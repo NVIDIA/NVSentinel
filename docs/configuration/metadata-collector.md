@@ -109,6 +109,10 @@ Authentication does not grant permissions. Do not assume the kubelet's own clien
 
 Client-go supports kubeconfig bearer tokens, token files, client certificates, and configured credential providers. Prefer rotating file credentials over embedded long-lived credentials. Token-file reload is periodic, so provision a new token before the old token expires. Restart the collector after changes to kubeconfig settings or CA trust. Client certificate files reload through client-go; embedded certificate data does not reload.
 
+Certificate authentication requires both a certificate and its private key. Each can be provided as a file or embedded data. A username and password alone do not satisfy the credential requirement.
+
+Without an explicit kubelet kubeconfig, the transport rereads the projected ServiceAccount token on every request, including retries. This preserves recovery when that token rotates between attempts. The client does not retain tokens or set authentication headers itself.
+
 ### Startup and failure handling
 
 Hardware inventory and pod-to-GPU mapping remain enabled. A missing PodResources socket no longer fails client construction. Each PodResources call waits up to 20 seconds for readiness and honors cancellation. The connection can recover after kubelet restarts.

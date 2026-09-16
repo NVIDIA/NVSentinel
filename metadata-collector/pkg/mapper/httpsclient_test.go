@@ -16,6 +16,7 @@ package mapper
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,6 +31,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/transport"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
@@ -482,12 +485,11 @@ func newTestKubeletHTTPSClient(responseCode int, responseBody string) *kubeletHT
 		Body:       io.NopCloser(strings.NewReader(responseBody)),
 	}, nil)
 	return &kubeletHTTPSClient{
-		ctx:               context.Background(),
-		httpRoundTripper:  mockRoundTripper,
-		staticBearerToken: "authToken",
-		listPodsURI:       "https://localhost:10250/pods",
-		listPodsBackoff:   fastTestBackoff,
-		listPodsTimeout:   testCallTimeout,
+		ctx:              context.Background(),
+		httpRoundTripper: transport.NewBearerAuthRoundTripper("authToken", mockRoundTripper),
+		listPodsURI:      "https://localhost:10250/pods",
+		listPodsBackoff:  fastTestBackoff,
+		listPodsTimeout:  testCallTimeout,
 	}
 }
 
@@ -519,10 +521,10 @@ func TestListPods(t *testing.T) {
 
 func TestListPodsWithReadFileError(t *testing.T) {
 	client := newTestKubeletHTTPSClient(http.StatusOK, podJson)
-	client.staticBearerToken = ""
-	client.bearerTokenPath = filepath.Join(t.TempDir(), "missing-token")
+	client.httpRoundTripper = transport.TokenSourceWrapTransport(
+		projectedTokenFile(filepath.Join(t.TempDir(), "missing-token")))(client.httpRoundTripper)
 	_, err := client.ListPods()
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
 // This used to set client.ctx = nil, which no longer reaches http.NewRequestWithContext:
@@ -562,12 +564,11 @@ func TestListPodsWithRetry(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(podJson)),
 	}, nil).Once()
 	client := &kubeletHTTPSClient{
-		ctx:               context.Background(),
-		httpRoundTripper:  mockRoundTripper,
-		staticBearerToken: "authToken",
-		listPodsURI:       "https://localhost:10250/pods",
-		listPodsBackoff:   fastTestBackoff,
-		listPodsTimeout:   testCallTimeout,
+		ctx:              context.Background(),
+		httpRoundTripper: transport.NewBearerAuthRoundTripper("authToken", mockRoundTripper),
+		listPodsURI:      "https://localhost:10250/pods",
+		listPodsBackoff:  fastTestBackoff,
+		listPodsTimeout:  testCallTimeout,
 	}
 	pods, err := client.ListPods()
 	assert.NoError(t, err)
@@ -586,29 +587,29 @@ func TestListPods_TokenRotatedMidRetry_SecondAttemptSendsTheNewToken(t *testing.
 
 	client := &kubeletHTTPSClient{
 		ctx:             context.Background(),
-		bearerTokenPath: tokenPath,
 		listPodsURI:     "https://localhost:10250/pods",
 		listPodsBackoff: fastTestBackoff,
 		listPodsTimeout: testCallTimeout,
-		httpRoundTripper: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			sentTokens = append(sentTokens, req.Header.Get("Authorization"))
+		httpRoundTripper: transport.TokenSourceWrapTransport(projectedTokenFile(tokenPath))(
+			roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				sentTokens = append(sentTokens, req.Header.Get("Authorization"))
 
-			if len(sentTokens) == 1 {
-				// Stand in for the kubelet rejecting the rotated-out credential, then the
-				// kubelet refreshing the projected volume before the next attempt.
-				require.NoError(t, os.WriteFile(tokenPath, []byte("fresh-token"), 0o600))
+				if len(sentTokens) == 1 {
+					// Stand in for the kubelet rejecting the rotated-out credential, then the
+					// kubelet refreshing the projected volume before the next attempt.
+					require.NoError(t, os.WriteFile(tokenPath, []byte("fresh-token"), 0o600))
+
+					return &http.Response{
+						StatusCode: http.StatusUnauthorized,
+						Body:       io.NopCloser(strings.NewReader("Unauthorized")),
+					}, nil
+				}
 
 				return &http.Response{
-					StatusCode: http.StatusUnauthorized,
-					Body:       io.NopCloser(strings.NewReader("Unauthorized")),
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(podJson)),
 				}, nil
-			}
-
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader(podJson)),
-			}, nil
-		}),
+			})),
 	}
 
 	pods, err := client.ListPods()
@@ -628,11 +629,10 @@ func TestListPods_HungKubelet_ReturnsWhenTheCallDeadlinePasses(t *testing.T) {
 	const callTimeout = 150 * time.Millisecond
 
 	client := &kubeletHTTPSClient{
-		ctx:               context.Background(),
-		staticBearerToken: "authToken",
-		listPodsURI:       "https://localhost:10250/pods",
-		listPodsBackoff:   fastTestBackoff,
-		listPodsTimeout:   callTimeout,
+		ctx:             context.Background(),
+		listPodsURI:     "https://localhost:10250/pods",
+		listPodsBackoff: fastTestBackoff,
+		listPodsTimeout: callTimeout,
 		httpRoundTripper: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			<-req.Context().Done()
 
@@ -726,4 +726,68 @@ func TestNewKubeletHTTPSClientHostResolution(t *testing.T) {
 			assert.Equal(t, tc.expected, client.(*kubeletHTTPSClient).listPodsURI)
 		})
 	}
+}
+
+func TestNewKubeletHTTPSClient_DefaultTransport_PreservesTLSAndTimeouts(t *testing.T) {
+	for _, paths := range [][]string{nil, {""}} {
+		client, err := NewKubeletHTTPSClient(t.Context(), paths...)
+		require.NoError(t, err)
+		roundTripper := client.(*kubeletHTTPSClient).httpRoundTripper
+		for {
+			wrapper, ok := roundTripper.(interface{ WrappedRoundTripper() http.RoundTripper })
+			if !ok {
+				break
+			}
+
+			roundTripper = wrapper.WrappedRoundTripper()
+		}
+
+		httpTransport, ok := roundTripper.(*http.Transport)
+		require.True(t, ok)
+		require.NotNil(t, httpTransport.TLSClientConfig)
+		assert.Equal(t, uint16(tls.VersionTLS12), httpTransport.TLSClientConfig.MinVersion)
+		assert.True(t, httpTransport.TLSClientConfig.InsecureSkipVerify)
+		assert.Equal(t, 30*time.Second, httpTransport.TLSHandshakeTimeout)
+		assert.Equal(t, 30*time.Second, httpTransport.IdleConnTimeout)
+		assert.Equal(t, 30*time.Second, httpTransport.ResponseHeaderTimeout)
+	}
+}
+
+func TestNewKubeletHTTPSClient_MultiplePaths_ReturnsError(t *testing.T) {
+	client, err := NewKubeletHTTPSClient(t.Context(), "one", "two")
+	require.ErrorContains(t, err, "at most one")
+	assert.Nil(t, client)
+}
+
+func TestProjectedTokenTransport_RereadsFileAndDoesNotRetainRemovedToken(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	var sentTokens []string
+	config := &rest.Config{
+		WrapTransport: transport.TokenSourceWrapTransport(projectedTokenFile(tokenPath)),
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			sentTokens = append(sentTokens, req.Header.Get("Authorization"))
+
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}),
+	}
+	roundTripper, err := rest.TransportFor(config)
+	require.NoError(t, err, "projected tokens must not be read until the first request")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://localhost:10250/pods", nil)
+	require.NoError(t, err)
+	_, err = roundTripper.RoundTrip(req)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.Empty(t, sentTokens)
+
+	for _, token := range []string{"old-token", "new-token"} {
+		require.NoError(t, os.WriteFile(tokenPath, []byte(" \n"+token+"\n"), 0o600))
+		resp, err := roundTripper.RoundTrip(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		assert.Empty(t, req.Header.Get("Authorization"), "the transport must not mutate the caller's request")
+	}
+
+	require.NoError(t, os.Remove(tokenPath))
+	_, err = roundTripper.RoundTrip(req)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	assert.Equal(t, []string{"Bearer old-token", "Bearer new-token"}, sentTokens)
 }

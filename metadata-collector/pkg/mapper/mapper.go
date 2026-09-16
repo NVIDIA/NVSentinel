@@ -85,7 +85,7 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		return nil, fmt.Errorf("create Kubernetes API client: %w", err)
 	}
 
-	httpsClient, err := newKubeletHTTPSClient(ctx, config.kubeletKubeconfigPath)
+	httpsClient, err := NewKubeletHTTPSClient(ctx, config.kubeletKubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("got an error creating Kubelet HTTPS client: %w", err)
 	}
@@ -147,10 +147,16 @@ func validateHostConfig(config *rest.Config) error {
 	return nil
 }
 
-// hasClientCredentials permits client-go's static, file-based, and plugin credentials.
+// hasClientCredentials reports whether a supported credential source is configured.
 func hasClientCredentials(config *rest.Config) bool {
-	return config.BearerToken != "" || config.BearerTokenFile != "" || config.CertFile != "" ||
-		len(config.CertData) > 0 || config.Username != "" || config.ExecProvider != nil || config.AuthProvider != nil
+	hasCert := config.CertFile != "" || len(config.CertData) > 0
+	hasKey := config.KeyFile != "" || len(config.KeyData) > 0
+
+	return config.BearerToken != "" ||
+		config.BearerTokenFile != "" ||
+		(hasCert && hasKey) ||
+		config.ExecProvider != nil ||
+		config.AuthProvider != nil
 }
 
 /*

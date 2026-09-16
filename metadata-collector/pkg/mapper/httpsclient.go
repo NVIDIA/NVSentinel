@@ -26,18 +26,19 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/oauth2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/transport"
 	"k8s.io/client-go/util/retry"
 )
 
 const (
-	kubeSecurePort      = "10250"
-	defaultKubeletHost  = "localhost"
-	kubeletHostEnvVar   = "KUBELET_HOST"
-	bearerTokenPath     = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // not a credential
-	listPodsURLTemplate = "https://%s/pods"
+	kubeSecurePort     = "10250"
+	defaultKubeletHost = "localhost"
+	kubeletHostEnvVar  = "KUBELET_HOST"
+	bearerTokenPath    = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // not a credential
 )
 
 // client-go's retry.DefaultRetry is documented for resource-version conflicts and waits about
@@ -63,54 +64,18 @@ type kubeletHTTPSClient struct {
 	ctx context.Context
 
 	httpRoundTripper http.RoundTripper
-
-	// Legacy in-cluster auth reads the projected token on each attempt. Explicit kubeconfigs
-	// leave both fields empty and delegate credential handling to the client-go transport.
-	staticBearerToken string
-	bearerTokenPath   string
-	listPodsURI       string
-	listPodsBackoff   wait.Backoff
-	listPodsTimeout   time.Duration
+	listPodsURI      string
+	listPodsBackoff  wait.Backoff
+	listPodsTimeout  time.Duration
 }
 
-// newKubeletHTTPSClient reads the kubelet endpoint, trust, and credentials from an explicit
-// kubeconfig. An empty path retains KUBELET_HOST and projected ServiceAccount token behavior.
+// NewKubeletHTTPSClient accepts at most one kubeconfig path for kubelet HTTPS access.
+// An omitted or empty path retains the in-cluster endpoint, token, and TLS behavior.
+// An explicit path must provide credentials and a verified HTTPS endpoint.
 // Requests use ctx for cancellation throughout the client's lifetime.
-func newKubeletHTTPSClient(ctx context.Context, kubeconfigPath string) (KubeletHTTPSClient, error) {
-	if kubeconfigPath == "" {
-		return NewKubeletHTTPSClient(ctx)
-	}
-
-	config, err := loadRESTConfig(kubeconfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("load kubelet configuration: %w", err)
-	}
-
-	transport, err := rest.TransportFor(config)
-	if err != nil {
-		return nil, fmt.Errorf("create kubelet transport: %w", err)
-	}
-
-	return &kubeletHTTPSClient{
-		ctx:              ctx,
-		httpRoundTripper: transport,
-		listPodsURI:      strings.TrimRight(config.Host, "/") + "/pods",
-		listPodsBackoff:  defaultListPodsBackoff,
-		listPodsTimeout:  defaultListPodsTimeout,
-	}, nil
-}
-
-// NewKubeletHTTPSClient retains the in-cluster endpoint, token, and TLS behavior.
-// Requests use ctx for cancellation throughout the client's lifetime.
-func NewKubeletHTTPSClient(ctx context.Context) (KubeletHTTPSClient, error) {
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true, //nolint:gosec // kubelet cert SAN does not cover localhost
-		},
-		TLSHandshakeTimeout:   30 * time.Second,
-		IdleConnTimeout:       30 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+func NewKubeletHTTPSClient(ctx context.Context, kubeconfigPath ...string) (KubeletHTTPSClient, error) {
+	if len(kubeconfigPath) > 1 {
+		return nil, fmt.Errorf("expected at most one kubelet kubeconfig path")
 	}
 
 	kubeletHost := os.Getenv(kubeletHostEnvVar)
@@ -118,14 +83,54 @@ func NewKubeletHTTPSClient(ctx context.Context) (KubeletHTTPSClient, error) {
 		kubeletHost = defaultKubeletHost
 	}
 
+	config := &rest.Config{
+		Host: "https://" + net.JoinHostPort(kubeletHost, kubeSecurePort),
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: true, //nolint:gosec // preserve in-cluster kubelet certificate behavior
+			},
+			TLSHandshakeTimeout:   30 * time.Second,
+			IdleConnTimeout:       30 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+		WrapTransport: transport.TokenSourceWrapTransport(projectedTokenFile(bearerTokenPath)),
+	}
+
+	if len(kubeconfigPath) == 1 && kubeconfigPath[0] != "" {
+		var err error
+
+		config, err = loadRESTConfig(kubeconfigPath[0])
+		if err != nil {
+			return nil, fmt.Errorf("load kubelet configuration: %w", err)
+		}
+	}
+
+	roundTripper, err := rest.TransportFor(config)
+	if err != nil {
+		return nil, fmt.Errorf("create kubelet transport: %w", err)
+	}
+
 	return &kubeletHTTPSClient{
 		ctx:              ctx,
-		httpRoundTripper: transport,
-		bearerTokenPath:  bearerTokenPath,
-		listPodsURI:      fmt.Sprintf(listPodsURLTemplate, net.JoinHostPort(kubeletHost, kubeSecurePort)),
+		httpRoundTripper: roundTripper,
+		listPodsURI:      strings.TrimRight(config.Host, "/") + "/pods",
 		listPodsBackoff:  defaultListPodsBackoff,
 		listPodsTimeout:  defaultListPodsTimeout,
 	}, nil
+}
+
+// projectedTokenFile avoids client-go's token cache so a retry immediately sees a rotated
+// ServiceAccount token. The transport owns header injection; no token is retained by the client.
+type projectedTokenFile string
+
+func (path projectedTokenFile) Token() (*oauth2.Token, error) {
+	tokenBytes, err := os.ReadFile(string(path))
+	if err != nil {
+		return nil, fmt.Errorf("could not read service account token %q: %w", path, err)
+	}
+
+	return &oauth2.Token{AccessToken: strings.TrimSpace(string(tokenBytes))}, nil
 }
 
 /*
@@ -187,23 +192,11 @@ func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
 	return pods.Items, nil
 }
 
-// fetchPods performs one attempt at the /pods request. Both the token and the request are built
-// here rather than once per ListPods call, because the backoff now spans several seconds and a
-// credential rotated part way through it is exactly what that wait is for; a token read once up
-// front would leave every attempt presenting the same expired credential.
+// fetchPods performs one attempt at the /pods request. The transport supplies authentication.
 func (client *kubeletHTTPSClient) fetchPods(ctx context.Context) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.listPodsURI, nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if client.bearerTokenPath != "" || client.staticBearerToken != "" {
-		token, err := client.bearerToken()
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
 	}
 
 	req.Header.Add("Accept", "application/json")
@@ -232,19 +225,6 @@ func (client *kubeletHTTPSClient) fetchPods(ctx context.Context) ([]byte, error)
 	}
 
 	return podBytes, nil
-}
-
-func (client *kubeletHTTPSClient) bearerToken() (string, error) {
-	if len(client.staticBearerToken) > 0 {
-		return client.staticBearerToken, nil
-	}
-
-	tokenBytes, err := os.ReadFile(client.bearerTokenPath)
-	if err != nil {
-		return "", fmt.Errorf("could not read service account token %q: %w", client.bearerTokenPath, err)
-	}
-
-	return string(tokenBytes), nil
 }
 
 // retriableUntil retries any error until ctx is done. Returning false there is what stops

@@ -56,6 +56,8 @@ func writeTestKubeconfig(t *testing.T, config *rest.Config) string {
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
 			"test": {
+				Username:              config.Username,
+				Password:              config.Password,
 				Token:                 config.BearerToken,
 				TokenFile:             config.BearerTokenFile,
 				ClientCertificate:     config.CertFile,
@@ -82,6 +84,64 @@ func tlsServerConfig(server *httptest.Server) *rest.Config {
 	}
 }
 
+func TestValidateHostConfig_CredentialSources_RequiresSupportedCredentials(t *testing.T) {
+	tests := []struct {
+		name   string
+		config rest.Config
+		want   bool
+	}{
+		{name: "no credentials"},
+		{name: "username only", config: rest.Config{Username: "test-user"}},
+		{name: "password only", config: rest.Config{Password: "fake-password"}},
+		{name: "basic auth", config: rest.Config{Username: "test-user", Password: "fake-password"}},
+		{name: "certificate file only", config: rest.Config{
+			TLSClientConfig: rest.TLSClientConfig{CertFile: "client.crt"},
+		}},
+		{name: "certificate data only", config: rest.Config{
+			TLSClientConfig: rest.TLSClientConfig{CertData: []byte("fake-certificate")},
+		}},
+		{name: "key file only", config: rest.Config{
+			TLSClientConfig: rest.TLSClientConfig{KeyFile: "client.key"},
+		}},
+		{name: "key data only", config: rest.Config{
+			TLSClientConfig: rest.TLSClientConfig{KeyData: []byte("fake-key")},
+		}},
+		{name: "certificate and key files", config: rest.Config{
+			TLSClientConfig: rest.TLSClientConfig{CertFile: "client.crt", KeyFile: "client.key"},
+		}, want: true},
+		{name: "certificate and key data", config: rest.Config{
+			TLSClientConfig: rest.TLSClientConfig{CertData: []byte("fake-certificate"), KeyData: []byte("fake-key")},
+		}, want: true},
+		{name: "certificate file and key data", config: rest.Config{
+			TLSClientConfig: rest.TLSClientConfig{CertFile: "client.crt", KeyData: []byte("fake-key")},
+		}, want: true},
+		{name: "certificate data and key file", config: rest.Config{
+			TLSClientConfig: rest.TLSClientConfig{CertData: []byte("fake-certificate"), KeyFile: "client.key"},
+		}, want: true},
+		{name: "bearer token", config: rest.Config{BearerToken: "fake-token"}, want: true},
+		{name: "token file", config: rest.Config{BearerTokenFile: "token"}, want: true},
+		{name: "exec provider", config: rest.Config{
+			ExecProvider: &clientcmdapi.ExecConfig{Command: "test-credential-plugin"},
+		}, want: true},
+		{name: "auth provider", config: rest.Config{
+			AuthProvider: &clientcmdapi.AuthProviderConfig{Name: "test-provider"},
+		}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.config.Host = "https://127.0.0.1:10250"
+			err := validateHostConfig(&tt.config)
+
+			if tt.want {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, "must provide client credentials")
+			}
+		})
+	}
+}
+
 func TestLoadRESTConfig_ExplicitHostConfig_RejectsUnsafeOrMissingSettings(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -93,6 +153,15 @@ func TestLoadRESTConfig_ExplicitHostConfig_RejectsUnsafeOrMissingSettings(t *tes
 			Host: "https://127.0.0.1:10250", BearerToken: "fake", TLSClientConfig: rest.TLSClientConfig{Insecure: true},
 		}, want: "verify the server certificate"},
 		{name: "anonymous", config: rest.Config{Host: "https://127.0.0.1:10250"}, want: "client credentials"},
+		{name: "username only", config: rest.Config{
+			Host: "https://127.0.0.1:10250", Username: "test-user",
+		}, want: "client credentials"},
+		{name: "basic auth", config: rest.Config{
+			Host: "https://127.0.0.1:10250", Username: "test-user", Password: "fake-password",
+		}, want: "client credentials"},
+		{name: "certificate without key", config: rest.Config{
+			Host: "https://127.0.0.1:10250", TLSClientConfig: rest.TLSClientConfig{CertData: []byte("fake-certificate")},
+		}, want: "client-key"},
 		{name: "URL credentials", config: rest.Config{
 			Host: "https://fake:fake@127.0.0.1:10250", BearerToken: "fake",
 		}, want: "URL credentials"},
@@ -136,7 +205,7 @@ func TestKubeletHostAuth_VerifiedTLS_UsesOnlyExplicitCredentials(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := newKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, tlsServerConfig(server)))
+	client, err := NewKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, tlsServerConfig(server)))
 	require.NoError(t, err)
 
 	pods, err := client.ListPods()
@@ -159,7 +228,7 @@ func TestKubeletHostAuth_InvalidTrustOrName_RejectsServer(t *testing.T) {
 				config.ServerName = "wrong.invalid"
 			}
 
-			client, err := newKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, config))
+			client, err := NewKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, config))
 			require.NoError(t, err)
 			client.(*kubeletHTTPSClient).listPodsBackoff = fastTestBackoff
 			_, err = client.ListPods()
@@ -175,7 +244,7 @@ func TestKubeletHostAuth_MissingCredentialFile_FailsAtConstruction(t *testing.T)
 		Host:            "https://127.0.0.1:10250",
 		BearerTokenFile: filepath.Join(t.TempDir(), "missing-token"),
 	}
-	_, err := newKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, config))
+	_, err := NewKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, config))
 	require.Error(t, err)
 }
 
@@ -188,7 +257,7 @@ func TestKubeletHostAuth_PermissionDenied_ReturnsStatusWithoutFollowingRedirect(
 			}))
 			defer server.Close()
 
-			client, err := newKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, tlsServerConfig(server)))
+			client, err := NewKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, tlsServerConfig(server)))
 			require.NoError(t, err)
 			client.(*kubeletHTTPSClient).listPodsBackoff = fastTestBackoff
 			_, err = client.ListPods()
@@ -218,7 +287,7 @@ func TestKubeletHostAuth_RotatedTokenFile_ReloadsWithoutRestart(t *testing.T) {
 	config := tlsServerConfig(server)
 	config.BearerToken = ""
 	config.BearerTokenFile = tokenPath
-	client, err := newKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, config))
+	client, err := NewKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, config))
 	require.NoError(t, err)
 	pods, err := client.ListPods()
 	require.NoError(t, err)
@@ -240,7 +309,7 @@ func TestKubeletHostAuth_CancelledContext_StopsRequest(t *testing.T) {
 	defer server.Close()
 
 	ctx, cancel := context.WithCancel(t.Context())
-	client, err := newKubeletHTTPSClient(ctx, writeTestKubeconfig(t, tlsServerConfig(server)))
+	client, err := NewKubeletHTTPSClient(ctx, writeTestKubeconfig(t, tlsServerConfig(server)))
 	require.NoError(t, err)
 	cancel()
 	_, err = client.ListPods()
@@ -298,7 +367,7 @@ func TestKubeletHostAuth_RotatedCertificateFiles_UsesNewCertificateOnReconnect(t
 	config.KeyFile = filepath.Join(dir, "client.key")
 	require.NoError(t, os.WriteFile(config.CertFile, firstCert, 0o600))
 	require.NoError(t, os.WriteFile(config.KeyFile, firstKey, 0o600))
-	client, err := newKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, config))
+	client, err := NewKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, config))
 	require.NoError(t, err)
 	pods, err := client.ListPods()
 	require.NoError(t, err)
