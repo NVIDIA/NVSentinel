@@ -17,14 +17,14 @@ package mapper
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
+	"os"
 	"slices"
 	"sort"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/resolver"
 	"k8s.io/client-go/util/retry"
 	v1 "k8s.io/kubelet/pkg/apis/podresources/v1"
 
@@ -32,8 +32,7 @@ import (
 )
 
 const (
-	podResourcesKubeletSocket  = "/var/lib/kubelet/pod-resources/kubelet.sock"
-	defaultPodResourcesTimeout = 20 * time.Second
+	podResourcesKubeletSocket = "/var/lib/kubelet/pod-resources/kubelet.sock"
 )
 
 type KubeletGRPClient interface {
@@ -45,19 +44,18 @@ type kubeletGRPClient struct {
 
 	connection         *grpc.ClientConn
 	podResourcesClient v1.PodResourcesListerClient
-	requestTimeout     time.Duration
 }
 
-// NewKubeletGRPClient connects lazily to the local PodResources socket.
-// Each request waits a bounded time for readiness. Cancellation closes the connection.
 func NewKubeletGRPClient(ctx context.Context) (KubeletGRPClient, error) {
-	return newKubeletGRPClient(ctx, podResourcesKubeletSocket)
-}
+	_, err := os.Stat(podResourcesKubeletSocket)
+	if err != nil {
+		return nil, err
+	}
 
-// newKubeletGRPClient permits a private socket path for transport tests.
-func newKubeletGRPClient(ctx context.Context, socketPath string) (*kubeletGRPClient, error) {
+	resolver.SetDefaultScheme("passthrough")
+
 	connection, err := grpc.NewClient(
-		"passthrough:///"+socketPath,
+		podResourcesKubeletSocket,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
 			d := net.Dialer{}
@@ -65,14 +63,8 @@ func newKubeletGRPClient(ctx context.Context, socketPath string) (*kubeletGRPCli
 		}),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("connect to PodResources socket %q: %w", socketPath, err)
+		return nil, fmt.Errorf("failure connecting to '%s'; err: %w", podResourcesKubeletSocket, err)
 	}
-
-	context.AfterFunc(ctx, func() {
-		if err := connection.Close(); err != nil {
-			slog.Warn("Close PodResources connection", "error", err)
-		}
-	})
 
 	client := v1.NewPodResourcesListerClient(connection)
 
@@ -80,7 +72,6 @@ func newKubeletGRPClient(ctx context.Context, socketPath string) (*kubeletGRPCli
 		ctx:                ctx,
 		connection:         connection,
 		podResourcesClient: client,
-		requestTimeout:     defaultPodResourcesTimeout,
 	}, nil
 }
 
@@ -122,16 +113,12 @@ Example output:
 	}
 */
 func (client *kubeletGRPClient) ListPodResources() (map[string]*model.DeviceAnnotation, error) {
-	ctx, cancel := context.WithTimeout(client.ctx, client.requestTimeout)
-	defer cancel()
-
 	var listPodResourcesResponse *v1.ListPodResourcesResponse
 
 	var listError error
 
-	err := retry.OnError(retry.DefaultRetry, retriableUntil(ctx), func() error {
-		listPodResourcesResponse, listError = client.podResourcesClient.List(ctx, &v1.ListPodResourcesRequest{},
-			grpc.WaitForReady(true))
+	err := retry.OnError(retry.DefaultRetry, retryAllErrors, func() error {
+		listPodResourcesResponse, listError = client.podResourcesClient.List(client.ctx, &v1.ListPodResourcesRequest{})
 		if listError != nil {
 			return fmt.Errorf("got an error calling ListPodResources: %w", listError)
 		}

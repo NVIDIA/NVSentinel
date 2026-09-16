@@ -21,7 +21,7 @@ Keep the local PodResources socket and pod-to-GPU annotation flow. Do not add an
 - Require authenticated, verified HTTPS for explicit configurations.
 - Read the kubelet endpoint from its kubeconfig. Do not copy API server credentials or trust settings to it.
 - Use client-go transports for token-file reload and client certificate handling.
-- Permit delayed PodResources socket availability through bounded, cancellable gRPC calls. Keep the existing consecutive-poll failure limit.
+- Keep PodResources socket checks, gRPC request behavior, and the consecutive-poll failure limit unchanged.
 - Keep inventory, annotation schemas, and mapping decisions unchanged.
 
 ## Rationale
@@ -45,8 +45,8 @@ Separate kubeconfigs keep endpoint trust and credentials together. Existing clie
 ### Mitigations
 
 - Document required pod patch and kubelet permissions.
-- Test credential separation, rotation, TLS errors, socket delay, and annotation updates.
-- Retain bounded retries and the existing failure threshold.
+- Test credential separation, credential validation, TLS errors, and authorized annotation updates.
+- Retain existing retries and the failure threshold.
 
 ## Alternatives Considered
 

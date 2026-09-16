@@ -67,7 +67,7 @@ type podDeviceMapper struct {
 	kubernetesClient   kubernetes.Interface
 }
 
-// NewPodDeviceMapper creates a mapper whose requests and connections live until ctx ends.
+// NewPodDeviceMapper creates clients for pod-to-device annotation updates.
 // Explicit kubeconfigs must provide credentials and verified HTTPS endpoints.
 func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper, error) {
 	config := clientConfig{}

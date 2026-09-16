@@ -28,7 +28,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	v1 "k8s.io/kubelet/pkg/apis/podresources/v1"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -86,26 +85,22 @@ func TestHostMapper_SeparateCredentials_RequiresPodPatchPermission(t *testing.T)
 	}))
 	defer kubelet.Close()
 
-	mapperInterface, err := NewPodDeviceMapper(t.Context(), WithKubeconfigs(
-		writeTestKubeconfig(t, user.Config()), writeTestKubeconfig(t, tlsServerConfig(kubelet))))
+	apiConfig, err := loadRESTConfig(writeTestKubeconfig(t, user.Config()))
 	require.NoError(t, err)
-	mapper := mapperInterface.(*podDeviceMapper)
+	apiClient, err := kubernetes.NewForConfig(apiConfig)
+	require.NoError(t, err)
+	httpsClient, err := NewKubeletHTTPSClient(t.Context(), writeTestKubeconfig(t, tlsServerConfig(kubelet)))
+	require.NoError(t, err)
 
-	// Only the Unix socket location changes for the fixture; API and HTTPS clients come
-	// from the production constructor and have no projected ServiceAccount files.
-	socket := testPodResourcesSocket(t)
-	resources := &podResourcesFixture{response: &v1.ListPodResourcesResponse{PodResources: []*v1.PodResources{{
-		Name: pod.Name, Namespace: pod.Namespace,
-		Containers: []*v1.ContainerResources{{
-			Name: "workload",
-			Devices: []*v1.ContainerDevices{{
-				ResourceName: "nvidia.com/gpu", DeviceIds: []string{"GPU-test-1"},
-			}},
+	// Only API and HTTPS authentication are under test; PodResources behavior is unchanged.
+	mapper := &podDeviceMapper{
+		ctx:                t.Context(),
+		kubernetesClient:   apiClient,
+		kubeletHTTPSClient: httpsClient,
+		kubeletGRPCClient: &mockKubeletGRPClient{devicesPerPod: map[string]*model.DeviceAnnotation{
+			pod.Namespace + "/" + pod.Name: {Devices: map[string][]string{"nvidia.com/gpu": {"GPU-test-1"}}},
 		}},
-	}}}}
-	startPodResourcesFixture(t, socket, resources)
-	mapper.kubeletGRPCClient, err = newKubeletGRPClient(t.Context(), socket)
-	require.NoError(t, err)
+	}
 
 	_, err = mapper.UpdatePodDevicesAnnotations()
 	require.True(t, apierrors.IsForbidden(err), "identity without pod patch permission must be rejected: %v", err)

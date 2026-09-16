@@ -115,7 +115,7 @@ Without an explicit kubelet kubeconfig, the transport rereads the projected Serv
 
 ### Startup and failure handling
 
-Hardware inventory and pod-to-GPU mapping remain enabled. A missing PodResources socket no longer fails client construction. Each PodResources call waits up to 20 seconds for readiness and honors cancellation. The connection can recover after kubelet restarts.
+Hardware inventory and pod-to-GPU mapping remain enabled. PodResources socket handling is unchanged. The kubelet socket must exist and be accessible when the mapper starts.
 
 The existing 30-second poll period and `--pod-mapper-max-consecutive-failures` limit remain unchanged. The default limit is 10 failed polls. Persistent authentication, authorization, or socket failures remain errors; the collector does not report them as successful mapping.
 

@@ -234,3 +234,11 @@ func retriableUntil(ctx context.Context) func(error) bool {
 		return ctx.Err() == nil
 	}
 }
+
+// Still used by the gRPC client. Retrying every error is not right: a permanent fault such as a
+// wrong bearerTokenPath is retried and then reported as though it were transient. Classifying
+// retryable against permanent is worth doing, but it interacts with the caller's failure
+// threshold, so it belongs in its own change.
+func retryAllErrors(_ error) bool {
+	return true
+}
