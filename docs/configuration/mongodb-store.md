@@ -102,13 +102,13 @@ Everything above compares values with each other. None of it can see the resourc
 
 Set **`mongodb-store.validateDeployedCrVersion: true`** to add an init container to the bootstrap Job that reads the deployed `crVersion` and applies the same rule: same major, and at most one minor behind the operator. It fails the Job rather than letting an unsupported pairing reconcile silently.
 
-It is **off by default** because enabling it grants the Job `get` on `perconaservermongodbs.psmdb.percona.com`. The grant and the check are gated on the same value, so no installation carries the permission without the check that needs it.
+It is **off by default** because enabling it grants the Job `list` on `perconaservermongodbs.psmdb.percona.com`, scoped to the release namespace. The grant and the check are gated on the same value, so no installation carries the permission without the check that needs it.
 
 Notes:
 
-- It runs after the operator-generated users secret exists, which means the operator has already reconciled the resource. A missing resource at that point is therefore an error, not a first install.
-- The resource name comes from `psmdb-db.fullnameOverride`. If you rename the resource by some other means the check will not find it and will fail loudly.
-- A first-time or air-gapped install has no deployed resource to compare against, so this cannot replace `psmdbVersion`. The two cover different moments.
+- It runs after the operator-generated users secret exists, which means the operator has already reconciled the resource. A missing resource at that point is therefore an error rather than a first install, which is what lets the check fail instead of skipping.
+- The resource is found by listing the namespace, not by name, so renaming it changes nothing. If the namespace holds more than one, the check refuses to guess which belongs to the release.
+- This runs only when the Job runs, so it cannot see a render. It does not replace `psmdbVersion`, which is what catches the values disagreeing with each other before anything is applied.
 
 ### Volume size
 

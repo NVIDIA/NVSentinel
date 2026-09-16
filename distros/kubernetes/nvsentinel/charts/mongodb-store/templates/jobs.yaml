@@ -30,7 +30,7 @@ rules:
 # when that check is enabled, so no install carries the grant without the check.
 - apiGroups: ["psmdb.percona.com"]
   resources: ["perconaservermongodbs"]
-  verbs: ["get"]
+  verbs: ["list"]
 {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -238,28 +238,49 @@ spec:
           set -e
 
           NAMESPACE="{{ .Release.Namespace }}"
-          CR_NAME="{{ include "mongodb-store.psmdbCrName" . }}"
           OP_TAG="{{ (index (index .Values "psmdb-operator" | default dict) "image" | default dict).tag | default "" }}"
           DOC="See docs/configuration/mongodb-store.md#percona-versions"
 
-          if ! DEPLOYED=$(kubectl get perconaservermongodbs.psmdb.percona.com "$CR_NAME" \
-              -n "$NAMESPACE" -o jsonpath='{.spec.crVersion}' 2>/dev/null); then
-            echo "[ERROR] PerconaServerMongoDB '$CR_NAME' not found in '$NAMESPACE'."
-            echo "[ERROR] The operator-generated users secret exists, so the resource should too."
-            echo "[ERROR] If the resource is named differently, psmdb-db.fullnameOverride is what sets it. $DOC"
+          # Listed rather than fetched by name, so that an empty result means
+          # "no resource" instead of "looked under the wrong name".
+          if ! FOUND=$(kubectl get perconaservermongodbs.psmdb.percona.com -n "$NAMESPACE" \
+              -o jsonpath='{range .items[*]}{.spec.crVersion}{"\n"}{end}' 2>&1); then
+            echo "[ERROR] Could not list PerconaServerMongoDB in '$NAMESPACE':"
+            echo "[ERROR] $FOUND"
             exit 1
           fi
 
+          COUNT=$(printf '%s' "$FOUND" | grep -c . || true)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "[ERROR] No PerconaServerMongoDB found in '$NAMESPACE'."
+            echo "[ERROR] The operator-generated users secret exists, so the resource should too. $DOC"
+            exit 1
+          fi
+          if [ "$COUNT" -gt 1 ]; then
+            echo "[ERROR] Found $COUNT PerconaServerMongoDB resources in '$NAMESPACE'."
+            echo "[ERROR] Cannot tell which one belongs to this release, so refusing to guess. $DOC"
+            exit 1
+          fi
+          DEPLOYED=$(printf '%s' "$FOUND" | grep . | head -1)
+
           echo "[INFO] chart operator $OP_TAG, deployed crVersion ${DEPLOYED:-<unset>}"
 
+          # Deliberately not anchored at the end: Percona ships pre-release tags
+          # such as 1.23.0-rc1, and only major.minor is compared, so the trailing
+          # part is irrelevant. Anchoring would skip those instead of checking them.
           is_semver() { echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; }
           if ! is_semver "$OP_TAG" || ! is_semver "$DEPLOYED"; then
             echo "[INFO] Not both semver, skipping the comparison."
             exit 0
           fi
 
-          OP_MAJOR=$(echo "$OP_TAG" | cut -d. -f1);   OP_MINOR=$(echo "$OP_TAG" | cut -d. -f2)
-          CR_MAJOR=$(echo "$DEPLOYED" | cut -d. -f1); CR_MINOR=$(echo "$DEPLOYED" | cut -d. -f2)
+          # A leading zero makes POSIX arithmetic read the value as octal, so 010
+          # would compare as 8 and 08 would abort the shell. Normalize first.
+          strip_zeros() { n=${1#"${1%%[!0]*}"}; echo "${n:-0}"; }
+          OP_MAJOR=$(strip_zeros "$(echo "$OP_TAG" | cut -d. -f1)")
+          OP_MINOR=$(strip_zeros "$(echo "$OP_TAG" | cut -d. -f2)")
+          CR_MAJOR=$(strip_zeros "$(echo "$DEPLOYED" | cut -d. -f1)")
+          CR_MINOR=$(strip_zeros "$(echo "$DEPLOYED" | cut -d. -f2)")
 
           if [ "$OP_MAJOR" -ne "$CR_MAJOR" ]; then
             echo "[ERROR] The operator is $OP_TAG and the deployed crVersion is $DEPLOYED, which differ by a major version."

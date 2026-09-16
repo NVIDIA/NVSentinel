@@ -29,7 +29,7 @@ tests:
           content:
             apiGroups: ["psmdb.percona.com"]
             resources: ["perconaservermongodbs"]
-            verbs: ["get"]
+            verbs: ["list"]
         documentIndex: 1
       - notContains:
           path: spec.template.spec.initContainers
@@ -51,7 +51,7 @@ tests:
           any: true
         documentIndex: 3
 
-  - it: grants get on perconaservermongodbs when enabled
+  - it: grants list on perconaservermongodbs when enabled
     set:
       mongodb-store.validateDeployedCrVersion: true
     asserts:
@@ -60,7 +60,7 @@ tests:
           content:
             apiGroups: ["psmdb.percona.com"]
             resources: ["perconaservermongodbs"]
-            verbs: ["get"]
+            verbs: ["list"]
         documentIndex: 1
 
   # Bitnami has no custom resource to read, so neither half may appear.
@@ -75,7 +75,7 @@ tests:
           content:
             apiGroups: ["psmdb.percona.com"]
             resources: ["perconaservermongodbs"]
-            verbs: ["get"]
+            verbs: ["list"]
         documentIndex: 1
       - notContains:
           path: spec.template.spec.initContainers
@@ -85,9 +85,10 @@ tests:
         documentIndex: 3
 
   # The comparison is against the operator tag, so the rendered script has to
-  # carry it. A refactor that drops either interpolation would leave the check
-  # silently skipping on an empty version or looking up the wrong resource.
-  - it: carries the operator tag and the resource name into the script
+  # carry it. A refactor dropping the interpolation would leave the check
+  # silently skipping on an empty version. The resource is listed, not named,
+  # so an empty result means absent rather than misnamed.
+  - it: carries the operator tag into the script and lists the resource
     set:
       mongodb-store.validateDeployedCrVersion: true
     asserts:
@@ -97,15 +98,5 @@ tests:
         documentIndex: 3
       - matchRegex:
           path: spec.template.spec.initContainers[3].command[2]
-          pattern: 'CR_NAME="mongodb"'
-        documentIndex: 3
-
-  - it: follows psmdb-db.fullnameOverride when the resource is renamed
-    set:
-      mongodb-store.validateDeployedCrVersion: true
-      mongodb-store.psmdb-db.fullnameOverride: sentinel-store
-    asserts:
-      - matchRegex:
-          path: spec.template.spec.initContainers[3].command[2]
-          pattern: 'CR_NAME="sentinel-store"'
+          pattern: 'jsonpath=.\{range \.items\[\*\]\}'
         documentIndex: 3
