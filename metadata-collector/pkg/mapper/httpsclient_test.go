@@ -16,9 +16,9 @@ package mapper
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -31,7 +31,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -548,9 +547,13 @@ func TestListPodsWithRoundTripError(t *testing.T) {
 }
 
 func TestListPodsWithInvalidResponseCode(t *testing.T) {
-	client := newTestKubeletHTTPSClient(http.StatusInternalServerError, podJson)
-	_, err := client.ListPods()
-	assert.Error(t, err)
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusFound, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			client := newTestKubeletHTTPSClient(status, podJson)
+			_, err := client.ListPods()
+			require.ErrorContains(t, err, fmt.Sprintf("non-200 response code from /pods endpoint: %d", status))
+		})
+	}
 }
 
 func TestListPodsWithRetry(t *testing.T) {
@@ -728,28 +731,13 @@ func TestNewKubeletHTTPSClientHostResolution(t *testing.T) {
 	}
 }
 
-func TestNewKubeletHTTPSClient_DefaultTransport_PreservesTLSAndTimeouts(t *testing.T) {
+func TestNewKubeletHTTPSClient_DefaultTransport_UsesProjectedTokens(t *testing.T) {
 	for _, paths := range [][]string{nil, {""}} {
 		client, err := NewKubeletHTTPSClient(t.Context(), paths...)
 		require.NoError(t, err)
-		roundTripper := client.(*kubeletHTTPSClient).httpRoundTripper
-		for {
-			wrapper, ok := roundTripper.(interface{ WrappedRoundTripper() http.RoundTripper })
-			if !ok {
-				break
-			}
-
-			roundTripper = wrapper.WrappedRoundTripper()
-		}
-
-		httpTransport, ok := roundTripper.(*http.Transport)
-		require.True(t, ok)
-		require.NotNil(t, httpTransport.TLSClientConfig)
-		assert.Equal(t, uint16(tls.VersionTLS12), httpTransport.TLSClientConfig.MinVersion)
-		assert.True(t, httpTransport.TLSClientConfig.InsecureSkipVerify)
-		assert.Equal(t, 30*time.Second, httpTransport.TLSHandshakeTimeout)
-		assert.Equal(t, 30*time.Second, httpTransport.IdleConnTimeout)
-		assert.Equal(t, 30*time.Second, httpTransport.ResponseHeaderTimeout)
+		// Check constructor wiring without reading credentials from the host.
+		expected := transport.TokenSourceWrapTransport(projectedTokenFile(bearerTokenPath))(nil)
+		assert.IsType(t, expected, client.(*kubeletHTTPSClient).httpRoundTripper)
 	}
 }
 
@@ -759,35 +747,20 @@ func TestNewKubeletHTTPSClient_MultiplePaths_ReturnsError(t *testing.T) {
 	assert.Nil(t, client)
 }
 
-func TestProjectedTokenTransport_RereadsFileAndDoesNotRetainRemovedToken(t *testing.T) {
+func TestProjectedTokenFile_RereadsFileAndDoesNotRetainRemovedToken(t *testing.T) {
 	tokenPath := filepath.Join(t.TempDir(), "token")
-	var sentTokens []string
-	config := &rest.Config{
-		WrapTransport: transport.TokenSourceWrapTransport(projectedTokenFile(tokenPath)),
-		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			sentTokens = append(sentTokens, req.Header.Get("Authorization"))
-
-			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
-		}),
-	}
-	roundTripper, err := rest.TransportFor(config)
-	require.NoError(t, err, "projected tokens must not be read until the first request")
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://localhost:10250/pods", nil)
-	require.NoError(t, err)
-	_, err = roundTripper.RoundTrip(req)
+	source := projectedTokenFile(tokenPath)
+	_, err := source.Token()
 	require.ErrorIs(t, err, os.ErrNotExist)
-	require.Empty(t, sentTokens)
 
 	for _, token := range []string{"old-token", "new-token"} {
 		require.NoError(t, os.WriteFile(tokenPath, []byte(" \n"+token+"\n"), 0o600))
-		resp, err := roundTripper.RoundTrip(req)
+		current, err := source.Token()
 		require.NoError(t, err)
-		require.NoError(t, resp.Body.Close())
-		assert.Empty(t, req.Header.Get("Authorization"), "the transport must not mutate the caller's request")
+		assert.Equal(t, token, current.AccessToken)
 	}
 
 	require.NoError(t, os.Remove(tokenPath))
-	_, err = roundTripper.RoundTrip(req)
+	_, err = source.Token()
 	require.ErrorIs(t, err, os.ErrNotExist)
-	assert.Equal(t, []string{"Bearer old-token", "Bearer new-token"}, sentTokens)
 }

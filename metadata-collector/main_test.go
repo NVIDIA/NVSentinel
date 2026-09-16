@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -252,15 +253,38 @@ func TestPollPodDevices_DefaultThreshold_RidesOutAtLeastAMinute(t *testing.T) {
 		"the default must outlast a credential rotation, which is what #1767 was")
 }
 
-func TestRunMapper_ExplicitKubeconfig_IsUsedWithoutInClusterEnvironment(t *testing.T) {
+func TestRunMapper_ExplicitKubeconfigs_UsesBothFlags(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "")
-	previous := *kubeconfigPath
-	t.Cleanup(func() { *kubeconfigPath = previous })
+	previousAPI, previousKubelet := *kubeconfigPath, *kubeletKubeconfigPath
+	t.Cleanup(func() { *kubeconfigPath, *kubeletKubeconfigPath = previousAPI, previousKubelet })
 
-	require.NoError(t, flag.Set("kubeconfig", filepath.Join(t.TempDir(), "missing-api-config")))
-	err := runMapper(t.Context(), newPodMapperMetrics(prometheus.NewRegistry()))
-	require.ErrorContains(t, err, "missing-api-config")
-	require.NotContains(t, err.Error(), "in-cluster")
-	require.NotNil(t, flag.Lookup("kubelet-kubeconfig"))
+	apiConfig := filepath.Join(t.TempDir(), "api.kubeconfig")
+	require.NoError(t, os.WriteFile(apiConfig, []byte(`
+apiVersion: v1
+kind: Config
+clusters: [{name: test, cluster: {server: https://127.0.0.1:6443}}]
+users: [{name: test, user: {token: fake-token}}]
+contexts: [{name: test, context: {cluster: test, user: test}}]
+current-context: test
+`), 0o600))
+	missing := filepath.Join(t.TempDir(), "missing-config")
+
+	for _, tt := range []struct {
+		name, api, kubelet, want string
+	}{
+		{"API", missing, "", "load Kubernetes API configuration"},
+		{"kubelet", apiConfig, missing, "load kubelet configuration"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, flag.Set("kubeconfig", tt.api))
+			require.NoError(t, flag.Set("kubelet-kubeconfig", tt.kubelet))
+			// Client construction must reject the missing file before polling starts.
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			err := runMapper(ctx, newPodMapperMetrics(prometheus.NewRegistry()))
+			require.ErrorContains(t, err, tt.want)
+			require.ErrorContains(t, err, missing)
+		})
+	}
 }

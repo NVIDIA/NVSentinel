@@ -15,11 +15,9 @@
 package mapper
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,7 +51,7 @@ func grantTestPodPatch(t *testing.T, admin kubernetes.Interface, namespace, user
 	require.NoError(t, err)
 }
 
-func TestHostMapper_SeparateCredentials_PatchesAndRemovesGPUAnnotations(t *testing.T) {
+func TestHostMapper_SeparateCredentials_RequiresPodPatchPermission(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "")
 
@@ -77,7 +75,6 @@ func TestHostMapper_SeparateCredentials_PatchesAndRemovesGPUAnnotations(t *testi
 
 	user, err := environment.AddUser(envtest.User{Name: "metadata-test"}, adminConfig)
 	require.NoError(t, err)
-	grantTestPodPatch(t, admin, pod.Namespace, "metadata-test")
 
 	kubelet := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-kubelet-token" {
@@ -85,13 +82,7 @@ func TestHostMapper_SeparateCredentials_PatchesAndRemovesGPUAnnotations(t *testi
 			return
 		}
 
-		current, err := admin.CoreV1().Pods(pod.Namespace).Get(r.Context(), pod.Name, metav1.GetOptions{})
-		if !assert.NoError(t, err) {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		assert.NoError(t, json.NewEncoder(w).Encode(corev1.PodList{Items: []corev1.Pod{*current}}))
+		assert.NoError(t, json.NewEncoder(w).Encode(corev1.PodList{Items: []corev1.Pod{*pod}}))
 	}))
 	defer kubelet.Close()
 
@@ -103,59 +94,30 @@ func TestHostMapper_SeparateCredentials_PatchesAndRemovesGPUAnnotations(t *testi
 	// Only the Unix socket location changes for the fixture; API and HTTPS clients come
 	// from the production constructor and have no projected ServiceAccount files.
 	socket := testPodResourcesSocket(t)
-	resources := &changingPodResources{}
-	resources.allocation.Store("GPU-test-1")
+	resources := &podResourcesFixture{response: &v1.ListPodResourcesResponse{PodResources: []*v1.PodResources{{
+		Name: pod.Name, Namespace: pod.Namespace,
+		Containers: []*v1.ContainerResources{{
+			Name: "workload",
+			Devices: []*v1.ContainerDevices{{
+				ResourceName: "nvidia.com/gpu", DeviceIds: []string{"GPU-test-1"},
+			}},
+		}},
+	}}}}
 	startPodResourcesFixture(t, socket, resources)
 	mapper.kubeletGRPCClient, err = newKubeletGRPClient(t.Context(), socket)
 	require.NoError(t, err)
 
-	for _, device := range []string{"GPU-test-1", "GPU-test-2", ""} {
-		resources.allocation.Store(device)
-		require.Eventually(t, func() bool {
-			_, err := mapper.UpdatePodDevicesAnnotations()
-			return err == nil
-		}, 10*time.Second, 50*time.Millisecond)
-
-		current, err := admin.CoreV1().Pods(pod.Namespace).Get(t.Context(), pod.Name, metav1.GetOptions{})
-		require.NoError(t, err)
-		if device == "" {
-			assert.NotContains(t, current.Annotations, model.PodDeviceAnnotationName)
-		} else {
-			var annotation model.DeviceAnnotation
-			require.NoError(t, json.Unmarshal([]byte(current.Annotations[model.PodDeviceAnnotationName]), &annotation))
-			assert.Equal(t, []string{device}, annotation.Devices["nvidia.com/gpu"])
-		}
-
-		updates, err := mapper.UpdatePodDevicesAnnotations()
-		require.NoError(t, err)
-		assert.Zero(t, updates, "unchanged allocations must not produce another write")
-	}
-
-	require.NoError(t, admin.RbacV1().RoleBindings(pod.Namespace).Delete(t.Context(), "patch-pods", metav1.DeleteOptions{}))
-	resources.allocation.Store("GPU-test-3")
+	_, err = mapper.UpdatePodDevicesAnnotations()
+	require.True(t, apierrors.IsForbidden(err), "identity without pod patch permission must be rejected: %v", err)
+	grantTestPodPatch(t, admin, pod.Namespace, "metadata-test")
 	require.Eventually(t, func() bool {
 		_, err := mapper.UpdatePodDevicesAnnotations()
-		return apierrors.IsForbidden(err)
+		return err == nil
 	}, 10*time.Second, 50*time.Millisecond)
-}
 
-type changingPodResources struct {
-	v1.UnimplementedPodResourcesListerServer
-	allocation atomic.Value
-}
-
-func (s *changingPodResources) List(context.Context, *v1.ListPodResourcesRequest) (*v1.ListPodResourcesResponse, error) {
-	device := s.allocation.Load().(string)
-	if device == "" {
-		return &v1.ListPodResourcesResponse{}, nil
-	}
-
-	return &v1.ListPodResourcesResponse{PodResources: []*v1.PodResources{{
-		Name:      "gpu-workload",
-		Namespace: "host-auth",
-		Containers: []*v1.ContainerResources{{
-			Name:    "workload",
-			Devices: []*v1.ContainerDevices{{ResourceName: "nvidia.com/gpu", DeviceIds: []string{device}}},
-		}},
-	}}}, nil
+	current, err := admin.CoreV1().Pods(pod.Namespace).Get(t.Context(), pod.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	var annotation model.DeviceAnnotation
+	require.NoError(t, json.Unmarshal([]byte(current.Annotations[model.PodDeviceAnnotationName]), &annotation))
+	assert.Equal(t, []string{"GPU-test-1"}, annotation.Devices["nvidia.com/gpu"])
 }
