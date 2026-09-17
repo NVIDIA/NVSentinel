@@ -158,7 +158,7 @@ func TestInformerTransformsPassThroughUnknownObjects(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, tombstone, transformedPodObject)
 
-	transformedNodeObject, err := nodeTransform(tombstone)
+	transformedNodeObject, err := nodeTransform()(tombstone)
 	require.NoError(t, err)
 	assert.Equal(t, tombstone, transformedNodeObject)
 }
@@ -179,7 +179,7 @@ func TestNodeTransformRetainsEventAndEvaluatorFields(t *testing.T) {
 		Status: v1.NodeStatus{Phase: v1.NodeRunning},
 	}
 
-	transformed, err := nodeTransform(node)
+	transformed, err := nodeTransform()(node)
 	require.NoError(t, err)
 
 	transformedNode := transformed.(*v1.Node)
@@ -192,6 +192,22 @@ func TestNodeTransformRetainsEventAndEvaluatorFields(t *testing.T) {
 	assert.Empty(t, transformedNode.Labels)
 	assert.Empty(t, transformedNode.Spec)
 	assert.Empty(t, transformedNode.Status)
+}
+
+// TestNodeTransformRetainsOnlyRequestedLabels keeps the node cache small when
+// customDrain.nodeSelector needs a label to pick the drain path.
+func TestNodeTransformRetainsOnlyRequestedLabels(t *testing.T) {
+	t.Parallel()
+
+	node := &v1.Node{
+		Name:   "node-a",
+		Labels: map[string]string{"scheduler": "slurm", "large": "metadata"},
+	}
+
+	transformed, err := nodeTransform("scheduler", "absent")(node)
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]string{"scheduler": "slurm"}, transformed.(*v1.Node).Labels)
 }
 
 func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
@@ -212,7 +228,7 @@ func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
 	}
 
 	client := fake.NewSimpleClientset(systemPod, daemonPod, eligiblePod, node)
-	informers, err := NewInformers(client, 0, new(5), false, false, `^kube-system$`)
+	informers, err := NewInformers(client, 0, new(5), false, false, `^kube-system$`, nil)
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -256,7 +272,7 @@ func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	informers, err := NewInformers(client, 0, new(5), false, false, "")
+	informers, err := NewInformers(client, 0, new(5), false, false, "", nil)
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 

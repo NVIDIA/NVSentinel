@@ -105,12 +105,18 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("failed to compile pod drain policies: %w", err)
 	}
 
+	customDrainNodes, err := config.CompileCustomDrainNodeSelector(configs.tomlCfg.CustomDrain)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile custom drain node selector: %w", err)
+	}
+
 	informersInstance, err := initializeInformers(
 		clientSet,
 		&configs.tomlCfg.NotReadyTimeoutMinutes,
 		configs.tomlCfg.DrainGPUPods,
 		params.DryRun,
 		configs.tomlCfg.SystemNamespaces,
+		customDrainNodes.LabelKeys(),
 		podPolicies.LabelKeys()...,
 	)
 	if err != nil {
@@ -320,7 +326,7 @@ func initializeKubernetesClient(params InitializationParams) (kubernetes.Interfa
 // initializeInformers creates drain informers with an hourly resync and the configured policy label keys.
 func initializeInformers(clientset kubernetes.Interface,
 	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
-	podLabelKeys ...string) (*informers.Informers, error) {
+	nodeLabelKeys []string, podLabelKeys ...string) (*informers.Informers, error) {
 	return informers.NewInformers(
 		clientset,
 		time.Hour,
@@ -328,6 +334,7 @@ func initializeInformers(clientset kubernetes.Interface,
 		drainGPUPods,
 		dryRun,
 		systemNamespaces,
+		nodeLabelKeys,
 		podLabelKeys...,
 	)
 }
