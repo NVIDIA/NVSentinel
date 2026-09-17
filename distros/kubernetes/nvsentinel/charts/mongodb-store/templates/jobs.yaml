@@ -242,15 +242,17 @@ spec:
           DOC="See docs/configuration/mongodb-store.md#percona-versions"
 
           # Listed rather than fetched by name, so that an empty result means
-          # "no resource" instead of "looked under the wrong name".
+          # "no resource" instead of "looked under the wrong name". Each line carries
+          # the name too, so counting resources does not depend on crVersion being
+          # set: a resource with no crVersion must still count as present.
           if ! FOUND=$(kubectl get perconaservermongodbs.psmdb.percona.com -n "$NAMESPACE" \
-              -o jsonpath='{range .items[*]}{.spec.crVersion}{"\n"}{end}' 2>&1); then
+              -o jsonpath='{range .items[*]}{.metadata.name}={.spec.crVersion}{"\n"}{end}' 2>&1); then
             echo "[ERROR] Could not list PerconaServerMongoDB in '$NAMESPACE':"
             echo "[ERROR] $FOUND"
             exit 1
           fi
 
-          COUNT=$(printf '%s' "$FOUND" | grep -c . || true)
+          COUNT=$(printf '%s' "$FOUND" | grep -c '=' || true)
           if [ "$COUNT" -eq 0 ]; then
             echo "[ERROR] No PerconaServerMongoDB found in '$NAMESPACE'."
             echo "[ERROR] The operator-generated users secret exists, so the resource should too. $DOC"
@@ -261,7 +263,7 @@ spec:
             echo "[ERROR] Cannot tell which one belongs to this release, so refusing to guess. $DOC"
             exit 1
           fi
-          DEPLOYED=$(printf '%s' "$FOUND" | grep . | head -1)
+          DEPLOYED=$(printf '%s' "$FOUND" | grep '=' | head -1 | cut -d= -f2-)
 
           echo "[INFO] chart operator $OP_TAG, deployed crVersion ${DEPLOYED:-<unset>}"
 
