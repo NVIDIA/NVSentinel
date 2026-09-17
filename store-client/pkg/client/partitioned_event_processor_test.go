@@ -149,9 +149,13 @@ func TestPartitionedEventProcessor_ConcurrencyAcrossNodes(t *testing.T) {
 	nodeBCompleted := make(chan struct{})
 	unblockNodeA := make(chan struct{})
 
-	processor.SetEventHandler(EventHandlerFunc(func(_ context.Context, e *model.HealthEventWithStatus) error {
+	processor.SetEventHandler(EventHandlerFunc(func(ctx context.Context, e *model.HealthEventWithStatus) error {
 		if e.HealthEvent.NodeName == "node-a" {
-			<-unblockNodeA
+			select {
+			case <-unblockNodeA:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		} else if e.HealthEvent.NodeName == "node-b" {
 			close(nodeBCompleted)
 		}
@@ -181,7 +185,12 @@ func TestPartitionedEventProcessor_ConcurrencyAcrossNodes(t *testing.T) {
 	// Now unblock Node A
 	close(unblockNodeA)
 
-	require.NoError(t, <-errCh)
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("processor.Start did not terminate after unblocking Node A")
+	}
 
 	// After both finish, the checkpoint should have advanced to event-2
 	require.NotEmpty(t, watcher.markedTokens)
@@ -235,15 +244,14 @@ func TestPartitionedEventProcessor_TimeoutNotCheckpointed(t *testing.T) {
 		MarkProcessedOnError: true,
 	})
 
-	event2Processed := make(chan struct{})
+	var timeoutExecuted atomic.Bool
 
 	processor.SetEventHandler(EventHandlerFunc(func(_ context.Context, e *model.HealthEventWithStatus) error {
 		if e.HealthEvent.Id == "timeout-event" {
+			timeoutExecuted.Store(true)
+
 			// Simulate transient context timeout
 			return context.DeadlineExceeded
-		}
-		if e.HealthEvent.Id == "good-event" {
-			close(event2Processed)
 		}
 
 		return nil
@@ -255,12 +263,11 @@ func TestPartitionedEventProcessor_TimeoutNotCheckpointed(t *testing.T) {
 	err := processor.Start(ctx)
 	require.NoError(t, err)
 
-	<-event2Processed
+	assert.True(t, timeoutExecuted.Load(), "handler must have executed for timeout-event")
 
-	// Verify that event1's token was NOT checkpointed because timeout is transient
-	for _, token := range watcher.markedTokens {
-		assert.NotEqual(t, "timeout-event", token, "timeout event must not be checkpointed")
-	}
+	// Verify that neither event was checkpointed because timeout is transient and halts
+	// the processor before sequence 1 can resolve.
+	assert.Empty(t, watcher.markedTokens, "timeout event and subsequent events must not be checkpointed")
 }
 
 func TestPartitionedEventProcessor_UncheckpointedErrorStopsProcessor(t *testing.T) {

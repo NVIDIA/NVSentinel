@@ -38,6 +38,18 @@ func (m *mockResumeTokenDBClient) InsertMany(context.Context, []any) (*InsertMan
 	return nil, nil
 }
 
+func (m *mockResumeTokenDBClient) InsertManyIdempotent(context.Context, []any) (*InsertManyResult, error) {
+	return nil, nil
+}
+
+func (m *mockResumeTokenDBClient) EnsureHealthEventIdempotencyIndex(context.Context) error {
+	return nil
+}
+
+func (m *mockResumeTokenDBClient) VerifyHealthEventIdempotencyIndex(context.Context) error {
+	return nil
+}
+
 func (m *mockResumeTokenDBClient) UpdateDocumentStatus(context.Context, string, string, any) error {
 	return nil
 }

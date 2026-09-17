@@ -26,63 +26,71 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
+// reconcileRequest is the workqueue item. It names the event rather than carrying it, so a
+// queued item does not retain the decoded change-stream document; the worker fetches the
+// document when it runs.
+//
+// resumeToken is the live event's change-stream position, held as a string because
+// workqueue.TypedInterface requires a comparable key and a []byte is not comparable. Go
+// strings hold arbitrary bytes, so the conversion round-trips a raw token unchanged.
+// The token has to travel with the item because fault-remediation only checkpoints an event
+// once the work is finalised — an event parked behind an in-progress maintenance CR must not
+// advance the stream position. Cold-start items carry no token.
 type reconcileRequest struct {
-	event      *datastore.EventWithToken
-	documentID string
+	documentID  string
+	resumeToken string
 }
 
-type controllerReconciler struct {
-	reconciler *FaultRemediationReconciler
-}
-
-func (c *controllerReconciler) Reconcile(
+// Reconcile fetches the health event named by the request and reconciles it. The live
+// change-stream path and cold start both queue document IDs, so both arrive here.
+func (r *FaultRemediationReconciler) Reconcile(
 	ctx context.Context,
 	request reconcileRequest,
 ) (ctrl.Result, error) {
-	if request.event != nil {
-		return c.reconciler.Reconcile(ctx, request.event)
-	}
+	documentID := request.documentID
+	resumeToken := []byte(request.resumeToken)
 
-	return c.reconcileColdStartEvent(ctx, request.documentID)
-}
-
-func (c *controllerReconciler) reconcileColdStartEvent(
-	ctx context.Context,
-	documentID string,
-) (ctrl.Result, error) {
 	if documentID == "" {
-		metrics.ProcessingErrors.WithLabelValues("invalid_cold_start_request", "unknown").Inc()
-		slog.ErrorContext(ctx, "Dropping cold-start reconcile request without a document ID")
+		metrics.ProcessingErrors.WithLabelValues("invalid_request", "unknown").Inc()
+		slog.ErrorContext(ctx, "Dropping reconcile request without a document ID")
 
 		return ctrl.Result{}, nil
 	}
 
-	healthEvents, err := c.reconciler.healthEventStore.FindHealthEventsByQuery(
+	healthEvents, err := r.healthEventStore.FindHealthEventsByQuery(
 		ctx,
 		query.New().Build(query.Eq("_id", documentID)),
 	)
 	if err != nil {
-		metrics.ProcessingErrors.WithLabelValues("cold_start_fetch_error", "unknown").Inc()
-		slog.ErrorContext(ctx, "Failed to fetch cold-start health event",
+		metrics.ProcessingErrors.WithLabelValues("fetch_error", "unknown").Inc()
+		slog.ErrorContext(ctx, "Failed to fetch health event",
 			"eventID", documentID,
 			"error", err)
 
-		return ctrl.Result{}, fmt.Errorf("fetch cold-start health event %s: %w", documentID, err)
+		return ctrl.Result{}, fmt.Errorf("fetch health event %s: %w", documentID, err)
 	}
 
+	// A live event can be deleted between being queued and being fetched. Dropping it is
+	// terminal, so the stream has to advance past it or the position stalls behind an event
+	// that will never load. Cold-start items carry no token and safeMarkProcessed ignores
+	// them, which is what keeps an empty token from advancing the checkpoint to the live
+	// cursor position.
 	if len(healthEvents) == 0 {
-		metrics.ProcessingErrors.WithLabelValues("cold_start_event_unavailable", "unknown").Inc()
-		slog.WarnContext(ctx, "Skipping deleted cold-start health event", "eventID", documentID)
+		metrics.ProcessingErrors.WithLabelValues("event_unavailable", "unknown").Inc()
+		slog.WarnContext(ctx, "Skipping deleted health event", "eventID", documentID)
 
-		return ctrl.Result{}, nil
+		return r.markProcessedOrError(ctx, r.Watcher, datastore.EventWithToken{ResumeToken: resumeToken}, "unknown")
 	}
 
 	if len(healthEvents[0].RawEvent) == 0 {
-		metrics.ProcessingErrors.WithLabelValues("cold_start_event_unavailable", "unknown").Inc()
-		slog.WarnContext(ctx, "Skipping cold-start health event without a raw document", "eventID", documentID)
+		metrics.ProcessingErrors.WithLabelValues("event_unavailable", "unknown").Inc()
+		slog.WarnContext(ctx, "Skipping health event without a raw document", "eventID", documentID)
 
-		return ctrl.Result{}, nil
+		return r.markProcessedOrError(ctx, r.Watcher, datastore.EventWithToken{ResumeToken: resumeToken}, "unknown")
 	}
 
-	return c.reconciler.Reconcile(ctx, &datastore.EventWithToken{Event: healthEvents[0].RawEvent})
+	return r.reconcileEvent(ctx, &datastore.EventWithToken{
+		Event:       healthEvents[0].RawEvent,
+		ResumeToken: resumeToken,
+	})
 }

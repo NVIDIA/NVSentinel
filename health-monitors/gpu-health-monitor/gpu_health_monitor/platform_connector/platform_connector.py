@@ -32,9 +32,17 @@ from . import metrics
 from time import monotonic, sleep
 import re
 
+import dcgm_fields
+
 MAX_RETRIES = 10
 INITIAL_DELAY = 5
 GRPC_CALL_TIMEOUT_SECONDS = 5.0
+GPU_ONLY_FIELD_HEALTH_WATCHES = frozenset(
+    {
+        "DCGM_HEALTH_WATCH_POWER_BRAKE",
+        "DCGM_HEALTH_WATCH_THERMAL_MARGIN",
+    }
+)
 # Critical events are emitted while the DCGM loop is about to enter cleanup or
 # is already hung. Keep delivery bounded well inside the liveness restart budget.
 CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
@@ -350,7 +358,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 log.error(f"Exception while sending DCGM responsive events: {e}")
                 raise
 
-    def health_event_occurred(self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list) -> None:
+    def health_event_occurred(
+        self,
+        health_details: dict[str, dcgmtypes.HealthDetails],
+        gpu_ids: list[int],
+        switch_ids: list[int] | None = None,
+    ) -> None:
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_health_events_to_grpc_channel"
         ).time():
@@ -516,6 +529,74 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             )
                             if had_errors:
                                 pending_metric_updates.append((check_name, gpu_id, 0))
+
+                if watch_name in GPU_ONLY_FIELD_HEALTH_WATCHES:
+                    continue
+
+                switch_failures = {
+                    entity_key[1]: failure
+                    for entity_key, failure in details.entity_failures.items()
+                    if isinstance(entity_key, tuple) and entity_key[0] == dcgm_fields.DCGM_FE_SWITCH
+                }
+                switch_cache_prefix = f"{check_name}|NVSWITCH|"
+                active_switches = {
+                    int(key.removeprefix(switch_cache_prefix))
+                    for key, entry in self.entity_cache.items()
+                    if key.startswith(switch_cache_prefix) and not entry.is_healthy
+                }
+                for switch_id in sorted(set(switch_ids or []) | set(switch_failures) | active_switches):
+                    entity = platformconnector_pb2.Entity(entityType="NVSWITCH", entityValue=str(switch_id))
+                    key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
+
+                    if switch_id in switch_failures:
+                        for failure_details in switch_failures[switch_id]:
+                            entry = pending_cache_updates.get(key, self.entity_cache.get(key))
+                            if entry is not None and failure_details.code in entry.active_errors:
+                                continue
+
+                            existing_errors = set(entry.active_errors) if entry else set()
+                            existing_errors.add(failure_details.code)
+                            pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
+                            recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
+                            health_events.append(
+                                platformconnector_pb2.HealthEvent(
+                                    version=self._version,
+                                    agent=self._agent,
+                                    componentClass="NVSWITCH",
+                                    checkName=check_name,
+                                    generatedTimestamp=timestamp,
+                                    isFatal=recommended_action != platformconnector_pb2.NONE,
+                                    errorCode=[failure_details.code],
+                                    entitiesImpacted=[entity],
+                                    message=failure_details.message,
+                                    recommendedAction=recommended_action,
+                                    nodeName=self._node_name,
+                                    # NVSwitch remediation is deferred until downstream handling is safe.
+                                    processingStrategy=platformconnector_pb2.STORE_ONLY,
+                                )
+                            )
+
+                        continue
+
+                    entry = self.entity_cache.get(key)
+                    if entry is not None and entry.is_healthy:
+                        continue
+
+                    pending_cache_updates[key] = EntityCacheEntry()
+                    health_events.append(
+                        platformconnector_pb2.HealthEvent(
+                            version=self._version,
+                            agent=self._agent,
+                            componentClass="NVSWITCH",
+                            checkName=check_name,
+                            generatedTimestamp=timestamp,
+                            isHealthy=True,
+                            entitiesImpacted=[entity],
+                            message=f"NVSWITCH {self._get_dcgm_watch(watch_name)} watch reported no errors",
+                            nodeName=self._node_name,
+                            processingStrategy=platformconnector_pb2.STORE_ONLY,
+                        )
+                    )
             log.debug(f"dcgm health event is {health_events}")
             if len(health_events):
                 try:

@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -2589,11 +2590,11 @@ func TestLogCollectorOnlyCalledWhenShouldCreateCR(t *testing.T) {
 func TestAdaptEvents_DoneChannelClosesOnInputClose(t *testing.T) {
 	ctx := t.Context()
 
-	in := make(chan datastore.EventWithToken)
-	_, done := AdaptEvents(ctx, in)
+	watcher := NewMockChangeStreamWatcher()
+	_, done := AdaptEvents(ctx, watcher)
 
 	// Close the input channel to simulate change stream death
-	close(in)
+	close(watcher.EventsChan)
 
 	select {
 	case <-done:
@@ -2606,8 +2607,8 @@ func TestAdaptEvents_DoneChannelClosesOnInputClose(t *testing.T) {
 func TestAdaptEvents_DoneChannelClosesOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	in := make(chan datastore.EventWithToken)
-	_, done := AdaptEvents(ctx, in)
+	watcher := NewMockChangeStreamWatcher()
+	_, done := AdaptEvents(ctx, watcher)
 
 	cancel()
 
@@ -2619,35 +2620,131 @@ func TestAdaptEvents_DoneChannelClosesOnContextCancel(t *testing.T) {
 	}
 }
 
-func TestAdaptEvents_ForwardsEvents(t *testing.T) {
+// TestAdaptEvents_QueuesDocumentIDAndToken pins both properties the queue item exists for:
+// it names the event rather than carrying the decoded change-stream document, and it keeps
+// the per-event resume token so the worker can still checkpoint once the event is finalised.
+func TestAdaptEvents_QueuesDocumentIDAndToken(t *testing.T) {
 	ctx := t.Context()
 
-	in := make(chan datastore.EventWithToken, 1)
-	out, _ := AdaptEvents(ctx, in)
+	watcher := NewMockChangeStreamWatcher()
+	out, _ := AdaptEvents(ctx, watcher)
 
-	testEvent := datastore.EventWithToken{}
-	in <- testEvent
+	watcher.EventsChan <- datastore.EventWithToken{
+		Event:       testRawHealthEvent("507f1f77bcf86cd799439011", "node-1", protos.RecommendedAction_RESTART_BM),
+		ResumeToken: []byte("resume-token-1"),
+	}
 
 	select {
 	case forwarded := <-out:
-		assert.NotNil(t, forwarded.Object.event)
-		assert.Equal(t, testEvent, *forwarded.Object.event)
-		assert.Empty(t, forwarded.Object.documentID)
+		assert.Equal(t,
+			reconcileRequest{documentID: "507f1f77bcf86cd799439011", resumeToken: "resume-token-1"},
+			forwarded.Object,
+			"a queued live event must carry its ID and token, and no decoded document")
 	case <-time.After(2 * time.Second):
 		t.Fatal("event was not forwarded through AdaptEvents")
 	}
+
+	assert.Empty(t, watcher.MarkProcessedTokens(),
+		"queueing an event must not checkpoint it: the worker checkpoints once it is finalised")
 }
 
-// TestControllerReconcilerHandlesColdStartFetchResults verifies that invalid and
-// missing cold-start requests are dropped, while a datastore lookup error is
-// returned so controller-runtime requeues and retries the request.
-func TestControllerReconcilerHandlesColdStartFetchResults(t *testing.T) {
-	t.Run("empty document ID is terminal", func(t *testing.T) {
-		controller := controllerReconciler{
-			reconciler: &FaultRemediationReconciler{},
-		}
+// TestAdaptEvents_SameDocumentQueuesEveryToken proves two updates to one document stay two
+// items, each carrying its own change-stream position. Keying the item by document ID alone
+// would collapse them and leave one token unacknowledged, so this pins the distinction.
+func TestAdaptEvents_SameDocumentQueuesEveryToken(t *testing.T) {
+	ctx := t.Context()
 
-		result, err := controller.Reconcile(context.Background(), reconcileRequest{})
+	watcher := NewMockChangeStreamWatcher()
+	out, _ := AdaptEvents(ctx, watcher)
+
+	documentID := "507f1f77bcf86cd799439011"
+	for _, token := range []string{"resume-token-1", "resume-token-2"} {
+		watcher.EventsChan <- datastore.EventWithToken{
+			Event:       testRawHealthEvent(documentID, "node-1", protos.RecommendedAction_RESTART_BM),
+			ResumeToken: []byte(token),
+		}
+	}
+
+	var queued []reconcileRequest
+
+	for range 2 {
+		select {
+		case forwarded := <-out:
+			queued = append(queued, forwarded.Object)
+		case <-time.After(2 * time.Second):
+			t.Fatal("both updates to the same document must be forwarded")
+		}
+	}
+
+	assert.Equal(t, []reconcileRequest{
+		{documentID: documentID, resumeToken: "resume-token-1"},
+		{documentID: documentID, resumeToken: "resume-token-2"},
+	}, queued, "each update must keep its own resume token so neither position is lost")
+}
+
+// TestReconcileRoundTripsResumeToken proves the []byte-to-string-to-[]byte trip the workqueue's
+// comparable key forces on the token is lossless, including for bytes that are not valid UTF-8.
+// A corrupted token would resume the change stream from the wrong position.
+func TestReconcileRoundTripsResumeToken(t *testing.T) {
+	token := []byte{0x00, 0xff, 0xfe, 'a', 0x80}
+
+	watcher := NewMockChangeStreamWatcher()
+	store := &MockHealthEventStore{
+		FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) (
+			[]datastore.HealthEventWithStatus, error,
+		) {
+			return nil, nil
+		},
+	}
+	r := &FaultRemediationReconciler{healthEventStore: store, Watcher: watcher}
+
+	// A missing document is terminal, and terminal drops checkpoint, so this exercises the
+	// token path without needing a full remediation.
+	_, err := r.Reconcile(context.Background(), reconcileRequest{
+		documentID:  "507f1f77bcf86cd799439011",
+		resumeToken: string(token),
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, [][]byte{token}, watcher.MarkProcessedTokens(),
+		"the token must reach MarkProcessed byte-for-byte")
+}
+
+// TestAdaptEvents_DropsAndCheckpointsEventWithoutDocumentID proves a document that can never
+// be fetched is not queued, and does not wedge the change-stream position behind it.
+func TestAdaptEvents_DropsAndCheckpointsEventWithoutDocumentID(t *testing.T) {
+	ctx := t.Context()
+
+	watcher := NewMockChangeStreamWatcher()
+	out, _ := AdaptEvents(ctx, watcher)
+
+	token := []byte("resume-token-1")
+	watcher.EventsChan <- datastore.EventWithToken{
+		Event:       datastore.Event{"healthevent": map[string]any{"nodename": "node-1"}},
+		ResumeToken: token,
+	}
+
+	require.Eventually(t, func() bool {
+		return len(watcher.MarkProcessedTokens()) == 1
+	}, 2*time.Second, 10*time.Millisecond, "an unfetchable event must still advance the checkpoint")
+
+	assert.Equal(t, [][]byte{token}, watcher.MarkProcessedTokens())
+
+	select {
+	case forwarded := <-out:
+		t.Fatalf("event without a document ID must not be queued, got %+v", forwarded.Object)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestReconcileHandlesFetchResults verifies that invalid and missing requests are
+// dropped, while a datastore lookup error is returned so controller-runtime requeues
+// and retries the request.
+func TestReconcileHandlesFetchResults(t *testing.T) {
+	t.Run("empty document ID is terminal", func(t *testing.T) {
+		r := &FaultRemediationReconciler{}
+
+		result, err := r.Reconcile(context.Background(), reconcileRequest{})
 
 		assert.NoError(t, err)
 		assert.True(t, result.IsZero())
@@ -2665,11 +2762,9 @@ func TestControllerReconcilerHandlesColdStartFetchResults(t *testing.T) {
 				return nil, nil
 			},
 		}
-		controller := controllerReconciler{
-			reconciler: &FaultRemediationReconciler{healthEventStore: store},
-		}
+		r := &FaultRemediationReconciler{healthEventStore: store}
 
-		result, err := controller.Reconcile(context.Background(), reconcileRequest{
+		result, err := r.Reconcile(context.Background(), reconcileRequest{
 			documentID: "507f1f77bcf86cd799439011",
 		})
 
@@ -2685,11 +2780,9 @@ func TestControllerReconcilerHandlesColdStartFetchResults(t *testing.T) {
 				return nil, errors.New("temporary datastore failure")
 			},
 		}
-		controller := controllerReconciler{
-			reconciler: &FaultRemediationReconciler{healthEventStore: store},
-		}
+		r := &FaultRemediationReconciler{healthEventStore: store}
 
-		_, err := controller.Reconcile(context.Background(), reconcileRequest{
+		_, err := r.Reconcile(context.Background(), reconcileRequest{
 			documentID: "event-1",
 		})
 
@@ -2717,8 +2810,7 @@ func TestHandleColdStartQueuesDocumentIDs(t *testing.T) {
 	r.HandleColdStart(context.Background())
 
 	queued := <-r.coldStartCh
-	assert.Equal(t, "event-1", queued.Object.documentID)
-	assert.Nil(t, queued.Object.event)
+	assert.Equal(t, reconcileRequest{documentID: "event-1"}, queued.Object)
 }
 
 func nodeNotFoundErr(nodeName string) error {
