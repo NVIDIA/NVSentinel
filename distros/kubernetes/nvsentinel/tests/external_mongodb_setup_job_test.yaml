@@ -1,0 +1,48 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: external mongodb setup job
+templates:
+  - templates/job-external-mongodb-setup.yaml
+set:
+  global.datastore:
+    provider: mongodb
+    credentialsFromSecret:
+      name: external-mongodb
+  global.mongodbStore.enabled: false
+tests:
+  # app.kubernetes.io/name has to carry the Job's own name and be emitted once.
+  # Appending it after the common labels emitted it twice, and a duplicate
+  # mapping key makes strict parsers reject the whole release even though Helm itself renders it.
+  - it: names the Job distinctly without duplicating the label
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: external-mongodb-setup
+      - equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: mongodb-init
+
+  - it: keeps the common labels alongside the Job-specific name
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME
+      - equal:
+          path: metadata.labels["app.kubernetes.io/managed-by"]
+          value: Helm
+      - exists:
+          path: metadata.labels["helm.sh/chart"]
+      - exists:
+          path: metadata.labels["app.kubernetes.io/version"]

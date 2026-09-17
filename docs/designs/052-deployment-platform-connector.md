@@ -134,7 +134,7 @@ The key is enforced per event rather than per batch, because MongoDB can store p
 flowchart LR
     M["monitor<br/>events + key + token"]
     API["deployment platform connector<br/>authorize · derive keys · write"]
-    DB[("unordered InsertMany<br/>duplicates on the key<br/>index count as success")]
+    DB[("ordered InsertMany<br/>duplicates on the key<br/>index are skipped")]
     ACK["acknowledged once stored:<br/>monitor drops its copy"]
 
     M --> API
@@ -155,7 +155,7 @@ flowchart LR
 #### store-client changes
 
 1. Make pool limits configurable (MongoDB uses the driver default of 100 today; PostgreSQL is hardcoded to 25).
-2. Allow an unordered `InsertMany` that reports duplicate-key errors per document and names the violated index, so only idempotency-index duplicates count as success.
+2. Add an ordered `InsertMany` that skips a duplicate on the idempotency index and carries on with the rest, and stops at any other failure, naming the violated index. Ordered, because MongoDB keeps the order of a batch only for ordered inserts, and a batch can hold a fatal and a later healthy event for the same check that consumers must see in that order. A resend costs one extra round trip per duplicate. PostgreSQL inserts the rows one at a time in the same order.
 3. Add a small index-management operation: create once, verify the full definition.
 
 ### Authentication

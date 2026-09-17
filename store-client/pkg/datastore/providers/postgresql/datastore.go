@@ -80,9 +80,7 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 	}
 
 	// Set connection pool settings
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(10)
-	db.SetConnMaxLifetime(time.Hour)
+	ConfigureConnectionPool(db, config.Options)
 
 	if _, err := otelsql.RegisterDBStatsMetrics(db,
 		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
@@ -107,6 +105,38 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 	slog.Info("Successfully connected to PostgreSQL database", "host", config.Connection.Host)
 
 	return store, nil
+}
+
+// defaultMaxOpenConns preserves the previously hardcoded connection pool limit.
+const defaultMaxOpenConns = 25
+
+// defaultMaxIdleConns and defaultConnMaxLifetime are the shared idle-connection
+// and connection-lifetime defaults applied to every PostgreSQL pool.
+const (
+	defaultMaxIdleConns    = 10
+	defaultConnMaxLifetime = time.Hour
+)
+
+// ConfigureConnectionPool applies the shared PostgreSQL connection pool
+// settings to db: the max open connections resolved by resolveMaxOpenConns
+// plus the default idle-connection count and connection lifetime. It is used
+// by NewPostgreSQLStore and by the client factory so both paths honor the
+// same pool configuration.
+func ConfigureConnectionPool(db *sql.DB, options map[string]string) {
+	db.SetMaxOpenConns(resolveMaxOpenConns(options))
+	db.SetMaxIdleConns(defaultMaxIdleConns)
+	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+}
+
+// resolveMaxOpenConns returns the connection pool limit: the shared
+// datastore.MaxConnections resolution (the maxConnections option, then the
+// DATASTORE_MAX_CONNECTIONS environment variable) or the default of 25.
+func resolveMaxOpenConns(options map[string]string) int {
+	if size := datastore.MaxConnections(options); size > 0 {
+		return size
+	}
+
+	return defaultMaxOpenConns
 }
 
 // MaintenanceEventStore returns the maintenance event store

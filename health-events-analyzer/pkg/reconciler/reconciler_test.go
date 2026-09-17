@@ -56,6 +56,24 @@ func (m *mockDatabaseClient) InsertMany(ctx context.Context, documents []any) (*
 	return args.Get(0).(*client.InsertManyResult), args.Error(1)
 }
 
+func (m *mockDatabaseClient) InsertManyIdempotent(ctx context.Context, documents []any) (*client.InsertManyResult, error) {
+	args := m.Called(ctx, documents)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*client.InsertManyResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) EnsureHealthEventIdempotencyIndex(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func (m *mockDatabaseClient) VerifyHealthEventIdempotencyIndex(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
 func (m *mockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status any) error {
 	args := m.Called(ctx, documentID, statusPath, status)
 	return args.Error(0)
@@ -231,9 +249,24 @@ var (
 )
 
 func TestEventProcessorConfigCheckpointsHandlerErrors(t *testing.T) {
-	processorConfig := newEventProcessorConfig()
+	processorConfig := newEventProcessorConfig(HealthEventsAnalyzerReconcilerConfig{})
 
 	assert.True(t, processorConfig.MarkProcessedOnError)
+}
+
+func TestEventProcessorConfigConcurrencySettings(t *testing.T) {
+	defaultConfig := newEventProcessorConfig(HealthEventsAnalyzerReconcilerConfig{})
+	assert.True(t, defaultConfig.MarkProcessedOnError)
+	assert.Equal(t, 1, defaultConfig.Workers)
+	assert.Equal(t, 1000, defaultConfig.MaxInFlight)
+
+	customConfig := newEventProcessorConfig(HealthEventsAnalyzerReconcilerConfig{
+		Workers:     16,
+		MaxInFlight: 500,
+	})
+	assert.True(t, customConfig.MarkProcessedOnError)
+	assert.Equal(t, 16, customConfig.Workers)
+	assert.Equal(t, 500, customConfig.MaxInFlight)
 }
 
 func TestCheckRule(t *testing.T) {

@@ -34,6 +34,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/plugins/slinky-drainer/pkg/cacheconfig"
 )
 
 const (
@@ -43,7 +44,13 @@ const (
 )
 
 type testEnvContext struct {
+	// client talks straight to the API server. Tests use it to stand in for the
+	// other writers of these objects (Slurm, kubelet, statemanager) and to
+	// assert on the stored object rather than the drainer's pruned cache.
 	client client.Client
+	// cached is the reconciler's client, backed by the cache the drainer runs
+	// with in production.
+	cached client.Client
 	ctx    context.Context
 }
 
@@ -127,6 +134,69 @@ func TestReconcile_DrainingPodNotDeleted(t *testing.T) {
 	assertDrainNotComplete(t, tc, "drain-still-draining", "default")
 }
 
+// TestReconcile_NodeAnnotationWrites_PreserveNodeSpec proves the annotate and
+// de-annotate writes do not clobber the rest of the Node. The reconciler reads a
+// Node pruned to labels and annotations, so writing it back with Update would
+// clear spec.unschedulable and spec.taints and hand a faulty node back to the
+// scheduler.
+func TestReconcile_NodeAnnotationWrites_PreserveNodeSpec(t *testing.T) {
+	tc := setupTestEnv(t, "drain-node-spec")
+
+	// The cache prunes every label and annotation except the two the reconciler
+	// uses, and both writes patch from that pruned object. Foreign metadata
+	// must therefore survive untouched.
+	node := createNode(t, tc,
+		"test-node-spec-preserved",
+		map[string]string{"csi.volume.kubernetes.io/nodeid": "keep-me"},
+		map[string]string{
+			nvsentinelStateLabelKey:  "draining",
+			"nvidia.com/gpu.product": "keep-me",
+		},
+	)
+	taint := cordonNode(t, tc, node.Name)
+
+	createDrainRequest(t, tc, "drain-node-spec", drainv1alpha1.DrainRequestSpec{
+		NodeName:  node.Name,
+		ErrorCode: []string{"79"},
+		Reason:    "GPU has fallen off the bus",
+	})
+
+	assertNodeAnnotation(t, tc, node.Name, "[T] [NVSentinel] 79 - GPU has fallen off the bus")
+	assertNodeCordoned(t, tc, node.Name, taint)
+	assertForeignMetadataIntact(t, tc, node.Name)
+
+	removeNodeLabel(t, tc, node.Name, nvsentinelStateLabelKey)
+
+	waitForAnnotationRemoved(t, tc, node.Name)
+	assertNodeCordoned(t, tc, node.Name, taint)
+	assertForeignMetadataIntact(t, tc, node.Name)
+}
+
+// TestCache_PodsOutsideSlinkyNamespace_AreNotCached is the regression test for
+// the cluster-wide Pod informer: the drainer must subscribe to Pods in the
+// Slinky namespace only.
+func TestCache_PodsOutsideSlinkyNamespace_AreNotCached(t *testing.T) {
+	tc := setupTestEnv(t, "cache-scope")
+
+	node := createNode(t, tc, "test-node-cache-scope", nil, nil)
+	slinkyPod := createSlinkyPod(t, tc, node.Name)
+	createPod(t, tc, "unrelated-pod", "default", node.Name)
+
+	require.Eventually(t, func() bool {
+		pods := &corev1.PodList{}
+		if err := tc.cached.List(tc.ctx, pods); err != nil {
+			return false
+		}
+
+		return len(pods.Items) == 1 && pods.Items[0].Name == slinkyPod.Name
+	}, testTimeout, testPollInterval, "cached client should only see pods in %s", testSlinkyNamespace)
+
+	// Reading another namespace is an error rather than an empty result, which
+	// is what a namespace-scoped informer looks like from the client side.
+	pods := &corev1.PodList{}
+	require.Error(t, tc.cached.List(tc.ctx, pods, client.InNamespace("default")))
+}
+
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
@@ -145,9 +215,13 @@ func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 	cfg, err := te.Start()
 	require.NoError(t, err, "failed to start envtest")
 
+	cacheOptions, err := cacheconfig.Build(testSlinkyNamespace)
+	require.NoError(t, err, "failed to build cache options")
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
+		Cache:   cacheOptions,
 	})
 	require.NoError(t, err, "failed to create manager")
 
@@ -190,9 +264,11 @@ func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 		}
 	}()
 
-	k := mgr.GetClient()
+	apiClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	require.NoError(t, err, "failed to create API client")
+
 	ns := &corev1.Namespace{Name: testSlinkyNamespace}
-	_ = k.Create(ctx, ns)
+	require.NoError(t, apiClient.Create(ctx, ns), "failed to create namespace %s", testSlinkyNamespace)
 
 	t.Cleanup(func() {
 		cancel()
@@ -203,7 +279,7 @@ func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 		}
 	})
 
-	return &testEnvContext{client: k, ctx: ctx}
+	return &testEnvContext{client: apiClient, cached: mgr.GetClient(), ctx: ctx}
 }
 
 // ---------------------------------------------------------------------------
@@ -223,12 +299,39 @@ func createNode(t *testing.T, tc *testEnvContext, name string, annotations, labe
 	return node
 }
 
+// cordonNode marks the node unschedulable and taints it, as Fault Quarantine
+// does before the drain runs. It returns the taint it applied.
+func cordonNode(t *testing.T, tc *testEnvContext, nodeName string) corev1.Taint {
+	t.Helper()
+
+	taint := corev1.Taint{
+		Key:    "nvsentinel.dgxc.nvidia.com/gpu-unhealthy",
+		Value:  "true",
+		Effect: corev1.TaintEffectNoSchedule,
+	}
+
+	node := &corev1.Node{}
+	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: nodeName}, node))
+
+	node.Spec.Unschedulable = true
+	node.Spec.Taints = []corev1.Taint{taint}
+	require.NoError(t, tc.client.Update(tc.ctx, node))
+
+	return taint
+}
+
 func createSlinkyPod(t *testing.T, tc *testEnvContext, nodeName string) *corev1.Pod {
 	t.Helper()
 
+	return createPod(t, tc, "slinky-pod-"+nodeName, testSlinkyNamespace, nodeName)
+}
+
+func createPod(t *testing.T, tc *testEnvContext, name, namespace, nodeName string) *corev1.Pod {
+	t.Helper()
+
 	pod := &corev1.Pod{
-		Name:      "slinky-pod-" + nodeName,
-		Namespace: testSlinkyNamespace,
+		Name:      name,
+		Namespace: namespace,
 		Spec: corev1.PodSpec{
 			NodeName:   nodeName,
 			Containers: []corev1.Container{{Name: "slurmd", Image: "nvcr.io/nvidia/slinky:latest"}},
@@ -395,6 +498,28 @@ func assertDrainNotComplete(t *testing.T, tc *testEnvContext, drName, drNamespac
 			t.Fatalf("DrainRequest %s/%s should NOT have DrainComplete=True while pods are still draining", drNamespace, drName)
 		}
 	}
+}
+
+// assertForeignMetadataIntact checks the labels and annotations the drainer
+// does not own, which the cache drops and the patches must not disturb.
+func assertForeignMetadataIntact(t *testing.T, tc *testEnvContext, nodeName string) {
+	t.Helper()
+
+	node := &corev1.Node{}
+	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: nodeName}, node))
+
+	assert.Equal(t, "keep-me", node.Labels["nvidia.com/gpu.product"])
+	assert.Equal(t, "keep-me", node.Annotations["csi.volume.kubernetes.io/nodeid"])
+}
+
+func assertNodeCordoned(t *testing.T, tc *testEnvContext, nodeName string, taint corev1.Taint) {
+	t.Helper()
+
+	node := &corev1.Node{}
+	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: nodeName}, node))
+
+	assert.True(t, node.Spec.Unschedulable, "Node %s should still be unschedulable", nodeName)
+	assert.Equal(t, []corev1.Taint{taint}, node.Spec.Taints, "Node %s should still carry its taint", nodeName)
 }
 
 func assertNodeAnnotation(t *testing.T, tc *testEnvContext, nodeName, expectedValue string) {

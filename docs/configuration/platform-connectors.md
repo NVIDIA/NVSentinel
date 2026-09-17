@@ -277,7 +277,8 @@ Configures the Kubernetes API client for creating node conditions and events.
 platformConnector:
   k8sConnector:
     enabled: true
-    maxRetries: 3
+    maxRetries: 100
+    maxRetryDuration: 1m
     maxNodeConditionMessageLength: 1024
     qps: 5.0
     burst: 10
@@ -290,21 +291,45 @@ Enables Kubernetes connector for creating node conditions and events.
 
 #### maxRetries
 
-Number of ordered retries for transient Kubernetes API failures. The connector holds the current batch during retries so a newer fault or recovery cannot overtake it. Total processing attempts are one initial attempt plus the effective retry count.
+Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `100`; positive integers override the default. Negative and non-integer values are rejected. An existing explicit value, such as `3`, still limits each write to that retry count.
 
-Omitting the setting or setting it to `0` selects the default of `3`. Zero does not disable retries. Positive integers override the default; negative values and non-integer configuration values are rejected.
+Each node status update and Kubernetes Event write has its own retry state. Successful writes are not repeated when another write fails. Permanent errors are skipped without preventing other writes from retrying. A node status update applies all condition changes for that node together.
 
-The outer retry delays start at 500 milliseconds, double after each retry, and stop increasing at 3 seconds. With the default of three retries, the delays are 0.5, 1, and 2 seconds: **3.5 seconds of outer backoff**. Kubernetes API calls and client-go's inner retries add to that time, so this is not a total processing deadline.
+Retry delays start at 500 milliseconds, double after each failure, and are capped at 3 seconds. Both the count limit and `maxRetryDuration` apply: whichever is reached first stops that write.
 
-For longer control-plane outages, set a larger retry count. For example, `maxRetries: 20` allows 21 processing attempts and **54.5 seconds of outer backoff**. Later batches wait behind the current batch during that time. Context cancellation and connector shutdown interrupt backoff immediately.
+#### maxRetryDuration
+
+Maximum processing time for the whole batch, including Kubernetes API calls and inner retry delays. The default is `1m`. Omission or a zero duration selects the default. Positive duration strings up to `5m` are accepted; negative, invalid, and larger durations are rejected.
+
+The connector holds the current batch while retrying. Newer batches cannot overtake a pending fault or recovery. This pauses consumption of the Kubernetes queue while other connector queues continue independently. Cancellation and connector shutdown interrupt API calls and backoff.
+
+For a five-minute outage window, configure both limits:
 
 ```yaml
 platformConnector:
   k8sConnector:
-    maxRetries: 20
+    maxRetries: 200
+    maxRetryDuration: 5m
 ```
 
-Choose the retry count based on expected control-plane recovery time and acceptable queue delay. The retry budget is bounded: after exhaustion, the connector logs the failure and drops the batch. If that batch contains a healthy recovery event, the node condition can remain set until another healthy event or operator action clears it. Retries improve delivery through transient failures; they do not guarantee delivery through an arbitrarily long outage or pod restart.
+The default count of 100 can exhaust after 294.5 seconds of outer backoff, before a five-minute deadline. The example raises it so the deadline controls the window. API calls and client-go retries also consume the time budget. A large batch shares one deadline across its writes.
+
+A write that exhausts its retry count is discarded; other writes can still run within the batch deadline. When the deadline expires, remaining writes are discarded and the connector advances to the next batch. A lost healthy recovery can therefore still leave a condition set. These bounded retries do not guarantee delivery through longer outages or pod restarts. Newer batches accumulate in memory during backpressure; this change does not add a persistent queue or an ingress memory limit.
+
+#### Drop metrics
+
+- `k8s_platform_connector_dropped_writes_total{operation,reason}` counts individual discarded writes, including writes not attempted before deadline or shutdown.
+- `k8s_platform_connector_dropped_batches_total{reason}` counts each affected batch once per reason. A batch with multiple failure reasons increments multiple series.
+
+The `operation` label is `node_condition` or `node_event`. The `reason` label is `permanent_error`, `retry_exhausted`, `retry_timeout`, or `shutdown`.
+
+For example, alert when writes are discarded outside shutdown:
+
+```promql
+sum(increase(k8s_platform_connector_dropped_writes_total{reason!="shutdown"}[5m])) > 0
+```
+
+A failed queue item is explicitly discarded; this operation does not requeue it. Monitor drop counters together with Kubernetes queue depth to detect exhausted retry windows and growing backlogs.
 
 #### maxNodeConditionMessageLength
 Maximum length of node condition messages in characters.

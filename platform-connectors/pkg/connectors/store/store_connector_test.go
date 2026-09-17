@@ -109,6 +109,24 @@ func (m *mockDatabaseClient) Ping(ctx context.Context) error {
 	return args.Error(0)
 }
 
+func (m *mockDatabaseClient) InsertManyIdempotent(ctx context.Context, documents []any) (*client.InsertManyResult, error) {
+	args := m.Called(ctx, documents)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*client.InsertManyResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) EnsureHealthEventIdempotencyIndex(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func (m *mockDatabaseClient) VerifyHealthEventIdempotencyIndex(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
 func TestInsertHealthEvents(t *testing.T) {
 	ringBuffer := ringbuffer.NewRingBuffer("testRingBuffer", context.Background())
 	nodeName := "testNode"

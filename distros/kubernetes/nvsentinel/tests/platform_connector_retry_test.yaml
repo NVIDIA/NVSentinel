@@ -27,7 +27,7 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.json"]
-          pattern: '"K8sConnectorMaxRetries": 3'
+          pattern: '"K8sConnectorMaxRetries": 100'
   - it: preserves zero for connector defaulting
     set:
       platformConnector.k8sConnector.maxRetries: 0
@@ -35,3 +35,26 @@ tests:
       - matchRegex:
           path: data["config.json"]
           pattern: '"K8sConnectorMaxRetries": 0'
+  - it: renders the default batch deadline
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: '"K8sConnectorMaxRetryDuration": "1m"'
+  - it: renders a five minute batch deadline
+    set:
+      platformConnector.k8sConnector.maxRetryDuration: 5m
+      platformConnector.k8sConnector.maxRetries: 200
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: '"K8sConnectorMaxRetryDuration": "5m"'
+      - matchRegex:
+          path: data["config.json"]
+          pattern: '"K8sConnectorMaxRetries": 200'
+  - it: preserves zero duration for connector defaulting
+    set:
+      platformConnector.k8sConnector.maxRetryDuration: 0s
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: '"K8sConnectorMaxRetryDuration": "0s"'

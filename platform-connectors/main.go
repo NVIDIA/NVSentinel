@@ -129,6 +129,35 @@ func k8sConnectorMaxRetriesFromConfig(config map[string]any) (int, error) {
 	return int(maxRetries), nil
 }
 
+// k8sConnectorMaxRetryDurationFromConfig validates the whole-batch retry deadline.
+func k8sConnectorMaxRetryDurationFromConfig(config map[string]any) (time.Duration, error) {
+	value, exists := config["K8sConnectorMaxRetryDuration"]
+	if !exists {
+		return k8sconnector.DefaultMaxRetryDuration, nil
+	}
+
+	raw, ok := value.(string)
+	if !ok {
+		return 0, fmt.Errorf("K8sConnectorMaxRetryDuration must be a duration string, got %v", value)
+	}
+
+	duration, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid K8sConnectorMaxRetryDuration: %w", err)
+	}
+
+	if duration < 0 || duration > k8sconnector.MaxAllowedRetryDuration {
+		return 0, fmt.Errorf("K8sConnectorMaxRetryDuration must be between 0 and %s, got %s",
+			k8sconnector.MaxAllowedRetryDuration, duration)
+	}
+
+	if duration == 0 {
+		return k8sconnector.DefaultMaxRetryDuration, nil
+	}
+
+	return duration, nil
+}
+
 // initializeK8sConnector creates the K8s connector and node metadata processor.
 // Processor is returned here because it depends on the clientset from K8s initialization.
 func initializeK8sConnector(
@@ -140,6 +169,11 @@ func initializeK8sConnector(
 	maxRetries, err := k8sConnectorMaxRetriesFromConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("invalid Kubernetes connector retry configuration: %w", err)
+	}
+
+	maxRetryDuration, err := k8sConnectorMaxRetryDurationFromConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Kubernetes connector retry duration: %w", err)
 	}
 
 	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
@@ -173,6 +207,7 @@ func initializeK8sConnector(
 		MaxNodeConditionMessageLength: maxNodeConditionMessageLength,
 		CompactedHealthEventMsgLen:    compactedEventMsgLen,
 		MaxRetries:                    maxRetries,
+		MaxRetryDuration:              maxRetryDuration,
 	}
 
 	k8sConnector, _, err := k8sconnector.InitializeK8sConnector(

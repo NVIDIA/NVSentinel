@@ -119,10 +119,10 @@ func NewFaultRemediationReconciler(
 	}
 }
 
-// Reconcile processes a single health event from the datastore change stream.
+// reconcileEvent processes a single health event loaded from the datastore.
 // It parses the event, determines the appropriate action (cancellation or remediation),
 // and returns a result instructing controller-runtime on requeue behavior.
-func (r *FaultRemediationReconciler) Reconcile(
+func (r *FaultRemediationReconciler) reconcileEvent(
 	ctx context.Context,
 	event *datastore.EventWithToken,
 ) (result ctrl.Result, reconcileErr error) {
@@ -1947,7 +1947,7 @@ func (r *FaultRemediationReconciler) CloseAll(ctx context.Context) error {
 func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) (<-chan struct{}, error) {
 	r.Watcher.Start(ctx)
 
-	typedCh, watcherDone := AdaptEvents(ctx, r.Watcher.Events())
+	typedCh, watcherDone := AdaptEvents(ctx, r.Watcher)
 
 	r.coldStartCh = make(chan event.TypedGenericEvent[reconcileRequest], coldStartBatchSize)
 
@@ -1965,7 +1965,7 @@ func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr c
 		Named("fault-remediation-controller").
 		WatchesRawSource(source.TypedChannel(typedCh, enqueueHandler)).
 		WatchesRawSource(source.TypedChannel(r.coldStartCh, enqueueHandler)).
-		Complete(&controllerReconciler{reconciler: r})
+		Complete(r)
 
 	return watcherDone, err
 }
@@ -2037,17 +2037,24 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 	slog.Info("Cold start: enqueued events for processing", "count", enqueued)
 }
 
-// AdaptEvents transforms a channel of EventWithToken into a channel of controller-runtime
-// TypedGenericEvent. It spawns a goroutine that continuously reads from the input channel
-// until either the context is cancelled or the input channel is closed.
-// The returned done channel is closed when the adapter goroutine exits. If the input channel
+// AdaptEvents transforms the watcher's stream of EventWithToken into a channel of
+// controller-runtime TypedGenericEvent that names each event by document ID instead of
+// carrying the decoded document. It spawns a goroutine that continuously reads from the
+// watcher until either the context is cancelled or the event channel is closed.
+// The returned done channel is closed when the adapter goroutine exits. If the event channel
 // closed while the context was still active, this indicates the change stream died unexpectedly.
+//
+// The per-event resume token travels on the queue item rather than being checkpointed here,
+// because fault-remediation advances the stream position only once an event is finalised.
+// The one exception is an event with no document ID: it can never be fetched, so it is
+// dropped and checkpointed immediately instead of being queued.
 func AdaptEvents(
 	ctx context.Context,
-	in <-chan datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
 ) (<-chan event.TypedGenericEvent[reconcileRequest], <-chan struct{}) {
 	out := make(chan event.TypedGenericEvent[reconcileRequest])
 	done := make(chan struct{})
+	in := watcherInstance.Events()
 
 	go func() {
 		defer close(out)
@@ -2062,13 +2069,48 @@ func AdaptEvents(
 					return
 				}
 
-				eventOut := e
-				request := reconcileRequest{event: &eventOut}
-
-				out <- event.TypedGenericEvent[reconcileRequest]{Object: request}
+				if !queueEventByDocumentID(ctx, e, watcherInstance, out) {
+					return
+				}
 			}
 		}
 	}()
 
 	return out, done
+}
+
+// queueEventByDocumentID hands one live event downstream as a document ID plus its resume
+// token, so the worker can load the document and checkpoint once the event is finalised.
+// An event with no document ID is dropped and checkpointed instead of queued.
+func queueEventByDocumentID(
+	ctx context.Context,
+	e datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	out chan<- event.TypedGenericEvent[reconcileRequest],
+) (keepReading bool) {
+	documentID, err := utils.ExtractDocumentID(e.Event)
+	if err != nil {
+		// Matches what parseHealthEvent did when it owned this failure: drop the event and
+		// advance past it, because retrying a document with no ID can never succeed.
+		metrics.ProcessingErrors.WithLabelValues("extract_id_error", "unknown").Inc()
+		slog.ErrorContext(ctx, "Dropping event without a document ID", "error", err)
+
+		if markErr := safeMarkProcessed(ctx, watcherInstance, e.ResumeToken, "unknown"); markErr != nil {
+			slog.ErrorContext(ctx, "Failed to checkpoint dropped event", "error", markErr)
+		}
+
+		return true
+	}
+
+	request := reconcileRequest{
+		documentID:  documentID,
+		resumeToken: string(e.ResumeToken),
+	}
+
+	select {
+	case out <- event.TypedGenericEvent[reconcileRequest]{Object: request}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

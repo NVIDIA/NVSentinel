@@ -33,6 +33,16 @@ const (
 
 // prometheus metrics
 var (
+	droppedWritesCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "k8s_platform_connector_dropped_writes_total",
+		Help: "Kubernetes writes discarded by operation and reason, including unattempted writes at deadline or shutdown",
+	}, []string{"operation", "reason"})
+
+	droppedBatchesCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "k8s_platform_connector_dropped_batches_total",
+		Help: "Batches containing discarded Kubernetes writes, counted once per terminal reason",
+	}, []string{"reason"})
+
 	nodeConditionUpdateCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "k8s_platform_connector_node_condition_update_total",
 		Help: "The total number of node condition updates by status",

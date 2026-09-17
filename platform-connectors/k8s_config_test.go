@@ -16,6 +16,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -49,6 +50,38 @@ func TestK8sConnectorMaxRetriesFromConfig_JSONValues_DefaultsOrRejects(t *testin
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, test.want, value)
+			}
+		})
+	}
+}
+
+// TestK8sConnectorMaxRetryDurationFromConfig_JSONValues_DefaultsOrRejects checks the operator deadline contract.
+func TestK8sConnectorMaxRetryDurationFromConfig_JSONValues_DefaultsOrRejects(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		raw     string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "omitted", raw: `{}`, want: time.Minute},
+		{name: "zero", raw: `{"K8sConnectorMaxRetryDuration":"0s"}`, want: time.Minute},
+		{name: "shorter window", raw: `{"K8sConnectorMaxRetryDuration":"30s"}`, want: 30 * time.Second},
+		{name: "maximum", raw: `{"K8sConnectorMaxRetryDuration":"5m"}`, want: 5 * time.Minute},
+		{name: "over maximum", raw: `{"K8sConnectorMaxRetryDuration":"5m1ns"}`, wantErr: true},
+		{name: "negative", raw: `{"K8sConnectorMaxRetryDuration":"-1s"}`, wantErr: true},
+		{name: "invalid", raw: `{"K8sConnectorMaxRetryDuration":"bad"}`, wantErr: true},
+		{name: "empty", raw: `{"K8sConnectorMaxRetryDuration":""}`, wantErr: true},
+		{name: "number", raw: `{"K8sConnectorMaxRetryDuration":5}`, wantErr: true},
+		{name: "boolean", raw: `{"K8sConnectorMaxRetryDuration":false}`, wantErr: true},
+		{name: "null", raw: `{"K8sConnectorMaxRetryDuration":null}`, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := k8sConnectorMaxRetryDurationFromConfig(configFromJSON(t, test.raw))
+			if test.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, test.want, got)
 			}
 		})
 	}

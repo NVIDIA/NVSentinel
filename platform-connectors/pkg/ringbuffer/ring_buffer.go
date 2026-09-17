@@ -123,7 +123,15 @@ func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *QueuedHealthEvent
 	rb.healthMetricQueue.Done(data)
 }
 
+// HealthMetricEleProcessingFailed discards the item without retrying it.
+//
+// Deprecated: use Discard for terminal failures or AddRateLimited to retry.
 func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *QueuedHealthEvents) {
+	rb.Discard(data)
+}
+
+// Discard releases an unsuccessful item permanently. It does not requeue it.
+func (rb *RingBuffer) Discard(data *QueuedHealthEvents) {
 	rb.healthMetricQueue.Forget(data)
 	rb.healthMetricQueue.Done(data)
 }

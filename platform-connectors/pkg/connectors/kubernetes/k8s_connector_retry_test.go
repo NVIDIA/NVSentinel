@@ -43,7 +43,7 @@ func retryTestConnector(
 ) *K8sConnector {
 	return &K8sConnector{
 		config:         K8sConnectorConfig{MaxRetries: maxRetries},
-		processEvents:  process,
+		prepareWrites:  retryTestWrites(process),
 		retryBaseDelay: time.Nanosecond,
 		retryMaxDelay:  time.Nanosecond,
 	}
@@ -105,7 +105,7 @@ func TestProcessHealthEventsWithRetry_RetryScenarios_EnforcePolicy(t *testing.T)
 		{name: "transient failure stops at the retry bound", maxRetries: 2, attemptErrors: []error{unavailable},
 			wantRetries: 2, wantCalls: 3, wantErr: unavailable},
 		{name: "canceled context stops retries", maxRetries: 3, attemptErrors: []error{unavailable},
-			canceled: true, wantCalls: 1, wantErr: context.Canceled},
+			canceled: true, wantCalls: 0, wantErr: context.Canceled},
 	}
 
 	for _, test := range tests {
@@ -196,36 +196,54 @@ func TestProcessHealthEventsWithRetry_InterruptionDuringBackoff_ReturnsCanceled(
 	}
 }
 
-// TestProcessHealthEventsWithRetry_ProductionDelays_MatchDocumentedHorizon verifies the default and
-// operator-configured retry budgets with the actual exponential backoff and delay cap.
-func TestProcessHealthEventsWithRetry_ProductionDelays_MatchDocumentedHorizon(t *testing.T) {
+// TestProcessHealthEventsWithRetry_ProductionDelays_EnforceBothLimits checks actual
+// retry timing, including a five-minute window, without wall-clock waits.
+func TestProcessHealthEventsWithRetry_ProductionDelays_EnforceBothLimits(t *testing.T) {
+	unavailable := apierrors.NewServiceUnavailable("control plane unavailable")
 	for _, test := range []struct {
 		name        string
 		maxRetries  int
+		duration    time.Duration
 		wantRetries int
+		wantCalls   int
 		wantDelay   time.Duration
+		wantErr     error
 	}{
-		{name: "default", wantRetries: 3, wantDelay: 3500 * time.Millisecond},
-		{name: "longer control plane outage", maxRetries: 20, wantRetries: 20, wantDelay: 54500 * time.Millisecond},
+		{name: "default minute", wantRetries: 22, wantCalls: 22, wantDelay: time.Minute, wantErr: context.DeadlineExceeded},
+		{name: "explicit old count", maxRetries: 3, wantRetries: 3, wantCalls: 4,
+			wantDelay: 3500 * time.Millisecond, wantErr: unavailable},
+		{name: "count limit", maxRetries: 20, wantRetries: 20, wantCalls: 21,
+			wantDelay: 54500 * time.Millisecond, wantErr: unavailable},
+		{name: "five minute cap", maxRetries: 200, duration: 5 * time.Minute, wantRetries: 102, wantCalls: 102,
+			wantDelay: 5 * time.Minute, wantErr: context.DeadlineExceeded},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				connector := NewK8sConnector(nil, nil, nil, context.Background(), K8sConnectorConfig{MaxRetries: test.maxRetries})
-				unavailable := apierrors.NewServiceUnavailable("control plane unavailable")
+				connector := NewK8sConnector(nil, nil, nil, context.Background(),
+					K8sConnectorConfig{MaxRetries: test.maxRetries, MaxRetryDuration: test.duration})
 				calls := 0
-				connector.processEvents = func(context.Context, *protos.HealthEvents) error {
+				connector.prepareWrites = retryTestWrites(func(context.Context, *protos.HealthEvents) error {
 					calls++
 					return unavailable
-				}
-
+				})
 				start := time.Now()
 				retries, err := connector.processHealthEventsWithRetry(context.Background(), &protos.HealthEvents{})
-				require.ErrorIs(t, err, unavailable)
+				require.ErrorIs(t, err, test.wantErr)
 				require.Equal(t, test.wantRetries, retries)
-				require.Equal(t, test.wantRetries+1, calls)
+				require.Equal(t, test.wantCalls, calls)
 				require.Equal(t, test.wantDelay, time.Since(start))
 			})
 		})
+	}
+}
+
+// retryTestWrites adapts a deterministic callback to one independently retryable write.
+func retryTestWrites(process func(context.Context, *protos.HealthEvents) error) func(
+	context.Context, *protos.HealthEvents,
+) []kubernetesWrite {
+	return func(_ context.Context, events *protos.HealthEvents) []kubernetesWrite {
+		return []kubernetesWrite{{operation: "node_condition", nodeName: "test-node",
+			run: func(ctx context.Context) error { return process(ctx, events) }}}
 	}
 }
 
@@ -243,7 +261,7 @@ func TestFetchAndProcessHealthMetric_TransientFaultFailure_PreservesFaultRecover
 	attempts := make([]string, 0, 3)
 	faultFailed := false
 	recoveryProcessed := make(chan struct{})
-	connector.processEvents = func(_ context.Context, events *protos.HealthEvents) error {
+	connector.prepareWrites = retryTestWrites(func(_ context.Context, events *protos.HealthEvents) error {
 		state := "fault"
 		if events.GetEvents()[0].GetIsHealthy() {
 			state = "recovery"
@@ -260,7 +278,7 @@ func TestFetchAndProcessHealthMetric_TransientFaultFailure_PreservesFaultRecover
 		}
 
 		return nil
-	}
+	})
 
 	buffer.Enqueue(ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{Events: []*protos.HealthEvent{{
 		CheckName:          "DerivedCondition",

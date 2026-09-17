@@ -33,6 +33,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -69,7 +70,7 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 		attribute.Int("platform_connector.k8s.node_condition_update_count", len(conditionEventsMap)),
 	)
 
-	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
+	err := retryKubernetesAPIWrite(ctx, func(err error) bool {
 		isRetriable := apierrors.IsConflict(err) || isTemporaryError(err)
 		if isRetriable {
 			span.AddEvent("platform_connector.k8s.update_node_conditions_failed",
@@ -578,7 +579,7 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 
 	dedupeKey := nodeEventDedupeKey(event, nodeName)
 
-	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
+	err := retryKubernetesAPIWrite(ctx, func(err error) bool {
 		return apierrors.IsConflict(err) || isTemporaryError(err)
 	}, func() error {
 		// An involvedObject LIST is an unindexed full-range etcd scan, so
@@ -707,54 +708,65 @@ func (r *K8sConnector) createK8sEvent(ctx context.Context, healthEvent *protos.H
 	}
 }
 
-func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *protos.HealthEvents) error {
-	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.process_health_events")
-	defer span.End()
+// kubernetesWrite is one independently retryable node status update or Event write.
+type kubernetesWrite struct {
+	operation string
+	nodeName  string
+	run       func(context.Context) error
+}
 
+// prepareHealthEventWrites fixes the work list once so retries cannot repeat successful writes.
+func (r *K8sConnector) prepareHealthEventWrites(
+	ctx context.Context, healthEvents *protos.HealthEvents,
+) []kubernetesWrite {
 	processableEvents := filterProcessableEvents(ctx, healthEvents)
 
-	span.SetAttributes(
-		attribute.Int("platform_connector.k8s.processable_events", len(processableEvents)),
-	)
+	var conditionEvents []*protos.HealthEvent
 
-	eventsByNode := groupEventsByNode(processableEvents)
-
-	var firstErr error
-
-	for _, nodeEvents := range eventsByNode {
-		if err := r.processNodeConditionUpdates(ctx, nodeEvents); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-
-			span.AddEvent("platform_connector.k8s.node_condition_update_error", trace.WithAttributes(
-				attribute.String("platform_connector.k8s.error.type", "node_condition_update_error"),
-				attribute.String("platform_connector.k8s.error.message", err.Error()),
-			))
+	for _, event := range processableEvents {
+		if event.IsHealthy || event.IsFatal {
+			conditionEvents = append(conditionEvents, event)
 		}
+	}
+
+	eventsByNode := groupEventsByNode(conditionEvents)
+
+	nodeNames := make([]string, 0, len(eventsByNode))
+	for nodeName := range eventsByNode {
+		nodeNames = append(nodeNames, nodeName)
+	}
+
+	slices.Sort(nodeNames)
+
+	writes := make([]kubernetesWrite, 0, len(nodeNames)+len(processableEvents))
+	for _, nodeName := range nodeNames {
+		nodeEvents := eventsByNode[nodeName]
+		writes = append(writes, kubernetesWrite{
+			operation: "node_condition", nodeName: nodeName,
+			run: func(ctx context.Context) error { return r.processNodeConditionUpdates(ctx, nodeEvents) },
+		})
 	}
 
 	for _, healthEvent := range processableEvents {
-		if !healthEvent.IsHealthy && !healthEvent.IsFatal {
-			start := time.Now()
-			err := r.writeNodeEvent(ctx, r.createK8sEvent(ctx, healthEvent), healthEvent.NodeName)
-
-			nodeEventUpdateCreateDuration.Observe(float64(time.Since(start).Milliseconds()))
-
-			if err != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("failed to write node event for %s: %w", healthEvent.NodeName, err)
-				}
-
-				span.AddEvent("platform_connector.k8s.node_event_write_failed", trace.WithAttributes(
-					attribute.String("platform_connector.k8s.error.type", "node_event_write_failed"),
-					attribute.String("platform_connector.k8s.error.message", err.Error()),
-				))
-			}
+		if healthEvent.IsHealthy || healthEvent.IsFatal {
+			continue
 		}
+
+		event := r.createK8sEvent(ctx, healthEvent)
+		writes = append(writes, kubernetesWrite{
+			operation: "node_event", nodeName: healthEvent.NodeName,
+			run: func(ctx context.Context) error {
+				start := time.Now()
+				err := r.writeNodeEvent(ctx, event, healthEvent.NodeName)
+
+				nodeEventUpdateCreateDuration.Observe(float64(time.Since(start).Milliseconds()))
+
+				return err
+			},
+		})
 	}
 
-	return firstErr
+	return writes
 }
 
 func groupEventsByNode(events []*protos.HealthEvent) map[string][]*protos.HealthEvent {
@@ -1097,4 +1109,28 @@ func (r *K8sConnector) truncateNodeConditionMessage(messages []string) string {
 	}
 
 	return result.String()
+}
+
+// retryKubernetesAPIWrite preserves client-go's short retry policy while honoring
+// the batch deadline and connector shutdown during both API calls and backoff.
+func retryKubernetesAPIWrite(ctx context.Context, retryable func(error) bool, run func() error) error {
+	var lastErr error
+
+	err := wait.ExponentialBackoffWithContext(ctx, retry.DefaultRetry, func(context.Context) (bool, error) {
+		lastErr = run()
+		if lastErr == nil {
+			return true, nil
+		}
+
+		if retryable(lastErr) {
+			return false, nil
+		}
+
+		return false, lastErr
+	})
+	if wait.Interrupted(err) && ctx.Err() == nil {
+		return lastErr
+	}
+
+	return err
 }
