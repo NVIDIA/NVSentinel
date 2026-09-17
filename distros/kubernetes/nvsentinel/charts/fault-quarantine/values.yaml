@@ -228,6 +228,37 @@ ruleSets:
     cordon:
       shouldCordon: true
 
+  - enabled: true
+    version: "1"
+    name: "MaintenanceRequest ruleset"
+    # A MaintenanceRequest (ADR-051) lets an external system tell NVSentinel that
+    # maintenance is incoming for a node, so the node is cordoned and drained
+    # before the work starts. lifecycle-manager publishes the requester's health
+    # event as authored, so agent, checkName and isFatal are all requester-chosen
+    # and none of them can be matched on. The maintenanceRequestName metadata key
+    # is set by the mutating webhook and re-asserted on every publish, so it marks
+    # MR-originated events whatever the requester wrote. This rule matches metadata
+    # rather than agent for that reason, unlike every other ruleset here.
+    #
+    # The metadata != null guard is required, not defensive. An event with no
+    # metadata reaches CEL with metadata set to null, and the "in" operator errors
+    # on null, which would fail evaluation for every metadata-free event any
+    # monitor publishes.
+    #
+    # isHealthy is deliberately not matched. Recovery evaluates the clearing event
+    # against these rulesets too, so excluding healthy events would stop the node
+    # un-cordoning when the requester deletes the MR.
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.metadata != null && 'maintenanceRequestName' in event.metadata"
+        - kind: "Node"
+          expression: >-
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
+    cordon:
+      shouldCordon: true
+
 # The validation section configures post-remediation validation from the fault-quarantine
 # module. If enabled, fault-quarantine will preserve the scheduling gate on a given node
 # when an unquarantine event occurs, and it will create the given validation resource
