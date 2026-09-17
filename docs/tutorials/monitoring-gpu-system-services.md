@@ -95,14 +95,15 @@ unit, so they are safe to install fleet-wide, including PCIe-only nodes.
 The plugin scripts and monitor configuration ship in this repository under
 `docs/tutorials/assets/npd-gpu-services/`:
 
-- `check_fm_active.sh` — Fabric Manager liveness.
 - `check_fm_flapping.sh` — Fabric Manager crash-loop detection over a sliding
   window (defaults: 3 restarts within 600 s), with `systemctl reset-failed`
   disambiguation.
 - `check_fm_installed.sh` — Fabric Manager unit presence (optional; required
   fleets only).
-- `check_gpu_service.sh` — parameterized liveness for additional GPU-support
-  services; the reference rule covers `nvidia-persistenced`.
+- `check_gpu_service.sh` — parameterized service liveness with
+  consecutive-probe debounce and hold-state semantics; the reference rules
+  invoke it for `nvidia-fabricmanager` and `nvidia-persistenced` (one rule,
+  condition, and state file per unit, so the checks stay independent).
 - `custom-plugin-fm-liveness.json`, `custom-plugin-fm-flap.json`,
   `custom-plugin-fm-presence.json`, `custom-plugin-persistenced.json` — one
   single-condition `CustomPluginMonitor` configuration per check. The split
@@ -120,8 +121,8 @@ Copy the scripts and configuration onto each GPU node:
 
 ```bash
 sudo install -d -m 0755 /etc/npd-plugins
-sudo install -m 0755 check_fm_active.sh check_fm_flapping.sh \
-  check_gpu_service.sh /etc/npd-plugins/
+sudo install -m 0755 check_fm_flapping.sh check_gpu_service.sh \
+  /etc/npd-plugins/
 # Required-FM fleets only:
 sudo install -m 0755 check_fm_installed.sh /etc/npd-plugins/
 
@@ -198,11 +199,13 @@ NODE="<gpu-node-name>"
 kubectl get node "$NODE" \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status}{" reason="}{.reason}{"\n"}{end}' |
   grep -E '^(FabricManagerDown|FabricManagerFlapping|FabricManagerNotInstalled|NvidiaPersistencedDown)='
-# Expected on a healthy NVSwitch node:
+# Expected on a healthy required-FM (NVSwitch) node — four conditions:
 # FabricManagerDown=False reason=FabricManagerActive
 # FabricManagerFlapping=False reason=FabricManagerStable
 # FabricManagerNotInstalled=False reason=FabricManagerInstalled
 # NvidiaPersistencedDown=False reason=NvidiaPersistencedActive
+# Fleets that omit the presence configuration expect three (no
+# FabricManagerNotInstalled).
 ```
 
 On a PCIe-only node the Fabric Manager unit is absent: the liveness and flap
@@ -348,16 +351,19 @@ hide an active crash loop.
 Two caveats from ADR-050 apply when interpreting these conditions during
 remediation:
 
-- **NPD restarts.** `skip_initial_status: true` prevents NPD from publishing
-  default healthy conditions at startup, but the first post-restart probe
-  batch can still briefly write a not-yet-probed condition at its default
-  `False` (the batch's completion skew — milliseconds when probes respond).
-  Do not treat a condition transition observed around an NPD restart as proof
-  of recovery, and do not restart NPD mid-remediation.
-- **`Unknown` conditions.** A probe that cannot observe systemd (D-Bus down,
-  timeout) sets its condition to `Unknown`, not `True`; a genuinely stopped
-  service re-reports `True` within one probe cycle. Treat `Unknown` as "could
-  not observe", never as recovery.
+- **NPD restarts.** Each check runs as its own single-condition monitor
+  with `skip_initial_status: true`, so an NPD restart publishes nothing for
+  a condition until that condition's own probe completes — a condition that
+  was `True` before the restart stays `True` until confirmed otherwise.
+  Still: do not treat transitions observed around an NPD restart as proof of
+  recovery, and do not restart NPD mid-remediation.
+- **`Unknown` conditions.** The scripts hold their last confirmed state
+  through probe failures: a faulted condition keeps reporting `True` until a
+  probe confirms recovery, and a healthy one holds through four consecutive
+  failures before reporting `Unknown` (after which the stale confirmation is
+  discarded — following non-running observations report `Unknown` until the
+  debounce threshold confirms either state). Treat `Unknown` as "could not
+  observe", never as recovery.
 
 ---
 

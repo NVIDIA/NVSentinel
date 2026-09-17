@@ -16,11 +16,12 @@
 # NPD custom plugin: GPU-support service liveness, parameterized (ADR-050).
 #
 # One NPD permanent rule per configured service, each bound to its own
-# condition type (for example NvidiaPersistencedDown):
+# condition type. The reference Fabric Manager liveness rule invokes this
+# script too:
 #
-#   { "type": "permanent", "condition": "NvidiaPersistencedDown", ...
+#   { "type": "permanent", "condition": "FabricManagerDown", ...
 #     "path": "/etc/npd-plugins/check_gpu_service.sh",
-#     "args": ["nvidia-persistenced"] }
+#     "args": ["nvidia-fabricmanager"] }
 #
 # Exit codes follow the NPD custom-plugin protocol:
 #   0 = healthy, 1 = unhealthy, 3 = unknown.
@@ -28,17 +29,22 @@
 #
 # Contract (ADR-050 plugin script contracts):
 # - LoadState=not-found exits healthy: the liveness check skips absent
-#   units; operators that require presence follow the check_fm_installed.sh
-#   pattern with a dedicated condition.
+#   units; presence is a separate, operator-declared check
+#   (check_fm_installed.sh).
 # - ActiveState=active confirms healthy and resets the failure count.
 # - Transitional states (activating/deactivating/reloading) neither confirm
-#   health nor count as down: the script holds its last confirmed state, so
-#   startup and planned restarts never fire the condition.
+#   health nor count as down: the script holds its last confirmed state and
+#   resets the consecutive-failure count, so a service starting up or in a
+#   planned restart never fires the condition.
 # - A non-running observation (inactive/failed) reports down only after
-#   FAIL_THRESHOLD consecutive probes.
+#   FAIL_THRESHOLD consecutive probes; anything else resets the count.
 # - Probe failures never clear a fault: the script holds the last confirmed
 #   state (unhealthy indefinitely; healthy for PROBE_FAIL_MAX consecutive
-#   failures, then unknown). Recovery always requires a confirming probe.
+#   failures, after which the healthy confirmation is considered stale and
+#   the check reports unknown until a probe confirms either state).
+# - A failed state-file commit never clears a fault either: an unhealthy
+#   result is still reported unhealthy; other results report unknown, since
+#   their debounce or hold accounting could not be persisted.
 
 set -o nounset
 set -o pipefail
@@ -52,6 +58,8 @@ STATE_DIR="/var/run/nvsentinel/npd"
 STATE_FILE="${STATE_DIR}/svc-${UNIT}.state"
 FAIL_THRESHOLD=3
 PROBE_FAIL_MAX=4
+# Canonical decimal: leading zeros would be read as octal by Bash arithmetic.
+NUM='^(0|[1-9][0-9]*)$'
 # Bound the probe below the NPD rule timeout (12s) so a wedged systemd/D-Bus
 # reports as this script's deliberate exit, not an NPD plugin timeout.
 PROBE_TIMEOUT_SECONDS=8
@@ -74,26 +82,45 @@ load_state() {
   done < "${STATE_FILE}"
   # Invalid content means a fresh baseline: never hold phantom state.
   if ! [[ "${confirmed}" =~ ^(healthy|unhealthy|none)$ &&
-          "${fail_count}" =~ ^[0-9]+$ &&
-          "${probe_fail_count}" =~ ^[0-9]+$ ]]; then
+          "${fail_count}" =~ ${NUM} &&
+          "${probe_fail_count}" =~ ${NUM} ]]; then
     confirmed="none"; fail_count=0; probe_fail_count=0
   fi
 }
 
-save_state_and_exit() { # $1=exit code, $2=message
-  local rc="${1}" msg="${2}" tmp_file
-  if mkdir -p "${STATE_DIR}" 2>/dev/null && chmod 0700 "${STATE_DIR}" 2>/dev/null &&
-     tmp_file=$(mktemp "${STATE_DIR}/.svc-${UNIT}.XXXXXX" 2>/dev/null); then
-    chmod 0600 "${tmp_file}"
-    {
-      echo "confirmed=${confirmed}"
-      echo "fail_count=${fail_count}"
-      echo "probe_fail_count=${probe_fail_count}"
-    } > "${tmp_file}"
-    mv -f "${tmp_file}" "${STATE_FILE}"
+# Persist state; returns non-zero (with the temp file removed) on any failure.
+persist_state() {
+  local tmp_file
+  mkdir -p "${STATE_DIR}" 2>/dev/null || return 1
+  chmod 0700 "${STATE_DIR}" 2>/dev/null || return 1
+  tmp_file=$(mktemp "${STATE_DIR}/.svc-${UNIT}.XXXXXX" 2>/dev/null) || return 1
+  if ! chmod 0600 "${tmp_file}" 2>/dev/null ||
+     ! {
+       echo "confirmed=${confirmed}"
+       echo "fail_count=${fail_count}"
+       echo "probe_fail_count=${probe_fail_count}"
+     } > "${tmp_file}" 2>/dev/null ||
+     ! mv -f "${tmp_file}" "${STATE_FILE}" 2>/dev/null; then
+    rm -f "${tmp_file}" 2>/dev/null
+    return 1
   fi
-  echo "${msg}"
-  exit "${rc}"
+  return 0
+}
+
+save_state_and_exit() { # $1=exit code, $2=message
+  local rc="${1}" msg="${2}"
+  if persist_state; then
+    echo "${msg}"
+    exit "${rc}"
+  fi
+  # A failed commit must never clear a fault; other results become unknown
+  # because their debounce/hold accounting was not persisted.
+  if [[ "${rc}" == "1" ]]; then
+    echo "${msg} (state persistence failed)"
+    exit 1
+  fi
+  echo "could not persist state for ${UNIT} under ${STATE_DIR}"
+  exit 3
 }
 
 # --- probe -------------------------------------------------------------------
@@ -106,8 +133,10 @@ show_output=$(timeout "${PROBE_TIMEOUT_SECONDS}" \
 rc=$?
 
 if [[ ${rc} -ne 0 || -z "${show_output}" ]]; then
-  # Probe failure: hold the last confirmed state; never clear a fault.
+  # Probe failure: hold the last confirmed state; never clear a fault. The
+  # consecutive-failure count only tracks confirmed non-running probes.
   probe_fail_count=$((probe_fail_count + 1))
+  fail_count=0
   if [[ "${confirmed}" == "unhealthy" ]]; then
     save_state_and_exit 1 \
       "${UNIT} holding fault: probe failing (${probe_fail_count} consecutive), last confirmed not active"
@@ -116,6 +145,9 @@ if [[ ${rc} -ne 0 || -z "${show_output}" ]]; then
     save_state_and_exit 0 \
       "${UNIT} holding healthy: probe failing (${probe_fail_count} consecutive)"
   fi
+  # The healthy confirmation is stale after the hold expires: degrade so a
+  # later observation cannot resurrect it.
+  confirmed="none"
   save_state_and_exit 3 "could not observe ${UNIT}: systemctl unavailable (rc=${rc})"
 fi
 
@@ -161,7 +193,10 @@ case "${active_state}" in
     ;;
   *)
     # Transitional or unrecognized states (activating, deactivating,
-    # reloading, ...): neither confirm health nor count as down; hold.
+    # reloading, ...): neither confirm health nor count as down; hold, and
+    # reset the consecutive-failure count — it tracks consecutive
+    # non-running observations only.
+    fail_count=0
     if [[ "${confirmed}" == "unhealthy" ]]; then
       save_state_and_exit 1 "${UNIT} holding fault: unit in transition (state=${active_state})"
     fi

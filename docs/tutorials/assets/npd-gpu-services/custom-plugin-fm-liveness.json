@@ -20,8 +20,11 @@
       "type": "permanent",
       "condition": "FabricManagerDown",
       "reason": "FabricManagerNotActive",
-      "path": "/etc/npd-plugins/check_fm_active.sh",
-      "timeout": "12s"
+      "path": "/etc/npd-plugins/check_gpu_service.sh",
+      "timeout": "12s",
+      "args": [
+        "nvidia-fabricmanager"
+      ]
     }
   ]
 }

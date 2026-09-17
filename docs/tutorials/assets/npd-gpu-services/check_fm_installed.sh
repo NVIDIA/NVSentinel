@@ -26,7 +26,10 @@
 #   0 = healthy, 1 = unhealthy, 3 = unknown.
 # Probe failures never clear a fault: the script holds its last confirmed
 # state (unhealthy indefinitely; healthy for PROBE_FAIL_MAX consecutive
-# failures, then unknown). Recovery always requires a confirming probe.
+# failures, after which the stale confirmation is degraded and the check
+# reports unknown). A failed state-file commit never clears a fault either:
+# an unhealthy result is still reported unhealthy; other results report
+# unknown.
 
 set -o nounset
 set -o pipefail
@@ -35,6 +38,8 @@ UNIT="nvidia-fabricmanager"
 STATE_DIR="/var/run/nvsentinel/npd"
 STATE_FILE="${STATE_DIR}/fm-presence.state"
 PROBE_FAIL_MAX=4
+# Canonical decimal: leading zeros would be read as octal by Bash arithmetic.
+NUM='^(0|[1-9][0-9]*)$'
 # Bound the probe below the NPD rule timeout (12s) so a wedged systemd/D-Bus
 # reports as this script's deliberate exit, not an NPD plugin timeout.
 PROBE_TIMEOUT_SECONDS=8
@@ -50,23 +55,41 @@ if [[ -r "${STATE_FILE}" ]]; then
     esac
   done < "${STATE_FILE}"
 fi
-if ! [[ "${confirmed}" =~ ^(healthy|unhealthy|none)$ && "${probe_fail_count}" =~ ^[0-9]+$ ]]; then
+if ! [[ "${confirmed}" =~ ^(healthy|unhealthy|none)$ && "${probe_fail_count}" =~ ${NUM} ]]; then
   confirmed="none"; probe_fail_count=0
 fi
 
-save_state_and_exit() { # $1=exit code, $2=message
-  local rc="${1}" msg="${2}" tmp_file
-  if mkdir -p "${STATE_DIR}" 2>/dev/null && chmod 0700 "${STATE_DIR}" 2>/dev/null &&
-     tmp_file=$(mktemp "${STATE_DIR}/.fm-presence.XXXXXX" 2>/dev/null); then
-    chmod 0600 "${tmp_file}"
-    {
-      echo "confirmed=${confirmed}"
-      echo "probe_fail_count=${probe_fail_count}"
-    } > "${tmp_file}"
-    mv -f "${tmp_file}" "${STATE_FILE}"
+# Persist state; returns non-zero (with the temp file removed) on any failure.
+persist_state() {
+  local tmp_file
+  mkdir -p "${STATE_DIR}" 2>/dev/null || return 1
+  chmod 0700 "${STATE_DIR}" 2>/dev/null || return 1
+  tmp_file=$(mktemp "${STATE_DIR}/.fm-presence.XXXXXX" 2>/dev/null) || return 1
+  if ! chmod 0600 "${tmp_file}" 2>/dev/null ||
+     ! {
+       echo "confirmed=${confirmed}"
+       echo "probe_fail_count=${probe_fail_count}"
+     } > "${tmp_file}" 2>/dev/null ||
+     ! mv -f "${tmp_file}" "${STATE_FILE}" 2>/dev/null; then
+    rm -f "${tmp_file}" 2>/dev/null
+    return 1
   fi
-  echo "${msg}"
-  exit "${rc}"
+  return 0
+}
+
+save_state_and_exit() { # $1=exit code, $2=message
+  local rc="${1}" msg="${2}"
+  if persist_state; then
+    echo "${msg}"
+    exit "${rc}"
+  fi
+  # A failed commit must never clear a fault; other results become unknown.
+  if [[ "${rc}" == "1" ]]; then
+    echo "${msg} (state persistence failed)"
+    exit 1
+  fi
+  echo "could not persist state for ${UNIT} under ${STATE_DIR}"
+  exit 3
 }
 
 load_state_prop=$(timeout "${PROBE_TIMEOUT_SECONDS}" \
@@ -84,6 +107,8 @@ if [[ ${rc} -ne 0 || -z "${load_state_prop}" ]]; then
     save_state_and_exit 0 \
       "${UNIT} holding healthy: probe failing (${probe_fail_count} consecutive)"
   fi
+  # The healthy confirmation is stale after the hold expires: degrade it.
+  confirmed="none"
   save_state_and_exit 3 "could not observe ${UNIT}: systemctl unavailable (rc=${rc})"
 fi
 
