@@ -81,20 +81,93 @@ class PlatformConnectorServicer(platformconnector_pb2_grpc.PlatformConnectorServ
 
 class TestPlatformConnectors(unittest.TestCase):
 
+    def test_partial_evaluation_does_not_clear_unobserved_gpu(self):
+        """Only a GPU with a valid sample may create or clear a field-watch event."""
+        temp_file_path = metadata_file()
+        processor = platform_connector.PlatformConnectorEventProcessor(
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={"DCGM_FR_THERMAL_VIOLATION": "CONTACT_SUPPORT"},
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            ),
+            exit=Event(),
+        )
+        processor.entity_cache[processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")] = (
+            platform_connector.EntityCacheEntry()
+        )
+        watch_name = "DCGM_HEALTH_WATCH_THERMAL_MARGIN"
+        check_name = "GpuThermalMarginWatch"
+        gpu0_key = processor._build_cache_key(check_name, "GPU", "0")
+
+        try:
+            with unittest.mock.patch.object(processor, "send_health_event_with_retries", return_value=True) as send:
+                processor.health_event_occurred(
+                    {
+                        watch_name: dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.FAIL,
+                            entity_failures={
+                                0: [
+                                    dcgmtypes.ErrorDetails(code="DCGM_FR_THERMAL_VIOLATION", message="GPU 0 is too hot")
+                                ]
+                            },
+                            evaluated_gpu_ids={0},
+                        )
+                    },
+                    [0, 1],
+                )
+                assert processor.entity_cache[gpu0_key].active_errors == {"DCGM_FR_THERMAL_VIOLATION"}
+
+                send.reset_mock()
+                processor.health_event_occurred(
+                    {
+                        watch_name: dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.PASS, entity_failures={}, evaluated_gpu_ids={1}
+                        )
+                    },
+                    [0, 1],
+                )
+                assert not processor.entity_cache[gpu0_key].is_healthy
+                assert all(
+                    event.checkName != check_name or event.entitiesImpacted[0].entityValue != "0"
+                    for event in send.call_args.args[0]
+                )
+
+                send.reset_mock()
+                processor.health_event_occurred(
+                    {
+                        watch_name: dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.PASS, entity_failures={}, evaluated_gpu_ids={0, 1}
+                        )
+                    },
+                    [0, 1],
+                )
+                assert processor.entity_cache[gpu0_key].is_healthy
+                assert any(
+                    event.checkName == check_name and event.isHealthy and event.entitiesImpacted[0].entityValue == "0"
+                    for event in send.call_args.args[0]
+                )
+        finally:
+            os.unlink(temp_file_path)
+
     def test_health_event_preserves_nvswitch_identity_and_recovery(self) -> None:
         temp_file_path = metadata_file()
         processor = platform_connector.PlatformConnectorEventProcessor(
-            socket_path,
-            node_name,
-            Event(),
-            {
-                "GPU_ERROR": "CONTACT_SUPPORT",
-                "SWITCH_ERROR": "CONTACT_SUPPORT",
-                "SWITCH_ERROR_2": "NONE",
-            },
-            "statefile",
-            temp_file_path,
-            platformconnector_pb2.EXECUTE_REMEDIATION,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={
+                    "GPU_ERROR": "CONTACT_SUPPORT",
+                    "SWITCH_ERROR": "CONTACT_SUPPORT",
+                    "SWITCH_ERROR_2": "NONE",
+                },
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            ),
+            exit=Event(),
         )
         published_events = []
 
@@ -158,11 +231,57 @@ class TestPlatformConnectors(unittest.TestCase):
             processor.health_event_occurred(health_details, [0])
             assert published_events == []
 
+            # Keep the non-fatal switch code active. The fatal switch code must
+            # clear by a scoped healthy event, without clearing the remaining code.
+            health_details["DCGM_HEALTH_WATCH_PCIE"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.WARN,
+                entity_failures={
+                    0: [dcgmtypes.ErrorDetails(code="GPU_ERROR", message="GPU 0 failed")],
+                    (dcgm_fields.DCGM_FE_SWITCH, 0): [
+                        dcgmtypes.ErrorDetails(
+                            code="SWITCH_ERROR_2",
+                            message="NVSwitch 0 reported a second error",
+                        )
+                    ],
+                },
+            )
+            processor.health_event_occurred(health_details, [0], [0])
+            switch_partial_recovery = [event for event in published_events if event.componentClass == "NVSWITCH"]
+            assert len(switch_partial_recovery) == 1
+            assert switch_partial_recovery[0].isHealthy
+            assert list(switch_partial_recovery[0].errorCode) == ["SWITCH_ERROR"]
+            assert switch_partial_recovery[0].processingStrategy == platformconnector_pb2.STORE_ONLY
+            switch_key = processor._build_cache_key("GpuPcieWatch", "NVSWITCH", "0")
+            assert processor.entity_cache[switch_key].active_errors == {"SWITCH_ERROR_2"}
+
+            # The recovered fatal switch code must publish again when it recurs.
+            published_events.clear()
+            health_details["DCGM_HEALTH_WATCH_PCIE"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.FAIL,
+                entity_failures={
+                    0: [dcgmtypes.ErrorDetails(code="GPU_ERROR", message="GPU 0 failed")],
+                    (dcgm_fields.DCGM_FE_SWITCH, 0): [
+                        dcgmtypes.ErrorDetails(code="SWITCH_ERROR", message="NVSwitch 0 failed"),
+                        dcgmtypes.ErrorDetails(
+                            code="SWITCH_ERROR_2",
+                            message="NVSwitch 0 reported a second error",
+                        ),
+                    ],
+                },
+            )
+            processor.health_event_occurred(health_details, [0], [0])
+            switch_recurrence = [event for event in published_events if event.componentClass == "NVSWITCH"]
+            assert len(switch_recurrence) == 1
+            assert not switch_recurrence[0].isHealthy
+            assert list(switch_recurrence[0].errorCode) == ["SWITCH_ERROR"]
+            assert processor.entity_cache[switch_key].active_errors == {"SWITCH_ERROR", "SWITCH_ERROR_2"}
+
+            published_events.clear()
             health_details["DCGM_HEALTH_WATCH_PCIE"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.PASS,
                 entity_failures={},
             )
-            processor.health_event_occurred(health_details, [0])
+            processor.health_event_occurred(health_details, [0], [0])
 
             assert len(published_events) == 2
             assert all(event.isHealthy for event in published_events)
@@ -193,13 +312,15 @@ class TestPlatformConnectors(unittest.TestCase):
             published_events: list[platformconnector_pb2.HealthEvent],
         ) -> platform_connector.PlatformConnectorEventProcessor:
             processor = platform_connector.PlatformConnectorEventProcessor(
-                socket_path,
-                node_name,
-                Event(),
-                {"SWITCH_ERROR": "CONTACT_SUPPORT"},
-                state_file_path,
-                temp_file_path,
-                platformconnector_pb2.EXECUTE_REMEDIATION,
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=socket_path,
+                    node_name=node_name,
+                    dcgm_errors_info_dict={"SWITCH_ERROR": "CONTACT_SUPPORT"},
+                    state_file_path=state_file_path,
+                    metadata_path=temp_file_path,
+                    processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+                ),
+                exit=Event(),
             )
 
             def capture_events(
@@ -276,10 +397,12 @@ class TestPlatformConnectors(unittest.TestCase):
         server.add_insecure_port(f"unix://{socket_path}")
         server.start()
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            config=dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         gpu_serials = {
             0: "1650924060039",
@@ -307,13 +430,15 @@ class TestPlatformConnectors(unittest.TestCase):
         temp_file_path = metadata_file()
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
-            socket_path,
-            node_name,
-            exit,
-            dcgm_errors_info_dict,
-            "statefile",
-            temp_file_path,
-            platformconnector_pb2.STORE_ONLY,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            ),
+            exit=exit,
         )
         dcgm_health_events = watcher._get_health_status_dict()
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
@@ -391,10 +516,12 @@ class TestPlatformConnectors(unittest.TestCase):
         server.start()
 
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            config=dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
 
         gpu_serials = {
@@ -415,13 +542,15 @@ class TestPlatformConnectors(unittest.TestCase):
         temp_file_path = metadata_file()
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
-            socket_path,
-            node_name,
-            exit,
-            dcgm_errors_info_dict,
-            "statefile",
-            temp_file_path,
-            platformconnector_pb2.STORE_ONLY,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            ),
+            exit=exit,
         )
 
         # Simulate multiple NvLink failures for GPU 0 (4 links down: 8, 9, 14, 15)
@@ -495,6 +624,8 @@ class TestPlatformConnectors(unittest.TestCase):
         Phase 4: GPU 1 recovers -> healthy event only for GPU 1
         Phase 5: All healthy, steady state -> no events sent
         """
+        metadata_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(metadata_dir.cleanup)
         healthEventProcessor = PlatformConnectorServicer()
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
         platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
@@ -502,10 +633,12 @@ class TestPlatformConnectors(unittest.TestCase):
         server.start()
 
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            config=dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
 
         gpu_serials = {
@@ -524,13 +657,15 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_errors_info_dict["DCGM_FR_NVLINK_DOWN"] = "COMPONENT_RESET"
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
-            socket_path,
-            node_name,
-            exit,
-            dcgm_errors_info_dict,
-            "statefile",
-            "/tmp/test_metadata.json",
-            platformconnector_pb2.STORE_ONLY,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path="statefile",
+                metadata_path=os.path.join(metadata_dir.name, "metadata.json"),
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            ),
+            exit=exit,
         )
 
         # Simulate multiple NvLink failures for GPU 0 and GPU 1
@@ -706,10 +841,12 @@ class TestPlatformConnectors(unittest.TestCase):
         server.start()
 
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            config=dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
 
         gpu_serials = {
@@ -730,13 +867,15 @@ class TestPlatformConnectors(unittest.TestCase):
         temp_file_path = metadata_file()
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
-            socket_path,
-            node_name,
-            exit,
-            dcgm_errors_info_dict,
-            "statefile",
-            temp_file_path,
-            platformconnector_pb2.STORE_ONLY,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            ),
+            exit=exit,
         )
 
         # Simulate multiple NvLink failures for GPU 0 and GPU 1
@@ -837,6 +976,8 @@ class TestPlatformConnectors(unittest.TestCase):
         import tempfile
         import os
 
+        metadata_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(metadata_dir.cleanup)
         # Create a temporary state file with test boot ID
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
             f.write("test_boot_id")
@@ -854,13 +995,15 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_errors_info_dict = {}
 
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
-                socket_path=socket_path,
-                node_name=node_name,
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=socket_path,
+                    node_name=node_name,
+                    dcgm_errors_info_dict=dcgm_errors_info_dict,
+                    state_file_path=state_file_path,
+                    metadata_path=os.path.join(metadata_dir.name, "metadata.json"),
+                    processing_strategy=platformconnector_pb2.STORE_ONLY,
+                ),
                 exit=exit,
-                dcgm_errors_info_dict=dcgm_errors_info_dict,
-                state_file_path=state_file_path,
-                metadata_path="/tmp/test_metadata.json",
-                processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
 
             # Trigger connectivity failure
@@ -890,6 +1033,8 @@ class TestPlatformConnectors(unittest.TestCase):
 
     def test_dcgm_connectivity_restored(self):
         """Test that connectivity restored event is sent when DCGM connectivity is restored."""
+        metadata_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(metadata_dir.cleanup)
         healthEventProcessor = PlatformConnectorServicer()
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
         platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
@@ -900,13 +1045,15 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_errors_info_dict = {}
 
         platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
-            socket_path=socket_path,
-            node_name=node_name,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path="statefile",
+                metadata_path=os.path.join(metadata_dir.name, "metadata.json"),
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            ),
             exit=exit,
-            dcgm_errors_info_dict=dcgm_errors_info_dict,
-            state_file_path="statefile",
-            metadata_path="/tmp/test_metadata.json",
-            processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
         )
 
         timestamp = Timestamp()
@@ -951,10 +1098,12 @@ class TestPlatformConnectors(unittest.TestCase):
         server.start()
 
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            config=dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
 
         exit = Event()
@@ -966,13 +1115,15 @@ class TestPlatformConnectors(unittest.TestCase):
         temp_file_path = metadata_file()
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
-            socket_path,
-            node_name,
-            exit,
-            dcgm_errors_info_dict,
-            "statefile",
-            temp_file_path,
-            platformconnector_pb2.STORE_ONLY,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            ),
+            exit=exit,
         )
 
         try:
@@ -1117,10 +1268,12 @@ class TestPlatformConnectors(unittest.TestCase):
         server.start()
 
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            config=dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
 
         exit = Event()
@@ -1131,13 +1284,15 @@ class TestPlatformConnectors(unittest.TestCase):
         temp_file_path = metadata_file()
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
-            socket_path,
-            node_name,
-            exit,
-            dcgm_errors_info_dict,
-            "statefile",
-            temp_file_path,
-            platformconnector_pb2.STORE_ONLY,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            ),
+            exit=exit,
         )
 
         try:
@@ -1204,16 +1359,15 @@ class TestPlatformConnectors(unittest.TestCase):
                 os.unlink(temp_file_path)
 
     def test_multiple_error_codes_accumulate_and_single_pass_clears_all(self):
-        """Test that different error codes on the same (watch, GPU) accumulate independently
-        in active_errors, and a single PASS wipes them all.
+        """Test a per-code recovery when a different error replaces an active error.
 
         Scenario (GpuPowerWatch, GPU 3):
           Phase 1: DCGM_FR_CLOCK_THROTTLE_POWER (action=NONE -> non-fatal) -> published
-          Phase 2: DCGM_FR_POWER_UNREADABLE (action=RESTART_VM -> fatal) -> published (new error code)
-                   Cache now has both error codes in active_errors
-          Phase 3: DCGM_FR_POWER_UNREADABLE again -> NOT re-published (already cached)
-          Phase 4: PASS -> single healthy event clears both errors
-          Phase 5: PASS again -> no event (already healthy)
+          Phase 2: DCGM_FR_POWER_UNREADABLE (action=RESTART_VM -> fatal) -> published,
+                   followed by a scoped healthy event for the disappeared throttle code
+          Phase 3: DCGM_FR_POWER_UNREADABLE again -> not re-published
+          Phase 4: PASS -> one full healthy event clears the remaining error
+          Phase 5: PASS again -> no event
         """
         healthEventProcessor = PlatformConnectorServicer()
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
@@ -1222,10 +1376,12 @@ class TestPlatformConnectors(unittest.TestCase):
         server.start()
 
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            config=dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
 
         exit = Event()
@@ -1237,13 +1393,15 @@ class TestPlatformConnectors(unittest.TestCase):
         temp_file_path = metadata_file()
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
-            socket_path,
-            node_name,
-            exit,
-            dcgm_errors_info_dict,
-            "statefile",
-            temp_file_path,
-            platformconnector_pb2.STORE_ONLY,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            ),
+            exit=exit,
         )
 
         cache_key = platform_connector_test._build_cache_key("GpuPowerWatch", "GPU", "3")
@@ -1316,10 +1474,15 @@ class TestPlatformConnectors(unittest.TestCase):
             assert power_event.isFatal, "DCGM_FR_POWER_UNREADABLE (action=RESTART_VM) should be fatal"
             assert power_event.errorCode[0] == "DCGM_FR_POWER_UNREADABLE"
 
-            assert platform_connector_test.entity_cache[cache_key].active_errors == {
-                "DCGM_FR_CLOCK_THROTTLE_POWER",
-                "DCGM_FR_POWER_UNREADABLE",
-            }, "Both error codes should be accumulated in active_errors"
+            throttle_recovery = next(
+                event
+                for event in health_events
+                if event.checkName == "GpuPowerWatch"
+                and event.isHealthy
+                and event.entitiesImpacted[0].entityValue == "3"
+            )
+            assert list(throttle_recovery.errorCode) == ["DCGM_FR_CLOCK_THROTTLE_POWER"]
+            assert platform_connector_test.entity_cache[cache_key].active_errors == {"DCGM_FR_POWER_UNREADABLE"}
 
             # --- Phase 3: Same fatal error again -> should NOT re-publish ---
             healthEventProcessor.health_events = None
@@ -1337,7 +1500,7 @@ class TestPlatformConnectors(unittest.TestCase):
                         break
                 assert power_duplicate is None, "Same error code should not be re-published"
 
-            # --- Phase 4: PASS -> single healthy event clears both errors ---
+            # --- Phase 4: PASS -> full healthy event clears the remaining error ---
             dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.PASS,
                 entity_failures={},
@@ -1357,7 +1520,7 @@ class TestPlatformConnectors(unittest.TestCase):
                     power_recovery = event
                     break
 
-            assert power_recovery is not None, "Healthy event must be sent to clear both errors"
+            assert power_recovery is not None, "Healthy event must be sent to clear the remaining error"
             assert platform_connector_test.entity_cache[cache_key].is_healthy
             assert platform_connector_test.entity_cache[cache_key].active_errors == set()
 
@@ -1386,6 +1549,8 @@ class TestPlatformConnectors(unittest.TestCase):
         import tempfile
         import os
 
+        metadata_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(metadata_dir.cleanup)
         original_max_retries = platform_connector.MAX_RETRIES
         original_initial_delay = platform_connector.INITIAL_DELAY
         platform_connector.MAX_RETRIES = 3
@@ -1397,10 +1562,12 @@ class TestPlatformConnectors(unittest.TestCase):
 
         try:
             watcher = dcgm.DCGMWatcher(
-                addr="localhost:5555",
-                poll_interval_seconds=10,
+                config=dcgm.types.DCGMWatcherConfig(
+                    addr="localhost:5555",
+                    poll_interval_seconds=10,
+                    dcgm_k8s_service_enabled=False,
+                ),
                 callbacks=[],
-                dcgm_k8s_service_enabled=False,
             )
             gpu_serials = {0: "1650924060039"}
             exit = Event()
@@ -1408,13 +1575,15 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_errors_info_dict = {"DCGM_FR_CORRUPT_INFOROM": "COMPONENT_RESET"}
 
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
-                socket_path=socket_path,
-                node_name=node_name,
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=socket_path,
+                    node_name=node_name,
+                    dcgm_errors_info_dict=dcgm_errors_info_dict,
+                    state_file_path=state_file_path,
+                    metadata_path=os.path.join(metadata_dir.name, "metadata.json"),
+                    processing_strategy=platformconnector_pb2.STORE_ONLY,
+                ),
                 exit=exit,
-                dcgm_errors_info_dict=dcgm_errors_info_dict,
-                state_file_path=state_file_path,
-                metadata_path="/tmp/test_metadata.json",
-                processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
 
             # Verify cache is empty initially
@@ -1560,13 +1729,15 @@ class TestPlatformConnectors(unittest.TestCase):
         try:
             stop_event = Event()
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
-                socket_path=nonexistent_socket,
-                node_name=node_name,
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=nonexistent_socket,
+                    node_name=node_name,
+                    dcgm_errors_info_dict={},
+                    state_file_path=state_file_path,
+                    metadata_path=metadata_path,
+                    processing_strategy=platformconnector_pb2.STORE_ONLY,
+                ),
                 exit=stop_event,
-                dcgm_errors_info_dict={},
-                state_file_path=state_file_path,
-                metadata_path=metadata_path,
-                processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
 
             before_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
@@ -1617,22 +1788,26 @@ class TestPlatformConnectors(unittest.TestCase):
 
         try:
             watcher = dcgm.DCGMWatcher(
-                addr="localhost:5555",
-                poll_interval_seconds=10,
+                config=dcgm.types.DCGMWatcherConfig(
+                    addr="localhost:5555",
+                    poll_interval_seconds=10,
+                    dcgm_k8s_service_enabled=False,
+                ),
                 callbacks=[],
-                dcgm_k8s_service_enabled=False,
             )
             stop_event = Event()
             dcgm_errors_info_dict = {"DCGM_FR_CORRUPT_INFOROM": "COMPONENT_RESET"}
 
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
-                socket_path=nonexistent_socket,
-                node_name=node_name,
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=nonexistent_socket,
+                    node_name=node_name,
+                    dcgm_errors_info_dict=dcgm_errors_info_dict,
+                    state_file_path=state_file_path,
+                    metadata_path=metadata_path,
+                    processing_strategy=platformconnector_pb2.STORE_ONLY,
+                ),
                 exit=stop_event,
-                dcgm_errors_info_dict=dcgm_errors_info_dict,
-                state_file_path=state_file_path,
-                metadata_path=metadata_path,
-                processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
 
             # Pre-seed connectivity cache as healthy so the clear path
@@ -1693,13 +1868,15 @@ class TestPlatformConnectors(unittest.TestCase):
         try:
             stop_event = Event()
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
-                socket_path=socket_path,
-                node_name=node_name,
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=socket_path,
+                    node_name=node_name,
+                    dcgm_errors_info_dict={},
+                    state_file_path=state_file_path,
+                    metadata_path=metadata_path,
+                    processing_strategy=platformconnector_pb2.STORE_ONLY,
+                ),
                 exit=stop_event,
-                dcgm_errors_info_dict={},
-                state_file_path=state_file_path,
-                metadata_path=metadata_path,
-                processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
 
             before_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
@@ -1737,13 +1914,15 @@ class TestPlatformConnectors(unittest.TestCase):
 
         try:
             processor = platform_connector.PlatformConnectorEventProcessor(
-                socket_path=stale_socket,
-                node_name=node_name,
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=stale_socket,
+                    node_name=node_name,
+                    dcgm_errors_info_dict={},
+                    state_file_path=state_file_path,
+                    metadata_path=metadata_path,
+                    processing_strategy=platformconnector_pb2.STORE_ONLY,
+                ),
                 exit=Event(),
-                dcgm_errors_info_dict={},
-                state_file_path=state_file_path,
-                metadata_path=metadata_path,
-                processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
             started = time.monotonic()
             assert processor.dcgm_connectivity_failed() is False
@@ -1760,14 +1939,16 @@ class TestPlatformConnectors(unittest.TestCase):
         self, state_file_path: str, metadata_path: str, **kwargs: Any
     ) -> platform_connector.PlatformConnectorEventProcessor:
         return platform_connector.PlatformConnectorEventProcessor(
-            socket_path=socket_path,
-            node_name=node_name,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={},
+                state_file_path=state_file_path,
+                metadata_path=metadata_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+                **kwargs,
+            ),
             exit=Event(),
-            dcgm_errors_info_dict={},
-            state_file_path=state_file_path,
-            metadata_path=metadata_path,
-            processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
-            **kwargs,
         )
 
     @contextlib.contextmanager
@@ -1835,13 +2016,15 @@ class TestPlatformConnectors(unittest.TestCase):
         metadata_path = metadata_file()
         try:
             processor = platform_connector.PlatformConnectorEventProcessor(
-                socket_path=nonexistent_socket,
-                node_name=node_name,
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=nonexistent_socket,
+                    node_name=node_name,
+                    dcgm_errors_info_dict={},
+                    state_file_path=state_file_path,
+                    metadata_path=metadata_path,
+                    processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+                ),
                 exit=Event(),
-                dcgm_errors_info_dict={},
-                state_file_path=state_file_path,
-                metadata_path=metadata_path,
-                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
             )
             assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is False
             assert not any("GpuDcgmUnresponsive" in k for k in processor.entity_cache)
@@ -1869,13 +2052,15 @@ class TestPlatformConnectors(unittest.TestCase):
 
         try:
             processor = platform_connector.PlatformConnectorEventProcessor(
-                socket_path=stale_socket,
-                node_name=node_name,
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=stale_socket,
+                    node_name=node_name,
+                    dcgm_errors_info_dict={},
+                    state_file_path=state_file_path,
+                    metadata_path=metadata_path,
+                    processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+                ),
                 exit=Event(),
-                dcgm_errors_info_dict={},
-                state_file_path=state_file_path,
-                metadata_path=metadata_path,
-                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
             )
             started = time.monotonic()
             assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is False
@@ -2275,14 +2460,16 @@ class TestPlatformConnectorTokenAuth(unittest.TestCase):
 
     def _make_processor(self, token_path: str | None = None) -> platform_connector.PlatformConnectorEventProcessor:
         return platform_connector.PlatformConnectorEventProcessor(
-            socket_path=self._socket_path,
-            node_name=node_name,
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=self._socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={},
+                state_file_path=self._state_file_path,
+                metadata_path=self._metadata_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+                token_path=token_path,
+            ),
             exit=Event(),
-            dcgm_errors_info_dict={},
-            state_file_path=self._state_file_path,
-            metadata_path=self._metadata_path,
-            processing_strategy=platformconnector_pb2.STORE_ONLY,
-            token_path=token_path,
         )
 
     @staticmethod

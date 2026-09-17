@@ -36,6 +36,12 @@ GPU Health Monitor starts an in-process DCGM hostengine and exposes it to pod-lo
 - The chart automatically sets `privileged: true` on the GPU Health Monitor container
 - The endpoint must be `localhost`, `127.0.0.1`, or `::1`
 
+## DCGM Version Selection
+
+Use a GPU Health Monitor image from the same DCGM major version as its hostengine. The node `nvsentinel.dgxc.nvidia.com/dcgm.version` label selects the 3.x or 4.x monitor image.
+
+In `operator-service` mode, labeler derives this label from the DCGM pod image. In `external-hostengine` and `embedded-mode`, the cluster operator supplies the label.
+
 ## Configuration Reference
 
 ### Module Enable/Disable
@@ -146,6 +152,7 @@ Drops DCGM health check incidents matching specific error codes before they gene
 ```yaml
 gpu-health-monitor:
   dcgmHealthCheck:
+    imexMonitoringEnabled: false
     suppressedErrorCodes:
       - DCGM_FR_CLOCK_THROTTLE_POWER
       - DCGM_FR_CLOCKS_EVENT_POWER
@@ -153,10 +160,18 @@ gpu-health-monitor:
       - DCGM_FR_CLOCKS_EVENT_THERMAL
 ```
 
+### imexMonitoringEnabled
+
+Enables DCGM IMEX health monitoring. It defaults to `false`. In DRA deployments, IMEX can be created only while a workload requests IMEX channels, so an idle node can legitimately have no IMEX daemon. Reporting that state as a DCGM health failure is not actionable.
+
+With DCGM 4.7 or newer hostengine, `false` removes IMEX from the requested health-watch mask while retaining NVLink monitoring. With an older hostengine, the monitor filters the legacy `DCGM_FR_IMEX_UNHEALTHY` incident before it is combined with GPU incidents. The hostengine version controls which behavior is available.
+
+Set this to `true` only where the IMEX daemon is expected to be continuously available. This restores the previous monitoring behavior. IMEX incidents are global DCGM entities, but GPU-health-monitor's existing routing can attribute them to GPU 0. Dedicated node-level IMEX event handling is deferred to a separate change.
+
 ### suppressedErrorCodes
 List of DCGM error code names (as reported by DCGM, e.g. `DCGM_FR_CLOCK_THROTTLE_POWER`) to suppress. Suppression is scoped to the listed error codes only — other incidents on the same health watch (e.g. other `GpuPowerWatch` error codes) are still reported.
 
-The default is throttling: of the errors these two watches raise, it is the only one that tracks load rather than a fault, and it maps to `NONE`, so it only ever produced node events.
+The defaults include throttling: of the errors these two watches raise, it is the only one that tracks load rather than a fault, and it maps to `NONE`, so it only ever produced node events.
 
 | Watch | Suppressed | Still reported |
 | --- | --- | --- |
@@ -165,11 +180,13 @@ The default is throttling: of the errors these two watches raise, it is the only
 
 Four names, two codes: `DCGM_FR_CLOCK_THROTTLE_*` is a deprecated alias of `DCGM_FR_CLOCKS_EVENT_*` with the same number, and either name can be reported, so both are listed.
 
+`DCGM_FR_NVLINK_ERROR_CRITICAL` (71) temporarily maps to `NONE` as clarity is not there around supported recovery and counter-clearing procedure. Both WARN and FAIL incidents produce non-fatal unhealthy events. The default quarantine policy does not cordon nodes for these events. This applies to every incident with code 71, including other NVLink errors that share this code. Other error codes retain their configured actions.
+
 Genuine power and cooling faults are unaffected, arriving as `GPU_HW_POWER_BRAKE_VIOLATION` via [`GpuPowerBrakeWatch`](#hardware-power-brake-detection) and `GPU_TEMP_HW_SLOWDOWN_VIOLATION` via `GpuThermalMarginWatch`, both `CONTACT_SUPPORT`. `DCGM_FR_THROTTLING_VIOLATION` is not suppressed either: it comes only from `dcgmi diag`, not these watches.
 
-### Example: Report throttling again
+### Example: Disable suppression
 
-Use this to investigate throttling on a specific cluster; it restores the `GpuPowerWatch` and `GpuThermalWatch` events.
+Use this to report all error codes again, including throttling.
 
 ```yaml
 gpu-health-monitor:

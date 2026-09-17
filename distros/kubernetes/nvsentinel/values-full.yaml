@@ -1113,11 +1113,15 @@ gpu-health-monitor:
   # event, so they are never persisted or acted on. Useful for high-frequency,
   # non-actionable flaps (e.g. normal power-cap boost-clock behavior).
   dcgmHealthCheck:
+    # Enable DCGM IMEX health monitoring. Off by default because DRA can remove
+    # IMEX when idle; older hostengines filter its legacy incident instead.
+    imexMonitoringEnabled: false
+
     # List of error code names to suppress (native DCGM codes like
     # DCGM_FR_CLOCK_THROTTLE_POWER, or custom field-monitor codes like
-    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Defaults to POWER/THERMAL watch
+    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Defaults include POWER/THERMAL watch
     # throttling, under both its canonical and deprecated alias names.
-    # Set to [] to report throttling too.
+    # Set to [] to report all codes.
     suppressedErrorCodes:
       - DCGM_FR_CLOCK_THROTTLE_POWER
       - DCGM_FR_CLOCKS_EVENT_POWER
