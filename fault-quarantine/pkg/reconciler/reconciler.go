@@ -2263,6 +2263,18 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	annotationsToRemove := appendIfPresent(annotations, nil, manualUnquarantineAnnotationKeys...)
 	labelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
 
+	// The automatic uncordon path removes the cordon-by/cordon-reason/cordon-timestamp labels, but the
+	// manual path historically left them behind, so a node returned to service kept cordon-by=NVSentinel
+	// and any consumer attributing a cordon would mis-attribute the node's next cordon. Remove them here
+	// too, but only when NVSentinel set the cordon-by label: some users reuse the same key for their own
+	// purposes and a blind removal would drop their label.
+	cordonLabelsToRemove, err := r.nvsentinelCordonLabelsToRemove(ctx, nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to inspect cordon labels for manually uncordoned node %s: %w", nodeName, err)
+	}
+
+	labelsToRemove = append(labelsToRemove, cordonLabelsToRemove...)
+
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
 		return fmt.Errorf("failed to read applied labels for manually uncordoned node %s: %w", nodeName, err)
@@ -2324,6 +2336,22 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	slog.InfoContext(ctx, "Successfully completed manual uncordon handling", "node", nodeName)
 
 	return nil
+}
+
+// nvsentinelCordonLabelsToRemove returns the cordon-by/cordon-reason/cordon-timestamp label keys when the
+// node's cordon-by label was set by NVSentinel. It returns nil when the label is absent or was set by
+// someone else, so a manual uncordon never strips a cordon-by label a user manages for another purpose.
+func (r *Reconciler) nvsentinelCordonLabelsToRemove(ctx context.Context, nodeName string) ([]string, error) {
+	node, err := r.getNode(ctx, nodeName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node: %w", err)
+	}
+
+	if node.Labels[r.cordonedByLabelKey] != cordonlabels.ServiceName {
+		return nil, nil
+	}
+
+	return []string{r.cordonedByLabelKey, r.cordonedReasonLabelKey, r.cordonedTimestampLabelKey}, nil
 }
 
 func appendIfPresent(annotations map[string]string, toRemove []string, keys ...string) []string {
