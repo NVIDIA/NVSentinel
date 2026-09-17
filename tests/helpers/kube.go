@@ -998,9 +998,9 @@ func CountSchedulableNodes(nodeList v1.NodeList) int {
 	return count
 }
 
-// GetRealNodeNames returns up to count distinct real (non-KWOK) worker node names.
-// Prefers schedulable workers, falls back to unschedulable workers if needed.
-func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string, error) {
+// AllRealNodeNames returns every real (non-KWOK) worker node name, schedulable
+// ones first.
+func AllRealNodeNames(ctx context.Context, c klient.Client) ([]string, error) {
 	var nodeList v1.NodeList
 
 	err := c.Resources().List(ctx, &nodeList,
@@ -1021,6 +1021,17 @@ func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string
 		if node.Spec.Unschedulable {
 			names = append(names, node.Name)
 		}
+	}
+
+	return names, nil
+}
+
+// GetRealNodeNames returns up to count distinct real (non-KWOK) worker node names.
+// Prefers schedulable workers, falls back to unschedulable workers if needed.
+func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string, error) {
+	names, err := AllRealNodeNames(ctx, c)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(names) < count {

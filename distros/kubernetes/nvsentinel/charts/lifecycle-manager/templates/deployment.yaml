@@ -58,6 +58,16 @@ spec:
             - "--enable-maintenance-controller={{ .Values.controllers.maintenanceRequest.enabled }}"
             {{- if .Values.controllers.maintenanceRequest.enabled }}
             - "--platform-connector-socket=unix://{{ ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}"
+            {{- if include "lifecycle-manager.pcAuth.enabled" . }}
+            {{- /* A MaintenanceRequest names any node in the cluster, so this
+                 Deployment reports on nodes other than its own and must present
+                 an allowlisted token to platform-connector. The matching
+                 allowlist entry is derived by the umbrella chart's
+                 nvsentinel.pcAuth.crossNodeUsernames from this same feature
+                 gate; without the token the events are pinned to whichever node
+                 this pod happens to run on and rejected as node_mismatch. */}}
+            - "--platform-connector-token-path={{ include "lifecycle-manager.pcAuth.tokenPath" . }}"
+            {{- end }}
             {{- end }}
             - "--webhook-cert-path={{ .Values.webhook.certDir }}"
             - "--webhook-cert-name=tls.crt"
@@ -126,6 +136,9 @@ spec:
             - name: platform-connector-socket
               mountPath: /var/run
               readOnly: true
+            {{- if include "lifecycle-manager.pcAuth.enabled" . }}
+            {{- include "lifecycle-manager.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
             {{- end }}
             {{- if .Values.metrics.tls.enabled }}
             - name: metrics-certs
@@ -147,6 +160,9 @@ spec:
           hostPath:
             path: /var/run/nvsentinel
             type: DirectoryOrCreate
+        {{- if include "lifecycle-manager.pcAuth.enabled" . }}
+        {{- include "lifecycle-manager.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
         {{- end }}
         - name: webhook-certs
           secret:
