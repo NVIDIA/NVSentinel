@@ -4381,6 +4381,14 @@ event-exporter:
       backoffMultiplier: 2.0
 
 lifecycle-manager:
+  # Off by default in the chart. TestMaintenanceRequestLifecycle needs the
+  # controller, its webhook, and the projected platform-connector token, and
+  # enabling it here is also what adds this ServiceAccount to the cross-node
+  # allowlist the connector enforces.
+  controllers:
+    maintenanceRequest:
+      enabled: true
+
   config:
     readinessCriteria:
       - name: not-under-quarantine

@@ -1,0 +1,88 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The allowlist is what turns lifecycle-manager's token into cross-node reach.
+# Chart and connector have to agree on the username verbatim: an entry that is
+# off by a namespace or a release prefix renders cleanly and is then never
+# equal to what TokenReview reports, so every MaintenanceRequest naming another
+# node is rejected at runtime with nothing in the manifests to show why.
+#
+# The grant and the credential are driven by the SAME switch,
+# lifecycle-manager.controllers.maintenanceRequest.enabled, asserted here and
+# in that chart's own deployment_test.yaml. They cannot be asserted together:
+# the umbrella suite runs with --with-subchart=false, so a subchart template is
+# not selectable from here. Keep the two suites keyed on that one value — a
+# second switch for the grant is what would let a token render with no matching
+# allowlist entry, which fails only at runtime.
+suite: platform-connector cross-node allowlist
+templates:
+  - templates/configmap.yaml
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+tests:
+  - it: allowlists the lifecycle-manager ServiceAccount when the MR controller is enabled
+    set:
+      global.lifecycleManager.enabled: true
+      lifecycle-manager.controllers.maintenanceRequest.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: '"AuthCrossNodeServiceAccounts": \[[^]]*"system:serviceaccount:nvsentinel:lifecycle-manager"'
+
+  # The namespace is the one thing a hand-written entry gets wrong most often:
+  # it renders cleanly and is then rejected at runtime on every install that is
+  # not in nvsentinel.
+  - it: follows the release namespace into the derived username
+    release:
+      name: prod
+      namespace: nvs-prod
+    set:
+      global.lifecycleManager.enabled: true
+      lifecycle-manager.controllers.maintenanceRequest.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: '"system:serviceaccount:nvs-prod:lifecycle-manager"'
+
+  - it: follows an overridden ServiceAccount name
+    set:
+      global.lifecycleManager.enabled: true
+      lifecycle-manager.controllers.maintenanceRequest.enabled: true
+      lifecycle-manager.serviceAccount.name: lcm-custom
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: '"system:serviceaccount:nvsentinel:lcm-custom"'
+
+  # Without the MR controller nothing in lifecycle-manager opens the socket, so
+  # granting it the right to cordon, drain and reboot any node would be reach
+  # it never uses.
+  - it: must not allowlist lifecycle-manager when the MR controller is disabled
+    set:
+      global.lifecycleManager.enabled: true
+      lifecycle-manager.controllers.maintenanceRequest.enabled: false
+    asserts:
+      - notMatchRegex:
+          path: data["config.json"]
+          pattern: 'lifecycle-manager'
+
+  - it: must not allowlist lifecycle-manager when the component is disabled
+    set:
+      global.lifecycleManager.enabled: false
+      lifecycle-manager.controllers.maintenanceRequest.enabled: true
+    asserts:
+      - notMatchRegex:
+          path: data["config.json"]
+          pattern: 'lifecycle-manager'
