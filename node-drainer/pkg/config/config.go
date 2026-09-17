@@ -44,7 +44,11 @@ type UserNamespace struct {
 }
 
 type CustomDrainConfig struct {
-	Enabled               bool     `toml:"enabled"`
+	Enabled bool `toml:"enabled"`
+	// NodeSelector restricts custom drain to the nodes it matches, using standard
+	// label selector syntax. Nodes that do not match keep the built-in eviction path.
+	// An empty selector sends every node through custom drain.
+	NodeSelector          string   `toml:"nodeSelector"`
 	TemplateMountPath     string   `toml:"templateMountPath"`
 	TemplateFileName      string   `toml:"templateFileName"`
 	Namespace             string   `toml:"namespace"`
@@ -116,12 +120,24 @@ func validateCustomDrainConfig(config *TomlConfig) error {
 		return nil
 	}
 
-	if len(config.UserNamespaces) > 0 {
-		return fmt.Errorf("cannot use both customDrain.enabled=true and userNamespaces configuration")
+	matcher, err := CompileCustomDrainNodeSelector(config.CustomDrain)
+	if err != nil {
+		return err
 	}
 
-	if len(config.PodDrainPolicies) > 0 {
-		return fmt.Errorf("cannot use both customDrain.enabled=true and podDrainPolicies configuration")
+	// Without a node selector custom drain owns every node, so the built-in eviction
+	// rules would never run and configuring them is a mistake. With a selector the
+	// unmatched nodes need those rules, so both halves must be configured together.
+	if !matcher.IsScoped() {
+		if len(config.UserNamespaces) > 0 {
+			return fmt.Errorf("cannot use both customDrain.enabled=true and userNamespaces configuration " +
+				"unless customDrain.nodeSelector is set")
+		}
+
+		if len(config.PodDrainPolicies) > 0 {
+			return fmt.Errorf("cannot use both customDrain.enabled=true and podDrainPolicies configuration " +
+				"unless customDrain.nodeSelector is set")
+		}
 	}
 
 	requiredFields := map[string]string{

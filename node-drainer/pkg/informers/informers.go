@@ -66,10 +66,11 @@ type Informers struct {
 type PodFilter func(*v1.Pod) bool
 
 // NewInformers creates the pod and node informers used to observe drainable workloads.
-// The pod cache retains only the labels named by podLabelKeys.
+// The pod cache retains only the labels named by podLabelKeys, and the node cache only
+// those named by nodeLabelKeys.
 func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
-	podLabelKeys ...string) (*Informers, error) {
+	nodeLabelKeys []string, podLabelKeys ...string) (*Informers, error) {
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,
@@ -96,7 +97,7 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}
 
 	nodeInformer := informerFactory.Core().V1().Nodes().Informer()
-	if err := nodeInformer.SetTransform(nodeTransform); err != nil {
+	if err := nodeInformer.SetTransform(nodeTransform(nodeLabelKeys...)); err != nil {
 		return nil, fmt.Errorf("failed to set node informer transform: %w", err)
 	}
 
@@ -238,28 +239,45 @@ func trimPodReadyConditions(conditions []v1.PodCondition) []v1.PodCondition {
 	return cached
 }
 
-func nodeTransform(obj any) (any, error) {
-	node, ok := obj.(*v1.Node)
-	if !ok {
-		return obj, nil
-	}
-
-	var annotations map[string]string
-	if quarantineHealthEvent, exists := node.Annotations[common.QuarantineHealthEventAnnotationKey]; exists {
-		annotations = map[string]string{
-			common.QuarantineHealthEventAnnotationKey: quarantineHealthEvent,
+// nodeTransform keeps only the quarantine annotation and the labels named by
+// nodeLabelKeys, so the node cache stays small on large clusters.
+func nodeTransform(nodeLabelKeys ...string) cache.TransformFunc {
+	return func(obj any) (any, error) {
+		node, ok := obj.(*v1.Node)
+		if !ok {
+			return obj, nil
 		}
-	}
 
-	return &v1.Node{
-		ObjectMeta: identityObjectMeta(
+		var annotations map[string]string
+		if quarantineHealthEvent, exists := node.Annotations[common.QuarantineHealthEventAnnotationKey]; exists {
+			annotations = map[string]string{
+				common.QuarantineHealthEventAnnotationKey: quarantineHealthEvent,
+			}
+		}
+
+		var nodeLabels map[string]string
+
+		for _, key := range nodeLabelKeys {
+			if value, exists := node.Labels[key]; exists {
+				if nodeLabels == nil {
+					nodeLabels = make(map[string]string)
+				}
+
+				nodeLabels[key] = value
+			}
+		}
+
+		objectMeta := identityObjectMeta(
 			node.Name,
 			"",
 			node.UID,
 			node.ResourceVersion,
 			annotations,
-		),
-	}, nil
+		)
+		objectMeta.Labels = nodeLabels
+
+		return &v1.Node{ObjectMeta: objectMeta}, nil
+	}
 }
 
 func identityObjectMeta(name, namespace string, uid types.UID, resourceVersion string,

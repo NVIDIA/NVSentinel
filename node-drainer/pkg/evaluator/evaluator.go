@@ -59,11 +59,17 @@ func NewNodeDrainEvaluator(
 		return nil, fmt.Errorf("compile pod drain policies: %w", err)
 	}
 
+	customDrainNodes, err := config.CompileCustomDrainNodeSelector(cfg.CustomDrain)
+	if err != nil {
+		return nil, fmt.Errorf("compile custom drain node selector: %w", err)
+	}
+
 	return &NodeDrainEvaluator{
 		config:            cfg,
 		informers:         informers,
 		customDrainClient: customDrainClient,
 		podPolicies:       policies,
+		customDrainNodes:  customDrainNodes,
 	}, nil
 }
 
@@ -149,7 +155,12 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 		return result, nil
 	}
 
-	if e.config.CustomDrain.Enabled && e.customDrainClient != nil {
+	useCustomDrain, retry := e.shouldUseCustomDrain(ctx, nodeName)
+	if retry != nil {
+		return retry, nil
+	}
+
+	if useCustomDrain {
 		r, err := e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
 		return r, err
 	}
@@ -157,6 +168,37 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	r, err := e.evaluateUserNamespaceActions(ctx, healthEvent, partialDrainEntity)
 
 	return r, err
+}
+
+// shouldUseCustomDrain reports whether the node is drained by the custom drain plugin
+// rather than the built-in eviction path. When customDrain.nodeSelector is set the answer
+// depends on the node's labels, and a node the informer cannot resolve yields a retry
+// result instead of a decision: guessing either path would drain the node the wrong way.
+func (e *NodeDrainEvaluator) shouldUseCustomDrain(ctx context.Context, nodeName string) (bool, *DrainActionResult) {
+	if !e.config.CustomDrain.Enabled || e.customDrainClient == nil {
+		return false, nil
+	}
+
+	if !e.customDrainNodes.IsScoped() {
+		return true, nil
+	}
+
+	node, err := e.informers.GetNode(nodeName)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get node to evaluate customDrain.nodeSelector, retrying",
+			"node", nodeName,
+			"error", err)
+
+		return false, &DrainActionResult{Action: ActionWait, WaitDelay: time.Minute}
+	}
+
+	matches := e.customDrainNodes.Matches(node)
+
+	slog.InfoContext(ctx, "Selected drain path for node",
+		"node", nodeName,
+		"customDrain", matches)
+
+	return matches, nil
 }
 
 func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statusStr string,

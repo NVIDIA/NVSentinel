@@ -172,11 +172,41 @@ Each policy has a unique, non-empty `name`, a non-empty `podSelector`, and a `mo
 
 Policy order takes precedence over mode: an early `AllowCompletion` match cannot be overridden by a later `Immediate` match. There is no namespace fallback in policy mode. Ensure the selectors cover every workload that should participate in draining. To retain namespace-based draining instead, leave `podDrainPolicies` empty and configure `userNamespaces` as before.
 
-Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. `DrainOverrides.Skip` retains its existing behavior. Custom drain configuration cannot be combined with pod drain policies.
+Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. `DrainOverrides.Skip` retains its existing behavior. Custom drain configuration cannot be combined with pod drain policies unless `customDrain.nodeSelector` scopes it to part of the cluster; see [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
 
 Pod labels are read from the informer cache on each reconciliation and before eviction or timeout deletion. Changing a relevant label changes the policy on a subsequent observation. API deletion preconditions prevent a stale observation from deleting a relabelled or replaced pod. Configuration changes require restarting node-drainer. Only label keys referenced by policies are retained in its pod cache.
 
 `DeleteAfterTimeout` continues to use `deleteAfterTimeoutMinutes` measured from the health event's creation, including after a restart. Policies do not introduce a new timeout or automatically choose a mode based on workload kind; workload owners opt in through labels.
+
+## Scoping custom drain to part of the cluster
+
+`customDrain.enabled: true` replaces node-drainer's own eviction with a
+[drain plugin](../tutorials/writing-a-drain-plugin.md), for the whole cluster. Set
+`customDrain.nodeSelector` when only some nodes are drained that way — a Slurm or LSF partition
+alongside nodes running ordinary Kubernetes workloads, for example. Nodes matching the selector go
+through the plugin; every other node keeps the built-in eviction path, so `userNamespaces` or
+`podDrainPolicies` must stay configured for them. The selector uses standard
+[Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors).
+
+```yaml
+node-drainer:
+  customDrain:
+    enabled: true
+    nodeSelector: "nvsentinel.example.com/scheduler=slurm"
+    # ... CR template and status condition settings
+  userNamespaces:
+    - name: "*"
+      mode: "AllowCompletion"
+```
+
+An empty or omitted `nodeSelector` keeps the original behavior: every node goes through custom
+drain, and configuring `userNamespaces` or `podDrainPolicies` alongside it is rejected at startup.
+An invalid selector is also rejected at startup.
+
+The drain path is chosen per health event from the node's labels as the informer cache holds them,
+so relabelling a node changes the path taken by subsequent events. A node the cache cannot resolve
+is retried rather than assigned a path. Only the label keys the selector references are retained in
+the node cache.
 
 ## User Namespaces
 
