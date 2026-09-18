@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package cel
+package celfields
 
 import (
 	"github.com/google/cel-go/cel"
@@ -27,7 +27,7 @@ const lookupArgs = 4
 type LookupTarget struct {
 	APIVersion string
 	Kind       string
-	// Paths carry the meaning they do in ResourceFieldPaths: each is a slice of
+	// Paths carry the meaning they do in FieldPaths: each is a slice of
 	// segments standing for the whole subtree beneath it. They are nil when
 	// Derivable is false.
 	Paths [][]string
@@ -39,21 +39,26 @@ type LookupTarget struct {
 	Derivable bool
 }
 
-// LookupTargets returns the GVKs compiled reads through lookup(), one entry per
-// GVK however many calls name it, for the calls that give their apiVersion and
-// kind as string literals. A call that computes either is absent: nothing can
-// be cached for a GVK that is not known until the expression runs.
+// LookupTargets returns the GVKs compiled reads through the lookupFunc call,
+// one entry per GVK however many calls name it, for the calls that give their
+// apiVersion and kind as string literals. A call that computes either is
+// absent: nothing can be cached for a GVK that is not known until the
+// expression runs.
+//
+// objectVar names the variable bound to the watched object, which the calls
+// reach to name what they read. An empty lookupFunc means the caller's
+// environment has no such function, and no target is returned.
 //
 // No target is derivable once the walk has stopped at an expression that uses
 // the watched object as a whole. The paths gathered up to that point describe
 // the calls walked so far and no others, and a call beyond it may read further
 // fields of a GVK already gathered, which pruning to those paths would drop.
-func LookupTargets(compiled *cel.Ast) []LookupTarget {
+func LookupTargets(compiled *cel.Ast, objectVar, lookupFunc string) []LookupTarget {
 	if compiled == nil || compiled.NativeRep() == nil {
 		return nil
 	}
 
-	w := walkExpression(compiled)
+	w := walkExpression(compiled, objectVar, lookupFunc)
 	targets := mergeFieldPathsByGVK(w.lookupFieldPaths)
 
 	if !w.ok {

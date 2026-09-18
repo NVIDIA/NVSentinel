@@ -531,6 +531,11 @@ fault-quarantine:
   # - Match conditions: When the rule should trigger
   # - Actions: What to do when conditions match (cordon, taint, label)
   # Rules are evaluated in order for each health event
+  #
+  # The node cache keeps only the label and annotation keys these expressions
+  # read, so how a Node rule is written decides how much memory it costs. Two
+  # rules that select the same nodes can prune differently.
+  # See docs/fault-quarantine.md#cached-node-fields before editing a Node rule.
   ruleSets:
     # Example rule 1: Quarantine nodes with fatal GPU errors
     # Enable or disable this ruleset; disabled rulesets are skipped entirely
