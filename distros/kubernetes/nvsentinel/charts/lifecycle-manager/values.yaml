@@ -91,7 +91,7 @@ config:
   tests:
     dcgm-diag-test:
       provider: k8s-job-provider
-      image: nvcr.io/nvidia/cloud-native/dcgm:4.5.2-1-ubuntu22.04
+      image: nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04
       # Add dcgmi diag retries for runtime errors which indicate that dcgmi diag failed to run compared to
       # the command failing due to detecting a GPU health issue. Specifically, we have observed that dcgm-diag-test
       # retries can result in a DCGM_ST_IN_USE runtime error because a previous request to nv-hostengine does not

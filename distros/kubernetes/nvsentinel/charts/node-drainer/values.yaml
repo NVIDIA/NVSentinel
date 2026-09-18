@@ -39,6 +39,13 @@ resources:
 # Must be a positive integer, converted to time.Duration in the code
 evictionTimeoutInSeconds: "60"
 
+# Base duration for exponential backoff on drain requeues
+# Controls the delay before the first retry when a node cannot be drained immediately.
+# Subsequent retries double up to a 2-minute ceiling.
+# Useful floor is the workload's pod termination time:
+# ~1s for zero-grace pods, or >= 30s when terminationGracePeriodSeconds is 30s.
+requeueBackoffBase: 10s
+
 # Regular expression pattern matching system namespaces
 # Pods in these namespaces are skipped during the drain process
 systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"

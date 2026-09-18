@@ -1,0 +1,102 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Lives in the umbrella suite because the bootstrap Job calls umbrella helpers,
+# so it cannot render with the subchart alone.
+suite: deployed crVersion check
+templates:
+  - charts/mongodb-store/templates/jobs.yaml
+set:
+  global.mongodbStore.enabled: true
+  mongodb-store.useBitnami: false
+  mongodb-store.usePerconaOperator: true
+tests:
+  - it: grants nothing and adds no init container by default
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["psmdb.percona.com"]
+            resources: ["perconaservermongodbs"]
+            verbs: ["list"]
+        documentIndex: 1
+      - notContains:
+          path: spec.template.spec.initContainers
+          content:
+            name: validate-deployed-crversion
+          any: true
+        documentIndex: 3
+
+  # The grant and the check are gated on one value, so an install can never
+  # carry the permission without the check that justifies it.
+  - it: adds the init container when enabled
+    set:
+      mongodb-store.validateDeployedCrVersion: true
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers
+          content:
+            name: validate-deployed-crversion
+          any: true
+        documentIndex: 3
+
+  - it: grants list on perconaservermongodbs when enabled
+    set:
+      mongodb-store.validateDeployedCrVersion: true
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["psmdb.percona.com"]
+            resources: ["perconaservermongodbs"]
+            verbs: ["list"]
+        documentIndex: 1
+
+  # Bitnami has no custom resource to read, so neither half may appear.
+  - it: stays absent on the Bitnami backend even when enabled
+    set:
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+      mongodb-store.validateDeployedCrVersion: true
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["psmdb.percona.com"]
+            resources: ["perconaservermongodbs"]
+            verbs: ["list"]
+        documentIndex: 1
+      - notContains:
+          path: spec.template.spec.initContainers
+          content:
+            name: validate-deployed-crversion
+          any: true
+        documentIndex: 3
+
+  # The comparison is against the operator tag, so the rendered script has to
+  # carry it. A refactor dropping the interpolation would leave the check
+  # silently skipping on an empty version. The resource is listed, not named,
+  # so an empty result means absent rather than misnamed.
+  - it: carries the operator tag into the script and lists the resource
+    set:
+      mongodb-store.validateDeployedCrVersion: true
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[3].command[2]
+          pattern: 'OP_TAG="1\.23\.0"'
+        documentIndex: 3
+      - matchRegex:
+          path: spec.template.spec.initContainers[3].command[2]
+          pattern: 'jsonpath=.\{range \.items\[\*\]\}'
+        documentIndex: 3

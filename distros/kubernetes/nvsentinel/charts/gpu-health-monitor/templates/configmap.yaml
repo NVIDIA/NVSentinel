@@ -42,6 +42,7 @@ data:
     gpupowerbrakeminconsecutivepolls = {{ .Values.dcgmFieldsMonitoring.gpuPowerBrakeMinConsecutivePolls }}
 
     [dcgmhealthcheck]
+    ImexMonitoringEnabled = {{ .Values.dcgmHealthCheck.imexMonitoringEnabled }}
     SuppressedErrorCodes = {{ .Values.dcgmHealthCheck.suppressedErrorCodes | join "," }}
     ConnectivityFailureEscalationThreshold = {{ .Values.dcgmHealthCheck.connectivityFailureEscalationThreshold }}
 {{- $debounce := list }}

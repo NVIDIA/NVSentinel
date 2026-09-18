@@ -37,8 +37,8 @@ health_events_insertion_skipped_pc_unavailable = Counter(
 
 dcgm_health_active_events = Gauge(
     "dcgm_health_active_events",
-    "Active health events by watch type and GPU",
-    labelnames=["event_type", "gpu_id"],
+    "Active health events by watch type, GPU, and error code",
+    labelnames=["event_type", "gpu_id", "error_code"],
 )
 
 dcgm_connectivity_consecutive_observations = Gauge(

@@ -1,0 +1,200 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+global:
+  dryRun: false
+
+  systemNodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  systemNodeTolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
+  gpuHealthMonitor:
+    enabled: true
+  syslogHealthMonitor:
+    enabled: false
+  cspHealthMonitor:
+    enabled: false
+  kubernetesObjectMonitor:
+    enabled: false
+  nicHealthMonitor:
+    enabled: false
+  nvcreCertificationMonitor:
+    enabled: false
+  slurmDrainMonitor:
+    enabled: false
+
+  faultQuarantine:
+    enabled: true
+  nodeDrainer:
+    enabled: true
+  faultRemediation:
+    enabled: true
+  janitor:
+    enabled: true
+  janitorProvider:
+    enabled: true
+
+  healthEventsAnalyzer:
+    enabled: false
+  lifecycleManager:
+    enabled: false
+  eventExporter:
+    enabled: false
+  preflight:
+    enabled: false
+  inclusterFileServer:
+    enabled: false
+
+  labeler:
+    enabled: false
+
+  metadataCollector:
+    enabled: false
+
+  mongodbStore:
+    enabled: true
+
+podMonitor:
+  enabled: false
+
+mongodb-store:
+  useBitnami: false
+  usePerconaOperator: true
+
+  job:
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+
+  psmdb-operator:
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+
+  psmdb-db:
+    unsafeFlags:
+      replsetSize: true
+
+    replsets:
+      rs0:
+        size: 1
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: ""
+        tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+        volumeSpec:
+          pvc:
+            resources:
+              requests:
+                storage: 3Gi
+        sidecars: []
+
+platformConnector:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+fault-quarantine:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  circuitBreaker:
+    enabled: false
+
+node-drainer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  userNamespaces:
+    - name: "*"
+      mode: "Immediate"
+
+  systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|cert-manager|local-path-storage)$"
+
+fault-remediation:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+janitor:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  config:
+    nodes:
+      exclusions:
+        - matchLabels:
+            node-role.kubernetes.io/control-plane: ""
+
+janitor-provider:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  csp:
+    provider: kind
+
+gpu-health-monitor:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

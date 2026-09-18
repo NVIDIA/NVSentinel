@@ -105,12 +105,15 @@ dcgmFieldsMonitoring:
 
 # DCGM health check incident suppression
 dcgmHealthCheck:
-  # DCGM error codes to drop before they become health events. The default is
-  # the throttling the POWER and THERMAL watches report: it maps to NONE in
-  # dcgmerrorsmapping.csv and tracks load rather than a fault. Each code is
+  # Enable DCGM IMEX health monitoring. Off by default because DRA can remove
+  # IMEX when idle; the monitor filters IMEX incidents from older hostengines.
+  imexMonitoringEnabled: false
+  # DCGM error codes to drop before they become health events. Throttling from
+  # the POWER and THERMAL watches maps to NONE in
+  # dcgmerrorsmapping.csv and tracks load rather than a fault. Each throttle code is
   # listed twice because DCGM_FR_CLOCK_THROTTLE_* is a deprecated alias of
   # DCGM_FR_CLOCKS_EVENT_* with the same number and either name can be
-  # reported. Set to [] to report throttling too.
+  # reported. Set to [] to report all codes.
   suppressedErrorCodes:
     - DCGM_FR_CLOCK_THROTTLE_POWER
     - DCGM_FR_CLOCKS_EVENT_POWER

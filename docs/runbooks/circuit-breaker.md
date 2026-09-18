@@ -4,10 +4,16 @@
 
 This runbook guides you through investigating and resetting a tripped circuit breaker. The circuit breaker automatically trips when too many nodes are cordoned within a short time window, blocking new remediation actions until manually reset.
 
+This is the canonical reset procedure. The [circuit breaker overview](../circuit-breaker.md) explains the concepts and defers to the steps here.
+
 **Key points:**
 - Circuit breaker does NOT auto-reset - requires manual intervention
 - In-progress remediation continues, but no new actions are taken
+- Processing halts for **all** health events, healthy ones included, so recovered nodes are not uncordoned automatically while tripped
+- Resetting the breaker does not uncordon anything; uncordon recovered nodes yourself in step 6
 - Only reset after investigating and fixing the root cause
+
+On a cluster with one or two GPU nodes the default 50% threshold trips on the first cordon. If that is why you are here, reset as below, then disable the breaker so it does not recur — see [Small clusters](../circuit-breaker.md#small-clusters).
 
 ## Procedure
 
@@ -61,13 +67,31 @@ If health checks are flapping, this typically indicates an infrastructure issue 
 
 ### 6. Uncordon Affected Nodes
 
-Manually uncordon nodes that are now healthy:
+Uncordon the nodes that are now healthy. This step is manual because a tripped breaker stops fault quarantine from processing the healthy events that would normally uncordon them, and resetting the breaker in step 7 does not retroactively uncordon anything.
+
+Find nodes whose condition has cleared but which are still cordoned:
+
+```bash
+kubectl get nodes | grep SchedulingDisabled
+
+# List the node's Gpu/SysLog conditions that are still True. Every one must clear
+# before you uncordon. The lookup has to succeed first: an empty result from a
+# failed kubectl call is indistinguishable from a healthy node.
+if CONDITIONS=$(kubectl get node {NODE_NAME} \
+     -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type}{"\n"}{end}'); then
+  echo "$CONDITIONS" | grep -E "^(Gpu|SysLog)" || echo "no Gpu/SysLog condition is True"
+else
+  echo "node lookup failed - do not uncordon"
+fi
+```
+
+Do not uncordon a node while any `Gpu` or `SysLog` condition is still `True`. Matching the condition name alone is not enough — a present condition can be either state, and uncordoning a node whose fault is still active puts workloads straight back onto broken hardware.
+
+Then uncordon each one:
 
 ```bash
 kubectl uncordon {NODE_NAME}
 ```
-
-Repeat for each affected node.
 
 ### 7. Reset Circuit Breaker
 
