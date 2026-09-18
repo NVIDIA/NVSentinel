@@ -973,6 +973,12 @@ health-events-analyzer:
   # Increase proportionally when running with 16+ workers (e.g. 2000-4000) to avoid false stalls.
   maxInFlight: 1000
 
+  # Registers rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}.
+  # Off by default: entity labels add a series per GPU/GPC/TPC/SM on each node.
+  # rule_matched_total already reports that a rule fired without this.
+  # GPU UUID is never used as entity_value; PCI or GPU index is exported instead.
+  ruleMatchedEntityMetricEnabled: false
+
   # Processing strategy for health events (default: EXECUTE_REMEDIATION)
   # Valid values: EXECUTE_REMEDIATION, STORE_ONLY
   processingStrategy: EXECUTE_REMEDIATION

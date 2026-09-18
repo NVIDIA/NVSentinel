@@ -41,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/initializer"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -131,7 +132,9 @@ func run() error {
 func setupCtrlRuntimeManagement(ctx context.Context) error {
 	slog.Info("Running in controller runtime managed mode")
 
-	mgr, err := createManager()
+	readinessChecker := server.NewDatastoreReadinessChecker(crmetrics.Registry)
+
+	mgr, err := createManager(readinessChecker)
 	if err != nil {
 		return err
 	}
@@ -167,7 +170,7 @@ func setupCtrlRuntimeManagement(ctx context.Context) error {
 	var cleanupReconciler func()
 
 	g.Go(func() error {
-		cleanup, initErr := initializeAndWatch(gCtx, params, mgr)
+		cleanup, initErr := initializeAndWatch(gCtx, params, mgr, readinessChecker)
 		cleanupReconciler = cleanup
 
 		return initErr
@@ -182,7 +185,7 @@ func setupCtrlRuntimeManagement(ctx context.Context) error {
 	return err
 }
 
-func createManager() (ctrl.Manager, error) {
+func createManager(readinessChecker *server.DatastoreReadinessChecker) (ctrl.Manager, error) {
 	cfg := ctrl.GetConfigOrDie()
 	cfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
 		return auditlogger.NewAuditingRoundTripper(rt)
@@ -221,7 +224,7 @@ func createManager() (ctrl.Manager, error) {
 		return nil, err
 	}
 
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("readyz", readinessChecker.Check); err != nil {
 		slog.Error("Unable to set up ready check", "error", err)
 		return nil, err
 	}
@@ -236,7 +239,10 @@ const reconcilerCloseTimeout = 30 * time.Second
 // the caller must invoke after the manager has fully stopped (after g.Wait) so that
 // datastore resources are not torn down under in-flight reconciles.
 func initializeAndWatch(
-	ctx context.Context, params initializer.InitializationParams, mgr ctrl.Manager,
+	ctx context.Context,
+	params initializer.InitializationParams,
+	mgr ctrl.Manager,
+	readinessChecker *server.DatastoreReadinessChecker,
 ) (cleanup func(), err error) {
 	components, err := initializer.InitializeAll(ctx, params, mgr.GetClient(), mgr.GetAPIReader())
 	if err != nil {
@@ -244,6 +250,10 @@ func initializeAndWatch(
 	}
 
 	reconciler := components.FaultRemediationReconciler
+
+	if readinessChecker != nil && reconciler != nil {
+		readinessChecker.SetWatcher(reconciler.Watcher)
+	}
 
 	cleanup = func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), reconcilerCloseTimeout)
