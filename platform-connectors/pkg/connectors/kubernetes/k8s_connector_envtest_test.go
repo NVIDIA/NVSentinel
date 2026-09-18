@@ -590,6 +590,10 @@ func TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery(t *testing.T) {
 				connector = NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 			}
 
+			// This is a later report of the fault, rather than a replay of the
+			// already persisted occurrence after a restart.
+			previousTime := healthEventsProto.Events[0].GeneratedTimestamp.AsTime()
+			healthEventsProto.Events[0].GeneratedTimestamp = timestamppb.New(previousTime.Add(time.Minute))
 			require.NoError(t, connector.processHealthEvents(ctx, healthEventsProto))
 
 			events = listNodeEvents()

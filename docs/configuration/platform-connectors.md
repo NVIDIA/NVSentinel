@@ -277,6 +277,8 @@ Configures the Kubernetes API client for creating node conditions and events.
 platformConnector:
   k8sConnector:
     enabled: true
+    maxRetries: 25
+    maxRetryDuration: 1m
     maxNodeConditionMessageLength: 1024
     qps: 5.0
     burst: 10
@@ -286,6 +288,52 @@ platformConnector:
 
 #### enabled
 Enables Kubernetes connector for creating node conditions and events.
+
+#### maxRetries
+
+Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `25`; positive integers override the default. Negative and non-integer values are rejected. An existing explicit value, such as `3`, still limits each write to that retry count.
+
+These settings apply to the node-local Kubernetes queue. Synchronous `ProcessBatch` callers receive errors directly and retry unacknowledged requests.
+
+Each node status update and Kubernetes Event write has its own retry state. Successful writes are not repeated when another write fails. Permanent errors are skipped without preventing other writes from retrying. A node status update applies all condition changes for that node together.
+
+Event retries retain the stable fault name and check the persisted timestamp after an uncertain response. An already persisted occurrence is accepted without increasing its count. Later reports refresh the existing Event after suppression expires or recovery clears it. Event timestamps have one-second precision; this counter does not count every monitor report.
+
+Retry delays start at 500 milliseconds, double after each failure, and are capped at 3 seconds. Both the count limit and `maxRetryDuration` apply: whichever is reached first stops that write.
+
+#### maxRetryDuration
+
+Maximum processing time for the whole batch, including Kubernetes API calls and inner retry delays. The default is `1m`. Omission or a zero duration selects the default. Positive duration strings up to `5m` are accepted; negative, invalid, and larger durations are rejected.
+
+The connector holds the current batch while retrying. Newer batches cannot overtake a pending fault or recovery. This pauses consumption of the Kubernetes queue while other connector queues continue independently. Cancellation and connector shutdown interrupt API calls and backoff.
+
+For a five-minute outage window, configure both limits:
+
+```yaml
+platformConnector:
+  k8sConnector:
+    maxRetries: 200
+    maxRetryDuration: 5m
+```
+
+The default count of 25 allows 69.5 seconds of outer backoff, but the default one-minute deadline stops retries sooner. The five-minute example raises both limits so its deadline controls the window. API calls and client-go retries also consume the time budget. A large batch shares one deadline across its writes.
+
+A write that exhausts its retry count is discarded; other writes can still run within the batch deadline. When the deadline expires, remaining writes are discarded and the connector advances to the next batch. A lost healthy recovery can therefore still leave a condition set. These bounded retries do not guarantee delivery through longer outages or pod restarts. Newer batches accumulate in memory during backpressure; this change does not add a persistent queue or an ingress memory limit.
+
+#### Drop metrics
+
+- `k8s_platform_connector_dropped_writes_total{operation,reason}` counts individual discarded writes, including writes not attempted before deadline or shutdown.
+- `k8s_platform_connector_dropped_batches_total{reason}` counts each affected batch once per reason. A batch with multiple failure reasons increments multiple series.
+
+The `operation` label is `node_condition` or `node_event`. The `reason` label is `permanent_error`, `retry_exhausted`, `retry_timeout`, or `shutdown`.
+
+For example, alert when writes are discarded outside shutdown:
+
+```promql
+sum(increase(k8s_platform_connector_dropped_writes_total{reason!="shutdown"}[5m])) > 0
+```
+
+A failed queue item is explicitly discarded; this operation does not requeue it. Monitor drop counters together with Kubernetes queue depth to detect exhausted retry windows and growing backlogs.
 
 #### maxNodeConditionMessageLength
 Maximum length of node condition messages in characters.

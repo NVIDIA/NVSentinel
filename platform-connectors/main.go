@@ -120,6 +120,56 @@ func loadConfig(configFilePath string) (map[string]any, error) {
 	return result, nil
 }
 
+// k8sConnectorMaxRetriesFromConfig applies the same zero-value default as
+// NewK8sConnector and rejects invalid JSON configuration before initialization.
+func k8sConnectorMaxRetriesFromConfig(config map[string]any) (int, error) {
+	configuredMaxRetries, configured := config["K8sConnectorMaxRetries"]
+	if !configured {
+		return k8sconnector.DefaultMaxRetries, nil
+	}
+
+	maxRetries, ok := configuredMaxRetries.(int64)
+	if !ok || maxRetries < 0 {
+		return 0, fmt.Errorf("K8sConnectorMaxRetries must be a non-negative integer (0 uses the default), got %v",
+			configuredMaxRetries)
+	}
+
+	if maxRetries == 0 {
+		return k8sconnector.DefaultMaxRetries, nil
+	}
+
+	return int(maxRetries), nil
+}
+
+// k8sConnectorMaxRetryDurationFromConfig validates the whole-batch retry deadline.
+func k8sConnectorMaxRetryDurationFromConfig(config map[string]any) (time.Duration, error) {
+	value, exists := config["K8sConnectorMaxRetryDuration"]
+	if !exists {
+		return k8sconnector.DefaultMaxRetryDuration, nil
+	}
+
+	raw, ok := value.(string)
+	if !ok {
+		return 0, fmt.Errorf("K8sConnectorMaxRetryDuration must be a duration string, got %v", value)
+	}
+
+	duration, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid K8sConnectorMaxRetryDuration: %w", err)
+	}
+
+	if duration < 0 || duration > k8sconnector.MaxAllowedRetryDuration {
+		return 0, fmt.Errorf("K8sConnectorMaxRetryDuration must be between 0 and %s, got %s",
+			k8sconnector.MaxAllowedRetryDuration, duration)
+	}
+
+	if duration == 0 {
+		return k8sconnector.DefaultMaxRetryDuration, nil
+	}
+
+	return duration, nil
+}
+
 // initializeK8sConnector creates the K8s connector and node metadata processor.
 // Processor is returned here because it depends on the clientset from K8s initialization.
 func initializeK8sConnector(
@@ -128,6 +178,16 @@ func initializeK8sConnector(
 	stopCh chan struct{},
 	kubeconfigPath string,
 ) (*ringbuffer.RingBuffer, error) {
+	maxRetries, err := k8sConnectorMaxRetriesFromConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Kubernetes connector retry configuration: %w", err)
+	}
+
+	maxRetryDuration, err := k8sConnectorMaxRetryDurationFromConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Kubernetes connector retry duration: %w", err)
+	}
+
 	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
 
 	qpsTemp, ok := config["K8sConnectorQps"].(float64)
@@ -157,6 +217,8 @@ func initializeK8sConnector(
 	k8sConnectorCfg := k8sconnector.K8sConnectorConfig{
 		MaxNodeConditionMessageLength: maxNodeConditionMessageLength,
 		CompactedHealthEventMsgLen:    compactedEventMsgLen,
+		MaxRetries:                    maxRetries,
+		MaxRetryDuration:              maxRetryDuration,
 	}
 
 	k8sConnector, _, err := k8sconnector.InitializeK8sConnector(

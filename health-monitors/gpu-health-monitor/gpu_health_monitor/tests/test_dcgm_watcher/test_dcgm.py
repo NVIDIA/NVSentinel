@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import dcgm_structs, dcgm_errors, dcgm_fields, dcgmvalue
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from ctypes import pointer
@@ -70,32 +71,80 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
 class TestDCGMHealthChecks:
     def _make_thermal_margin_watcher(self, metadata_reader: MetadataReader) -> dcgm.DCGMWatcher:
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                thermal_margin_enabled=True,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            thermal_margin_enabled=True,
             metadata_reader=metadata_reader,
         )
         watcher._field_group = MagicMock()
-        return watcher
-
-    def _make_power_brake_watcher(self, min_consecutive_polls: int = 1) -> dcgm.DCGMWatcher:
-        watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
-            callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            power_brake_enabled=True,
-            power_brake_min_consecutive_polls=min_consecutive_polls,
-        )
-        watcher._field_group = MagicMock()
+        watcher._read_thermal_margin_samples = MagicMock()
         return watcher
 
     @staticmethod
-    def _brake_samples(mask_by_gpu: dict[int, int]) -> MagicMock:
-        field_id = dcgm.DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"].field_id
-        return MagicMock(values={gpu: {field_id: [MagicMock(value=mask)]} for gpu, mask in mask_by_gpu.items()})
+    def _thermal_read_result(margins):
+        timestamp = 1_000_000_000
+        return {gpu_id: dcgm.ThermalMarginSample(timestamp, 0, ord("i"), margin) for gpu_id, margin in margins.items()}
+
+    @pytest.fixture
+    def field_history_watcher(self):
+        metadata = MagicMock()
+        metadata.get_slowdown_tlimit_c.return_value = -2
+        instance = dcgm.DCGMWatcher(
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                thermal_margin_enabled=True,
+            ),
+            callbacks=[],
+            metadata_reader=metadata,
+        )
+        instance._field_group = SimpleNamespace(fieldGroupId=456)
+        yield instance
+        instance._callback_thread_pool.shutdown()
+
+    @staticmethod
+    def _raw_field_sample(value=-3, timestamp=1_000_000_000, status=0, field_id=153, field_type=ord("i")):
+        return SimpleNamespace(
+            ts=timestamp, status=status, fieldId=field_id, fieldType=field_type, value=SimpleNamespace(i64=value)
+        )
+
+    @staticmethod
+    def _install_history_reader(monkeypatch, batches, next_timestamp=1_000_000_001):
+        def read(handle, group, field_group, since, callback, user_data):
+            for entity_group, gpu_id, values in batches:
+                assert callback(entity_group, gpu_id, values, len(values), user_data) == 0
+            return next_timestamp
+
+        reader = MagicMock(side_effect=read)
+        monkeypatch.setattr(dcgm.dcgm_agent, "dcgmGetValuesSince_v2", reader, raising=False)
+        monkeypatch.setattr(
+            dcgm.dcgm_agent, "dcgmFieldValueEntityEnumeration_f", lambda callback: callback, raising=False
+        )
+        return reader
+
+    def _make_power_brake_watcher(self, min_consecutive_polls: int = 1) -> dcgm.DCGMWatcher:
+        watcher = dcgm.DCGMWatcher(
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                power_brake_enabled=True,
+                power_brake_min_consecutive_polls=min_consecutive_polls,
+            ),
+            callbacks=[],
+        )
+        watcher._field_group = MagicMock()
+        watcher._read_power_brake_samples = MagicMock()
+        return watcher
+
+    @staticmethod
+    def _brake_samples(mask_by_gpu: dict[int, int]) -> dict[int, dcgm.ThermalMarginSample]:
+        return {gpu: dcgm.ThermalMarginSample(1_000_000_000, 0, ord("i"), mask) for gpu, mask in mask_by_gpu.items()}
 
     def _get_pcie_incident(self, group_id, entity_id):
         incident = dcgm_structs.c_dcgmIncidentInfo_t()
@@ -112,11 +161,13 @@ class TestDCGMHealthChecks:
     def test_unsupported_thermal_margin_field_is_disabled(self, monkeypatch):
         monkeypatch.delitem(dcgm.DCGM_FIELDS_MONITORING, "gputemplimitmonitoringenabled")
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                thermal_margin_enabled=True,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            thermal_margin_enabled=True,
             metadata_reader=MagicMock(),
         )
         dcgm_group = MagicMock()
@@ -127,43 +178,47 @@ class TestDCGMHealthChecks:
         watcher._initialize_dcgm_monitoring(MagicMock())
 
         assert watcher._thermal_margin_enabled is False
-        dcgm_group.health.Set.assert_called_once_with(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
+        dcgm_group.health.Set.assert_called_once_with(dcgm_structs.DCGM_HEALTH_WATCH_ALL & ~0x2000 & ~0x1000)
         dcgm_group.samples.WatchFields.assert_not_called()
 
     def test_unsupported_power_brake_field_is_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No clocks-event-reasons field in this DCGM build → monitor disables itself."""
         monkeypatch.delitem(dcgm.DCGM_FIELDS_MONITORING, "gpupowerbrakemonitoringenabled")
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                power_brake_enabled=True,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            power_brake_enabled=True,
         )
         assert watcher._power_brake_enabled is False
 
     def test_power_brake_disabled_returns_none(self) -> None:
         """Watch off → nothing published, even with the bit set."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         watcher._field_group = MagicMock()
         dcgm_group_mock = MagicMock()
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
+        watcher._read_power_brake_samples = MagicMock(
+            return_value=self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
+        )
 
-        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]) is None
+        assert watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]) is None
 
     def test_evaluate_gpu_power_brake_detects_brake_bit(self) -> None:
         """Brake bit set, threshold of 1 → FAIL carrying the violation code."""
         watcher = self._make_power_brake_watcher()
         dcgm_group_mock = MagicMock()
         # 0x8c = SW power cap | HW slowdown | HW power brake, as seen on real hardware.
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: 0x8C})
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: 0x8C})
 
-        result = watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0])
+        result = watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0])
 
         assert result is not None
         assert result.status == dcgm.types.HealthStatus.FAIL
@@ -173,9 +228,9 @@ class TestDCGMHealthChecks:
         """SW power cap alone is normal capping under load and must not fail."""
         watcher = self._make_power_brake_watcher()
         dcgm_group_mock = MagicMock()
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: 0x04})
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: 0x04})
 
-        result = watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0])
+        result = watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0])
 
         assert result is not None
         assert result.status == dcgm.types.HealthStatus.PASS
@@ -185,11 +240,11 @@ class TestDCGMHealthChecks:
         """With a threshold of 3, only the third consecutive assertion fails."""
         watcher = self._make_power_brake_watcher(min_consecutive_polls=3)
         dcgm_group_mock = MagicMock()
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
 
-        first = watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0])
-        second = watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0])
-        third = watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0])
+        first = watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0])
+        second = watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0])
+        third = watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0])
 
         assert first.status == dcgm.types.HealthStatus.PASS
         assert second.status == dcgm.types.HealthStatus.PASS
@@ -201,25 +256,31 @@ class TestDCGMHealthChecks:
         watcher = self._make_power_brake_watcher(min_consecutive_polls=2)
         dcgm_group_mock = MagicMock()
 
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
-        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
+        assert (
+            watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
+        )
 
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: 0x00})
-        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: 0x00})
+        assert (
+            watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
+        )
         assert watcher._power_brake_streaks == {}
 
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
-        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
+        assert (
+            watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
+        )
 
     def test_evaluate_gpu_power_brake_mixed_gpus(self) -> None:
         """Only the braked GPU is failed; the other is left clean."""
         watcher = self._make_power_brake_watcher()
         dcgm_group_mock = MagicMock()
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples(
+        watcher._read_power_brake_samples.return_value = self._brake_samples(
             {0: 0x01, 1: dcgm.HW_POWER_BRAKE_REASON_BIT}
         )
 
-        result = watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0, 1])
+        result = watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0, 1])
 
         assert result.status == dcgm.types.HealthStatus.FAIL
         assert set(result.entity_failures) == {1}
@@ -228,19 +289,33 @@ class TestDCGMHealthChecks:
         """A DCGM data gap must neither raise nor clear a finding."""
         watcher = self._make_power_brake_watcher()
         dcgm_group_mock = MagicMock()
-        dcgm_group_mock.samples.GetLatest.return_value = MagicMock(values={})
+        watcher._read_power_brake_samples.return_value = {}
 
-        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]) is None
+        assert watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]) is None
 
     def test_evaluate_gpu_power_brake_ignores_blank_sentinel(self) -> None:
         """DCGM blank sentinels have bit 0x80 set in their low byte, so an
         unchecked blank would be indistinguishable from an asserted brake."""
         watcher = self._make_power_brake_watcher()
         dcgm_group_mock = MagicMock()
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgmvalue.DCGM_INT64_BLANK})
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgmvalue.DCGM_INT64_BLANK})
 
         # Nothing was evaluated, so the watch is not published at all.
-        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]) is None
+        assert watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]) is None
+
+    @pytest.mark.parametrize(
+        "sample",
+        [
+            dcgm.ThermalMarginSample(1, -3, ord("i"), 0),
+            dcgm.ThermalMarginSample(1, 0, ord("d"), 0),
+            dcgm.ThermalMarginSample(1, 0, ord("i"), 0, history_size=dcgm.THERMAL_HISTORY_SAMPLE_LIMIT + 1),
+        ],
+    )
+    def test_evaluate_gpu_power_brake_skips_invalid_history_sample(self, sample) -> None:
+        watcher = self._make_power_brake_watcher()
+        watcher._read_power_brake_samples.return_value = {0: sample}
+
+        assert watcher._evaluate_gpu_power_brake(MagicMock(), MagicMock(), [0]) is None
 
     def test_evaluate_gpu_power_brake_blank_does_not_accumulate_streak(self) -> None:
         """Repeated blanks must not accumulate to a failure, and must not clear
@@ -248,55 +323,59 @@ class TestDCGMHealthChecks:
         watcher = self._make_power_brake_watcher(min_consecutive_polls=2)
         dcgm_group_mock = MagicMock()
 
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
-        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
+        assert (
+            watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
+        )
         assert watcher._power_brake_streaks == {0: 1}
 
         # A blank in the middle is skipped: the streak survives rather than
         # being cleared or advanced.
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgmvalue.DCGM_INT64_BLANK})
-        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]) is None
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgmvalue.DCGM_INT64_BLANK})
+        assert watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]) is None
         assert watcher._power_brake_streaks == {0: 1}
 
-        dcgm_group_mock.samples.GetLatest.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
-        assert watcher._evaluate_gpu_power_brake(dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.FAIL
+        watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
+        assert (
+            watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.FAIL
+        )
 
     def test_get_available_health_watches(self):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         health_watches = watcher._get_available_health_watches()
         assert len(health_watches) == 13
 
     def test_get_available_error_codes(self):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         error_codes = watcher._get_available_error_codes()
         assert len(error_codes) == 116
 
     def test_get_available_fields(self):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_fields = watcher._get_available_fields()
         assert len(dcgm_fields) == 320
 
     def test_get_health_status_dict(self):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         health_status_dict = watcher._get_health_status_dict()
         assert len(health_status_dict) == 13
@@ -304,17 +383,27 @@ class TestDCGMHealthChecks:
             assert val.status == dcgm.types.HealthStatus.PASS
             assert val.entity_failures == {}
 
-    def test_evaluate_gpu_thermal_margin_skips_when_no_threshold(self):
-        """No GPU has threshold → returns None (watch not published)."""
+    @pytest.mark.parametrize(
+        "threshold,sample",
+        [
+            (None, dcgm.ThermalMarginSample(1, 0, ord("i"), 43)),
+            (-2, None),
+            (-2, dcgm.ThermalMarginSample(1, -3, ord("i"), -3)),
+            (-2, dcgm.ThermalMarginSample(1, 0, ord("i"), dcgmvalue.DCGM_INT64_BLANK)),
+            (-2, dcgm.ThermalMarginSample(1, 0, ord("d"), -3)),
+            (-2, dcgm.ThermalMarginSample(1, 0, ord("i"), -3, dcgm.THERMAL_HISTORY_SAMPLE_LIMIT + 1)),
+        ],
+        ids=["no-threshold", "no-sample", "field-status", "blank", "field-type", "history-overflow"],
+    )
+    def test_evaluate_gpu_thermal_margin_skips_unavailable_data(self, threshold, sample):
+        """Missing metadata or invalid samples must not publish a healthy result."""
         metadata_reader = MagicMock()
-        metadata_reader.get_slowdown_tlimit_c.return_value = None
+        metadata_reader.get_slowdown_tlimit_c.return_value = threshold
         watcher = self._make_thermal_margin_watcher(metadata_reader)
         dcgm_group_mock = MagicMock()
-        dcgm_group_mock.samples.GetLatest.return_value = MagicMock(
-            values={0: {dcgm.DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].field_id: [MagicMock(value=43)]}}
-        )
+        watcher._read_thermal_margin_samples.return_value = {} if sample is None else {0: sample}
 
-        assert watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0]) is None
+        assert watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0]) is None
 
     def test_evaluate_gpu_thermal_margin_lifecycle(self, tmp_path):
         """Covers: PASS → FAIL → PASS lifecycle.
@@ -343,26 +432,25 @@ class TestDCGMHealthChecks:
         dcgm_group_mock = MagicMock()
 
         # Phase 1: Healthy (margin=-1 > threshold=-2) → PASS
-        dcgm_group_mock.samples.GetLatest.return_value = MagicMock(values={0: {field_id: [MagicMock(value=-1)]}})
-        healthy = watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0])
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: -1})
+        healthy = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
         assert healthy.status == dcgm.types.HealthStatus.PASS
         assert healthy.entity_failures == {}
 
         # Phase 2: Violation (margin=-3 < threshold=-2) → FAIL
-        dcgm_group_mock.samples.GetLatest.return_value = MagicMock(values={0: {field_id: [MagicMock(value=-3)]}})
-        triggered = watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0])
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: -3})
+        triggered = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
         assert triggered.status == dcgm.types.HealthStatus.FAIL
         assert triggered.entity_failures[0][0].code == violation_code
 
         # Phase 3: Adjust threshold to clear violation → PASS
         reader._metadata["gpus"][0]["slowdown_tlimit_c"] = -4
-        cleared = watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0])
+        cleared = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
         assert cleared.status == dcgm.types.HealthStatus.PASS
         assert cleared.entity_failures == {}
 
     def test_evaluate_gpu_thermal_margin_mixed_gpus(self, tmp_path):
         """Test mixed scenario: GPU 0 passes, GPU 1 fails."""
-        field_id = dcgm.DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].field_id
         violation_code = dcgm.DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].violation_code
 
         metadata_path = tmp_path / "gpu_metadata.json"
@@ -382,26 +470,110 @@ class TestDCGMHealthChecks:
         dcgm_group_mock = MagicMock()
 
         # GPU 0: margin=-1 (healthy), GPU 1: margin=-3 (violation)
-        dcgm_group_mock.samples.GetLatest.return_value = MagicMock(
-            values={
-                0: {field_id: [MagicMock(value=-1)]},
-                1: {field_id: [MagicMock(value=-3)]},
-            }
-        )
-        result = watcher._evaluate_gpu_thermal_margin(dcgm_group_mock, [0, 1])
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: -1, 1: -3})
+        result = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0, 1])
 
         assert result.status == dcgm.types.HealthStatus.FAIL
         assert 0 not in result.entity_failures  # GPU 0 passed
         assert 1 in result.entity_failures  # GPU 1 failed
         assert result.entity_failures[1][0].code == violation_code
 
+    def test_reads_public_history_and_copies_only_newest_gpu_sample(self, monkeypatch, field_history_watcher):
+        latest = self._raw_field_sample(-3)
+        reader = self._install_history_reader(
+            monkeypatch,
+            [
+                (dcgm.dcgm_fields.DCGM_FE_GPU, 0, [self._raw_field_sample(7, 999_000_000), latest]),
+                (
+                    dcgm.dcgm_fields.DCGM_FE_GPU,
+                    0,
+                    [self._raw_field_sample(9, 998_000_000), self._raw_field_sample(42, field_id=112)],
+                ),
+                (dcgm.dcgm_fields.DCGM_FE_SWITCH, 0, [self._raw_field_sample(100)]),
+                (dcgm.dcgm_fields.DCGM_FE_GPU, 1, [self._raw_field_sample(status=-3)]),
+                (dcgm.dcgm_fields.DCGM_FE_GPU, 2, [self._raw_field_sample(value=dcgmvalue.DCGM_INT64_BLANK)]),
+                (dcgm.dcgm_fields.DCGM_FE_GPU, 3, [self._raw_field_sample(field_type=ord("d"))]),
+            ],
+        )
+        group = MagicMock()
+        group.GetId.return_value = 789
+
+        samples = field_history_watcher._read_thermal_margin_samples(SimpleNamespace(handle=123), group)
+
+        assert samples == {
+            0: dcgm.ThermalMarginSample(1_000_000_000, 0, ord("i"), -3, history_size=3),
+            1: dcgm.ThermalMarginSample(1_000_000_000, -3, ord("i"), -3),
+            2: dcgm.ThermalMarginSample(1_000_000_000, 0, ord("i"), dcgmvalue.DCGM_INT64_BLANK),
+            3: dcgm.ThermalMarginSample(1_000_000_000, 0, ord("d"), -3),
+        }
+        assert reader.call_args.args[:4] == (123, 789, 456, 0)
+        latest.value.i64 = 100
+        assert samples[0].value == -3
+
+    def test_power_brake_and_thermal_margin_keep_independent_history_cursors(self, monkeypatch, field_history_watcher):
+        thermal_field_id = dcgm.DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].field_id
+        power_field_id = dcgm.DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"].field_id
+        calls = []
+        responses = [(thermal_field_id, 101), (power_field_id, 202), (thermal_field_id, 303), (power_field_id, 404)]
+
+        def read(handle, group, field_group, since, callback, user_data):
+            calls.append(since)
+            field_id, next_timestamp = responses[len(calls) - 1]
+            callback(dcgm.dcgm_fields.DCGM_FE_GPU, 0, [self._raw_field_sample(-3, field_id=field_id)], 1, user_data)
+            return next_timestamp
+
+        monkeypatch.setattr(dcgm.dcgm_agent, "dcgmGetValuesSince_v2", read, raising=False)
+        monkeypatch.setattr(
+            dcgm.dcgm_agent, "dcgmFieldValueEntityEnumeration_f", lambda callback: callback, raising=False
+        )
+        group = MagicMock()
+        group.GetId.return_value = 789
+        handle = SimpleNamespace(handle=123)
+
+        field_history_watcher._read_thermal_margin_samples(handle, group)
+        field_history_watcher._read_power_brake_samples(handle, group)
+        field_history_watcher._read_thermal_margin_samples(handle, group)
+        field_history_watcher._read_power_brake_samples(handle, group)
+
+        assert calls == [0, 0, 101, 202]
+
+    def test_excessive_shared_history_skips_only_affected_gpu_then_resumes(self, monkeypatch, field_history_watcher):
+        batches = [
+            (dcgm.dcgm_fields.DCGM_FE_GPU, 0, [self._raw_field_sample(5)] * (dcgm.THERMAL_HISTORY_SAMPLE_LIMIT + 1)),
+            (dcgm.dcgm_fields.DCGM_FE_GPU, 1, [self._raw_field_sample(-3)]),
+        ]
+        reader = self._install_history_reader(monkeypatch, batches)
+        result = field_history_watcher._evaluate_gpu_thermal_margin(SimpleNamespace(handle=123), MagicMock(), [0, 1])
+        assert result.evaluated_gpu_ids == {1}
+        assert set(result.entity_failures) == {1}
+        assert field_history_watcher._thermal_since_timestamp == 1_000_000_001
+
+        batches[:] = [(dcgm.dcgm_fields.DCGM_FE_GPU, 0, [self._raw_field_sample(-3, timestamp=1_010_000_000)])]
+        reader = self._install_history_reader(monkeypatch, batches, next_timestamp=1_010_000_001)
+        result = field_history_watcher._evaluate_gpu_thermal_margin(SimpleNamespace(handle=123), MagicMock(), [0, 1])
+        assert reader.call_args.args[3] == 1_000_000_001
+        assert result.evaluated_gpu_ids == {0}
+        assert set(result.entity_failures) == {0}
+
+    def test_api_failure_discards_partial_read_and_preserves_cursor(self, monkeypatch, field_history_watcher):
+        field_history_watcher._thermal_since_timestamp = 900_000_001
+        reader = self._install_history_reader(monkeypatch, [])
+
+        def fail(handle, group, field_group, since, callback, user_data):
+            callback(dcgm.dcgm_fields.DCGM_FE_GPU, 0, [self._raw_field_sample(10)], 1, user_data)
+            raise dcgm.dcgm_structs.DCGMError_Timeout("hostengine timeout")
+
+        reader.side_effect = fail
+        assert field_history_watcher._evaluate_gpu_thermal_margin(SimpleNamespace(handle=123), MagicMock(), [0]) is None
+        assert field_history_watcher._thermal_since_timestamp == 900_000_001
+
     @patch("pydcgm.DcgmGroup.__new__")
     def test_dcgm_create_group(self, mock_dcgm_group):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_handle_mock = MagicMock()
         dcgm_system_mock = MagicMock()
@@ -430,10 +602,10 @@ class TestDCGMHealthChecks:
 
     def test_perform_health_check_all_watch_pass(self):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -448,12 +620,111 @@ class TestDCGMHealthChecks:
         assert response == expected_response
         assert connectivity_success == True
 
+    def test_perform_health_check_marks_capacity_response_incomplete(self):
+        watcher = dcgm.DCGMWatcher(
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
+            callbacks=[],
+        )
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_WARN
+        capacity = dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS
+        mock_response.incidentCount = capacity
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * capacity)()
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+
+        assert connectivity_success is True
+        assert all(not details.is_complete for details in response.values())
+
+    def test_perform_health_check_uses_v2_incident_capacity_when_available(self, monkeypatch):
+        watcher = dcgm.DCGMWatcher(
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
+            callbacks=[],
+        )
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.incidentCount = 1
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+        monkeypatch.setattr(dcgm_structs, "DCGM_HEALTH_WATCH_MAX_INCIDENTS_V2", 1, raising=False)
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+
+        assert connectivity_success is True
+        assert all(not details.is_complete for details in response.values())
+
+    def test_incomplete_response_preserves_absent_incident_debounce_streak(self) -> None:
+        """A truncated response cannot prove an incident stopped occurring."""
+        watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
+        dcgm_group_mock = MagicMock()
+        down = [self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16)]
+
+        self._poll(watcher, dcgm_group_mock, down)
+        self._poll(watcher, dcgm_group_mock, down)
+        assert watcher._incident_streaks == {("DCGM_FR_NVLINK_DOWN", 1): 2}
+
+        truncated = dcgm_structs.c_dcgmHealthResponse_v4()
+        truncated.version = dcgm_structs.dcgmHealthResponse_version4
+        truncated.incidentCount = dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS
+        truncated.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+        dcgm_group_mock.health.Check.return_value = truncated
+        watcher._perform_health_check(dcgm_group_mock)
+
+        actual_fault = self._poll(watcher, dcgm_group_mock, down)
+        assert actual_fault["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
+
+    def test_health_callback_executor_preserves_poll_order_and_does_not_block_direct_callbacks(self):
+        first_started = Event()
+        release_first = Event()
+        observed: list[str] = []
+
+        class OrderedProcessor(FakeEventProcessorInTest):
+            def health_event_occurred(self, health_details, gpu_ids, switch_ids=None):
+                name = health_details["name"]
+                if name == "first":
+                    first_started.set()
+                    assert release_first.wait(1)
+                observed.append(name)
+
+            def dcgm_connectivity_failed(self):
+                observed.append("connectivity")
+                return True
+
+        processor = OrderedProcessor()
+        watcher = dcgm.DCGMWatcher(
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
+            callbacks=[processor],
+        )
+        try:
+            watcher._fire_callback_funcs("health_event_occurred", [{"name": "first"}, []])
+            assert first_started.wait(1)
+            watcher._fire_callback_funcs("health_event_occurred", [{"name": "second"}, []])
+
+            assert watcher._invoke_callback_funcs_sync("dcgm_connectivity_failed", [])
+            assert observed == ["connectivity"]
+
+            release_first.set()
+            watcher._callback_thread_pool.shutdown(wait=True)
+            assert observed == ["connectivity", "first", "second"]
+        finally:
+            release_first.set()
+
     def test_perform_health_check_one_watch_fail_single_entity_failure(self):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -461,7 +732,7 @@ class TestDCGMHealthChecks:
         mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_WARN
         mock_response.incidentCount = 1
         mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
-        mock_response.incidents[0] = self._get_pcie_incident(0, 1)
+        mock_response.incidents[0] = self._get_pcie_incident(dcgm_fields.DCGM_FE_GPU, 1)
         dcgm_group_mock.health.Check.return_value = mock_response()
 
         response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
@@ -482,10 +753,10 @@ class TestDCGMHealthChecks:
 
     def test_perform_health_check_one_watch_fail_multiple_entity_failure(self):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -493,8 +764,8 @@ class TestDCGMHealthChecks:
         mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_WARN
         mock_response.incidentCount = 2
         mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
-        mock_response.incidents[0] = self._get_pcie_incident(0, 1)
-        mock_response.incidents[1] = self._get_pcie_incident(0, 2)
+        mock_response.incidents[0] = self._get_pcie_incident(dcgm_fields.DCGM_FE_GPU, 1)
+        mock_response.incidents[1] = self._get_pcie_incident(dcgm_fields.DCGM_FE_GPU, 2)
         dcgm_group_mock.health.Check.return_value = mock_response()
 
         response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
@@ -522,10 +793,10 @@ class TestDCGMHealthChecks:
 
     def test_perform_health_check_keeps_gpu_and_switch_with_same_id_separate(self) -> None:
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -568,10 +839,10 @@ class TestDCGMHealthChecks:
         (see _suppress_configured_error_codes). Only NVLINK_DOWN false positives
         on non-NVLink GPUs are filtered per-incident during the check itself."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -579,7 +850,7 @@ class TestDCGMHealthChecks:
         mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_WARN
         mock_response.incidentCount = 1
         mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
-        mock_response.incidents[0] = self._get_power_throttle_incident(0, 1)
+        mock_response.incidents[0] = self._get_power_throttle_incident(dcgm_fields.DCGM_FE_GPU, 1)
         dcgm_group_mock.health.Check.return_value = mock_response()
 
         response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
@@ -602,10 +873,10 @@ class TestDCGMHealthChecks:
     def test_suppress_configured_error_codes_noop_by_default(self):
         """With no suppressed_error_codes configured, health_status is left untouched."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         health_status = watcher._get_health_status_dict()
         health_status["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
@@ -629,11 +900,13 @@ class TestDCGMHealthChecks:
         """A DCGM health-watch incident (e.g. GpuPowerWatch) matching a suppressed
         error code is dropped and the watch reverts to PASS."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                suppressed_error_codes=frozenset({"DCGM_FR_CLOCK_THROTTLE_POWER"}),
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            suppressed_error_codes=frozenset({"DCGM_FR_CLOCK_THROTTLE_POWER"}),
         )
         health_status = watcher._get_health_status_dict()
         health_status["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
@@ -656,11 +929,13 @@ class TestDCGMHealthChecks:
     def test_suppress_configured_error_codes_only_suppresses_matching_entities(self):
         """A genuine (non-suppressed) incident on another GPU/watch must still be reported."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                suppressed_error_codes=frozenset({"DCGM_FR_CLOCK_THROTTLE_POWER"}),
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            suppressed_error_codes=frozenset({"DCGM_FR_CLOCK_THROTTLE_POWER"}),
         )
         health_status = watcher._get_health_status_dict()
         health_status["DCGM_HEALTH_WATCH_POWER"] = dcgm.types.HealthDetails(
@@ -707,11 +982,13 @@ class TestDCGMHealthChecks:
         such as GpuThermalMarginWatch (custom field monitoring), not just native
         DCGM health check incidents."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                suppressed_error_codes=frozenset({"GPU_TEMP_HW_SLOWDOWN_VIOLATION"}),
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            suppressed_error_codes=frozenset({"GPU_TEMP_HW_SLOWDOWN_VIOLATION"}),
         )
         health_status = watcher._get_health_status_dict()
         health_status["DCGM_HEALTH_WATCH_THERMAL_MARGIN"] = dcgm.types.HealthDetails(
@@ -743,18 +1020,20 @@ class TestDCGMHealthChecks:
         incident.error.msg = error_msg
         incident.error.code = error_code
         incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
-        incident.entityInfo.entityGroupId = 0
+        incident.entityInfo.entityGroupId = dcgm_fields.DCGM_FE_GPU
         incident.entityInfo.entityId = entity_id
         return incident
 
     def _make_suppressing_watcher(self, codes: set[str], **kwargs) -> dcgm.DCGMWatcher:
         return dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                suppressed_error_codes=frozenset(codes),
+                **kwargs,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            suppressed_error_codes=frozenset(codes),
-            **kwargs,
         )
 
     def _poll_with_suppression(self, watcher: dcgm.DCGMWatcher, dcgm_group_mock: MagicMock, incidents: list) -> dict:
@@ -814,7 +1093,7 @@ class TestDCGMHealthChecks:
             MagicMock(),
             [
                 self._get_nvlink_watch_incident(0, dcgm_errors.DCGM_FR_IMEX_UNHEALTHY, "GPU 0 IMEX is not healthy"),
-                self._get_nvlink_incident(0, 1, 16),
+                self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16),
             ],
         )
 
@@ -850,7 +1129,9 @@ class TestDCGMHealthChecks:
         dcgm_group_mock = MagicMock()
 
         for _ in range(3):
-            health_status = self._poll_with_suppression(watcher, dcgm_group_mock, [self._get_nvlink_incident(0, 1, 16)])
+            health_status = self._poll_with_suppression(
+                watcher, dcgm_group_mock, [self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16)]
+            )
             assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
 
         assert watcher._incident_streaks == {}
@@ -870,11 +1151,13 @@ class TestDCGMHealthChecks:
 
     def _make_debounce_watcher(self, thresholds: dict[str, int]) -> dcgm.DCGMWatcher:
         return dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                health_check_min_consecutive_polls=thresholds,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            health_check_min_consecutive_polls=thresholds,
         )
 
     @staticmethod
@@ -902,7 +1185,7 @@ class TestDCGMHealthChecks:
         """With no thresholds configured, an incident is published on the poll it appears."""
         watcher = self._make_debounce_watcher({})
 
-        health_status = self._poll(watcher, MagicMock(), [self._get_nvlink_incident(0, 1, 16)])
+        health_status = self._poll(watcher, MagicMock(), [self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16)])
 
         assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
         # Unconfigured codes are never tracked, so the dict stays empty.
@@ -912,7 +1195,7 @@ class TestDCGMHealthChecks:
         """A threshold of 2 withholds the first observation and publishes the second."""
         watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
         dcgm_group_mock = MagicMock()
-        incidents = [self._get_nvlink_incident(0, 1, 16)]
+        incidents = [self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16)]
 
         first = self._poll(watcher, dcgm_group_mock, incidents)
         assert first["DCGM_HEALTH_WATCH_NVLINK"] == dcgm.types.HealthDetails(
@@ -927,7 +1210,7 @@ class TestDCGMHealthChecks:
         """A sustained fault keeps publishing once the threshold is met."""
         watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
         dcgm_group_mock = MagicMock()
-        incidents = [self._get_nvlink_incident(0, 1, 16)]
+        incidents = [self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16)]
 
         self._poll(watcher, dcgm_group_mock, incidents)
 
@@ -942,7 +1225,10 @@ class TestDCGMHealthChecks:
         the debounce is defeated."""
         watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
         dcgm_group_mock = MagicMock()
-        two_links_one_gpu = [self._get_nvlink_incident(0, 3, 16), self._get_nvlink_incident(0, 3, 17)]
+        two_links_one_gpu = [
+            self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 3, 16),
+            self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 3, 17),
+        ]
 
         first = self._poll(watcher, dcgm_group_mock, two_links_one_gpu)
         assert first["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
@@ -959,7 +1245,7 @@ class TestDCGMHealthChecks:
         """A link down on alternate polls never reaches its threshold."""
         watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
         dcgm_group_mock = MagicMock()
-        down = [self._get_nvlink_incident(0, 1, 16)]
+        down = [self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16)]
 
         for incidents in (down, [], down, [], down):
             health_status = self._poll(watcher, dcgm_group_mock, incidents)
@@ -972,11 +1258,14 @@ class TestDCGMHealthChecks:
         watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
         dcgm_group_mock = MagicMock()
 
-        self._poll(watcher, dcgm_group_mock, [self._get_nvlink_incident(0, 1, 16)])
+        self._poll(watcher, dcgm_group_mock, [self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16)])
         health_status = self._poll(
             watcher,
             dcgm_group_mock,
-            [self._get_nvlink_incident(0, 1, 16), self._get_nvlink_incident(0, 2, 16)],
+            [
+                self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16),
+                self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 2, 16),
+            ],
         )
 
         failures = health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures
@@ -990,7 +1279,10 @@ class TestDCGMHealthChecks:
         health_status = self._poll(
             watcher,
             MagicMock(),
-            [self._get_nvlink_incident(0, 1, 16), self._get_pcie_incident(0, 1)],
+            [
+                self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16),
+                self._get_pcie_incident(dcgm_fields.DCGM_FE_GPU, 1),
+            ],
         )
 
         assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures == {}
@@ -1001,7 +1293,7 @@ class TestDCGMHealthChecks:
         DCGM timeout still publishes on its next observation."""
         watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 2})
         dcgm_group_mock = MagicMock()
-        incidents = [self._get_nvlink_incident(0, 1, 16)]
+        incidents = [self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16)]
 
         self._poll(watcher, dcgm_group_mock, incidents)
 
@@ -1021,7 +1313,14 @@ class TestDCGMHealthChecks:
         before = counter._value.get()
 
         # Two links on GPU 1 in one poll must count once, not twice.
-        self._poll(watcher, MagicMock(), [self._get_nvlink_incident(0, 1, 16), self._get_nvlink_incident(0, 1, 17)])
+        self._poll(
+            watcher,
+            MagicMock(),
+            [
+                self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16),
+                self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 17),
+            ],
+        )
 
         assert counter._value.get() == before + 1
 
@@ -1029,7 +1328,7 @@ class TestDCGMHealthChecks:
         """A configured threshold of 1 is today's behaviour, so no streak is kept."""
         watcher = self._make_debounce_watcher({"DCGM_FR_NVLINK_DOWN": 1})
 
-        health_status = self._poll(watcher, MagicMock(), [self._get_nvlink_incident(0, 1, 16)])
+        health_status = self._poll(watcher, MagicMock(), [self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 16)])
 
         assert health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
         assert watcher._health_check_min_consecutive_polls == {}
@@ -1037,10 +1336,10 @@ class TestDCGMHealthChecks:
     def test_perform_health_check_multiple_failures_same_gpu(self):
         """Test that multiple failures for the same GPU are aggregated into a single error message."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -1050,10 +1349,10 @@ class TestDCGMHealthChecks:
         mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
 
         # Simulate 4 NvLink failures for GPU 0 (links 8, 9, 14, 15)
-        mock_response.incidents[0] = self._get_nvlink_incident(0, 0, 8)
-        mock_response.incidents[1] = self._get_nvlink_incident(0, 0, 9)
-        mock_response.incidents[2] = self._get_nvlink_incident(0, 0, 14)
-        mock_response.incidents[3] = self._get_nvlink_incident(0, 0, 15)
+        mock_response.incidents[0] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 0, 8)
+        mock_response.incidents[1] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 0, 9)
+        mock_response.incidents[2] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 0, 14)
+        mock_response.incidents[3] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 0, 15)
         dcgm_group_mock.health.Check.return_value = mock_response()
 
         response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
@@ -1094,10 +1393,10 @@ class TestDCGMHealthChecks:
     def test_perform_health_check_multiple_gpus_multiple_failures_each(self):
         """Test that multiple failures across multiple GPUs are properly handled."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -1107,14 +1406,14 @@ class TestDCGMHealthChecks:
         mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
 
         # Simulate 4 NvLink failures for GPU 0 and 4 for GPU 1
-        mock_response.incidents[0] = self._get_nvlink_incident(0, 0, 8)
-        mock_response.incidents[1] = self._get_nvlink_incident(0, 0, 9)
-        mock_response.incidents[2] = self._get_nvlink_incident(0, 0, 14)
-        mock_response.incidents[3] = self._get_nvlink_incident(0, 0, 15)
-        mock_response.incidents[4] = self._get_nvlink_incident(0, 1, 8)
-        mock_response.incidents[5] = self._get_nvlink_incident(0, 1, 9)
-        mock_response.incidents[6] = self._get_nvlink_incident(0, 1, 12)
-        mock_response.incidents[7] = self._get_nvlink_incident(0, 1, 13)
+        mock_response.incidents[0] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 0, 8)
+        mock_response.incidents[1] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 0, 9)
+        mock_response.incidents[2] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 0, 14)
+        mock_response.incidents[3] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 0, 15)
+        mock_response.incidents[4] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 8)
+        mock_response.incidents[5] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 9)
+        mock_response.incidents[6] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 12)
+        mock_response.incidents[7] = self._get_nvlink_incident(dcgm_fields.DCGM_FE_GPU, 1, 13)
         dcgm_group_mock.health.Check.return_value = mock_response()
 
         response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
@@ -1146,10 +1445,10 @@ class TestDCGMHealthChecks:
     def test_start(self, mock_dcgm_group, mock_dcgm_handle):
         event_processor_test = FakeEventProcessorInTest()
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[event_processor_test],
-            dcgm_k8s_service_enabled=False,
         )
         exit = MagicMock(spec=Event)
         exit.is_set.side_effect = [False, False, False, True]
@@ -1177,11 +1476,13 @@ class TestDCGMHealthChecks:
     @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
     def test_local_managed_exposes_in_process_embedded_handle(self, mock_handle, mock_run_server):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                dcgm_mode="local-managed",
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            dcgm_mode="local-managed",
         )
 
         handle = watcher._create_dcgm_handle()
@@ -1194,11 +1495,13 @@ class TestDCGMHealthChecks:
     @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
     def test_local_managed_stops_embedded_handle_when_server_start_fails(self, mock_handle, _mock_run_server):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                dcgm_mode="local-managed",
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            dcgm_mode="local-managed",
         )
 
         with pytest.raises(RuntimeError, match="bind failed"):
@@ -1210,11 +1513,13 @@ class TestDCGMHealthChecks:
     @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
     def test_local_managed_rejects_non_loopback_address(self, mock_handle, mock_run_server):
         watcher = dcgm.DCGMWatcher(
-            addr="dcgm-hostengine.nvsentinel.svc:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="dcgm-hostengine.nvsentinel.svc:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                dcgm_mode="local-managed",
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            dcgm_mode="local-managed",
         )
 
         with pytest.raises(ValueError, match="requires a loopback DCGM address"):
@@ -1241,11 +1546,13 @@ class TestDCGMHealthChecks:
     def test_remote_mode_connects_to_addr(self, mock_handle):
         """remote mode connects to the configured DCGM address over the network."""
         watcher = dcgm.DCGMWatcher(
-            addr="dcgm-hostengine.nvsentinel.svc:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="dcgm-hostengine.nvsentinel.svc:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=True,
+                dcgm_mode="remote",
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=True,
-            dcgm_mode="remote",
         )
 
         handle = watcher._create_dcgm_handle()
@@ -1257,11 +1564,13 @@ class TestDCGMHealthChecks:
 
     def test_get_dcgm_handle_returns_none_on_error(self):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                dcgm_mode="local-managed",
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
-            dcgm_mode="local-managed",
         )
         watcher._create_dcgm_handle = MagicMock(side_effect=Exception("boom"))
 
@@ -1270,10 +1579,10 @@ class TestDCGMHealthChecks:
     def test_perform_health_check_connectivity_failure_timeout(self):
         """Test that connectivity failure is detected when DCGM health check times out."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         # Simulate timeout exception - DCGMError_Timeout doesn't take message parameter
@@ -1288,10 +1597,10 @@ class TestDCGMHealthChecks:
     def test_perform_health_check_connectivity_failure_generic_error(self):
         """Test that connectivity failure is detected when DCGM health check raises generic exception."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         # Simulate generic exception
@@ -1306,10 +1615,10 @@ class TestDCGMHealthChecks:
     def test_perform_health_check_watch_all_incident(self):
         """Test that DCGM_HEALTH_WATCH_ALL incidents are processed correctly."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -1325,7 +1634,7 @@ class TestDCGMHealthChecks:
         incident.error.msg = "XID 95 detected on GPU 0"
         incident.error.code = dcgm_errors.DCGM_FR_PCI_REPLAY_RATE
         incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
-        incident.entityInfo.entityGroupId = 0
+        incident.entityInfo.entityGroupId = dcgm_fields.DCGM_FE_GPU
         incident.entityInfo.entityId = 0
         mock_response.incidents[0] = incident
         dcgm_group_mock.health.Check.return_value = mock_response()
@@ -1340,10 +1649,10 @@ class TestDCGMHealthChecks:
     def test_perform_health_check_unknown_error_code(self):
         """Test that incidents with unknown error codes use DCGM_FR_UNKNOWN fallback."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -1359,7 +1668,7 @@ class TestDCGMHealthChecks:
         incident.error.msg = "Some future error"
         incident.error.code = 99999
         incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
-        incident.entityInfo.entityGroupId = 0
+        incident.entityInfo.entityGroupId = dcgm_fields.DCGM_FE_GPU
         incident.entityInfo.entityId = 1
         mock_response.incidents[0] = incident
         dcgm_group_mock.health.Check.return_value = mock_response()
@@ -1371,15 +1680,16 @@ class TestDCGMHealthChecks:
         assert 1 in response["DCGM_HEALTH_WATCH_PCIE"].entity_failures
         assert response["DCGM_HEALTH_WATCH_PCIE"].entity_failures[1][0].code == "DCGM_FR_UNKNOWN"
 
+    @pytest.mark.parametrize("attributes_supported", [True, False])
     @patch("pydcgm.DcgmHandle")
     @patch("pydcgm.DcgmGroup")
-    def test_initialize_dcgm_monitoring(self, mock_dcgm_group, mock_dcgm_handle):
+    def test_initialize_dcgm_monitoring(self, mock_dcgm_group, mock_dcgm_handle, attributes_supported):
         """Test that _initialize_dcgm_monitoring properly sets up monitoring components."""
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
 
         # Setup mocks
@@ -1394,6 +1704,8 @@ class TestDCGMHealthChecks:
         dcgm_system_mock.discovery.GetGpuAttributes.return_value = MagicMock(
             identifiers=MagicMock(serial="TEST_SERIAL")
         )
+        if not attributes_supported:
+            dcgm_system_mock.discovery.GetGpuAttributes.side_effect = dcgm_structs.DCGMError_FunctionNotFound()
         dcgm_handle_mock.GetSystem.return_value = dcgm_system_mock
 
         # Call the method
@@ -1406,7 +1718,7 @@ class TestDCGMHealthChecks:
         assert hasattr(group, "GetGpuIds")
         assert gpu_ids == [0, 1, 2, 3]
         assert switch_ids == [0, 1, 2, 3]
-        assert len(gpu_serials) == 4
+        assert gpu_serials == ({gpu_id: "TEST_SERIAL" for gpu_id in gpu_ids} if attributes_supported else {})
         # Verify that health.Set was called on the actual group object
         group.health.Set.assert_called_once()
 
@@ -1419,10 +1731,10 @@ class TestDCGMHandleLeakFix:
 
     def _make_watcher(self):
         return dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
 
     @pytest.mark.parametrize(
@@ -1487,10 +1799,10 @@ class TestSuppressNvlinkDownOnPcieGpus:
 
     def _make_watcher(self):
         return dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
         )
 
     @pytest.mark.parametrize(
@@ -1559,12 +1871,14 @@ class TestSuppressNvlinkDownOnPcieGpus:
         suppress_unbridged_pcie: bool = False,
     ) -> dcgm.DCGMWatcher:
         return dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                suppress_unbridged_pcie_nvlink_down=suppress_unbridged_pcie,
+            ),
             callbacks=[],
-            dcgm_k8s_service_enabled=False,
             metadata_reader=metadata_reader,
-            suppress_unbridged_pcie_nvlink_down=suppress_unbridged_pcie,
         )
 
     def _make_nvlink_incident(self, entity_id: int, msg: str, error_code: int) -> "dcgm_structs.c_dcgmIncidentInfo_t":
@@ -1575,7 +1889,7 @@ class TestSuppressNvlinkDownOnPcieGpus:
         incident.error.msg = msg
         incident.error.code = error_code
         incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
-        incident.entityInfo.entityGroupId = 0
+        incident.entityInfo.entityGroupId = dcgm_fields.DCGM_FE_GPU
         incident.entityInfo.entityId = entity_id
         return incident
 
@@ -1690,22 +2004,28 @@ class TestSuppressNvlinkDownOnPcieGpus:
         assert 0 not in details.entity_failures
         assert details.entity_failures[1][0].code == "DCGM_FR_NVLINK_DOWN"
 
-    def test_mixed_codes_same_gpu_preserves_genuine_incident(self, tmp_path: Path) -> None:
-        """Regression: a genuine non-NVLINK_DOWN incident aggregated on the same
-        GPU and watch survives suppression of the NVLINK_DOWN false positives.
-
-        NVLINK_DOWN arrives first, so aggregate-level suppression (keyed on the
-        first incident's code) would have deleted the whole entry and dropped
-        the genuine threshold incident with it."""
+    @pytest.mark.parametrize(
+        "critical_health", [None, dcgm_structs.DCGM_HEALTH_RESULT_WARN, dcgm_structs.DCGM_HEALTH_RESULT_FAIL]
+    )
+    def test_mixed_codes_same_gpu_preserves_genuine_incident(self, tmp_path: Path, critical_health) -> None:
+        """A genuine incident survives either topology or configured-code suppression."""
         reader = make_metadata_reader(tmp_path, [A100_PCIE_UNBRIDGED])
         watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+        suppressed_incidents = [self._nvlink_down_incident(0, 8), self._nvlink_down_incident(0, 9)]
+        if critical_health is not None:
+            watcher._suppressed_error_codes = frozenset({"DCGM_FR_NVLINK_ERROR_CRITICAL"})
+            watcher._error_codes[71] = "DCGM_FR_NVLINK_ERROR_CRITICAL"
+            for incident in suppressed_incidents:
+                incident.error.code = 71
+                incident.health = critical_health
+                incident.error.msg = "GPU 0 NVLink recovery counter is nonzero"
 
         health_status = self._run_health_check(
             watcher,
             [
-                self._nvlink_down_incident(0, 8),
+                suppressed_incidents[0],
                 self._nvlink_threshold_incident(0),
-                self._nvlink_down_incident(0, 9),
+                suppressed_incidents[1],
             ],
         )
 
@@ -1714,6 +2034,8 @@ class TestSuppressNvlinkDownOnPcieGpus:
         assert details.entity_failures[0][0].code == "DCGM_FR_NVLINK_ERROR_THRESHOLD"
         assert details.entity_failures[0][0].message == "GPU 0 NVLink error threshold exceeded"
         assert "currently down" not in details.entity_failures[0][0].message
+
+        assert self._run_health_check(watcher, suppressed_incidents) == watcher._get_health_status_dict()
 
     def test_no_suppress_when_metadata_unavailable(self) -> None:
         """Metadata file missing: incident NOT suppressed (fail closed)."""
@@ -1888,11 +2210,13 @@ class TestProbeWatchdog:
 class TestDCGMWatcherProbeWatchdog:
     def _make_watcher(self, probe_deadline_seconds: float, callbacks=None) -> dcgm.DCGMWatcher:
         return dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                probe_deadline_seconds=probe_deadline_seconds,
+            ),
             callbacks=callbacks if callbacks is not None else [],
-            dcgm_k8s_service_enabled=False,
-            probe_deadline_seconds=probe_deadline_seconds,
         )
 
     def test_watchdog_disabled_when_deadline_not_positive(self):
@@ -1970,10 +2294,10 @@ class TestDCGMWatcherHangSafeOrdering:
                 return delivered
 
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False
+            ),
             callbacks=[SignallingProcessor()],
-            dcgm_k8s_service_enabled=False,
         )
 
         # Saturate the shared callback executor. Critical connectivity delivery
@@ -2010,11 +2334,13 @@ class TestDCGMWatcherHangSafeOrdering:
     @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
     def test_thermal_margin_evaluation_is_probe_tracked(self, mock_dcgm_handle, mock_dcgm_group):
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555",
-            poll_interval_seconds=10,
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                probe_deadline_seconds=30,
+            ),
             callbacks=[FakeEventProcessorInTest()],
-            dcgm_k8s_service_enabled=False,
-            probe_deadline_seconds=30,
         )
         observed = {}
         watcher._evaluate_gpu_thermal_margin = lambda *_: observed.update(operation=watcher._probe_watchdog._operation)

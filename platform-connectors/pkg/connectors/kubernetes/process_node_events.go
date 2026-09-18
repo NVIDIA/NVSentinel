@@ -34,6 +34,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -50,8 +51,7 @@ const (
 
 // updateNodeConditions updates node conditions for a single node.
 // All healthEvents must belong to the same node; callers must partition by NodeName.
-// updateNodeConditions folds one node's events of a batch into its conditions.
-// The events must be in timestamp order: processHealthEvents sorts the whole
+// The events must be in timestamp order: prepareHealthEventWrites sorts the whole
 // batch once, for this path and the Event path alike.
 func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []*protos.HealthEvent) (bool, error) {
 	nodeName := ""
@@ -74,7 +74,7 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 
 	skipped := false
 
-	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
+	err := retryKubernetesAPIWrite(ctx, func(err error) bool {
 		isRetriable := apierrors.IsConflict(err) || isTemporaryError(err)
 		if isRetriable {
 			span.AddEvent("platform_connector.k8s.update_node_conditions_failed",
@@ -726,103 +726,38 @@ func (r *K8sConnector) forgetNodeCheck(nodeName, checkName string, recovered []s
 	}
 }
 
-// refreshNodeEvent bumps the count and timestamp of the Event written for this
-// fault before, which carries the same derived name as event. It returns
-// (true, nil) on success, (false, nil) when the Event is gone and a fresh one
-// should be created, and (true, error) for other lookup or update failures.
+// refreshNodeEvent reconciles the named fault's Event. It returns false when
+// the Event disappeared and should be created again.
 func (r *K8sConnector) refreshNodeEvent(
-	ctx context.Context, span trace.Span, entities []string, event *corev1.Event, nodeName string,
+	ctx context.Context, event *corev1.Event, nodeName string,
 ) (bool, error) {
-	name := event.Name
+	_, err := r.reconcileNodeEvent(ctx, event)
+	if apierrors.IsNotFound(err) {
+		r.forgetNodeEvent(nodeName, event)
 
-	existingEvent, getErr := r.clientset.CoreV1().Events(DefaultNamespace).Get(ctx, name, metav1.GetOptions{})
-
-	switch {
-	case getErr == nil:
-		existingEvent.Count++
-		existingEvent.LastTimestamp = event.LastTimestamp
-
-		_, err := r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, existingEvent, metav1.UpdateOptions{})
-
-		switch {
-		case err == nil:
-			r.rememberNodeEvent(nodeName, event, entities)
-			nodeEventOperationsCounter.WithLabelValues(OperationUpdate, StatusSuccess).Inc()
-
-			return true, nil
-		case apierrors.IsNotFound(err):
-			// Deleted between lookup and update: fall through and create a fresh event.
-		default:
-			nodeEventOperationsCounter.WithLabelValues(OperationUpdate, StatusFailed).Inc()
-			span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
-				attribute.String("platform_connector.k8s.error.type", "node_event_update_failed"),
-				attribute.String("platform_connector.k8s.error.message", err.Error()),
-			))
-
-			return true, fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
-		}
-	case apierrors.IsNotFound(getErr):
-		// The Event expired or was deleted: fall through and create a fresh event.
-	default:
-		return true, fmt.Errorf("failed to look up event %s for node %s: %w", name, nodeName, getErr)
+		return false, nil
 	}
 
-	// The Event is gone; forget it so the next report creates a fresh one.
-	r.forgetNodeEvent(nodeName, event)
-
-	return false, nil
+	return true, err
 }
 
-// createOrRefreshNodeEvent creates the fault's Event. When it already exists,
-// written by another replica or by an earlier life of this one, it refreshes
-// that Event instead of writing a second one. An Event that disappears
-// between the create and the refresh is not chased: the next report of the
-// fault creates it again.
-func (r *K8sConnector) createOrRefreshNodeEvent(
-	ctx context.Context, span trace.Span, event *corev1.Event, nodeName string, entities []string,
-) error {
-	_, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
-
-	switch {
-	case err == nil:
-		r.rememberNodeEvent(nodeName, event, entities)
-		nodeEventOperationsCounter.WithLabelValues(OperationCreate, StatusSuccess).Inc()
-
-		return nil
-	case apierrors.IsAlreadyExists(err):
-		refreshed, refreshErr := r.refreshNodeEvent(ctx, span, entities, event, nodeName)
-		if refreshErr == nil && !refreshed {
-			// Gone between the create and the refresh: not chased, the next
-			// report creates it again, but the write did not happen.
-			nodeEventOperationsCounter.WithLabelValues(OperationCreate, StatusSkipped).Inc()
-		}
-
-		return refreshErr
-	default:
-		nodeEventOperationsCounter.WithLabelValues(OperationCreate, StatusFailed).Inc()
-
-		return fmt.Errorf("failed to create event for node %s: %w", nodeName, err)
-	}
+// nodeEventWrite retains one occurrence across both client and connector retries.
+type nodeEventWrite struct {
+	event           *corev1.Event
+	entities        []string
+	createAttempted bool
 }
 
-// writeNodeEvent announces a non-fatal fault as a Kubernetes Event. The first
-// write of a fault creates the Event; a repeat refreshes it by its derived
-// name, a single-key GET, because an involvedObject LIST is an
-// unindexed full-range etcd scan. The name is derived from the fault, so a
-// replica with no memory of it (another replica wrote it, or this one
-// restarted or evicted the entry) learns from the create's AlreadyExists
-// answer and refreshes that Event instead of writing a second one. A repeat
-// inside nodeEventRefreshInterval is skipped without any API call.
-func (r *K8sConnector) writeNodeEvent(ctx context.Context, healthEvent *protos.HealthEvent) (bool, error) {
+// writeNodeEvent skips recently announced faults and reconciles pending writes
+// by their stable name. Recovery steps clear the memory before a recurrence.
+func (r *K8sConnector) writeNodeEvent(ctx context.Context, write *nodeEventWrite, nodeName string) (bool, error) {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.update_node_event")
 	defer span.End()
 
-	nodeName := healthEvent.NodeName
-	event := r.createK8sEvent(ctx, healthEvent)
-
+	event := write.event
 	span.SetAttributes(
 		attribute.String("platform_connector.k8s.event_reason", event.Reason),
-		attribute.String("platform_connector.k8s.event_type", string(event.Type)),
+		attribute.String("platform_connector.k8s.event_type", event.Type),
 	)
 
 	remembered, known := r.rememberedNodeEvent(nodeName, event)
@@ -832,32 +767,114 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, healthEvent *protos.H
 		return true, nil
 	}
 
-	entities := entityKeys(healthEvent)
-
-	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
+	err := retryKubernetesAPIWrite(ctx, func(err error) bool {
 		return apierrors.IsConflict(err) || isTemporaryError(err)
 	}, func() error {
 		if known {
-			refreshed, err := r.refreshNodeEvent(ctx, span, remembered.entities, event, nodeName)
+			refreshed, err := r.refreshNodeEvent(ctx, event, nodeName)
 			if refreshed {
 				return err
 			}
 
-			// Gone: a retry goes straight to the create.
 			known = false
 		}
 
-		return r.createOrRefreshNodeEvent(ctx, span, event, nodeName, entities)
+		_, err := r.createOrReconcileNodeEvent(ctx, write)
+
+		return err
 	})
 	if err != nil {
 		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("platform_connector.k8s.error.type", "write_node_event_failed"),
-			attribute.String("platform_connector.k8s.error.message", err.Error()),
-		)
+
+		return false, fmt.Errorf("failed to write event for node %s: %w", nodeName, err)
 	}
 
-	return false, err
+	r.rememberNodeEvent(nodeName, event, write.entities)
+
+	return false, nil
+}
+
+// createOrReconcileNodeEvent resolves an uncertain create before trying another POST.
+// The first attempt needs no lookup; later attempts create only after a NotFound.
+func (r *K8sConnector) createOrReconcileNodeEvent(ctx context.Context, write *nodeEventWrite) (*corev1.Event, error) {
+	if write.createAttempted {
+		existing, err := r.reconcileNodeEvent(ctx, write.event)
+		if !apierrors.IsNotFound(err) {
+			return existing, err
+		}
+	}
+
+	write.createAttempted = true
+
+	created, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, write.event, metav1.CreateOptions{})
+	if err == nil {
+		nodeEventOperationsCounter.WithLabelValues(OperationCreate, StatusSuccess).Inc()
+
+		return created, nil
+	}
+
+	if !apierrors.IsAlreadyExists(err) {
+		nodeEventOperationsCounter.WithLabelValues(OperationCreate, StatusFailed).Inc()
+
+		return nil, err
+	}
+
+	// A concurrent create can win after our lookup. Verify it rather than
+	// treating every name collision as the successful delivery of this event.
+	existing, lookupErr := r.reconcileNodeEvent(ctx, write.event)
+	if apierrors.IsNotFound(lookupErr) {
+		// The object was deleted between AlreadyExists and GET; retry the lookup.
+		return nil, apierrors.NewConflict(corev1.Resource("events"), write.event.Name, lookupErr)
+	}
+
+	return existing, lookupErr
+}
+
+// reconcileNodeEvent validates the fault behind a stable name. Its last timestamp
+// identifies the latest persisted occurrence: replay accepts it without increasing
+// Count, while a later occurrence refreshes the same Event. FirstTimestamp belongs
+// to the first occurrence and is preserved across replicas and restarts.
+func (r *K8sConnector) reconcileNodeEvent(ctx context.Context, event *corev1.Event) (*corev1.Event, error) {
+	existing, err := r.clientset.CoreV1().Events(DefaultNamespace).Get(ctx, event.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("look up pending event %s: %w", event.Name, err)
+	}
+
+	if !sameNodeEventFault(existing, event) {
+		return nil, fmt.Errorf("existing event %s does not match the pending write", event.Name)
+	}
+
+	// Kubernetes stores metav1.Time at second precision. An already persisted
+	// occurrence, or a newer one from another replica, must not be counted again.
+	if existing.LastTimestamp.Unix() >= event.LastTimestamp.Unix() {
+		return existing, nil
+	}
+
+	existing.Count++
+	existing.LastTimestamp = event.LastTimestamp
+
+	updated, err := r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, existing, metav1.UpdateOptions{})
+	if err != nil {
+		nodeEventOperationsCounter.WithLabelValues(OperationUpdate, StatusFailed).Inc()
+
+		return nil, fmt.Errorf("refresh pending event %s: %w", event.Name, err)
+	}
+
+	nodeEventOperationsCounter.WithLabelValues(OperationUpdate, StatusSuccess).Inc()
+
+	return updated, nil
+}
+
+// sameNodeEventFault checks immutable fault identity; timestamps and count vary
+// across occurrences now that the name identifies the fault rather than a report.
+func sameNodeEventFault(existing, expected *corev1.Event) bool {
+	return existing.InvolvedObject == expected.InvolvedObject &&
+		existing.Source == expected.Source &&
+		existing.Type == expected.Type &&
+		existing.Reason == expected.Reason &&
+		existing.Message == expected.Message &&
+		existing.ReportingController == expected.ReportingController &&
+		existing.ReportingInstance == expected.ReportingInstance
 }
 
 func (r *K8sConnector) updateHealthEventReason(checkName string, isHealthy bool) string {
@@ -969,54 +986,75 @@ func (r *K8sConnector) createK8sEvent(ctx context.Context, healthEvent *protos.H
 	}
 }
 
-func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *protos.HealthEvents) error {
+// kubernetesWrite is one independently retryable node status update or Event write.
+type kubernetesWrite struct {
+	operation string
+	nodeName  string
+	run       func(context.Context) error
+}
+
+// processHealthEvents executes one pass for synchronous callers. They receive
+// every failure and retain responsibility for retrying unacknowledged batches.
+func (r *K8sConnector) processHealthEvents(ctx context.Context, events *protos.HealthEvents) error {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.process_health_events")
 	defer span.End()
 
-	// One order for the whole batch: the condition and Event paths both see
-	// a recovery and a later return of the same fault in that order.
-	processableEvents := sortHealthEventsByTimestamp(filterProcessableEvents(ctx, healthEvents))
+	var failures []error
 
-	span.SetAttributes(
-		attribute.Int("platform_connector.k8s.processable_events", len(processableEvents)),
-	)
-
-	eventsByNode := groupEventsByNode(processableEvents)
-
-	var firstErr error
-
-	for _, nodeEvents := range eventsByNode {
-		if err := r.processNodeConditionUpdates(ctx, nodeEvents); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-
-			span.AddEvent("platform_connector.k8s.node_condition_update_error", trace.WithAttributes(
-				attribute.String("platform_connector.k8s.error.type", "node_condition_update_error"),
-				attribute.String("platform_connector.k8s.error.message", err.Error()),
-			))
+	for _, write := range r.prepareHealthEventWrites(ctx, events) {
+		if err := write.run(ctx); err != nil {
+			tracing.RecordError(span, err)
+			failures = append(failures, fmt.Errorf("%s write for node %s: %w", write.operation, write.nodeName, err))
 		}
 	}
 
-	if err := r.writeNodeEvents(ctx, span, processableEvents); err != nil && firstErr == nil {
-		firstErr = err
-	}
-
-	return firstErr
+	return errors.Join(failures...)
 }
 
-// writeNodeEvents writes the Kubernetes Events of a batch, which
-// processHealthEvents hands over in timestamp order like the condition path,
-// so a recovery and a later return of the same fault in one batch are seen in
-// that order. It returns the first write error.
-func (r *K8sConnector) writeNodeEvents(ctx context.Context, span trace.Span, events []*protos.HealthEvent) error {
-	var firstErr error
+// prepareHealthEventWrites fixes the work list once so retries cannot repeat successful writes.
+func (r *K8sConnector) prepareHealthEventWrites(
+	ctx context.Context, healthEvents *protos.HealthEvents,
+) []kubernetesWrite {
+	processableEvents := sortHealthEventsByTimestamp(filterProcessableEvents(ctx, healthEvents))
 
-	for _, healthEvent := range events {
+	var conditionEvents []*protos.HealthEvent
+
+	for _, event := range processableEvents {
+		if event.IsHealthy || event.IsFatal {
+			conditionEvents = append(conditionEvents, event)
+		}
+	}
+
+	eventsByNode := groupEventsByNode(conditionEvents)
+
+	nodeNames := make([]string, 0, len(eventsByNode))
+	for nodeName := range eventsByNode {
+		nodeNames = append(nodeNames, nodeName)
+	}
+
+	slices.Sort(nodeNames)
+
+	writes := make([]kubernetesWrite, 0, len(nodeNames)+len(processableEvents))
+	for _, nodeName := range nodeNames {
+		nodeEvents := eventsByNode[nodeName]
+		writes = append(writes, kubernetesWrite{
+			operation: "node_condition", nodeName: nodeName,
+			run: func(ctx context.Context) error { return r.processNodeConditionUpdates(ctx, nodeEvents) },
+		})
+	}
+
+	for _, healthEvent := range processableEvents {
 		if healthEvent.IsHealthy {
-			// The check recovered for these entities: their next fault is a
-			// change again, not a repeat of an Event already written.
-			r.forgetNodeCheck(healthEvent.NodeName, healthEvent.CheckName, entityKeys(healthEvent))
+			// Keep recovery in the same ordered work list: preparing it must not
+			// erase the memory before an earlier fault has finished retrying.
+			writes = append(writes, kubernetesWrite{
+				operation: "node_event", nodeName: healthEvent.NodeName,
+				run: func(context.Context) error {
+					r.forgetNodeCheck(healthEvent.NodeName, healthEvent.CheckName, entityKeys(healthEvent))
+
+					return nil
+				},
+			})
 
 			continue
 		}
@@ -1025,26 +1063,23 @@ func (r *K8sConnector) writeNodeEvents(ctx context.Context, span trace.Span, eve
 			continue
 		}
 
-		start := time.Now()
-		skipped, err := r.writeNodeEvent(ctx, healthEvent)
+		write := &nodeEventWrite{event: r.createK8sEvent(ctx, healthEvent), entities: entityKeys(healthEvent)}
+		writes = append(writes, kubernetesWrite{
+			operation: "node_event", nodeName: healthEvent.NodeName,
+			run: func(ctx context.Context) error {
+				start := time.Now()
+				skipped, err := r.writeNodeEvent(ctx, write, healthEvent.NodeName)
 
-		if !skipped {
-			nodeEventUpdateCreateDuration.Observe(float64(time.Since(start).Milliseconds()))
-		}
+				if !skipped {
+					nodeEventUpdateCreateDuration.Observe(float64(time.Since(start).Milliseconds()))
+				}
 
-		if err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("failed to write node event for %s: %w", healthEvent.NodeName, err)
-			}
-
-			span.AddEvent("platform_connector.k8s.node_event_write_failed", trace.WithAttributes(
-				attribute.String("platform_connector.k8s.error.type", "node_event_write_failed"),
-				attribute.String("platform_connector.k8s.error.message", err.Error()),
-			))
-		}
+				return err
+			},
+		})
 	}
 
-	return firstErr
+	return writes
 }
 
 func groupEventsByNode(events []*protos.HealthEvent) map[string][]*protos.HealthEvent {
@@ -1387,4 +1422,28 @@ func (r *K8sConnector) truncateNodeConditionMessage(messages []string) string {
 	}
 
 	return result.String()
+}
+
+// retryKubernetesAPIWrite preserves client-go's short retry policy while honoring
+// the batch deadline and connector shutdown during both API calls and backoff.
+func retryKubernetesAPIWrite(ctx context.Context, retryable func(error) bool, run func() error) error {
+	var lastErr error
+
+	err := wait.ExponentialBackoffWithContext(ctx, retry.DefaultRetry, func(context.Context) (bool, error) {
+		lastErr = run()
+		if lastErr == nil {
+			return true, nil
+		}
+
+		if retryable(lastErr) {
+			return false, nil
+		}
+
+		return false, lastErr
+	})
+	if wait.Interrupted(err) && ctx.Err() == nil {
+		return lastErr
+	}
+
+	return err
 }

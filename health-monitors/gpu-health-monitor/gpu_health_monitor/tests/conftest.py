@@ -46,6 +46,7 @@ class MockDCGMModule:
     DCGM_HEALTH_RESULT_PASS = 0
     DCGM_HEALTH_RESULT_WARN = 1
     DCGM_HEALTH_RESULT_FAIL = 2
+    DCGM_ST_OK = 0
 
     # Diag result constants
     DCGM_DIAG_RESULT_PASS = 0
@@ -57,14 +58,18 @@ class MockDCGMModule:
     DCGM_OPERATION_MODE_AUTO = 0
 
     # Entity constants
-    DCGM_FE_GPU = 0
-    DCGM_FE_SWITCH = 1
+    DCGM_FE_NONE = 0
+    DCGM_FE_GPU = 1
+    DCGM_FE_SWITCH = 3
 
     # Version constants
     dcgmHealthResponse_version4 = 4
 
     # Exception classes
     class DCGMError_Timeout(Exception):
+        pass
+
+    class DCGMError_FunctionNotFound(Exception):
         pass
 
     class IncidentArrayType(type):
@@ -175,8 +180,10 @@ class MockDCGMFields:
     """Mock DCGM fields module for testing."""
 
     # Entity group constants
-    DCGM_FE_GPU = 0
-    DCGM_FE_SWITCH = 1
+    DCGM_FE_NONE = 0
+    DCGM_FE_GPU = 1
+    DCGM_FE_SWITCH = 3
+    DCGM_FT_INT64 = "i"
 
     # Add device field constants as needed
     for i in range(320):  # Mock 320 device fields as expected by tests

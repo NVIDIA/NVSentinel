@@ -18,10 +18,12 @@ from . import types, metrics
 from gpu_health_monitor.metadata import MetadataReader, NVLinkDownExpectation
 from threading import Event, Lock, Thread
 from functools import partial
+from dataclasses import dataclass, replace
 from concurrent.futures import ThreadPoolExecutor
 from gpu_health_monitor.healthz import mark_alive as _mark_alive
 from collections.abc import Callable, Iterator
 import contextlib
+import ctypes
 from contextlib import AbstractContextManager
 import os
 import time
@@ -29,9 +31,23 @@ import time
 DELAY, MULTIPLIER, MAX_DELAY = 2, 1.5, 120
 DCGM_4_PYTHON_PATH = "/usr/share/datacenter-gpu-manager-4/bindings/python3"
 DCGM_CONNECTION_TYPE_TCP = 1
+# Wire identifiers also needed with older bindings talking to a 4.7 hostengine.
+DCGM_IMEX_HEALTH_WATCH_BIT = 0x2000
+DCGM_IMEX_UNHEALTHY_ERROR_CODE = 122
+# Exclude ConnectX until GHM supports NIC discovery and NIC health events.
+# GHM currently groups only GPUs and NVSwitches and cannot publish NIC incidents.
+# Including this watch would emit healthy GPU events without checking any NIC.
+# Integration needs stable NIC identities, valid telemetry, and NIC-specific
+# severity and recovery handling before this watch can be enabled safely.
+DCGM_CONNECTX_HEALTH_WATCH_BIT = 0x1000
 
 # How often the watchdog thread checks for an overdue probe.
 PROBE_WATCHDOG_INTERVAL_SECONDS = 1.0
+
+# GetValuesSince_v2 can truncate ascending history without flagging it. Both
+# DCGM 4.5.2 and 4.6.1 cap int64 reads at 130816 samples per entity/field.
+# Stay well below that limit so a retained prefix is never treated as latest.
+THERMAL_HISTORY_SAMPLE_LIMIT = 1024
 
 
 def _run_dcgm_server(port: int, bind_address: str) -> None:
@@ -71,7 +87,11 @@ def _first_defined(module: object, *names: str) -> int | None:
 
 
 DCGM_FIELDS_MONITORING: dict[str, types.DCGMFieldMonitor] = {}
-_gpu_temp_limit_field_id = getattr(dcgm_fields, "DCGM_FI_DEV_GPU_TEMP_TLIMIT", None)
+_gpu_temp_limit_field_id = _first_defined(
+    dcgm_fields,
+    "DCGM_FI_DEV_GPU_TEMP_MARGIN_CELSIUS",
+    "DCGM_FI_DEV_GPU_TEMP_TLIMIT",
+)
 if _gpu_temp_limit_field_id is not None:
     DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"] = types.DCGMFieldMonitor(
         field_id=_gpu_temp_limit_field_id,
@@ -103,6 +123,15 @@ HW_POWER_BRAKE_REASON_BIT = (
     )
     or 0x0000000000000080
 )
+
+
+@dataclass(frozen=True)
+class ThermalMarginSample:
+    timestamp: int
+    status: int
+    field_type: int
+    value: int
+    history_size: int = 1
 
 
 class ProbeWatchdog:
@@ -196,36 +225,28 @@ class ProbeWatchdog:
 class DCGMWatcher:
     def __init__(
         self,
-        addr: str,
-        poll_interval_seconds: int,
+        config: types.DCGMWatcherConfig,
         callbacks: list[types.CallbackInterface],
-        dcgm_k8s_service_enabled: bool,
-        thermal_margin_enabled: bool = False,
         metadata_reader: MetadataReader | None = None,
-        dcgm_mode: str = "remote",
-        suppressed_error_codes: frozenset[str] | None = None,
-        suppress_unbridged_pcie_nvlink_down: bool = False,
-        probe_deadline_seconds: float = 0.0,
-        power_brake_enabled: bool = False,
-        power_brake_min_consecutive_polls: int = 1,
-        health_check_min_consecutive_polls: dict[str, int] | None = None,
     ) -> None:
-        self._addr = addr
-        self._poll_interval_seconds = poll_interval_seconds
+        self._addr = config.addr
+        self._poll_interval_seconds = config.poll_interval_seconds
         self._callbacks = callbacks
-        self._suppressed_error_codes = frozenset(suppressed_error_codes or ())
+        self._imex_monitoring_enabled = config.imex_monitoring_enabled
+        log.info("DCGM IMEX monitoring enabled: %s", config.imex_monitoring_enabled)
+        self._suppressed_error_codes = frozenset(config.suppressed_error_codes or ())
         if self._suppressed_error_codes:
             log.info(f"Suppressing DCGM incidents for error codes: {sorted(self._suppressed_error_codes)}")
         thermal_margin_supported = "gputemplimitmonitoringenabled" in DCGM_FIELDS_MONITORING
-        self._thermal_margin_enabled = thermal_margin_enabled and thermal_margin_supported
-        if thermal_margin_enabled and not thermal_margin_supported:
+        self._thermal_margin_enabled = config.thermal_margin_enabled and thermal_margin_supported
+        if config.thermal_margin_enabled and not thermal_margin_supported:
             log.warning(
-                "GpuThermalMarginWatch requested but DCGM_FI_DEV_GPU_TEMP_TLIMIT (field 153) is unavailable; "
+                "GpuThermalMarginWatch requested but the thermal margin field (153) is unavailable; "
                 "disabling the optional monitor"
             )
         power_brake_supported = "gpupowerbrakemonitoringenabled" in DCGM_FIELDS_MONITORING
-        self._power_brake_enabled = power_brake_enabled and power_brake_supported
-        if power_brake_enabled and not power_brake_supported:
+        self._power_brake_enabled = config.power_brake_enabled and power_brake_supported
+        if config.power_brake_enabled and not power_brake_supported:
             log.warning(
                 "GpuPowerBrakeWatch requested but neither DCGM_FI_DEV_CLOCKS_EVENT_REASONS nor "
                 "DCGM_FI_DEV_CLOCK_THROTTLE_REASONS is available; disabling the optional monitor"
@@ -233,7 +254,7 @@ class DCGMWatcher:
         # A brake asserted for a single poll can be a load transient. Requiring N
         # consecutive observations before failing keeps that out of the event stream
         # without hiding a sustained assertion, which is the actionable case.
-        self._power_brake_min_consecutive_polls = max(1, power_brake_min_consecutive_polls)
+        self._power_brake_min_consecutive_polls = max(1, config.power_brake_min_consecutive_polls)
         self._power_brake_streaks: dict[int, int] = {}
         if self._power_brake_enabled:
             log.info(
@@ -249,7 +270,7 @@ class DCGMWatcher:
         # A threshold of 1 or less is today's behaviour, so those are dropped here
         # and no streak is ever tracked for them.
         self._health_check_min_consecutive_polls = {
-            code: polls for code, polls in (health_check_min_consecutive_polls or {}).items() if polls > 1
+            code: polls for code, polls in (config.health_check_min_consecutive_polls or {}).items() if polls > 1
         }
         self._incident_streaks: dict[tuple[str, types.EntityKey], int] = {}
         if self._health_check_min_consecutive_polls:
@@ -261,14 +282,16 @@ class DCGMWatcher:
                 ),
             )
         self._metadata_reader = metadata_reader
-        self._suppress_unbridged_pcie_nvlink_down = suppress_unbridged_pcie_nvlink_down
-        if suppress_unbridged_pcie_nvlink_down:
+        self._suppress_unbridged_pcie_nvlink_down = config.suppress_unbridged_pcie_nvlink_down
+        if config.suppress_unbridged_pcie_nvlink_down:
             log.info(
                 "Operator opted in to suppressing DCGM_FR_NVLINK_DOWN on unbridged "
                 "bridge-capable PCIe GPUs (zero active NVLink links by design)"
             )
         self._field_group = None
-        self._dcgm_mode = dcgm_mode
+        self._thermal_since_timestamp = 0
+        self._power_brake_since_timestamp = 0
+        self._dcgm_mode = config.dcgm_mode
 
         self._health_watches = self._get_available_health_watches()
         log.debug(f"Got available health watches {self._health_watches}")
@@ -277,13 +300,15 @@ class DCGMWatcher:
         self._error_codes = self._get_available_error_codes()
         log.debug(f"Got available error codes {self._error_codes}")
 
-        self._callback_thread_pool = ThreadPoolExecutor()
-        self._dcgm_k8s_service_enabled = dcgm_k8s_service_enabled
+        # Health snapshots change state and must reach callbacks in poll order.
+        # Critical connectivity and watchdog callbacks bypass this executor.
+        self._callback_thread_pool = ThreadPoolExecutor(max_workers=1)
+        self._dcgm_k8s_service_enabled = config.dcgm_k8s_service_enabled
 
         self._probe_watchdog: ProbeWatchdog | None = None
-        if probe_deadline_seconds > 0:
-            self._probe_watchdog = ProbeWatchdog(probe_deadline_seconds, self._report_probe_unresponsive)
-            log.info(f"DCGM probe watchdog enabled with a {probe_deadline_seconds:.1f}s deadline")
+        if config.probe_deadline_seconds > 0:
+            self._probe_watchdog = ProbeWatchdog(config.probe_deadline_seconds, self._report_probe_unresponsive)
+            log.info(f"DCGM probe watchdog enabled with a {config.probe_deadline_seconds:.1f}s deadline")
         else:
             log.warning("DCGM probe watchdog disabled; a driver that hangs instead of erroring will not be reported")
 
@@ -295,6 +320,7 @@ class DCGMWatcher:
                 and not "_COUNT_" in var
                 and not "DCGM_GROUP_MAX_ENTITIES" in var
                 and not "DCGM_HEALTH_WATCH_MAX_INCIDENTS" in var
+                and var != "DCGM_HEALTH_WATCH_CONNECTX"
             ):
                 health_watches[getattr(dcgm_structs, var)] = var
         log.info(f"dcgm_health_watches {health_watches}")
@@ -341,6 +367,8 @@ class DCGMWatcher:
     def _get_health_status_dict(self) -> dict[str, types.HealthDetails]:
         health_status = {}
         for system_name in self._health_watches.values():
+            if not self._imex_monitoring_enabled and system_name == "DCGM_HEALTH_WATCH_IMEX":
+                continue
             health_status[system_name] = types.HealthDetails(status=types.HealthStatus.PASS, entity_failures={})
         return health_status
 
@@ -587,6 +615,17 @@ class DCGMWatcher:
             log.debug(f"initial health status is {health_details}")
 
             health_status = self._get_health_status_dict()
+            incident_capacity = getattr(dcgm_structs, "DCGM_HEALTH_WATCH_MAX_INCIDENTS_V2", None)
+            if incident_capacity is None:
+                incident_capacity = dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS
+            response_is_complete = health_details.incidentCount < incident_capacity
+            if not response_is_complete:
+                for details in health_status.values():
+                    details.is_complete = False
+                log.warning(
+                    "DCGM health response reached incident capacity (%s); absent incidents cannot be treated as recovered",
+                    incident_capacity,
+                )
             # Group repeated incidents by watch, entity and error code.
             entity_failures_accumulator: dict[tuple[str, int, int, str], list[str]] = {}
             # One debounce decision per (error code, GPU) per poll. DCGM reports an
@@ -603,6 +642,14 @@ class DCGMWatcher:
 
             for i in range(health_details.incidentCount):
                 incident = health_details.incidents[i]
+                # Older servers report global IMEX failures under NVLink. Filter
+                # before aggregation so a real GPU 0 NVLink fault is preserved.
+                if not self._imex_monitoring_enabled and (
+                    incident.system == DCGM_IMEX_HEALTH_WATCH_BIT
+                    or incident.error.code == DCGM_IMEX_UNHEALTHY_ERROR_CODE
+                ):
+                    metrics.dcgm_health_check_suppressed_incidents.labels("DCGM_FR_IMEX_UNHEALTHY").inc()
+                    continue
                 log.debug(
                     f"Incident[{i}]: system={incident.system} (known={incident.system in self._health_watches}), "
                     f"health={incident.health}, error.code={incident.error.code}, "
@@ -622,6 +669,12 @@ class DCGMWatcher:
 
                 entity_group_id = incident.entityInfo.entityGroupId
                 entity_id = incident.entityInfo.entityId
+                if (
+                    entity_group_id == dcgm_fields.DCGM_FE_NONE
+                    and incident.error.code == DCGM_IMEX_UNHEALTHY_ERROR_CODE
+                ):
+                    # Preserve the existing event identity for global IMEX failures.
+                    entity_group_id = dcgm_fields.DCGM_FE_GPU
                 entity_key = entity_id if entity_group_id == dcgm_fields.DCGM_FE_GPU else (entity_group_id, entity_id)
                 fallback_error_code = self._error_codes.get(dcgm_errors.DCGM_FR_UNKNOWN, "DCGM_FR_UNKNOWN")
                 error_code = self._error_codes.get(incident.error.code, fallback_error_code)
@@ -670,7 +723,8 @@ class DCGMWatcher:
                     types.ErrorDetails(message="; ".join(messages), code=error_code)
                 )
 
-            self._reset_absent_incident_streaks(set(debounce_decisions))
+            if response_is_complete:
+                self._reset_absent_incident_streaks(set(debounce_decisions))
 
             log.debug(f"filled in health details is {health_status}")
             return health_status, True
@@ -685,8 +739,84 @@ class DCGMWatcher:
             # Return empty health status with connectivity failure flag
             return self._get_health_status_dict(), False
 
+    def _read_field_samples(
+        self,
+        dcgm_handle: pydcgm.DcgmHandle,
+        dcgm_group: pydcgm.DcgmGroup,
+        field_id: int,
+        since_timestamp: int,
+    ) -> tuple[dict[int, ThermalMarginSample], int]:
+        """Read new field samples through the public API shared by DCGM 4.5 and 4.6.
+
+        GetLatest uses a newer wire request in 4.6 that a 4.5 hostengine cannot
+        handle. Call GetValuesSince_v2 directly: the group convenience wrapper
+        still calls GetLatest on its first read. Keep only the newest sample
+        per GPU. The caller advances its own server timestamp cursor only on
+        success, so independently evaluated fields cannot consume each other's
+        samples.
+        """
+        samples: dict[int, ThermalMarginSample] = {}
+        sample_counts: dict[int, int] = {}
+
+        # Match DCGM's field-value enumeration callback signature.
+        def collect(
+            entity_group: int,
+            entity_id: int,
+            values: "ctypes._Pointer[dcgm_structs.c_dcgmFieldValue_v1]",
+            count: int,
+            _: int | None,
+        ) -> int:
+            if entity_group != dcgm_fields.DCGM_FE_GPU:
+                return 0
+            for index in range(count):
+                raw = values[index]
+                if raw.fieldId != field_id:
+                    continue
+                sample_counts[entity_id] = sample_counts.get(entity_id, 0) + 1
+                # The callback buffer is reused by DCGM; retain scalar copies.
+                sample = ThermalMarginSample(raw.ts, raw.status, raw.fieldType, raw.value.i64)
+                previous = samples.get(entity_id)
+                if previous is None or sample.timestamp >= previous.timestamp:
+                    samples[entity_id] = sample
+            return 0
+
+        callback = dcgm_agent.dcgmFieldValueEntityEnumeration_f(collect)
+        next_timestamp = dcgm_agent.dcgmGetValuesSince_v2(
+            dcgm_handle.handle,
+            dcgm_group.GetId(),
+            self._field_group.fieldGroupId,
+            since_timestamp,
+            callback,
+            None,
+        )
+        return (
+            {gpu_id: replace(sample, history_size=sample_counts[gpu_id]) for gpu_id, sample in samples.items()},
+            next_timestamp,
+        )
+
+    def _read_thermal_margin_samples(
+        self, dcgm_handle: pydcgm.DcgmHandle, dcgm_group: pydcgm.DcgmGroup
+    ) -> dict[int, ThermalMarginSample]:
+        field_id = DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].field_id
+        samples, next_timestamp = self._read_field_samples(
+            dcgm_handle, dcgm_group, field_id, self._thermal_since_timestamp
+        )
+        self._thermal_since_timestamp = next_timestamp
+        return samples
+
+    def _read_power_brake_samples(
+        self, dcgm_handle: pydcgm.DcgmHandle, dcgm_group: pydcgm.DcgmGroup
+    ) -> dict[int, ThermalMarginSample]:
+        field_id = DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"].field_id
+        samples, next_timestamp = self._read_field_samples(
+            dcgm_handle, dcgm_group, field_id, self._power_brake_since_timestamp
+        )
+        self._power_brake_since_timestamp = next_timestamp
+        return samples
+
     def _evaluate_gpu_thermal_margin(
         self,
+        dcgm_handle: pydcgm.DcgmHandle,
         dcgm_group: pydcgm.DcgmGroup,
         gpu_ids: list[int],
     ) -> types.HealthDetails | None:
@@ -703,17 +833,18 @@ class DCGMWatcher:
             return None
 
         monitor = DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"]
-        margin_details = types.HealthDetails(status=types.HealthStatus.PASS, entity_failures={})
+        margin_details = types.HealthDetails(
+            status=types.HealthStatus.PASS, entity_failures={}, evaluated_gpu_ids=set()
+        )
 
         try:
-            with metrics.dcgm_api_latency.labels("dcgm_field_153_get_latest").time():
-                field_values = dcgm_group.samples.GetLatest(self._field_group)
+            with metrics.dcgm_api_latency.labels("dcgm_field_153_get_since").time():
+                samples = self._read_thermal_margin_samples(dcgm_handle, dcgm_group)
         except Exception as e:
-            log.error("Error getting latest DCGM field 153 values for GpuThermalMarginWatch: %s", e)
-            metrics.dcgm_api_failures.labels("dcgm_field_153_get_latest").inc()
+            log.error("Error reading DCGM field 153 values for GpuThermalMarginWatch: %s", e)
+            metrics.dcgm_api_failures.labels("dcgm_field_153_get_since").inc()
             return None
 
-        evaluated = False
         for gpu_id in gpu_ids:
             slowdown_threshold = self._metadata_reader.get_slowdown_tlimit_c(gpu_id)
             if slowdown_threshold is None:
@@ -724,23 +855,26 @@ class DCGMWatcher:
                 metrics.gpu_temp_limit_slowdown_threshold_missing.inc()
                 continue
 
-            field_samples = field_values.values.get(gpu_id, {}).get(monitor.field_id, [])
-            if not field_samples:
-                log.warning("GPU %s field 153 margin unavailable; skipping thermal margin evaluation", gpu_id)
-                metrics.gpu_temp_limit_margin_blank.inc()
+            sample = samples.get(gpu_id)
+            reason = None
+            if sample is None:
+                reason = "no_sample"
+            elif sample.history_size > THERMAL_HISTORY_SAMPLE_LIMIT:
+                reason = "history_overflow"
+            elif sample.status != dcgm_structs.DCGM_ST_OK:
+                reason = "field_status"
+            elif sample.field_type != ord(dcgm_fields.DCGM_FT_INT64):
+                reason = "field_type"
+            elif dcgmvalue.DCGM_INT64_IS_BLANK(sample.value):
+                reason = "blank"
+            if reason is not None:
+                log.warning("GPU %s field 153 unavailable (%s, sample=%s); skipping evaluation", gpu_id, reason, sample)
+                if reason in ("no_sample", "blank"):
+                    metrics.gpu_temp_limit_margin_blank.inc()
                 continue
 
-            raw_margin = field_samples[0].value
-            try:
-                margin_c = int(raw_margin)
-            except (ValueError, TypeError):
-                log.warning(
-                    "GPU %s thermal margin value %r is not a valid integer; skipping thermal margin evaluation",
-                    gpu_id,
-                    raw_margin,
-                )
-                continue
-            evaluated = True
+            margin_c = sample.value
+            margin_details.evaluated_gpu_ids.add(gpu_id)
 
             if margin_c < slowdown_threshold:
                 log.debug(
@@ -764,13 +898,14 @@ class DCGMWatcher:
                     slowdown_threshold,
                 )
 
-        if not evaluated:
+        if not margin_details.evaluated_gpu_ids:
             return None
 
         return margin_details
 
     def _evaluate_gpu_power_brake(
         self,
+        dcgm_handle: pydcgm.DcgmHandle,
         dcgm_group: pydcgm.DcgmGroup,
         gpu_ids: list[int],
     ) -> types.HealthDetails | None:
@@ -795,53 +930,41 @@ class DCGMWatcher:
             return None
 
         monitor = DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"]
-        brake_details = types.HealthDetails(status=types.HealthStatus.PASS, entity_failures={})
+        brake_details = types.HealthDetails(status=types.HealthStatus.PASS, entity_failures={}, evaluated_gpu_ids=set())
 
         try:
             with metrics.dcgm_api_latency.labels("dcgm_clocks_event_reasons_get_latest").time():
-                field_values = dcgm_group.samples.GetLatest(self._field_group)
+                samples = self._read_power_brake_samples(dcgm_handle, dcgm_group)
         except Exception as e:
-            log.error("Error getting latest DCGM clocks-event-reasons values for GpuPowerBrakeWatch: %s", e)
+            log.error("Error reading DCGM clocks-event-reasons values for GpuPowerBrakeWatch: %s", e)
             metrics.dcgm_api_failures.labels("dcgm_clocks_event_reasons_get_latest").inc()
             return None
 
-        evaluated = False
         for gpu_id in gpu_ids:
-            field_samples = field_values.values.get(gpu_id, {}).get(monitor.field_id, [])
-            if not field_samples:
+            sample = samples.get(gpu_id)
+            reason = None
+            if sample is None:
+                reason = "no_sample"
+            elif sample.history_size > THERMAL_HISTORY_SAMPLE_LIMIT:
+                reason = "history_overflow"
+            elif sample.status != dcgm_structs.DCGM_ST_OK:
+                reason = "field_status"
+            elif sample.field_type != ord(dcgm_fields.DCGM_FT_INT64):
+                reason = "field_type"
+            elif dcgmvalue.DCGM_INT64_IS_BLANK(sample.value):
+                reason = "blank"
+            if reason is not None:
                 # Debug, not warning: a GPU that never reports this field would log
                 # on every poll. The counter below keeps it observable.
-                log.debug("GPU %s clocks-event-reasons unavailable; skipping power brake evaluation", gpu_id)
-                metrics.gpu_power_brake_reasons_blank.inc()
-                continue
-
-            raw_reasons = field_samples[0].value
-            try:
-                reasons_mask = int(raw_reasons)
-            except (ValueError, TypeError):
-                log.warning(
-                    "GPU %s clocks-event-reasons value %r is not a valid integer; skipping power brake evaluation",
-                    gpu_id,
-                    raw_reasons,
-                )
-                continue
-
-            # DCGM encodes "no data" as int64 sentinels (DCGM_INT64_BLANK and
-            # friends, 0x7ffffffffffffff0..f3) whose low byte has bit 0x80 set,
-            # so an unchecked blank would count as an asserted brake. Treat it
-            # like a missing sample: skip, keep the streak.
-            if dcgmvalue.DCGM_INT64_IS_BLANK(reasons_mask):
-                # Debug, not warning: a GPU whose field is unsupported returns a
-                # blank on every poll, which would flood the log. The counter keeps
-                # it observable without the noise.
                 log.debug(
-                    "GPU %s clocks-event-reasons value is blank (0x%x); skipping power brake evaluation",
-                    gpu_id,
-                    reasons_mask,
+                    "GPU %s clocks-event-reasons unavailable (%s); skipping power brake evaluation", gpu_id, reason
                 )
-                metrics.gpu_power_brake_reasons_blank.inc()
+                if reason in ("no_sample", "blank"):
+                    metrics.gpu_power_brake_reasons_blank.inc()
                 continue
-            evaluated = True
+
+            reasons_mask = sample.value
+            brake_details.evaluated_gpu_ids.add(gpu_id)
 
             if reasons_mask & HW_POWER_BRAKE_REASON_BIT:
                 streak = self._power_brake_streaks.get(gpu_id, 0) + 1
@@ -874,7 +997,7 @@ class DCGMWatcher:
             else:
                 self._power_brake_streaks.pop(gpu_id, None)
 
-        if not evaluated:
+        if not brake_details.evaluated_gpu_ids:
             return None
 
         return brake_details
@@ -940,12 +1063,22 @@ class DCGMWatcher:
         """
         dcgm_group, switch_ids = self._create_dcgm_group_with_all_entities(dcgm_handle)
         self._field_group = None
+        self._thermal_since_timestamp = 0
+        self._power_brake_since_timestamp = 0
         try:
             with metrics.dcgm_api_latency.labels("group_health_set").time():
-                dcgm_group.health.Set(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
+                health_mask = dcgm_structs.DCGM_HEALTH_WATCH_ALL & ~DCGM_CONNECTX_HEALTH_WATCH_BIT
+                if not self._imex_monitoring_enabled:
+                    health_mask &= ~DCGM_IMEX_HEALTH_WATCH_BIT
+                dcgm_group.health.Set(health_mask)
 
             gpu_ids = dcgm_group.GetGpuIds()
-            gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
+            try:
+                gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
+            except dcgm_structs.DCGMError_FunctionNotFound:
+                # Older 4.x servers cannot handle newer GPU attribute requests.
+                log.warning("DCGM server does not support GPU attribute requests; continuing without GPU serials")
+                gpu_serials = {}
             log.info(f"dcgm gpu_id are {gpu_ids}")
 
             # One field group covers every enabled field monitor; each evaluator
@@ -971,8 +1104,8 @@ class DCGMWatcher:
             if watched_fields:
                 self._field_group = pydcgm.DcgmFieldGroup(dcgm_handle, "nvsentinel_field_monitors", watched_fields)
                 update_freq_usec = self._poll_interval_seconds * 1_000_000
-                # We only read GetLatest, so retain a single most-recent sample per
-                # field: max_keep_age=0.0 (no time bound), max_keep_samples=1.
+                # Field monitors need only the newest sample. Other clients may
+                # retain more history; the thermal reader discards older samples.
                 max_keep_age_seconds = 0.0
                 max_keep_samples = 1
                 with metrics.dcgm_api_latency.labels("field_watch_fields").time():
@@ -1119,13 +1252,13 @@ class DCGMWatcher:
                             switch_ids = []
                         else:
                             with self._probe("dcgm_thermal_margin"):
-                                margin_details = self._evaluate_gpu_thermal_margin(dcgm_group, gpu_ids)
+                                margin_details = self._evaluate_gpu_thermal_margin(dcgm_handle, dcgm_group, gpu_ids)
                             if margin_details is not None:
                                 health_status[DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].watch_name] = (
                                     margin_details
                                 )
                             with self._probe("dcgm_power_brake"):
-                                brake_details = self._evaluate_gpu_power_brake(dcgm_group, gpu_ids)
+                                brake_details = self._evaluate_gpu_power_brake(dcgm_handle, dcgm_group, gpu_ids)
                             if brake_details is not None:
                                 health_status[DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"].watch_name] = (
                                     brake_details

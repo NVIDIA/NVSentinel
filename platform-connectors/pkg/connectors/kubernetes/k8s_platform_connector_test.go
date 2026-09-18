@@ -2422,8 +2422,10 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 	_, ok := connector.rememberedNodeEvent(nodeName, k8sEvent)
 	require.True(t, ok, "First write should remember the created event")
 
-	// Inside the refresh interval a repeat writes nothing; the race needs the refresh.
+	// The race needs a later report after the refresh interval, not a replay
+	// of the occurrence whose timestamp is already persisted.
 	ageRememberedEvent(t, connector, nodeName, k8sEvent)
+	healthEvent.GeneratedTimestamp = timestamppb.New(healthEvent.GeneratedTimestamp.AsTime().Add(time.Minute))
 
 	// Delete the raced event from the tracker so the NotFound reflects real state.
 	var (

@@ -2165,19 +2165,9 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 
 	// Extract only quarantine annotations
 	quarantineAnnotations := make(map[string]string)
-	quarantineKeys := []string{
-		common.QuarantineHealthEventAnnotationKey,
-		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
-		common.QuarantineHealthEventAppliedLabelsAnnotationKey,
-		common.QuarantineHealthEventIsCordonedAnnotationKey,
-		common.QuarantineHealthEventCordonPreExistingAnnotationKey,
-		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
-		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey,
-		common.QuarantineValidationHealthEventAnnotationKey,
-	}
 
 	if node.Annotations != nil {
-		for _, key := range quarantineKeys {
+		for _, key := range common.QuarantineAnnotationKeys {
 			if value, exists := node.Annotations[key]; exists {
 				quarantineAnnotations[key] = value
 			}
@@ -2263,6 +2253,10 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	annotationsToRemove := appendIfPresent(annotations, nil, manualUnquarantineAnnotationKeys...)
 	labelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
 
+	// The rule labels are deliberately left on the node, as the taints are: a
+	// manual uncordon means an operator took the node over, so fault-quarantine
+	// drops its own cordon bookkeeping and leaves the fault markings in place.
+	// TestE2ECordonAndTaint_ManualUncordon asserts this.
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
 		return fmt.Errorf("failed to read applied labels for manually uncordoned node %s: %w", nodeName, err)
@@ -2362,6 +2356,7 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 
 	annotationsToRemove := appendIfPresent(annotations, nil, manualUnquarantineAnnotationKeys...)
 
+	// As on manual uncordon, the rule labels stay on the node by design.
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
 		return fmt.Errorf("failed to read applied labels for manually untainted node %s: %w", nodeName, err)
