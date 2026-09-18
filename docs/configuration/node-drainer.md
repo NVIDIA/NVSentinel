@@ -92,6 +92,21 @@ node-drainer:
 
 This timeout is passed as the `GracePeriodSeconds` in the Kubernetes eviction API call. Only used for `Immediate` eviction mode. Other modes respect the pod's configured `terminationGracePeriodSeconds`.
 
+### Requeue Backoff Base
+
+Base duration for exponential backoff on drain requeues in `Immediate` mode.
+
+```yaml
+node-drainer:
+  requeueBackoffBase: 10s
+```
+
+When pods cannot be evicted immediately, the node drainer requeues the drain event. Retries use exponential backoff starting at `requeueBackoffBase` and double up to a two-minute maximum.
+
+Configure this setting based on the workload pod termination time:
+- For zero-grace pods (`terminationGracePeriodSeconds: 0`), set a lower base such as `2s` to decrease drain latency.
+- For workloads with standard grace periods (`terminationGracePeriodSeconds: 30`), pod termination dominates drain latency. A short retry interval increases redundant eviction calls.
+
 ### System Namespaces
 
 Regular expression pattern matching system namespaces that are skipped during node drain operations.

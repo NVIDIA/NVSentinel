@@ -67,6 +67,7 @@ type EventQueueManager interface {
 
 type eventQueueManager struct {
 	queue                   workqueue.TypedRateLimitingInterface[NodeEvent]
+	rateLimiter             workqueue.TypedRateLimiter[NodeEvent]
 	dataStoreEventProcessor DataStoreEventProcessor // New database-agnostic processor
 	shutdown                chan struct{}
 	sessions                sync.Map // EventID -> *DrainSession

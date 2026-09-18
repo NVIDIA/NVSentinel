@@ -34,9 +34,17 @@ import (
 func TestNewInitializationParams_ConfiguredRateLimits_ForwardsValues(t *testing.T) {
 	rateLimits := kubeclient.RateLimitConfig{QPS: 40, Burst: 80}
 
-	params := newInitializationParams("", "", "", "", false, rateLimits)
+	params := newInitializationParams("", "", "", "", false, rateLimits, 10*time.Second)
 
 	assert.Equal(t, rateLimits, params.KubernetesClientRateLimits)
+}
+
+func TestNewInitializationParams_RequeueBackoffBase_ForwardsValue(t *testing.T) {
+	backoffBase := 2 * time.Second
+
+	params := newInitializationParams("", "", "", "", false, kubeclient.RateLimitConfig{}, backoffBase)
+
+	assert.Equal(t, backoffBase, params.RequeueBackoffBase)
 }
 
 type fakeLagProvider struct {
