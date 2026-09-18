@@ -66,6 +66,32 @@ expectedDeviceCounts:
       expectedCountOverrides: []
       currentExpression: |
         int(node.metadata.labels['nvidia.com/gpu.count'])
+    
+    # GPU Operator GPUCluster (DRA) mode publishes the GPU inventory as
+    # ResourceSlices from the gpu.nvidia.com driver instead of GFD labels. This
+    # class writes the same label pair from those slices.
+    - name: gpu-dra
+      enabled: true
+      labels:
+        current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+        expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+      groupingLabels:
+        - node.kubernetes.io/instance-type
+      expectedCountOverrides: []
+      resourceSliceDriver: gpu.nvidia.com
+      currentExpression: |
+        sum(resourceSlices
+          .filter(rs, has(rs.spec.devices))
+          .map(rs, rs.spec.devices
+            .filter(d,
+              has(d.attributes) &&
+              'type' in d.attributes &&
+              has(d.attributes['type'].string) &&
+              d.attributes['type'].string == 'gpu'
+            )
+            .size()
+          ))
+    
     - name: nic
       enabled: true
       labels:

@@ -90,6 +90,9 @@ enabled = {{ .enabled }}
 {{- with .groupingLabels }}
 groupingLabels = [{{- range $i, $label := . }}{{ if $i }}, {{ end }}{{ $label | quote }}{{- end }}]
 {{- end }}
+{{- with .resourceSliceDriver }}
+resourceSliceDriver = {{ . | quote }}
+{{- end }}
 currentExpression = '''
 {{ trimSuffix "\n" (default "" .currentExpression) }}
 '''
