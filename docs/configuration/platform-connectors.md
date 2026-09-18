@@ -293,7 +293,11 @@ Enables Kubernetes connector for creating node conditions and events.
 
 Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `25`; positive integers override the default. Negative and non-integer values are rejected. An existing explicit value, such as `3`, still limits each write to that retry count.
 
+These settings apply to the node-local Kubernetes queue. Synchronous `ProcessBatch` callers receive errors directly and retry unacknowledged requests.
+
 Each node status update and Kubernetes Event write has its own retry state. Successful writes are not repeated when another write fails. Permanent errors are skipped without preventing other writes from retrying. A node status update applies all condition changes for that node together.
+
+Event retries retain the stable fault name and check the persisted timestamp after an uncertain response. An already persisted occurrence is accepted without increasing its count. Later reports refresh the existing Event after suppression expires or recovery clears it. Event timestamps have one-second precision; this counter does not count every monitor report.
 
 Retry delays start at 500 milliseconds, double after each failure, and are capped at 3 seconds. Both the count limit and `maxRetryDuration` apply: whichever is reached first stops that write.
 

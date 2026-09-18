@@ -94,10 +94,13 @@ func run() error {
 		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
+	readinessChecker := server.NewDatastoreReadinessChecker(nil)
+
 	srv := server.NewServer(
 		server.WithPort(portInt),
 		server.WithPrometheusMetrics(),
 		server.WithSimpleHealth(),
+		server.WithReadinessCheck(readinessChecker),
 	)
 
 	params := initializer.InitializationParams{
@@ -115,6 +118,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialization failed: %w", err)
 	}
+
+	components.Reconciler.SetReadinessChecker(readinessChecker)
 
 	for _, rs := range components.TomlConfig.RuleSets {
 		ff.Set(rs.Name, rs.Enabled)

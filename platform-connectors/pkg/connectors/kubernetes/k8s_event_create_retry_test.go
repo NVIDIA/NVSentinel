@@ -166,7 +166,8 @@ func TestProcessHealthEventsWithRetry_AmbiguousEventCreate_ReconcilesPersistedOc
 		{name: "different message", mutate: func(e *corev1.Event) { e.Message = "another occurrence" }, wantPosts: 1, wantError: "does not match"},
 		{name: "different node identity", mutate: func(e *corev1.Event) { e.InvolvedObject.UID = "other-node" }, wantPosts: 1, wantError: "does not match"},
 		{name: "different reporter", mutate: func(e *corev1.Event) { e.ReportingController = "other-monitor" }, wantPosts: 1, wantError: "does not match"},
-		{name: "different occurrence time", mutate: func(e *corev1.Event) { e.FirstTimestamp = metav1.NewTime(e.FirstTimestamp.Add(-time.Minute)) }, wantPosts: 1, wantError: "does not match"},
+		// Stable names aggregate occurrences; an older FirstTimestamp is valid.
+		{name: "earlier first occurrence of the same fault", mutate: func(e *corev1.Event) { e.FirstTimestamp = metav1.NewTime(e.FirstTimestamp.Add(-time.Minute)) }, wantPosts: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -211,7 +212,8 @@ func TestProcessHealthEventsWithRetry_AmbiguousEventCreate_ReconcilesPersistedOc
 			require.Len(t, stored.Items, 1)
 			require.EqualValues(t, 1, stored.Items[0].Count, "reconciling the saved occurrence must not increment it")
 			expected := connector.createK8sEvent(ctx, events.Events[0])
-			name, cached := connector.getCachedNodeEventName(nodeEventDedupeKey(expected, node))
+			_, cached := connector.rememberedNodeEvent(node, expected)
+			name := expected.Name
 			if tc.wantError != "" {
 				require.False(t, cached, "unverified or mismatched events must not populate the cache")
 				require.Equal(t, beforeDrops+1, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error")))
@@ -222,7 +224,15 @@ func TestProcessHealthEventsWithRetry_AmbiguousEventCreate_ReconcilesPersistedOc
 			require.Equal(t, stored.Items[0].Name, name)
 			require.Equal(t, beforeDrops, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error")))
 			require.Equal(t, beforeBatches, testutil.ToFloat64(droppedBatchesCounter.WithLabelValues("permanent_error")))
-			// A later health-event occurrence still increments the cached Event once.
+			// A repeat inside main's refresh interval makes no API call.
+			_, err = connector.processHealthEventsWithRetry(ctx, events)
+			require.NoError(t, err)
+			transport.mu.Lock()
+			require.Len(t, transport.calls, len(calls))
+			transport.mu.Unlock()
+			// After the interval a later report refreshes the same Event once.
+			ageRememberedEvent(t, connector, node, expected)
+			events.Events[0].GeneratedTimestamp = timestamppb.New(events.Events[0].GeneratedTimestamp.AsTime().Add(time.Minute))
 			_, err = connector.processHealthEventsWithRetry(ctx, events)
 			require.NoError(t, err)
 			later, err := reader.CoreV1().Events(DefaultNamespace).Get(ctx, name, metav1.GetOptions{})

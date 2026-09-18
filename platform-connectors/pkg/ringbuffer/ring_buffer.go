@@ -38,6 +38,10 @@ const (
 type QueuedHealthEvents struct {
 	Events            *protos.HealthEvents
 	ParentSpanContext trace.SpanContext
+	// BatchKey is the idempotency key prefix the store connector gives the
+	// batch on its first write attempt. A requeued batch keeps it, so a retried
+	// insert stores each event once.
+	BatchKey string
 }
 
 func NewQueuedHealthEvents(events *protos.HealthEvents) *QueuedHealthEvents {
@@ -96,6 +100,16 @@ func NewRingBuffer(ringBufferName string, ctx context.Context, opts ...Option) *
 
 func (rb *RingBuffer) Enqueue(item *QueuedHealthEvents) {
 	rb.healthMetricQueue.Add(item)
+}
+
+// ProcessBatch queues the batch and returns at once. The connector draining
+// this buffer processes it later, with its own retries; the caller's span
+// travels with the batch so that processing joins the same trace. It lets a
+// buffer stand in for its connector in the server's connector set.
+func (rb *RingBuffer) ProcessBatch(ctx context.Context, he *protos.HealthEvents) error {
+	rb.Enqueue(&QueuedHealthEvents{Events: he, ParentSpanContext: trace.SpanContextFromContext(ctx)})
+
+	return nil
 }
 
 func (rb *RingBuffer) Dequeue() (*QueuedHealthEvents, bool) {

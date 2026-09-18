@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -139,10 +138,11 @@ func TestProcessHealthEventsWithRetry_PartialWrites_PreserveCountsAndRetryIndepe
 			require.NoError(t, err)
 			connector := NewK8sConnector(client, nil, nil, ctx, defaultConnectorConfig)
 			connector.retryBaseDelay, connector.retryMaxDelay = time.Nanosecond, time.Nanosecond
+			timestamp := timestamppb.Now()
 			events := []*protos.HealthEvent{
 				{NodeName: nodeA, Agent: "retry-test", CheckName: "GPUWarning", IsFatal: test.condition,
-					GeneratedTimestamp: timestamppb.Now()},
-				{NodeName: nodeB, Agent: "retry-test", CheckName: "GPUWarning", GeneratedTimestamp: timestamppb.Now()},
+					GeneratedTimestamp: timestamp},
+				{NodeName: nodeB, Agent: "retry-test", CheckName: "GPUWarning", GeneratedTimestamp: timestamp},
 			}
 			if test.reverse {
 				events[0], events[1] = events[1], events[0]
@@ -252,18 +252,6 @@ func TestProcessHealthEventsWithRetry_StopDuringCall_CancelsImmediately(t *testi
 		require.ErrorIs(t, <-result, context.Canceled)
 		require.Zero(t, time.Since(start))
 	})
-}
-
-// processHealthEvents executes one pass for existing focused condition/Event tests.
-// The production queue path and its retries are exercised by the retry regressions.
-func (r *K8sConnector) processHealthEvents(ctx context.Context, events *protos.HealthEvents) error {
-	var failures []error
-	for _, write := range r.prepareHealthEventWrites(ctx, events) {
-		if err := write.run(ctx); err != nil {
-			failures = append(failures, err)
-		}
-	}
-	return errors.Join(failures...)
 }
 
 // TestProcessHealthEventsWithRetry_LongOutage_HoldsCurrentBatchUntilRecovery

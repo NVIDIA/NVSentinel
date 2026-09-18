@@ -26,10 +26,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/client-go/kubernetes"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
@@ -39,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/auth"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/grpcsink"
 	k8sconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/prom"
@@ -65,6 +68,7 @@ var (
 
 func main() {
 	logger.SetDefaultStructuredLoggerWithTraceCorrelation("platform-connectors", version)
+	setControllerRuntimeLogger()
 
 	initCtx := context.Background()
 	slog.InfoContext(initCtx, "Starting platform-connectors", "version", version, "commit", commit, "date", date)
@@ -90,6 +94,14 @@ func main() {
 	if err := auditlogger.CloseAuditLogger(); err != nil {
 		slog.WarnContext(initCtx, "Failed to close audit logger", "error", err)
 	}
+}
+
+// setControllerRuntimeLogger routes controller-runtime's logr output (the
+// certificate watchers) through the process's slog handler; without a sink
+// controller-runtime drops those lines and prints a "SetLogger(...) was never
+// called" warning with a stack trace.
+func setControllerRuntimeLogger() {
+	ctrllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 }
 
 func loadConfig(configFilePath string) (map[string]any, error) {
@@ -177,7 +189,6 @@ func initializeK8sConnector(
 	}
 
 	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
-	server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
 
 	qpsTemp, ok := config["K8sConnectorQps"].(float64)
 	if !ok {
@@ -222,76 +233,42 @@ func initializeK8sConnector(
 	return k8sRingBuffer, nil
 }
 
+// initializeDatabaseStoreConnector starts the store connector and returns it
+// with the ring buffer its loop drains.
 func initializeDatabaseStoreConnector(
 	ctx context.Context,
 	config map[string]any,
 	databaseClientCertMountPath string,
-) (*store.DatabaseStoreConnector, error) {
+) (*store.DatabaseStoreConnector, *ringbuffer.RingBuffer, error) {
 	ringBuffer := ringbuffer.NewRingBuffer("databaseStore", ctx)
-	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
 
 	maxRetriesInt64, ok := config["StoreConnectorMaxRetries"].(int64)
 	if !ok {
-		return nil, fmt.Errorf("failed to convert StoreConnectorMaxRetries to int: %v", config["StoreConnectorMaxRetries"])
+		return nil, nil, fmt.Errorf("failed to convert StoreConnectorMaxRetries to int: %v",
+			config["StoreConnectorMaxRetries"])
 	}
 
 	maxRetries := int(maxRetriesInt64)
 
 	storeConnector, err := store.InitializeDatabaseStoreConnector(ctx, ringBuffer, databaseClientCertMountPath, maxRetries)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize database store connector: %w", err)
+		return nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)
 	}
 
 	go storeConnector.FetchAndProcessHealthMetric(ctx)
 
-	return storeConnector, nil
+	return storeConnector, ringBuffer, nil
 }
 
-func initializePipeline(ctx context.Context, config map[string]any, opts pipeline.Options) (*pipeline.Pipeline, error) {
-	pipelineCfg, ok := config["pipeline"].([]any)
-	if !ok || len(pipelineCfg) == 0 {
-		slog.ErrorContext(ctx, "No pipeline configuration found, events will not be transformed")
-		return pipeline.New(), fmt.Errorf("no pipeline configuration found")
-	}
-
-	var transformerConfigs []pipeline.Config
-
-	for _, item := range pipelineCfg {
-		configMap, ok := item.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("failed to convert pipeline configuration to map: %v", item)
-		}
-
-		name, ok := configMap["name"].(string)
-		if !ok {
-			return nil, fmt.Errorf("pipeline config missing or invalid 'name' field: %v", configMap["name"])
-		}
-
-		enabled, ok := configMap["enabled"].(bool)
-		if !ok {
-			return nil, fmt.Errorf("pipeline config missing or invalid 'enabled' field: %v", configMap["enabled"])
-		}
-
-		configPath, ok := configMap["config"].(string)
-		if !ok {
-			return nil, fmt.Errorf("pipeline config missing or invalid 'config' field: %v", configMap["config"])
-		}
-
-		transformerConfigs = append(transformerConfigs, pipeline.Config{
-			Name:       name,
-			Enabled:    enabled,
-			ConfigPath: configPath,
-		})
-	}
-
-	return pipeline.NewFromConfigs(ctx, transformerConfigs, opts)
-}
-
+// startGRPCServer serves the PlatformConnector service on the Unix socket.
+// Every accepted batch goes to queues, one ring buffer per connector, and is
+// acknowledged at once; the connectors process it from their queues.
 func startGRPCServer(
 	ctx context.Context,
 	socket string,
 	pipeline *pipeline.Pipeline,
 	interceptor grpc.UnaryServerInterceptor,
+	queues connectors.Connector,
 ) (net.Listener, error) {
 	slog.InfoContext(ctx, "Starting gRPC server on Unix socket", "socket", socket)
 
@@ -325,7 +302,8 @@ func startGRPCServer(
 
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{
-		Pipeline: pipeline,
+		Pipeline:  pipeline,
+		Connector: queues,
 	})
 
 	go func() {
@@ -601,21 +579,22 @@ func boolFromConfig(config map[string]any, key string, def bool) (bool, error) {
 	return false, fmt.Errorf("%s must be true or false, got %#v", key, raw)
 }
 
+// initializeGRPCSinkConnector starts the gRPC sink connector and returns it
+// with the ring buffer its loop drains.
 func initializeGRPCSinkConnector(
 	ctx context.Context,
 	config map[string]any,
-) (*grpcsink.GRPCSinkConnector, error) {
+) (*grpcsink.GRPCSinkConnector, *ringbuffer.RingBuffer, error) {
 	ringBuffer := ringbuffer.NewRingBuffer("grpcSink", ctx)
-	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
 
 	target, ok := config["GRPCSinkTarget"].(string)
 	if !ok || target == "" {
-		return nil, fmt.Errorf("grpcSinkTarget not configured or empty")
+		return nil, nil, fmt.Errorf("grpcSinkTarget not configured or empty")
 	}
 
 	maxRetriesInt64, ok := config["GRPCSinkConnectorMaxRetries"].(int64)
 	if !ok {
-		return nil, fmt.Errorf("failed to convert GRPCSinkConnectorMaxRetries to int: %v",
+		return nil, nil, fmt.Errorf("failed to convert GRPCSinkConnectorMaxRetries to int: %v",
 			config["GRPCSinkConnectorMaxRetries"])
 	}
 
@@ -626,17 +605,20 @@ func initializeGRPCSinkConnector(
 
 	connector, err := grpcsink.InitializeGRPCSinkConnector(ringBuffer, target, maxRetries, tokenPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize gRPC sink connector: %w", err)
+		return nil, nil, fmt.Errorf("failed to initialize gRPC sink connector: %w", err)
 	}
 
 	go connector.FetchAndProcessHealthMetric(ctx)
 
-	return connector, nil
+	return connector, ringBuffer, nil
 }
 
 // connectorSet holds the connectors started by initializeConnectors. Grouping them keeps
 // adding a connector from growing the signature of every function that starts or stops them.
 type connectorSet struct {
+	// queues is what the gRPC server hands each accepted batch to: one ring
+	// buffer per enabled connector, each drained by that connector's loop.
+	queues        connectors.Set
 	k8sRingBuffer *ringbuffer.RingBuffer
 	store         *store.DatabaseStoreConnector
 	grpcSink      *grpcsink.GRPCSinkConnector
@@ -660,40 +642,53 @@ func initializeConnectors(
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
 		}
+
+		set.queues = append(set.queues, set.k8sRingBuffer)
 	}
 
 	// Keep the legacy config key name for backward compatibility with existing ConfigMaps
 	if config["enableMongoDBStorePlatformConnector"] == True || config["enablePostgresDBStorePlatformConnector"] == True {
-		set.store, err = initializeDatabaseStoreConnector(ctx, config, databaseClientCertMountPath)
+		var storeQueue *ringbuffer.RingBuffer
+
+		set.store, storeQueue, err = initializeDatabaseStoreConnector(ctx, config, databaseClientCertMountPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize database store connector: %w", err)
 		}
+
+		set.queues = append(set.queues, storeQueue)
 	}
 
 	if config["enableGRPCSinkConnector"] == True {
-		set.grpcSink, err = initializeGRPCSinkConnector(ctx, config)
+		var sinkQueue *ringbuffer.RingBuffer
+
+		set.grpcSink, sinkQueue, err = initializeGRPCSinkConnector(ctx, config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize gRPC sink connector: %w", err)
 		}
+
+		set.queues = append(set.queues, sinkQueue)
 	}
 
 	if config["enablePromPlatformConnector"] == True {
-		set.prom = initializePromConnector(ctx)
+		var promQueue *ringbuffer.RingBuffer
+
+		set.prom, promQueue = initializePromConnector(ctx)
+		set.queues = append(set.queues, promQueue)
 	}
 
 	return set, nil
 }
 
-// initializePromConnector attaches a ring buffer that records health events as Prometheus
-// counters. It cannot fail: there is no external dependency to reach.
-func initializePromConnector(ctx context.Context) *prom.PromConnector {
+// initializePromConnector starts the connector that records health events as
+// Prometheus counters and returns it with the ring buffer its loop drains. It
+// cannot fail: there is no external dependency to reach.
+func initializePromConnector(ctx context.Context) (*prom.PromConnector, *ringbuffer.RingBuffer) {
 	ringBuffer := ringbuffer.NewRingBuffer("prom", ctx)
-	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
 
 	promConnector := prom.InitializePromConnector(ringBuffer)
 	go promConnector.FetchAndProcessHealthMetric(ctx)
 
-	return promConnector
+	return promConnector, ringBuffer
 }
 
 func cleanupResources(
@@ -859,13 +854,13 @@ func run() error {
 		return err
 	}
 
-	connectors, err := initializeConnectors(ctx,
+	set, err := initializeConnectors(ctx,
 		config, stopCh, cfg.databaseClientCertMountPath, cfg.kubeconfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize connectors: %w", err)
 	}
 
-	pipeline, err := initializePipeline(ctx, config, pipeline.Options{
+	pipeline, err := pipeline.NewFromRawConfig(ctx, config, pipeline.Options{
 		KubeconfigPath: cfg.kubeconfigPath,
 	})
 	if err != nil {
@@ -878,7 +873,7 @@ func run() error {
 		return fmt.Errorf("failed to initialize auth interceptor: %w", err)
 	}
 
-	lis, err := startGRPCServer(ctx, cfg.socket, pipeline, authInterceptor)
+	lis, err := startGRPCServer(ctx, cfg.socket, pipeline, authInterceptor, set.queues)
 	if err != nil {
 		return err
 	}
@@ -903,7 +898,7 @@ func run() error {
 	})
 
 	g.Go(func() error {
-		return handleShutdown(gCtx, sigs, stopCh, cfg, lis, connectors, cancel)
+		return handleShutdown(gCtx, sigs, stopCh, cfg, lis, set, cancel)
 	})
 
 	return g.Wait()

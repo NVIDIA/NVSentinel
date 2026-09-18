@@ -38,6 +38,14 @@ func newFromConfig(cfg *pipeline.Config, opts pipeline.Options) (pipeline.Transf
 		return nil, fmt.Errorf("failed to get Kubernetes configuration: %w", err)
 	}
 
+	if opts.KubeClientQPS > 0 {
+		k8sConfig.QPS = opts.KubeClientQPS
+	}
+
+	if opts.KubeClientBurst > 0 {
+		k8sConfig.Burst = opts.KubeClientBurst
+	}
+
 	clientset, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kubernetes clientset: %w", err)
@@ -46,6 +54,14 @@ func newFromConfig(cfg *pipeline.Config, opts pipeline.Options) (pipeline.Transf
 	metadataCfg, err := LoadConfig(cfg.ConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load metadata configuration: %w", err)
+	}
+
+	if opts.NodeMetadataCacheSize > 0 {
+		metadataCfg.CacheSize = opts.NodeMetadataCacheSize
+	}
+
+	if opts.NodeMetadataCacheTTL > 0 {
+		metadataCfg.CacheTTL = opts.NodeMetadataCacheTTL
 	}
 
 	if err := metadataCfg.Validate(); err != nil {
