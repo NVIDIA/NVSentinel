@@ -20,6 +20,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -53,7 +54,22 @@ import (
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/remediation"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
+
+// publishLiveEvent feeds an event through the change stream the way platform-connectors
+// would, and makes it fetchable by document ID. Both halves are needed: the reconciler
+// queues only the ID, so a live event the store cannot serve looks like a deleted one.
+func publishLiveEvent(t *testing.T, event datastore.Event, resumeToken string) {
+	t.Helper()
+
+	mockStore.SeedEvent(t, event)
+
+	mockWatcher.EventsChan <- datastore.EventWithToken{
+		Event:       event,
+		ResumeToken: []byte(resumeToken),
+	}
+}
 
 var (
 	restartRemediationActions = map[string]config.MaintenanceResource{
@@ -107,9 +123,10 @@ var (
 // MockChangeStreamWatcher provides a mock implementation of datastore.ChangeStreamWatcher for testing
 type MockChangeStreamWatcher struct {
 	// Used for concurrency safety between reconciler calling writes and tests reading counts
-	mu                 sync.Mutex
-	EventsChan         chan datastore.EventWithToken
-	markProcessedCount int
+	mu                  sync.Mutex
+	EventsChan          chan datastore.EventWithToken
+	markProcessedCount  int
+	markProcessedTokens [][]byte
 }
 
 // NewMockChangeStreamWatcher creates a new mock change stream Watcher
@@ -134,8 +151,17 @@ func (m *MockChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byt
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.markProcessedCount++
+	m.markProcessedTokens = append(m.markProcessedTokens, token)
 
 	return nil
+}
+
+// MarkProcessedTokens returns the tokens passed to MarkProcessed, in call order.
+func (m *MockChangeStreamWatcher) MarkProcessedTokens() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return slices.Clone(m.markProcessedTokens)
 }
 
 // Close closes the change stream Watcher
@@ -162,6 +188,51 @@ type MockHealthEventStore struct {
 	// must be atomic to stay race-free.
 	updateCalled                 atomic.Int64
 	findHealthEventsByQueryCalls atomic.Int64
+	// seededEvents answers lookups by document ID. The reconciler queues only an event's
+	// ID and loads the document when the worker runs, so a test that publishes a live
+	// event must also make it fetchable. Every other query falls through to
+	// FindHealthEventsByQueryFn.
+	seededEvents sync.Map
+}
+
+// SeedEvent makes event resolvable by its document ID, storing the document as the datastore
+// would hold it: change-stream events arrive wrapped in fullDocument, but what is persisted
+// — and therefore what a later fetch returns — is the document inside that wrapper.
+func (m *MockHealthEventStore) SeedEvent(t *testing.T, event datastore.Event) {
+	t.Helper()
+
+	documentID, err := utils.ExtractDocumentID(event)
+	require.NoError(t, err, "a seeded event must carry a document ID")
+
+	stored := event
+	if fullDocument, wrapped := event["fullDocument"].(map[string]any); wrapped {
+		stored = datastore.Event(fullDocument)
+	}
+
+	m.seededEvents.Store(documentID, stored)
+}
+
+// documentIDFromQuery reports the document ID a by-ID lookup asks for. Query values for the
+// _id field are converted to a driver object ID when the ID is hex, so accept either form.
+func documentIDFromQuery(builder datastore.QueryBuilder) (string, bool) {
+	filter := builder.ToMongo()
+	if len(filter) != 1 {
+		return "", false
+	}
+
+	value, isIDQuery := filter["_id"]
+	if !isIDQuery {
+		return "", false
+	}
+
+	switch id := value.(type) {
+	case string:
+		return id, true
+	case interface{ Hex() string }:
+		return id.Hex(), true
+	default:
+		return "", false
+	}
 }
 
 // UpdateHealthEventStatus updates a health event status (mock implementation)
@@ -216,8 +287,16 @@ func (m *MockHealthEventStore) FindLatestEventForNode(ctx context.Context, nodeN
 func (m *MockHealthEventStore) FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
 	m.findHealthEventsByQueryCalls.Add(1)
 
+	// An explicitly configured function wins, so a test can still stage a specific reply for
+	// a document a live event already seeded.
 	if m.FindHealthEventsByQueryFn != nil {
 		return m.FindHealthEventsByQueryFn(ctx, builder)
+	}
+
+	if documentID, isIDQuery := documentIDFromQuery(builder); isIDQuery {
+		if stored, seeded := m.seededEvents.Load(documentID); seeded {
+			return []datastore.HealthEventWithStatus{{RawEvent: stored.(datastore.Event)}}, nil
+		}
 	}
 
 	return nil, nil
@@ -1189,11 +1268,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		// Event 1: Send quarantine event through channel
 		eventID1 := "test-event-id-1"
 		event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
-		eventToken1 := datastore.EventWithToken{
-			Event:       map[string]any(event1),
-			ResumeToken: []byte("test-token-1"),
-		}
-		mockWatcher.EventsChan <- eventToken1
+		publishLiveEvent(t, event1, "test-token-1")
 
 		// Wait for CR creation
 		var crName string
@@ -1252,11 +1327,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		// must be marked remediated (not produce a second CR) once the CR succeeds.
 		event2 := createQuarantineEventCreatedAt(eventID2, nodeName, protos.RecommendedAction_RESTART_VM,
 			time.Now().Add(-time.Hour))
-		eventToken2 := datastore.EventWithToken{
-			Event:       map[string]any(event2),
-			ResumeToken: []byte("test-token-2"),
-		}
-		mockWatcher.EventsChan <- eventToken2
+		publishLiveEvent(t, event2, "test-token-2")
 
 		// Wait until the event has been evaluated at least once against the in-progress CR
 		assert.Eventually(t, func() bool {
@@ -1319,11 +1390,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 
 		// Event 3: Send unquarantine event
 		unquarantineEvent := createUnquarantineEvent(nodeName)
-		unquarantineEventToken := datastore.EventWithToken{
-			Event:       map[string]any(unquarantineEvent),
-			ResumeToken: []byte("test-token-3"),
-		}
-		mockWatcher.EventsChan <- unquarantineEventToken
+		publishLiveEvent(t, unquarantineEvent, "test-token-3")
 
 		// Wait for annotation cleanup
 		assert.Eventually(t, func() bool {
@@ -1519,11 +1586,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 	t.Log("Send Quarantined event to create CR and annotation")
 	eventID1 := "test-event-id-1"
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
-	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]any(event1),
-		ResumeToken: []byte("test-token-1"),
-	}
-	mockWatcher.EventsChan <- eventToken1
+	publishLiveEvent(t, event1, "test-token-1")
 
 	// Wait for CR creation and annotation
 	var crName string
@@ -1546,11 +1609,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 
 	t.Log("Send Cancelled event to remove group from annotation")
 	cancelledEvent := createCancelledEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
-	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]any(cancelledEvent),
-		ResumeToken: []byte("test-token-2"),
-	}
-	mockWatcher.EventsChan <- cancelledEventToken
+	publishLiveEvent(t, cancelledEvent, "test-token-2")
 
 	t.Log("Verify group removed from annotation")
 	require.Eventually(t, func() bool {
@@ -1593,11 +1652,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	t.Log("Send multiple Quarantined events with different recommended actions")
 	eventID1 := "test-event-id-1"
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
-	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]any(event1),
-		ResumeToken: []byte("test-token-1"),
-	}
-	mockWatcher.EventsChan <- eventToken1
+	publishLiveEvent(t, event1, "test-token-1")
 
 	// Wait for first CR
 	var crName1 string
@@ -1616,11 +1671,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	t.Log("Send second event with different action (same equivalence group)")
 	eventID2 := "test-event-id-2"
 	event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_RESTART_VM)
-	eventToken2 := datastore.EventWithToken{
-		Event:       map[string]any(event2),
-		ResumeToken: []byte("test-token-2"),
-	}
-	mockWatcher.EventsChan <- eventToken2
+	publishLiveEvent(t, event2, "test-token-2")
 
 	// Allow time for second event to be processed (should be deduplicated)
 	time.Sleep(500 * time.Millisecond)
@@ -1632,11 +1683,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 
 	t.Log("Send Cancelled event")
 	cancelledEvent := createCancelledEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
-	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]any(cancelledEvent),
-		ResumeToken: []byte("test-token-3"),
-	}
-	mockWatcher.EventsChan <- cancelledEventToken
+	publishLiveEvent(t, cancelledEvent, "test-token-3")
 
 	t.Log("Verify all groups cleared from annotation")
 	require.Eventually(t, func() bool {
@@ -1674,11 +1721,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	t.Log("Send Quarantined event")
 	eventID1 := "test-event-id-1"
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
-	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]any(event1),
-		ResumeToken: []byte("test-token-1"),
-	}
-	mockWatcher.EventsChan <- eventToken1
+	publishLiveEvent(t, event1, "test-token-1")
 
 	var crName string
 	require.Eventually(t, func() bool {
@@ -1695,11 +1738,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 
 	t.Log("Send Cancelled event")
 	cancelledEvent := createCancelledEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
-	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]any(cancelledEvent),
-		ResumeToken: []byte("test-token-2"),
-	}
-	mockWatcher.EventsChan <- cancelledEventToken
+	publishLiveEvent(t, cancelledEvent, "test-token-2")
 
 	require.Eventually(t, func() bool {
 		state, _, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
@@ -1711,11 +1750,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 
 	t.Log("Send UnQuarantined event")
 	unquarantineEvent := createUnquarantineEvent(nodeName)
-	unquarantineEventToken := datastore.EventWithToken{
-		Event:       map[string]any(unquarantineEvent),
-		ResumeToken: []byte("test-token-3"),
-	}
-	mockWatcher.EventsChan <- unquarantineEventToken
+	publishLiveEvent(t, unquarantineEvent, "test-token-3")
 
 	// Allow time for processing
 	time.Sleep(500 * time.Millisecond)
@@ -1922,11 +1957,7 @@ func TestMetrics_CRGenerationDuration(t *testing.T) {
 		}
 	}
 
-	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]any(event1),
-		ResumeToken: []byte("test-token-1"),
-	}
-	mockWatcher.EventsChan <- eventToken1
+	publishLiveEvent(t, event1, "test-token-1")
 
 	var crName string
 	require.Eventually(t, func() bool {
@@ -1971,7 +2002,7 @@ func TestMetrics_ProcessingErrors(t *testing.T) {
 		Watcher: watcher,
 	}
 
-	r.Reconcile(testContext, invalidEventToken)
+	r.reconcileEvent(testContext, invalidEventToken)
 
 	afterError := getCounterVecValue(t, metrics.ProcessingErrors, "unmarshal_doc_error", "unknown")
 	assert.Greater(t, afterError, beforeError, "ProcessingErrors should increment for unmarshal error")
@@ -2136,10 +2167,7 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 	t.Log("Step 1: Processing quarantine event via change stream")
 	eventID := "cold-start-cancel-event-1"
 	quarantineEvent := createQuarantineEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
-	mockWatcher.EventsChan <- datastore.EventWithToken{
-		Event:       map[string]any(quarantineEvent),
-		ResumeToken: []byte("cold-start-token-1"),
-	}
+	publishLiveEvent(t, quarantineEvent, "cold-start-token-1")
 
 	var crName string
 	require.Eventually(t, func() bool {
@@ -2265,7 +2293,7 @@ func TestCancellationEvent_WritesCompletionMarker(t *testing.T) {
 		Event:       map[string]any(quarantineEvent),
 		ResumeToken: []byte("cancel-marker-token-1"),
 	}
-	_, err = localReconciler.Reconcile(ctx, &quarantineEventToken)
+	_, err = localReconciler.reconcileEvent(ctx, &quarantineEventToken)
 	require.NoError(t, err)
 
 	var crName string
@@ -2293,7 +2321,7 @@ func TestCancellationEvent_WritesCompletionMarker(t *testing.T) {
 		Event:       map[string]any(cancelledEvent),
 		ResumeToken: []byte("cancel-marker-token-2"),
 	}
-	_, err = localReconciler.Reconcile(ctx, &cancelledEventToken)
+	_, err = localReconciler.reconcileEvent(ctx, &cancelledEventToken)
 	require.NoError(t, err)
 
 	// Step 3: Wait for remediation state to be cleared (proves cancellation was processed)
@@ -2508,7 +2536,7 @@ func TestCustomAction_E2E(t *testing.T) {
 		ResumeToken: []byte("custom-token-1"),
 	}
 
-	_, err = customReconciler.Reconcile(ctx, &eventToken)
+	_, err = customReconciler.reconcileEvent(ctx, &eventToken)
 	require.NoError(t, err)
 
 	state, _, err := customReconciler.annotationManager.GetRemediationState(ctx, nodeName)

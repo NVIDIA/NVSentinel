@@ -67,6 +67,18 @@ func (p *PromConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 }
 
 // recordEvent increments the counter for one health event.
+// ProcessBatch counts every event of one batch. The deployment platform
+// connector calls it per accepted batch instead of running the ring-buffer
+// loop, so health_events_total carries the same labels in both roles. It
+// never fails; the error return only satisfies the batch processor shape.
+func (p *PromConnector) ProcessBatch(_ context.Context, healthEvents *protos.HealthEvents) error {
+	for _, event := range healthEvents.GetEvents() {
+		recordEvent(event)
+	}
+
+	return nil
+}
+
 func recordEvent(event *protos.HealthEvent) {
 	if event == nil {
 		return

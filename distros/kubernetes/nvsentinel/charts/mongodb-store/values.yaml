@@ -309,6 +309,10 @@ mongodb:
 # pairing is only published at check.percona.com.
 psmdbVersion: ""
 
+# Also check the DEPLOYED crVersion from the bootstrap Job, which the render
+# cannot see. Off by default: grants the Job `get` on perconaservermongodbs.
+validateDeployedCrVersion: false
+
 psmdb-operator:
   nodeSelector: {}
   tolerations: []

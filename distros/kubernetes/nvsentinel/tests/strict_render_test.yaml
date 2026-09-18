@@ -1,0 +1,65 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Every template has to render as strictly valid YAML, not just YAML that Helm
+# itself accepts. Helm's parser keeps the last of a duplicated mapping key, so a
+# chart can render, lint, and publish while Flux's post-renderer and Argo CD's
+# kustomize reject the whole release. 
+#
+# These tests pin no assertion beyond "it rendered": listing no templates makes
+# helm-unittest render and strictly parse every template in the chart, which is
+# the check itself. Add a case here whenever a value permutation brings a new
+# set of objects into the release.
+suite: strict render
+tests:
+  - it: renders default values
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: renders with an external MongoDB datastore
+    set:
+      global.datastore:
+        provider: mongodb
+        credentialsFromSecret:
+          name: external-mongodb
+      global.mongodbStore.enabled: false
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: renders with the bundled MongoDB datastore
+    set:
+      global.datastore:
+        provider: mongodb
+        connection:
+          host: nvsentinel-mongodb
+          port: 27017
+          database: nvsentinel
+      global.mongodbStore.enabled: true
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: renders with a PostgreSQL datastore
+    set:
+      global.datastore:
+        provider: postgresql
+        credentialsFromSecret:
+          name: external-postgresql
+        connection:
+          host: postgres.example.com
+          port: 5432
+          database: nvsentinel
+          username: nvsentinel
+          sslmode: require
+    asserts:
+      - notFailedTemplate: {}

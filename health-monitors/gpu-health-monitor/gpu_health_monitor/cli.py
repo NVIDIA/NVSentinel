@@ -20,6 +20,7 @@ from threading import Event
 from gpu_health_monitor.healthz import start_server as start_health_server
 import csv
 from .dcgm_watcher import dcgm
+from .dcgm_watcher.types import DCGMWatcherConfig
 from .platform_connector import platform_connector
 from . import metrics
 from gpu_health_monitor.metadata import MetadataReader
@@ -58,35 +59,14 @@ def _parse_min_consecutive_polls(raw: str) -> dict[str, int]:
 
 def _init_event_processor(
     event_processor_name: str,
-    config: configparser.ConfigParser,
-    node_name: str,
+    config: platform_connector.PlatformConnectorConfig,
     exit: Event,
-    dcgm_errors_info_dict: dict[str, str],
-    state_file_path: str,
-    metadata_path: str,
-    processing_strategy: platformconnector_pb2.ProcessingStrategy,
-    store_only_checks: frozenset[str],
-    connectivity_failure_escalation_threshold: int,
-    connectivity_failure_threshold: int,
-    connectivity_success_threshold: int,
-    platform_connector_token_path: str,
-):
-    platform_connector_config = config["eventprocessors.platformconnector"]
+) -> platform_connector.PlatformConnectorEventProcessor:
     match event_processor_name:
         case platform_connector.PlatformConnectorEventProcessor.__name__:
             return platform_connector.PlatformConnectorEventProcessor(
-                socket_path=platform_connector_config["SocketPath"],
-                node_name=node_name,
+                config=config,
                 exit=exit,
-                dcgm_errors_info_dict=dcgm_errors_info_dict,
-                state_file_path=state_file_path,
-                metadata_path=metadata_path,
-                processing_strategy=processing_strategy,
-                store_only_checks=store_only_checks,
-                connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
-                connectivity_failure_threshold=connectivity_failure_threshold,
-                connectivity_success_threshold=connectivity_success_threshold,
-                token_path=platform_connector_token_path or None,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -267,6 +247,7 @@ def cli(
     health_check_min_consecutive_polls: dict[str, int] = {}
     connectivity_failure_threshold = 1
     connectivity_success_threshold = 1
+    imex_monitoring_enabled = config.getboolean("dcgmhealthcheck", "ImexMonitoringEnabled", fallback=False)
     if config.has_section("dcgmhealthcheck"):
         health_check_config = config["dcgmhealthcheck"]
         suppressed_error_codes_raw = health_check_config.get("SuppressedErrorCodes", fallback="")
@@ -311,24 +292,27 @@ def cli(
         connectivity_success_threshold,
     )
 
+    event_processor_config = platform_connector.PlatformConnectorConfig(
+        socket_path=config["eventprocessors.platformconnector"]["SocketPath"],
+        node_name=node_name,
+        dcgm_errors_info_dict=dcgm_errors_info_dict,
+        state_file_path=state_file_path,
+        metadata_path=metadata_path,
+        processing_strategy=processing_strategy_value,
+        store_only_checks=store_only_checks,
+        connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
+        connectivity_failure_threshold=connectivity_failure_threshold,
+        connectivity_success_threshold=connectivity_success_threshold,
+        token_path=platform_connector_token_path or None,
+    )
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
     for event_processor in enabled_event_processor_names:
         enabled_event_processors.append(
             _init_event_processor(
                 event_processor,
-                config,
-                node_name,
-                exit,
-                dcgm_errors_info_dict,
-                state_file_path,
-                metadata_path,
-                processing_strategy_value,
-                store_only_checks,
-                connectivity_failure_escalation_threshold,
-                connectivity_failure_threshold,
-                connectivity_success_threshold,
-                platform_connector_token_path,
+                event_processor_config,
+                exit=exit,
             )
         )
 
@@ -351,13 +335,11 @@ def cli(
     signal.signal(signal.SIGTERM, process_exit_signal)
     signal.signal(signal.SIGINT, process_exit_signal)
 
-    dcgm_watcher = dcgm.DCGMWatcher(
+    watcher_config = DCGMWatcherConfig(
         addr=dcgm_addr,
         poll_interval_seconds=poll_interval,
-        callbacks=enabled_event_processors,
         dcgm_k8s_service_enabled=dcgm_k8s_service_enabled,
         thermal_margin_enabled=thermal_margin_enabled,
-        metadata_reader=metadata_reader,
         dcgm_mode=dcgm_mode,
         suppressed_error_codes=suppressed_error_codes,
         suppress_unbridged_pcie_nvlink_down=suppress_nvlink_down_unbridged_pcie,
@@ -365,6 +347,12 @@ def cli(
         power_brake_enabled=power_brake_enabled,
         power_brake_min_consecutive_polls=power_brake_min_consecutive_polls,
         health_check_min_consecutive_polls=health_check_min_consecutive_polls,
+        imex_monitoring_enabled=imex_monitoring_enabled,
+    )
+    dcgm_watcher = dcgm.DCGMWatcher(
+        config=watcher_config,
+        callbacks=enabled_event_processors,
+        metadata_reader=metadata_reader,
     )
     dcgm_watcher.start([], exit)
 

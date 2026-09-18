@@ -65,8 +65,7 @@ kind: Job
 metadata:
   name: {{ include "nvsentinel.externalMongoInitJobName" . }}
   labels:
-    {{- include "nvsentinel.labels" . | nindent 4 }}
-    app.kubernetes.io/name: external-mongodb-setup
+    {{- include "nvsentinel.labelsWithName" (dict "context" . "name" "external-mongodb-setup") | nindent 4 }}
     app.kubernetes.io/component: mongodb-init
   annotations:
     # Argo: recreate this immutable Job on sync if the first run Failed and TTL

@@ -235,3 +235,26 @@ func TestFetchAndProcessHealthMetric_ContextCanceled_ReturnsOnNextItem(t *testin
 		t.Fatal("FetchAndProcessHealthMetric did not return after context cancellation")
 	}
 }
+
+// TestProcessBatch_CountsEveryEventWithoutARingBuffer covers the deployment
+// platform connector's entry point: one call per batch, no ring buffer, every
+// event counted under its own labels.
+func TestProcessBatch_CountsEveryEventWithoutARingBuffer(t *testing.T) {
+	fatalBefore := counter(t, "node-1", "gpu-health-monitor", "GpuMemWatch", "RESTART_VM", "true", "false")
+	healthyBefore := counter(t, "node-1", "gpu-health-monitor", "GpuMemWatch", "NONE", "false", "true")
+
+	connector := InitializePromConnector(nil)
+
+	err := connector.ProcessBatch(context.Background(), &protos.HealthEvents{Events: []*protos.HealthEvent{
+		event("gpu-health-monitor", "GpuMemWatch", protos.RecommendedAction_RESTART_VM, false),
+		event("gpu-health-monitor", "GpuMemWatch", protos.RecommendedAction_RESTART_VM, false),
+		event("gpu-health-monitor", "GpuMemWatch", protos.RecommendedAction_NONE, true),
+	}})
+	require.NoError(t, err)
+
+	assert.Equal(t, fatalBefore+2, counter(t, "node-1", "gpu-health-monitor", "GpuMemWatch", "RESTART_VM", "true", "false"))
+	assert.Equal(t, healthyBefore+1, counter(t, "node-1", "gpu-health-monitor", "GpuMemWatch", "NONE", "false", "true"))
+
+	// Shutting down without a ring buffer is a no-op, not a crash.
+	connector.ShutdownRingBuffer(context.Background())
+}

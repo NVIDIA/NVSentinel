@@ -1,347 +1,135 @@
-# NVSentinel Local Demo: Fault Injection and Node Quarantine
+# NVSentinel Local Demo: Fault Injection and Recovery
 
-Welcome! This demo shows NVSentinel's core functionality running locally on your laptop. You'll see how NVSentinel automatically detects GPU failures and protects your cluster by cordoning faulty nodes.
+**Detect, protect and remediate, end to end, on a KIND cluster with no GPU hardware.**
 
-> **💡 For this demo, no GPU Required!**  
-> This demo runs on **any laptop** - no GPU needed! We simulate GPU failures by sending test events directly to NVSentinel, allowing you to see the full detection and response workflow without any special hardware.
+This demo breaks a GPU and then gets out of the way. NVSentinel detects the fault, protects the workload by cordoning and draining the node, remediates it with a reboot, and returns it to service once the fault clears — with nothing typed at any point in between.
 
-## 🎯 What You'll Learn
+> **No GPU required.** The GPU is simulated by a fake DCGM hostengine backed by NVML injection. Everything above it — the health monitor, the event pipeline, the quarantine rules, the drain, the repair request — is the code that runs in production clusters, unmodified.
 
-1. **GPU Health Monitoring** - How NVSentinel detects hardware failures
-2. **Automated Response** - How faulty nodes are automatically quarantined
-3. **Event-Driven Architecture** - How health events flow through the system
+## What You'll Learn
 
-## 📋 Prerequisites
+The same three stages the [project README](../../README.md) describes, watched one at a time:
 
-**No GPU required!** This demo works on any laptop.
+1. **Detect** — gpu-health-monitor polls DCGM, and a fault becomes a health event and a node condition
+2. **Protect** — fault-quarantine cordons the node so nothing new lands on it, and node-drainer evicts what was already there
+3. **Remediate** — fault-remediation asks for the repair the fault calls for, janitor carries it out, and the node comes back on its own
 
-**System Requirements:**
-- **Disk Space**: ~10GB free (for Docker images and KIND cluster)
-- **Memory**: 4GB RAM minimum, 8GB recommended
-- **CPU**: 2 cores minimum
-
-**Required tools:**
-- **Docker** - For running KIND (Kubernetes in Docker) ([install](https://docs.docker.com/get-docker/))
-- **kubectl** - Kubernetes command-line tool ([install](https://kubernetes.io/docs/tasks/tools/))
-- **kind** - Kubernetes IN Docker ([install](https://kind.sigs.k8s.io/docs/user/quick-start/#installation))
-- **helm** - Kubernetes package manager ([install](https://helm.sh/docs/intro/install/))
-- **jq** - JSON processor for parsing Kubernetes output ([install](https://jqlang.github.io/jq/download/))
-
-**Optional:**
-- **curl** - For sending HTTP requests (usually pre-installed)
-
-## 🚀 Quick Start
-
-### Option 1: Automated Demo (Fast)
-
-**Best for:** Quick overview, presentations, or if you're short on time.
-
-**What you'll see:** The entire workflow runs automatically from cluster creation through error injection to verification. Great for getting a quick sense of NVSentinel's capabilities, but you won't see the details of each step.
-
-```bash
-# Run the complete demo (takes ~5-10 minutes)
-make demo
-
-# Clean up when done
-make cleanup
-```
-
-### Option 2: Step-by-Step (Interactive - Recommended for Learning)
-
-**Best for:** Understanding how NVSentinel works, learning the architecture, seeing logs and events in detail.
-
-**What you'll learn:** By running each script individually, you'll see the cluster state before and after each action, understand the event flow, and have time to explore logs and Kubernetes resources at each stage.
-
-**See below for expected output after each step!**
-
-```bash
-# Step 0: Create cluster and install NVSentinel
-./scripts/00-setup.sh
-
-# Step 1: View the healthy cluster
-./scripts/01-show-cluster.sh
-
-# Step 2: Inject a GPU fault (simulates hardware failure)
-./scripts/02-inject-error.sh
-
-# Step 3: Verify node was cordoned
-./scripts/03-verify-cordon.sh
-
-# Clean up
-./scripts/99-cleanup.sh
-```
-
-
-## 📚 Understanding the Demo
-
-### What GPU Faults Does NVSentinel Detect?
-
-NVSentinel monitors GPU health through multiple channels and can detect various hardware and driver failures through DCGM health checks, XID error codes, and system logs.
-
-This demo simulates a **fatal GPU hardware fault** (corrupt InfoROM) using DCGM's error injection capability. This type of fault requires the node to be removed from service to protect workloads.
-
-### How NVSentinel Responds
-
-When a GPU fault is detected, NVSentinel:
-
-1. **Health Monitor** detects the GPU error (from DCGM, syslog, or other sources)
-2. **Platform Connectors** receives the health event via gRPC
-3. **MongoDB** stores the event in the persistent event database
-4. **Fault Quarantine** watches for new events and evaluates rules
-5. **Kubernetes API** - Node is cordoned (no new pods scheduled)
-6. **Node Drainer** - (if enabled) Gracefully evicts running workloads
-7. **Fault Remediation** - (if enabled) Triggers repair workflows
-
-In this simplified demo, we focus on #1-5.
-
-## 🏗️ Demo Architecture
-
-This demo uses a **minimal NVSentinel deployment** with:
-
-- **KIND Cluster** - 1 control plane + 1 worker node
-- **Fake DCGM** - Simulates NVIDIA GPU monitoring (with NVML injection)
-- **GPU Health Monitor** - Detects GPU errors from DCGM
-- **Platform Connectors** - gRPC server for receiving health events
-- **Fault Quarantine** - Rule engine that cordons nodes on fatal errors
-- **MongoDB** - Event storage and change streams
+## The Pipeline
 
 ```text
-┌───────────────────────────────────────────────────────┐
-│  Your Laptop (KIND Cluster)                           │
-│                                                       │
-│  ┌──────────────────────────┐                         │
-│  │ Worker Node              │                         │
-│  │                          │                         │
-│  │  * Fake DCGM (Injected)  │                         │
-│  │  * GPU Health Monitor    │                         │
-│  └──────────┬───────────────┘                         │
-│             │ gRPC                                    │
-│             ↓                                         │
-│  ┌────────────────────────────────────────────────┐   │
-│  │ NVSentinel Core                                │   │
-│  │                                                │   │
-│  │  ┌───────────────┐      ┌──────────────────┐   │   │
-│  │  │  Platform     │─────>│    MongoDB       │   │   │
-│  │  │  Connectors   │      │  (Event Store)   │   │   │
-│  │  └───────────────┘      └────────┬─────────┘   │   │
-│  │                                  │             │   │
-│  │                         Change   │             │   │
-│  │                         Stream   ↓             │   │
-│  │                         ┌──────────────────┐   │   │
-│  │                         │ Fault Quarantine │   │   │
-│  │                         │  (CEL Rules)     │   │   │
-│  │                         └────────┬─────────┘   │   │
-│  │                                  │             │   │
-│  │                                  ↓             │   │
-│  │                         ┌──────────────────┐   │   │
-│  │                         │  Kubernetes API  │   │   │
-│  │                         │  (Cordon Node)   │   │   │
-│  │                         └──────────────────┘   │   │
-│  └────────────────────────────────────────────────┘   │
-└───────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│  KIND cluster                                                             │
+│                                                                           │
+│  GPU node                                                                 │
+│  ┌───────────────────────────────────────────────────────┐                │
+│  │  fake DCGM hostengine  ◄── you inject XID 95 here     │                │
+│  │          │  :5555                                     │                │
+│  │          ▼                                            │                │
+│  │  gpu-health-monitor                                   │                │
+│  │          │  health event, over a Unix socket          │                │
+│  │          ▼                                            │                │
+│  │  platform-connectors ─────────────┐                   │                │
+│  └───────────────────────────────────┼───────────────────┘                │
+│                                      │ write                              │
+│                                      ▼                                    │
+│                              ┌───────────────┐                            │
+│                              │   MongoDB     │                            │
+│                              └───────┬───────┘                            │
+│                                change stream                              │
+│            ┌─────────────────────────┼─────────────────────────┐          │
+│            ▼                         ▼                         ▼          │
+│    fault-quarantine  ──────►   node-drainer  ──────►  fault-remediation   │
+│      cordon the node          evict the pods          request a reboot    │
+│                                                                │          │
+│                                                                ▼          │
+│                                                            janitor        │
+│                                                       perform the reboot  │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
+The core modules coordinate only through the datastore — none of them calls another — which is why each can be enabled, disabled or replaced on its own. The one direct hop is at the edge: a health monitor hands its events to the platform-connectors instance on its own node over a Unix socket, which is what puts them in the datastore in the first place.
 
-## 🔍 What Happens During the Demo
+## Prerequisites
 
-### Phase 0: Setup (00-setup.sh)
+Runs on Linux and on macOS, Intel or Apple Silicon.
 
-1. **Creates KIND cluster** with 1 worker node (minimal config)
-2. **Installs cert-manager** (for TLS certificates)
-3. **Installs NVSentinel** with minimal components:
-   - Platform Connectors (event ingestion)
-   - MongoDB (3-node replica set for change streams - adds ~2-3 min)
-   - Simple Health Client (test tool)
-   - Fault Quarantine (auto-cordon)
-4. **Waits for all pods to be ready** (~5-6 minutes total)
+- **Docker** — runs the KIND cluster ([install](https://docs.docker.com/get-docker/))
+- **kind** — Kubernetes in Docker ([install](https://kind.sigs.k8s.io/docs/user/quick-start/#installation))
+- **kubectl** — Kubernetes CLI ([install](https://kubernetes.io/docs/tasks/tools/))
+- **helm** — Kubernetes package manager ([install](https://helm.sh/docs/intro/install/))
+- **jq** — JSON processor ([install](https://jqlang.github.io/jq/download/))
+- **curl** — used to look up the current NVSentinel release
 
-### Phase 1: Initial State (01-show-cluster.sh)
+Resources: roughly 4 CPU cores, 8 GB RAM and 20 GB of free disk.
 
-Shows the healthy cluster:
-- ✅ All nodes are `Ready` and `SchedulingEnabled`
-- ✅ All NVSentinel pods are `Running`
-- ✅ No health events in the database
-
-**Expected output:**
+## Quick Start
 
 ```bash
-$ kubectl get nodes
-NAME                            STATUS   ROLES           AGE   VERSION
-nvsentinel-demo-control-plane   Ready    control-plane   2m    v1.31.0
-nvsentinel-demo-worker          Ready    <none>          2m    v1.31.0
+cd demos/local-fault-injection-demo
+
+./demo.sh            # every step, start to finish
+./demo.sh cleanup    # delete the cluster
 ```
 
-Both nodes should be `Ready` with no scheduling restrictions.
-
-### Phase 2: Failure Injection (02-inject-error.sh)
-
-**Injects a GPU hardware fault** into the fake DCGM service. The GPU Health Monitor detects this error automatically (just like it would with real GPU hardware) and NVSentinel quarantines the node.
-
-**How it works:**
-- We use `dcgmi test --inject` to simulate a corrupt InfoROM (a fatal GPU hardware fault)
-- GPU Health Monitor polls DCGM every few seconds and detects the error
-- NVSentinel automatically processes the event and cordons the node
-
-
-
-The GPU Health Monitor detects this from DCGM and sends it via gRPC to Platform Connectors - exactly like production!
-
-**Demo magic:** We use fake DCGM to simulate GPU faults without actual hardware - NVSentinel's detection and response is 100% authentic.
-
-### Phase 3: Verification (03-verify-cordon.sh)
-
-Confirms the automated response:
-- 🔒 Worker node shows as `SchedulingDisabled` (cordoned)
-- 📊 Node condition shows the health event
-- 🎯 Fault Quarantine logs show the rule evaluation
-
-**Expected output:**
+To read what happens at each stage, run the steps yourself instead:
 
 ```bash
-$ kubectl get nodes
-NAME                            STATUS                     ROLES           AGE   VERSION
-nvsentinel-demo-control-plane   Ready                      control-plane   12m   v1.31.0
-nvsentinel-demo-worker          Ready,SchedulingDisabled   <none>          12m   v1.31.0
+./scripts/00-setup.sh              # build the cluster, install NVSentinel and the workload
+./scripts/01-show-cluster.sh       # look at the cluster before anything is broken
+./scripts/02-inject-fault.sh       # inject XID 95 into the GPU
+./scripts/03-watch-remediation.sh  # detect, protect, remediate
+./scripts/04-recover.sh            # clear the fault, watch the node return to service
+./scripts/99-cleanup.sh            # delete the cluster
 ```
 
-Notice the worker node now shows `SchedulingDisabled` - NVSentinel automatically cordoned it after detecting the GPU fault! 🎉
+These are ordered stages, not independent scripts: step 2 needs the cluster and DCGM pod that step 0 builds, and step 3 needs the fault step 2 injects. Run them in order. Any one of them can be re-run as long as the earlier stages still hold — re-running step 3 after it has already completed, for instance, just re-checks a node that is already drained.
 
-### Cleanup (99-cleanup.sh)
+## What Happens at Each Step
 
-Removes the KIND cluster and cleans up resources.
+### Step 0: Setup (`00-setup.sh`)
 
-## 🎓 Learning Outcomes
+Creates a two node KIND cluster, installs cert-manager, then installs NVSentinel from `oci://ghcr.io/nvidia/nvsentinel` with [config/nvsentinel-values.yaml](config/nvsentinel-values.yaml).
 
-After completing this demo, you'll understand:
+It then deploys the fake DCGM hostengine into the `gpu-operator` namespace, labels the worker as a GPU node, and starts a single-replica Deployment on it to stand in for a training job.
 
-1. **Event-Driven Architecture** - How health events flow through NVSentinel
-2. **Kubernetes Integration** - How NVSentinel interacts with Kubernetes API
-3. **Rule-Based Quarantine** - How CEL rules determine when to cordon nodes
-4. **Production Readiness** - What a minimal NVSentinel deployment looks like
+Before it finishes, setup waits for the `GpuDcgmConnectivityFailure` condition on the node to read `False`. A running gpu-health-monitor pod proves nothing about whether it can reach the hostengine; that condition is only written once a poll has actually succeeded. Without the gate, a fault injected in step 2 could be silently dropped.
 
-## ⚙️ Configuration
+### Step 1: Before the fault (`01-show-cluster.sh`)
 
-### Using a Different NVSentinel Version
+The baseline: both nodes `Ready` and schedulable, and the workload running on the GPU node.
 
-By default, the demo uses NVSentinel v0.6.0 (the latest published release). To use a different version:
+It also checks that no GPU health check is currently failing. NVSentinel keeps one node condition per DCGM check it watches, `False` while the check passes and `True` once it fails, so a healthy node carries the full list all `False`. To see them:
 
 ```bash
-# Use a specific version (replace vX.Y.Z with your desired version)
-NVSENTINEL_VERSION=vX.Y.Z ./scripts/00-setup.sh
-
-# Or set it for the entire demo
-NVSENTINEL_VERSION=vX.Y.Z make demo
+kubectl get node <node> -o json | jq '.status.conditions[] | select(.type | startswith("Gpu"))'
 ```
 
-### Using Development/Local Code
+### Step 2: Break the GPU (`02-inject-fault.sh`)
 
-To test with local development code:
-1. Build and push images to a registry accessible from KIND
-2. Update the image tags in the Helm values file
-3. See [DEVELOPMENT.md](../../DEVELOPMENT.md) for details
-
-## 💾 Disk Space Management
-
-The demo uses approximately **8-10GB** of disk space:
-- KIND cluster images: ~2GB
-- Container images (NVSentinel, MongoDB, DCGM): ~6-8GB
-
-**To minimize disk usage:**
 ```bash
-# After completing the demo, clean up immediately
-make cleanup
-
-# Or manually clean Docker
-docker system prune -a -f --volumes
+dcgmi test --inject --gpuid 0 -f 230 -v 95
 ```
 
-**If you're low on disk:**
-- The demo creates a minimal deployment:
-  - 1 MongoDB instance (single-member replica set for change streams)
-  - 1 worker node (not 2+)
-  - Persistence disabled (no storage volumes)
-  - Only essential components enabled
+Field 230 is `DCGM_FI_DEV_XID_ERRORS`. XID 95 is an uncontained ECC error which classes as fatal with a recommended action of `RESTART_VM`.
 
-## 🔧 Troubleshooting
+### Step 3: Detect, protect, remediate (`03-watch-remediation.sh`)
 
-### Out of disk space
-```bash
-# Check disk usage
-df -h /
+Three stages, each waited on by the effect it produces rather than by the clock:
 
-# Clean up Docker
-docker system prune -a -f --volumes
+| Stage | Who acts | Waits for | Node state label |
+|---|---|---|---|
+| **Detect** | gpu-health-monitor, platform-connectors | a GPU condition flipping to `True` | — |
+| **Protect** | fault-quarantine, node-drainer | the node cordoned, then the workload off it | `quarantined` → `draining` → `drain-succeeded` |
+| **Remediate** | fault-remediation, janitor | a `RebootNode`, then its completion | `remediating` → `remediation-succeeded` |
 
-# Delete old KIND clusters
-kind get clusters
-kind delete cluster --name <old-cluster-name>
-```
+**Detect.** gpu-health-monitor polls DCGM every 15 seconds. When it sees the XID it sends a health event to platform-connectors over the node's Unix socket; platform-connectors stores it and records it as a node condition. 
 
-### Cluster creation fails
-```bash
-# Clean up and retry
-kind delete cluster --name nvsentinel-demo
-./scripts/00-setup.sh
-```
+**Protect.** fault-quarantine watches the datastore, matches its default fatal GPU rule, and cordons the node so the scheduler stops placing work on hardware known to be broken. The cordon only stops *new* pods, so node-drainer then evicts the job already running there. That pod goes `Pending`, not away: the Deployment still wants its replica and the only GPU node is cordoned, so there is nowhere to put it. 
 
-### Pods not starting
-```bash
-# Check pod status
-kubectl get pods -n nvsentinel
+**Remediate.** With the node empty, fault-remediation turns the event's recommended action into a repair request. `RESTART_VM` means a `RebootNode` resource, which janitor acts on through its configured provider: an EC2 call on AWS, `instances.reset` on GCP. Here it is the `kind` provider, which simulates the reboot.
 
-# View logs
-kubectl logs -n nvsentinel deployment/platform-connectors
-kubectl logs -n nvsentinel deployment/simple-health-client
-```
+### Step 4: Back in service (`04-recover.sh`)
 
-### Node not cordoning
-```bash
-# Check fault-quarantine logs
-kubectl logs -n nvsentinel deployment/fault-quarantine
+On real hardware the reboot is what clears the XID. A KIND node is a container that is never really rebooted, and the injected fault lives in the fake DCGM hostengine, so this step restarts that pod instead — the same effect, by the only means available here. The replacement hostengine carries no injected state and reports a healthy GPU.
 
-# Verify event was received
-kubectl get events -A | grep GPU
-```
-
-### Port conflicts
-```bash
-# Change the port used by simple-health-client
-kubectl edit service -n nvsentinel simple-health-client
-```
-
-## 🚀 Next Steps
-
-After trying this demo, explore more NVSentinel capabilities:
-
-1. **Full Installation** - Deploy on a real cluster with GPU nodes ([Quick Start Guide](../../README.md#-quick-start))
-2. **Production Configuration** - Enable node drainer and fault remediation ([Configuration Guide](../../distros/kubernetes/README.md))
-3. **Custom Rules** - Write your own CEL rules for fault quarantine
-4. **Scale Testing** - Try the [scale test suite](../../tests/README.md)
-5. **Real GPU Monitoring** - Connect to actual NVIDIA GPUs with DCGM
-
-## 📖 Additional Resources
-
-- **[NVSentinel README](../../README.md)** - Project overview and features
-- **[Architecture Guide](../../docs/OVERVIEW.md)** - Detailed system architecture
-- **[Development Guide](../../DEVELOPMENT.md)** - Contributing and development setup
-- **[Helm Chart Configuration](../../distros/kubernetes/README.md)** - All configuration options
-- **[NVIDIA GPU Error Codes (XIDs)](https://docs.nvidia.com/deploy/xid-errors/)** - Reference for GPU error codes
-
-## 🤝 Contributing
-
-Found an issue with this demo? Want to improve it? We welcome contributions!
-
-1. Check the [Contributing Guide](../../CONTRIBUTING.md)
-2. Open an issue or pull request
-3. Sign your commits with `git commit -s`
-
-## 📄 License
-
-This demo is part of NVSentinel and is licensed under the Apache License 2.0.
-
----
-
-**Questions?** Start a [discussion](https://github.com/NVIDIA/NVSentinel/discussions) or [open an issue](https://github.com/NVIDIA/NVSentinel/issues).
-
-**Enjoy the demo!** 🎉
-
+From there NVSentinel is unassisted again. gpu-health-monitor sends a healthy event for the check that was failing; fault-quarantine, which tracks the checks it quarantined the node for, sees the last one recover and uncordons. The scheduler places the Pending pod and the workload is running again, on the node that was broken a minute earlier.
