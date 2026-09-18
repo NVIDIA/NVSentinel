@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package cel
+package celfields
 
 import (
 	"testing"
@@ -88,6 +88,18 @@ func TestLookupTargets_Expressions_ExtractsGVKsAndPaths(t *testing.T) {
 			},
 		},
 		{
+			name:       "a membership test narrows a looked-up map the same way",
+			expression: `'nvidia.com/gpu.present' in lookup('v1', 'Node', '', 'node-a').metadata.labels`,
+			want: []LookupTarget{
+				{
+					APIVersion: "v1",
+					Kind:       "Node",
+					Paths:      [][]string{{"metadata", "labels", "nvidia.com/gpu.present"}},
+					Derivable:  true,
+				},
+			},
+		},
+		{
 			name:       "a computed index keeps the parent subtree",
 			expression: `lookup('v1', 'Node', '', 'node-a').metadata.labels[resource.spec.nodeName] == 'true'`,
 			want: []LookupTarget{
@@ -140,29 +152,25 @@ func TestLookupTargets_Expressions_ExtractsGVKsAndPaths(t *testing.T) {
 		},
 	}
 
-	env, err := NewCompilerEnvironment()
-	require.NoError(t, err)
+	env := newTestEnv(t)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			compiled, err := env.Compile(tt.expression)
-			require.NoError(t, err)
+			compiled := compile(t, env, tt.expression)
 
-			require.Equal(t, tt.want, LookupTargets(compiled))
+			require.Equal(t, tt.want, LookupTargets(compiled, testResourceVar, testLookupFunc))
 		})
 	}
 }
 
 func TestLookupTargets_LookupArguments_StillReadTheResource(t *testing.T) {
-	env, err := NewCompilerEnvironment()
-	require.NoError(t, err)
+	env := newTestEnv(t)
 
 	// The namespace and name handed to lookup() are read off the watched
 	// object, so they have to survive pruning of the watched object too.
-	compiled, err := env.Compile(chainedLookupExpression)
-	require.NoError(t, err)
+	compiled := compile(t, env, chainedLookupExpression)
 
-	paths, ok := ResourceFieldPaths(compiled)
+	paths, ok := FieldPaths(compiled, testResourceVar)
 
 	require.True(t, ok)
 	require.Equal(t, [][]string{{"metadata", "namespace"}, {"status", "podName"}}, paths)
@@ -175,24 +183,32 @@ func TestLookupTargets_LookupArguments_StillReadTheResource(t *testing.T) {
 // that GVK is read for would prune the rest from its cache entry, and the call
 // past the stop would read them as absent rather than as what they hold.
 func TestLookupTargets_WalkStoppedEarly_DropsThePathsGatheredSoFar(t *testing.T) {
-	env, err := NewCompilerEnvironment()
-	require.NoError(t, err)
+	env := newTestEnv(t)
 
-	compiled, err := env.Compile(
-		`lookup('v1', 'Pod', 'ns', 'a').spec.nodeName != '' && size(resource) > 3 && ` +
+	compiled := compile(t, env,
+		`lookup('v1', 'Pod', 'ns', 'a').spec.nodeName != '' && size(resource) > 3 && `+
 			`lookup('v1', 'Pod', 'ns', 'a').status.phase == 'Running'`)
-	require.NoError(t, err)
 
-	_, ok := ResourceFieldPaths(compiled)
+	_, ok := FieldPaths(compiled, testResourceVar)
 	require.False(t, ok, "the watched object is used as a whole, so its fields are underivable")
 
-	targets := LookupTargets(compiled)
+	targets := LookupTargets(compiled, testResourceVar, testLookupFunc)
 
 	require.Len(t, targets, 1)
 	require.False(t, targets[0].Derivable)
 	require.Nil(t, targets[0].Paths)
 }
 
+// TestLookupTargets_NoLookupFunc_ReturnsNothing covers a caller whose
+// environment declares no lookup function, such as fault-quarantine. Every
+// call then ends a chain like any other, and none roots one the cache serves.
+func TestLookupTargets_NoLookupFunc_ReturnsNothing(t *testing.T) {
+	env := newTestEnv(t)
+	compiled := compile(t, env, `lookup('v1', 'Pod', 'ns', 'a').spec.nodeName != ''`)
+
+	require.Nil(t, LookupTargets(compiled, testResourceVar, ""))
+}
+
 func TestLookupTargets_NilAST_ReturnsNothing(t *testing.T) {
-	require.Nil(t, LookupTargets(nil))
+	require.Nil(t, LookupTargets(nil, testResourceVar, testLookupFunc))
 }
