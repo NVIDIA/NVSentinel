@@ -18,15 +18,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
+	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"go.opentelemetry.io/otel/attribute"
+	"golang.org/x/sync/singleflight"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // NodeMetadata holds cached node information fetched from the Kubernetes API.
@@ -37,10 +39,11 @@ type NodeMetadata struct {
 }
 
 type Augmentor struct {
-	config    *Config
-	clientset kubernetes.Interface
-	cache     *expirable.LRU[string, *NodeMetadata]
-	fetchMu   sync.Mutex
+	config        *Config
+	clientset     kubernetes.Interface
+	cache         *expirable.LRU[string, *NodeMetadata]
+	fetches       singleflight.Group
+	lookupTimeout time.Duration
 }
 
 func New(ctx context.Context, config *Config, clientset kubernetes.Interface) (*Augmentor, error) {
@@ -54,17 +57,48 @@ func New(ctx context.Context, config *Config, clientset kubernetes.Interface) (*
 		config.CacheTTL,
 	)
 
+	lookupTimeout := config.LookupTimeout
+	if lookupTimeout == 0 {
+		lookupTimeout = DefaultLookupTimeout
+	}
+
+	cfg := *config
+	cfg.AllowedLabels = withoutReservedLabels(ctx, config.AllowedLabels)
+
 	slog.InfoContext(ctx, "Metadata augmentor initialized",
-		"cacheSize", config.CacheSize,
-		"cacheTTL", config.CacheTTL,
-		"allowedLabels", config.AllowedLabels,
-		"skipNodeLabel", config.SkipNodeLabel)
+		"cacheSize", cfg.CacheSize,
+		"cacheTTL", cfg.CacheTTL,
+		"lookupTimeout", lookupTimeout,
+		"allowedLabels", cfg.AllowedLabels,
+		"skipNodeLabel", cfg.SkipNodeLabel)
 
 	return &Augmentor{
-		config:    config,
-		clientset: clientset,
-		cache:     cache,
+		config:        &cfg,
+		clientset:     clientset,
+		cache:         cache,
+		lookupTimeout: lookupTimeout,
 	}, nil
+}
+
+// withoutReservedLabels drops from the allowed labels the one named like the
+// event's idempotency key. That metadata field belongs to the platform
+// connector, which stamps it before the pipeline runs so the store can refuse
+// a resend; a node label of the same name must not overwrite it.
+func withoutReservedLabels(ctx context.Context, allowed []string) []string {
+	kept := make([]string, 0, len(allowed))
+
+	for _, label := range allowed {
+		if label == datastore.HealthEventIdempotencyKeyMetadataField {
+			slog.WarnContext(ctx, "Ignoring allowed label named like the reserved idempotency key metadata field",
+				"label", label)
+
+			continue
+		}
+
+		kept = append(kept, label)
+	}
+
+	return kept
 }
 
 func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error {
@@ -129,7 +163,9 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 		attribute.Int("metadata.labels_added", labelsAdded),
 	)
 
-	slog.InfoContext(ctx, "Metadata augmented",
+	// Per-event, so debug only: at info this is one log line per fleet event
+	// now that the pipeline also runs centrally.
+	slog.DebugContext(ctx, "Metadata augmented",
 		"node", event.NodeName,
 		"providerID", metadata.ProviderID,
 		"labelsAdded", labelsAdded)
@@ -141,29 +177,63 @@ func (a *Augmentor) Name() string {
 	return "MetadataAugmentor"
 }
 
+// getOrFetchMetadata serves a node's metadata from the cache and reads it
+// from the API on a miss. Concurrent misses for the same node share one read;
+// misses for different nodes proceed independently. The shared read does not
+// die with the caller that happened to start it: it runs detached from that
+// caller's cancellation, bounded by the lookup timeout, and each waiter leaves
+// on its own context instead.
 func (a *Augmentor) getOrFetchMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
 	if metadata, found := a.cache.Get(nodeName); found {
 		return metadata, nil
 	}
 
-	a.fetchMu.Lock()
-	defer a.fetchMu.Unlock()
-
-	if metadata, found := a.cache.Get(nodeName); found {
-		return metadata, nil
-	}
-
-	metadata, err := a.fetchNodeMetadata(ctx, nodeName)
-	if err != nil {
+	// A caller that is already gone must not start a read it will not wait
+	// for: a cancelled batch would otherwise fan out one detached read per
+	// remaining node.
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	a.cache.Add(nodeName, metadata)
+	results := a.fetches.DoChan(nodeName, func() (any, error) {
+		if metadata, found := a.cache.Get(nodeName); found {
+			return metadata, nil
+		}
 
-	return metadata, nil
+		metadata, err := a.fetchNodeMetadata(context.WithoutCancel(ctx), nodeName)
+		if err != nil {
+			return nil, err
+		}
+
+		a.cache.Add(nodeName, metadata)
+
+		return metadata, nil
+	})
+
+	select {
+	case result := <-results:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+
+		metadata, ok := result.Val.(*NodeMetadata)
+		if !ok {
+			return nil, fmt.Errorf("unexpected metadata type %T", result.Val)
+		}
+
+		return metadata, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
+// fetchNodeMetadata reads one node, bounded by the lookup timeout so a
+// stalled API server cannot hold the event (and its acknowledgement) longer
+// than that; the caller fails open on the timeout.
 func (a *Augmentor) fetchNodeMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.lookupTimeout)
+	defer cancel()
+
 	node, err := a.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node from API: %w", err)

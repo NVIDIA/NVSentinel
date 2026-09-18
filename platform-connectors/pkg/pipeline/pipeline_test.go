@@ -25,14 +25,16 @@ import (
 )
 
 type mockTransformer struct {
-	name   string
-	called bool
-	fail   bool
-	mutate func(*pb.HealthEvent)
+	name      string
+	called    bool
+	processed int
+	fail      bool
+	mutate    func(*pb.HealthEvent)
 }
 
 func (m *mockTransformer) Transform(ctx context.Context, event *pb.HealthEvent) error {
 	m.called = true
+	m.processed++
 	if m.fail {
 		return fmt.Errorf("mock error")
 	}
@@ -125,4 +127,17 @@ func TestPipelineOrder(t *testing.T) {
 	pipeline.Process(context.Background(), event)
 
 	assert.Equal(t, []string{"first", "second"}, order)
+}
+
+// TestPipeline_ProcessBatch_EveryEventPassesEveryTransformer: a batch is
+// processed event by event, each through every transformer in order.
+func TestPipeline_ProcessBatch_EveryEventPassesEveryTransformer(t *testing.T) {
+	first := &mockTransformer{name: "first"}
+	second := &mockTransformer{name: "second"}
+	events := []*pb.HealthEvent{{NodeName: "n1"}, {NodeName: "n2"}, {NodeName: "n3"}}
+
+	New(first, second).ProcessBatch(context.Background(), events)
+
+	assert.Equal(t, 3, first.processed)
+	assert.Equal(t, 3, second.processed)
 }

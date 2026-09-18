@@ -178,8 +178,8 @@ submitting health events naming another node. See
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
-| `k8s_platform_connector_node_condition_update_total` | Counter | `status` | Total number of node condition updates by status. Status values: `success`, `failed` |
-| `k8s_platform_connector_node_event_operations_total` | Counter | `node_name`, `operation`, `status` | Total number of node event operations by type and status. Operation values: `create`, `update`. Status values: `success`, `failed` |
+| `k8s_platform_connector_node_condition_update_total` | Counter | `status` | Total number of node condition updates by status. Status values: `success`, `failed`, `skipped` (an update that would leave the node's conditions as they are, such as a monitor's repeat of a fault the node already shows, is skipped) |
+| `k8s_platform_connector_node_event_operations_total` | Counter | `operation`, `status` | Total number of node event operations by type and status. Operation values: `create`, `update`. Status values: `success`, `failed`, `skipped` (a repeat of a fault whose Event was written less than 10 minutes ago is skipped; later repeats refresh the Event) |
 | `k8s_platform_connector_node_condition_update_duration_milliseconds` | Histogram | - | Duration of node condition updates in milliseconds. Uses linear buckets (0, 10, 500) |
 | `k8s_platform_connector_node_event_update_create_duration_milliseconds` | Histogram | - | Duration of node event updates/creations in milliseconds. Uses linear buckets (0, 10, 500) |
 
@@ -219,6 +219,15 @@ sum by (agent, check_name) (rate(health_events_total{recommended_action!="NONE",
 # Per node, correct for every agent including health-events-analyzer
 sum by (node) (rate(health_events_total{recommended_action!="NONE"}[1h]))
 ```
+
+### Platform Connector Request Metrics
+
+The platform connector exposes these for the batches that reach its request handler.
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `platform_connector_request_duration_seconds` | Histogram | `outcome` | Duration of health event batch requests that reached the handler, by outcome: `ok` (acknowledged), `rejected` (the batch is invalid), `failed` (the connector returned an error while processing the batch; the caller retries). On the node-local DaemonSet the connector is the set of ring buffers, which always accept, so a batch is `ok` once queued unless it is invalid. |
+| `platform_connector_store_batches_total` | Counter | `outcome` | Batches written to the datastore by the store connector: `stored`, or `duplicate` (a resend, or a retried batch, whose events already existed; treated like a store) |
 
 ### Workqueue Metrics
 

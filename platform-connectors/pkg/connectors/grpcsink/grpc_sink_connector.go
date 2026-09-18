@@ -131,6 +131,17 @@ func (g *GRPCSinkConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 	}
 }
 
+// ProcessBatch forwards one batch to the sink with the connector's RPC
+// timeout and no retry. The deployment platform connector calls it from inside
+// the request, best effort, instead of through the ring buffer.
+func (g *GRPCSinkConnector) ProcessBatch(ctx context.Context, healthEvents *pb.HealthEvents) error {
+	if len(healthEvents.GetEvents()) == 0 {
+		return nil
+	}
+
+	return g.sendHealthEvents(ctx, healthEvents)
+}
+
 func (g *GRPCSinkConnector) sendHealthEvents(ctx context.Context, healthEvents *pb.HealthEvents) error {
 	start := time.Now()
 
