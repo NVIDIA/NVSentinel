@@ -70,3 +70,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 054 | [`Observability` — change stream consumer lag metrics](054-changestream-lag-metrics.md) |
 | 055 | [Health Monitors — NVCRE Certification Monitor](055-nvcre-certification-monitor.md) |
 | 056 | [Performance — Concurrent Node-Partitioned Event Processing](056-concurrent-node-partitioned-event-processing.md) |
+| 057 | [Distribution — Native GPU Health Monitor Release (proposed)](057-native-gpu-monitor-release.md) |

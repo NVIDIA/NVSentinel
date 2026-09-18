@@ -26,7 +26,7 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -35,14 +35,23 @@ permissions:
   actions: read        # Required for downloading artifacts
 
 jobs:
+  native-package:
+    if: github.repository == 'nvidia/nvsentinel'
+    uses: ./.github/workflows/native-package.yml
+    permissions:
+      contents: read
+    with:
+      release-tag: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
   build-image-list:
     if: github.repository == 'nvidia/nvsentinel'
+    needs: native-package
     runs-on: linux-amd64-cpu32
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+          ref: ${{ format('refs/tags/{0}', github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name) }}
 
       - name: Compute ref name with short SHA
         id: ref-name
@@ -57,7 +66,7 @@ jobs:
           fi
           # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
           SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
-          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
+          echo "value=$SAFE_REF" >> "$GITHUB_OUTPUT"
 
       - name: Build image list
         env:
@@ -82,18 +91,30 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+          ref: ${{ format('refs/tags/{0}', github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name) }}
 
       - name: Load Helm version from .versions.yaml
         id: helm-version
         run: |
-          HELM_VERSION=$(yq eval '.testing_tools.helm' .versions.yaml)
-          echo "helm_version=${HELM_VERSION}" >> $GITHUB_OUTPUT
+          {
+            echo "helm_version=$(yq -er '.testing_tools.helm' .versions.yaml)"
+            echo "helm_sha256=$(yq -er '.testing_tools.helm_linux_amd64_sha256' .versions.yaml)"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Install helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5.0.1
-        with:
-          version: ${{ steps.helm-version.outputs.helm_version }}
+      - name: Install checksum-pinned Helm
+        env:
+          HELM_VERSION: ${{ steps.helm-version.outputs.helm_version }}
+          HELM_SHA256: ${{ steps.helm-version.outputs.helm_sha256 }}
+        run: |
+          tools_dir=$(mktemp -d "$RUNNER_TEMP/helm.XXXXXX")
+          archive="$tools_dir/helm.tar.gz"
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --retry 3 --connect-timeout 30 --max-time 300 \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output "$archive"
+          printf '%s  %s\n' "$HELM_SHA256" "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$tools_dir" linux-amd64/helm
+          "$tools_dir/linux-amd64/helm" version --short
+          echo "$tools_dir/linux-amd64" >> "$GITHUB_PATH"
 
       - name: Configure Helm for GitHub Packages
         run: |
@@ -112,7 +133,7 @@ jobs:
           fi
           # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
           SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
-          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
+          echo "value=$SAFE_REF" >> "$GITHUB_OUTPUT"
 
       - name: Package and publish Helm chart
         env:
@@ -129,20 +150,71 @@ jobs:
     runs-on: linux-amd64-cpu4
     timeout-minutes: 15
     needs:
+      - native-package
       - build-image-list
       - helm-publish
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+          ref: ${{ format('refs/tags/{0}', github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name) }}
 
       - name: Download versions.txt
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: versions
           path: .
+
+      - name: Download verified native assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: gpu-health-monitor-native-linux-amd64
+          path: native-artifacts
+
+      - name: Refuse replacement of native release assets
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({
+                ...context.repo, tag: process.env.RELEASE_TAG
+              })).data;
+            } catch (error) {
+              if (error.status === 404) return;
+              throw error;
+            }
+            const names = new Set(fs.readdirSync('native-artifacts'));
+            names.add('gpu-health-monitor-native-linux-amd64.sigstore.json');
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+              ...context.repo, release_id: release.id, per_page: 100
+            });
+            const conflicts = assets.filter(asset => names.has(asset.name));
+            if (conflicts.length) {
+              throw new Error('Native assets already exist; use a new release version: ' +
+                conflicts.map(asset => asset.name).join(', '));
+            }
+
+      - name: Attest native archive and metadata
+        id: native-provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3.0.0
+        with:
+          subject-path: |
+            native-artifacts/*.tar.gz
+            native-artifacts/*.tar.gz.sha256
+            native-artifacts/*.manifest.json
+            native-artifacts/*.cdx.json
+
+      - name: Include native verification bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.native-provenance.outputs.bundle-path }}
+        run: cp "$ATTESTATION_BUNDLE" native-artifacts/gpu-health-monitor-native-linux-amd64.sigstore.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
@@ -156,6 +228,15 @@ jobs:
 
             See versions.txt for the full list of container images and versions.
 
+            ## Native GPU Health Monitor (experimental)
+
+            The gpu-health-monitor tar.gz runs with private Python as a systemd process.
+            Native assets include a checksum, manifest, CycloneDX SBOM, and build-provenance bundle.
+            The initial build target is Linux amd64 with host-provided DCGM 4.
+            The host must also provide matching DCGM bindings, NVIDIA drivers, a platform connector, and GPU metadata.
+            This package does not include the other NVSentinel components.
+            See health-monitors/gpu-health-monitor/README.md in this tag for installation and qualification requirements.
+
             ## Helm Chart
 
             Install with:
@@ -164,5 +245,12 @@ jobs:
             ```
           files: |
             versions.txt
+            native-artifacts/*.tar.gz
+            native-artifacts/*.tar.gz.sha256
+            native-artifacts/*.manifest.json
+            native-artifacts/*.cdx.json
+            native-artifacts/*.sigstore.json
+          fail_on_unmatched_files: true
+          overwrite_files: false
           draft: false
           prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name, '-') }}
