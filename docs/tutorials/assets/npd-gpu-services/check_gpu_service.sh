@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# NPD custom plugin: GPU-support service liveness, parameterized (ADR-050).
+# NPD custom plugin: GPU-support service liveness, parameterized.
 #
 # One NPD permanent rule per configured service, each bound to its own
 # condition type. The reference Fabric Manager liveness rule invokes this
@@ -27,7 +27,7 @@
 #   0 = healthy, 1 = unhealthy, 3 = unknown.
 # Stdout becomes the condition message on state transitions.
 #
-# Contract (ADR-050 plugin script contracts):
+# Contract (NVSentinel GPU system-service check contracts):
 # - LoadState=not-found exits healthy: the liveness check skips absent
 #   units; presence is a separate, operator-declared check
 #   (check_fm_installed.sh).

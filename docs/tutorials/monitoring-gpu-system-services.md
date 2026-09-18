@@ -2,8 +2,8 @@
 
 This tutorial extends an existing
 [node-problem-detector (NPD)](https://github.com/kubernetes/node-problem-detector)
-installation with the ADR-050 `CustomPluginMonitor` checks for GPU-critical
-systemd services, and configures NVSentinel to consume the resulting Node
+installation with `CustomPluginMonitor` checks for GPU-critical systemd
+services, and configures NVSentinel to consume the resulting Node
 Conditions.
 
 By the end you will have:
@@ -47,16 +47,14 @@ If NPD is not installed yet, follow
 first — including its guidance to never deploy a second NPD instance next to a
 provider-managed one.
 
-For the design rationale, check inventory, and recovery semantics, see
-[ADR-050](../designs/050-gpu-system-services-npd-checks.md).
-
 ---
 
 ## 1. Understand the integration
 
 The plugin scripts probe systemd through `systemctl show`; NPD publishes the
 results as permanent Node Conditions; KOM turns matching conditions into
-NVSentinel HealthEvents on the same path as ADR-053's default NPD checks.
+NVSentinel HealthEvents on the same path as the default NPD condition
+integration.
 
 ```mermaid
 flowchart LR
@@ -79,7 +77,7 @@ This integration watches these condition and reason pairs:
 | `FabricManagerNotInstalled` | `FabricManagerUnitNotFound` | `NPDFabricManagerNotInstalled` | yes | `CONTACT_SUPPORT` |
 | `NvidiaPersistencedDown` | `NvidiaPersistencedNotActive` | `NPDNvidiaPersistencedDown` | no | `CONTACT_SUPPORT` |
 
-Unlike ADR-053's log-matched conditions, these are active probes: a healthy
+Unlike log-matched NPD conditions, these are active probes: a healthy
 observation sets the condition back to `False`, so recoveries clear without an
 NPD restart.
 
@@ -109,7 +107,7 @@ The plugin scripts and monitor configuration ship in this repository under
   single-condition `CustomPluginMonitor` configuration per check. The split
   matters: NPD publishes each monitor's conditions only from that monitor's
   own probe results, so an NPD restart can never briefly report a
-  not-yet-probed condition as healthy (ADR-050 recovery semantics).
+  not-yet-probed condition as healthy.
 
 The scripts need the same host visibility NPD's own checks use: access to
 systemd via `systemctl`. How they reach the nodes depends on the NPD
@@ -174,10 +172,17 @@ then update the DaemonSet:
             type: DirectoryOrCreate
 ```
 
-4. The scripts run `systemctl`, which requires the host's D-Bus. Provider NPD
-   images and DaemonSets that already run service checks have this plumbing;
-   otherwise mount `/run/dbus` (read-only) and ensure `systemctl` exists in
-   the image.
+4. The scripts run `systemctl`. Provider NPD images and DaemonSets that
+   already run service checks have this plumbing. The upstream NPD image
+   ships no `systemctl`: the robust pattern is a shim — mount the node's
+   root read-only at `/host` and place this first on the container `PATH`
+   (query verbs such as `systemctl show` work in a chroot through the
+   host's `/run/systemd/private` socket):
+
+```bash
+#!/bin/bash
+exec chroot /host /usr/bin/systemctl "$@"
+```
 
 Roll the DaemonSet and confirm every pod restarts ready:
 
@@ -218,11 +223,12 @@ fleets do not.
 ## 3. Configure NVSentinel and KOM policies
 
 The GPU-service policies are intentionally excluded from the default KOM
-values, for the same reason as ADR-053's: NVSentinel does not install NPD or
+values, for the same reason as the default NPD policies: NVSentinel does not install NPD or
 control how an operator handles its conditions. The opt-in overlay
 `distros/kubernetes/nvsentinel/values-npd-gpu-services.yaml` provides them
-(shipped with the companion chart change; see the ADR's Configuration
-matrix for the per-scenario policy sets).
+(shipped with the companion chart change). Per fleet scenario: required-FM
+fleets enable all four policies; fleets with container-managed FM or no FM
+enable `NPDNvidiaPersistencedDown` only.
 
 Helm replaces lists rather than merging their entries, so the overlay repeats
 the default `ReplaceNotReadyNode` policy. If the cluster already uses
@@ -348,8 +354,7 @@ hide an active crash loop.
 
 ## Recovery semantics and NPD restarts
 
-Two caveats from ADR-050 apply when interpreting these conditions during
-remediation:
+Two caveats apply when interpreting these conditions during remediation:
 
 - **NPD restarts.** Each check runs as its own single-condition monitor
   with `skip_initial_status: true`, so an NPD restart publishes nothing for
@@ -411,7 +416,7 @@ Paste this prompt into an AI coding agent with access to your NVSentinel
 checkout. Replace the bracketed values before running it.
 
 ```text
-Help me add the ADR-050 GPU system-service NPD checks to this cluster and
+Help me add the NVSentinel GPU system-service NPD checks to this cluster and
 integrate them with NVSentinel:
 
 - Kubernetes context: [context]
@@ -448,7 +453,7 @@ Follow these requirements:
    nvidia-fabricmanager (fatal, RESTART_BM). For flap validation use
    systemctl kill --signal=SIGKILL three times ~20s apart, never manual
    restarts (NRestarts does not count them).
-6. Interpret conditions per ADR-050 recovery semantics: never treat
+6. Interpret conditions per the recovery-semantics section above: never treat
    transitions observed around an NPD restart as recovery; Unknown means
    could-not-observe, not healthy.
 

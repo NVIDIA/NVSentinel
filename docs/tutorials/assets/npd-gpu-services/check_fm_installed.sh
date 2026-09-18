@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# NPD custom plugin: nvidia-fabricmanager unit presence (ADR-050).
+# NPD custom plugin: nvidia-fabricmanager unit presence.
 #
 # Install this rule only on fleets where the operator declares Fabric Manager
 # required AND host-systemd-managed (NVSwitch platforms with the host unit):

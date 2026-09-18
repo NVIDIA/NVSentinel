@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# NPD custom plugin: nvidia-fabricmanager crash-loop (flap) detection
-# (ADR-050).
+# NPD custom plugin: nvidia-fabricmanager crash-loop (flap) detection.
 #
 # Exit codes follow the NPD custom-plugin protocol:
 #   0 = healthy, 1 = unhealthy (flapping), 3 = unknown (could not observe).
