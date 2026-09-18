@@ -573,13 +573,22 @@ health-events-analyzer:
         }
       }
       ''',
+      # Only the most recent previous sticky XID can satisfy the bound, so a scalar
+      # $max over the same window answers the question without materialising every
+      # previous event. Pushing $$ROOT made this stage quadratic in data and work.
       '''
       {
         "$setWindowFields": {
           "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
           "output": {
-            "allPreviousEvents": {
-              "$push": "$$ROOT",
+            "lastStickyTimestamp": {
+              "$max": {
+                "$cond": {
+                  "if": "$isStickyXid",
+                  "then": "$healthevent.generatedtimestamp.seconds",
+                  "else": null
+                }
+              },
               "window": {"documents": ["unbounded", -1]}
             }
           }
@@ -593,23 +602,10 @@ health-events-analyzer:
             "$cond": {
               "if": "$isStickyXid",
               "then": {
-                "$anyElementTrue": {
-                  "$map": {
-                    "input": "$allPreviousEvents",
-                    "as": "prevEvent",
-                    "in": {
-                      "$and": [
-                        {
-                          "$in": [
-                            {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                            ["74", "79", "95", "109", "119"]
-                          ]
-                        },
-                        {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 30]}
-                      ]
-                    }
-                  }
-                }
+                "$and": [
+                  {"$ne": ["$lastStickyTimestamp", null]},
+                  {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 30]}
+                ]
               },
               "else": false
             }
@@ -826,13 +822,22 @@ health-events-analyzer:
         }
       }
       ''',
+      # Only the most recent previous sticky XID can satisfy the bound, so a scalar
+      # $max over the same window answers the question without materialising every
+      # previous event. Pushing $$ROOT made this stage quadratic in data and work.
       '''
       {
         "$setWindowFields": {
           "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
           "output": {
-            "allPreviousEvents": {
-              "$push": "$$ROOT",
+            "lastStickyTimestamp": {
+              "$max": {
+                "$cond": {
+                  "if": "$isStickyXid",
+                  "then": "$healthevent.generatedtimestamp.seconds",
+                  "else": null
+                }
+              },
               "window": {"documents": ["unbounded", -1]}
             }
           }
@@ -846,23 +851,10 @@ health-events-analyzer:
             "$cond": {
               "if": "$isStickyXid",
               "then": {
-                "$anyElementTrue": {
-                  "$map": {
-                    "input": "$allPreviousEvents",
-                    "as": "prevEvent",
-                    "in": {
-                      "$and": [
-                        {
-                          "$in": [
-                            {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                            ["74", "79", "95", "109", "119"]
-                          ]
-                        },
-                        {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 30]}
-                      ]
-                    }
-                  }
-                }
+                "$and": [
+                  {"$ne": ["$lastStickyTimestamp", null]},
+                  {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 30]}
+                ]
               },
               "else": false
             }
@@ -1178,13 +1170,22 @@ health-events-analyzer:
         }
       }
       ''',
+      # Only the most recent previous sticky XID can satisfy the bound, so a scalar
+      # $max over the same window answers the question without materialising every
+      # previous event. Pushing $$ROOT made this stage quadratic in data and work.
       '''
       {
         "$setWindowFields": {
           "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
           "output": {
-            "allPreviousEvents": {
-              "$push": "$$ROOT",
+            "lastStickyTimestamp": {
+              "$max": {
+                "$cond": {
+                  "if": "$isStickyXid",
+                  "then": "$healthevent.generatedtimestamp.seconds",
+                  "else": null
+                }
+              },
               "window": {"documents": ["unbounded", -1]}
             }
           }
@@ -1198,23 +1199,10 @@ health-events-analyzer:
             "$cond": {
               "if": "$isStickyXid",
               "then": {
-                "$anyElementTrue": {
-                  "$map": {
-                    "input": "$allPreviousEvents",
-                    "as": "prevEvent",
-                    "in": {
-                      "$and": [
-                        {
-                          "$in": [
-                            {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                            ["74", "79", "95", "109", "119"]
-                          ]
-                        },
-                        {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 30]}
-                      ]
-                    }
-                  }
-                }
+                "$and": [
+                  {"$ne": ["$lastStickyTimestamp", null]},
+                  {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 30]}
+                ]
               },
               "else": false
             }
@@ -1636,13 +1624,22 @@ health-events-analyzer:
         }
       }
       ''',
+      # Only the most recent previous sticky XID can satisfy the bound, so a scalar
+      # $max over the same window answers the question without materialising every
+      # previous event. Pushing $$ROOT made this stage quadratic in data and work.
       '''
       {
         "$setWindowFields": {
           "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
           "output": {
-            "allPreviousEvents": {
-              "$push": "$$ROOT",
+            "lastStickyTimestamp": {
+              "$max": {
+                "$cond": {
+                  "if": "$isStickyXid",
+                  "then": "$healthevent.generatedtimestamp.seconds",
+                  "else": null
+                }
+              },
               "window": {"documents": ["unbounded", -1]}
             }
           }
@@ -1656,23 +1653,10 @@ health-events-analyzer:
             "$cond": {
               "if": "$isStickyXid",
               "then": {
-                "$anyElementTrue": {
-                  "$map": {
-                    "input": "$allPreviousEvents",
-                    "as": "prevEvent",
-                    "in": {
-                      "$and": [
-                        {
-                          "$in": [
-                            {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                            ["74", "79", "95", "109", "119"]
-                          ]
-                        },
-                        {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 20]}
-                      ]
-                    }
-                  }
-                }
+                "$and": [
+                  {"$ne": ["$lastStickyTimestamp", null]},
+                  {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 20]}
+                ]
               },
               "else": false
             }
