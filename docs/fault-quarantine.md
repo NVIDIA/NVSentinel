@@ -116,6 +116,48 @@ Rules are defined using rulesets that evaluate CEL expressions. Each ruleset has
 - **Label Prefix**: Customize the prefix for tracking labels and annotations on nodes
 - **Multiple Rulesets**: Define different rules for different failure types with CEL expressions that access either the health event or Node metadata/spec
 
+#### Cached Node Fields
+
+The `node` variable is served from the informer cache, not fetched per evaluation. Rules are read once at startup, so the label and annotation keys each expression reads are derived from the compiled CEL, and the cache keeps only those keys. `node.status` is cleared. `node.spec` and the identity metadata are kept whole, because the cordon path reads them. The retained keys are logged at startup, so you can see the effect of a rule change without reading the code.
+
+Fault Quarantine also keeps the keys it uses itself, whatever your rules say: the quarantine annotations, the node state label, the GPU node label, the six cordon and uncordon tracking labels, and any label a ruleset applies.
+
+**How you write a rule changes what the cache keeps.** Two rules that select the same nodes can prune differently, so the form matters for memory even when the result is identical.
+
+These forms keep one key each, which is the cheapest shape:
+
+```text
+'k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels
+node.metadata.labels['nvidia.com/gpu.present'] == 'true'
+node.metadata.annotations['maintenance'] == 'false'
+```
+
+These forms keep the whole label map, because the key is not known until the rule runs:
+
+```text
+size(node.metadata.labels) > 0
+node.metadata.labels.exists(k, k.startsWith('nvidia.com/'))
+node.metadata.labels[node.spec.nodeName] == 'true'
+node.metadata.labels['nvidia.com/' + 'gpu.present'] == 'true'
+```
+
+The last one is worth noting: the key is built at run time, so it keeps the whole map even though both halves are string literals. Write the key as a single literal to keep one entry.
+
+These forms give up pruning for the node altogether, because no set of keys describes what they read:
+
+```text
+size(node)
+```
+
+An expression that does not compile has the same effect.
+
+Two properties follow from this, and both surprise people:
+
+- The retained set is a union across every ruleset, and "keep everything" wins. **One unprunable expression in one ruleset turns off label pruning for every node and every rule.** If the startup log shows `retainedLabels="<all>"`, look for the expression that caused it.
+- Rulesets are read whether or not they are enabled. A disabled ruleset with an unprunable expression still turns pruning off. Remove such a ruleset rather than disabling it if you want the saving.
+
+Prefer the guarded literal-key form in any case. It is also what correctness needs: reading a label that is absent raises an error rather than returning false, so an optional label has to be read behind an `in` guard.
+
 ## Key Features
 
 ### Entity-Level Tracking

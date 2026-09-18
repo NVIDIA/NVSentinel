@@ -321,6 +321,14 @@ platformConnector:
   # Kubernetes connector configuration
   # Handles updating Kubernetes node status and conditions
   k8sConnector:
+    # Retry each failed Kubernetes write in place; completed writes are not repeated.
+    # Zero or omission selects 25 retries per write. Negative values are invalid.
+    # The batch deadline below can stop retries before the count is reached.
+    maxRetries: 25
+    # Whole-batch deadline, including API calls and backoff. Maximum: 5m.
+    # Zero or omission selects 1m. Later batches wait; permanent errors are skipped.
+    # For a 5m window, also increase maxRetries to 200.
+    maxRetryDuration: 1m
     # Maximum length of the node condition message
     # This is the maximum length of the node condition message that will be stored in the Kubernetes node status
     # If the node condition message is longer than this value, it will be truncated
@@ -523,6 +531,11 @@ fault-quarantine:
   # - Match conditions: When the rule should trigger
   # - Actions: What to do when conditions match (cordon, taint, label)
   # Rules are evaluated in order for each health event
+  #
+  # The node cache keeps only the label and annotation keys these expressions
+  # read, so how a Node rule is written decides how much memory it costs. Two
+  # rules that select the same nodes can prune differently.
+  # See docs/fault-quarantine.md#cached-node-fields before editing a Node rule.
   ruleSets:
     # Example rule 1: Quarantine nodes with fatal GPU errors
     # Enable or disable this ruleset; disabled rulesets are skipped entirely

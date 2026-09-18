@@ -83,6 +83,11 @@ circuitBreaker:
 # Each ruleset defines conditions (match) and actions (taint, label, cordon) to apply when conditions are met
 # Rules are evaluated using CEL (Common Expression Language) expressions
 # Multiple rulesets can be defined and are evaluated in order
+#
+# The node cache keeps only the label and annotation keys these expressions read,
+# so how a Node rule is written decides how much memory it costs. Two rules that
+# select the same nodes can prune differently.
+# See docs/fault-quarantine.md#cached-node-fields before editing a Node rule.
 ruleSets:
   - # Enable or disable this ruleset; disabled rulesets are skipped entirely
     enabled: true
