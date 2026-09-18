@@ -26,10 +26,11 @@ option go_package = "github.com/nvidia/nvsentinel/data-models/pkg/protos";
 // requester supplies a healthEvent describing the preparation NVSentinel must
 // perform, and a startTime recording when the maintenance window opens.
 message MaintenanceRequestSpec {
-  // healthEvent describes the preparation NVSentinel must perform. The
-  // reconciler re-emits this event into the pipeline as authored (the
-  // requester's recommendedAction stands), so the normal quarantine, drain,
-  // and remediation flow fires for whichever action the event names.
+  // healthEvent describes the preparation NVSentinel must perform.
+  // lifecycle-manager identifies itself as the publishing agent and preserves
+  // the requester-supplied agent in metadata. The requester's
+  // recommendedAction stands, so the normal quarantine, drain, and remediation
+  // flow fires for whichever action the event names.
   HealthEvent healthEvent = 1;
 
   // startTime is when the maintenance window opens. It is recorded for

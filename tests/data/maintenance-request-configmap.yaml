@@ -1,0 +1,86 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fault-quarantine
+  namespace: nvsentinel
+data:
+  config.toml: |
+    [circuitBreaker]
+      percentage = 50
+      duration = "5m"
+
+    # Copied verbatim from what the chart renders for the "MaintenanceRequest
+    # ruleset" entry in charts/fault-quarantine/values.yaml. The point of this
+    # test is that the SHIPPED rule cordons on a MaintenanceRequest, so a rule
+    # written specially for the test would prove nothing. Regenerate with:
+    #   helm template nvsentinel distros/kubernetes/nvsentinel \
+    #     --set global.faultQuarantine.enabled=true
+    [[rule-sets]]
+      enabled = true
+      version = "1"
+      name = "MaintenanceRequest ruleset"
+      priority = 0
+
+      [[rule-sets.match.all]]
+        kind = "HealthEvent"
+        expression = "event.agent == 'lifecycle-manager' && event.metadata != null && 'maintenanceRequestName' in event.metadata"
+
+      [[rule-sets.match.all]]
+        kind = "Node"
+        expression = "!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == \"false\") && !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == \"false\")"
+
+      [rule-sets.cordon]
+        shouldCordon = true
+
+    # Kept because the deployment mounts the template below and runs with
+    # validation enabled; no MaintenanceRequest event matches this rule, which
+    # needs componentClass GPU and a restart action.
+    [validation]
+      enabled = true
+      apiGroup = "nvsentinel.nvidia.com"
+      version = "v1alpha1"
+      kind = "ValidationRequest"
+      resource = "validationrequests"
+      templateFileName = "validation-request-template.yaml"
+      templateMountPath = "/etc/config"
+
+    [[validation.ruleSets]]
+      enabled = true
+      version = "1"
+      name = "VM/BM restart validation"
+      tests = ["dcgm-diag-test"]
+      [[validation.ruleSets.match.all]]
+        kind = "HealthEvent"
+        expression = "event.componentClass == 'GPU' && event.isFatal == true && event.recommendedAction in [15, 24]"
+  validation-request-template.yaml: |
+    apiVersion: nvsentinel.nvidia.com/v1alpha1
+    kind: ValidationRequest
+    metadata:
+      name: {{ .NodeName }}-validation-{{ .SessionID }}
+      labels:
+        app.kubernetes.io/managed-by: nvsentinel
+        nvsentinel.nvidia.com/created-by: fault-quarantine
+      annotations:
+        nvsentinel.nvidia.com/trace-id: "{{ .TraceID }}"
+        nvsentinel.nvidia.com/span-id: "{{ .SpanID }}"
+    spec:
+      nodes:
+        - name: {{ .NodeName }}
+      tests:
+        {{- range .Tests }}
+        - {{ . }}
+        {{- end }}

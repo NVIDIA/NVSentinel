@@ -163,6 +163,7 @@ Each module has additional configuration options documented in its dedicated gui
 - [Metadata Collector](./metadata-collector.md)
 - [Labeler](./labeler.md)
 - [Fault Quarantine](./fault-quarantine.md)
+- [Lifecycle Manager](./lifecycle-manager.md)
 - [Node Drainer](./node-drainer.md)
 - [Fault Remediation](./fault-remediation.md)
 - [Preflight](./preflight.md)

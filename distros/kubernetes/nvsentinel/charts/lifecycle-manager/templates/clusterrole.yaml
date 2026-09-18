@@ -67,6 +67,32 @@ rules:
   - update
   - patch
   - delete
+{{- if .Values.controllers.maintenanceRequest.enabled }}
+- apiGroups:
+  - nvsentinel.dgxc.nvidia.com
+  resources:
+  - maintenancerequests
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
+  - nvsentinel.dgxc.nvidia.com
+  resources:
+  - maintenancerequests/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - nvsentinel.dgxc.nvidia.com
+  resources:
+  - maintenancerequests/finalizers
+  verbs:
+  - update
+{{- end }}
 {{- /*
   Add permissions for API groups and resources from config.providers.
 */}}
