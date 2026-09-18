@@ -24,13 +24,6 @@ global:
 
   gpuHealthMonitor:
     enabled: true
-  faultQuarantine:
-    enabled: true
-  nodeDrainer:
-    enabled: true
-  mongodbStore:
-    enabled: true
-
   syslogHealthMonitor:
     enabled: false
   cspHealthMonitor:
@@ -44,8 +37,17 @@ global:
   slurmDrainMonitor:
     enabled: false
 
+  faultQuarantine:
+    enabled: true
+  nodeDrainer:
+    enabled: true
   faultRemediation:
-    enabled: false
+    enabled: true
+  janitor:
+    enabled: true
+  janitorProvider:
+    enabled: true
+
   healthEventsAnalyzer:
     enabled: false
   lifecycleManager:
@@ -56,15 +58,15 @@ global:
     enabled: false
   inclusterFileServer:
     enabled: false
-  janitor:
-    enabled: false
-  janitorProvider:
-    enabled: false
-  metadataCollector:
-    enabled: false
 
   labeler:
     enabled: false
+
+  metadataCollector:
+    enabled: false
+
+  mongodbStore:
+    enabled: true
 
 podMonitor:
   enabled: false
@@ -146,21 +148,47 @@ node-drainer:
       cpu: 500m
       memory: 256Mi
 
-  userNamespaces: []
+  userNamespaces:
+    - name: "*"
+      mode: "Immediate"
 
-  customDrain:
-    enabled: true
-    templateConfigMapName: "slinky-drain-template"
-    templateMountPath: "/etc/drain-template"
-    templateFileName: "drain-template.yaml"
-    namespace: "nvsentinel"
-    apiGroup: "nvsentinel.nvidia.com"
-    version: "v1alpha1"
-    kind: "DrainRequest"
-    resource: "drainrequests"
-    statusConditionType: "DrainComplete"
-    statusConditionStatus: "True"
-    timeout: "1800"
+  systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|cert-manager|local-path-storage)$"
+
+fault-remediation:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+janitor:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  config:
+    nodes:
+      exclusions:
+        - matchLabels:
+            node-role.kubernetes.io/control-plane: ""
+
+janitor-provider:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  csp:
+    provider: kind
 
 gpu-health-monitor:
   resources:
