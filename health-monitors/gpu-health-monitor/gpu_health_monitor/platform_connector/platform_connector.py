@@ -172,6 +172,17 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
         return f"{check_name}|{entity_type}|{entity_value}"
 
+    def _clear_active_event_metric(self, check_name: str, key: str) -> None:
+        """Zero every error_code series the cache says this check latched.
+
+        A check can be latched by more than one code, so zeroing a single
+        assumed code would leave the others reading 1 for the process lifetime.
+        Call this before the cache entry is reset.
+        """
+        entry = self.entity_cache.get(key)
+        for code in sorted(entry.active_errors) if entry else []:
+            metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", error_code=code).set(0)
+
     def _persist_dcgm_unresponsive_state(self, processing_strategy: platformconnector_pb2.ProcessingStrategy) -> None:
         """Remember a delivered local-managed probe hang across liveness restarts.
 
@@ -215,7 +226,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         key = self._build_cache_key("GpuDcgmUnresponsive", "DCGM", "ALL")
         self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
         self._dcgm_unresponsive_strategy = strategy
-        metrics.dcgm_health_active_events.labels(event_type="GpuDcgmUnresponsive", gpu_id="").set(1)
+        metrics.dcgm_health_active_events.labels(
+            event_type="GpuDcgmUnresponsive", gpu_id="", error_code="DCGM_PROBE_HANG"
+        ).set(1)
 
     def _clear_dcgm_unresponsive_state(self) -> None:
         try:
@@ -288,12 +301,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
+                    self._clear_active_event_metric(check_name, key)
                     self.entity_cache[key] = EntityCacheEntry()
                     self._consecutive_connectivity_successes = 0
                     self._connectivity_escalated = False
                     metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
-                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(0)
             except Exception as e:
                 log.error(f"Exception while sending DCGM connectivity restored events: {e}")
                 raise
@@ -355,10 +368,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
+                    self._clear_active_event_metric(check_name, key)
                     self.entity_cache[key] = EntityCacheEntry()
                     self._clear_dcgm_unresponsive_state()
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
-                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(0)
             except Exception as e:
                 log.error(f"Exception while sending DCGM responsive events: {e}")
                 raise
@@ -385,7 +398,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             health_events = []
             # Collect pending cache and metric updates to apply only after successful send
             pending_cache_updates: dict[str, EntityCacheEntry] = {}
-            pending_metric_updates: list[tuple[str, int, int]] = []  # (event_type, gpu_id, value)
+            pending_metric_updates: list[tuple[str, int, str, int]] = []  # (event_type, gpu_id, code, value)
 
             for watch_name, details in health_details.items():
                 check_name = self._convert_dcgm_watch_name_to_check_name(watch_name)
@@ -485,7 +498,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                         processingStrategy=effective_strategy,
                                     )
                                 )
-                                pending_metric_updates.append((check_name, gpu_id, 1))
+                                pending_metric_updates.append((check_name, gpu_id, failure_details.code, 1))
 
                         entry = self.entity_cache.get(key)
                         if details.is_complete and entry is not None:
@@ -519,6 +532,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                             processingStrategy=effective_strategy,
                                         )
                                     )
+                                    pending_metric_updates.append((check_name, gpu_id, recovered_code, 0))
                     elif details.is_complete:
 
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
@@ -568,7 +582,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                 )
                             )
                             if had_errors:
-                                pending_metric_updates.append((check_name, gpu_id, 0))
+                                # entry is the pre-reset state, so active_errors still
+                                # names every code that needs clearing.
+                                for code in sorted(entry.active_errors):
+                                    pending_metric_updates.append((check_name, gpu_id, code, 0))
 
                 if watch_name in GPU_ONLY_FIELD_HEALTH_WATCHES:
                     continue
@@ -679,8 +696,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             log.info(
                                 f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send"
                             )
-                        for event_type, gpu_id, value in pending_metric_updates:
-                            metrics.dcgm_health_active_events.labels(event_type=event_type, gpu_id=gpu_id).set(value)
+                        for event_type, gpu_id, error_code, value in pending_metric_updates:
+                            metrics.dcgm_health_active_events.labels(
+                                event_type=event_type, gpu_id=gpu_id, error_code=error_code
+                            ).set(value)
                 except Exception as e:
                     log.error(f"Exception while sending health events: {e}")
 
@@ -925,7 +944,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     if escalate:
                         self._connectivity_escalated = True
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
-                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(1)
+                    metrics.dcgm_health_active_events.labels(
+                        event_type=check_name, gpu_id="", error_code="DCGM_CONNECTIVITY_ERROR"
+                    ).set(1)
                     return True
                 return False
             except Exception as e:
@@ -1024,7 +1045,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     if local_managed:
                         self._persist_dcgm_unresponsive_state(processing_strategy)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
-                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(1)
+                    metrics.dcgm_health_active_events.labels(
+                        event_type=check_name, gpu_id="", error_code=error_code
+                    ).set(1)
                     return True
                 return False
             except Exception as e:

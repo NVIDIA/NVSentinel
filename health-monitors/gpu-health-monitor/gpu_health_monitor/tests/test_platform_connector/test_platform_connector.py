@@ -303,6 +303,74 @@ class TestPlatformConnectors(unittest.TestCase):
         finally:
             os.unlink(temp_file_path)
 
+    def test_active_events_metric_carries_error_code_and_clears_every_code(self) -> None:
+        """Each code gets its own series, and recovery zeroes all of them.
+
+        The gauge is cleared per label set, so a recovery that zeroed only one
+        assumed code would leave the entity's other codes reading 1 forever.
+        """
+        temp_file_path = metadata_file()
+        processor = platform_connector.PlatformConnectorEventProcessor(
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={"GPU_ERROR": "CONTACT_SUPPORT", "GPU_ERROR_2": "CONTACT_SUPPORT"},
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            ),
+            exit=Event(),
+        )
+        processor.send_health_event_with_retries = (
+            lambda events, delivery_timeout_seconds=None: True  # type: ignore[method-assign]
+        )
+
+        observed: dict[tuple[str, Any, str], int] = {}
+
+        def fake_labels(**kwargs: Any) -> unittest.mock.MagicMock:
+            child = unittest.mock.MagicMock()
+            key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"])
+            child.set.side_effect = lambda value: observed.__setitem__(key, value)
+            return child
+
+        try:
+            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
+                gauge.labels.side_effect = fake_labels
+
+                failing = {
+                    "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                        status=dcgmtypes.HealthStatus.FAIL,
+                        entity_failures={
+                            0: [
+                                dcgmtypes.ErrorDetails(code="GPU_ERROR", message="GPU 0 failed"),
+                                dcgmtypes.ErrorDetails(code="GPU_ERROR_2", message="GPU 0 failed again"),
+                            ]
+                        },
+                    )
+                }
+                processor.health_event_occurred(failing, [0])
+
+                assert observed == {
+                    ("GpuPcieWatch", 0, "GPU_ERROR"): 1,
+                    ("GpuPcieWatch", 0, "GPU_ERROR_2"): 1,
+                }
+
+                processor.health_event_occurred(
+                    {
+                        "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.PASS, entity_failures={}
+                        )
+                    },
+                    [0],
+                )
+
+                assert observed == {
+                    ("GpuPcieWatch", 0, "GPU_ERROR"): 0,
+                    ("GpuPcieWatch", 0, "GPU_ERROR_2"): 0,
+                }
+        finally:
+            os.unlink(temp_file_path)
+
     def test_health_event_reports_healthy_nvswitch_after_restart(self) -> None:
         temp_file_path = metadata_file()
         with tempfile.NamedTemporaryFile(delete=False) as state_file:
@@ -2136,7 +2204,9 @@ class TestPlatformConnectors(unittest.TestCase):
                     processor.state_file_path,
                     processor._metadata_reader._path,
                 )
-                gauge.labels.assert_called_with(event_type="GpuDcgmUnresponsive", gpu_id="")
+                gauge.labels.assert_called_with(
+                    event_type="GpuDcgmUnresponsive", gpu_id="", error_code="DCGM_PROBE_HANG"
+                )
                 gauge_labels.set.assert_called_with(1)
 
             servicer.health_events = None

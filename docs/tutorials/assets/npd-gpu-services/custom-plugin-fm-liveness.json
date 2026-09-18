@@ -1,0 +1,30 @@
+{
+  "plugin": "custom",
+  "pluginConfig": {
+    "invoke_interval": "30s",
+    "timeout": "15s",
+    "max_output_length": 120,
+    "skip_initial_status": true
+  },
+  "source": "nvsentinel-gpu-services-fm-liveness",
+  "metricsReporting": false,
+  "conditions": [
+    {
+      "type": "FabricManagerDown",
+      "reason": "FabricManagerActive",
+      "message": "nvidia-fabricmanager is active"
+    }
+  ],
+  "rules": [
+    {
+      "type": "permanent",
+      "condition": "FabricManagerDown",
+      "reason": "FabricManagerNotActive",
+      "path": "/etc/npd-plugins/check_gpu_service.sh",
+      "timeout": "12s",
+      "args": [
+        "nvidia-fabricmanager"
+      ]
+    }
+  ]
+}

@@ -258,7 +258,7 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `dcgm_health_events_publish_time_to_grpc_channel` | Histogram | `operation_name`                   | Amount of time spent in publishing DCGM health events on the gRPC channel                                 |
 | `health_events_insertion_to_uds_succeed`          | Counter   | -                                  | Total number of successful insertions of health events to UDS                                             |
 | `health_events_insertion_to_uds_error`            | Counter   | -                                  | Total number of failed insertions of health events to UDS                                                 |
-| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id` | Total number of active health events at any given time |
+| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `error_code` | Total number of active health events at any given time |
 | `dcgm_api_latency`                                | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
 | `dcgm_reconcile_time`                             | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
 | `number_of_health_watches`                        | Gauge     | -                                  | Number of DCGM health watches available                                                                   |
