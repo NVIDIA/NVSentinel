@@ -44,6 +44,12 @@ spec:
           status:
             type: object
             properties:
+              reclaimedPods:
+                type: integer
+                minimum: 0
+              completionTime:
+                type: string
+                format: date-time
               conditions:
                 type: array
                 items:
@@ -66,6 +72,12 @@ spec:
     - name: Node
       type: string
       jsonPath: .spec.nodeName
+    - name: Reclaimed
+      type: integer
+      jsonPath: .status.reclaimedPods
+    - name: Reason
+      type: string
+      jsonPath: .status.conditions[?(@.type=="MemoryReclaimed")].reason
     - name: Age
       type: date
       jsonPath: .metadata.creationTimestamp

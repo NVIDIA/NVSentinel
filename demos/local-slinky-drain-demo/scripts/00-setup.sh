@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,377 +13,389 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -euo pipefail
+# Step 0: build the demo cluster, install NVSentinel with custom drain enabled,
+# and stand up the two plugins that carry the drain out.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# How long to wait on the multi-gigabyte image pulls (DCGM and
+# gpu-health-monitor, both carrying the NVIDIA stack). A fresh KIND cluster has
+# an empty containerd, so both are pulled from scratch every run.
+PULL_TIMEOUT=${PULL_TIMEOUT:-900}
 
-export CLUSTER_NAME="${CLUSTER_NAME:-nvsentinel-demo}"
-NAMESPACE="nvsentinel"
-SLINKY_NAMESPACE="slinky"
+# How long the controllers must stay up before setup calls itself successful.
+SETTLE_SECONDS=${SETTLE_SECONDS:-30}
 
-log() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
-}
+# shellcheck source-path=SCRIPTDIR source=common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-section() {
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  $*"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-}
+create_cluster() {
+    section "Creating the KIND cluster"
 
-check_prerequisites() {
-    section "Checking Prerequisites"
-    
-    local missing=()
-    
-    command -v kind &>/dev/null || missing+=("kind")
-    command -v kubectl &>/dev/null || missing+=("kubectl")
-    command -v docker &>/dev/null || missing+=("docker")
-    command -v helm &>/dev/null || missing+=("helm")
-    command -v ko &>/dev/null || missing+=("ko")
-    command -v go &>/dev/null || missing+=("go")
-    
-    if [ ${#missing[@]} -gt 0 ]; then
-        log "❌ Missing required tools: ${missing[*]}"
-        log "Please install them and try again"
-        exit 1
-    fi
-    
-    log "✓ All prerequisites found"
-}
-
-create_kind_cluster() {
-    section "Phase 1: Creating KIND Cluster"
-    
-    if kind get clusters | grep -q "^${CLUSTER_NAME}$"; then
-        log "Cluster '$CLUSTER_NAME' already exists. Deleting it first..."
+    if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+        warn "Cluster '$CLUSTER_NAME' already exists; deleting it so this run starts clean."
         kind delete cluster --name "$CLUSTER_NAME"
     fi
-    
-    log "Creating KIND cluster with 2 nodes..."
-    cat <<EOF | kind create cluster --name "$CLUSTER_NAME" --config=-
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-- role: worker
-EOF
-    
-    log "✓ KIND cluster created"
+
+    kind create cluster --name "$CLUSTER_NAME" --config "$CONFIG_DIR/kind-cluster.yaml"
+    kubectl config use-context "kind-${CLUSTER_NAME}" >/dev/null
+    kubectl wait --for=condition=ready nodes --all --timeout=180s >/dev/null
+
+    success "Cluster '$CLUSTER_NAME' is up"
+    kubectl get nodes
 }
 
 install_cert_manager() {
-    section "Phase 2: Installing cert-manager"
-    
-    log "Installing cert-manager..."
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.1/cert-manager.yaml
-    
-    log "Waiting for cert-manager to be ready..."
-    kubectl wait --for=condition=available --timeout=300s \
-        deployment/cert-manager -n cert-manager
-    kubectl wait --for=condition=available --timeout=300s \
-        deployment/cert-manager-webhook -n cert-manager
-    kubectl wait --for=condition=available --timeout=300s \
-        deployment/cert-manager-cainjector -n cert-manager
-    
-    log "✓ cert-manager installed"
-}
+    section "Installing cert-manager"
 
-prepare_namespace() {
-    section "Phase 3: Preparing Namespace"
-    
-    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-    
-    log "Creating custom drain template ConfigMap..."
-    cat <<'EOF' | kubectl apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: slinky-drain-template
-  namespace: nvsentinel
-data:
-  drain-template.yaml: |
-    apiVersion: nvsentinel.nvidia.com/v1alpha1
-    kind: DrainRequest
-    spec:
-      nodeName: {{ .HealthEvent.NodeName }}
-      checkName: {{ .HealthEvent.CheckName }}
-      recommendedAction: {{ .HealthEvent.RecommendedAction.String }}
-      errorCode:
-      {{- range .HealthEvent.ErrorCode }}
-      - "{{ . }}"
-      {{- end }}
-      healthEventID: {{ .EventID }}
-      entitiesImpacted:
-      {{- range .HealthEvent.EntitiesImpacted }}
-      - type: {{ .EntityType }}
-        value: "{{ .EntityValue }}"
-      {{- end }}
-      reason: "{{ .HealthEvent.Message }}"
-EOF
-    
-    log "✓ Namespace and drain template ready"
-}
+    log "NVSentinel needs cert-manager for MongoDB mTLS."
+    log "Installing the latest release."
 
-install_custom_drain_crd() {
-    section "Phase 4: Installing Custom Drain CRD"
-    
-    local crd_file="$PROJECT_ROOT/plugins/slinky-drainer/config/crd/nvsentinel.nvidia.com_drainrequests.yaml"
-    
-    # Generate CRD if it doesn't exist
-    if [ ! -f "$crd_file" ]; then
-        log "CRD file not found, generating it..."
-        cd "$PROJECT_ROOT/plugins/slinky-drainer"
-        make generate
-        log "✓ CRD generated"
-    else
-        log "CRD file already exists, skipping generation"
+    helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1 || true
+    helm repo update jetstack >/dev/null 2>&1 || true
+
+    # Quiet: installing the CRDs makes client-go log hundreds of "unrecognized
+    # format" lines for OpenAPI int32/int64 fields. On failure the pods are
+    # printed instead, which says more than the log would have.
+    if ! helm upgrade --install cert-manager jetstack/cert-manager \
+        --namespace cert-manager \
+        --create-namespace \
+        --values "$CONFIG_DIR/cert-manager-values.yaml" \
+        --wait --timeout 5m >/dev/null 2>&1; then
+        kubectl get pods -n cert-manager
+        fail "cert-manager did not install. Its pods are above."
     fi
-    
-    log "Installing DrainRequest CRD (required by node-drainer)..."
-    kubectl apply -f "$crd_file"
-    
-    log "✓ DrainRequest CRD installed"
+
+    success "cert-manager is ready"
+}
+
+install_drain_request_crd() {
+    section "Installing the DrainRequest CRD"
+
+    log "node-drainer creates these; slinky-drainer reconciles them. Both need the type to exist first."
+
+    local crd_file="$REPO_ROOT/plugins/slinky-drainer/config/crd/nvsentinel.nvidia.com_drainrequests.yaml"
+
+    if [[ ! -f "$crd_file" ]]; then
+        log "CRD not generated yet; running 'make generate' in plugins/slinky-drainer."
+        make -C "$REPO_ROOT/plugins/slinky-drainer" generate >/dev/null
+    fi
+
+    kubectl apply -f "$crd_file" >/dev/null
+
+    success "DrainRequest CRD installed"
 }
 
 install_nvsentinel() {
-    section "Phase 5: Installing NVSentinel"
-    
-    local nvsentinel_version="${NVSENTINEL_VERSION:-v0.10.0}"
-    
-    log "Installing Prometheus Operator CRDs (for PodMonitor)..."
-    kubectl apply --server-side -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.68.0/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml
-    
-    log "Installing NVSentinel Helm chart from local directory..."
-    log "Using image tag: ${nvsentinel_version}"
-    
-    helm upgrade --install nvsentinel \
-        "$PROJECT_ROOT/distros/kubernetes/nvsentinel" \
+    section "Installing NVSentinel ${CHART_VERSION}"
+
+    log "Chart:     oci://ghcr.io/nvidia/nvsentinel ${CHART_VERSION}"
+    log "Values:    config/nvsentinel-values.yaml"
+    log "Modules:   gpu-health-monitor, platform-connectors, fault-quarantine, node-drainer"
+    log "Drain:     delegated to slinky-drainer through a DrainRequest CR"
+    log "Datastore: Percona Server for MongoDB, single member"
+    echo
+    log "A few minutes: the operator issues certificates and initialises the replica set before MongoDB accepts writes."
+
+    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+    # The chart pins its own matching image tag, so nothing overrides it here:
+    # setting one and not the other is how a chart ends up rendering flags the
+    # image does not have.
+    if ! helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+        --version "$CHART_VERSION" \
         --namespace "$NAMESPACE" \
-        --values "$SCRIPT_DIR/../config/nvsentinel-values.yaml" \
-        --set global.image.tag="${nvsentinel_version}" \
-        --wait --timeout=10m
-    
-    log "✓ NVSentinel installed"
-}
-
-check_ko() {
-    if ! command -v ko &>/dev/null; then
-        log "ko not found, installing..."
-        go install github.com/google/ko@latest
-        export PATH="$PATH:$(go env GOPATH)/bin"
+        --values "$CONFIG_DIR/nvsentinel-values.yaml" \
+        --wait --timeout 15m >/dev/null 2>&1; then
+        kubectl get pods -n "$NAMESPACE"
+        fail "The NVSentinel install did not complete. The pods above show how far it got."
     fi
+
+    success "NVSentinel installed"
 }
 
-build_and_load_plugin_images() {
-    section "Phase 6: Building Custom Plugin Images"
-    
-    check_ko
-      
-    log "Building slinky-drainer..."
-    cd "$PROJECT_ROOT/plugins/slinky-drainer"
-    KO_DOCKER_REPO=ko.local ko build --bare --local . --tags demo
-    docker tag ko.local:demo slinky-drainer:demo
-    kind load docker-image slinky-drainer:demo --name "$CLUSTER_NAME"
-    
-    log "Building mock-slurm-operator..."
-    cd "$PROJECT_ROOT/plugins/mock-slurm-operator"
-    KO_DOCKER_REPO=ko.local ko build --bare --local . --tags demo
-    docker tag ko.local:demo mock-slurm-operator:demo
-    kind load docker-image mock-slurm-operator:demo --name "$CLUSTER_NAME"
-    
-    log "✓ All plugin images built and loaded"
+create_drain_template() {
+    section "Configuring the custom drain template"
+
+    log "node-drainer renders this Go template into a DrainRequest for every node it is asked to drain."
+
+    # Ahead of the Helm install, not after it: node-drainer mounts this ConfigMap,
+    # so its pod cannot start until the ConfigMap exists, and `helm --wait` would
+    # sit there until it timed out.
+    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+    apply_manifest drain-template.yaml
+
+    success "Drain template ready"
 }
 
-create_slinky_namespace() {
-    section "Phase 7: Creating Slinky Namespace"
-    
-    kubectl create namespace "$SLINKY_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-    
-    log "✓ Slinky namespace created"
+deploy_fake_dcgm() {
+    section "Deploying the fake DCGM hostengine"
+
+    log "No GPU here, so DCGM is backed by NVML injection: same protocol, same port, same code path in the monitor."
+
+    kubectl create namespace "$DCGM_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+    # Generated from the repository's single source of truth for the injected
+    # GPU, the same file the Tilt development environment mounts.
+    kubectl create configmap nvidia-dcgm-gpu-spec \
+        --namespace "$DCGM_NAMESPACE" \
+        --from-file=gpu-spec.yaml="$REPO_ROOT/tilt/dcgm-fake/gpu-spec.yaml" \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+    kubectl apply -f "$CONFIG_DIR/fake-dcgm.yaml" >/dev/null
+
+    log "The image carries the NVIDIA stack and runs to a few GB, so the first pull is slow."
+
+    if ! wait_for_pod_ready "$DCGM_NAMESPACE" app=nvidia-dcgm "$PULL_TIMEOUT"; then
+        kubectl get pods -n "$DCGM_NAMESPACE"
+        fail "The fake DCGM pod did not become ready within ${PULL_TIMEOUT}s. If it is still pulling, raise PULL_TIMEOUT and re-run."
+    fi
+
+    success "Fake DCGM is listening on port 5555"
 }
 
-deploy_slinky_drainer() {
-    section "Phase 8: Deploying Slinky Drainer Plugin"
-    
-    log "Deploying Slinky Drainer..."
-    cd "$PROJECT_ROOT/plugins/slinky-drainer"
-    kubectl apply -k config/default
-    
-    kubectl set image deployment/slinky-drainer \
-        controller=slinky-drainer:demo \
-        -n "$NAMESPACE"
-    
-    kubectl patch deployment slinky-drainer \
-        -n "$NAMESPACE" \
-        --type=json \
-        -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/imagePullPolicy", "value": "Never"}]'
-    
-    kubectl wait --for=condition=available --timeout=120s \
-        deployment/slinky-drainer -n "$NAMESPACE"
-    
-    log "✓ Slinky drainer deployed"
+label_gpu_nodes() {
+    section "Labelling the worker as a GPU node"
+
+    # In a real cluster the GPU Operator and NVSentinel's own labeler write
+    # these. Here they are asserted by hand, which is why the labeler is turned
+    # off in config/nvsentinel-values.yaml — it would strip them back off.
+    log "Applying what a GPU Operator install leaves behind: gpu.present, driver.installed, dcgm.version."
+
+    local node
+    for node in $(kubectl get nodes -o name \
+        -l '!node-role.kubernetes.io/control-plane'); do
+        kubectl label "$node" \
+            nvidia.com/gpu.present=true \
+            nvsentinel.dgxc.nvidia.com/driver.installed=true \
+            nvsentinel.dgxc.nvidia.com/kata.enabled=false \
+            nvsentinel.dgxc.nvidia.com/dcgm.version=4.x \
+            --overwrite >/dev/null
+        log "Labelled ${node#node/}"
+    done
+
+    log "gpu-health-monitor selects on the dcgm.version label, so its pod starts now."
+
+    if ! kubectl rollout status daemonset/gpu-health-monitor-dcgm-4.x \
+        -n "$NAMESPACE" --timeout="${PULL_TIMEOUT}s" >/dev/null 2>&1; then
+        kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=gpu-health-monitor
+        fail "gpu-health-monitor did not become ready within ${PULL_TIMEOUT}s. If it is still pulling, raise PULL_TIMEOUT and re-run."
+    fi
+
+    success "gpu-health-monitor is running on the GPU node"
 }
 
-deploy_mock_slurm() {
-    section "Phase 9: Deploying Mock Slurm Operator"
-    
-    log "Deploying Mock Slurm Operator..."
-    cd "$PROJECT_ROOT/plugins/mock-slurm-operator"
-    kubectl apply -k config/default
-    
-    kubectl set image deployment/mock-slurm-operator \
-        manager=mock-slurm-operator:demo \
-        -n "$NAMESPACE"
-    
-    kubectl patch deployment mock-slurm-operator \
-        -n "$NAMESPACE" \
-        --type=json \
-        -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/imagePullPolicy", "value": "Never"}]'
-    
-    kubectl wait --for=condition=available --timeout=120s \
-        deployment/mock-slurm-operator -n "$NAMESPACE"
-    
-    log "✓ Mock Slurm operator deployed"
+await_dcgm_connectivity() {
+    section "Confirming the monitor can read the GPU"
+
+    # A running gpu-health-monitor pod proves nothing about whether it can reach
+    # the hostengine. The proof is GpuDcgmConnectivityFailure: platform-connectors
+    # only writes that condition once the monitor has completed a poll, and it
+    # reads False while the connection is healthy. Gating setup on it means a
+    # fault injected in the next step is seen rather than silently dropped.
+    log "A running pod proves nothing. GpuDcgmConnectivityFailure=False appears only after a successful poll."
+
+    wait_until 300 "gpu-health-monitor to report a healthy DCGM connection" \
+        dcgm_connected "$NODE" ||
+        fail "gpu-health-monitor never reported a healthy DCGM connection.
+Condition: $(node_condition_status "$NODE" GpuDcgmConnectivityFailure | grep . || echo absent)
+Check the monitor:  kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=gpu-health-monitor --tail=50"
+
+    success "gpu-health-monitor is reading the GPU through DCGM"
 }
 
-deploy_simple_health_client() {
-    section "Phase 10: Deploying Simple Health Client"
-
-    log "Building simple-health-client image..."
-    cd "$PROJECT_ROOT/tilt/simple-health-client"
-    docker build -t simple-health-client:demo -f Dockerfile "$PROJECT_ROOT"
-    kind load docker-image simple-health-client:demo --name "$CLUSTER_NAME"
-
-    log "Deploying simple-health-client..."
-    kubectl apply -f deployment.yaml
-
-    kubectl set image deployment/simple-health-client \
-        simple-health-client=simple-health-client:demo \
-        -n "$NAMESPACE"
-
-    kubectl patch deployment simple-health-client \
-        -n "$NAMESPACE" \
-        --type=json \
-        -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/imagePullPolicy", "value": "Never"}]'
-
-    kubectl wait --for=condition=available --timeout=120s \
-        deployment/simple-health-client -n "$NAMESPACE"
-
-    log "✓ Simple health client deployed"
+# True once gpu-health-monitor has proven it can talk to DCGM.
+dcgm_connected() {
+    [[ "$(node_condition_status "$1" GpuDcgmConnectivityFailure)" == "False" ]]
 }
 
-create_test_workloads() {
-    section "Phase 11: Creating Test Workloads"
-    
-    log "Creating test pods in slinky namespace..."
-    cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: slinky-workload-1
-  namespace: $SLINKY_NAMESPACE
-  labels:
-    app: slinky-workload
-spec:
-  nodeSelector:
-    kubernetes.io/hostname: ${CLUSTER_NAME}-worker
-  containers:
-  - name: nginx
-    image: public.ecr.aws/docker/library/nginx:alpine
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: slinky-workload-2
-  namespace: $SLINKY_NAMESPACE
-  labels:
-    app: slinky-workload
-spec:
-  nodeSelector:
-    kubernetes.io/hostname: ${CLUSTER_NAME}-worker
-  containers:
-  - name: nginx
-    image: public.ecr.aws/docker/library/nginx:alpine
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-EOF
-    
-    kubectl wait --for=condition=ready --timeout=120s \
-        pod -l app=slinky-workload -n "$SLINKY_NAMESPACE"
-    
-    log "✓ Test workloads created"
+build_mock_slurm() {
+    section "Building the mock Slurm operator"
+
+    # slinky-drainer ships with the release, so it is pulled rather than built.
+    # mock-slurm-operator is demo-only and published nowhere, so it is the one
+    # thing that has to be built from this checkout.
+    log "This is the only image the demo builds: it stands in for a Slurm control plane, so it ships with no release."
+
+    (
+        cd "$REPO_ROOT/plugins/mock-slurm-operator"
+        KO_DOCKER_REPO=ko.local ko build --bare --local . --tags demo >/dev/null 2>&1
+    ) || fail "Could not build mock-slurm-operator."
+
+    docker tag ko.local:demo mock-slurm-operator:demo >/dev/null
+    kind load docker-image mock-slurm-operator:demo --name "$CLUSTER_NAME" >/dev/null 2>&1
+
+    success "mock-slurm-operator:demo is loaded into the cluster"
 }
 
-show_summary() {
-    section "Setup Complete!"
-    
-    cat <<EOF
+deploy_plugins() {
+    section "Deploying the drain plugins"
 
-✅ Slinky Drain Demo Ready!
+    log "slinky-drainer: ${SLINKY_DRAINER_IMAGE}"
+    log "mock-slurm-operator: locally built mock-slurm-operator:demo"
 
-📊 Cluster Information:
-   • Cluster: $CLUSTER_NAME
-   • NVSentinel Namespace: $NAMESPACE
-   • Slinky Namespace: $SLINKY_NAMESPACE
+    local plugin container image policy
+    for plugin in slinky-drainer mock-slurm-operator; do
+        # The two kustomizations name their container differently, and only the
+        # locally built one has to be kept from being pulled.
+        if [[ "$plugin" == "slinky-drainer" ]]; then
+            container=controller
+            image="$SLINKY_DRAINER_IMAGE"
+            policy=IfNotPresent
+        else
+            container=manager
+            image=mock-slurm-operator:demo
+            policy=Never
+        fi
 
-🔧 Components Deployed:
-   ✓ KIND Cluster (1 control-plane + 1 worker)
-   ✓ cert-manager
-   ✓ NVSentinel (via Helm chart):
-     - MongoDB
-     - Platform Connectors
-     - Fault Quarantine
-     - Node Drainer
-   ✓ Custom Plugins:
-     - Slinky Drainer Plugin
-     - Mock Slurm Operator
-   ✓ Test Workloads (2 pods on worker node)
+        kubectl apply -k "$REPO_ROOT/plugins/$plugin/config/default" >/dev/null
+        kubectl set image "deployment/$plugin" "${container}=${image}" -n "$NAMESPACE" >/dev/null
+        kubectl patch deployment "$plugin" -n "$NAMESPACE" --type=json \
+            -p="[{\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/imagePullPolicy\", \"value\": \"${policy}\"}]" >/dev/null
 
-📝 Next Steps:
-   1. View cluster status:
-      make show-cluster
+        if ! kubectl wait --for=condition=available --timeout=300s \
+            "deployment/$plugin" -n "$NAMESPACE" >/dev/null 2>&1; then
+            kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=$plugin"
+            fail "${plugin} did not become available."
+        fi
 
-   2. Inject a health event to trigger drain:
-      make inject-health-event
+        success "${plugin} is running"
+    done
+}
 
-   3. Verify the drain workflow:
-      make verify-drain
+deploy_workload() {
+    section "Deploying the demo workload"
 
-🧹 Cleanup:
-   make cleanup
+    log "Standing in for Slurm-managed jobs, so the custom drain has something to evict."
 
-EOF
+    kubectl create namespace "$SLINKY_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    kubectl apply -f "$CONFIG_DIR/slinky-workload.yaml" >/dev/null
+
+    if ! kubectl rollout status "deployment/${WORKLOAD_NAME}" \
+        -n "$SLINKY_NAMESPACE" --timeout=180s >/dev/null 2>&1; then
+        kubectl get pods -n "$SLINKY_NAMESPACE"
+        fail "The demo workload did not start."
+    fi
+
+    success "Workload is running on ${NODE}"
+}
+
+# A pod that reports Ready once can still be crash-looping: fault-quarantine,
+# for example, starts cleanly and only fails a few seconds later when it first
+# evaluates the circuit breaker. Re-check after a settle window and treat a
+# restart as a failed setup rather than reporting success over the top of it.
+verify_sustained_readiness() {
+    section "Confirming the controllers stay up"
+
+    log "Waiting ${SETTLE_SECONDS}s and re-checking, so a crash loop is caught here rather than three steps later."
+
+    local before after unready
+    before="$(restart_counts)"
+    sleep "$SETTLE_SECONDS"
+    after="$(restart_counts)"
+
+    # Completed Job pods (the MongoDB bootstrap job) sit at Ready=False forever,
+    # so match on phase too and only treat a still-running pod as unready. A
+    # Failed pod is not excused - that is a genuine problem worth stopping for.
+    unready="$(kubectl get pods -n "$NAMESPACE" -o json |
+        jq -r '.items[]
+               | select(.status.phase != "Succeeded")
+               | select([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 0)
+               | .metadata.name')"
+
+    if [[ -n "$unready" ]]; then
+        kubectl get pods -n "$NAMESPACE"
+        fail "These pods are not Ready: $(echo "$unready" | tr '\n' ' ')"
+    fi
+
+    local problems
+    problems="$(restart_problems "$before" "$after")"
+
+    if [[ -n "$problems" ]]; then
+        kubectl get pods -n "$NAMESPACE"
+        fail "Something restarted during the ${SETTLE_SECONDS}s settle window:
+${problems}"
+    fi
+
+    success "Every pod is Ready and has stayed up for ${SETTLE_SECONDS}s"
+}
+
+# Snapshot of every pod's identity and its containers' restart counts.
+#
+# Keyed by UID rather than by pod name: a replacement pod can reuse the name, and
+# comparing by name alone would read a brand-new container as the old one having
+# restarted.
+restart_counts() {
+    kubectl get pods -n "$NAMESPACE" -o json |
+        jq -S '[.items[] | {
+                   uid: .metadata.uid,
+                   name: .metadata.name,
+                   containers: [(.status.containerStatuses // [])[] | {name, restartCount}]
+               }]'
+}
+
+# Prints one line per problem found between two snapshots, and nothing when the
+# cluster merely churned.
+#
+# Only two things count: a container that restarted while the demo watched, and a
+# pod replaced under the same name. Pods appearing or disappearing do not - the
+# MongoDB bootstrap Job and the Percona operator both retire pods while the
+# cluster settles, and comparing whole snapshots would fail a healthy setup for
+# that alone.
+restart_problems() {
+    jq -rn --argjson before "$1" --argjson after "$2" '
+        ($before | INDEX(.uid)) as $b |
+        [
+          ( $after[] | . as $pod
+            | select($b[$pod.uid] != null)
+            | $pod.containers[] | . as $c
+            | ($b[$pod.uid].containers | map(select(.name == $c.name)) | first) as $was
+            | select($was != null and $c.restartCount > $was.restartCount)
+            | "\($pod.name)/\($c.name) restarted \($c.restartCount - $was.restartCount) time(s)" ),
+          ( $after[] | . as $pod
+            | select($b[$pod.uid] == null)
+            | select([$before[] | select(.name == $pod.name)] | length > 0)
+            | "\($pod.name) was replaced" )
+        ] | .[]
+    '
+}
+
+print_summary() {
+    success "Cluster '${CLUSTER_NAME}' is running NVSentinel ${CHART_VERSION}, with ${NODE} standing in for a GPU node"
+
+    next_step "./scripts/01-show-cluster.sh   look at it before anything is broken"
 }
 
 main() {
-    log "Starting Slinky Drain Demo setup..."
-    echo ""
-    
-    check_prerequisites
-    create_kind_cluster
+    require_tools docker kind kubectl helm ko go jq curl column
+    require_supported_namespace
+
+    section "Preparing the cluster"
+    log "Resolving the NVSentinel version to install..."
+    CHART_VERSION="$(resolve_chart_version)"
+
+    # slinky-drainer is a released NVSentinel component, so it is pulled at the
+    # same version as the chart rather than built from this checkout. Override
+    # SLINKY_DRAINER_IMAGE to try a local build instead.
+    SLINKY_DRAINER_IMAGE="${SLINKY_DRAINER_IMAGE:-ghcr.io/nvidia/nvsentinel/slinky-drainer:${CHART_VERSION}}"
+
+    success "Installing NVSentinel ${CHART_VERSION}"
+
+    create_cluster
     install_cert_manager
-    prepare_namespace
-    install_custom_drain_crd
+    install_drain_request_crd
+    create_drain_template
     install_nvsentinel
-    build_and_load_plugin_images
-    create_slinky_namespace
-    deploy_slinky_drainer
-    deploy_mock_slurm
-    deploy_simple_health_client
-    create_test_workloads
-    show_summary
-    
-    log "✅ Setup complete!"
+    deploy_fake_dcgm
+    label_gpu_nodes
+
+    NODE="$(gpu_node)"
+    await_dcgm_connectivity
+
+    build_mock_slurm
+    deploy_plugins
+    deploy_workload
+    verify_sustained_readiness
+    print_summary
 }
 
 main "$@"

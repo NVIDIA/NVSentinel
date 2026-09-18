@@ -709,6 +709,13 @@ node-drainer:
   # Must be a positive integer
   evictionTimeoutInSeconds: "60"
 
+  # Base duration for exponential backoff on drain requeues (e.g., 10s, 2s).
+  # Controls the delay before the first retry when a node cannot be drained immediately.
+  # Subsequent retries double up to a 2-minute ceiling.
+  # Set according to workload termination times (~1s for zero-grace pods, >= 30s for 30s grace).
+  # Default: 10s
+  requeueBackoffBase: 10s
+
   # System namespaces regex pattern
   # Pods in these namespaces are skipped during drain
   # This protects critical infrastructure pods from eviction

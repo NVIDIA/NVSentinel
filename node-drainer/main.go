@@ -36,6 +36,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/initializer"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 )
 
 var (
@@ -97,9 +98,15 @@ func run() error {
 		"path where the node drainer config file is present")
 
 	dryRun := flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
+	requeueBackoffBase := flag.Duration("requeue-backoff-base", queue.DefaultRequeueBackoffBase,
+		"base duration for exponential backoff on drain requeues (must be positive)")
 	rateLimits := kubeclient.RegisterRateLimitFlags()
 
 	flag.Parse()
+
+	if *requeueBackoffBase <= 0 {
+		return fmt.Errorf("invalid --requeue-backoff-base: %v (must be positive)", *requeueBackoffBase)
+	}
 
 	ff := metrics.NewRegistry("node-drainer")
 	ff.Set("dry_run", *dryRun)
@@ -108,6 +115,7 @@ func run() error {
 	databaseClientCertMountPath := certConfig.ResolveCertPath()
 
 	slog.InfoContext(ctx, "Database client cert", "path", databaseClientCertMountPath)
+	slog.InfoContext(ctx, "Drain requeue backoff base", "duration", *requeueBackoffBase)
 
 	params := newInitializationParams(
 		databaseClientCertMountPath,
@@ -116,6 +124,7 @@ func run() error {
 		*metricsPort,
 		*dryRun,
 		*rateLimits,
+		*requeueBackoffBase,
 	)
 
 	readinessChecker := server.NewDatastoreReadinessChecker(nil)
@@ -202,8 +211,10 @@ func run() error {
 	return g.Wait()
 }
 
-func newInitializationParams(databaseClientCertMountPath, kubeconfigPath, tomlConfigPath, metricsPort string,
-	dryRun bool, rateLimits kubeclient.RateLimitConfig) initializer.InitializationParams {
+func newInitializationParams(
+	databaseClientCertMountPath, kubeconfigPath, tomlConfigPath, metricsPort string,
+	dryRun bool, rateLimits kubeclient.RateLimitConfig, requeueBackoffBase time.Duration,
+) initializer.InitializationParams {
 	return initializer.InitializationParams{
 		DatabaseClientCertMountPath: databaseClientCertMountPath,
 		KubeconfigPath:              kubeconfigPath,
@@ -211,6 +222,7 @@ func newInitializationParams(databaseClientCertMountPath, kubeconfigPath, tomlCo
 		MetricsPort:                 metricsPort,
 		DryRun:                      dryRun,
 		KubernetesClientRateLimits:  rateLimits,
+		RequeueBackoffBase:          requeueBackoffBase,
 	}
 }
 

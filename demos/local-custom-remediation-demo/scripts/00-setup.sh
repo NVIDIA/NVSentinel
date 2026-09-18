@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,427 +13,253 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -euo pipefail
+# Step 0: build the demo cluster, install NVSentinel with a custom remediation
+# action, and stand up the monitor that reports the fault and the controller
+# that repairs it.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# How long the controllers must stay up before setup calls itself successful.
+SETTLE_SECONDS=${SETTLE_SECONDS:-30}
 
-export CLUSTER_NAME="${CLUSTER_NAME:-nvsentinel-demo}"
-NAMESPACE="nvsentinel"
+# shellcheck source-path=SCRIPTDIR source=common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-log() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
-}
+create_cluster() {
+    section "Creating the KIND cluster"
 
-section() {
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  $*"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-}
-
-check_prerequisites() {
-    section "Checking Prerequisites"
-
-    local missing=()
-
-    command -v docker &>/dev/null || missing+=("docker")
-    command -v kind &>/dev/null || missing+=("kind")
-    command -v kubectl &>/dev/null || missing+=("kubectl")
-    command -v helm &>/dev/null || missing+=("helm")
-    command -v ko &>/dev/null || missing+=("ko")
-    command -v go &>/dev/null || missing+=("go")
-    command -v jq &>/dev/null || missing+=("jq")
-
-    if [ ${#missing[@]} -gt 0 ]; then
-        log "❌ Missing required tools: ${missing[*]}"
-        log "Please install them and try again"
-        exit 1
-    fi
-
-    log "✓ All prerequisites found"
-}
-
-create_kind_cluster() {
-    section "Phase 1: Creating KIND Cluster"
-
-    if kind get clusters | grep -q "^${CLUSTER_NAME}$"; then
-        log "Cluster '$CLUSTER_NAME' already exists. Deleting it first..."
+    if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+        warn "Cluster '$CLUSTER_NAME' already exists; deleting it so this run starts clean."
         kind delete cluster --name "$CLUSTER_NAME"
     fi
 
-    log "Creating KIND cluster with 2 nodes..."
-    cat <<EOF | kind create cluster --name "$CLUSTER_NAME" --config=-
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-- role: worker
-EOF
+    kind create cluster --name "$CLUSTER_NAME" --config "$CONFIG_DIR/kind-cluster.yaml"
+    kubectl config use-context "kind-${CLUSTER_NAME}" >/dev/null
+    kubectl wait --for=condition=ready nodes --all --timeout=180s >/dev/null
 
-    log "✓ KIND cluster created"
+    success "Cluster '$CLUSTER_NAME' is up"
+    kubectl get nodes
 }
 
 install_cert_manager() {
-    section "Phase 2: Installing cert-manager"
+    section "Installing cert-manager"
 
-    log "Installing cert-manager..."
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.1/cert-manager.yaml
+    log "NVSentinel needs cert-manager for MongoDB mTLS."
+    log "Installing the latest release."
 
-    log "Waiting for cert-manager to be ready..."
-    kubectl wait --for=condition=available --timeout=300s \
-        deployment/cert-manager -n cert-manager
-    kubectl wait --for=condition=available --timeout=300s \
-        deployment/cert-manager-webhook -n cert-manager
-    kubectl wait --for=condition=available --timeout=300s \
-        deployment/cert-manager-cainjector -n cert-manager
+    helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1 || true
+    helm repo update jetstack >/dev/null 2>&1 || true
 
-    log "✓ cert-manager installed"
+    # Quiet: installing the CRDs makes client-go log hundreds of "unrecognized
+    # format" lines for OpenAPI int32/int64 fields. On failure the pods are
+    # printed instead, which says more than the log would have.
+    if ! helm upgrade --install cert-manager jetstack/cert-manager \
+        --namespace cert-manager \
+        --create-namespace \
+        --values "$CONFIG_DIR/cert-manager-values.yaml" \
+        --wait --timeout 5m >/dev/null 2>&1; then
+        kubectl get pods -n cert-manager
+        fail "cert-manager did not install. Its pods are above."
+    fi
+
+    success "cert-manager is ready"
 }
 
 install_nvsentinel() {
-    section "Phase 3: Installing NVSentinel"
+    section "Installing NVSentinel ${CHART_VERSION}"
 
-    local chart_version="${NVSENTINEL_CHART_VERSION:-v1.2.0}"
-    local image_tag="${NVSENTINEL_IMAGE_TAG:-main-83a39fa}"
+    log "Chart:     oci://ghcr.io/nvidia/nvsentinel ${CHART_VERSION}"
+    log "Values:    config/nvsentinel-values.yaml"
+    log "Modules:   platform-connectors, fault-quarantine, node-drainer, fault-remediation"
+    log "Action:    RECLAIM_MEMORY, a custom action mapped to a MemoryReclaim CR"
+    log "Datastore: Percona Server for MongoDB, single member"
+    echo
+    log "A few minutes: the operator issues certificates and initialises the replica set before MongoDB accepts writes."
 
-    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-    local ARCH=$(uname -m)
-    local mongo_repo="bitnamilegacy/mongodb"
-    local mongo_tag="8.0.3-debian-12-r1"
-    if [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
-        mongo_repo="dlavrenuek/bitnami-mongodb-arm"
-        mongo_tag="8.0.4"
+    # The chart pins its own matching image tag, so nothing overrides it here:
+    # setting one and not the other is how a chart ends up rendering flags the
+    # image does not have.
+    if ! helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+        --version "$CHART_VERSION" \
+        --namespace "$NAMESPACE" \
+        --values "$CONFIG_DIR/nvsentinel-values.yaml" \
+        --wait --timeout 15m >/dev/null 2>&1; then
+        kubectl get pods -n "$NAMESPACE"
+        fail "The NVSentinel install did not complete. The pods above show how far it got."
     fi
 
-    log "Installing NVSentinel Helm chart ${chart_version} from OCI registry..."
-    log "Using image tag: ${image_tag} (contains custom remediation action support)"
-    log "MongoDB image: ${mongo_repo}:${mongo_tag} (${ARCH})"
-
-    helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-        --version "$chart_version" \
-        --namespace "$NAMESPACE" \
-        --values "$SCRIPT_DIR/../config/nvsentinel-values.yaml" \
-        --set global.image.tag="${image_tag}" \
-        --set "mongodb-store.mongodb.image.repository=${mongo_repo}" \
-        --set "mongodb-store.mongodb.image.tag=${mongo_tag}" \
-        --wait --timeout=10m
-
-    log "✓ NVSentinel installed"
-
-    log "Granting fault-remediation RBAC for MemoryReclaim CRD..."
-    cat <<EOF | kubectl apply -f -
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: nvsentinel-memoryreclaim
-rules:
-- apiGroups: ["demo.nvsentinel.nvidia.com"]
-  resources: ["memoryreclaims"]
-  verbs: ["create", "get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: nvsentinel-memoryreclaim
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: nvsentinel-memoryreclaim
-subjects:
-- kind: ServiceAccount
-  name: fault-remediation
-  namespace: $NAMESPACE
-EOF
-    log "✓ RBAC for MemoryReclaim CRD granted"
+    success "NVSentinel installed"
 }
 
-build_and_load_images() {
-    section "Phase 4: Building Custom Component Images"
+install_memoryreclaim_crd() {
+    section "Installing the MemoryReclaim CRD"
 
-    local demo_dir="$PROJECT_ROOT/demos/local-custom-remediation-demo"
+    log "fault-remediation creates these from the RECLAIM_MEMORY template; the demo controller reconciles them."
 
-    log "Building memory-pressure-monitor..."
-    docker build -t memory-pressure-monitor:demo \
-        -f "$demo_dir/memory-pressure-monitor/Dockerfile" \
-        "$PROJECT_ROOT"
-    kind load docker-image memory-pressure-monitor:demo --name "$CLUSTER_NAME"
+    apply_manifest memoryreclaim-crd.yaml
+    apply_manifest fault-remediation-rbac.yaml
 
-    log "Building memory-reclaim-controller..."
-    docker build -t memory-reclaim-controller:demo \
-        -f "$demo_dir/memory-reclaim-controller/Dockerfile" \
-        "$PROJECT_ROOT"
-    kind load docker-image memory-reclaim-controller:demo --name "$CLUSTER_NAME"
-
-    log "✓ All component images built and loaded"
+    success "MemoryReclaim CRD installed and fault-remediation granted access to it"
 }
 
-deploy_memory_pressure_monitor() {
-    section "Phase 5: Deploying Memory Pressure Monitor"
+build_images() {
+    section "Building the demo components"
 
-    local worker_node="${CLUSTER_NAME}-worker"
-    local avail_kb
-    avail_kb=$(docker exec "$worker_node" awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
-    local avail_mb=$((avail_kb / 1024))
-    MEM_THRESHOLD_MB=${MEM_THRESHOLD_MB:-$((avail_mb - 200))}
+    log "A health monitor that reports memory pressure, and a controller that acts on it."
 
-    log "Worker node available memory: ${avail_mb} MB"
-    log "Setting threshold to ${MEM_THRESHOLD_MB} MB (triggers when stress pod consumes ~200+ MB)"
+    local component
+    for component in memory-pressure-monitor memory-reclaim-controller; do
+        log "Building ${component}..."
+        docker build -q -t "${component}:demo" \
+            -f "$DEMO_DIR/${component}/Dockerfile" "$REPO_ROOT" >/dev/null ||
+            fail "Could not build ${component}."
+        kind load docker-image "${component}:demo" --name "$CLUSTER_NAME" >/dev/null 2>&1
+    done
 
-    log "Deploying memory-pressure-monitor DaemonSet..."
-    cat <<EOF | kubectl apply -f -
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: memory-pressure-monitor
-  namespace: $NAMESPACE
-  labels:
-    app: memory-pressure-monitor
-spec:
-  selector:
-    matchLabels:
-      app: memory-pressure-monitor
-  template:
-    metadata:
-      labels:
-        app: memory-pressure-monitor
-    spec:
-      serviceAccountName: default
-      containers:
-      - name: monitor
-        image: memory-pressure-monitor:demo
-        imagePullPolicy: Never
-        env:
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-        - name: MEM_THRESHOLD_MB
-          value: "${MEM_THRESHOLD_MB}"
-        - name: PROCFS_PATH
-          value: "/host/proc/meminfo"
-        - name: POLL_INTERVAL_SECONDS
-          value: "10"
-        - name: SOCKET_PATH
-          value: "/var/run/nvsentinel.sock"
-        volumeMounts:
-        - name: host-proc
-          mountPath: /host/proc
-          readOnly: true
-        - name: nvsentinel-socket
-          mountPath: /var/run
-        resources:
-          requests:
-            cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 200m
-            memory: 128Mi
-      volumes:
-      - name: host-proc
-        hostPath:
-          path: /proc
-      - name: nvsentinel-socket
-        hostPath:
-          path: /var/run/nvsentinel
-          type: DirectoryOrCreate
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: node-role.kubernetes.io/control-plane
-                operator: DoesNotExist
-      tolerations:
-      - operator: Exists
-EOF
-
-    log "✓ Memory pressure monitor deployed"
+    success "Both images are loaded into the cluster"
 }
 
-deploy_memory_reclaim_controller() {
-    section "Phase 6: Deploying Memory Reclaim Controller"
+deploy_monitor() {
+    section "Deploying the memory pressure monitor"
 
-    log "Installing MemoryReclaim CRD..."
-    kubectl apply -f "$SCRIPT_DIR/../config/memoryreclaim-crd.yaml"
+    local avail_mb threshold
+    avail_mb="$(node_available_mb)"
+    threshold=$((avail_mb - MEM_MARGIN_MB))
 
-    log "Creating RBAC for memory-reclaim-controller..."
-    cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: memory-reclaim-controller
-  namespace: $NAMESPACE
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: memory-reclaim-controller
-rules:
-- apiGroups: ["demo.nvsentinel.nvidia.com"]
-  resources: ["memoryreclaims"]
-  verbs: ["get", "list", "watch", "update"]
-- apiGroups: ["demo.nvsentinel.nvidia.com"]
-  resources: ["memoryreclaims/status"]
-  verbs: ["get", "update"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: memory-reclaim-controller
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: memory-reclaim-controller
-subjects:
-- kind: ServiceAccount
-  name: memory-reclaim-controller
-  namespace: $NAMESPACE
-EOF
+    log "MemAvailable on ${NODE} is ${avail_mb} MB, so the threshold starts at ${threshold} MB."
+    log "KIND shares the host's memory, so this drifts. Step 2 recalibrates it before it triggers."
 
-    log "Deploying memory-reclaim-controller..."
-    cat <<EOF | kubectl apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: memory-reclaim-controller
-  namespace: $NAMESPACE
-  labels:
-    app: memory-reclaim-controller
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: memory-reclaim-controller
-  template:
-    metadata:
-      labels:
-        app: memory-reclaim-controller
-    spec:
-      serviceAccountName: memory-reclaim-controller
-      containers:
-      - name: controller
-        image: memory-reclaim-controller:demo
-        imagePullPolicy: Never
-        env:
-        - name: NAMESPACE
-          value: "default"
-        resources:
-          requests:
-            cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 200m
-            memory: 128Mi
-EOF
+    apply_manifest memory-pressure-monitor.yaml "MEM_THRESHOLD_MB=${threshold}"
 
-    kubectl wait --for=condition=available --timeout=120s \
-        deployment/memory-reclaim-controller -n "$NAMESPACE"
+    wait_for_pod_ready "$NAMESPACE" app=memory-pressure-monitor 180 ||
+        fail "The memory pressure monitor did not become ready."
 
-    log "✓ Memory reclaim controller deployed"
+    success "Monitor is polling /proc/meminfo on ${NODE}"
 }
 
-wait_for_pods() {
-    section "Phase 8: Waiting for All Pods"
+deploy_controller() {
+    section "Deploying the memory reclaim controller"
 
-    log "Waiting for all pods to be ready (this may take 2-3 minutes)..."
+    log "This is the third-party half: it watches MemoryReclaim CRs and deletes the offending pods."
 
-    kubectl wait --for=condition=ready pod \
-        -l app.kubernetes.io/name=nvsentinel \
-        -n "$NAMESPACE" \
-        --timeout=300s > /dev/null 2>&1 || {
-            log "WARNING: Platform Connectors not ready yet"
-        }
+    apply_manifest memory-reclaim-controller.yaml "WORKLOAD_NAMESPACE=${WORKLOAD_NAMESPACE}"
 
-    kubectl wait --for=condition=ready pod \
-        -l app.kubernetes.io/name=fault-quarantine \
-        -n "$NAMESPACE" \
-        --timeout=300s > /dev/null 2>&1 || {
-            log "WARNING: Fault Quarantine not ready yet"
-        }
+    if ! kubectl wait --for=condition=available --timeout=180s \
+        deployment/memory-reclaim-controller -n "$NAMESPACE" >/dev/null 2>&1; then
+        kubectl get pods -n "$NAMESPACE" -l app=memory-reclaim-controller
+        fail "The memory reclaim controller did not become available."
+    fi
 
-    kubectl wait --for=condition=ready pod \
-        -l app.kubernetes.io/name=mongodb \
-        -n "$NAMESPACE" \
-        --timeout=300s > /dev/null 2>&1 || {
-            log "WARNING: MongoDB not ready yet"
-        }
-
-    kubectl wait --for=condition=ready pod \
-        -l app=memory-pressure-monitor \
-        -n "$NAMESPACE" \
-        --timeout=120s > /dev/null 2>&1 || {
-            log "WARNING: Memory pressure monitor not ready yet"
-        }
-
-    kubectl wait --for=condition=available --timeout=120s \
-        deployment/memory-reclaim-controller -n "$NAMESPACE" > /dev/null 2>&1 || {
-            log "WARNING: Memory reclaim controller not ready yet"
-        }
-
-    log "✓ All pods are ready"
+    # It runs on the control plane on purpose: it is the thing that repairs the
+    # worker, so it must not be evicted by the drain it is reacting to.
+    success "Controller is watching MemoryReclaim CRs from the control plane"
 }
 
-show_summary() {
-    section "Setup Complete!"
+# A pod that reports Ready once can still be crash-looping: fault-quarantine,
+# for example, starts cleanly and only fails a few seconds later when it first
+# evaluates the circuit breaker. Re-check after a settle window and treat a
+# restart as a failed setup rather than reporting success over the top of it.
+verify_sustained_readiness() {
+    section "Confirming the controllers stay up"
 
-    cat <<EOF
+    log "Waiting ${SETTLE_SECONDS}s and re-checking, so a crash loop is caught here rather than two steps later."
 
-✅ Custom Remediation Demo Ready!
+    local before after unready
+    before="$(restart_counts)"
+    sleep "$SETTLE_SECONDS"
+    after="$(restart_counts)"
 
-📊 Cluster Information:
-   • Cluster: $CLUSTER_NAME
-   • NVSentinel Namespace: $NAMESPACE
+    # Completed Job pods (the MongoDB bootstrap job) sit at Ready=False forever,
+    # so match on phase too and only treat a still-running pod as unready. A
+    # Failed pod is not excused - that is a genuine problem worth stopping for.
+    unready="$(kubectl get pods -n "$NAMESPACE" -o json |
+        jq -r '.items[]
+               | select(.status.phase != "Succeeded")
+               | select([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 0)
+               | .metadata.name')"
 
-🔧 Components Deployed:
-   ✓ KIND Cluster (1 control-plane + 1 worker)
-   ✓ cert-manager
-   ✓ NVSentinel (via local Helm chart):
-     - Platform Connectors
-     - Fault Quarantine
-     - Node Drainer
-     - Fault Remediation (with RECLAIM_MEMORY action)
-     - MongoDB
-   ✓ Custom Components:
-     - Memory Pressure Monitor (DaemonSet on worker)
-     - Memory Reclaim Controller (Deployment)
+    if [[ -n "$unready" ]]; then
+        kubectl get pods -n "$NAMESPACE"
+        fail "These pods are not Ready: $(echo "$unready" | tr '\n' ' ')"
+    fi
 
-📝 Next Steps:
-   1. View cluster status:
-      make show-cluster
+    local problems
+    problems="$(restart_problems "$before" "$after")"
 
-   2. Trigger memory pressure:
-      make trigger
+    if [[ -n "$problems" ]]; then
+        kubectl get pods -n "$NAMESPACE"
+        fail "Something restarted during the ${SETTLE_SECONDS}s settle window:
+${problems}"
+    fi
 
-   3. Verify the remediation workflow:
-      make verify
+    success "Every pod is Ready and has stayed up for ${SETTLE_SECONDS}s"
+}
 
-🧹 Cleanup:
-   make cleanup
+# Snapshot of every pod's identity and its containers' restart counts.
+#
+# Keyed by UID rather than by pod name: a replacement pod can reuse the name, and
+# comparing by name alone would read a brand-new container as the old one having
+# restarted.
+restart_counts() {
+    kubectl get pods -n "$NAMESPACE" -o json |
+        jq -S '[.items[] | {
+                   uid: .metadata.uid,
+                   name: .metadata.name,
+                   containers: [(.status.containerStatuses // [])[] | {name, restartCount}]
+               }]'
+}
 
-EOF
+# Prints one line per problem found between two snapshots, and nothing when the
+# cluster merely churned.
+#
+# Only two things count: a container that restarted while the demo watched, and a
+# pod replaced under the same name. Pods appearing or disappearing do not - the
+# MongoDB bootstrap Job and the Percona operator both retire pods while the
+# cluster settles, and comparing whole snapshots would fail a healthy setup for
+# that alone.
+restart_problems() {
+    jq -rn --argjson before "$1" --argjson after "$2" '
+        ($before | INDEX(.uid)) as $b |
+        [
+          ( $after[] | . as $pod
+            | select($b[$pod.uid] != null)
+            | $pod.containers[] | . as $c
+            | ($b[$pod.uid].containers | map(select(.name == $c.name)) | first) as $was
+            | select($was != null and $c.restartCount > $was.restartCount)
+            | "\($pod.name)/\($c.name) restarted \($c.restartCount - $was.restartCount) time(s)" ),
+          ( $after[] | . as $pod
+            | select($b[$pod.uid] == null)
+            | select([$before[] | select(.name == $pod.name)] | length > 0)
+            | "\($pod.name) was replaced" )
+        ] | .[]
+    '
+}
+
+print_summary() {
+    success "Cluster '${CLUSTER_NAME}' is running NVSentinel ${CHART_VERSION} with a custom RECLAIM_MEMORY action"
+
+    next_step "./scripts/01-show-cluster.sh   look at it before anything is broken"
 }
 
 main() {
-    log "Starting Custom Remediation Demo setup..."
-    echo ""
+    require_tools docker kind kubectl helm go jq curl column
 
-    check_prerequisites
-    create_kind_cluster
+    section "Preparing the cluster"
+    log "Resolving the NVSentinel version to install..."
+    CHART_VERSION="$(resolve_chart_version)"
+    success "Installing NVSentinel ${CHART_VERSION}"
+
+    create_cluster
+    NODE="$(worker_node)"
+
     install_cert_manager
     install_nvsentinel
-    build_and_load_images
-    deploy_memory_pressure_monitor
-    deploy_memory_reclaim_controller
-    wait_for_pods
-    show_summary
-
-    log "✅ Setup complete!"
+    install_memoryreclaim_crd
+    build_images
+    deploy_monitor
+    deploy_controller
+    verify_sustained_readiness
+    print_summary
 }
 
 main "$@"
