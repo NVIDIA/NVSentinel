@@ -57,7 +57,8 @@ spec:
             {{- end }}
             - "--enable-maintenance-controller={{ .Values.controllers.maintenanceRequest.enabled }}"
             {{- if .Values.controllers.maintenanceRequest.enabled }}
-            - "--platform-connector-socket=unix://{{ ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}"
+            {{- $socketPath := ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}
+            - "--platform-connector-socket=unix:///var/run/nvsentinel/{{ base $socketPath }}"
             {{- if include "lifecycle-manager.pcAuth.enabled" . }}
             {{- /* A MaintenanceRequest names any node in the cluster, so this
                  Deployment reports on nodes other than its own and must present
@@ -134,7 +135,7 @@ spec:
               readOnly: true
             {{- if .Values.controllers.maintenanceRequest.enabled }}
             - name: platform-connector-socket
-              mountPath: /var/run
+              mountPath: /var/run/nvsentinel
               readOnly: true
             {{- if include "lifecycle-manager.pcAuth.enabled" . }}
             {{- include "lifecycle-manager.pcAuth.volumeMount" . | nindent 12 }}
