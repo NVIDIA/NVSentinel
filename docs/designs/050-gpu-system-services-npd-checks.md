@@ -111,20 +111,6 @@ Scripts follow the NPD custom-plugin protocol: exit `0` healthy, `1`
 unhealthy, any other value unknown; the message on stdout becomes the
 condition message.
 
-- **`check_fm_active.sh`** — `systemctl show nvidia-fabricmanager
-  --property=LoadState,ActiveState,SubState`. `LoadState=not-found` exits `0`
-  (not applicable on this host; see platform applicability).
-  `ActiveState=active` confirms healthy (exit `0`) and resets the check's
-  consecutive-failure count. Transitional states (`activating`,
-  `deactivating`, `reloading`) neither confirm health nor count as down —
-  the script holds its last confirmed state, so a service starting up or in
-  a planned restart never fires the condition; systemd's own start timeout
-  turns a stuck `activating` into `failed`, which does count. A non-running
-  observation (`inactive`, `failed`) reports down (exit `1`, sub-state in
-  the message) only when observed on a threshold of consecutive probes
-  (default 3, ≈ 90 s at the reference interval): detection latency for a
-  genuine death is threshold × `invoke_interval`, traded against firing on
-  planned restarts.
 - **`check_fm_flapping.sh`** — reads `NRestarts` and
   `ExecMainStartTimestamp`, keeping its baseline and restart-window samples
   in the per-check state (below); the window is boot-scoped by construction,
@@ -140,9 +126,22 @@ condition message.
 - **`check_fm_installed.sh`** — exits `1` when `LoadState=not-found`, `0`
   otherwise. Only installed by operators declaring FM required and
   host-systemd-managed.
-- **`check_gpu_service.sh <unit>`** — the liveness contract of
-  `check_fm_active.sh`, parameterized (including the consecutive-probe
-  debounce); one NPD rule per configured service.
+- **`check_gpu_service.sh <unit>`** — service liveness, one NPD rule per
+  configured unit; the reference Fabric Manager liveness rule invokes it
+  with `nvidia-fabricmanager` (per-unit conditions and state files keep the
+  checks independent while the logic is maintained once). `systemctl show
+  <unit> --property=LoadState,ActiveState,SubState`. `LoadState=not-found`
+  exits `0` (not applicable; see platform applicability).
+  `ActiveState=active` confirms healthy and resets the consecutive-failure
+  count. A non-running observation (`inactive`, `failed`) reports down
+  (exit `1`) only on a threshold of consecutive probes (default 3, ≈ 90 s
+  at the reference interval); any other observation — transitional states
+  (`activating`, `deactivating`, `reloading`), probe failures — holds the
+  last confirmed state and resets the count, so a service starting up or in
+  a planned restart never fires the condition; systemd's own start timeout
+  turns a stuck `activating` into `failed`, which does count. Detection
+  latency for a genuine death is threshold × `invoke_interval`, traded
+  against firing on planned restarts.
 
 **Per-check state.** Each check persists a small state file under the
 **host's** `/var/run/nvsentinel/npd` (tmpfs — boot-scoped by construction): the
@@ -171,13 +170,19 @@ prescribing one privilege model, since the operator owns the NPD install.
 its own probes (`systemctl` with an internal timeout **shorter than** the
 rule's `timeout`), so a wedged probe reports as the script's own deliberate
 exit rather than as an NPD plugin timeout. On a probe failure (systemd/D-Bus
-unreachable, timeout) the script reports its **last confirmed state**: a
-check whose condition is unhealthy keeps reporting unhealthy — with a
-"holding: probe failing" message — until a probe confirms recovery, and a
-previously healthy check holds healthy for a bounded number of consecutive
-failures (default 4) before reporting unknown. Recovery therefore always
-requires a confirming observation; lost observability alone can neither set
-nor clear a fault (see Recovery semantics for the KOM consequence).
+unreachable, timeout, or unparseable output) the script reports its **last
+confirmed state**: a check whose condition is unhealthy keeps reporting
+unhealthy — with a "holding: probe failing" message — until a probe
+confirms recovery, and a previously healthy check holds healthy for a
+bounded number of consecutive failures (default 4), after which the stale
+confirmation is discarded and the check reports unknown until a probe
+confirms either state. A failed state-file commit follows the same rule: an
+unhealthy result is still reported unhealthy, while other results report
+unknown, since their debounce or windowing accounting could not be
+persisted (an uncommitted flap baseline would double-count restart deltas).
+Recovery therefore always requires a confirming observation; lost
+observability alone can neither set nor clear a fault (see Recovery
+semantics for the KOM consequence).
 
 ### Reference NPD configuration
 
@@ -214,14 +219,14 @@ shape with their own source, condition, reason, and script:
     { "type": "FabricManagerDown", "reason": "FabricManagerActive", "message": "nvidia-fabricmanager is active" }
   ],
   "rules": [
-    { "type": "permanent", "condition": "FabricManagerDown", "reason": "FabricManagerNotActive", "path": "/etc/npd-plugins/check_fm_active.sh", "timeout": "12s" }
+    { "type": "permanent", "condition": "FabricManagerDown", "reason": "FabricManagerNotActive", "path": "/etc/npd-plugins/check_gpu_service.sh", "args": ["nvidia-fabricmanager"], "timeout": "12s" }
   ]
 }
 ```
 
 | Configuration | `source` | Condition | Problem reason | Script |
 | --- | --- | --- | --- | --- |
-| `custom-plugin-fm-liveness.json` | `nvsentinel-gpu-services-fm-liveness` | `FabricManagerDown` | `FabricManagerNotActive` | `check_fm_active.sh` |
+| `custom-plugin-fm-liveness.json` | `nvsentinel-gpu-services-fm-liveness` | `FabricManagerDown` | `FabricManagerNotActive` | `check_gpu_service.sh nvidia-fabricmanager` |
 | `custom-plugin-fm-flap.json` | `nvsentinel-gpu-services-fm-flap` | `FabricManagerFlapping` | `FabricManagerFlapping` | `check_fm_flapping.sh` |
 | `custom-plugin-fm-presence.json` | `nvsentinel-gpu-services-fm-presence` | `FabricManagerNotInstalled` | `FabricManagerUnitNotFound` | `check_fm_installed.sh` |
 | `custom-plugin-persistenced.json` | `nvsentinel-gpu-services-persistenced` | `NvidiaPersistencedDown` | `NvidiaPersistencedNotActive` | `check_gpu_service.sh nvidia-persistenced` |
