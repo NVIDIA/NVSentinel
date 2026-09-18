@@ -160,7 +160,7 @@ flowchart LR
 
 ### Authentication
 
-Monitors authenticate exactly as they do on the socket today (ADR-030): a projected ServiceAccount token on every request, checked through TokenReview, with the same cross-node allowlist for the four components that report about other nodes (csp-health-monitor, kubernetes-object-monitor, slurm-drain-monitor, health-events-analyzer). The check moves to the central service under its own audience, so the event path still has exactly one token validation. Three things change:
+Monitors authenticate exactly as they do on the socket today (ADR-030): a projected ServiceAccount token on every request, checked through TokenReview, with the same cross-node allowlist for the four components that report about other nodes (csp-health-monitor, kubernetes-object-monitor, slurm-drain-monitor, health-events-analyzer). The check moves to the central service under the same audience, so a monitor keeps its token when it switches over and the event path still has exactly one token validation. Three things change:
 
 - Every caller must present a token. The socket accepted callers with no credential and filled in its own node name for them. Over the network there is no local node to fall back on, so a batch without a pod-bound token is rejected.
 - Node scope comes from the token instead of the connector. The socket checked that a token's node claim matched the node it was running on. The central service has no node of its own, so it pins each batch to the node named in the caller's token.
@@ -239,7 +239,6 @@ global:
       mode: required   # cert-manager issued certificate; the only alternative is
                        # the explicitly named insecureDevelopmentMode
     auth:
-      audience: "platform-connector-deployment.nvsentinel.nvidia.com"
       tokenExpirationSeconds: 3600
 
 platformConnector:
@@ -294,7 +293,7 @@ If a datastore outage longer than the monitors' retry window ever has to be surv
 ### Negative
 
 - The write path now depends on one central service. If it is down, every monitor's writes stop at once and the whole fleet buffers in its clients for the retry window, where today a platform connector pod failure affects only its own node.
-- Custom or token-less socket publishers, and the injected preflight checks that run under tenant ServiceAccounts, cannot publish to the central service as they are, because they cannot be put on the allowlist. Each must be deprecated together with the socket, keep a thin node-local shim, or get its own identity and a network rule that lets it in. That decision is outside this ADR but has to be made before the DaemonSet is removed.
+- Token-less socket publishers, including the injected preflight checks that run under tenant ServiceAccounts without a projected token, cannot publish to the central service as they are, because every caller must present a pod-bound token. Each must be deprecated together with the socket, keep a thin node-local shim, or mount a projected token and get a network rule that lets it in. That decision is outside this ADR but has to be made before the DaemonSet is removed.
 - The server keeps no buffer. A datastore outage is felt by every monitor at once, a MongoDB primary election shows up as a burst of retries, and an outage longer than the monitors' retry window loses events at the edge, as it does today.
 - Node condition updates are best effort, and when a batch changes the node they add Kubernetes API latency to the acknowledgement. After a failed update or a client time-out a condition can be wrong until the monitor next reports that entity, which for a monitor that reports only changes can be a long time.
 

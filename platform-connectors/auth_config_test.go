@@ -16,26 +16,28 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/util/json"
-
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/auth"
 )
 
-// configFromJSON parses config the same way loadConfig does, so these tests
-// exercise the real types the ConfigMap produces (int64 for whole numbers,
-// []interface{} for arrays) rather than hand-built Go maps that would hide
+// configFromJSON decodes config the way configfile.Load does (numbers as
+// json.Number, arrays as []any), so these tests exercise the real types the
+// ConfigMap produces rather than hand-built Go maps that would hide
 // type-assertion bugs.
 func configFromJSON(t *testing.T, raw string) map[string]any {
 	t.Helper()
 
-	result := make(map[string]any)
-	require.NoError(t, json.Unmarshal([]byte(raw), &result))
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+
+	result := map[string]any{}
+	require.NoError(t, dec.Decode(&result))
 
 	return result
 }
@@ -65,106 +67,6 @@ users:
 `), 0o600))
 
 	return path
-}
-
-func TestStringSliceFromConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		raw     string
-		key     string
-		want    []string
-		wantErr bool
-	}{
-		{
-			name:    "absent key is a configuration error",
-			raw:     `{"other": 1}`,
-			key:     "AuthCrossNodeServiceAccounts",
-			wantErr: true,
-		},
-		{
-			name:    "explicit null is a configuration error",
-			raw:     `{"AuthCrossNodeServiceAccounts": null}`,
-			key:     "AuthCrossNodeServiceAccounts",
-			wantErr: true,
-		},
-		{
-			name: "empty array yields empty slice",
-			raw:  `{"AuthCrossNodeServiceAccounts": []}`,
-			key:  "AuthCrossNodeServiceAccounts",
-			want: []string{},
-		},
-		{
-			name: "populated array",
-			raw:  `{"AuthCrossNodeServiceAccounts": ["system:serviceaccount:ns:a","system:serviceaccount:ns:b"]}`,
-			key:  "AuthCrossNodeServiceAccounts",
-			want: []string{"system:serviceaccount:ns:a", "system:serviceaccount:ns:b"},
-		},
-		{
-			name:    "wrong container type is an error, not silently ignored",
-			raw:     `{"AuthCrossNodeServiceAccounts": "not-a-list"}`,
-			key:     "AuthCrossNodeServiceAccounts",
-			wantErr: true,
-		},
-		{
-			name:    "non-string element is an error",
-			raw:     `{"AuthCrossNodeServiceAccounts": ["ok", 42]}`,
-			key:     "AuthCrossNodeServiceAccounts",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := stringSliceFromConfig(configFromJSON(t, tt.raw), tt.key)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestNodeBindingEnabled(t *testing.T) {
-	// Disabling enforcement must take saying so. Anything that is neither a
-	// clear yes nor a clear no stops the process instead of quietly leaving the
-	// socket open to any node name.
-	tests := []struct {
-		name    string
-		raw     string
-		want    bool
-		wantErr bool
-	}{
-		{name: "absent is a configuration error", raw: `{"other":1}`, wantErr: true},
-		{name: "quoted true", raw: `{"enableNodeBindingAuth":"true","AuthCrossNodeServiceAccounts":[]}`, want: true},
-		{name: "unquoted true", raw: `{"enableNodeBindingAuth":true}`, want: true},
-		{name: "quoted false", raw: `{"enableNodeBindingAuth":"false"}`, want: false},
-		{name: "unquoted false", raw: `{"enableNodeBindingAuth":false}`, want: false},
-		{name: "explicit null is malformed", raw: `{"enableNodeBindingAuth":null}`, wantErr: true},
-		{name: "typo is malformed", raw: `{"enableNodeBindingAuth":"yes"}`, wantErr: true},
-		{name: "wrong case is malformed", raw: `{"enableNodeBindingAuth":"True"}`, wantErr: true},
-		{name: "number is malformed", raw: `{"enableNodeBindingAuth":1}`, wantErr: true},
-		{name: "empty string is malformed", raw: `{"enableNodeBindingAuth":""}`, wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := nodeBindingEnabled(configFromJSON(t, tt.raw))
-
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "must be true or false")
-
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
 }
 
 func TestInitializeAuthInterceptor_Disabled(t *testing.T) {
@@ -208,7 +110,7 @@ func TestInitializeAuthInterceptor_RequiresNodeName(t *testing.T) {
 	t.Setenv("NODE_NAME", "")
 
 	_, err := initializeAuthInterceptor(context.Background(),
-		configFromJSON(t, `{"enableNodeBindingAuth":"true","AuthCrossNodeServiceAccounts":[]}`), "")
+		configFromJSON(t, `{"enableNodeBindingAuth":"true","AuthAudience":"a","AuthCrossNodeServiceAccounts":[]}`), "")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "NODE_NAME")
@@ -236,69 +138,6 @@ func TestInitializeAuthInterceptor_RequiresAudience(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "AuthAudience")
-}
-
-func TestAuthMode(t *testing.T) {
-	tests := []struct {
-		name    string
-		raw     string
-		want    auth.Mode
-		wantErr string
-	}{
-		{name: "absent defaults to enforce", raw: `{"other":1}`, want: auth.ModeEnforce},
-		{name: "explicit enforce", raw: `{"AuthMode":"enforce"}`, want: auth.ModeEnforce},
-		{name: "explicit audit", raw: `{"AuthMode":"audit"}`, want: auth.ModeAudit},
-		{name: "unknown value is rejected", raw: `{"AuthMode":"warn"}`, wantErr: `must be "enforce" or "audit"`},
-		{name: "wrong type is rejected", raw: `{"AuthMode":1}`, wantErr: "must be a string"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := authMode(configFromJSON(t, tt.raw))
-
-			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
-
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestBoolFromConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		raw     string
-		def     bool
-		want    bool
-		wantErr bool
-	}{
-		{name: "absent returns default", raw: `{"other":1}`, def: true, want: true},
-		{name: "quoted true", raw: `{"k":"true"}`, want: true},
-		{name: "unquoted true", raw: `{"k":true}`, want: true},
-		{name: "quoted false", raw: `{"k":"false"}`, def: true, want: false},
-		{name: "unquoted false", raw: `{"k":false}`, def: true, want: false},
-		{name: "typo is malformed", raw: `{"k":"yes"}`, wantErr: true},
-		{name: "number is malformed", raw: `{"k":1}`, wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := boolFromConfig(configFromJSON(t, tt.raw), "k", tt.def)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
 }
 
 func TestInitializeAuthInterceptor_RejectsUnknownMode(t *testing.T) {

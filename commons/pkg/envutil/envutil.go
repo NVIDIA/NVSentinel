@@ -17,8 +17,10 @@
 package envutil
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // GetEnvInt retrieves an integer environment variable.
@@ -54,4 +56,53 @@ func GetEnvString(key string, defaultVal string) string {
 	}
 
 	return defaultVal
+}
+
+// ParseEnvInt reads an integer environment variable. An unset or empty
+// variable returns defaultVal; a value that does not parse is an error that
+// names the variable, for components that refuse to start on a bad value
+// rather than run with a default.
+func ParseEnvInt(key string, defaultVal int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal, nil
+	}
+
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+
+	return i, nil
+}
+
+// ParseEnvFloat64 is ParseEnvInt for floating point values.
+func ParseEnvFloat64(key string, defaultVal float64) (float64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal, nil
+	}
+
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+
+	return f, nil
+}
+
+// ParseEnvDuration is ParseEnvInt for durations in time.ParseDuration form,
+// such as "30s" or "5m".
+func ParseEnvDuration(key string, defaultVal time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal, nil
+	}
+
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+
+	return d, nil
 }

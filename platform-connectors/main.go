@@ -29,34 +29,28 @@ import (
 	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
-	"k8s.io/apimachinery/pkg/util/json"
-	"k8s.io/client-go/kubernetes"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
-	"github.com/nvidia/nvsentinel/commons/pkg/grpcauth"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/auth"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/central"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/configfile"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/grpcsink"
 	k8sconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/prom"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/kubeconfig"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
 	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/dedup"
 	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/metadata"
 	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/overrides"
-)
-
-const (
-	True = "true"
 )
 
 var (
@@ -67,32 +61,47 @@ var (
 )
 
 func main() {
-	logger.SetDefaultStructuredLoggerWithTraceCorrelation("platform-connectors", version)
-	setControllerRuntimeLogger()
+	// One image, two roles: PC_MODE=deployment runs the deployment platform
+	// connector, unset runs the node-local DaemonSet connector. The process
+	// setup below is shared; the roles differ in their names and entrypoint.
+	// The DaemonSet keeps the tracing service name it has always had.
+	appName, tracingName, run := "platform-connectors", "platform-connector", runNodeLocal
 
-	initCtx := context.Background()
-	slog.InfoContext(initCtx, "Starting platform-connectors", "version", version, "commit", commit, "date", date)
-
-	if err := auditlogger.InitAuditLogger("platform-connectors"); err != nil {
-		slog.WarnContext(initCtx, "Failed to initialize audit logger", "error", err)
-	}
-
-	if err := tracing.InitTracing("platform-connector"); err != nil {
-		slog.WarnContext(initCtx, "Failed to initialize tracing", "error", err)
-	}
-
-	if err := run(); err != nil {
-		slog.ErrorContext(initCtx, "Platform connectors exited with error", "error", err)
-
-		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
-			slog.WarnContext(initCtx, "Failed to close audit logger", "error", closeErr)
-		}
-
+	switch mode := os.Getenv("PC_MODE"); mode {
+	case "deployment":
+		appName, tracingName, run = central.AppName, central.AppName, central.Run
+	case "":
+		// The node-local role.
+	default:
+		fmt.Fprintf(os.Stderr, "unknown PC_MODE %q: use \"deployment\" or leave it unset for the node-local role\n", mode)
 		os.Exit(1)
 	}
 
-	if err := auditlogger.CloseAuditLogger(); err != nil {
-		slog.WarnContext(initCtx, "Failed to close audit logger", "error", err)
+	logger.SetDefaultStructuredLoggerWithTraceCorrelation(appName, version)
+	setControllerRuntimeLogger()
+
+	initCtx := context.Background()
+	slog.InfoContext(initCtx, "Starting "+appName, "version", version, "commit", commit, "date", date)
+
+	if err := auditlogger.InitAuditLogger(appName); err != nil {
+		slog.WarnContext(initCtx, "Failed to initialize audit logger", "error", err)
+	}
+
+	if err := tracing.InitTracing(tracingName); err != nil {
+		slog.WarnContext(initCtx, "Failed to initialize tracing", "error", err)
+	}
+
+	err := run()
+	if err != nil {
+		slog.ErrorContext(initCtx, appName+" exited with error", "error", err)
+	}
+
+	if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
+		slog.WarnContext(initCtx, "Failed to close audit logger", "error", closeErr)
+	}
+
+	if err != nil {
+		os.Exit(1)
 	}
 }
 
@@ -104,24 +113,8 @@ func setControllerRuntimeLogger() {
 	ctrllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 }
 
-func loadConfig(configFilePath string) (map[string]any, error) {
-	data, err := os.ReadFile(configFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read platform-connector-configmap with err %w", err)
-	}
-
-	result := make(map[string]any)
-
-	err = json.Unmarshal(data, &result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal platform-connector-configmap with err %w", err)
-	}
-
-	return result, nil
-}
-
-// initializeK8sConnector creates the K8s connector and node metadata processor.
-// Processor is returned here because it depends on the clientset from K8s initialization.
+// initializeK8sConnector starts the K8s connector and returns the ring buffer
+// its loop drains.
 func initializeK8sConnector(
 	ctx context.Context,
 	config map[string]any,
@@ -130,37 +123,13 @@ func initializeK8sConnector(
 ) (*ringbuffer.RingBuffer, error) {
 	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
 
-	qpsTemp, ok := config["K8sConnectorQps"].(float64)
-	if !ok {
-		return nil, fmt.Errorf("failed to convert K8sConnectorQps to float: %v", config["K8sConnectorQps"])
-	}
-
-	qps := float32(qpsTemp)
-
-	maxNodeConditionMessageLength, ok := config["MaxNodeConditionMessageLength"].(int64)
-	if !ok {
-		return nil, fmt.Errorf("failed to convert MaxNodeConditionMessageLength to int64: %v",
-			config["MaxNodeConditionMessageLength"])
-	}
-
-	compactedEventMsgLen, ok := config["CompactedHealthEventMsgLen"].(int64)
-	if !ok {
-		return nil, fmt.Errorf("failed to convert CompactedHealthEventMsgLen to int64: %v",
-			config["CompactedHealthEventMsgLen"])
-	}
-
-	burst, ok := config["K8sConnectorBurst"].(int64)
-	if !ok {
-		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
-	}
-
-	k8sConnectorCfg := k8sconnector.K8sConnectorConfig{
-		MaxNodeConditionMessageLength: maxNodeConditionMessageLength,
-		CompactedHealthEventMsgLen:    compactedEventMsgLen,
+	settings, err := k8sconnector.SettingsFromConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("k8s connector settings: %w", err)
 	}
 
 	k8sConnector, _, err := k8sconnector.InitializeK8sConnector(
-		ctx, k8sRingBuffer, qps, int(burst), stopCh, k8sConnectorCfg, kubeconfigPath,
+		ctx, k8sRingBuffer, settings.QPS, settings.Burst, stopCh, settings.K8sConnectorConfig, kubeconfigPath,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
@@ -180,15 +149,13 @@ func initializeDatabaseStoreConnector(
 ) (*store.DatabaseStoreConnector, *ringbuffer.RingBuffer, error) {
 	ringBuffer := ringbuffer.NewRingBuffer("databaseStore", ctx)
 
-	maxRetriesInt64, ok := config["StoreConnectorMaxRetries"].(int64)
-	if !ok {
-		return nil, nil, fmt.Errorf("failed to convert StoreConnectorMaxRetries to int: %v",
-			config["StoreConnectorMaxRetries"])
+	maxRetries, err := configfile.Int64(config, "StoreConnectorMaxRetries")
+	if err != nil {
+		return nil, nil, fmt.Errorf("store connector settings: %w", err)
 	}
 
-	maxRetries := int(maxRetriesInt64)
-
-	storeConnector, err := store.InitializeDatabaseStoreConnector(ctx, ringBuffer, databaseClientCertMountPath, maxRetries)
+	storeConnector, err := store.InitializeDatabaseStoreConnector(
+		ctx, ringBuffer, databaseClientCertMountPath, int(maxRetries))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)
 	}
@@ -257,165 +224,32 @@ func startGRPCServer(
 	return lis, nil
 }
 
-// TokenReview QPS and per-request timeout. client-go's defaults (5 QPS, 10
-// burst, no timeout) are meant for controllers that write occasionally, not for
-// a call on the path of every cross-node health event: at 5 QPS a burst of
-// events from the cluster-scoped publishers would queue in the client's rate
-// limiter, and with no timeout a wedged API server would hold those calls open
-// indefinitely instead of letting the publisher retry.
+// TokenReview client rate limit for one node's callers, passed to the shared
+// auth.NewTokenReviewValidator. client-go's defaults (5 QPS, 10 burst) are
+// meant for controllers that write occasionally, not for a call on the path of
+// every cross-node health event: at 5 QPS a burst of events from the
+// cluster-scoped publishers would queue in the client's rate limiter.
 const (
-	tokenReviewQPS     = 50
-	tokenReviewBurst   = 100
-	tokenReviewTimeout = 10 * time.Second
+	tokenReviewQPS   = 50
+	tokenReviewBurst = 100
 )
 
-// newK8sClientset builds a Kubernetes clientset for the auth interceptor. It is
-// kept separate from the K8s connector's clientset so that node-binding
-// enforcement does not depend on enableK8sPlatformConnector being on, and so
-// TokenReview traffic does not share the connector's node-patching QPS budget.
-//
-// This client is deliberately NOT wrapped with auditlogger. A TokenReview is a
-// question, not a change to the cluster, so there is nothing here for a change
-// audit to record. It is only a POST because that is the shape of the API, and
-// the audit round tripper treats every POST as a write: it would emit an entry
-// per authenticated batch, and with AUDIT_LOG_REQUEST_BODY on it would copy the
-// request body into the log. That body is the caller's ServiceAccount token.
-func newK8sClientset(kubeconfigPath string) (kubernetes.Interface, error) {
-	restConfig, err := kubeconfig.Load(kubeconfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("loading kubernetes auth configuration: %w", err)
-	}
-
-	restConfig.QPS = tokenReviewQPS
-	restConfig.Burst = tokenReviewBurst
-	restConfig.Timeout = tokenReviewTimeout
-
-	clientSet, err := kubernetes.NewForConfig(restConfig)
-	if err != nil {
-		return nil, fmt.Errorf("error creating kubernetes clientset for auth: %w", err)
-	}
-
-	return clientSet, nil
-}
-
-// stringSliceFromConfig reads a JSON array of strings out of the ConfigMap.
-//
-// A missing key and an explicit null are errors, not empty lists. Silently
-// reading either as "no cross-node publishers" would start the connector in a
-// configuration where every cluster-scoped monitor is pinned to one node and
-// its events rejected — a failure that surfaces far from its cause. Only an
-// explicit [] says that on purpose.
-func stringSliceFromConfig(config map[string]any, key string) ([]string, error) {
-	raw, present := config[key]
-	if !present {
-		return nil, fmt.Errorf("%s is not set: it must be a list of canonical "+
-			"ServiceAccount usernames, or an explicit empty list to declare that no "+
-			"publisher may name other nodes", key)
-	}
-
-	if raw == nil {
-		return nil, fmt.Errorf("%s is null: use an explicit empty list to declare "+
-			"that no publisher may name other nodes", key)
-	}
-
-	items, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("%s must be a list of strings, got %T", key, raw)
-	}
-
-	result := make([]string, 0, len(items))
-
-	for _, item := range items {
-		s, ok := item.(string)
-		if !ok {
-			return nil, fmt.Errorf("%s must be a list of strings, found element of type %T", key, item)
-		}
-
-		result = append(result, s)
-	}
-
-	return result, nil
-}
-
-// nodeBindingEnabled reports whether node binding is on.
-//
-// The flag must be present and must be exactly true or false. It is not
-// defaulted in either direction: guessing "on" would silently enforce against
-// a config that never asked for it, and guessing "off" would silently drop the
-// check that keeps a publisher on one node from reporting faults about
-// another. A ConfigMap that predates the flag is missing the audience and
-// allowlist too, so it cannot work either way — saying so plainly is more
-// useful than inferring an answer.
-//
-//	true / "true"     -> enabled
-//	false / "false"   -> disabled
-//	absent or other   -> refuse to start
-//
-// Values arrive as JSON, where the chart quotes them; an unquoted bool from a
-// hand-edited ConfigMap is accepted too.
-func nodeBindingEnabled(config map[string]any) (bool, error) {
-	const key = "enableNodeBindingAuth"
-
-	raw, present := config[key]
-	if !present {
-		return false, fmt.Errorf(
-			"%s is not set: it must be true or false. A ConfigMap without it "+
-				"predates this platform-connector version and is missing AuthAudience and "+
-				"AuthCrossNodeServiceAccounts as well; upgrade the chart rather than "+
-				"relying on a default", key)
-	}
-
-	switch v := raw.(type) {
-	case bool:
-		return v, nil
-	case string:
-		switch v {
-		case True:
-			return true, nil
-		case "false":
-			return false, nil
-		}
-	}
-
-	return false, fmt.Errorf("%s must be true or false, got %#v", key, raw)
-}
-
-// newTokenValidator builds the TokenReview validator used to authenticate
-// token-presenting publishers. It answers authentication only.
-//
-// The cross-node allowlist is deliberately not applied here: an authenticated
-// identity not entitled to cross-node scope is pinned to this node by the
-// interceptor rather than rejected, so it can still report the node it runs on.
-// Authorization lives in platform-connectors/pkg/auth.
-func newTokenValidator(audience string, kubeconfigPath string) (*grpcauth.Validator, error) {
-	clientSet, err := newK8sClientset(kubeconfigPath)
-	if err != nil {
-		return nil, err
-	}
-
-	validator, err := grpcauth.NewValidator(clientSet, audience)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build token validator: %w", err)
-	}
-
-	return validator, nil
-}
-
 // initializeAuthInterceptor builds the node-binding interceptor that keeps a
-// publisher on one node from submitting health events naming another node. It
-// returns nil when node binding is explicitly disabled, in which case any
-// caller may name any node; that is not a supported production configuration.
+// publisher on one node from submitting health events naming another node,
+// from the settings the shared config.json carries. It returns nil when node
+// binding is explicitly disabled, in which case any caller may name any node;
+// that is not a supported production configuration.
 func initializeAuthInterceptor(
 	ctx context.Context,
 	config map[string]any,
 	kubeconfigPath string,
 ) (grpc.UnaryServerInterceptor, error) {
-	enabled, err := nodeBindingEnabled(config)
+	settings, err := auth.SettingsFromConfig(config)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("node-binding auth settings: %w", err)
 	}
 
-	if !enabled {
+	if !settings.Enabled {
 		slog.WarnContext(ctx, "Node-binding authentication is DISABLED. Any caller able to reach the "+
 			"platform-connector socket may submit health events naming any node in the cluster.")
 
@@ -427,94 +261,23 @@ func initializeAuthInterceptor(
 		return nil, fmt.Errorf("NODE_NAME environment variable is required when node-binding auth is enabled")
 	}
 
-	crossNodeSAs, err := stringSliceFromConfig(config, "AuthCrossNodeServiceAccounts")
+	validator, err := auth.NewTokenReviewValidator(kubeconfigPath, settings.Audience, tokenReviewQPS, tokenReviewBurst)
 	if err != nil {
 		return nil, err
-	}
-
-	// Every monitor may present a token, not only the cross-node ones, so the
-	// audience is required whenever node binding is on: without it no token can
-	// be verified and the node claims this check rests on are unreadable.
-	audience, _ := config["AuthAudience"].(string)
-	if audience == "" {
-		return nil, fmt.Errorf("AuthAudience must be set when node-binding auth is enabled")
-	}
-
-	validator, err := newTokenValidator(audience, kubeconfigPath)
-	if err != nil {
-		return nil, err
-	}
-
-	mode, err := authMode(config)
-	if err != nil {
-		return nil, fmt.Errorf("parse AuthMode: %w", err)
-	}
-
-	failOpenOnUnavailable, err := boolFromConfig(config, "AuthFailOpenOnUnavailable", false)
-	if err != nil {
-		return nil, fmt.Errorf("parse AuthFailOpenOnUnavailable: %w", err)
 	}
 
 	interceptor, err := auth.NewNodeBindingInterceptor(auth.Config{
 		NodeName:                 nodeName,
 		Validator:                validator,
-		CrossNodeServiceAccounts: crossNodeSAs,
-		Mode:                     mode,
-		FailOpenOnUnavailable:    failOpenOnUnavailable,
+		CrossNodeServiceAccounts: settings.CrossNodeServiceAccounts,
+		Mode:                     settings.Mode,
+		FailOpenOnUnavailable:    settings.FailOpenOnUnavailable,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build node-binding interceptor: %w", err)
 	}
 
 	return interceptor, nil
-}
-
-// authMode reads the node-binding enforcement mode from config. Absent means
-// auth.ModeEnforce, so that a ConfigMap that predates this setting keeps
-// today's behavior rather than silently switching to audit-only.
-func authMode(config map[string]any) (auth.Mode, error) {
-	const key = "AuthMode"
-
-	raw, present := config[key]
-	if !present {
-		return auth.ModeEnforce, nil
-	}
-
-	v, ok := raw.(string)
-	if !ok {
-		return "", fmt.Errorf("%s must be a string, got %#v", key, raw)
-	}
-
-	switch auth.Mode(v) {
-	case auth.ModeEnforce, auth.ModeAudit:
-		return auth.Mode(v), nil
-	default:
-		return "", fmt.Errorf("%s must be %q or %q, got %q", key, auth.ModeEnforce, auth.ModeAudit, v)
-	}
-}
-
-// boolFromConfig reads a strict boolean config value, defaulting when absent.
-// Values arrive as JSON, where the chart quotes them; an unquoted bool from a
-// hand-edited ConfigMap is accepted too.
-func boolFromConfig(config map[string]any, key string, def bool) (bool, error) {
-	raw, present := config[key]
-	if !present {
-		return def, nil
-	}
-
-	switch v := raw.(type) {
-	case bool:
-		return v, nil
-	case string:
-		switch v {
-		case True:
-			return true, nil
-		case "false":
-			return false, nil
-		}
-	}
-
-	return false, fmt.Errorf("%s must be true or false, got %#v", key, raw)
 }
 
 // initializeGRPCSinkConnector starts the gRPC sink connector and returns it
@@ -525,23 +288,19 @@ func initializeGRPCSinkConnector(
 ) (*grpcsink.GRPCSinkConnector, *ringbuffer.RingBuffer, error) {
 	ringBuffer := ringbuffer.NewRingBuffer("grpcSink", ctx)
 
-	target, ok := config["GRPCSinkTarget"].(string)
-	if !ok || target == "" {
-		return nil, nil, fmt.Errorf("grpcSinkTarget not configured or empty")
+	settings, err := grpcsink.SettingsFromConfig(config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("gRPC sink connector settings: %w", err)
 	}
 
-	maxRetriesInt64, ok := config["GRPCSinkConnectorMaxRetries"].(int64)
-	if !ok {
-		return nil, nil, fmt.Errorf("failed to convert GRPCSinkConnectorMaxRetries to int: %v",
-			config["GRPCSinkConnectorMaxRetries"])
+	// Only the queue loop retries, so the retry count is this role's alone.
+	maxRetries, err := configfile.Int64(config, "GRPCSinkConnectorMaxRetries")
+	if err != nil {
+		return nil, nil, fmt.Errorf("gRPC sink connector settings: %w", err)
 	}
 
-	maxRetries := int(maxRetriesInt64)
-
-	// Optional SA token auth — empty string disables it
-	tokenPath, _ := config["GRPCSinkTokenPath"].(string)
-
-	connector, err := grpcsink.InitializeGRPCSinkConnector(ringBuffer, target, maxRetries, tokenPath)
+	connector, err := grpcsink.InitializeGRPCSinkConnector(
+		ringBuffer, settings.Target, int(maxRetries), settings.TokenPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize gRPC sink connector: %w", err)
 	}
@@ -575,7 +334,7 @@ func initializeConnectors(
 		err error
 	)
 
-	if config["enableK8sPlatformConnector"] == True {
+	if configfile.Bool(config, "enableK8sPlatformConnector") {
 		set.k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh, kubeconfigPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
@@ -585,7 +344,8 @@ func initializeConnectors(
 	}
 
 	// Keep the legacy config key name for backward compatibility with existing ConfigMaps
-	if config["enableMongoDBStorePlatformConnector"] == True || config["enablePostgresDBStorePlatformConnector"] == True {
+	if configfile.Bool(config, "enableMongoDBStorePlatformConnector") ||
+		configfile.Bool(config, "enablePostgresDBStorePlatformConnector") {
 		var storeQueue *ringbuffer.RingBuffer
 
 		set.store, storeQueue, err = initializeDatabaseStoreConnector(ctx, config, databaseClientCertMountPath)
@@ -596,7 +356,7 @@ func initializeConnectors(
 		set.queues = append(set.queues, storeQueue)
 	}
 
-	if config["enableGRPCSinkConnector"] == True {
+	if configfile.Bool(config, "enableGRPCSinkConnector") {
 		var sinkQueue *ringbuffer.RingBuffer
 
 		set.grpcSink, sinkQueue, err = initializeGRPCSinkConnector(ctx, config)
@@ -607,7 +367,7 @@ func initializeConnectors(
 		set.queues = append(set.queues, sinkQueue)
 	}
 
-	if config["enablePromPlatformConnector"] == True {
+	if configfile.Bool(config, "enablePromPlatformConnector") {
 		var promQueue *ringbuffer.RingBuffer
 
 		set.prom, promQueue = initializePromConnector(ctx)
@@ -767,7 +527,7 @@ func handleShutdown(
 	return nil
 }
 
-func run() error {
+func runNodeLocal() error {
 	cfg, err := parseFlags()
 	if err != nil {
 		return err
@@ -787,7 +547,7 @@ func run() error {
 		slog.InfoContext(ctx, "Using explicit kubeconfig for Kubernetes authentication", "path", cfg.kubeconfigPath)
 	}
 
-	config, err := loadConfig(cfg.configFilePath)
+	config, err := configfile.Load(cfg.configFilePath)
 	if err != nil {
 		return err
 	}

@@ -16,7 +16,9 @@ package envutil
 
 import (
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestGetEnvInt(t *testing.T) {
@@ -243,4 +245,67 @@ func TestGetEnvString(t *testing.T) {
 			t.Errorf("GetEnvString for unset variable = %q, want 'default-value'", result)
 		}
 	})
+}
+
+func TestParseEnvInt(t *testing.T) {
+	t.Setenv("TEST_PARSE_INT", "")
+
+	got, err := ParseEnvInt("TEST_PARSE_INT", 7)
+	if err != nil || got != 7 {
+		t.Fatalf("unset: got %d, %v; want the default 7", got, err)
+	}
+
+	t.Setenv("TEST_PARSE_INT", "42")
+
+	if got, err = ParseEnvInt("TEST_PARSE_INT", 7); err != nil || got != 42 {
+		t.Fatalf("valid: got %d, %v; want 42", got, err)
+	}
+
+	t.Setenv("TEST_PARSE_INT", "forty-two")
+
+	if _, err = ParseEnvInt("TEST_PARSE_INT", 7); err == nil || !strings.Contains(err.Error(), "TEST_PARSE_INT") {
+		t.Fatalf("invalid: want an error naming the variable, got %v", err)
+	}
+}
+
+func TestParseEnvFloat64(t *testing.T) {
+	t.Setenv("TEST_PARSE_FLOAT", "")
+
+	got, err := ParseEnvFloat64("TEST_PARSE_FLOAT", 1.5)
+	if err != nil || got != 1.5 {
+		t.Fatalf("unset: got %v, %v; want the default 1.5", got, err)
+	}
+
+	t.Setenv("TEST_PARSE_FLOAT", "100.5")
+
+	if got, err = ParseEnvFloat64("TEST_PARSE_FLOAT", 1.5); err != nil || got != 100.5 {
+		t.Fatalf("valid: got %v, %v; want 100.5", got, err)
+	}
+
+	t.Setenv("TEST_PARSE_FLOAT", "fast")
+
+	if _, err = ParseEnvFloat64("TEST_PARSE_FLOAT", 1.5); err == nil || !strings.Contains(err.Error(), "TEST_PARSE_FLOAT") {
+		t.Fatalf("invalid: want an error naming the variable, got %v", err)
+	}
+}
+
+func TestParseEnvDuration(t *testing.T) {
+	t.Setenv("TEST_PARSE_DURATION", "")
+
+	got, err := ParseEnvDuration("TEST_PARSE_DURATION", time.Minute)
+	if err != nil || got != time.Minute {
+		t.Fatalf("unset: got %v, %v; want the default 1m", got, err)
+	}
+
+	t.Setenv("TEST_PARSE_DURATION", "30s")
+
+	if got, err = ParseEnvDuration("TEST_PARSE_DURATION", time.Minute); err != nil || got != 30*time.Second {
+		t.Fatalf("valid: got %v, %v; want 30s", got, err)
+	}
+
+	t.Setenv("TEST_PARSE_DURATION", "soon")
+
+	if _, err = ParseEnvDuration("TEST_PARSE_DURATION", time.Minute); err == nil || !strings.Contains(err.Error(), "TEST_PARSE_DURATION") {
+		t.Fatalf("invalid: want an error naming the variable, got %v", err)
+	}
 }
