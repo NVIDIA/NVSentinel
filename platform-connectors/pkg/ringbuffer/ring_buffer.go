@@ -38,6 +38,10 @@ const (
 type QueuedHealthEvents struct {
 	Events            *protos.HealthEvents
 	ParentSpanContext trace.SpanContext
+	// BatchKey is the idempotency key prefix the store connector gives the
+	// batch on its first write attempt. A requeued batch keeps it, so a retried
+	// insert stores each event once.
+	BatchKey string
 }
 
 func NewQueuedHealthEvents(events *protos.HealthEvents) *QueuedHealthEvents {
@@ -98,6 +102,16 @@ func (rb *RingBuffer) Enqueue(item *QueuedHealthEvents) {
 	rb.healthMetricQueue.Add(item)
 }
 
+// ProcessBatch queues the batch and returns at once. The connector draining
+// this buffer processes it later, with its own retries; the caller's span
+// travels with the batch so that processing joins the same trace. It lets a
+// buffer stand in for its connector in the server's connector set.
+func (rb *RingBuffer) ProcessBatch(ctx context.Context, he *protos.HealthEvents) error {
+	rb.Enqueue(&QueuedHealthEvents{Events: he, ParentSpanContext: trace.SpanContextFromContext(ctx)})
+
+	return nil
+}
+
 func (rb *RingBuffer) Dequeue() (*QueuedHealthEvents, bool) {
 	healthEvents, quit := rb.healthMetricQueue.Get()
 	if quit {
@@ -123,7 +137,15 @@ func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *QueuedHealthEvent
 	rb.healthMetricQueue.Done(data)
 }
 
+// HealthMetricEleProcessingFailed discards the item without retrying it.
+//
+// Deprecated: use Discard for terminal failures or AddRateLimited to retry.
 func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *QueuedHealthEvents) {
+	rb.Discard(data)
+}
+
+// Discard releases an unsuccessful item permanently. It does not requeue it.
+func (rb *RingBuffer) Discard(data *QueuedHealthEvents) {
 	rb.healthMetricQueue.Forget(data)
 	rb.healthMetricQueue.Done(data)
 }

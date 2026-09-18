@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -234,4 +235,43 @@ func TestRingBuffer_CurrentLength(t *testing.T) {
 	if ringBuffer.CurrentLength() != 3 {
 		t.Errorf("Expected length 3 after adding 3 events, got %d", ringBuffer.CurrentLength())
 	}
+}
+
+// TestRingBuffer_ProcessBatchQueuesWithTheCallerSpan: as a connector, the
+// buffer accepts the batch at once and keeps the caller's span context with
+// it, so the connector draining the queue joins the same trace.
+func TestRingBuffer_ProcessBatchQueuesWithTheCallerSpan(t *testing.T) {
+	rb := NewRingBuffer("as-connector", context.Background())
+
+	traceID, err := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spanID, err := trace.SpanIDFromHex("0102030405060708")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled})
+	he := &protos.HealthEvents{Events: []*protos.HealthEvent{{NodeName: "node-a", CheckName: "check"}}}
+
+	if err := rb.ProcessBatch(trace.ContextWithSpanContext(context.Background(), sc), he); err != nil {
+		t.Fatalf("ProcessBatch returned %v", err)
+	}
+
+	queued, quit := rb.Dequeue()
+	if quit {
+		t.Fatal("queue signalled shutdown")
+	}
+
+	if queued.Events != he {
+		t.Fatal("the queued item does not carry the batch")
+	}
+
+	if queued.ParentSpanContext.TraceID() != traceID || queued.ParentSpanContext.SpanID() != spanID {
+		t.Fatalf("the queued item does not carry the caller's span context: %v", queued.ParentSpanContext)
+	}
+
+	rb.HealthMetricEleProcessingCompleted(queued)
 }

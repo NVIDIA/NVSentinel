@@ -17,6 +17,7 @@ package queue
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +32,7 @@ func TestWorkqueueDeduplication_WithoutEventID(t *testing.T) {
 	t.Skip("Skipping test for current behavior - demonstrates the problem")
 
 	// Create queue manager
-	mgr := NewEventQueueManager()
+	mgr := NewEventQueueManager(0)
 	defer mgr.Shutdown()
 
 	ctx := context.Background()
@@ -78,7 +79,7 @@ func TestWorkqueueDeduplication_WithoutEventID(t *testing.T) {
 // This demonstrates that the fix works correctly
 func TestWorkqueueDeduplication_WithEventID(t *testing.T) {
 	// Create queue manager
-	mgr := NewEventQueueManager()
+	mgr := NewEventQueueManager(0)
 	defer mgr.Shutdown()
 
 	ctx := context.Background()
@@ -137,7 +138,7 @@ func TestWorkqueueDeduplication_WithEventID(t *testing.T) {
 // processed marks it "dirty" in the workqueue rather than adding a new queue entry.
 // The item only becomes available again after Done() is called on the in-flight item.
 func TestWorkqueueDeduplication_SameEventDifferentStatus(t *testing.T) {
-	mgr := NewEventQueueManager()
+	mgr := NewEventQueueManager(0)
 	defer mgr.Shutdown()
 
 	ctx := context.Background()
@@ -192,7 +193,7 @@ func TestWorkqueueDeduplication_SameEventDifferentStatus(t *testing.T) {
 // TestWorkqueueDeduplication_MultipleFaultsSameNode tests that multiple different faults
 // on the same node can be queued simultaneously
 func TestWorkqueueDeduplication_MultipleFaultsSameNode(t *testing.T) {
-	mgr := NewEventQueueManager()
+	mgr := NewEventQueueManager(0)
 	defer mgr.Shutdown()
 
 	ctx := context.Background()
@@ -242,7 +243,7 @@ func TestWorkqueueDeduplication_MultipleFaultsSameNode(t *testing.T) {
 
 // TestWorkqueueDeduplication_RealWorldScenario tests the exact scenario from the bug report
 func TestWorkqueueDeduplication_RealWorldScenario(t *testing.T) {
-	mgr := NewEventQueueManager()
+	mgr := NewEventQueueManager(0)
 	defer mgr.Shutdown()
 
 	ctx := context.Background()
@@ -297,7 +298,7 @@ func TestWorkqueueDeduplication_RealWorldScenario(t *testing.T) {
 // TestWorkqueueDeduplication_DifferentNodes tests that events for different nodes
 // don't interfere with each other
 func TestWorkqueueDeduplication_DifferentNodes(t *testing.T) {
-	mgr := NewEventQueueManager()
+	mgr := NewEventQueueManager(0)
 	defer mgr.Shutdown()
 
 	ctx := context.Background()
@@ -344,7 +345,7 @@ func TestWorkqueueDeduplication_DifferentNodes(t *testing.T) {
 }
 
 func TestPriorityQueue_GroupedFloodPrioritizesUnrepresentedNodes(t *testing.T) {
-	mgr := NewEventQueueManager()
+	mgr := NewEventQueueManager(0)
 	defer mgr.Shutdown()
 
 	ctx := context.Background()
@@ -388,7 +389,7 @@ func TestPriorityQueue_GroupedFloodPrioritizesUnrepresentedNodes(t *testing.T) {
 }
 
 func TestPriorityQueue_DrainingNodesStayLowPriorityUntilCleared(t *testing.T) {
-	mgr := NewEventQueueManager()
+	mgr := NewEventQueueManager(0)
 	defer mgr.Shutdown()
 
 	ctx := context.Background()
@@ -512,4 +513,87 @@ type MockHealthEventStore struct {
 
 func (m *MockHealthEventStore) FindHealthEventsByQueryBatched(_ context.Context, _ datastore.QueryBuilder, _ int, _ func([]datastore.HealthEventWithStatus) error) error {
 	return nil
+}
+
+func TestNewEventQueueManager_RequeueBackoffBase_CustomValue(t *testing.T) {
+	customBase := 2 * time.Second
+	mgr := NewEventQueueManager(customBase)
+	defer mgr.Shutdown()
+
+	queueImpl, ok := mgr.(*eventQueueManager)
+	require.True(t, ok)
+	require.NotNil(t, queueImpl.rateLimiter)
+
+	event := NodeEvent{
+		NodeName: "test-node",
+		EventID:  "test-event-1",
+	}
+
+	// 1st attempt: delay should equal customBase (2s)
+	assert.Equal(t, customBase, queueImpl.rateLimiter.When(event))
+
+	// 2nd attempt: delay should double (4s)
+	assert.Equal(t, 4*time.Second, queueImpl.rateLimiter.When(event))
+
+	// 3rd attempt: delay should double again (8s)
+	assert.Equal(t, 8*time.Second, queueImpl.rateLimiter.When(event))
+
+	// Reset rate limiter for the item
+	queueImpl.rateLimiter.Forget(event)
+	assert.Equal(t, customBase, queueImpl.rateLimiter.When(event))
+}
+
+func TestNewEventQueueManager_RequeueBackoffBase_DefaultFallback(t *testing.T) {
+	tests := []struct {
+		name        string
+		backoffBase time.Duration
+	}{
+		{name: "zero value", backoffBase: 0},
+		{name: "negative value", backoffBase: -5 * time.Second},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := NewEventQueueManager(tc.backoffBase)
+			defer mgr.Shutdown()
+
+			queueImpl, ok := mgr.(*eventQueueManager)
+			require.True(t, ok)
+			require.NotNil(t, queueImpl.rateLimiter)
+
+			event := NodeEvent{
+				NodeName: "test-node",
+				EventID:  "test-event-default",
+			}
+
+			// 1st attempt: delay should fall back to DefaultRequeueBackoffBase (10s)
+			assert.Equal(t, DefaultRequeueBackoffBase, queueImpl.rateLimiter.When(event))
+
+			// 2nd attempt: delay should double (20s)
+			assert.Equal(t, 20*time.Second, queueImpl.rateLimiter.When(event))
+		})
+	}
+}
+
+func TestNewEventQueueManager_RequeueBackoffBase_CeilingCap(t *testing.T) {
+	mgr := NewEventQueueManager(1 * time.Minute)
+	defer mgr.Shutdown()
+
+	queueImpl, ok := mgr.(*eventQueueManager)
+	require.True(t, ok)
+	require.NotNil(t, queueImpl.rateLimiter)
+
+	event := NodeEvent{
+		NodeName: "test-node",
+		EventID:  "test-event-ceiling",
+	}
+
+	// 1st attempt: 1m
+	assert.Equal(t, 1*time.Minute, queueImpl.rateLimiter.When(event))
+
+	// 2nd attempt: 2m (capped at MaxRequeueBackoff)
+	assert.Equal(t, MaxRequeueBackoff, queueImpl.rateLimiter.When(event))
+
+	// 3rd attempt: still capped at MaxRequeueBackoff
+	assert.Equal(t, MaxRequeueBackoff, queueImpl.rateLimiter.When(event))
 }

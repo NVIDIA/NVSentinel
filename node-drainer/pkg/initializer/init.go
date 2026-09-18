@@ -55,6 +55,7 @@ type InitializationParams struct {
 	MetricsPort                 string
 	DryRun                      bool
 	KubernetesClientRateLimits  kubeclient.RateLimitConfig
+	RequeueBackoffBase          time.Duration
 }
 
 // Components holds the initialized runtime dependencies returned by InitializeAll.
@@ -127,6 +128,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	reconcilerCfg := createReconcilerConfig(
 		*configs.tomlCfg, configs.databaseConfig, clientTokenConfig, stateManager,
+		params.RequeueBackoffBase,
 	)
 
 	ds, err := datastore.NewDataStore(ctx, *configs.dsConfig)
@@ -339,12 +341,14 @@ func createReconcilerConfig(
 	databaseConfig sdkconfig.DatabaseConfig,
 	tokenConfig client.TokenConfig,
 	stateManager statemanager.StateManager,
+	requeueBackoffBase time.Duration,
 ) config.ReconcilerConfig {
 	return config.ReconcilerConfig{
-		TomlConfig:     tomlCfg,
-		DatabaseConfig: databaseConfig,
-		TokenConfig:    tokenConfig,
-		StateManager:   stateManager,
+		TomlConfig:         tomlCfg,
+		DatabaseConfig:     databaseConfig,
+		TokenConfig:        tokenConfig,
+		StateManager:       stateManager,
+		RequeueBackoffBase: requeueBackoffBase,
 	}
 }
 

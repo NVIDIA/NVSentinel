@@ -36,6 +36,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/initializer"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 )
 
 var (
@@ -97,9 +98,15 @@ func run() error {
 		"path where the node drainer config file is present")
 
 	dryRun := flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
+	requeueBackoffBase := flag.Duration("requeue-backoff-base", queue.DefaultRequeueBackoffBase,
+		"base duration for exponential backoff on drain requeues (must be positive)")
 	rateLimits := kubeclient.RegisterRateLimitFlags()
 
 	flag.Parse()
+
+	if *requeueBackoffBase <= 0 {
+		return fmt.Errorf("invalid --requeue-backoff-base: %v (must be positive)", *requeueBackoffBase)
+	}
 
 	ff := metrics.NewRegistry("node-drainer")
 	ff.Set("dry_run", *dryRun)
@@ -108,6 +115,7 @@ func run() error {
 	databaseClientCertMountPath := certConfig.ResolveCertPath()
 
 	slog.InfoContext(ctx, "Database client cert", "path", databaseClientCertMountPath)
+	slog.InfoContext(ctx, "Drain requeue backoff base", "duration", *requeueBackoffBase)
 
 	params := newInitializationParams(
 		databaseClientCertMountPath,
@@ -116,12 +124,15 @@ func run() error {
 		*metricsPort,
 		*dryRun,
 		*rateLimits,
+		*requeueBackoffBase,
 	)
+
+	readinessChecker := server.NewDatastoreReadinessChecker(nil)
 
 	// Create and start the health/metrics server BEFORE the potentially slow MongoDB
 	// initialization. This ensures Kubernetes liveness probes get HTTP 200 responses
 	// immediately, preventing the pod from being killed during initialization.
-	srv, err := createMetricsServer(*metricsPort)
+	srv, err := createMetricsServer(*metricsPort, readinessChecker)
 	if err != nil {
 		return err
 	}
@@ -135,6 +146,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize components: %w", err)
 	}
+
+	readinessChecker.SetWatcher(components.EventWatcher)
 
 	ff.Set("custom_drain", components.CustomDrainEnabled)
 
@@ -198,8 +211,10 @@ func run() error {
 	return g.Wait()
 }
 
-func newInitializationParams(databaseClientCertMountPath, kubeconfigPath, tomlConfigPath, metricsPort string,
-	dryRun bool, rateLimits kubeclient.RateLimitConfig) initializer.InitializationParams {
+func newInitializationParams(
+	databaseClientCertMountPath, kubeconfigPath, tomlConfigPath, metricsPort string,
+	dryRun bool, rateLimits kubeclient.RateLimitConfig, requeueBackoffBase time.Duration,
+) initializer.InitializationParams {
 	return initializer.InitializationParams{
 		DatabaseClientCertMountPath: databaseClientCertMountPath,
 		KubeconfigPath:              kubeconfigPath,
@@ -207,11 +222,12 @@ func newInitializationParams(databaseClientCertMountPath, kubeconfigPath, tomlCo
 		MetricsPort:                 metricsPort,
 		DryRun:                      dryRun,
 		KubernetesClientRateLimits:  rateLimits,
+		RequeueBackoffBase:          requeueBackoffBase,
 	}
 }
 
 // createMetricsServer creates and configures the metrics server
-func createMetricsServer(metricsPort string) (server.Server, error) {
+func createMetricsServer(metricsPort string, readinessChecker server.ReadinessChecker) (server.Server, error) {
 	portInt, err := strconv.Atoi(metricsPort)
 	if err != nil {
 		return nil, fmt.Errorf("invalid metrics port: %w", err)
@@ -221,6 +237,7 @@ func createMetricsServer(metricsPort string) (server.Server, error) {
 		server.WithPort(portInt),
 		server.WithPrometheusMetrics(),
 		server.WithSimpleHealth(),
+		server.WithReadinessCheck(readinessChecker),
 	)
 
 	return srv, nil

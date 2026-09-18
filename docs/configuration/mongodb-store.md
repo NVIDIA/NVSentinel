@@ -45,6 +45,61 @@ Do **NOT** switch backends by changing the two flags on a live release with `hel
 
 Switching backends reinstalls the datastore; the migration runbook's default path carries the health event data over with a dump and restore, and only its opt-out clean path drops it. Follow the [MongoDB Bitnami to Percona migration runbook](../runbooks/mongodb-bitnami-to-percona-migration.md) for the full procedure, including the cleanup steps and the handling of in-flight quarantines.
 
+## Enabling Bitnami MongoDB on an existing installation
+
+The Bitnami backend generates its root password only during a fresh `helm install`. Turning the datastore on later, for example when you move from monitoring to cordon and drain, is a `helm upgrade`, and the chart stops before it deploys anything:
+
+```text
+PASSWORDS ERROR: You must provide your current passwords when upgrading the release.
+```
+
+The chart reads the `mongodb` Secret during template rendering, which happens before any Job or init container can create it. Create the Secret yourself first, then run the same upgrade again. The Percona backend does not have this behaviour.
+
+**Avoid this by creating the Secret at install time.** The Quick Start in the [README](https://github.com/NVIDIA/NVSentinel#quick-start) creates it alongside the namespace, before the first `helm upgrade --install`. The Secret costs nothing while the datastore is off, and it makes enabling the datastore later a single command. The rest of this section is for installations that already exist without it.
+
+### Check before you create anything
+
+The Secret must match the credentials already written into the database volume. Creating a new one over a live database locks NVSentinel out of its own data. Run both checks, then read their output against the decision table below:
+
+```bash
+# 1. A usable credentials Secret. Prints "present" only when the key exists and is
+#    non-empty; it never prints the password itself.
+kubectl get secret mongodb -n nvsentinel -o jsonpath='{.data.mongodb-root-password}' 2>/dev/null \
+  | grep -q . && echo "present" || echo "missing or empty"
+
+# 2. Existing database volumes. If any exist, a database was deployed before.
+kubectl get pvc -n nvsentinel -l app.kubernetes.io/name=mongodb
+```
+
+The Secret existing is not enough. The chart fails the same way when `mongodb-root-password` is absent or empty, so check the key rather than the object.
+
+Read the results together:
+
+| Key present | Volumes | What to do |
+|---|---|---|
+| no | none | Fresh datastore. Create the Secret below. |
+| yes | any | Keep the Secret as is and go straight to the upgrade. |
+| no | one or more | **Stop.** The volume holds credentials you no longer have. Creating a new Secret locks NVSentinel out of that data. |
+
+For the last row, recover the original password from your backup. The data-preserving path in the [migration runbook](../runbooks/mongodb-bitnami-to-percona-migration.md) needs that password too: its dump step reads the same `mongodb-root-password` key and stops if the key is missing. Without the password the only remaining option is the runbook's clean path, which drops the stored health events.
+
+### Create the Secret
+
+The Secret needs one key, `mongodb-root-password`. An empty Secret does not work: the chart treats a missing key the same as a missing Secret and fails with `The secret "mongodb" does not contain the key "mongodb-root-password"`.
+
+```bash
+kubectl create secret generic mongodb -n nvsentinel \
+  --from-literal=mongodb-root-password="$(openssl rand -hex 24)"
+```
+
+Then run your `helm upgrade` again, unchanged. The chart finds the Secret, reuses it, and keeps reusing it on every later upgrade. The root username stays `root`, set by `mongodb-store.mongodb.auth.rootUser`.
+
+Confirm the datastore came up:
+
+```bash
+kubectl get pods -n nvsentinel -l app.kubernetes.io/name=mongodb
+```
+
 ## Percona Operator
 
 Enable Percona when first installing NVSentinel. On a release that already runs Percona, keep these flags set on every upgrade. To move an existing Bitnami installation to Percona, do not change the flags in place; follow the [migration runbook](../runbooks/mongodb-bitnami-to-percona-migration.md) instead.
@@ -95,6 +150,20 @@ The **mongod** version (`psmdb-db.image.tag`) is separate. It is a different pro
 Then repeat for 1.23. Do not set `psmdbVersion` until the ladder is finished, since it demands that all three agree.
 
 A non-semver operator tag, for example a local build, disables the skew comparison. The `psmdbVersion` and init image checks still apply.
+
+#### Checking the deployed resource
+
+Everything above compares values with each other. None of it can see the resource that is actually deployed, and that is the gap that bites an existing cluster: adopting a release moves the bundled versions together, so the values stay self-consistent while the live `PerconaServerMongoDB` still carries the `crVersion` it was installed with. `lookup` returns empty under `helm template`, so a render-time guard cannot close this for ArgoCD users either.
+
+Set **`mongodb-store.validateDeployedCrVersion: true`** to add an init container to the bootstrap Job that reads the deployed `crVersion` and applies the same rule: same major, and at most one minor behind the operator. It fails the Job rather than letting an unsupported pairing reconcile silently.
+
+It is **off by default** because enabling it grants the Job `list` on `perconaservermongodbs.psmdb.percona.com`, scoped to the release namespace. The grant and the check are gated on the same value, so no installation carries the permission without the check that needs it.
+
+Notes:
+
+- It runs after the operator-generated users secret exists, which means the operator has already reconciled the resource. A missing resource at that point is therefore an error rather than a first install, which is what lets the check fail instead of skipping.
+- The resource is found by listing the namespace, not by name, so renaming it changes nothing. If the namespace holds more than one, the check refuses to guess which belongs to the release.
+- This runs only when the Job runs, so it cannot see a render. It does not replace `psmdbVersion`, which is what catches the values disagreeing with each other before anything is applied.
 
 ### Volume size
 

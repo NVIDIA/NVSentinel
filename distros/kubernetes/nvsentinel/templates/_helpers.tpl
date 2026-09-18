@@ -60,12 +60,26 @@ Create chart name and version as used by the chart label.
 Common labels
 */}}
 {{- define "nvsentinel.labels" -}}
-helm.sh/chart: {{ include "nvsentinel.chart" . }}
-{{ include "nvsentinel.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- include "nvsentinel.labelsWithName" (dict "context" . "name" (include "nvsentinel.name" .)) -}}
 {{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
+
+{{/*
+Common labels for an object named distinctly from the release, such as the
+external MongoDB setup Job. Pass the name here rather than appending a second
+app.kubernetes.io/name after "nvsentinel.labels": Helm's own parser keeps the
+last of a duplicated mapping key, but the strict parsers in Flux's post-renderer
+and Argo CD's kustomize reject the whole release.
+
+Usage: include "nvsentinel.labelsWithName" (dict "context" $ "name" "my-object")
+*/}}
+{{- define "nvsentinel.labelsWithName" -}}
+helm.sh/chart: {{ include "nvsentinel.chart" .context }}
+app.kubernetes.io/name: {{ .name }}
+app.kubernetes.io/instance: {{ .context.Release.Name }}
+{{- if .context.Chart.AppVersion }}
+app.kubernetes.io/version: {{ .context.Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .context.Release.Service }}
 {{- end }}
 
 {{/*

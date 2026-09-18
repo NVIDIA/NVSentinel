@@ -25,7 +25,7 @@ import (
 // Name is the pipeline registry name for the deduplication transformer.
 const Name = "Deduplicator"
 
-// Deduplicator marks repeated health events as STORE_ONLY within a tracker suppression window.
+// Deduplicator marks repeated unhealthy events as STORE_AND_ANALYSE within a tracker suppression window.
 type Deduplicator struct {
 	tracker *tracker
 	include map[string]bool
@@ -68,10 +68,10 @@ func (d *Deduplicator) Name() string {
 	return Name
 }
 
-// Transform downgrades duplicate unhealthy events to STORE_ONLY so they are persisted
-// but do not create Kubernetes-side remediation effects. Events already marked
-// STORE_ONLY (e.g. by the managed-label gate) are returned immediately without
-// entering the dedup tracker.
+// Transform downgrades duplicate unhealthy events to STORE_AND_ANALYSE so they
+// are persisted and analysed but do not trigger remediation again. Events
+// already marked STORE_ONLY (e.g. by the managed-label gate) are returned
+// immediately without entering the dedup tracker.
 func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) error {
 	if event.GetProcessingStrategy() == pb.ProcessingStrategy_STORE_ONLY {
 		return nil
@@ -96,7 +96,6 @@ func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) err
 	if d.tracker.checkAndMark(event) {
 		dedupStoreAndAnalyseCounter.WithLabelValues(
 			event.GetCheckName(),
-			event.GetNodeName(),
 			errCodeLabel(event),
 		).Inc()
 		event.ProcessingStrategy = pb.ProcessingStrategy_STORE_AND_ANALYSE

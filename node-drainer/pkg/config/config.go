@@ -182,10 +182,11 @@ func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
 }
 
 type ReconcilerConfig struct {
-	TomlConfig     TomlConfig
-	DatabaseConfig config.DatabaseConfig
-	TokenConfig    client.TokenConfig
-	StateManager   statemanager.StateManager
+	TomlConfig         TomlConfig
+	DatabaseConfig     config.DatabaseConfig
+	TokenConfig        client.TokenConfig
+	StateManager       statemanager.StateManager
+	RequeueBackoffBase time.Duration
 }
 
 // EnvConfig holds configuration loaded from environment variables

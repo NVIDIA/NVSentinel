@@ -30,6 +30,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// ResourceVar is the name of the CEL variable bound to the watched object.
+const ResourceVar = "resource"
+
+// LookupFunc is the name of the CEL function that reads a second object.
+const LookupFunc = "lookup"
+
 // LookupCache is what lookup() needs of the manager's cache: to read an object
 // from it, and to ask whether the informer behind a GVK has caught up, since a
 // read of one that has not blocks until it does. cache.Cache satisfies it.

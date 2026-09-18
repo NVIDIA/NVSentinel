@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	toolscache "k8s.io/client-go/tools/cache"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celfields"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 )
@@ -131,13 +132,16 @@ func derivePolicyFieldPaths(compiler *celenv.Environment, policies []config.Poli
 				continue
 			}
 
-			if paths, ok := celenv.ResourceFieldPaths(compiled); ok {
+			if paths, ok := celfields.FieldPaths(compiled, celenv.ResourceVar); ok {
 				watched.watchPaths = append(watched.watchPaths, paths...)
 			} else {
 				watched.wholeWatch = policy.Name
 			}
 
-			derived.recordLookupPaths(policy.Name, celenv.LookupTargets(compiled))
+			derived.recordLookupPaths(
+				policy.Name,
+				celfields.LookupTargets(compiled, celenv.ResourceVar, celenv.LookupFunc),
+			)
 		}
 	}
 
@@ -145,7 +149,7 @@ func derivePolicyFieldPaths(compiler *celenv.Environment, policies []config.Poli
 }
 
 // recordLookupPaths records what the policy reads off each GVK it looks up.
-func (f fieldPathsByGVK) recordLookupPaths(policyName string, targets []celenv.LookupTarget) {
+func (f fieldPathsByGVK) recordLookupPaths(policyName string, targets []celfields.LookupTarget) {
 	for _, target := range targets {
 		gvk := schema.FromAPIVersionAndKind(target.APIVersion, target.Kind)
 
