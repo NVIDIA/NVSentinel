@@ -6,12 +6,9 @@ The Lifecycle Manager hosts the controllers that manage a node's transitions in 
 service. It runs two independent controllers, each with its own feature gate:
 
 - **ValidationRequest controller** — runs validation tests against a node and keeps it gated
-  until they pass. On by default. See [ADR-045](../designs/049-node-validation.md); its Helm
-  values are not yet covered here.
-- **MaintenanceRequest controller** — lets an external system declare that maintenance is
-  coming for a node, so NVSentinel cordons and drains it before the work starts, and releases
-  it afterwards. Opt-in, and documented below. See
-  [ADR-051](../designs/051-maintenance-request.md).
+  until the tests pass. It is enabled by default.
+- **MaintenanceRequest controller** — prepares a node for upcoming maintenance, then releases
+  it when the request is deleted. It is disabled by default.
 
 The two are unrelated at runtime. Enabling one does not require the other.
 
@@ -110,8 +107,9 @@ spec:
     isFatal: false
     recommendedAction: RESTART_VM
     message: "Host maintenance scheduled by the cloud provider"
-  startTime: "2026-10-01T02:00:00Z"
 ```
+
+The webhook changes `agent` to `lifecycle-manager` before it stores the object. It preserves `csp-maintenance-integration` in `healthEvent.metadata.maintenanceRequestRequesterAgent`.
 
 ### Validation Rules
 
@@ -122,10 +120,9 @@ The validating webhook rejects a request that:
 - leaves `version` at zero
 - names a node that does not exist
 - sets `startTime` in the past
-- changes any requester-authored field of `healthEvent` after creation
+- changes any stored field of `healthEvent` after creation
 
-The mutating webhook fills in `id` and `generatedTimestamp` if absent, and always sets the
-`maintenanceRequestName` metadata key.
+The mutating webhook fills in `id` and `generatedTimestamp` if absent. It sets the publishing agent to `lifecycle-manager`, preserves the supplied agent in `maintenanceRequestRequesterAgent`, and always sets the `maintenanceRequestName` metadata key.
 
 ### Status and Deletion
 

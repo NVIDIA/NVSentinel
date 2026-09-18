@@ -74,7 +74,7 @@ func CreateMaintenanceRequest(
 
 	healthEvent := map[string]any{
 		"version":           int64(1),
-		"agent":             "lifecycle-manager",
+		"agent":             "e2e-maintenance-requester",
 		"componentClass":    "Node",
 		"checkName":         checkName,
 		"nodeName":          nodeName,

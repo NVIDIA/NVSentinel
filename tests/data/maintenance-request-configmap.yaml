@@ -37,7 +37,7 @@ data:
 
       [[rule-sets.match.all]]
         kind = "HealthEvent"
-        expression = "event.metadata != null && 'maintenanceRequestName' in event.metadata"
+        expression = "event.agent == 'lifecycle-manager' && event.metadata != null && 'maintenanceRequestName' in event.metadata"
 
       [[rule-sets.match.all]]
         kind = "Node"
