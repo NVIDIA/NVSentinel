@@ -19,8 +19,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	k8sconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 )
 
 // TestK8sConnectorMaxRetriesFromConfig_JSONValues_DefaultsOrRejects verifies the
@@ -32,8 +30,8 @@ func TestK8sConnectorMaxRetriesFromConfig_JSONValues_DefaultsOrRejects(t *testin
 		want    int
 		wantErr bool
 	}{
-		{name: "omitted", raw: `{}`, want: k8sconnector.DefaultMaxRetries},
-		{name: "zero selects default", raw: `{"K8sConnectorMaxRetries":0}`, want: k8sconnector.DefaultMaxRetries},
+		{name: "omitted", raw: `{}`, want: 25},
+		{name: "zero selects default", raw: `{"K8sConnectorMaxRetries":0}`, want: 25},
 		{name: "positive override", raw: `{"K8sConnectorMaxRetries":20}`, want: 20},
 		{name: "negative", raw: `{"K8sConnectorMaxRetries":-1}`, wantErr: true},
 		{name: "fraction", raw: `{"K8sConnectorMaxRetries":1.5}`, wantErr: true},

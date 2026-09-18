@@ -53,7 +53,7 @@ type K8sConnectorConfig struct {
 }
 
 // DefaultMaxRetries allows retries throughout the default one-minute batch window.
-const DefaultMaxRetries = 100
+const DefaultMaxRetries = 25
 
 // DefaultMaxRetryDuration bounds the time a batch holds the Kubernetes queue.
 const DefaultMaxRetryDuration = time.Minute

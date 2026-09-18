@@ -568,7 +568,15 @@ func (r *K8sConnector) updateCachedNodeEvent(
 	return false, nil
 }
 
-func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {
+// nodeEventWrite retains create progress across both client and connector retries.
+type nodeEventWrite struct {
+	event           *corev1.Event
+	createAttempted bool
+}
+
+func (r *K8sConnector) writeNodeEvent(ctx context.Context, write *nodeEventWrite, nodeName string) error {
+	event := write.event
+
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.update_node_event")
 	defer span.End()
 
@@ -594,7 +602,7 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 		// No live matching event, create a new event with count 1
 		event.Count = 1
 
-		created, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
+		created, err := r.createOrReconcileNodeEvent(ctx, write)
 		if err != nil {
 			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusFailed).Inc()
 			return fmt.Errorf("failed to create event for node %s: %w", nodeName, err)
@@ -614,6 +622,61 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 	}
 
 	return err
+}
+
+// createOrReconcileNodeEvent resolves an uncertain create before trying another POST.
+// The first attempt needs no lookup; later attempts create only after a NotFound.
+func (r *K8sConnector) createOrReconcileNodeEvent(ctx context.Context, write *nodeEventWrite) (*corev1.Event, error) {
+	if write.createAttempted {
+		existing, err := r.reconcileNodeEvent(ctx, write.event)
+		if !apierrors.IsNotFound(err) {
+			return existing, err
+		}
+	}
+
+	write.createAttempted = true
+
+	created, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, write.event, metav1.CreateOptions{})
+	if !apierrors.IsAlreadyExists(err) {
+		return created, err
+	}
+
+	// A concurrent create can win after our lookup. Verify it rather than
+	// treating every name collision as the successful delivery of this event.
+	existing, lookupErr := r.reconcileNodeEvent(ctx, write.event)
+	if apierrors.IsNotFound(lookupErr) {
+		// The object was deleted between AlreadyExists and GET; retry the lookup.
+		return nil, apierrors.NewConflict(corev1.Resource("events"), write.event.Name, lookupErr)
+	}
+
+	return existing, lookupErr
+}
+
+// reconcileNodeEvent accepts the same persisted occurrence without incrementing Count.
+func (r *K8sConnector) reconcileNodeEvent(ctx context.Context, event *corev1.Event) (*corev1.Event, error) {
+	existing, err := r.clientset.CoreV1().Events(DefaultNamespace).Get(ctx, event.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("look up pending event %s: %w", event.Name, err)
+	}
+
+	if !sameNodeEventOccurrence(existing, event) {
+		return nil, fmt.Errorf("existing event %s does not match the pending write", event.Name)
+	}
+
+	return existing, nil
+}
+
+// sameNodeEventOccurrence checks immutable occurrence identity, excluding API metadata
+// and the mutable count/last timestamp. Kubernetes stores metav1.Time at second precision.
+func sameNodeEventOccurrence(existing, expected *corev1.Event) bool {
+	return existing.InvolvedObject == expected.InvolvedObject &&
+		existing.Source == expected.Source &&
+		existing.Type == expected.Type &&
+		existing.Reason == expected.Reason &&
+		existing.Message == expected.Message &&
+		existing.ReportingController == expected.ReportingController &&
+		existing.ReportingInstance == expected.ReportingInstance &&
+		existing.FirstTimestamp.Unix() == expected.FirstTimestamp.Unix()
 }
 
 func (r *K8sConnector) updateHealthEventReason(checkName string, isHealthy bool) string {
@@ -752,12 +815,12 @@ func (r *K8sConnector) prepareHealthEventWrites(
 			continue
 		}
 
-		event := r.createK8sEvent(ctx, healthEvent)
+		write := &nodeEventWrite{event: r.createK8sEvent(ctx, healthEvent)}
 		writes = append(writes, kubernetesWrite{
 			operation: "node_event", nodeName: healthEvent.NodeName,
 			run: func(ctx context.Context) error {
 				start := time.Now()
-				err := r.writeNodeEvent(ctx, event, healthEvent.NodeName)
+				err := r.writeNodeEvent(ctx, write, healthEvent.NodeName)
 
 				nodeEventUpdateCreateDuration.Observe(float64(time.Since(start).Milliseconds()))
 

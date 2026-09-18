@@ -379,9 +379,9 @@ platformConnector:
   k8sConnector:
     enabled: true
     # Retry each failed Kubernetes write in place; completed writes are not repeated.
-    # Zero or omission selects 100 retries per write. Negative values are invalid.
+    # Zero or omission selects 25 retries per write. Negative values are invalid.
     # The batch deadline below can stop retries before the count is reached.
-    maxRetries: 100
+    maxRetries: 25
     # Whole-batch deadline, including API calls and backoff. Maximum: 5m.
     # Zero or omission selects 1m. Later batches wait; permanent errors are skipped.
     # For a 5m window, also increase maxRetries to 200.

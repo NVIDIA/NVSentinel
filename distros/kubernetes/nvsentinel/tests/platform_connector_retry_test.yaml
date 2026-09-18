@@ -27,7 +27,7 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.json"]
-          pattern: '"K8sConnectorMaxRetries": 100'
+          pattern: '"K8sConnectorMaxRetries": 25'
   - it: preserves zero for connector defaulting
     set:
       platformConnector.k8sConnector.maxRetries: 0

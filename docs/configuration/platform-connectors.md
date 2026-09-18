@@ -277,7 +277,7 @@ Configures the Kubernetes API client for creating node conditions and events.
 platformConnector:
   k8sConnector:
     enabled: true
-    maxRetries: 100
+    maxRetries: 25
     maxRetryDuration: 1m
     maxNodeConditionMessageLength: 1024
     qps: 5.0
@@ -291,7 +291,7 @@ Enables Kubernetes connector for creating node conditions and events.
 
 #### maxRetries
 
-Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `100`; positive integers override the default. Negative and non-integer values are rejected. An existing explicit value, such as `3`, still limits each write to that retry count.
+Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `25`; positive integers override the default. Negative and non-integer values are rejected. An existing explicit value, such as `3`, still limits each write to that retry count.
 
 Each node status update and Kubernetes Event write has its own retry state. Successful writes are not repeated when another write fails. Permanent errors are skipped without preventing other writes from retrying. A node status update applies all condition changes for that node together.
 
@@ -312,7 +312,7 @@ platformConnector:
     maxRetryDuration: 5m
 ```
 
-The default count of 100 can exhaust after 294.5 seconds of outer backoff, before a five-minute deadline. The example raises it so the deadline controls the window. API calls and client-go retries also consume the time budget. A large batch shares one deadline across its writes.
+The default count of 25 allows 69.5 seconds of outer backoff, but the default one-minute deadline stops retries sooner. The five-minute example raises both limits so its deadline controls the window. API calls and client-go retries also consume the time budget. A large batch shares one deadline across its writes.
 
 A write that exhausts its retry count is discarded; other writes can still run within the batch deadline. When the deadline expires, remaining writes are discarded and the connector advances to the next batch. A lost healthy recovery can therefore still leave a condition set. These bounded retries do not guarantee delivery through longer outages or pod restarts. Newer batches accumulate in memory during backpressure; this change does not add a persistent queue or an ingress memory limit.
 

@@ -212,6 +212,8 @@ func TestProcessHealthEventsWithRetry_ProductionDelays_EnforceBothLimits(t *test
 		{name: "default minute", wantRetries: 22, wantCalls: 22, wantDelay: time.Minute, wantErr: context.DeadlineExceeded},
 		{name: "explicit old count", maxRetries: 3, wantRetries: 3, wantCalls: 4,
 			wantDelay: 3500 * time.Millisecond, wantErr: unavailable},
+		{name: "default count with longer window", duration: 5 * time.Minute, wantRetries: 25, wantCalls: 26,
+			wantDelay: 69500 * time.Millisecond, wantErr: unavailable},
 		{name: "count limit", maxRetries: 20, wantRetries: 20, wantCalls: 21,
 			wantDelay: 54500 * time.Millisecond, wantErr: unavailable},
 		{name: "five minute cap", maxRetries: 200, duration: 5 * time.Minute, wantRetries: 102, wantCalls: 102,
