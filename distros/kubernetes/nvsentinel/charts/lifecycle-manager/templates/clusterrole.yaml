@@ -67,6 +67,7 @@ rules:
   - update
   - patch
   - delete
+{{- if .Values.controllers.maintenanceRequest.enabled }}
 - apiGroups:
   - ""
   resources:
@@ -98,6 +99,7 @@ rules:
   - maintenancerequests/finalizers
   verbs:
   - update
+{{- end }}
 {{- /*
   Add permissions for API groups and resources from config.providers.
 */}}

@@ -192,8 +192,11 @@ controllers:
     # An MR may name any node, so with global.platformConnectorAuth.enabled
     # the deployment additionally projects a ServiceAccount token and the
     # umbrella chart adds this ServiceAccount to the cross-node allowlist.
-    # Without both, platform-connector pins the events to whichever node this
-    # pod runs on and rejects the rest as node_mismatch.
+    # When authentication is enabled, the projected token and the cross-node
+    # allowlist entry are both required. Without either one, platform-connector
+    # pins events to this pod's node and rejects other node names as
+    # node_mismatch. When authentication is disabled, it accepts events for any
+    # node without checking the caller's identity.
     enabled: false
 
 leaderElection:
