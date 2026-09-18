@@ -20,10 +20,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 )
@@ -50,6 +53,7 @@ const (
 	LifecycleManagerLabelSelector = "app.kubernetes.io/name=lifecycle-manager"
 
 	maintenanceRequestPollInterval = 1 * time.Second
+	maintenanceRequestCleanupWait  = 30 * time.Second
 )
 
 // CreateMaintenanceRequest creates a cluster-scoped MaintenanceRequest naming
@@ -126,48 +130,64 @@ func WaitForMaintenanceRequestEmitted(
 	return mr
 }
 
-// NodeRunningLifecycleManager returns the node hosting the lifecycle-manager
-// pod. The MaintenanceRequest controller publishes from that pod, so every
-// other node is one it can only report on by presenting an allowlisted token.
-func NodeRunningLifecycleManager(ctx context.Context, c klient.Client) (string, error) {
+// NodesRunningLifecycleManager returns the nodes that host lifecycle-manager
+// pods. Excluding all of them ensures that the test target differs from the
+// active leader's node, including during a rollout or with multiple replicas.
+func NodesRunningLifecycleManager(ctx context.Context, c klient.Client) ([]string, error) {
 	var pods v1.PodList
 
 	err := c.Resources(NVSentinelNamespace).List(ctx, &pods,
 		resources.WithLabelSelector(LifecycleManagerLabelSelector))
 	if err != nil {
-		return "", fmt.Errorf("failed to list lifecycle-manager pods: %w", err)
+		return nil, fmt.Errorf("failed to list lifecycle-manager pods: %w", err)
 	}
+
+	nodes := make(map[string]struct{})
 
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.Spec.NodeName != "" && pod.DeletionTimestamp == nil {
-			return pod.Spec.NodeName, nil
+			nodes[pod.Spec.NodeName] = struct{}{}
 		}
 	}
 
-	return "", fmt.Errorf("no scheduled lifecycle-manager pod found in namespace %s", NVSentinelNamespace)
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("no scheduled lifecycle-manager pod found in namespace %s", NVSentinelNamespace)
+	}
+
+	nodeNames := make([]string, 0, len(nodes))
+	for nodeName := range nodes {
+		nodeNames = append(nodeNames, nodeName)
+	}
+
+	return nodeNames, nil
 }
 
 // SelectMaintenanceTargetNode returns a clean, uncordoned worker node that is
-// not avoidNode.
+// not hosting a lifecycle-manager pod.
 //
-// Excluding avoidNode is the whole point: platform-connector pins a caller to
-// its own node unless that caller is on the cross-node allowlist and presents
-// its projected token, so an MR naming the publisher's own node would pass even
-// with the token wiring removed. Failing loudly beats quietly falling back to
-// the same node and turning the cross-node assertion into a no-op.
+// Excluding every lifecycle-manager node is the whole point:
+// platform-connector pins a caller to its own node unless that caller is on the
+// cross-node allowlist and presents its projected token. An MR naming the
+// leader's own node would pass even with the token wiring removed.
 func SelectMaintenanceTargetNode(
-	ctx context.Context, t *testing.T, c klient.Client, avoidNode string,
+	ctx context.Context, t *testing.T, c klient.Client, lifecycleManagerNodes []string,
 ) string {
 	t.Helper()
 
 	names, err := AllRealNodeNames(ctx, c)
 	require.NoError(t, err, "failed to list real worker nodes")
 
+	excludedNodes := make(map[string]struct{}, len(lifecycleManagerNodes))
+	for _, nodeName := range lifecycleManagerNodes {
+		excludedNodes[nodeName] = struct{}{}
+	}
+
 	var skipped []string
 
 	for _, name := range names {
-		if name == avoidNode {
+		if _, excluded := excludedNodes[name]; excluded {
+			skipped = append(skipped, fmt.Sprintf("%s (hosts lifecycle-manager)", name))
 			continue
 		}
 
@@ -187,16 +207,16 @@ func SelectMaintenanceTargetNode(
 			continue
 		}
 
-		t.Logf("Selected maintenance target %s; lifecycle-manager runs on %s, so this is a cross-node publish",
-			name, avoidNode)
+		t.Logf("Selected maintenance target %s; lifecycle-manager runs on %v, so this is a cross-node publish",
+			name, lifecycleManagerNodes)
 
 		return name
 	}
 
 	require.FailNow(t,
 		"no usable maintenance target node",
-		"need a clean uncordoned worker other than %s (lifecycle-manager's node); skipped: %v",
-		avoidNode, skipped)
+		"need a clean uncordoned worker outside lifecycle-manager nodes %v; skipped: %v",
+		lifecycleManagerNodes, skipped)
 
 	return ""
 }
@@ -213,4 +233,63 @@ func DeleteMaintenanceRequestIfPresent(ctx context.Context, t *testing.T, c klie
 
 	err := DeleteCR(ctx, t, c, mr, true)
 	require.NoError(t, err, "failed to delete MaintenanceRequest %s", crName)
+}
+
+// CleanupMaintenanceRequest deletes an MR without stopping the rest of test
+// teardown. If normal finalization stalls, it removes the finalizers so node
+// and ConfigMap cleanup can still run.
+func CleanupMaintenanceRequest(ctx context.Context, t *testing.T, c klient.Client, crName string) {
+	t.Helper()
+
+	mr := &unstructured.Unstructured{}
+	mr.SetGroupVersionKind(MaintenanceRequestGVK)
+	mr.SetName(crName)
+
+	err := c.Resources().Delete(ctx, mr)
+	if apierrors.IsNotFound(err) {
+		return
+	}
+
+	if !assert.NoError(t, err, "failed to request deletion of MaintenanceRequest %s", crName) {
+		return
+	}
+
+	removed := assert.Eventually(t, func() bool {
+		err := c.Resources().Get(ctx, crName, "", mr)
+
+		return apierrors.IsNotFound(err)
+	}, maintenanceRequestCleanupWait, maintenanceRequestPollInterval,
+		"MaintenanceRequest %s should complete normal finalization during teardown", crName)
+	if removed {
+		return
+	}
+
+	t.Logf("MaintenanceRequest %s is still terminating; removing finalizers for test cleanup", crName)
+
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current := &unstructured.Unstructured{}
+		current.SetGroupVersionKind(MaintenanceRequestGVK)
+
+		if getErr := c.Resources().Get(ctx, crName, "", current); getErr != nil {
+			if apierrors.IsNotFound(getErr) {
+				return nil
+			}
+
+			return getErr
+		}
+
+		current.SetFinalizers(nil)
+
+		return c.Resources().Update(ctx, current)
+	})
+	if !assert.NoError(t, err, "failed to remove finalizers from MaintenanceRequest %s", crName) {
+		return
+	}
+
+	assert.Eventually(t, func() bool {
+		err := c.Resources().Get(ctx, crName, "", mr)
+
+		return apierrors.IsNotFound(err)
+	}, maintenanceRequestCleanupWait, maintenanceRequestPollInterval,
+		"MaintenanceRequest %s should be removed after finalizers are cleared", crName)
 }

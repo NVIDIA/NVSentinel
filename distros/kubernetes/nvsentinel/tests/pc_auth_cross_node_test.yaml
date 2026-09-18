@@ -60,11 +60,22 @@ tests:
     set:
       global.lifecycleManager.enabled: true
       lifecycle-manager.controllers.maintenanceRequest.enabled: true
+      lifecycle-manager.serviceAccount.create: false
       lifecycle-manager.serviceAccount.name: lcm-custom
     asserts:
       - matchRegex:
           path: data["config.json"]
           pattern: '"system:serviceaccount:nvsentinel:lcm-custom"'
+
+  - it: refuses to grant cross-node access to the shared default ServiceAccount
+    set:
+      global.lifecycleManager.enabled: true
+      lifecycle-manager.controllers.maintenanceRequest.enabled: true
+      lifecycle-manager.serviceAccount.create: false
+      lifecycle-manager.serviceAccount.name: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: must use a dedicated ServiceAccount
 
   # Without the MR controller nothing in lifecycle-manager opens the socket, so
   # granting it the right to cordon, drain and reboot any node would be reach

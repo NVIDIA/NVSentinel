@@ -58,10 +58,10 @@ func TestMaintenanceRequestLifecycle(t *testing.T) {
 
 		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/maintenance-request-configmap.yaml")
 
-		publisherNode, err := helpers.NodeRunningLifecycleManager(ctx, client)
-		require.NoError(t, err, "failed to locate the lifecycle-manager pod")
+		publisherNodes, err := helpers.NodesRunningLifecycleManager(ctx, client)
+		require.NoError(t, err, "failed to locate the lifecycle-manager pods")
 
-		targetNode := helpers.SelectMaintenanceTargetNode(ctx, t, client, publisherNode)
+		targetNode := helpers.SelectMaintenanceTargetNode(ctx, t, client, publisherNodes)
 
 		return context.WithValue(ctx, keyNodeName, targetNode)
 	})
@@ -138,7 +138,7 @@ func TestMaintenanceRequestLifecycle(t *testing.T) {
 		// Idempotent: the delete assessment normally removed it already, but an
 		// earlier failure would leave the MR holding the node cordoned for
 		// every test that runs after this one.
-		helpers.DeleteMaintenanceRequestIfPresent(ctx, t, client, mrName)
+		helpers.CleanupMaintenanceRequest(ctx, t, client, mrName)
 
 		if nodeNameVal := ctx.Value(keyNodeName); nodeNameVal != nil {
 			nodeName := nodeNameVal.(string)

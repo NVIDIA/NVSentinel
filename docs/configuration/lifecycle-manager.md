@@ -38,8 +38,10 @@ absence means cleared** — deleting the resource is the instruction, not merely
 lifecycle-manager:
   controllers:
     maintenanceRequest:
-      enabled: false
+      enabled: true
 ```
+
+The controller is disabled by default.
 
 Turning this on changes more than the reconciler. It also:
 

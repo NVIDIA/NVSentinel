@@ -570,6 +570,9 @@ runtime rejection the derived namespace above exists to prevent.
 {{- $lm := (index $.Values "lifecycle-manager") | default dict -}}
 {{- if and ((index (($.Values.global) | default dict) "lifecycleManager") | default dict).enabled ((($lm.controllers) | default dict).maintenanceRequest | default dict).enabled -}}
 {{- $lmSA := include "lifecycle-manager.serviceAccountName" (dict "Values" $lm "Chart" (dict "Name" "lifecycle-manager") "Release" $.Release) -}}
+{{- if eq $lmSA "default" -}}
+{{- fail "lifecycle-manager must use a dedicated ServiceAccount when the MaintenanceRequest controller and platform-connector authentication are enabled; set lifecycle-manager.serviceAccount.name when lifecycle-manager.serviceAccount.create is false" -}}
+{{- end -}}
 {{- $derived = append $derived (printf "system:serviceaccount:%s:%s" $ns $lmSA) -}}
 {{- end -}}
 {{- /*
