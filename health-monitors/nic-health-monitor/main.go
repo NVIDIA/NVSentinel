@@ -58,7 +58,7 @@ var (
 
 	checksList = flag.String("checks",
 		"InfiniBandStateCheck,InfiniBandDegradationCheck,InfiniBandCharDeviceCheck,"+
-			"EthernetStateCheck,EthernetDegradationCheck",
+			"EthernetStateCheck,EthernetDegradationCheck,EFAStateCheck,EFADegradationCheck",
 		"Comma-separated list of checks to enable.")
 	platformConnectorSocket = flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
 		"Path to the platform-connector UDS socket")
@@ -157,7 +157,7 @@ func run() error {
 	if len(enabledChecks) == 0 {
 		return fmt.Errorf("no checks enabled — set --checks to include at least one of: " +
 			"InfiniBandStateCheck, InfiniBandDegradationCheck, InfiniBandCharDeviceCheck, " +
-			"EthernetStateCheck, EthernetDegradationCheck")
+			"EthernetStateCheck, EthernetDegradationCheck, EFAStateCheck, EFADegradationCheck")
 	}
 
 	nicMonitor := monitor.NewNICHealthMonitor(rc.nodeName, client, *platformConnectorSocket,
@@ -411,24 +411,45 @@ func buildCheck(
 	case checks.EthernetStateCheckName:
 		return state.NewEthernetStateCheck(
 			nodeName, reader, cfg, classifier, processingStrategy, stateManager, stateBaselines)
-	case checks.InfiniBandDegradationCheckName:
+	case checks.EFAStateCheckName:
+		return state.NewEFAStateCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, stateBaselines)
+	case checks.InfiniBandDegradationCheckName, checks.EthernetDegradationCheckName, checks.EFADegradationCheckName:
 		if !cfg.CounterDetection.Enabled {
 			slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", name)
 			return nil
 		}
 
+		return buildCounterCheck(name, nodeName, reader, cfg, classifier,
+			processingStrategy, stateManager, counterBaselines)
+	default:
+		slog.Warn("Unknown check, skipping", "check", name)
+		return nil
+	}
+}
+
+// buildCounterCheck instantiates one of the degradation checks. The
+// caller has already verified that counter detection is enabled.
+func buildCounterCheck(
+	name, nodeName string,
+	reader sysfs.Reader,
+	cfg *config.Config,
+	classifier *topology.Classifier,
+	processingStrategy pb.ProcessingStrategy,
+	stateManager *statefile.Manager,
+	counterBaselines bool,
+) checks.TransactionalCheck {
+	switch name {
+	case checks.InfiniBandDegradationCheckName:
 		return counter.NewInfiniBandDegradationCheck(
 			nodeName, reader, cfg, classifier, processingStrategy, stateManager, counterBaselines)
 	case checks.EthernetDegradationCheckName:
-		if !cfg.CounterDetection.Enabled {
-			slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", name)
-			return nil
-		}
-
 		return counter.NewEthernetDegradationCheck(
 			nodeName, reader, cfg, classifier, processingStrategy, stateManager, counterBaselines)
+	case checks.EFADegradationCheckName:
+		return counter.NewEFADegradationCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, counterBaselines)
 	default:
-		slog.Warn("Unknown check, skipping", "check", name)
 		return nil
 	}
 }
