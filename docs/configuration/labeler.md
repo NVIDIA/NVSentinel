@@ -143,8 +143,41 @@ labeler:
 The CEL context exposes:
 
 - `node`: the cached projection of the Kubernetes Node being reconciled.
-- `resourceSlices`: ResourceSlice objects associated with the node.
+- `resourceSlices`: ResourceSlice objects associated with the node. When the class sets `resourceSliceDriver`, only slices whose `spec.driver` matches are included.
 - `sum(list<int>)`: helper that returns the sum of a list of integers.
+
+#### Class fields
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Class name, used in metrics and logs |
+| `enabled` | yes | Whether the class is evaluated |
+| `labels.current`, `labels.expected` | yes | Node labels written by the class. Several classes may share one label pair when at most one of them can succeed on any node |
+| `groupingLabels` | no | Node labels whose values define the hardware partition for expected-count learning |
+| `expectedCountOverrides` | no | Pin the expected count for nodes matching `matchLabels` |
+| `currentExpression` | yes | CEL expression returning the node's current device count as an integer |
+| `resourceSliceDriver` | no | DRA driver name (`ResourceSlice.spec.driver`). Restricts `resourceSlices` to that driver and marks the class as ResourceSlice-backed: a node with no slices from that driver is skipped as a missing source instead of receiving a `0` count |
+
+#### ResourceSlice-backed classes and mode-specific sources
+
+A class whose expression references `resourceSlices`, or that sets `resourceSliceDriver`, is skipped on nodes with no matching ResourceSlices, so a missing DRA source never turns into `current=0`. This makes it possible to ship one class per inventory source writing the same label pair. The chart default does this for GPUs:
+
+- `gpu` reads the GPU Feature Discovery label `nvidia.com/gpu.count` (GPU Operator ClusterPolicy mode).
+- `gpu-dra` counts `type == 'gpu'` devices in the node's `gpu.nvidia.com` ResourceSlices (GPU Operator GPUCluster / DRA mode, where GFD is not deployed). `resourceSliceDriver: gpu.nvidia.com` keeps it skipped on ClusterPolicy nodes even when another DRA driver publishes slices for the node.
+
+Exactly one of the two succeeds per GPU node; the other is skipped and recorded under `labeler_device_count_skipped_updates_total{class=...}`. Expected counts are learned per class from peers that share the same source.
+
+#### Limitation: no `nvidia.com/gpu.product` grouping in GPUCluster mode
+
+`groupingLabels` must be **node labels**, because the expected count is learned per partition across peer nodes and the partition key is built from the node object alone. In ClusterPolicy mode the default `gpu` class groups by `node.kubernetes.io/instance-type` and `nvidia.com/gpu.product`, so two GPU models in the same instance type learn separate expected counts. `nvidia.com/gpu.product` is written by GPU Feature Discovery, which GPUCluster mode does not deploy, so the `gpu-dra` class groups by `node.kubernetes.io/instance-type` only. The GPU model is present in the ResourceSlice as the `productName` device attribute, but a `ResourceSlice` attribute cannot be used as a grouping label.
+
+On GPUCluster clusters this means all GPU nodes with the same instance-type value share one learned expected count, and nodes without `node.kubernetes.io/instance-type` all fall into a single partition (rendered as `instance-type=` in `labeler_device_count_expected`). When such a partition mixes nodes with different GPU counts (for example 8-GPU and 4-GPU nodes), the expected count ratchets to the maximum and the smaller nodes are reported as missing GPUs. To avoid this, in order of preference:
+
+1. Ensure every GPU node in the cluster carries `node.kubernetes.io/instance-type` with a value that implies one GPU configuration. Cloud providers set this label by default; on bare-metal or self-managed clusters the node provisioning process must set it, for example through the kubelet `--node-labels` flag.
+2. Add a node label that encodes the GPU model (for example `nvidia.com/gpu.product` applied by the provisioning process, or a Node Feature Discovery rule that derives it from the PCI device ID) and list it under `groupingLabels` for `gpu-dra` in the cluster's values.
+3. Pin the count with `expectedCountOverrides` on whichever node labels do exist, which bypasses learning for the matched nodes entirely.
+
+ResourceSlices are read through a `resource.k8s.io/v1` informer, which is created only when an enabled class needs it **and** the API server serves that group version (Kubernetes 1.34 or newer). On older clusters the labeler logs a warning at start-up and leaves ResourceSlice-backed classes permanently skipped.
 
 #### Node fields available to expressions
 

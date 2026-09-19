@@ -26,6 +26,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
@@ -49,6 +50,10 @@ const (
 	KataEnabledLabel                 = "nvsentinel.dgxc.nvidia.com/kata.enabled"
 	KataRuntimeDefaultLabel          = "katacontainers.io/kata-runtime"
 	DCGMBootstrapCompletedAnnotation = "nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed"
+
+	// resourceSliceResourceName is the plural resource name looked up in
+	// resource.k8s.io/v1 discovery before the ResourceSlice informer is created.
+	resourceSliceResourceName = "resourceslices"
 
 	NodeDCGMIndex               = "nodeDCGM"
 	NodeDriverIndex             = "nodeDriver"
@@ -143,8 +148,21 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 
 	var resourceSliceInformer cache.SharedIndexInformer
 	if deviceCounts.RequiresResourceSlices() {
-		resourceSliceInformer = createResourceSliceInformer(clientset, resyncPeriod)
-		informersSynced = append(informersSynced, resourceSliceInformer.HasSynced)
+		// resource.k8s.io/v1 is only served from Kubernetes 1.34. Watching it on an
+		// older API server would never sync and block every label write, so the
+		// ResourceSlice-backed classes are left permanently skipped instead.
+		available, err := resourceSliceAPIAvailable(clientset)
+		if err != nil {
+			return nil, fmt.Errorf("discover ResourceSlice API: %w", err)
+		}
+
+		if available {
+			resourceSliceInformer = createResourceSliceInformer(clientset, resyncPeriod)
+			informersSynced = append(informersSynced, resourceSliceInformer.HasSynced)
+		} else {
+			slog.Warn("ResourceSlice-based device-count classes will be skipped because the API server does not serve " +
+				resourcev1.SchemeGroupVersion.String() + " resourceslices (requires Kubernetes 1.34 or newer)")
+		}
 	}
 
 	l := &Labeler{
@@ -387,6 +405,28 @@ func createNodeInformer(
 	}
 
 	return informer, nil
+}
+
+// resourceSliceAPIAvailable reports whether the API server serves
+// resource.k8s.io/v1 ResourceSlices. A missing group version is not an error:
+// it is the expected state on Kubernetes releases older than 1.34.
+func resourceSliceAPIAvailable(clientset kubernetes.Interface) (bool, error) {
+	resources, err := clientset.Discovery().ServerResourcesForGroupVersion(resourcev1.SchemeGroupVersion.String())
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("query %s resources: %w", resourcev1.SchemeGroupVersion.String(), err)
+	}
+
+	for _, resource := range resources.APIResources {
+		if resource.Name == resourceSliceResourceName {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func createResourceSliceInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {

@@ -252,3 +252,168 @@ func stringAttribute(value string) *resourcev1.DeviceAttribute {
 func boolAttribute(value bool) *resourcev1.DeviceAttribute {
 	return &resourcev1.DeviceAttribute{BoolValue: &value}
 }
+
+// TestResourceSliceDriverMakesDualGPUClassesMutuallyExclusive covers the
+// GPUCluster (DRA) configuration shipped in the chart: a GFD-label class and a
+// ResourceSlice class share one label pair, and exactly one succeeds per node.
+func TestResourceSliceDriverMakesDualGPUClassesMutuallyExclusive(t *testing.T) {
+	const gpuDRAExpression = `
+sum(resourceSlices
+  .filter(rs, has(rs.spec.devices))
+  .map(rs, rs.spec.devices
+    .filter(d,
+      has(d.attributes) &&
+      'type' in d.attributes &&
+      has(d.attributes['type'].string) &&
+      d.attributes['type'].string == 'gpu'
+    )
+    .size()
+  ))`
+
+	config := Config{
+		Enabled: true,
+		Classes: []ClassConfig{
+			{
+				Name:    "gpu",
+				Enabled: true,
+				Labels: Labels{
+					Current:  testGPUCountCurrentLabel,
+					Expected: testGPUCountExpectedLabel,
+				},
+				GroupingLabels:    []string{"node.kubernetes.io/instance-type"},
+				CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
+			},
+			{
+				Name:    "gpu-dra",
+				Enabled: true,
+				Labels: Labels{
+					Current:  testGPUCountCurrentLabel,
+					Expected: testGPUCountExpectedLabel,
+				},
+				GroupingLabels:      []string{"node.kubernetes.io/instance-type"},
+				ResourceSliceDriver: "gpu.nvidia.com",
+				CurrentExpression:   gpuDRAExpression,
+			},
+		},
+	}
+
+	gpuDevice := func(name, deviceType string) resourcev1.Device {
+		return resourcev1.Device{
+			Name: name,
+			Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
+				"type": *stringAttribute(deviceType),
+				"uuid": *stringAttribute("GPU-" + name),
+			},
+		}
+	}
+	nvidiaSlice := func(name, nodeName string, devices ...resourcev1.Device) *resourcev1.ResourceSlice {
+		slice := testResourceSlice(name, nodeName, devices...)
+		slice.Spec.Driver = "gpu.nvidia.com"
+
+		return slice
+	}
+
+	const instanceTypeLabel = "node.kubernetes.io/instance-type"
+
+	clusterPolicyNode := testNode("cluster-policy", map[string]string{
+		instanceTypeLabel: "gpu-8x", "nvidia.com/gpu.count": "8",
+	})
+	// A ClusterPolicy node that also runs an unrelated DRA driver has slices but
+	// no gpu.nvidia.com ones; the DRA class must not write current=0 there.
+	clusterPolicyNodeWithNICDRA := testNode("cluster-policy-nic-dra", map[string]string{
+		instanceTypeLabel: "gpu-8x", "nvidia.com/gpu.count": "8",
+	})
+	gpuClusterNode := testNode("gpu-cluster", map[string]string{instanceTypeLabel: "gpu-4x"})
+	cpuNode := testNode("cpu", map[string]string{instanceTypeLabel: "cpu-only"})
+
+	resourceSlicesByNode := map[string][]*resourcev1.ResourceSlice{
+		clusterPolicyNodeWithNICDRA.Name: {
+			testResourceSlice("nic-slice", clusterPolicyNodeWithNICDRA.Name, testDevice("roce-a", stringAttribute("roce"))),
+		},
+		gpuClusterNode.Name: {
+			nvidiaSlice("gpu-slice-a", gpuClusterNode.Name,
+				gpuDevice("gpu-0", "gpu"), gpuDevice("gpu-1", "gpu"), gpuDevice("gpu-2", "gpu")),
+			nvidiaSlice("gpu-slice-b", gpuClusterNode.Name,
+				gpuDevice("gpu-3", "gpu"), gpuDevice("gpu-3-mig-0", "mig")),
+			// Unrelated driver on the same node is filtered out by resourceSliceDriver.
+			testResourceSlice("nic-slice", gpuClusterNode.Name, testDevice("roce-b", stringAttribute("roce"))),
+		},
+	}
+	allNodes := []*corev1.Node{clusterPolicyNode, clusterPolicyNodeWithNICDRA, gpuClusterNode, cpuNode}
+	loadResourceSlices := func(node *corev1.Node) []*resourcev1.ResourceSlice {
+		return resourceSlicesByNode[node.Name]
+	}
+
+	manager := newTestManager(t, config)
+	require.True(t, manager.RequiresResourceSlices())
+
+	cache := manager.NewReconcileCache(allNodes, loadResourceSlices)
+
+	require.True(t, cache.CalculateAndSetDeviceCountLabels(context.Background(), clusterPolicyNode))
+	require.Equal(t, "8", clusterPolicyNode.Labels[testGPUCountCurrentLabel], "GFD class serves ClusterPolicy nodes")
+	require.Equal(t, "8", clusterPolicyNode.Labels[testGPUCountExpectedLabel])
+
+	require.True(t, cache.CalculateAndSetDeviceCountLabels(context.Background(), clusterPolicyNodeWithNICDRA))
+	require.Equal(t, "8", clusterPolicyNodeWithNICDRA.Labels[testGPUCountCurrentLabel],
+		"foreign-driver slices must not let the DRA class overwrite the GFD count with 0")
+	require.Equal(t, "8", clusterPolicyNodeWithNICDRA.Labels[testGPUCountExpectedLabel])
+
+	require.True(t, cache.CalculateAndSetDeviceCountLabels(context.Background(), gpuClusterNode))
+	require.Equal(t, "4", gpuClusterNode.Labels[testGPUCountCurrentLabel],
+		"DRA class counts only type=gpu devices from gpu.nvidia.com slices")
+	require.Equal(t, "4", gpuClusterNode.Labels[testGPUCountExpectedLabel],
+		"expected count is learned only from peers with the same source")
+
+	require.False(t, cache.CalculateAndSetDeviceCountLabels(context.Background(), cpuNode))
+	require.NotContains(t, cpuNode.Labels, testGPUCountCurrentLabel)
+	require.NotContains(t, cpuNode.Labels, testGPUCountExpectedLabel)
+}
+
+func TestResourceSliceDriverWithoutSlicesFromDriverIsMissingSource(t *testing.T) {
+	config := Config{
+		Enabled: true,
+		Classes: []ClassConfig{{
+			Name:    "gpu-dra",
+			Enabled: true,
+			Labels: Labels{
+				Current:  testGPUCountCurrentLabel,
+				Expected: testGPUCountExpectedLabel,
+			},
+			ResourceSliceDriver: "gpu.nvidia.com",
+			// The expression never names resourceSlices; the driver alone makes
+			// the class ResourceSlice-backed so it is skipped, not evaluated to 7.
+			CurrentExpression: "7",
+		}},
+	}
+
+	node := testNode("node-a", map[string]string{})
+	foreignSlices := []*resourcev1.ResourceSlice{
+		testResourceSlice("nic-slice", node.Name, testDevice("roce-a", stringAttribute("roce"))),
+	}
+
+	manager := newTestManager(t, config)
+	require.True(t, manager.RequiresResourceSlices())
+
+	updated := manager.CalculateAndSetDeviceCountLabels(
+		context.Background(),
+		node,
+		[]*corev1.Node{node},
+		func(*corev1.Node) []*resourcev1.ResourceSlice { return foreignSlices },
+	)
+
+	require.False(t, updated)
+	require.Empty(t, node.Labels)
+
+	nvidiaSlice := testResourceSlice("gpu-slice", node.Name)
+	nvidiaSlice.Spec.Driver = "gpu.nvidia.com"
+
+	updated = manager.CalculateAndSetDeviceCountLabels(
+		context.Background(),
+		node,
+		[]*corev1.Node{node},
+		func(*corev1.Node) []*resourcev1.ResourceSlice { return []*resourcev1.ResourceSlice{nvidiaSlice} },
+	)
+
+	require.True(t, updated)
+	require.Equal(t, "7", node.Labels[testGPUCountCurrentLabel])
+}

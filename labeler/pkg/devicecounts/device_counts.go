@@ -48,6 +48,9 @@ type ClassConfig struct {
 	GroupingLabels         []string                `toml:"groupingLabels"`
 	ExpectedCountOverrides []ExpectedCountOverride `toml:"expectedCountOverrides"`
 	CurrentExpression      string                  `toml:"currentExpression"`
+	// ResourceSliceDriver optionally restricts the ResourceSlices exposed to
+	// CurrentExpression to those published by configured DRA driver (spec.driver).
+	ResourceSliceDriver string `toml:"resourceSliceDriver"`
 }
 
 // Labels contains the current and expected node labels managed for a class.
@@ -259,9 +262,11 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 	}
 
 	needsUpdate := false
-	resourceSlices := p.cachedResourceSlicesForNode(node)
+	nodeResourceSlices := p.cachedResourceSlicesForNode(node)
 
 	for classIndex, class := range p.manager.classes {
+		resourceSlices := class.resourceSlicesForClass(nodeResourceSlices)
+
 		// Do not turn a missing DRA source into current=0. A ResourceSlice-based
 		// expression should wait until at least one associated slice exists.
 		if class.referencesResourceSlices() && len(resourceSlices) == 0 {
@@ -719,7 +724,7 @@ func (p *ReconcileCache) currentDeviceCountForPeer(
 
 	cached, ok := p.peerCurrentCounts[key]
 	if !ok {
-		peerResourceSlices := p.cachedResourceSlicesForNode(peer)
+		peerResourceSlices := class.resourceSlicesForClass(p.cachedResourceSlicesForNode(peer))
 
 		cached.missingSource = class.referencesResourceSlices() && len(peerResourceSlices) == 0
 		if !cached.missingSource {
@@ -773,8 +778,31 @@ func (class compiledClass) expectedOverride(node *corev1.Node) (int, bool) {
 func (class compiledClass) referencesResourceSlices() bool {
 	// This cheap check is only used to distinguish "missing DRA source" from a
 	// legitimate zero count. Expressions that do not reference ResourceSlices can
-	// still evaluate from node labels alone.
-	return strings.Contains(class.CurrentExpression, "resourceSlices")
+	// still evaluate from node labels alone. A class pinned to a DRA driver is
+	// ResourceSlice-backed even if its expression never names the variable.
+	return class.ResourceSliceDriver != "" || strings.Contains(class.CurrentExpression, "resourceSlices")
+}
+
+// resourceSlicesForClass narrows a node's ResourceSlices to the class's
+// configured DRA driver. Without a configured driver all slices are returned,
+// so a node that only carries slices from unrelated drivers (for example a NIC
+// DRA driver on a device-plugin GPU node) does not satisfy a GPU class's source.
+func (class compiledClass) resourceSlicesForClass(
+	resourceSlices []*resourcev1.ResourceSlice,
+) []*resourcev1.ResourceSlice {
+	if class.ResourceSliceDriver == "" {
+		return resourceSlices
+	}
+
+	filtered := make([]*resourcev1.ResourceSlice, 0, len(resourceSlices))
+
+	for _, resourceSlice := range resourceSlices {
+		if resourceSlice != nil && resourceSlice.Spec.Driver == class.ResourceSliceDriver {
+			filtered = append(filtered, resourceSlice)
+		}
+	}
+
+	return filtered
 }
 
 // referencesNodeResources is a cheap heuristic mirroring referencesResourceSlices.
