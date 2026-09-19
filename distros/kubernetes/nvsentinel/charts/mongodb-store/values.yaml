@@ -74,6 +74,24 @@ job:
   nodeSelector: {}
   tolerations: []
 
+# NetworkPolicy configuration
+networkPolicy:
+  # Additional namespaces permitted to scrape the mongodb_exporter metrics endpoint (port 9216).
+  # Applied only when usePerconaOperator=true. The release namespace is always permitted.
+  additionalScrapeNamespaces: []
+  # Additional ingress rules for the metrics endpoint (port 9216).
+  # Applied only when usePerconaOperator=true.
+  # Each entry is rendered directly under 'from:' in the port 9216 ingress rule.
+  # Example:
+  # additionalScrapeRules:
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: monitoring
+  #     podSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: prometheus
+  additionalScrapeRules: []
+
 # =============================================================================
 # Bitnami MongoDB Configuration (used when usePerconaOperator=false)
 # =============================================================================
