@@ -55,6 +55,13 @@ func (p *Pipeline) Close() {
 	}
 }
 
+// ProcessBatch runs every event of one batch through the pipeline, in order.
+func (p *Pipeline) ProcessBatch(ctx context.Context, events []*pb.HealthEvent) {
+	for _, event := range events {
+		p.Process(ctx, event)
+	}
+}
+
 // Process applies the pipeline to the event.
 func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.pipeline.process")

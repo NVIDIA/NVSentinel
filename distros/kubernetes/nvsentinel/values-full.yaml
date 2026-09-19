@@ -321,6 +321,14 @@ platformConnector:
   # Kubernetes connector configuration
   # Handles updating Kubernetes node status and conditions
   k8sConnector:
+    # Retry each failed Kubernetes write in place; completed writes are not repeated.
+    # Zero or omission selects 25 retries per write. Negative values are invalid.
+    # The batch deadline below can stop retries before the count is reached.
+    maxRetries: 25
+    # Whole-batch deadline, including API calls and backoff. Maximum: 5m.
+    # Zero or omission selects 1m. Later batches wait; permanent errors are skipped.
+    # For a 5m window, also increase maxRetries to 200.
+    maxRetryDuration: 1m
     # Maximum length of the node condition message
     # This is the maximum length of the node condition message that will be stored in the Kubernetes node status
     # If the node condition message is longer than this value, it will be truncated
@@ -523,6 +531,11 @@ fault-quarantine:
   # - Match conditions: When the rule should trigger
   # - Actions: What to do when conditions match (cordon, taint, label)
   # Rules are evaluated in order for each health event
+  #
+  # The node cache keeps only the label and annotation keys these expressions
+  # read, so how a Node rule is written decides how much memory it costs. Two
+  # rules that select the same nodes can prune differently.
+  # See docs/fault-quarantine.md#cached-node-fields before editing a Node rule.
   ruleSets:
     # Example rule 1: Quarantine nodes with fatal GPU errors
     # Enable or disable this ruleset; disabled rulesets are skipped entirely
@@ -695,6 +708,13 @@ node-drainer:
   # After this timeout, pod may be force deleted (depends on eviction mode)
   # Must be a positive integer
   evictionTimeoutInSeconds: "60"
+
+  # Base duration for exponential backoff on drain requeues (e.g., 10s, 2s).
+  # Controls the delay before the first retry when a node cannot be drained immediately.
+  # Subsequent retries double up to a 2-minute ceiling.
+  # Set according to workload termination times (~1s for zero-grace pods, >= 30s for 30s grace).
+  # Default: 10s
+  requeueBackoffBase: 10s
 
   # System namespaces regex pattern
   # Pods in these namespaces are skipped during drain
@@ -973,6 +993,12 @@ health-events-analyzer:
   # Increase proportionally when running with 16+ workers (e.g. 2000-4000) to avoid false stalls.
   maxInFlight: 1000
 
+  # Registers rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}.
+  # Off by default: entity labels add a series per GPU/GPC/TPC/SM on each node.
+  # rule_matched_total already reports that a rule fired without this.
+  # GPU UUID is never used as entity_value; PCI or GPU index is exported instead.
+  ruleMatchedEntityMetricEnabled: false
+
   # Processing strategy for health events (default: EXECUTE_REMEDIATION)
   # Valid values: EXECUTE_REMEDIATION, STORE_ONLY
   processingStrategy: EXECUTE_REMEDIATION
@@ -1094,11 +1120,15 @@ gpu-health-monitor:
   # event, so they are never persisted or acted on. Useful for high-frequency,
   # non-actionable flaps (e.g. normal power-cap boost-clock behavior).
   dcgmHealthCheck:
+    # Enable DCGM IMEX health monitoring. Off by default because DRA can remove
+    # IMEX when idle; older hostengines filter its legacy incident instead.
+    imexMonitoringEnabled: false
+
     # List of error code names to suppress (native DCGM codes like
     # DCGM_FR_CLOCK_THROTTLE_POWER, or custom field-monitor codes like
-    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Defaults to POWER/THERMAL watch
+    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Defaults include POWER/THERMAL watch
     # throttling, under both its canonical and deprecated alias names.
-    # Set to [] to report throttling too.
+    # Set to [] to report all codes.
     suppressedErrorCodes:
       - DCGM_FR_CLOCK_THROTTLE_POWER
       - DCGM_FR_CLOCKS_EVENT_POWER

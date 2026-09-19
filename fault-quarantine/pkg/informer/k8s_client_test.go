@@ -41,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,7 +93,7 @@ func setupTestClient(t *testing.T) *FaultQuarantineClient {
 		DryRunMode: false,
 	}
 
-	nodeInformer, err := NewNodeInformer(testClient, 0, GPUNodeLabel, GPUNodeLabelValue)
+	nodeInformer, err := NewNodeInformer(testClient, 0, GPUNodeLabel, GPUNodeLabelValue, nodecache.Keys{})
 	if err != nil {
 		t.Fatalf("Failed to create NodeInformer: %v", err)
 	}
@@ -193,6 +194,7 @@ func measureCordonThroughput(t *testing.T, prefix string, nodeCount int, qps flo
 		GPUNodeLabel,
 		GPUNodeLabelValue,
 		kubeclient.RateLimitConfig{QPS: qps, Burst: burst},
+		nodecache.Keys{},
 	)
 	require.NoError(t, err)
 

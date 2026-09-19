@@ -34,9 +34,34 @@ EntityKey = int | tuple[int, int]
 
 
 @dataclasses.dataclass
+class DCGMWatcherConfig:
+    addr: str
+    poll_interval_seconds: int
+    dcgm_k8s_service_enabled: bool
+    thermal_margin_enabled: bool = False
+    dcgm_mode: str = "remote"
+    suppressed_error_codes: frozenset[str] | None = None
+    suppress_unbridged_pcie_nvlink_down: bool = False
+    probe_deadline_seconds: float = 0.0
+    power_brake_enabled: bool = False
+    power_brake_min_consecutive_polls: int = 1
+    health_check_min_consecutive_polls: dict[str, int] | None = None
+    imex_monitoring_enabled: bool = False
+
+
+@dataclasses.dataclass
 class HealthDetails:
     status: HealthStatus
     entity_failures: dict[EntityKey, list[ErrorDetails]]
+    # None retains the native DCGM-watch behavior: every monitored GPU has
+    # been evaluated. Field-based watches can instead identify only GPUs with
+    # a valid sample so an unavailable sample cannot clear an active
+    # error for that GPU.
+    evaluated_gpu_ids: set[int] | None = None
+    # Native DCGM health responses have a fixed incident array. A response at
+    # capacity can omit additional incidents, so it is not safe to infer that
+    # an absent error code has recovered.
+    is_complete: bool = True
 
 
 @dataclasses.dataclass(frozen=True)

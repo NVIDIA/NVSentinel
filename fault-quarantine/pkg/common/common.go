@@ -48,4 +48,32 @@ const (
 	QuarantineValidationHealthEventAnnotationKey          = "quarantineValidationHealthEvent"
 
 	ServiceName = "NVSentinel"
+
+	// NodeCELVar is the CEL variable the Node rules are evaluated against.
+	//
+	// The evaluator binds the cached node to this name, and the node cache
+	// derives what it retains by looking for reads of it. The two have to agree:
+	// a name the rules do not use yields no field paths, so every node prunes to
+	// the operational keys alone and the opt-out rules stop seeing the labels
+	// they read.
+	NodeCELVar = "node"
 )
+
+// QuarantineAnnotationKeys are every annotation key fault-quarantine reads off
+// a node or removes from one.
+//
+// This is the single source of truth for that set. The node informer cache
+// retains exactly these keys and drops the rest, so a key added above but not
+// listed here is not merely absent from a read: it disappears from the cache,
+// and fault-quarantine then concludes no quarantine is in progress and
+// re-cordons a node it has already handled.
+var QuarantineAnnotationKeys = []string{
+	QuarantineHealthEventAnnotationKey,
+	QuarantineHealthEventAppliedTaintsAnnotationKey,
+	QuarantineHealthEventAppliedLabelsAnnotationKey,
+	QuarantineHealthEventIsCordonedAnnotationKey,
+	QuarantineHealthEventCordonPreExistingAnnotationKey,
+	QuarantinedNodeUncordonedManuallyAnnotationKey,
+	QuarantinedNodeIsUntaintedManuallyAnnotationKey,
+	QuarantineValidationHealthEventAnnotationKey,
+}
