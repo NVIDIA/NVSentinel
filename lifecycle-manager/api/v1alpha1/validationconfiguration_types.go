@@ -79,11 +79,12 @@ type NewNodeValidationConfig struct {
 	// Condition is the node condition type the controller uses to track whether a node has
 	// already been validated. The controller requires this condition to be absent or false before
 	// targeting a node, and sets it to True once a ValidationRequest is created.
-	// +optional
+	// +required
 	Condition corev1.NodeConditionType `json:"condition,omitempty"`
 
 	// Criteria are CEL expressions evaluated against each node to determine whether it requires
-	// new node validation. All expressions must evaluate to true.
+	// new node validation. All expressions must evaluate to true. If empty, every node missing
+	// the condition is considered eligible.
 	// +optional
 	Criteria []CriteriaSpec `json:"criteria,omitempty"`
 
@@ -91,10 +92,10 @@ type NewNodeValidationConfig struct {
 	// +optional
 	NewNodeTests []string `json:"newNodeTests,omitempty"`
 
-	// BatchPeriod is the window during which the controller collects eligible new nodes before
-	// creating a ValidationRequest for them as a batch.
-	// +optional
-	BatchPeriod metav1.Duration `json:"batchPeriod,omitempty"`
+	// BatchPeriodSeconds is the number of seconds during which the controller collects eligible new
+	// nodes before creating a ValidationRequest for them as a batch.
+	// +required
+	BatchPeriodSeconds int64 `json:"batchPeriodSeconds,omitempty"`
 }
 
 // CriteriaSpec is a named CEL expression evaluated against a node and its pods.
