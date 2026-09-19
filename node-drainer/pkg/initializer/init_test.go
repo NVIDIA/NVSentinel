@@ -89,7 +89,7 @@ func TestInitializeKubernetesClient_RateLimitScenarios_InitializedInformersUseCo
 
 			notReadyTimeoutMinutes := 10
 			initializedInformers, initErr := initializeInformers(
-				clientset, &notReadyTimeoutMinutes, false, false, "kube-system",
+				clientset, &notReadyTimeoutMinutes, false, false, "kube-system", nil,
 			)
 			require.NoError(t, initErr)
 

@@ -109,10 +109,18 @@ partialDrainEntityMetricEnabled: false
 # Custom drain configuration for extensible drain handling
 # When enabled, node-drainer creates a customer-defined CR from a template instead of evicting pods directly
 # The customer controller is responsible for draining pods and updating the CR status
-# Mutually exclusive with userNamespaces and podDrainPolicies (only one can be enabled)
+# Mutually exclusive with userNamespaces and podDrainPolicies, unless nodeSelector scopes
+# custom drain to part of the cluster
 customDrain:
   # Enable custom drain mechanism
   enabled: false
+
+  # Restrict custom drain to the nodes matching this label selector, using standard
+  # label selector syntax (e.g. "scheduler=slurm", "scheduler in (slurm,lsf)").
+  # Nodes that do not match keep the built-in eviction path, so userNamespaces or
+  # podDrainPolicies must stay configured for them.
+  # Empty sends every node through custom drain.
+  nodeSelector: ""
 
   # Name of the ConfigMap containing the drain template
   # Customer must create this ConfigMap with the drain template file
