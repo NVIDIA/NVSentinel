@@ -27,7 +27,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1329,9 +1328,15 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		require.Len(t, labeler.informersSynced, 4)
 	})
 
+	// The remaining cases exercise discovery against a real API server: with
+	// resource.k8s.io/v1 served (Kubernetes 1.34+) and with it switched off, as
+	// on 1.33. A fake clientset cannot stand in here because the assertion is
+	// that the informer is created and syncs against the served API.
 	t.Run("ResourceSlice expression creates ResourceSlice informer when the API is served", func(t *testing.T) {
+		cli := startEnvtestClientset(t)
+
 		labeler, err := NewLabeler(
-			fakeClientsetWithResourceSliceAPI(),
+			cli,
 			time.Minute,
 			"nvidia-dcgm",
 			"nvidia-driver-daemonset",
@@ -1350,13 +1355,19 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 			labeler.resourceSliceInformer.GetIndexer().GetIndexers(),
 			devicecounts.ResourceSliceNodeNameIndex,
 		)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		go labeler.resourceSliceInformer.Run(ctx.Done())
+		require.True(t, cache.WaitForCacheSync(ctx.Done(), labeler.resourceSliceInformer.HasSynced))
 	})
 
 	t.Run("ResourceSlice expression without resource.k8s.io/v1 skips the informer", func(t *testing.T) {
-		// The plain fake clientset serves no API groups, mirroring a Kubernetes
-		// 1.33 API server that does not have resource.k8s.io/v1.
+		cli := startEnvtestClientset(t, "resource.k8s.io/v1=false")
+
 		labeler, err := NewLabeler(
-			fake.NewSimpleClientset(),
+			cli,
 			time.Minute,
 			"nvidia-dcgm",
 			"nvidia-driver-daemonset",
@@ -1372,46 +1383,52 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		require.Len(t, labeler.informersSynced, 4)
 		require.Nil(t, labeler.loadResourceSlicesForNode(&corev1.Node{Name: "node-a"}))
 	})
-
-	t.Run("resource.k8s.io/v1 served without resourceslices skips the informer", func(t *testing.T) {
-		clientset := fake.NewSimpleClientset()
-		clientset.Fake.Resources = []*metav1.APIResourceList{{
-			GroupVersion: resourcev1.SchemeGroupVersion.String(),
-			APIResources: []metav1.APIResource{{Name: "deviceclasses", Kind: "DeviceClass"}},
-		}}
-
-		labeler, err := NewLabeler(
-			clientset,
-			time.Minute,
-			"nvidia-dcgm",
-			"nvidia-driver-daemonset",
-			"nvidia-driver-installer",
-			"",
-			false,
-			false,
-			testResourceSliceDeviceCountConfig(),
-			false,
-		)
-		require.NoError(t, err)
-		require.Nil(t, labeler.resourceSliceInformer)
-	})
 }
 
-// fakeClientsetWithResourceSliceAPI returns a fake clientset whose discovery
-// serves resource.k8s.io/v1 resourceslices, as a Kubernetes 1.34+ API server does.
-func fakeClientsetWithResourceSliceAPI(objects ...k8sruntime.Object) *fake.Clientset {
-	clientset := fake.NewSimpleClientset(objects...)
-	clientset.Fake.Resources = []*metav1.APIResourceList{{
-		GroupVersion: resourcev1.SchemeGroupVersion.String(),
-		APIResources: []metav1.APIResource{{
-			Name:       "resourceslices",
-			Kind:       "ResourceSlice",
-			Namespaced: false,
-			Verbs:      metav1.Verbs{"get", "list", "watch"},
-		}},
-	}}
+// TestNewLabeler_ResourceSliceDiscoveryError covers the one discovery outcome
+// a real API server cannot be made to produce: an error other than NotFound
+// must fail NewLabeler so start-up fails instead of silently disabling DRA
+// counting. A fake is used only because envtest cannot inject this response.
+func TestNewLabeler_ResourceSliceDiscoveryError(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	clientset.Fake.PrependReactor("get", "resource", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+		return true, nil, errors.NewInternalError(fmt.Errorf("discovery unavailable"))
+	})
 
-	return clientset
+	_, err := NewLabeler(
+		clientset,
+		time.Minute,
+		"nvidia-dcgm",
+		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
+		"",
+		false,
+		false,
+		testResourceSliceDeviceCountConfig(),
+		false,
+	)
+	require.ErrorContains(t, err, "discover ResourceSlice API")
+	require.ErrorContains(t, err, "discovery unavailable")
+}
+
+// startEnvtestClientset starts an envtest control plane for the calling test,
+// optionally with extra --runtime-config entries, and returns a clientset.
+func startEnvtestClientset(t *testing.T, runtimeConfig ...string) kubernetes.Interface {
+	t.Helper()
+
+	testEnv := &envtest.Environment{}
+	if len(runtimeConfig) > 0 {
+		testEnv.ControlPlane.GetAPIServer().Configure().Append("runtime-config", runtimeConfig...)
+	}
+
+	cfg, err := testEnv.Start()
+	require.NoError(t, err, "failed to setup envtest")
+	t.Cleanup(func() { _ = testEnv.Stop() })
+
+	cli, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	return cli
 }
 
 func TestLabelerNodeRequiresReconciliation_DeviceCountLabels(t *testing.T) {
