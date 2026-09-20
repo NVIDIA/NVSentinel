@@ -16,6 +16,7 @@ package devicecounts
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -215,13 +216,17 @@ func TestMissingPeerResourceSlicesDoNotLowerExpectedDeviceCount(t *testing.T) {
 	require.Equal(t, "5", targetNode.Labels[testNICCountExpectedLabel])
 }
 
+// testResourceSlice returns a single-slice pool. Each slice is its own pool so
+// that tests adding several slices to one node stay consistent with the DRA
+// contract (a pool declaring resourceSliceCount=1 must contain exactly one
+// slice); multi-slice pools are modelled explicitly with pooledSlice.
 func testResourceSlice(name, nodeName string, devices ...resourcev1.Device) *resourcev1.ResourceSlice {
 	return &resourcev1.ResourceSlice{
 		Name: name,
 		Spec: resourcev1.ResourceSliceSpec{
 			Driver: "dra.networking.k8s.aws",
 			Pool: resourcev1.ResourcePool{
-				Name:               nodeName,
+				Name:               nodeName + "/" + name,
 				Generation:         1,
 				ResourceSliceCount: 1,
 			},
@@ -369,8 +374,36 @@ sum(resourceSlices
 	require.NotContains(t, cpuNode.Labels, testGPUCountExpectedLabel)
 }
 
-func TestResourceSliceDriverWithoutSlicesFromDriverIsMissingSource(t *testing.T) {
-	config := Config{
+// pooledSlice builds a gpu.nvidia.com slice belonging to a named pool with an
+// explicit generation and slice count, so tests can model driver rollouts.
+func pooledSlice(name, nodeName, pool string, generation, sliceCount int64, gpus int) *resourcev1.ResourceSlice {
+	devices := make([]resourcev1.Device, 0, gpus)
+	for i := 0; i < gpus; i++ {
+		devices = append(devices, resourcev1.Device{
+			Name: fmt.Sprintf("%s-gpu-%d", name, i),
+			Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
+				"type": *stringAttribute("gpu"),
+			},
+		})
+	}
+
+	return &resourcev1.ResourceSlice{
+		Name: name,
+		Spec: resourcev1.ResourceSliceSpec{
+			Driver: "gpu.nvidia.com",
+			Pool: resourcev1.ResourcePool{
+				Name:               pool,
+				Generation:         generation,
+				ResourceSliceCount: sliceCount,
+			},
+			NodeName: &nodeName,
+			Devices:  devices,
+		},
+	}
+}
+
+func gpuDRATestConfig() Config {
+	return Config{
 		Enabled: true,
 		Classes: []ClassConfig{{
 			Name:    "gpu-dra",
@@ -380,40 +413,77 @@ func TestResourceSliceDriverWithoutSlicesFromDriverIsMissingSource(t *testing.T)
 				Expected: testGPUCountExpectedLabel,
 			},
 			ResourceSliceDriver: "gpu.nvidia.com",
-			// The expression never names resourceSlices; the driver alone makes
-			// the class ResourceSlice-backed so it is skipped, not evaluated to 7.
-			CurrentExpression: "7",
+			CurrentExpression: `
+sum(resourceSlices
+  .filter(rs, has(rs.spec.devices))
+  .map(rs, rs.spec.devices
+    .filter(d, has(d.attributes) && 'type' in d.attributes &&
+      has(d.attributes['type'].string) && d.attributes['type'].string == 'gpu')
+    .size()))`,
 		}},
 	}
+}
 
-	node := testNode("node-a", map[string]string{})
-	foreignSlices := []*resourcev1.ResourceSlice{
-		testResourceSlice("nic-slice", node.Name, testDevice("roce-a", stringAttribute("roce"))),
-	}
+func evaluateGPUDRA(t *testing.T, node *corev1.Node, slices []*resourcev1.ResourceSlice) bool {
+	t.Helper()
 
-	manager := newTestManager(t, config)
-	require.True(t, manager.RequiresResourceSlices())
-
-	updated := manager.CalculateAndSetDeviceCountLabels(
+	return newTestManager(t, gpuDRATestConfig()).CalculateAndSetDeviceCountLabels(
 		context.Background(),
 		node,
 		[]*corev1.Node{node},
-		func(*corev1.Node) []*resourcev1.ResourceSlice { return foreignSlices },
+		func(*corev1.Node) []*resourcev1.ResourceSlice { return slices },
 	)
+}
 
+// TestResourceSlicePoolGenerationAndCompleteness is the single check for
+// completePoolSlices: a driver republishes its pool (generation 3, two slices)
+// while the old single-slice generation 2 is still in the informer.
+func TestResourceSlicePoolGenerationAndCompleteness(t *testing.T) {
+	node := testNode("node-a", map[string]string{})
+	stale := pooledSlice("old", node.Name, node.Name, 2, 1, 8)
+
+	// Only one of the two new slices is visible: neither the stale 8 nor the
+	// partial 4 may be labelled.
+	updated := evaluateGPUDRA(t, node, []*resourcev1.ResourceSlice{
+		stale, pooledSlice("part-1", node.Name, node.Name, 3, 2, 4),
+	})
 	require.False(t, updated)
 	require.Empty(t, node.Labels)
 
-	nvidiaSlice := testResourceSlice("gpu-slice", node.Name)
-	nvidiaSlice.Spec.Driver = "gpu.nvidia.com"
+	// Second slice arrives: the new generation is complete and summed, the stale
+	// generation is ignored rather than double-counted.
+	updated = evaluateGPUDRA(t, node, []*resourcev1.ResourceSlice{
+		stale,
+		pooledSlice("part-1", node.Name, node.Name, 3, 2, 4),
+		pooledSlice("part-2", node.Name, node.Name, 3, 2, 3),
+	})
+	require.True(t, updated)
+	require.Equal(t, "7", node.Labels[testGPUCountCurrentLabel])
+}
 
-	updated = manager.CalculateAndSetDeviceCountLabels(
+func TestResourceSlicePoolIncompletePeerDoesNotRaiseExpected(t *testing.T) {
+	target := testNode("target", map[string]string{})
+	peer := testNode("peer", map[string]string{})
+
+	slicesByNode := map[string][]*resourcev1.ResourceSlice{
+		target.Name: {pooledSlice("t", target.Name, target.Name, 1, 1, 4)},
+		// Peer pool claims 2 slices at generation 5 but only one (with 8 GPUs) is
+		// visible; a stale generation 4 slice with 16 GPUs is also present.
+		peer.Name: {
+			pooledSlice("p-stale", peer.Name, peer.Name, 4, 1, 16),
+			pooledSlice("p-new-1", peer.Name, peer.Name, 5, 2, 8),
+		},
+	}
+
+	updated := newTestManager(t, gpuDRATestConfig()).CalculateAndSetDeviceCountLabels(
 		context.Background(),
-		node,
-		[]*corev1.Node{node},
-		func(*corev1.Node) []*resourcev1.ResourceSlice { return []*resourcev1.ResourceSlice{nvidiaSlice} },
+		target,
+		[]*corev1.Node{target, peer},
+		func(n *corev1.Node) []*resourcev1.ResourceSlice { return slicesByNode[n.Name] },
 	)
 
 	require.True(t, updated)
-	require.Equal(t, "7", node.Labels[testGPUCountCurrentLabel])
+	require.Equal(t, "4", target.Labels[testGPUCountCurrentLabel])
+	require.Equal(t, "4", target.Labels[testGPUCountExpectedLabel],
+		"neither the stale 16 nor the partial 8 from the peer may raise the baseline")
 }

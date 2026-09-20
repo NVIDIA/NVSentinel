@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1328,9 +1329,9 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		require.Len(t, labeler.informersSynced, 4)
 	})
 
-	t.Run("ResourceSlice expression creates ResourceSlice informer", func(t *testing.T) {
+	t.Run("ResourceSlice expression creates ResourceSlice informer when the API is served", func(t *testing.T) {
 		labeler, err := NewLabeler(
-			clientset,
+			fakeClientsetWithResourceSliceAPI(),
 			time.Minute,
 			"nvidia-dcgm",
 			"nvidia-driver-daemonset",
@@ -1350,6 +1351,67 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 			devicecounts.ResourceSliceNodeNameIndex,
 		)
 	})
+
+	t.Run("ResourceSlice expression without resource.k8s.io/v1 skips the informer", func(t *testing.T) {
+		// The plain fake clientset serves no API groups, mirroring a Kubernetes
+		// 1.33 API server that does not have resource.k8s.io/v1.
+		labeler, err := NewLabeler(
+			fake.NewSimpleClientset(),
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			false,
+			testResourceSliceDeviceCountConfig(),
+			false,
+		)
+		require.NoError(t, err)
+		require.Nil(t, labeler.resourceSliceInformer)
+		require.Len(t, labeler.informersSynced, 4)
+		require.Nil(t, labeler.loadResourceSlicesForNode(&corev1.Node{Name: "node-a"}))
+	})
+
+	t.Run("resource.k8s.io/v1 served without resourceslices skips the informer", func(t *testing.T) {
+		clientset := fake.NewSimpleClientset()
+		clientset.Fake.Resources = []*metav1.APIResourceList{{
+			GroupVersion: resourcev1.SchemeGroupVersion.String(),
+			APIResources: []metav1.APIResource{{Name: "deviceclasses", Kind: "DeviceClass"}},
+		}}
+
+		labeler, err := NewLabeler(
+			clientset,
+			time.Minute,
+			"nvidia-dcgm",
+			"nvidia-driver-daemonset",
+			"nvidia-driver-installer",
+			"",
+			false,
+			false,
+			testResourceSliceDeviceCountConfig(),
+			false,
+		)
+		require.NoError(t, err)
+		require.Nil(t, labeler.resourceSliceInformer)
+	})
+}
+
+// fakeClientsetWithResourceSliceAPI returns a fake clientset whose discovery
+// serves resource.k8s.io/v1 resourceslices, as a Kubernetes 1.34+ API server does.
+func fakeClientsetWithResourceSliceAPI(objects ...k8sruntime.Object) *fake.Clientset {
+	clientset := fake.NewSimpleClientset(objects...)
+	clientset.Fake.Resources = []*metav1.APIResourceList{{
+		GroupVersion: resourcev1.SchemeGroupVersion.String(),
+		APIResources: []metav1.APIResource{{
+			Name:       "resourceslices",
+			Kind:       "ResourceSlice",
+			Namespaced: false,
+			Verbs:      metav1.Verbs{"get", "list", "watch"},
+		}},
+	}}
+
+	return clientset
 }
 
 func TestLabelerNodeRequiresReconciliation_DeviceCountLabels(t *testing.T) {
@@ -1463,7 +1525,6 @@ func TestLabelerNodeRequiresReconciliation_AllocatableChanges(t *testing.T) {
 		require.False(t, labeler.nodeRequiresReconciliation(oldNode, newNode))
 	})
 }
-
 
 func testDeviceCountConfig() devicecounts.Config {
 	return devicecounts.Config{
@@ -2239,7 +2300,7 @@ func TestCalculateAndSetNodeLabels_KataAndDriverLabelsMissing_AppliesBoth(t *tes
 	require.NoError(t, podInformer.GetStore().Add(&corev1.Pod{
 		Name:   "driver-pod",
 		Labels: map[string]string{"app": "nvidia-driver-daemonset"},
-		Spec: corev1.PodSpec{NodeName: node.Name},
+		Spec:   corev1.PodSpec{NodeName: node.Name},
 		Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{
 			Type:   corev1.PodReady,
 			Status: corev1.ConditionTrue,

@@ -140,7 +140,8 @@ type partitionExpectedKey struct {
 // cachedCurrentCount records the result of evaluating one class for one peer.
 //
 // Exactly one result state is meaningful:
-//   - missingSource is true when a ResourceSlice-backed class has no slices;
+//   - missingSource is true when a ResourceSlice-backed class has no slices, or
+//     a relevant pool has not published all slices of its latest generation;
 //   - err is non-nil when CEL evaluation failed; or
 //   - count is valid when missingSource is false and err is nil.
 //
@@ -265,14 +266,15 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 	nodeResourceSlices := p.cachedResourceSlicesForNode(node)
 
 	for classIndex, class := range p.manager.classes {
-		resourceSlices := class.resourceSlicesForClass(nodeResourceSlices)
+		resourceSlices, complete := class.resourceSlicesForClass(nodeResourceSlices)
 
 		// Do not turn a missing DRA source into current=0. A ResourceSlice-based
-		// expression should wait until at least one associated slice exists.
-		if class.referencesResourceSlices() && len(resourceSlices) == 0 {
+		// expression should wait until at least one associated slice exists and
+		// every pool has published all slices of its latest generation.
+		if class.referencesResourceSlices() && (len(resourceSlices) == 0 || !complete) {
 			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
-			slog.Warn("Skipping device count label update because no ResourceSlices are associated with the node",
-				"node", node.Name, "class", class.Name)
+			slog.Warn("Skipping device count label update because the node has no complete ResourceSlice source",
+				"node", node.Name, "class", class.Name, "complete", complete)
 
 			continue
 		}
@@ -442,6 +444,12 @@ func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
 	if strings.TrimSpace(classConfig.CurrentExpression) == "" {
 		return fmt.Errorf(
 			"expectedDeviceCounts.classes[%d] (%s): currentExpression is required",
+			index, classConfig.Name)
+	}
+
+	if classConfig.ResourceSliceDriver != "" && !strings.Contains(classConfig.CurrentExpression, "resourceSlices") {
+		return fmt.Errorf(
+			"expectedDeviceCounts.classes[%d] (%s): resourceSliceDriver requires currentExpression to reference resourceSlices",
 			index, classConfig.Name)
 	}
 
@@ -724,9 +732,9 @@ func (p *ReconcileCache) currentDeviceCountForPeer(
 
 	cached, ok := p.peerCurrentCounts[key]
 	if !ok {
-		peerResourceSlices := class.resourceSlicesForClass(p.cachedResourceSlicesForNode(peer))
+		peerResourceSlices, complete := class.resourceSlicesForClass(p.cachedResourceSlicesForNode(peer))
 
-		cached.missingSource = class.referencesResourceSlices() && len(peerResourceSlices) == 0
+		cached.missingSource = class.referencesResourceSlices() && (len(peerResourceSlices) == 0 || !complete)
 		if !cached.missingSource {
 			cached.count, cached.err = p.manager.evaluateCurrent(ctx, class, peer, peerResourceSlices)
 		}
@@ -778,23 +786,25 @@ func (class compiledClass) expectedOverride(node *corev1.Node) (int, bool) {
 func (class compiledClass) referencesResourceSlices() bool {
 	// This cheap check is only used to distinguish "missing DRA source" from a
 	// legitimate zero count. Expressions that do not reference ResourceSlices can
-	// still evaluate from node labels alone. A class pinned to a DRA driver is
-	// ResourceSlice-backed even if its expression never names the variable.
-	return class.ResourceSliceDriver != "" || strings.Contains(class.CurrentExpression, "resourceSlices")
+	// still evaluate from node labels alone.
+	return strings.Contains(class.CurrentExpression, "resourceSlices")
 }
 
 // resourceSlicesForClass narrows a node's ResourceSlices to the class's
-// configured DRA driver. Without a configured driver all slices are returned,
-// so a node that only carries slices from unrelated drivers (for example a NIC
-// DRA driver on a device-plugin GPU node) does not satisfy a GPU class's source.
+// configured DRA driver and normalises them to the current, complete pool
+// generation (see completePoolSlices). Without a configured driver all
+// drivers' slices are considered, so a node that only carries slices from
+// unrelated drivers (for example a NIC DRA driver on a device-plugin GPU node)
+// does not satisfy a GPU class's source. complete is false while a relevant
+// pool has not yet published every slice of its latest generation.
 func (class compiledClass) resourceSlicesForClass(
 	resourceSlices []*resourcev1.ResourceSlice,
-) []*resourcev1.ResourceSlice {
+) (filtered []*resourcev1.ResourceSlice, complete bool) {
 	if class.ResourceSliceDriver == "" {
-		return resourceSlices
+		return completePoolSlices(resourceSlices)
 	}
 
-	filtered := make([]*resourcev1.ResourceSlice, 0, len(resourceSlices))
+	filtered = make([]*resourcev1.ResourceSlice, 0, len(resourceSlices))
 
 	for _, resourceSlice := range resourceSlices {
 		if resourceSlice != nil && resourceSlice.Spec.Driver == class.ResourceSliceDriver {
@@ -802,7 +812,7 @@ func (class compiledClass) resourceSlicesForClass(
 		}
 	}
 
-	return filtered
+	return completePoolSlices(filtered)
 }
 
 // referencesNodeResources is a cheap heuristic mirroring referencesResourceSlices.

@@ -75,3 +75,64 @@ func resourceSliceNodeName(resourceSlice *resourcev1.ResourceSlice) (string, boo
 
 	return *resourceSlice.Spec.NodeName, true
 }
+
+// poolKey identifies one ResourcePool: a driver may publish several pools and
+// pool names are only unique within a driver.
+type poolKey struct {
+	driver string
+	pool   string
+}
+
+// completePoolSlices applies the ResourceSlice consumer contract from the
+// Kubernetes DRA API: within each driver/pool only the slices carrying the
+// highest spec.pool.generation are current, and a pool is only usable once
+// exactly spec.pool.resourceSliceCount slices of that generation are visible.
+// During a driver rollout both generations can coexist in the informer, and a
+// multi-slice pool is published one object at a time, so counting the raw
+// slices would double-count or under-count devices.
+//
+// Stale generations are dropped. If any remaining pool is incomplete the
+// function reports complete=false and callers must skip the update instead of
+// labelling a partial inventory.
+func completePoolSlices(resourceSlices []*resourcev1.ResourceSlice) (
+	current []*resourcev1.ResourceSlice, complete bool) {
+	latestGeneration := make(map[poolKey]int64)
+
+	for _, resourceSlice := range resourceSlices {
+		if resourceSlice == nil {
+			continue
+		}
+
+		key := poolKey{driver: resourceSlice.Spec.Driver, pool: resourceSlice.Spec.Pool.Name}
+		if generation, ok := latestGeneration[key]; !ok || resourceSlice.Spec.Pool.Generation > generation {
+			latestGeneration[key] = resourceSlice.Spec.Pool.Generation
+		}
+	}
+
+	observed := make(map[poolKey]int64)
+	expected := make(map[poolKey]int64)
+	current = make([]*resourcev1.ResourceSlice, 0, len(resourceSlices))
+
+	for _, resourceSlice := range resourceSlices {
+		if resourceSlice == nil {
+			continue
+		}
+
+		key := poolKey{driver: resourceSlice.Spec.Driver, pool: resourceSlice.Spec.Pool.Name}
+		if resourceSlice.Spec.Pool.Generation != latestGeneration[key] {
+			continue // stale generation superseded by a newer publication
+		}
+
+		observed[key]++
+		expected[key] = resourceSlice.Spec.Pool.ResourceSliceCount
+		current = append(current, resourceSlice)
+	}
+
+	for key, want := range expected {
+		if observed[key] != want {
+			return current, false
+		}
+	}
+
+	return current, true
+}

@@ -147,6 +147,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}
 
 	var resourceSliceInformer cache.SharedIndexInformer
+
 	if deviceCounts.RequiresResourceSlices() {
 		// resource.k8s.io/v1 is only served from Kubernetes 1.34. Watching it on an
 		// older API server would never sync and block every label write, so the

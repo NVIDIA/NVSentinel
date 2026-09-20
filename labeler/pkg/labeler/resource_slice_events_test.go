@@ -300,7 +300,7 @@ func testResourceSliceForNode(name, nodeName string) *resourcev1.ResourceSlice {
 		Spec: resourcev1.ResourceSliceSpec{
 			NodeName: &nodeName,
 			Pool: resourcev1.ResourcePool{
-				Name:               nodeName,
+				Name:               nodeName + "/" + name,
 				Generation:         1,
 				ResourceSliceCount: 1,
 			},
