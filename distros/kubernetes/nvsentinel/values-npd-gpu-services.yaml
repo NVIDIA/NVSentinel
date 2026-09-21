@@ -73,8 +73,7 @@ kubernetes-object-monitor:
         expression: |
           resource.status.conditions.exists(c,
             c.type == "FabricManagerDown" &&
-            c.status == "True" &&
-            c.reason == "FabricManagerNotActive")
+            c.status != "False")
       healthEvent:
         componentClass: Node
         isFatal: true
@@ -96,8 +95,7 @@ kubernetes-object-monitor:
         expression: |
           resource.status.conditions.exists(c,
             c.type == "FabricManagerFlapping" &&
-            c.status == "True" &&
-            c.reason == "FabricManagerFlapping")
+            c.status != "False")
       healthEvent:
         componentClass: Node
         isFatal: true
@@ -121,8 +119,7 @@ kubernetes-object-monitor:
         expression: |
           resource.status.conditions.exists(c,
             c.type == "FabricManagerNotInstalled" &&
-            c.status == "True" &&
-            c.reason == "FabricManagerUnitNotFound")
+            c.status != "False")
       healthEvent:
         componentClass: Node
         isFatal: true
@@ -145,8 +142,7 @@ kubernetes-object-monitor:
         expression: |
           resource.status.conditions.exists(c,
             c.type == "NvidiaPersistencedDown" &&
-            c.status == "True" &&
-            c.reason == "NvidiaPersistencedNotActive")
+            c.status != "False")
       healthEvent:
         componentClass: Node
         isFatal: false
