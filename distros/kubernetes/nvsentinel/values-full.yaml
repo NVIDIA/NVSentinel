@@ -214,6 +214,11 @@ global:
   janitor:
     enabled: false
 
+  # Lifecycle Manager - manages node validation and maintenance requests
+  # Requires: cert-manager or OpenShift service CA
+  lifecycleManager:
+    enabled: false
+
   # CSP Health Monitor - monitors cloud provider maintenance events
   # Detects scheduled maintenance windows from cloud provider APIs
   # Supports: GCP (Compute Engine), AWS (EC2)
@@ -442,6 +447,21 @@ platformConnector:
 # Health monitors connect to platform-connectors via this socket
 # Must be accessible by both monitors and platform-connectors
 socketPath: "/var/run/nvsentinel.sock"
+
+################################################################################
+# LIFECYCLE-MANAGER MODULE CONFIGURATION
+#
+# Controls the independent validation and maintenance request controllers.
+################################################################################
+lifecycle-manager:
+  controllers:
+    # Runs configured validation tests before returning nodes to service.
+    validationRequest:
+      enabled: true
+    # Publishes opening and clearing health events for MaintenanceRequests.
+    # Disabled by default because this is an opt-in API.
+    maintenanceRequest:
+      enabled: false
 
 ################################################################################
 # FAULT-QUARANTINE MODULE CONFIGURATION

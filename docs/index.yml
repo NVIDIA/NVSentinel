@@ -112,6 +112,8 @@ navigation:
         path: configuration/nvcre-certification-monitor.md
       - page: Fault Quarantine
         path: configuration/fault-quarantine.md
+      - page: Lifecycle Manager
+        path: configuration/lifecycle-manager.md
       - page: Node Drainer
         path: configuration/node-drainer.md
       - page: Fault Remediation
