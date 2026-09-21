@@ -277,7 +277,7 @@ func TestLookupChaining(t *testing.T) {
 	}
 }
 
-func TestNPDConditionEvaluation(t *testing.T) {
+func TestNPDConditionEvaluation_ConditionStatus_ExpectedHealthState(t *testing.T) {
 	nodeWithStatus := func(conditions []any) map[string]any {
 		return map[string]any{
 			"status": map[string]any{
