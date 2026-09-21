@@ -1,0 +1,170 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: mongodb networkpolicy
+templates:
+  - templates/networkpolicy.yaml
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+tests:
+  - it: renders default ingress rules when usePerconaOperator is false
+    set:
+      useBitnami: true
+      usePerconaOperator: false
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 27017
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: nvsentinel
+      - isNull:
+          path: spec.ingress[1]
+
+  - it: separates port 27017 and port 9216 when usePerconaOperator is true
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 27017
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: nvsentinel
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 9216
+      - equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: nvsentinel
+      - lengthEqual:
+          path: spec.ingress[1].from
+          count: 1
+
+  - it: allows additional scrape namespaces for port 9216 while keeping port 27017 restricted
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      networkPolicy:
+        additionalScrapeNamespaces:
+          - monitoring
+          - prometheus
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 27017
+      - lengthEqual:
+          path: spec.ingress[0].from
+          count: 1
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: nvsentinel
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 9216
+      - lengthEqual:
+          path: spec.ingress[1].from
+          count: 3
+      - equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: nvsentinel
+      - equal:
+          path: spec.ingress[1].from[1].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: monitoring
+      - equal:
+          path: spec.ingress[1].from[2].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: prometheus
+
+  - it: allows additional scrape rules for port 9216
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      networkPolicy:
+        additionalScrapeRules:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: prometheus
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 9216
+      - lengthEqual:
+          path: spec.ingress[1].from
+          count: 2
+      - equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: nvsentinel
+      - equal:
+          path: spec.ingress[1].from[1].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: prometheus
+
+  - it: allows scrape namespaces configured under legacy mongodb.networkPolicy
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      mongodb:
+        networkPolicy:
+          additionalScrapeNamespaces:
+            - monitoring
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 9216
+      - lengthEqual:
+          path: spec.ingress[1].from
+          count: 2
+      - equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: nvsentinel
+      - equal:
+          path: spec.ingress[1].from[1].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: monitoring
+
+  - it: allows scrape rules configured under legacy mongodb.networkPolicy
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      mongodb:
+        networkPolicy:
+          additionalScrapeRules:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: prometheus
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 9216
+      - lengthEqual:
+          path: spec.ingress[1].from
+          count: 2
+      - equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: nvsentinel
+      - equal:
+          path: spec.ingress[1].from[1].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: prometheus
