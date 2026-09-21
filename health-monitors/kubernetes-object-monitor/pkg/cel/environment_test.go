@@ -276,3 +276,138 @@ func TestLookupChaining(t *testing.T) {
 		t.Errorf("expected 'True', got %v", result)
 	}
 }
+
+func TestNPDConditionEvaluation(t *testing.T) {
+	nodeWithStatus := func(conditions []any) map[string]any {
+		return map[string]any{
+			"status": map[string]any{
+				"conditions": conditions,
+			},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		resource   any
+		expectValA bool
+		expectValB bool
+		expectValC bool
+	}{
+		{
+			name: "condition True reports unhealthy",
+			resource: nodeWithStatus([]any{
+				map[string]any{
+					"type":   "FabricManagerDown",
+					"status": "True",
+					"reason": "FabricManagerNotActive",
+				},
+			}),
+			expectValA: true,
+			expectValB: true,
+			expectValC: true,
+		},
+		{
+			name: "condition Unknown (probe timeout/crash) reports unhealthy",
+			resource: nodeWithStatus([]any{
+				map[string]any{
+					"type":   "FabricManagerDown",
+					"status": "Unknown",
+					"reason": "PluginTimeout",
+				},
+			}),
+			expectValA: true,
+			expectValB: true,
+			expectValC: true,
+		},
+		{
+			name: "condition False reports healthy",
+			resource: nodeWithStatus([]any{
+				map[string]any{
+					"type":   "FabricManagerDown",
+					"status": "False",
+					"reason": "FabricManagerActive",
+				},
+			}),
+			expectValA: false,
+			expectValB: false,
+			expectValC: false,
+		},
+		{
+			name: "condition absent reports healthy for exists checks, unhealthy for must-exist",
+			resource: nodeWithStatus([]any{
+				map[string]any{
+					"type":   "Ready",
+					"status": "True",
+				},
+			}),
+			expectValA: false,
+			expectValB: false,
+			expectValC: true,
+		},
+		{
+			name:       "empty conditions list reports healthy for exists checks, unhealthy for must-exist",
+			resource:   nodeWithStatus([]any{}),
+			expectValA: false,
+			expectValB: false,
+			expectValC: true,
+		},
+		{
+			name: "multiple conditions with Unknown reports unhealthy",
+			resource: nodeWithStatus([]any{
+				map[string]any{
+					"type":   "Ready",
+					"status": "True",
+				},
+				map[string]any{
+					"type":   "FabricManagerDown",
+					"status": "Unknown",
+					"reason": "PluginTimeout",
+				},
+			}),
+			expectValA: true,
+			expectValB: true,
+			expectValC: true,
+		},
+		{
+			name: "multiple conditions with False reports healthy",
+			resource: nodeWithStatus([]any{
+				map[string]any{
+					"type":   "Ready",
+					"status": "True",
+				},
+				map[string]any{
+					"type":   "FabricManagerDown",
+					"status": "False",
+					"reason": "FabricManagerActive",
+				},
+			}),
+			expectValA: false,
+			expectValB: false,
+			expectValC: false,
+		},
+	}
+
+	// Variant A: Condition exists and is non-False (used in NPD overlay values).
+	exprA := `resource.status.conditions.exists(c, c.type == "FabricManagerDown" && c.status != "False")`
+
+	// Variant B: Condition exists and is explicitly True or Unknown.
+	exprB := `resource.status.conditions.exists(c, c.type == "FabricManagerDown" && (c.status == "True" || c.status == "Unknown"))`
+
+	// Variant C: Condition must exist and be False (lack of condition is treated as unhealthy).
+	exprC := `!resource.status.conditions.exists(c, c.type == "FabricManagerDown" && c.status == "False")`
+
+	client := fakeClient()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resA := eval(t, client, exprA, tt.resource)
+			require.Equal(t, tt.expectValA, resA, "Variant A (!= False)")
+
+			resB := eval(t, client, exprB, tt.resource)
+			require.Equal(t, tt.expectValB, resB, "Variant B (True || Unknown)")
+
+			resC := eval(t, client, exprC, tt.resource)
+			require.Equal(t, tt.expectValC, resC, "Variant C (must exist)")
+		})
+	}
+}
