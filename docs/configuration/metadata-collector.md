@@ -77,6 +77,40 @@ metadata-collector:
 
 `additionalHostVolumes`, `additionalVolumeMounts`, and `extraEnv` default to empty lists. Existing RuntimeClass-based installs are unchanged.
 
+## Kubelet Host
+
+Sets the `KUBELET_HOST` environment variable, which tells the collector where to reach the kubelet `/pods` endpoint.
+
+```yaml
+metadata-collector:
+  kubeletHost:
+    valueFrom:
+      fieldRef:
+        fieldPath: status.hostIP
+```
+
+The default resolves the node's own primary IP through the downward API, which works whether the kubelet binds to `0.0.0.0` or to the node IP. A static address also works:
+
+```yaml
+metadata-collector:
+  kubeletHost:
+    value: "10.0.0.1"
+```
+
+Set `kubeletHost: {}` to leave the variable unset, which falls back to `localhost`. An explicit `--kubelet-kubeconfig` overrides this value entirely.
+
+## Pod Mapper Failure Tolerance
+
+Consecutive failed poll cycles the pod mapper tolerates before the container exits non-zero.
+
+```yaml
+metadata-collector:
+  podMapper:
+    maxConsecutiveFailures: 10
+```
+
+The poll period is 30 seconds, so the default rides out five minutes of failures — long enough to outlast a credential rotation or a kubelet restart, short enough to fail loudly when the collector is genuinely broken. The minimum is `1`, which exits on the first failed poll. This value sets the `--pod-mapper-max-consecutive-failures` flag described in [Startup and failure handling](#startup-and-failure-handling).
+
 ## Host-native authentication
 
 Use two explicit kubeconfigs when the collector runs outside a pod:

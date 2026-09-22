@@ -24,7 +24,6 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -174,49 +173,6 @@ func extractMongoDuplicateIndexName(writeErr mongo.WriteError) string {
 	return datastore.HealthEventIdempotencyIndexName
 }
 
-// EnsureHealthEventIdempotencyIndex makes sure the unique partial index that
-// enforces per-event idempotency keys exists with the expected definition. The
-// partial filter covers only documents that carry the key, so existing records
-// need no backfill. An index of the same name with another definition, which
-// CreateOne would refuse with an options conflict, is dropped and recreated:
-// the name is ours, and the index Job is how an operator repairs the index.
-func (c *MongoDBClient) EnsureHealthEventIdempotencyIndex(ctx context.Context) error {
-	switch err := c.VerifyHealthEventIdempotencyIndex(ctx); {
-	case err == nil:
-		return nil
-	case errors.Is(err, datastore.ErrIndexMissing):
-	case errors.Is(err, datastore.ErrIndexBuilding):
-		// Dropping it would abort another session's build; wait for it.
-		return fmt.Errorf("idempotency index %s on collection %s is still being built by another session; retry later: %w",
-			datastore.HealthEventIdempotencyIndexName, c.collection, err)
-	case errors.Is(err, datastore.ErrIndexMismatch):
-		if err := c.mongoCol.Indexes().DropOne(ctx, datastore.HealthEventIdempotencyIndexName); err != nil {
-			return fmt.Errorf("failed to drop mismatched idempotency index %s on collection %s: %w",
-				datastore.HealthEventIdempotencyIndexName, c.collection, err)
-		}
-	default:
-		return err
-	}
-
-	indexModel := mongo.IndexModel{
-		Keys: bson.D{{Key: healthEventIdempotencyKeyDocumentPath, Value: 1}},
-		Options: options.Index().
-			SetName(datastore.HealthEventIdempotencyIndexName).
-			SetUnique(true).
-			SetPartialFilterExpression(bson.D{{
-				Key:   healthEventIdempotencyKeyDocumentPath,
-				Value: bson.D{{Key: "$exists", Value: true}},
-			}}),
-	}
-
-	if _, err := c.mongoCol.Indexes().CreateOne(ctx, indexModel); err != nil {
-		return fmt.Errorf("failed to ensure idempotency index %s on collection %s: %w",
-			datastore.HealthEventIdempotencyIndexName, c.collection, err)
-	}
-
-	return nil
-}
-
 // VerifyHealthEventIdempotencyIndex returns nil only when the idempotency index
 // exists with the expected name, key path, uniqueness, partial predicate, and a
 // completed build. A missing index yields datastore.ErrIndexMissing; any other
@@ -247,8 +203,9 @@ func (c *MongoDBClient) VerifyHealthEventIdempotencyIndex(ctx context.Context) e
 	}
 
 	// The build check comes first: an index another session is still building
-	// is reported as such whatever its definition, so Ensure waits for that
-	// build instead of aborting it as a mismatch.
+	// is reported as ErrIndexBuilding whatever its definition. It wraps
+	// ErrIndexMismatch, so a verifying platform connector treats the index as
+	// not enforcing yet and keeps refusing writes until the build completes.
 	if err := c.verifyMongoIdempotencyIndexBuildComplete(ctx); err != nil {
 		return err
 	}

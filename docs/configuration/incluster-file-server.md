@@ -113,6 +113,43 @@ incluster-file-server:
 #### enabled
 When `true`, deploys the `prometheus-nginxlog-exporter` sidecar and exposes nginx access-log metrics on `metricsPort`. These metrics include request counts, response codes, and `fileserver_disk_space_free_bytes`. Requires a Prometheus installation to scrape the metrics endpoint.
 
+### Cleanup Metrics
+
+Image for the sidecar that exports metrics about the log cleanup job, served on `cleanupMetricsPort` (default `9002`).
+
+```yaml
+incluster-file-server:
+  cleanupMetrics:
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/file-server-cleanup
+      tag: ""
+      pullPolicy: IfNotPresent
+```
+
+An empty `tag` inherits `global.image.tag`. Change these values only when you mirror images into a private registry.
+
+### Security Context
+
+Runs the file server as a non-root user and controls how the persistent volume's ownership is set.
+
+```yaml
+incluster-file-server:
+  podSecurityContext:
+    fsGroup: 101
+    fsGroupChangePolicy: OnRootMismatch
+  containerSecurityContext:
+    runAsUser: 1001
+    runAsGroup: 1001
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+```
+
+Kubernetes sets the volume's group ownership to `fsGroup` and adds that group to the container process as a supplementary group, so the server writes to the volume even though its primary group differs. Changing `fsGroup` without also reconciling the ownership of an existing volume makes the server unable to write to it.
+
+`fsGroupChangePolicy: OnRootMismatch` re-applies ownership only when the volume root does not already match, which avoids a recursive `chown` over a large log archive on every pod start.
+
+`readOnlyRootFilesystem` is `false` because nginx writes its temporary files to the container filesystem.
+
 ### Resources
 
 Defines CPU and memory resource requests and limits for the nginx container.

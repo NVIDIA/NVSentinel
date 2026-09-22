@@ -21,8 +21,8 @@ import (
 )
 
 // The two names below are part of the stored schema: documents carry the field,
-// and the index Job creates the index under this name, which every replica then
-// verifies. Changing either changes what is on disk, so treat them as fixed.
+// and the datastore setup creates the index under this name, which every
+// replica then verifies. Changing either changes what is on disk, so treat them as fixed.
 const (
 	// HealthEventIdempotencyKeyMetadataField is the health event metadata key that
 	// carries the server-derived per-event idempotency key. Documents that contain
@@ -41,10 +41,10 @@ var (
 	ErrIndexMissing = errors.New("idempotency index missing")
 
 	// ErrIndexBuilding indicates the index exists but another session is still
-	// building it (reported by the MongoDB verification; PostgreSQL's Ensure
-	// checks the build progress itself); it wraps ErrIndexMismatch, because
-	// the index does not enforce anything yet, and lets callers wait instead
-	// of replacing it.
+	// building it (reported by the MongoDB verification; on PostgreSQL the
+	// table setup checks the build progress itself). It wraps
+	// ErrIndexMismatch, because the index does not enforce anything yet: a
+	// verifying platform connector refuses writes until the build completes.
 	ErrIndexBuilding = fmt.Errorf("%w: build in progress", ErrIndexMismatch)
 
 	// ErrIndexMismatch indicates an index with the expected name exists but its
@@ -86,7 +86,9 @@ const maxFailureMessageLength = 256
 // insert is ordered and stops at that document: InsertedCount documents before
 // it were stored, DuplicateCount were resends skipped, and the documents after
 // it were not attempted; the caller's retry of the whole batch stores them in
-// order and meets the stored ones as duplicates. Failed carries the server's
+// order and meets the stored ones as duplicates (a duplicate on another unique
+// index is the one answer a retry cannot change, and the deployment platform
+// connector refuses such a batch for good). Failed carries the server's
 // answer about the document, so the reason survives into logs.
 //
 //nolint:errname // cross-module API name, consumed outside this module; mirrors mongo.BulkWriteException

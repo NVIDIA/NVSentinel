@@ -45,10 +45,6 @@ type DatabaseClient interface {
 	Aggregate(ctx context.Context, pipeline any) (Cursor, error)
 
 	// Idempotency index management
-	// EnsureHealthEventIdempotencyIndex idempotently creates the unique partial
-	// index (datastore.HealthEventIdempotencyIndexName) that enforces per-event
-	// idempotency keys on health events.
-	EnsureHealthEventIdempotencyIndex(ctx context.Context) error
 	// VerifyHealthEventIdempotencyIndex returns nil only when the index exists
 	// with the expected name, key path, uniqueness, partial predicate, and a
 	// completed build; otherwise it returns datastore.ErrIndexMissing or

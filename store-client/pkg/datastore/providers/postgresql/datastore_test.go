@@ -16,14 +16,21 @@ package postgresql
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
@@ -319,4 +326,275 @@ func TestPostgreSQLDataStore_HealthEventStore(t *testing.T) {
 	store := ds.HealthEventStore()
 	assert.NotNil(t, store)
 	assert.IsType(t, &PostgreSQLHealthEventStore{}, store)
+}
+
+// TestEnsureIdempotencyIndex: the table setup builds the index concurrently
+// when it is missing, leaves a build another session is running alone,
+// replaces a leftover or a different definition, and reports a build that
+// did not end valid.
+func TestEnsureIdempotencyIndex(t *testing.T) {
+	createStatement := regexp.QuoteMeta(client.CreateIdempotencyIndexStatement)
+	dropStatement := regexp.QuoteMeta(client.DropIdempotencyIndexStatement)
+	verifyQuery := "SELECT i.indisunique"
+	progressQuery := "pg_stat_progress_create_index"
+	verifyColumns := []string{"indisunique", "indisvalid", "indnatts", "indexdef", "predicate"}
+	validIndexDef := "CREATE UNIQUE INDEX healthevent_idempotency_key_unique ON public.health_events " +
+		"USING btree (((document #>> '{healthevent,metadata,idempotencyKey}'::text[]))) " +
+		"WHERE ((document #>> '{healthevent,metadata,idempotencyKey}'::text[]) IS NOT NULL)"
+	validPredicate := "((document #>> '{healthevent,metadata,idempotencyKey}'::text[]) IS NOT NULL)"
+
+	expectIndex := func(mock sqlmock.Sqlmock, valid bool) {
+		mock.ExpectQuery(verifyQuery).
+			WithArgs(datastore.HealthEventIdempotencyIndexName, healthEventsTable).
+			WillReturnRows(sqlmock.NewRows(verifyColumns).AddRow(true, valid, 1, validIndexDef, validPredicate))
+	}
+	expectMissing := func(mock sqlmock.Sqlmock) {
+		mock.ExpectQuery(verifyQuery).
+			WithArgs(datastore.HealthEventIdempotencyIndexName, healthEventsTable).
+			WillReturnRows(sqlmock.NewRows(verifyColumns))
+	}
+	expectBuilding := func(mock sqlmock.Sqlmock, building bool) {
+		mock.ExpectQuery(progressQuery).
+			WithArgs(datastore.HealthEventIdempotencyIndexName, healthEventsTable).
+			WillReturnRows(sqlmock.NewRows([]string{"building"}).AddRow(building))
+	}
+	newDB := func(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
+		t.Helper()
+
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { db.Close() })
+
+		return db, mock
+	}
+
+	t.Run("missing index is built concurrently and verified", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureIdempotencyIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a correct index is left alone", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureIdempotencyIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a build another session is running is left alone", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectIndex(mock, false)
+		expectBuilding(mock, true)
+
+		require.NoError(t, ensureIdempotencyIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("an invalid leftover is dropped and built again", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectIndex(mock, false)
+		expectBuilding(mock, false)
+		mock.ExpectExec(dropStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureIdempotencyIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a valid index with another definition is dropped and built again", func(t *testing.T) {
+		db, mock := newDB(t)
+		mock.ExpectQuery(verifyQuery).
+			WithArgs(datastore.HealthEventIdempotencyIndexName, healthEventsTable).
+			WillReturnRows(sqlmock.NewRows(verifyColumns).AddRow(true, true, 1,
+				strings.Replace(validIndexDef, "IS NOT NULL)", "IS NOT NULL AND (node_name = 'node-a'::text))", 1),
+				"(((document #>> '{healthevent,metadata,idempotencyKey}'::text[]) IS NOT NULL) AND (node_name = 'node-a'::text))"))
+		expectBuilding(mock, false)
+		mock.ExpectExec(dropStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureIdempotencyIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a failed drop is reported and no create follows", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectIndex(mock, false)
+		expectBuilding(mock, false)
+		mock.ExpectExec(dropStatement).WillReturnError(errors.New("lock timeout"))
+
+		err := ensureIdempotencyIndex(context.Background(), db)
+		require.ErrorContains(t, err, "dropping the mismatched idempotency index")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("documents sharing a key stop the build and name the key", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnError(&pq.Error{
+			Code:   pqerror.UniqueViolation,
+			Detail: "Key ((document #>> '{healthevent,metadata,idempotencyKey}'::text[]))=(dup-2) is duplicated.",
+		})
+
+		err := ensureIdempotencyIndex(context.Background(), db)
+		require.ErrorContains(t, err, "share an idempotency key")
+		require.ErrorContains(t, err, "dup-2")
+		require.ErrorContains(t, err, "GROUP BY 1 HAVING count(*) > 1")
+		assert.NoError(t, mock.ExpectationsWereMet(), "no retry: the next build would fail the same way")
+	})
+
+	t.Run("a build that did not end valid is reported", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectIndex(mock, false)
+
+		err := ensureIdempotencyIndex(context.Background(), db)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, datastore.ErrIndexMismatch)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a failed check is reported", func(t *testing.T) {
+		db, mock := newDB(t)
+		mock.ExpectQuery(verifyQuery).
+			WithArgs(datastore.HealthEventIdempotencyIndexName, healthEventsTable).
+			WillReturnError(errors.New("connection refused"))
+
+		err := ensureIdempotencyIndex(context.Background(), db)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "checking the idempotency index")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	// The components start together and their table setup takes strong locks
+	// on the same table, so PostgreSQL may abort the CONCURRENTLY build as a
+	// deadlock victim; the build is then tried again without a wait here.
+	noRetryDelay := func(t *testing.T) {
+		t.Helper()
+
+		previous := idempotencyIndexRetryDelay
+		idempotencyIndexRetryDelay = 0
+
+		t.Cleanup(func() { idempotencyIndexRetryDelay = previous })
+	}
+	deadlock := &pq.Error{Code: pqerror.TRDeadlockDetected, Message: "deadlock detected"}
+
+	t.Run("a build aborted as deadlock victim drops its leftover and is built again", func(t *testing.T) {
+		noRetryDelay(t)
+
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnError(deadlock)
+		expectIndex(mock, false)
+		expectBuilding(mock, false)
+		mock.ExpectExec(dropStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureIdempotencyIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a deadlock victim finds the index another session finished", func(t *testing.T) {
+		noRetryDelay(t)
+
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnError(deadlock)
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureIdempotencyIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a build that keeps losing is reported after the last attempt", func(t *testing.T) {
+		noRetryDelay(t)
+
+		db, mock := newDB(t)
+
+		for range idempotencyIndexBuildAttempts {
+			expectMissing(mock)
+			mock.ExpectExec(createStatement).WillReturnError(deadlock)
+		}
+
+		err := ensureIdempotencyIndex(context.Background(), db)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "building the idempotency index")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a build that fails for another reason is not tried again", func(t *testing.T) {
+		noRetryDelay(t)
+
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnError(errors.New("disk full"))
+
+		err := ensureIdempotencyIndex(context.Background(), db)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "disk full")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+// TestWithSetupLock: the table setup runs once the advisory lock is held,
+// waiting while another component holds it, and releases the lock afterwards,
+// also when the setup fails.
+func TestWithSetupLock(t *testing.T) {
+	setupLockPoll = time.Millisecond
+
+	t.Cleanup(func() { setupLockPoll = time.Second })
+
+	lockQuery := "SELECT pg_try_advisory_lock"
+	unlockQuery := "SELECT pg_advisory_unlock"
+	locked := func(v bool) *sqlmock.Rows { return sqlmock.NewRows([]string{"pg_try_advisory_lock"}).AddRow(v) }
+
+	t.Run("waits for the lock, runs the setup, releases the lock", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { db.Close() })
+
+		mock.ExpectQuery(lockQuery).WithArgs(setupLockKey).WillReturnRows(locked(false))
+		mock.ExpectQuery(lockQuery).WithArgs(setupLockKey).WillReturnRows(locked(true))
+		mock.ExpectExec(unlockQuery).WithArgs(setupLockKey).WillReturnResult(sqlmock.NewResult(0, 0))
+
+		ran := false
+		require.NoError(t, withSetupLock(context.Background(), db, func() error { ran = true; return nil }))
+		assert.True(t, ran)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a failed setup still releases the lock", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { db.Close() })
+
+		mock.ExpectQuery(lockQuery).WithArgs(setupLockKey).WillReturnRows(locked(true))
+		mock.ExpectExec(unlockQuery).WithArgs(setupLockKey).WillReturnResult(sqlmock.NewResult(0, 0))
+
+		err = withSetupLock(context.Background(), db, func() error { return errors.New("setup failed") })
+		require.ErrorContains(t, err, "setup failed")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("gives up with the context while waiting", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { db.Close() })
+
+		mock.ExpectQuery(lockQuery).WithArgs(setupLockKey).WillReturnRows(locked(false))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err = withSetupLock(ctx, db, func() error { t.Fatal("setup must not run"); return nil })
+		require.ErrorIs(t, err, context.Canceled)
+	})
 }

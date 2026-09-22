@@ -125,7 +125,7 @@ Clients retry, so a batch could be stored twice if the server stored it but the 
 The key is enforced per event rather than per batch, because MongoDB can store part of a batch and fail the rest. The server builds each event's key from the caller's pod UID, the client's key and the event's position in the batch, so two callers can never collide. A partial unique index rejects duplicates, and a duplicate on that index counts as success, so a retry inserts only the events that are still missing. The key is mandatory, its format is checked, and the server always writes the key into the stored event itself; it never trusts a key already present in an incoming event.
 
 - A client uses one key per batch and keeps using that same key every time it retries that batch. It must also send the same events with it, because the server only compares keys; it never compares the events themselves. If a client reused a key for a different batch, that batch would be silently treated as a duplicate and dropped.
-- The unique index must exist before any replica writes, otherwise duplicates from that time would never be caught. So a small Job that ships with the Helm release creates the index once, and every replica checks that the index is really there, with the right field, uniqueness and filter, before it reports itself ready; one that has waited five minutes without it exits, so a missing index is visible as a crash loop rather than a pod that is quietly not ready. A replica that is not ready is out of the Service and refuses any batch that still reaches it over an existing connection with a retryable error, so no client can write before the guarantee is in place. It is a plain Job, not a Helm hook: replicas are not ready until the index exists, and a post-install hook runs only once the pods are ready, so the two would wait for each other. The index definition lives once in `store-client`, shared by the Job and the replicas' readiness check, and covers PostgreSQL too.
+- The unique index must exist before any replica writes, otherwise duplicates from that time would never be caught. So the datastore setup creates the index once (on MongoDB the setup Job's script, on PostgreSQL the table setup every component runs at start, one component at a time under a lock so the concurrent builds never abort each other), and every replica checks that the index is really there, with the right field, uniqueness and filter, before it reports itself ready; one that has waited five minutes without it exits, so a missing index is visible as a crash loop rather than a pod that is quietly not ready. A replica that is not ready is out of the Service and refuses any batch that still reaches it over an existing connection with a retryable error, so no client can write before the guarantee is in place. The MongoDB Job is a plain Job, not a Helm hook: replicas are not ready until the index exists, and a post-install hook runs only once the pods are ready, so the two would wait for each other. The index definition lives once in `store-client`, shared by the setup and the replicas' readiness check, and covers PostgreSQL too.
 - The index is partial: it only covers documents that have the key field. The millions of events written before this change have no key, so they are left alone and nothing has to be rewritten. Both MongoDB and PostgreSQL support this kind of index.
 
 **Normal write and retry:**
@@ -156,7 +156,7 @@ flowchart LR
 
 1. Make pool limits configurable (MongoDB uses the driver default of 100 today; PostgreSQL is hardcoded to 25).
 2. Add an ordered `InsertMany` that skips a duplicate on the idempotency index and carries on with the rest, and stops at any other failure, naming the violated index. Ordered, because MongoDB keeps the order of a batch only for ordered inserts, and a batch can hold a fatal and a later healthy event for the same check that consumers must see in that order. A resend costs one extra round trip per duplicate. PostgreSQL inserts the rows one at a time in the same order.
-3. Add a small index-management operation: create once, verify the full definition.
+3. Create the index from the datastore setup and verify its full definition.
 
 ### Authentication
 
@@ -244,7 +244,7 @@ global:
 platformConnector:
   deployment:
     enabled: false     # the switchover flag; deploys the deployment platform
-                       # connector and its index migration Job
+                       # connector; the datastore setup creates its index
     replicas: 3
     auth:
       crossNodePublishers: []   # override for the derived list of components

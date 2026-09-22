@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -249,139 +248,6 @@ func TestPostgreSQLClientInsertManyIdempotent(t *testing.T) {
 	})
 }
 
-func TestPostgreSQLClientEnsureHealthEventIdempotencyIndex(t *testing.T) {
-	createStatement := regexp.QuoteMeta(
-		"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS healthevent_idempotency_key_unique ON health_events " +
-			"((document #>> '{healthevent,metadata,idempotencyKey}')) " +
-			"WHERE (document #>> '{healthevent,metadata,idempotencyKey}') IS NOT NULL")
-	dropStatement := regexp.QuoteMeta("DROP INDEX CONCURRENTLY IF EXISTS healthevent_idempotency_key_unique")
-	progressQuery := "pg_stat_progress_create_index"
-	progressColumns := []string{"building"}
-
-	verifyQuery := "SELECT i.indisunique"
-	verifyColumns := []string{"indisunique", "indisvalid", "indnatts", "indexdef", "predicate"}
-	validIndexDef := "CREATE UNIQUE INDEX healthevent_idempotency_key_unique ON public.health_events " +
-		"USING btree (((document #>> '{healthevent,metadata,idempotencyKey}'::text[]))) " +
-		"WHERE ((document #>> '{healthevent,metadata,idempotencyKey}'::text[]) IS NOT NULL)"
-	validPredicate := "((document #>> '{healthevent,metadata,idempotencyKey}'::text[]) IS NOT NULL)"
-
-	expectIndex := func(mock sqlmock.Sqlmock, valid bool, predicate string) {
-		mock.ExpectQuery(verifyQuery).
-			WithArgs(datastore.HealthEventIdempotencyIndexName, healthEventsTableName).
-			WillReturnRows(sqlmock.NewRows(verifyColumns).AddRow(true, valid, 1, validIndexDef, predicate))
-	}
-	expectMissing := func(mock sqlmock.Sqlmock) {
-		mock.ExpectQuery(verifyQuery).
-			WithArgs(datastore.HealthEventIdempotencyIndexName, healthEventsTableName).
-			WillReturnRows(sqlmock.NewRows(verifyColumns))
-	}
-	expectBuilding := func(mock sqlmock.Sqlmock, building bool) {
-		mock.ExpectQuery(progressQuery).
-			WithArgs(datastore.HealthEventIdempotencyIndexName, healthEventsTableName).
-			WillReturnRows(sqlmock.NewRows(progressColumns).AddRow(building))
-	}
-
-	newClient := func(t *testing.T) (*PostgreSQLClient, sqlmock.Sqlmock) {
-		t.Helper()
-
-		db, mock, err := sqlmock.New()
-		require.NoError(t, err)
-		t.Cleanup(func() { db.Close() })
-
-		return NewPostgreSQLClientFromDB(db, healthEventsTableName), mock
-	}
-
-	t.Run("missing index is created concurrently", func(t *testing.T) {
-		client, mock := newClient(t)
-		expectMissing(mock)
-		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
-		expectIndex(mock, true, validPredicate)
-
-		require.NoError(t, client.EnsureHealthEventIdempotencyIndex(context.Background()))
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("index with the expected definition is left alone", func(t *testing.T) {
-		client, mock := newClient(t)
-		expectIndex(mock, true, validPredicate)
-
-		require.NoError(t, client.EnsureHealthEventIdempotencyIndex(context.Background()))
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("invalid leftover index is dropped concurrently and recreated", func(t *testing.T) {
-		client, mock := newClient(t)
-		expectIndex(mock, false, validPredicate)
-		expectBuilding(mock, false)
-		mock.ExpectExec(dropStatement).WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
-		expectIndex(mock, true, validPredicate)
-
-		require.NoError(t, client.EnsureHealthEventIdempotencyIndex(context.Background()))
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("index still being built by another session is left alone", func(t *testing.T) {
-		client, mock := newClient(t)
-		expectIndex(mock, false, validPredicate)
-		expectBuilding(mock, true)
-
-		err := client.EnsureHealthEventIdempotencyIndex(context.Background())
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "still being built")
-		assert.ErrorIs(t, err, datastore.ErrIndexMismatch)
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("valid index with another definition is replaced", func(t *testing.T) {
-		client, mock := newClient(t)
-		expectIndex(mock, true, "(((document #>> '{healthevent,metadata,idempotencyKey}'::text[]) IS NOT NULL) AND (node_name = 'node-a'::text))")
-		expectBuilding(mock, false)
-		mock.ExpectExec(dropStatement).WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
-		expectIndex(mock, true, validPredicate)
-
-		require.NoError(t, client.EnsureHealthEventIdempotencyIndex(context.Background()))
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("failed drop is returned and the create is not attempted", func(t *testing.T) {
-		client, mock := newClient(t)
-		expectIndex(mock, false, validPredicate)
-		expectBuilding(mock, false)
-		mock.ExpectExec(dropStatement).WillReturnError(errors.New("lock timeout"))
-
-		err := client.EnsureHealthEventIdempotencyIndex(context.Background())
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to drop mismatched idempotency index")
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("aborted concurrent build is reported so the caller retries", func(t *testing.T) {
-		client, mock := newClient(t)
-		expectMissing(mock)
-		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
-		expectIndex(mock, false, validPredicate)
-
-		err := client.EnsureHealthEventIdempotencyIndex(context.Background())
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not usable after the build")
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("datastore failure during the check is returned", func(t *testing.T) {
-		client, mock := newClient(t)
-		mock.ExpectQuery(verifyQuery).
-			WithArgs(datastore.HealthEventIdempotencyIndexName, healthEventsTableName).
-			WillReturnError(errors.New("connection refused"))
-
-		err := client.EnsureHealthEventIdempotencyIndex(context.Background())
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to check idempotency index")
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-}
-
 func TestPostgreSQLClientVerifyHealthEventIdempotencyIndex(t *testing.T) {
 	validIndexDef := "CREATE UNIQUE INDEX healthevent_idempotency_key_unique ON public.health_events " +
 		"USING btree (((document #>> '{healthevent,metadata,idempotencyKey}'::text[]))) " +
@@ -569,4 +435,16 @@ func TestVerifyPostgresIdempotencyIndexDefinition(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCreateIdempotencyIndexStatement pins the statement the datastore setup
+// runs: it must build exactly the definition the verification accepts, and
+// CONCURRENTLY, so writers are not blocked while it builds.
+func TestCreateIdempotencyIndexStatement(t *testing.T) {
+	require.Equal(t,
+		"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS healthevent_idempotency_key_unique ON health_events "+
+			"((document #>> '{healthevent,metadata,idempotencyKey}')) "+
+			"WHERE (document #>> '{healthevent,metadata,idempotencyKey}') IS NOT NULL",
+		CreateIdempotencyIndexStatement)
+	require.Equal(t, "DROP INDEX CONCURRENTLY IF EXISTS healthevent_idempotency_key_unique", DropIdempotencyIndexStatement)
 }
