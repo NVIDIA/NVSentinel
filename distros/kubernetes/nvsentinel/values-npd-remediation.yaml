@@ -79,8 +79,7 @@ kubernetes-object-monitor:
         expression: |
           resource.status.conditions.exists(c,
             c.type == "XfsShutdown" &&
-            c.status == "True" &&
-            c.reason == "XfsHasShutdown")
+            c.status != "False")
       healthEvent:
         componentClass: Node
         isFatal: true
@@ -101,8 +100,7 @@ kubernetes-object-monitor:
         expression: |
           resource.status.conditions.exists(c,
             c.type == "CperHardwareErrorFatal" &&
-            c.status == "True" &&
-            c.reason == "CperHardwareErrorFatal")
+            c.status != "False")
       healthEvent:
         componentClass: Node
         isFatal: true
@@ -123,8 +121,7 @@ kubernetes-object-monitor:
         expression: |
           resource.status.conditions.exists(c,
             c.type == "ReadonlyFilesystem" &&
-            c.status == "True" &&
-            c.reason == "FilesystemIsReadOnly")
+            c.status != "False")
       healthEvent:
         componentClass: Node
         isFatal: true

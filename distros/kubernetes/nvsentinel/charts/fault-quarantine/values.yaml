@@ -83,6 +83,11 @@ circuitBreaker:
 # Each ruleset defines conditions (match) and actions (taint, label, cordon) to apply when conditions are met
 # Rules are evaluated using CEL (Common Expression Language) expressions
 # Multiple rulesets can be defined and are evaluated in order
+#
+# The node cache keeps only the label and annotation keys these expressions read,
+# so how a Node rule is written decides how much memory it costs. Two rules that
+# select the same nodes can prune differently.
+# See docs/fault-quarantine.md#cached-node-fields before editing a Node rule.
 ruleSets:
   - # Enable or disable this ruleset; disabled rulesets are skipped entirely
     enabled: true
@@ -221,6 +226,34 @@ ruleSets:
       all:
         - kind: "HealthEvent"
           expression: "event.agent.startsWith('preflight-') && event.isFatal == true"
+        - kind: "Node"
+          expression: >-
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
+    cordon:
+      shouldCordon: true
+
+  - enabled: true
+    version: "1"
+    name: "MaintenanceRequest ruleset"
+    # A MaintenanceRequest lets an external system tell NVSentinel that
+    # maintenance is incoming for a node, so the node is cordoned and drained
+    # before the work starts. lifecycle-manager sets a static agent before
+    # publishing. The maintenanceRequestName metadata key distinguishes these
+    # events from other event types lifecycle-manager might publish in the future.
+    #
+    # The metadata != null guard is required, not defensive. An event with no
+    # metadata reaches CEL with metadata set to null, and the "in" operator errors
+    # on null, which would fail evaluation for every metadata-free event any
+    # monitor publishes.
+    #
+    # isHealthy is deliberately not matched. Recovery evaluates the clearing event
+    # against these rulesets too, so excluding healthy events would stop the node
+    # un-cordoning when the requester deletes the MR.
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.agent == 'lifecycle-manager' && event.metadata != null && 'maintenanceRequestName' in event.metadata"
         - kind: "Node"
           expression: >-
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&

@@ -762,12 +762,14 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			event := eventForPublishing(mr)
 
 			Expect(event.Id).To(Equal("test-uid-123"))
+			Expect(event.Agent).To(Equal("maintenance-controller"))
 			Expect(event.GeneratedTimestamp).NotTo(BeNil())
 			Expect(event.Metadata).To(HaveKeyWithValue(
 				"maintenanceRequestName", "mr-copy"))
 			Expect(event.Metadata).To(HaveKeyWithValue(
 				"maintenanceRequestUID", "test-uid-123"))
 			Expect(mr.Spec.HealthEvent.Id).To(BeEmpty())
+			Expect(mr.Spec.HealthEvent.Agent).To(Equal("maintenance-controller"))
 			Expect(mr.Spec.HealthEvent.GeneratedTimestamp).To(BeNil())
 			Expect(mr.Spec.HealthEvent.Metadata).To(BeNil())
 		})
@@ -786,6 +788,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			event := eventForPublishing(mr)
 
 			Expect(event.Id).To(Equal("custom-id"))
+			Expect(event.Agent).To(Equal("maintenance-controller"))
 			Expect(event.GeneratedTimestamp).To(Equal(ts))
 			Expect(event.Metadata).To(
 				HaveKeyWithValue("existingKey", "existingValue"))

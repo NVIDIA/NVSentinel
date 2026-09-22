@@ -103,7 +103,9 @@ global:
     #
     # The bundled cluster-scoped monitors — csp-health-monitor,
     # kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor
-    # and health-events-analyzer — do NOT belong here. They are derived from the release namespace at
+    # and health-events-analyzer — do NOT belong here, and neither does
+    # lifecycle-manager once its MaintenanceRequest controller is enabled (an MR
+    # names any node, so it publishes cross-node). They are derived from the release namespace at
     # render time for whichever of them are enabled, so installing into a
     # namespace other than nvsentinel needs no edit. Listing them by hand is
     # what used to break such an install: a hardcoded namespace rendered
@@ -378,6 +380,14 @@ platformConnector:
 
   k8sConnector:
     enabled: true
+    # Retry each failed Kubernetes write in place; completed writes are not repeated.
+    # Zero or omission selects 25 retries per write. Negative values are invalid.
+    # The batch deadline below can stop retries before the count is reached.
+    maxRetries: 25
+    # Whole-batch deadline, including API calls and backoff. Maximum: 5m.
+    # Zero or omission selects 1m. Later batches wait; permanent errors are skipped.
+    # For a 5m window, also increase maxRetries to 200.
+    maxRetryDuration: 1m
     maxNodeConditionMessageLength: 1024
     # Max length of the compacted message prefix (before Recommended Action) per health event
     compactedHealthEventMsgLen: 72

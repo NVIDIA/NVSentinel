@@ -55,7 +55,10 @@ type HealthEventsAnalyzerRule struct {
 }
 
 type TomlConfig struct {
-	Rules []HealthEventsAnalyzerRule `toml:"rules"`
+	// Registers rule_matched_entity_total. Off by default because entity
+	// labels raise cardinality (GPU × GPC × TPC × SM per node).
+	RuleMatchedEntityMetricEnabled bool                       `toml:"ruleMatchedEntityMetricEnabled"`
+	Rules                          []HealthEventsAnalyzerRule `toml:"rules"`
 }
 
 func (c *TomlConfig) HasEnabledRecovery() bool {

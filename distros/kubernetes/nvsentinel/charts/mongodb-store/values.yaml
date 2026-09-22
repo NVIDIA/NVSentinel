@@ -74,6 +74,24 @@ job:
   nodeSelector: {}
   tolerations: []
 
+# NetworkPolicy configuration
+networkPolicy:
+  # Additional namespaces permitted to scrape the mongodb_exporter metrics endpoint (port 9216).
+  # Applied only when usePerconaOperator=true. The release namespace is always permitted.
+  additionalScrapeNamespaces: []
+  # Additional ingress rules for the metrics endpoint (port 9216).
+  # Applied only when usePerconaOperator=true.
+  # Each entry is rendered directly under 'from:' in the port 9216 ingress rule.
+  # Example:
+  # additionalScrapeRules:
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: monitoring
+  #     podSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: prometheus
+  additionalScrapeRules: []
+
 # =============================================================================
 # Bitnami MongoDB Configuration (used when usePerconaOperator=false)
 # =============================================================================
@@ -300,6 +318,19 @@ mongodb:
 # =============================================================================
 # Percona MongoDB Operator Configuration (used when usePerconaOperator=true)
 # =============================================================================
+
+# The operator version you intend to run, which is also crVersion and the init
+# image tag. This ASSERTS, it does not set: Helm resolves subchart values before
+# templates run, so set the three below as usual and set this to match. A render
+# that disagrees fails, which is what catches a partial edit. Empty disables the
+# assertion. Does not cover mongod: different version line, and the certified
+# pairing is only published at check.percona.com.
+psmdbVersion: ""
+
+# Also check the DEPLOYED crVersion from the bootstrap Job, which the render
+# cannot see. Off by default: grants the Job `get` on perconaservermongodbs.
+validateDeployedCrVersion: false
+
 psmdb-operator:
   nodeSelector: {}
   tolerations: []

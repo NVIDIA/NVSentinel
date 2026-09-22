@@ -16,6 +16,7 @@ package controller
 
 import (
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -50,6 +51,20 @@ var (
 		{
 			Name:       "test-criterion",
 			Expression: `has(node.metadata.labels) && "ready" in node.metadata.labels`,
+		},
+	}
+	gpuPresentLabelCriteria = []v1alpha1.CriteriaSpec{
+		{
+			Name: "gpu-present",
+			Expression: `has(node.metadata.labels) && "nvidia.com/gpu.present" in node.metadata.labels &&
+				node.metadata.labels["nvidia.com/gpu.present"] == "true"`,
+		},
+	}
+	recentlyJoinedCriteria = []v1alpha1.CriteriaSpec{
+		{
+			Name: "recently-joined",
+			Expression: `has(node.metadata.creationTimestamp) &&
+				now() - timestamp(node.metadata.creationTimestamp) < duration("15m")`,
 		},
 	}
 )
@@ -166,6 +181,62 @@ func TestEvaluateNodeReadinessCriteria(t *testing.T) {
 			},
 			wantFailedCriteria: "test-criterion",
 		},
+		{
+			name:     "gpu-present: no labels",
+			criteria: gpuPresentLabelCriteria,
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Labels: nil},
+			},
+			wantFailedCriteria: "gpu-present",
+		},
+		{
+			name:     "gpu-present: other labels present without gpu.present",
+			criteria: gpuPresentLabelCriteria,
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"other-label": "value"}},
+			},
+			wantFailedCriteria: "gpu-present",
+		},
+		{
+			name:     "gpu-present: label present with wrong value",
+			criteria: gpuPresentLabelCriteria,
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"nvidia.com/gpu.present": "false"}},
+			},
+			wantFailedCriteria: "gpu-present",
+		},
+		{
+			name:     "gpu-present: label present with correct value",
+			criteria: gpuPresentLabelCriteria,
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"nvidia.com/gpu.present": "true"}},
+			},
+			wantFailedCriteria: "",
+		},
+		{
+			name:     "recently-joined: no creationTimestamp",
+			criteria: recentlyJoinedCriteria,
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			wantFailedCriteria: "recently-joined",
+		},
+		{
+			name:     "recently-joined: creationTimestamp before the window",
+			criteria: recentlyJoinedCriteria,
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(time.Now().Add(-1 * time.Hour))},
+			},
+			wantFailedCriteria: "recently-joined",
+		},
+		{
+			name:     "recently-joined: creationTimestamp within the window",
+			criteria: recentlyJoinedCriteria,
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.Now()},
+			},
+			wantFailedCriteria: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -181,7 +252,7 @@ func TestEvaluateNodeReadinessCriteria(t *testing.T) {
 				t.Fatalf("failed to construct reconciler: %v", err)
 			}
 
-			failedCriterion, err := reconciler.evaluateNodeReadinessCriteria(tt.node, tt.criteria)
+			failedCriterion, err := evaluateCriteria(tt.node, tt.criteria, reconciler.ReadinessPrograms)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got none")

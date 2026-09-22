@@ -114,6 +114,7 @@ type ResetJobConfig struct {
 	Resources          ResourceRequirements `mapstructure:"resources" json:"resources"`
 	RuntimeClassName   string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
 	HostDriverRootPath string               `mapstructure:"hostDriverRootPath" json:"hostDriverRootPath"`
+	DriverRoot         string               `mapstructure:"driverRoot" json:"driverRoot"`
 	WriteSysLogEvent   *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
 	UploadURL          string               `mapstructure:"uploadURL" json:"uploadURL"`
 }
@@ -183,7 +184,8 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 
 		jobTemplate, err := getDefaultGPUResetJobTemplate(namespace, resetJobConfig.ImageConfig.Image,
 			resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.HostDriverRootPath,
-			resetJobConfig.RuntimeClassName, *resetJobConfig.WriteSysLogEvent, resetJobConfig.UploadURL)
+			resetJobConfig.DriverRoot, resetJobConfig.RuntimeClassName, *resetJobConfig.WriteSysLogEvent,
+			resetJobConfig.UploadURL)
 		if err != nil {
 			return nil, err
 		}

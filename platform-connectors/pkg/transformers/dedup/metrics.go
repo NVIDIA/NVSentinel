@@ -26,12 +26,15 @@ import (
 
 const noErrorCodeLabel = "none"
 
+// No node label: the deployment platform connector runs this transformer
+// for the whole fleet, and one series per node would be fleet-sized per
+// replica. The node is in the log line next to the increment.
 var dedupStoreAndAnalyseCounter = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "nvsentinel_platform_connector_dedup_store_and_analyse_total",
 		Help: "Total number of duplicate health events marked STORE_AND_ANALYSE by deduplication.",
 	},
-	[]string{"check", "node", "err_code"},
+	[]string{"check", "err_code"},
 )
 
 func errCodeLabel(event *pb.HealthEvent) string {

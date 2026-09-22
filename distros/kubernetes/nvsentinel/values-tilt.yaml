@@ -573,13 +573,22 @@ health-events-analyzer:
         }
       }
       ''',
+      # Only the most recent previous sticky XID can satisfy the bound, so a scalar
+      # $max over the same window answers the question without materialising every
+      # previous event. Pushing $$ROOT made this stage quadratic in data and work.
       '''
       {
         "$setWindowFields": {
           "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
           "output": {
-            "allPreviousEvents": {
-              "$push": "$$ROOT",
+            "lastStickyTimestamp": {
+              "$max": {
+                "$cond": {
+                  "if": "$isStickyXid",
+                  "then": "$healthevent.generatedtimestamp.seconds",
+                  "else": null
+                }
+              },
               "window": {"documents": ["unbounded", -1]}
             }
           }
@@ -593,23 +602,10 @@ health-events-analyzer:
             "$cond": {
               "if": "$isStickyXid",
               "then": {
-                "$anyElementTrue": {
-                  "$map": {
-                    "input": "$allPreviousEvents",
-                    "as": "prevEvent",
-                    "in": {
-                      "$and": [
-                        {
-                          "$in": [
-                            {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                            ["74", "79", "95", "109", "119"]
-                          ]
-                        },
-                        {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 30]}
-                      ]
-                    }
-                  }
-                }
+                "$and": [
+                  {"$ne": ["$lastStickyTimestamp", null]},
+                  {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 30]}
+                ]
               },
               "else": false
             }
@@ -826,13 +822,22 @@ health-events-analyzer:
         }
       }
       ''',
+      # Only the most recent previous sticky XID can satisfy the bound, so a scalar
+      # $max over the same window answers the question without materialising every
+      # previous event. Pushing $$ROOT made this stage quadratic in data and work.
       '''
       {
         "$setWindowFields": {
           "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
           "output": {
-            "allPreviousEvents": {
-              "$push": "$$ROOT",
+            "lastStickyTimestamp": {
+              "$max": {
+                "$cond": {
+                  "if": "$isStickyXid",
+                  "then": "$healthevent.generatedtimestamp.seconds",
+                  "else": null
+                }
+              },
               "window": {"documents": ["unbounded", -1]}
             }
           }
@@ -846,23 +851,10 @@ health-events-analyzer:
             "$cond": {
               "if": "$isStickyXid",
               "then": {
-                "$anyElementTrue": {
-                  "$map": {
-                    "input": "$allPreviousEvents",
-                    "as": "prevEvent",
-                    "in": {
-                      "$and": [
-                        {
-                          "$in": [
-                            {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                            ["74", "79", "95", "109", "119"]
-                          ]
-                        },
-                        {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 30]}
-                      ]
-                    }
-                  }
-                }
+                "$and": [
+                  {"$ne": ["$lastStickyTimestamp", null]},
+                  {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 30]}
+                ]
               },
               "else": false
             }
@@ -1178,13 +1170,22 @@ health-events-analyzer:
         }
       }
       ''',
+      # Only the most recent previous sticky XID can satisfy the bound, so a scalar
+      # $max over the same window answers the question without materialising every
+      # previous event. Pushing $$ROOT made this stage quadratic in data and work.
       '''
       {
         "$setWindowFields": {
           "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
           "output": {
-            "allPreviousEvents": {
-              "$push": "$$ROOT",
+            "lastStickyTimestamp": {
+              "$max": {
+                "$cond": {
+                  "if": "$isStickyXid",
+                  "then": "$healthevent.generatedtimestamp.seconds",
+                  "else": null
+                }
+              },
               "window": {"documents": ["unbounded", -1]}
             }
           }
@@ -1198,23 +1199,10 @@ health-events-analyzer:
             "$cond": {
               "if": "$isStickyXid",
               "then": {
-                "$anyElementTrue": {
-                  "$map": {
-                    "input": "$allPreviousEvents",
-                    "as": "prevEvent",
-                    "in": {
-                      "$and": [
-                        {
-                          "$in": [
-                            {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                            ["74", "79", "95", "109", "119"]
-                          ]
-                        },
-                        {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 30]}
-                      ]
-                    }
-                  }
-                }
+                "$and": [
+                  {"$ne": ["$lastStickyTimestamp", null]},
+                  {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 30]}
+                ]
               },
               "else": false
             }
@@ -1636,13 +1624,22 @@ health-events-analyzer:
         }
       }
       ''',
+      # Only the most recent previous sticky XID can satisfy the bound, so a scalar
+      # $max over the same window answers the question without materialising every
+      # previous event. Pushing $$ROOT made this stage quadratic in data and work.
       '''
       {
         "$setWindowFields": {
           "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
           "output": {
-            "allPreviousEvents": {
-              "$push": "$$ROOT",
+            "lastStickyTimestamp": {
+              "$max": {
+                "$cond": {
+                  "if": "$isStickyXid",
+                  "then": "$healthevent.generatedtimestamp.seconds",
+                  "else": null
+                }
+              },
               "window": {"documents": ["unbounded", -1]}
             }
           }
@@ -1656,23 +1653,10 @@ health-events-analyzer:
             "$cond": {
               "if": "$isStickyXid",
               "then": {
-                "$anyElementTrue": {
-                  "$map": {
-                    "input": "$allPreviousEvents",
-                    "as": "prevEvent",
-                    "in": {
-                      "$and": [
-                        {
-                          "$in": [
-                            {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                            ["74", "79", "95", "109", "119"]
-                          ]
-                        },
-                        {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 20]}
-                      ]
-                    }
-                  }
-                }
+                "$and": [
+                  {"$ne": ["$lastStickyTimestamp", null]},
+                  {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 20]}
+                ]
               },
               "else": false
             }
@@ -2758,6 +2742,28 @@ health-events-analyzer:
       {
         "$match": {
           "$expr": {
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
+            ]
+          }
+        }
+      }
+      ''',
+      '''
+      {
+        "$match": {
+          "$expr": {
             "$eq": [
               "this.healthevent.errorcode.0",
               "74"
@@ -2808,6 +2814,7 @@ health-events-analyzer:
         }
       }
       ''',
+      '{"$limit": 1}'
     ]
 
     [[rules]]
@@ -4381,12 +4388,34 @@ event-exporter:
       backoffMultiplier: 2.0
 
 lifecycle-manager:
+  # Off by default in the chart. TestMaintenanceRequestLifecycle needs the
+  # controller, its webhook, and the projected platform-connector token, and
+  # enabling it here is also what adds this ServiceAccount to the cross-node
+  # allowlist the connector enforces.
+  controllers:
+    maintenanceRequest:
+      enabled: true
+
   config:
     readinessCriteria:
       - name: not-under-quarantine
         expression: >-
           !(has(node.metadata.annotations) &&
           "quarantineHealthEvent" in node.metadata.annotations)
+    newNodeValidation:
+      batchPeriodSeconds: 5
+      criteria:
+        - name: recently-joined
+          expression: >-
+            has(node.metadata.creationTimestamp) &&
+            now() - timestamp(node.metadata.creationTimestamp) < duration("2h")
+        - name: targeted-for-new-node-validation-test
+          expression: >-
+            has(node.metadata.labels) &&
+            "nvsentinel.dgxc.nvidia.com/new-node-validation-test" in node.metadata.labels &&
+            node.metadata.labels["nvsentinel.dgxc.nvidia.com/new-node-validation-test"] == "true"
+      newNodeTests:
+        - e2e-smoke-test
     tests:
       e2e-smoke-test:
         provider: k8s-job-provider

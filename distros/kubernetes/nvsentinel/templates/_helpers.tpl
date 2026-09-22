@@ -60,12 +60,26 @@ Create chart name and version as used by the chart label.
 Common labels
 */}}
 {{- define "nvsentinel.labels" -}}
-helm.sh/chart: {{ include "nvsentinel.chart" . }}
-{{ include "nvsentinel.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- include "nvsentinel.labelsWithName" (dict "context" . "name" (include "nvsentinel.name" .)) -}}
 {{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
+
+{{/*
+Common labels for an object named distinctly from the release, such as the
+external MongoDB setup Job. Pass the name here rather than appending a second
+app.kubernetes.io/name after "nvsentinel.labels": Helm's own parser keeps the
+last of a duplicated mapping key, but the strict parsers in Flux's post-renderer
+and Argo CD's kustomize reject the whole release.
+
+Usage: include "nvsentinel.labelsWithName" (dict "context" $ "name" "my-object")
+*/}}
+{{- define "nvsentinel.labelsWithName" -}}
+helm.sh/chart: {{ include "nvsentinel.chart" .context }}
+app.kubernetes.io/name: {{ .name }}
+app.kubernetes.io/instance: {{ .context.Release.Name }}
+{{- if .context.Chart.AppVersion }}
+app.kubernetes.io/version: {{ .context.Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .context.Release.Service }}
 {{- end }}
 
 {{/*
@@ -539,6 +553,27 @@ runtime. Only monitors that are actually enabled are included.
   {{- if (index (($.Values.global) | default dict) $key | default dict).enabled -}}
     {{- $derived = append $derived (printf "system:serviceaccount:%s:%s" $ns $sa) -}}
   {{- end -}}
+{{- end -}}
+{{- /*
+lifecycle-manager is derived separately from the table above because it is
+gated on a FEATURE rather than on the component: the chart is enabled in plenty
+of installs that never publish a health event, and only the MaintenanceRequest
+controller opens the socket. An MR may name any node in the cluster, so once
+that controller is on this is a cross-node publisher.
+
+The name is taken from the subchart rather than written out here. Its
+ServiceAccount is a fixed "lifecycle-manager" only because the subchart ships
+fullNameOverride; overriding that or serviceAccount.name would otherwise leave
+this allowlist naming an identity that does not exist — the same silent
+runtime rejection the derived namespace above exists to prevent.
+*/ -}}
+{{- $lm := (index $.Values "lifecycle-manager") | default dict -}}
+{{- if and ((index (($.Values.global) | default dict) "lifecycleManager") | default dict).enabled ((($lm.controllers) | default dict).maintenanceRequest | default dict).enabled -}}
+{{- $lmSA := include "lifecycle-manager.serviceAccountName" (dict "Values" $lm "Chart" (dict "Name" "lifecycle-manager") "Release" $.Release) -}}
+{{- if eq $lmSA "default" -}}
+{{- fail "lifecycle-manager must use a dedicated ServiceAccount when the MaintenanceRequest controller and platform-connector authentication are enabled; set lifecycle-manager.serviceAccount.name when lifecycle-manager.serviceAccount.create is false" -}}
+{{- end -}}
+{{- $derived = append $derived (printf "system:serviceaccount:%s:%s" $ns $lmSA) -}}
 {{- end -}}
 {{- /*
 crossNodeServiceAccounts is now only for callers this chart does not ship. It

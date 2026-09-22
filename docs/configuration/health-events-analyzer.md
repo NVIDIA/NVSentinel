@@ -69,6 +69,50 @@ Events are persisted and ingested by the Health Events Analyzer for rule evaluat
 #### STORE_ONLY
 Observability-only mode. Derived events are persisted and exported but do not modify any cluster resources. Use this mode to shadow-test new or customised rules in production before enabling full remediation.
 
+### Concurrent Event Processing
+
+The Health Events Analyzer partitions incoming events across a concurrent worker pool by node name. Events for distinct nodes are evaluated concurrently, while events for the same node are processed in strict chronological order. Checkpoints advance using a low-water mark tracker to guarantee at-least-once delivery without head-of-line blocking.
+
+```yaml
+health-events-analyzer:
+  workers: 1       # Number of concurrent workers (default: 1)
+  maxInFlight: 1000 # Maximum uncheckpointed in-flight events before backpressure (default: 1000)
+```
+
+#### Scaling Workers by Datastore Event Rate
+
+Each event evaluation executes rule aggregation queries against the datastore, averaging approximately 17.5 ms of I/O round-trip latency. A single worker achieves a processing ceiling of approximately 57 events/second. Throughput scales linearly with the number of workers ($\approx \text{Workers} \times 57\text{ events/s}$).
+
+Use the following reference table to configure `workers` and `maxInFlight` based on cluster size and expected event rate:
+
+| Offered Event Rate in DB | Recommended `workers` | Recommended `maxInFlight` | Estimated Throughput Capacity | Recommended Cluster Scale |
+|---|---|---|---|---|
+| $< 50$ events/s | `1` (default) | `1000` | ~57 events/s | Up to ~500 nodes |
+| $50 - 200$ events/s | `4` | `1000` | ~220 events/s | 500 – 2,000 nodes |
+| $200 - 400$ events/s | `8` | `2000` | ~440 events/s | 2,000 – 4,000 nodes |
+| $400 - 800$ events/s | `16` | `2000` | ~860 events/s | 4,000 – 8,000 nodes |
+| $800 - 1,500$ events/s | `32` | `4000` | ~1,680 events/s | 8,000 – 15,000 nodes |
+| $> 1,500$ events/s | `64` | `8000` | ~3,500 events/s | 15,000+ nodes |
+
+`maxInFlight` bounds uncheckpointed in-flight events in memory. When in-flight events reach this limit, stream ingestion pauses until workers resolve earlier events. Increase `maxInFlight` proportionally for larger worker counts to absorb bursty event traffic without stalling ingestion.
+
+### Matched-entity metric
+
+`rule_matched_total` is labeled `{rule_name, node_name}` only. Rules that select on a GPU, GPC, TPC, or NIC therefore fire without saying which unit they selected. The optional counter below adds that identity; it is off by default because the extra labels raise cardinality.
+
+```yaml
+health-events-analyzer:
+  ruleMatchedEntityMetricEnabled: false
+```
+
+When enabled, a match on an entity-keyed rule increments:
+
+```text
+rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}
+```
+
+`entity_type` / `entity_value` come from the triggering event's impacted entities. Only PCI, GPU, GPC, TPC, SM, NVLINK, NIC, NICPort, and NVSwitch are exported, using the producer spelling. GPU UUID is never exported; PCI or GPU index is used instead. Node-scoped rules (for example `MultipleRemediations`) do not emit this series. `RepeatedXidError` does.
+
 ### Client Certificate Mount Path
 
 Path inside the container where TLS client certificates are mounted for authenticated MongoDB connections. Certificates are typically provisioned by cert-manager and mounted via a Kubernetes secret volume.
@@ -165,8 +209,9 @@ The full default ruleset — including all aggregation pipeline stage definition
 
 ### Derived-condition recovery
 
-The design rationale, tradeoffs, and alternatives are documented in
-[ADR-056](../designs/056-derived-condition-recovery.md).
+The design rationale, tradeoffs, and alternatives are documented in [ADR-059](../designs/059-derived-condition-recovery.md).
+
+A monitor can publish the derived healthy event directly if it supplies the complete derived identity and processing strategy. That clears the downstream condition but does not establish a source recovery boundary. Use the mapping below when the analyzer must also exclude pre-recovery history, check current derived state, and handle replay. See [direct publishing](../designs/059-derived-condition-recovery.md#have-another-monitor-publish-the-derived-healthy-event-directly) for the tradeoff.
 
 Rules may opt into automatic recovery by mapping a verified healthy source event
 to the derived condition:
@@ -229,7 +274,7 @@ Deterministic failures tied to a rule or stored record are logged, checkpointed,
 and skipped so a poison event cannot halt every later event. Transient datastore
 and publisher failures stop the shared processor for replay whenever recovery is
 enabled. Without enabled recovery mappings, handler failures retain the default
-checkpoint-and-continue behavior. Checkpoint failures stop processing in either mode.
+checkpoint-and-continue behavior. With one worker, checkpoint failures stop processing. With multiple workers, the processor retains the last safe checkpoint and retries it on later completions and shutdown. It never advances the checkpoint past an unresolved event.
 
 The persisted source recovery event also becomes the rule's history boundary.
 Later evaluations exclude records stored or generated at or before that event,

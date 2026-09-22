@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	metricLabelNodeName = "node_name"
-	metricLabelRuleName = "rule_name"
+	labelRuleName = "rule_name"
+	labelNodeName = "node_name"
 )
 
 var (
@@ -30,7 +30,7 @@ var (
 			Name: "health_event_analyzer_events_received_total",
 			Help: "Total number of events received from the watcher.",
 		},
-		[]string{metricLabelNodeName},
+		[]string{labelNodeName},
 	)
 	totalEventsSuccessfullyProcessed = promauto.NewCounter(
 		prometheus.CounterOpts{
@@ -59,7 +59,17 @@ var (
 			Name: "rule_matched_total",
 			Help: "Total number of times a rule matched for a node",
 		},
-		[]string{metricLabelRuleName, metricLabelNodeName},
+		[]string{labelRuleName, labelNodeName},
+	)
+
+	// ruleMatchedEntityTotal counts matches by impacted entity. Series are
+	// recorded only when ruleMatchedEntityMetricEnabled is set.
+	ruleMatchedEntityTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rule_matched_entity_total",
+			Help: "Total number of times a rule matched, labeled by the entity it selected on.",
+		},
+		[]string{labelRuleName, labelNodeName, "entity_type", "entity_value"},
 	)
 
 	recoveryEventsPublishedTotal = promauto.NewCounterVec(
@@ -67,21 +77,21 @@ var (
 			Name: "health_event_analyzer_recovery_events_published_total",
 			Help: "Total number of derived healthy transitions published by recovery-enabled rules.",
 		},
-		[]string{metricLabelRuleName, "scope"},
+		[]string{labelRuleName, "scope"},
 	)
 	recoveryPersistenceTimeoutsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "health_event_analyzer_recovery_persistence_timeouts_total",
 			Help: "Total derived transitions not observed in the store before the persistence deadline.",
 		},
-		[]string{metricLabelRuleName, "state"},
+		[]string{labelRuleName, "state"},
 	)
 	recoveryStoredDocumentDecodeErrorsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "health_event_analyzer_recovery_stored_document_decode_errors_total",
 			Help: "Total stored health event documents skipped because they could not be decoded or scoped.",
 		},
-		[]string{metricLabelRuleName, "lookup", "classification"},
+		[]string{labelRuleName, "lookup", "classification"},
 	)
 
 	mongoQueryExecutionDuration = promauto.NewHistogramVec(
@@ -90,7 +100,7 @@ var (
 			Help:    "Histogram of MongoDB pipeline execution durations.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{metricLabelRuleName},
+		[]string{labelRuleName},
 	)
 
 	// performance metrics
@@ -98,7 +108,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "health_event_analyzer_event_handling_duration_seconds",
 			Help:    "Histogram of event handling durations.",
-			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12),
+			Buckets: prometheus.DefBuckets,
 		},
 	)
 )

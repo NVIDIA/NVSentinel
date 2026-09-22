@@ -26,6 +26,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/reconciler"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	storeconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
@@ -79,9 +80,18 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.InfoContext(ctx, "Running in dry-run mode")
 	}
 
+	// Derived here because the informer sets its cache transform when it is
+	// constructed, on the next line, and the rules are already loaded. The
+	// evaluators compile the same expressions later, after the cache has
+	// synced, which is far too late to decide what the cache keeps.
+	retained := nodecache.Derive(tomlCfg, nodecache.Operational{
+		GPUNodeLabelKey: params.GPUNodeLabelKey,
+	})
+
 	k8sClient, err := informer.NewFaultQuarantineClient(
 		params.KubeconfigPath, params.DryRun, 30*time.Minute,
 		params.GPUNodeLabelKey, params.GPUNodeLabelValue, params.KubernetesClientRateLimits,
+		retained,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)

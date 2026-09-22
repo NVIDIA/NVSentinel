@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -40,6 +42,23 @@ type PodDeviceMapper interface {
 	UpdatePodDevicesAnnotations() (int, error)
 }
 
+type clientConfig struct {
+	kubeconfigPath        string
+	kubeletKubeconfigPath string
+}
+
+// Option configures mapper clients without changing the in-cluster defaults.
+type Option func(*clientConfig)
+
+// WithKubeconfigs selects independent API server and kubelet HTTPS authentication.
+// Empty paths retain in-cluster API auth and the kubelet's projected token.
+func WithKubeconfigs(apiPath, kubeletPath string) Option {
+	return func(config *clientConfig) {
+		config.kubeconfigPath = apiPath
+		config.kubeletKubeconfigPath = kubeletPath
+	}
+}
+
 type podDeviceMapper struct {
 	ctx context.Context
 
@@ -48,8 +67,25 @@ type podDeviceMapper struct {
 	kubernetesClient   kubernetes.Interface
 }
 
-func NewPodDeviceMapper(ctx context.Context) (PodDeviceMapper, error) {
-	httpsClient, err := NewKubeletHTTPSClient(ctx)
+// NewPodDeviceMapper creates clients for pod-to-device annotation updates.
+// Explicit kubeconfigs must provide credentials and verified HTTPS endpoints.
+func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper, error) {
+	config := clientConfig{}
+	for _, option := range options {
+		option(&config)
+	}
+
+	clusterConfig, err := loadRESTConfig(config.kubeconfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("load Kubernetes API configuration: %w", err)
+	}
+
+	k8sClient, err := kubernetes.NewForConfig(clusterConfig)
+	if err != nil {
+		return nil, fmt.Errorf("create Kubernetes API client: %w", err)
+	}
+
+	httpsClient, err := NewKubeletHTTPSClient(ctx, config.kubeletKubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("got an error creating Kubelet HTTPS client: %w", err)
 	}
@@ -59,22 +95,68 @@ func NewPodDeviceMapper(ctx context.Context) (PodDeviceMapper, error) {
 		return nil, fmt.Errorf("got an error creating Kubelet gRPC client: %w", err)
 	}
 
-	clusterConfig, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("got an error creating in-cluster config: %w", err)
-	}
-
-	k8sClient, err := kubernetes.NewForConfig(clusterConfig)
-	if err != nil {
-		return nil, fmt.Errorf("got an error creating in-cluster client: %w", err)
-	}
-
 	return &podDeviceMapper{
 		ctx:                ctx,
 		kubeletHTTPSClient: httpsClient,
 		kubeletGRPCClient:  grpcClient,
 		kubernetesClient:   k8sClient,
 	}, nil
+}
+
+// loadRESTConfig uses only the explicit file, or in-cluster credentials when path is empty.
+// Host configuration must authenticate over verified HTTPS; errors never print credentials.
+func loadRESTConfig(path string) (*rest.Config, error) {
+	if path == "" {
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("load in-cluster credentials (set --kubeconfig for host operation): %w", err)
+		}
+
+		return config, nil
+	}
+
+	config, err := clientcmd.BuildConfigFromFlags("", path)
+	if err != nil {
+		return nil, fmt.Errorf("load kubeconfig %q: %w", path, err)
+	}
+
+	if err := validateHostConfig(config); err != nil {
+		return nil, fmt.Errorf("kubeconfig %q: %w", path, err)
+	}
+
+	return config, nil
+}
+
+// validateHostConfig checks transport security separately from endpoint permissions.
+// Kubernetes and the kubelet remain responsible for authenticating and authorizing requests.
+func validateHostConfig(config *rest.Config) error {
+	endpoint, err := url.Parse(config.Host)
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" ||
+		endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return fmt.Errorf("must use an HTTPS server without URL credentials, query, or fragment")
+	}
+
+	if config.Insecure {
+		return fmt.Errorf("must verify the server certificate")
+	}
+
+	if !hasClientCredentials(config) {
+		return fmt.Errorf("must provide client credentials")
+	}
+
+	return nil
+}
+
+// hasClientCredentials reports whether a supported credential source is configured.
+func hasClientCredentials(config *rest.Config) bool {
+	hasCert := config.CertFile != "" || len(config.CertData) > 0
+	hasKey := config.KeyFile != "" || len(config.KeyData) > 0
+
+	return config.BearerToken != "" ||
+		config.BearerTokenFile != "" ||
+		(hasCert && hasKey) ||
+		config.ExecProvider != nil ||
+		config.AuthProvider != nil
 }
 
 /*

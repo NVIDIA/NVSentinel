@@ -131,7 +131,7 @@ Port for the Janitor's internal HTTP server (health and readiness endpoints).
 
 ## Node Exclusions
 
-Prevents specific nodes from being targeted by any Janitor operation.
+Stops new `RebootNode`, `TerminateNode`, and `GPUReset` CRs from being created for the matching nodes.
 
 ```yaml
 janitor:
@@ -140,18 +140,55 @@ janitor:
       exclusions: []
 ```
 
-Provide a list of node names to exclude:
+Each entry is a Kubernetes [label selector](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors), not a node name. Use `matchLabels`, `matchExpressions`, or both. A node that matches **any** entry is excluded.
 
 ```yaml
 janitor:
   config:
     nodes:
       exclusions:
-        - control-plane-node-1
-        - infra-node-2
+        # Every control-plane node
+        - matchLabels:
+            node-role.kubernetes.io/control-plane: ""
+
+        # One specific node, selected through its hostname label
+        - matchLabels:
+            kubernetes.io/hostname: gpu-node-07
+
+        # Any node in a critical or production tier
+        - matchExpressions:
+            - key: workload-tier
+              operator: In
+              values:
+                - critical
+                - production
 ```
 
-Use this for control-plane nodes, infrastructure nodes, or any node that must never be rebooted or terminated by NVSentinel.
+To exclude one node, select it through the `kubernetes.io/hostname` label that kubelet sets on every node. Read the value first, because it does not always match the node's object name:
+
+```bash
+kubectl get node gpu-node-07 -o jsonpath='{.metadata.labels.kubernetes\.io/hostname}'
+```
+
+One list covers all three controllers: RebootNode, TerminateNode, and GPUReset.
+
+### How exclusions are enforced
+
+A validating admission webhook compares the node's labels against every exclusion when a Janitor CR is created, and rejects the request on the first match:
+
+```text
+node 'control-plane-1' is excluded from janitor operations due to a label on the node matching the label exclusion 'node-role.kubernetes.io/control-plane=' from config value global.nodes.exclusions
+```
+
+The check runs server-side on the API request, so it applies to every client, and `force: true` does not bypass it. Because it matches on labels read at admission time, relabelling a node changes what is excluded without a Janitor restart.
+
+Admission is the only place exclusions are enforced. The controllers do not re-check them while reconciling, so a CR admitted before you added the exclusion, or before you labelled the node, still runs to completion. After you add an exclusion, check for CRs that are already in flight for those nodes:
+
+```bash
+kubectl get rebootnodes,terminatenodes,gpuresets -A
+```
+
+Use this for control-plane nodes, infrastructure nodes, or any node that NVSentinel should not reboot or terminate.
 
 ## Controllers
 
@@ -198,6 +235,7 @@ janitor:
           writeSysLogEvent: true
           runtimeClassName: "nvidia"
           hostDriverRootPath: "/run/nvidia/driver"
+          driverRoot: "/run/nvidia/driver"
           image:
             repository: ghcr.io/nvidia/nvsentinel/gpu-reset
             tag: ""
@@ -222,9 +260,18 @@ When `true`, the reset job writes a kernel syslog message on reset completion. U
 NVIDIA RuntimeClass name used by the GPU reset Job. Must match a RuntimeClass installed in the cluster.
 
 ### resetJob.hostDriverRootPath
-Host path containing the NVIDIA driver filesystem. It is mounted at `/run/nvidia/driver` inside the reset container, where the reset command uses it as a chroot.
+Host path containing the NVIDIA driver filesystem. The reset Job mounts it at `resetJob.driverRoot` inside the reset container.
 
 Keep the default `/run/nvidia/driver` for containerized driver installations. Set it to `/` when the driver is installed directly into the host filesystem and `nvidia-smi` is available at a path such as `/usr/bin/nvidia-smi`.
+
+### resetJob.driverRoot
+Path inside the reset container that the reset command chroots into. The reset command runs `chroot <driverRoot> nvidia-smi` for every `nvidia-smi` call, so this path must hold a complete filesystem: the `nvidia-smi` binary, its shared libraries, and a dynamic loader. The reset Job also mounts the host `/sys` at `<driverRoot>/sys`, so the chroot can read sysfs.
+
+Keep the default `/run/nvidia/driver`. The GPU Operator driver container bind-mounts its full container root to that host path, which satisfies the chroot. This default also works with `hostDriverRootPath: "/"`, because the host root filesystem is complete as well.
+
+Set `driverRoot` to `/` when the driver root holds only driver files and not a complete filesystem. A chroot into a partial driver root fails before `nvidia-smi` starts. With `/`, the chroot is a no-op and the reset command uses the `nvidia-smi` in the reset container image. The Job then does not mount `hostDriverRootPath`, and it mounts the host `/sys` at `/sys`.
+
+The value must be an absolute, clean path. The janitor rejects any other value at startup.
 
 ### resetJob.image
 Container image for the GPU reset Job. Leave `tag` empty to use the chart default.

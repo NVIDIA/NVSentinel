@@ -193,55 +193,12 @@ func (c *PostgreSQLDatabaseClient) insertHealthEvents(
 	insertedIDs := make([]any, 0, len(documents))
 
 	for _, doc := range documents {
-		modelEvent, ok := doc.(model.HealthEventWithStatus)
-		if !ok {
-			slog.Error("Type assertion failed in insertHealthEvents",
-				"expectedType", "model.HealthEventWithStatus",
-				"actualType", fmt.Sprintf("%T", doc))
-
-			return nil, fmt.Errorf("expected HealthEventWithStatus but got %T", doc)
-		}
-
-		// CRITICAL: Extract index fields from the protobuf BEFORE JSON marshaling
-		// After JSON marshal/unmarshal, the protobuf is converted to a map and we lose type info
-		var indexFields healthEventIndexFields
-		if modelEvent.HealthEvent != nil {
-			indexFields = healthEventIndexFields{
-				nodeName:          modelEvent.HealthEvent.NodeName,
-				eventType:         modelEvent.HealthEvent.CheckName,
-				severity:          modelEvent.HealthEvent.ComponentClass,
-				recommendedAction: modelEvent.HealthEvent.RecommendedAction.String(),
-			}
-
-			slog.Debug("Extracted index fields from protobuf", "nodeName", indexFields.nodeName)
-		} else {
-			slog.Debug("modelEvent.HealthEvent is nil, using empty index fields")
-		}
-
-		// Convert model.HealthEventWithStatus to datastore.HealthEventWithStatus
-		// by marshaling to JSON and unmarshaling to the datastore type
-		modelJSON, err := json.Marshal(modelEvent)
+		id, err := c.insertSingleHealthEvent(ctx, healthStore, doc)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal model health event: %w", err)
+			return nil, err
 		}
 
-		var datastoreEvent datastore.HealthEventWithStatus
-		if err := json.Unmarshal(modelJSON, &datastoreEvent); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal to datastore health event: %w", err)
-		}
-
-		// Use the PostgreSQL health event store to insert with proper schema
-		// Pass the index fields we extracted from the protobuf
-		err = healthStore.InsertHealthEventsWithIndexFields(ctx, &datastoreEvent, indexFields)
-		if err != nil {
-			slog.Error("InsertHealthEventsWithIndexFields failed", "error", err)
-
-			return nil, fmt.Errorf("[postgresql:insert] failed to insert documents: %w", err)
-		}
-
-		// For now, use a placeholder ID since InsertHealthEvents doesn't return the ID
-		// In the future, we could modify InsertHealthEvents to return the generated UUID
-		insertedIDs = append(insertedIDs, "inserted")
+		insertedIDs = append(insertedIDs, id)
 	}
 
 	slog.Debug("insertHealthEvents complete", "insertedCount", len(insertedIDs))
@@ -249,6 +206,121 @@ func (c *PostgreSQLDatabaseClient) insertHealthEvents(
 	return &client.InsertManyResult{
 		InsertedIDs: insertedIDs,
 	}, nil
+}
+
+// insertSingleHealthEvent inserts one health event using the PostgreSQL-specific schema
+func (c *PostgreSQLDatabaseClient) insertSingleHealthEvent(
+	ctx context.Context, healthStore *PostgreSQLHealthEventStore, doc any,
+) (any, error) {
+	modelEvent, ok := doc.(model.HealthEventWithStatus)
+	if !ok {
+		slog.Error("Type assertion failed in insertSingleHealthEvent",
+			"expectedType", "model.HealthEventWithStatus",
+			"actualType", fmt.Sprintf("%T", doc))
+
+		return nil, fmt.Errorf("expected HealthEventWithStatus but got %T", doc)
+	}
+
+	// CRITICAL: Extract index fields from the protobuf BEFORE JSON marshaling
+	// After JSON marshal/unmarshal, the protobuf is converted to a map and we lose type info
+	var indexFields healthEventIndexFields
+	if modelEvent.HealthEvent != nil {
+		indexFields = healthEventIndexFields{
+			nodeName:          modelEvent.HealthEvent.NodeName,
+			eventType:         modelEvent.HealthEvent.CheckName,
+			severity:          modelEvent.HealthEvent.ComponentClass,
+			recommendedAction: modelEvent.HealthEvent.RecommendedAction.String(),
+		}
+
+		slog.Debug("Extracted index fields from protobuf", "nodeName", indexFields.nodeName)
+	} else {
+		slog.Debug("modelEvent.HealthEvent is nil, using empty index fields")
+	}
+
+	// Convert model.HealthEventWithStatus to datastore.HealthEventWithStatus
+	// by marshaling to JSON and unmarshaling to the datastore type
+	modelJSON, err := json.Marshal(modelEvent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal model health event: %w", err)
+	}
+
+	var datastoreEvent datastore.HealthEventWithStatus
+	if err := json.Unmarshal(modelJSON, &datastoreEvent); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal to datastore health event: %w", err)
+	}
+
+	// Use the PostgreSQL health event store to insert with proper schema
+	// Pass the index fields we extracted from the protobuf
+	// Not logged here: a duplicate on the idempotency index is the expected
+	// answer to a resend, and the caller classifies and reports the rest.
+	err = healthStore.InsertHealthEventsWithIndexFields(ctx, &datastoreEvent, indexFields)
+	if err != nil {
+		return nil, fmt.Errorf("[postgresql:insert] failed to insert documents: %w", err)
+	}
+
+	// For now, use a placeholder ID since InsertHealthEvents doesn't return the ID
+	// In the future, we could modify InsertHealthEvents to return the generated UUID
+	return "inserted", nil
+}
+
+// InsertManyIdempotent inserts documents one at a time, in order, resuming
+// past duplicates on the idempotency index and stopping at any other failure;
+// see client.InsertManyIdempotentWith.
+func (c *PostgreSQLDatabaseClient) InsertManyIdempotent(
+	ctx context.Context, documents []any,
+) (*client.InsertManyResult, error) {
+	slog.Debug("InsertManyIdempotent called", "documentCount", len(documents), "tableName", c.tableName)
+
+	healthStore := NewPostgreSQLHealthEventStore(c.db)
+
+	return client.InsertManyIdempotentWith(ctx, documents, func(ctx context.Context, doc any) (string, error) {
+		return c.insertSingleDocument(ctx, healthStore, doc)
+	})
+}
+
+// insertSingleDocument inserts one document on its own, outside a transaction,
+// so a failure on one document leaves the ones before it stored: a health
+// event goes through the health event store with its index fields, anything
+// else as JSON, like InsertMany. The datastore's error is returned unwrapped
+// beyond the store's own wrapping, so the caller can read its SQLSTATE.
+func (c *PostgreSQLDatabaseClient) insertSingleDocument(
+	ctx context.Context, healthStore *PostgreSQLHealthEventStore, doc any,
+) (string, error) {
+	if _, ok := doc.(model.HealthEventWithStatus); ok {
+		id, err := c.insertSingleHealthEvent(ctx, healthStore, doc)
+		if err != nil {
+			return "", err
+		}
+
+		return fmt.Sprint(id), nil
+	}
+
+	jsonData, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal document: %w", err)
+	}
+
+	//nolint:gosec // G201: table name from config, values are parameterized
+	query := fmt.Sprintf("INSERT INTO %s (data) VALUES ($1) RETURNING id", c.tableName)
+
+	var id string
+	if err := c.db.QueryRowContext(ctx, query, jsonData).Scan(&id); err != nil {
+		return "", err
+	}
+
+	return id, nil
+}
+
+// EnsureHealthEventIdempotencyIndex idempotently creates the partial unique
+// expression index that enforces per-event idempotency keys on health events.
+func (c *PostgreSQLDatabaseClient) EnsureHealthEventIdempotencyIndex(ctx context.Context) error {
+	return client.NewPostgreSQLClientFromDB(c.db, c.tableName).EnsureHealthEventIdempotencyIndex(ctx)
+}
+
+// VerifyHealthEventIdempotencyIndex checks the full idempotency index definition,
+// returning datastore.ErrIndexMissing or datastore.ErrIndexMismatch on deviation.
+func (c *PostgreSQLDatabaseClient) VerifyHealthEventIdempotencyIndex(ctx context.Context) error {
+	return client.NewPostgreSQLClientFromDB(c.db, c.tableName).VerifyHealthEventIdempotencyIndex(ctx)
 }
 
 // UpdateDocumentStatus updates a specific status field in a document

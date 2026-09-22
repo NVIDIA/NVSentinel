@@ -1971,3 +1971,59 @@ func TestProcessRulePropagatesPersistenceCancellation(t *testing.T) {
 	require.False(t, published)
 	require.ErrorIs(t, err, context.Canceled)
 }
+
+func TestProcessRule_MatchMetrics_CountOnceWithRecovery(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recovery=%t", recovery), func(t *testing.T) {
+			now := time.Now().UTC()
+			rule := recoveryRule(config.RecoveryScopeEntity)
+			rule.Name = t.Name()
+			rule.Stage = []string{`{"$match":{"healthevent.entitiesimpacted":{"$exists":true}}}`, `{"$count":"count"}`}
+			if !recovery {
+				rule.Recovery = nil
+			}
+			incoming := storedEvent(now, &protos.HealthEvent{
+				Agent: "syslog-health-monitor", CheckName: "SysLogsXIDError", NodeName: "node-metrics",
+				GeneratedTimestamp: timestamppb.New(now),
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "GPU", EntityValue: "0"},
+					{EntityType: "GPU_UUID", EntityValue: "GPU-target"},
+				},
+			})
+			database := new(mockDatabaseClient)
+			platform := new(mockPublisher)
+			reconciler := newRecoveryReconciler(rule, database, platform)
+			reconciler.config.HealthEventsAnalyzerRules.RuleMatchedEntityMetricEnabled = true
+			aggregate, _ := createMockCursor([]map[string]any{{"ruleMatched": true}})
+			database.On("Aggregate", mock.Anything, mock.Anything).Return(aggregate, nil).Once()
+			if recovery {
+				identity, ok := recoveryIdentityForEvent(rule, incoming.HealthEvent)
+				require.True(t, ok)
+				reconciler.rememberRecoveryBoundary(rule.Name, identity, recoveryBoundary{createdAt: now.Add(-time.Minute)})
+				database.On("Find", mock.Anything, mock.Anything, mock.Anything).
+					Return(newHealthEventCursor(), nil).Twice()
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			platform.On("HealthEventOccurredV1", mock.Anything, mock.Anything).
+				Run(func(mock.Arguments) {
+					if recovery {
+						cancel()
+					}
+				}).Return(&emptypb.Empty{}, nil).Once()
+			published, err := reconciler.processRule(ctx, rule, &incoming)
+			if recovery {
+				require.False(t, published)
+				require.ErrorIs(t, err, context.Canceled)
+			} else {
+				require.NoError(t, err)
+				require.True(t, published)
+			}
+			require.Equal(t, float64(1), testutil.ToFloat64(ruleMatchedTotal.WithLabelValues(rule.Name, "node-metrics")))
+			require.Equal(t, float64(1), testutil.ToFloat64(
+				ruleMatchedEntityTotal.WithLabelValues(rule.Name, "node-metrics", "GPU", "0")))
+			database.AssertExpectations(t)
+			platform.AssertExpectations(t)
+		})
+	}
+}

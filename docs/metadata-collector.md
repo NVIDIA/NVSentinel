@@ -56,6 +56,7 @@ metadata-collector:
 
 - **Runtime Class**: Specify runtime class name for GPU access (typically `"nvidia"` for containerd). For CRI-O and NRI-mode clusters, set `runtimeClassName: ""` to omit the field. On NRI-mode GPU Operator clusters, also mount host driver libraries (see [Metadata Collector Configuration](./configuration/metadata-collector.md)).
 - **Output Path**: Path where metadata JSON is written (default: `/var/lib/nvsentinel/gpu_metadata.json`)
+- **Host Authentication**: Use `--kubeconfig` for Kubernetes API access and `--kubelet-kubeconfig` for kubelet HTTPS access. See [host-native authentication](./configuration/metadata-collector.md#host-native-authentication) for credentials, TLS, and permissions. Hardware inventory and pod-to-GPU mapping remain enabled.
 
 ## What It Collects
 

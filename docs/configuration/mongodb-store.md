@@ -45,6 +45,61 @@ Do **NOT** switch backends by changing the two flags on a live release with `hel
 
 Switching backends reinstalls the datastore; the migration runbook's default path carries the health event data over with a dump and restore, and only its opt-out clean path drops it. Follow the [MongoDB Bitnami to Percona migration runbook](../runbooks/mongodb-bitnami-to-percona-migration.md) for the full procedure, including the cleanup steps and the handling of in-flight quarantines.
 
+## Enabling Bitnami MongoDB on an existing installation
+
+The Bitnami backend generates its root password only during a fresh `helm install`. Turning the datastore on later, for example when you move from monitoring to cordon and drain, is a `helm upgrade`, and the chart stops before it deploys anything:
+
+```text
+PASSWORDS ERROR: You must provide your current passwords when upgrading the release.
+```
+
+The chart reads the `mongodb` Secret during template rendering, which happens before any Job or init container can create it. Create the Secret yourself first, then run the same upgrade again. The Percona backend does not have this behaviour.
+
+**Avoid this by creating the Secret at install time.** The Quick Start in the [README](https://github.com/NVIDIA/NVSentinel#quick-start) creates it alongside the namespace, before the first `helm upgrade --install`. The Secret costs nothing while the datastore is off, and it makes enabling the datastore later a single command. The rest of this section is for installations that already exist without it.
+
+### Check before you create anything
+
+The Secret must match the credentials already written into the database volume. Creating a new one over a live database locks NVSentinel out of its own data. Run both checks, then read their output against the decision table below:
+
+```bash
+# 1. A usable credentials Secret. Prints "present" only when the key exists and is
+#    non-empty; it never prints the password itself.
+kubectl get secret mongodb -n nvsentinel -o jsonpath='{.data.mongodb-root-password}' 2>/dev/null \
+  | grep -q . && echo "present" || echo "missing or empty"
+
+# 2. Existing database volumes. If any exist, a database was deployed before.
+kubectl get pvc -n nvsentinel -l app.kubernetes.io/name=mongodb
+```
+
+The Secret existing is not enough. The chart fails the same way when `mongodb-root-password` is absent or empty, so check the key rather than the object.
+
+Read the results together:
+
+| Key present | Volumes | What to do |
+|---|---|---|
+| no | none | Fresh datastore. Create the Secret below. |
+| yes | any | Keep the Secret as is and go straight to the upgrade. |
+| no | one or more | **Stop.** The volume holds credentials you no longer have. Creating a new Secret locks NVSentinel out of that data. |
+
+For the last row, recover the original password from your backup. The data-preserving path in the [migration runbook](../runbooks/mongodb-bitnami-to-percona-migration.md) needs that password too: its dump step reads the same `mongodb-root-password` key and stops if the key is missing. Without the password the only remaining option is the runbook's clean path, which drops the stored health events.
+
+### Create the Secret
+
+The Secret needs one key, `mongodb-root-password`. An empty Secret does not work: the chart treats a missing key the same as a missing Secret and fails with `The secret "mongodb" does not contain the key "mongodb-root-password"`.
+
+```bash
+kubectl create secret generic mongodb -n nvsentinel \
+  --from-literal=mongodb-root-password="$(openssl rand -hex 24)"
+```
+
+Then run your `helm upgrade` again, unchanged. The chart finds the Secret, reuses it, and keeps reusing it on every later upgrade. The root username stays `root`, set by `mongodb-store.mongodb.auth.rootUser`.
+
+Confirm the datastore came up:
+
+```bash
+kubectl get pods -n nvsentinel -l app.kubernetes.io/name=mongodb
+```
+
 ## Percona Operator
 
 Enable Percona when first installing NVSentinel. On a release that already runs Percona, keep these flags set on every upgrade. To move an existing Bitnami installation to Percona, do not change the flags in place; follow the [migration runbook](../runbooks/mongodb-bitnami-to-percona-migration.md) instead.
@@ -66,6 +121,49 @@ When Percona is enabled, the replica set is configured under `psmdb-db` instead 
 - **Operator reference:** [Percona Operator for MongoDB](https://docs.percona.com/percona-operator-for-mongodb/)
 
 The chart-generated `MONGODB_URI` follows the selected backend automatically (`mongodb-headless` for Bitnami, `mongodb-rs0` for Percona). If you set `global.datastore.connection.host` explicitly in your values, it must match the backend you selected.
+
+### Percona versions
+
+Three values carry the Percona **operator** version and must agree, because the init container runs the operator image:
+
+| Value | What it is |
+| --- | --- |
+| `psmdb-operator.image.tag` | the operator image |
+| `psmdb-db.crVersion` | the schema version of the `PerconaServerMongoDB` resource |
+| `psmdb-db.initImage.tag` | the init container, which is the operator image |
+
+Set **`mongodb-store.psmdbVersion`** to the version you intend to run. **It asserts rather than sets:** Helm resolves subchart values before any template runs, so a parent chart cannot write into them. Set the three values as usual and set `psmdbVersion` to match; the render then fails if any of them disagrees.
+
+That is what makes it useful. The mistake an operator carrying pins actually makes is a partial edit, raising the operator tag and init image but forgetting `crVersion`, and this refuses that instead of deploying it. Leaving `psmdbVersion` empty disables the assertion; the consistency checks below still run.
+
+The **mongod** version (`psmdb-db.image.tag`) is separate. It is a different product on its own version line, and which mongod a given operator certifies is published at `https://check.percona.com/versions/v1/psmdb-operator/<version>`, which the chart cannot consult while rendering. Check that matrix yourself before changing it; a pairing outside it renders and runs without complaint.
+
+#### Upgrading
+
+[Percona permits upgrading only to the nearest `major.minor`](https://docs.percona.com/percona-operator-for-mongodb/update-operator.html). The render enforces this: it fails when `crVersion` is more than one minor behind the operator, when the major versions differ, or when `crVersion` is ahead of the operator.
+
+**One minor of skew is allowed on purpose**, because that is how the documented upgrade is performed. Moving from 1.21 to 1.23 on a live cluster is two steps:
+
+1. Raise `psmdb-operator.image.tag` and `psmdb-db.initImage.tag` to `1.22.0`, leaving `crVersion` at `1.21.x`. The operator is now one minor ahead, which is permitted and does not roll the replica set.
+2. Raise `crVersion` to `1.22.0`. **This rolls the replica set**, because `crVersion` is a field of the custom resource, so the operator runs SmartUpdate across every member: secondaries first, then a primary step-down.
+
+Then repeat for 1.23. Do not set `psmdbVersion` until the ladder is finished, since it demands that all three agree.
+
+A non-semver operator tag, for example a local build, disables the skew comparison. The `psmdbVersion` and init image checks still apply.
+
+#### Checking the deployed resource
+
+Everything above compares values with each other. None of it can see the resource that is actually deployed, and that is the gap that bites an existing cluster: adopting a release moves the bundled versions together, so the values stay self-consistent while the live `PerconaServerMongoDB` still carries the `crVersion` it was installed with. `lookup` returns empty under `helm template`, so a render-time guard cannot close this for ArgoCD users either.
+
+Set **`mongodb-store.validateDeployedCrVersion: true`** to add an init container to the bootstrap Job that reads the deployed `crVersion` and applies the same rule: same major, and at most one minor behind the operator. It fails the Job rather than letting an unsupported pairing reconcile silently.
+
+It is **off by default** because enabling it grants the Job `list` on `perconaservermongodbs.psmdb.percona.com`, scoped to the release namespace. The grant and the check are gated on the same value, so no installation carries the permission without the check that needs it.
+
+Notes:
+
+- It runs after the operator-generated users secret exists, which means the operator has already reconciled the resource. A missing resource at that point is therefore an error rather than a first install, which is what lets the check fail instead of skipping.
+- The resource is found by listing the namespace, not by name, so renaming it changes nothing. If the namespace holds more than one, the check refuses to guess which belongs to the release.
+- This runs only when the Job runs, so it cannot see a render. It does not replace `psmdbVersion`, which is what catches the values disagreeing with each other before anything is applied.
 
 ### Volume size
 
@@ -320,6 +418,29 @@ Container image for the MongoDB exporter.
 Image tag for the MongoDB exporter.
 
 The exporter exposes metrics on port 9216 for Prometheus scraping.
+
+### Network Policy
+
+Configures network policy ingress rules for MongoDB pods. The database port (`27017`) is always restricted to the NVSentinel release namespace. When `usePerconaOperator: true`, the metrics exporter port (`9216`) allows ingress from the release namespace by default and can permit additional monitoring namespaces or custom ingress rules. These settings apply only when using the Percona Operator backend.
+
+```yaml
+mongodb-store:
+  useBitnami: false
+  usePerconaOperator: true
+  networkPolicy:
+    additionalScrapeNamespaces:
+      - monitoring
+      - prometheus
+    additionalScrapeRules: []
+```
+
+#### Parameters
+
+##### additionalScrapeNamespaces
+List of namespaces permitted to scrape the metrics exporter on port `9216` when `usePerconaOperator: true`. Defaults to empty (`[]`). The release namespace is always permitted.
+
+##### additionalScrapeRules
+Custom ingress rules rendered directly under `from:` for the metrics exporter on port `9216` when `usePerconaOperator: true`. Use this to match specific pod labels or IP blocks.
 
 ### Helper Images
 

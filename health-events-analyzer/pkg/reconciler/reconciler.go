@@ -64,6 +64,8 @@ type HealthEventsAnalyzerReconcilerConfig struct {
 	Pipeline                  any
 	HealthEventsAnalyzerRules *config.TomlConfig
 	Publisher                 *publisher.PublisherConfig
+	Workers                   int
+	MaxInFlight               int
 }
 
 type Reconciler struct {
@@ -90,14 +92,25 @@ func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
 	}
 }
 
-func newEventProcessorConfig(rules *config.TomlConfig) client.EventProcessorConfig {
-	// Recovery requires ordered replay: a later event must not advance the token
-	// past a failed transition. Without recovery, retain the default skip-on-error
-	// behavior. Checkpoint failures stop processing in either mode.
+func newEventProcessorConfig(cfg HealthEventsAnalyzerReconcilerConfig) client.EventProcessorConfig {
+	workers := cfg.Workers
+	if workers <= 0 {
+		workers = 1
+	}
+
+	maxInFlight := cfg.MaxInFlight
+	if maxInFlight <= 0 {
+		maxInFlight = 1000
+	}
+
+	// Recovery must replay failed transitions before advancing the checkpoint.
+	// Node-partitioned workers retain this policy while processing nodes in parallel.
 	return client.EventProcessorConfig{
 		EnableMetrics:        true,
 		MetricsLabels:        map[string]string{"module": agentName},
-		MarkProcessedOnError: !rules.HasEnabledRecovery(),
+		MarkProcessedOnError: !cfg.HealthEventsAnalyzerRules.HasEnabledRecovery(),
+		Workers:              workers,
+		MaxInFlight:          maxInFlight,
 		SkipEvent: func(event client.Event) bool {
 			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
 		},
@@ -162,7 +175,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	oldWatcher := unwrapable.Unwrap()
 
-	processorConfig := newEventProcessorConfig(r.config.HealthEventsAnalyzerRules)
+	processorConfig := newEventProcessorConfig(r.config)
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)
 
@@ -436,6 +449,7 @@ func (r *Reconciler) processRule(ctx context.Context,
 	}
 
 	ruleMatchedTotal.WithLabelValues(rule.Name, event.HealthEvent.NodeName).Inc()
+	r.recordMatchedEntityMetric(rule.Name, event.HealthEvent.NodeName, event.HealthEvent, ruleSelectsOnEntity(rule))
 
 	published, err := r.publishRuleMatch(ctx, rule, event, identity, recoveryEnabled)
 	if err != nil {
@@ -807,6 +821,7 @@ func (r *Reconciler) processXidBurstDetection(ctx context.Context, event *protos
 
 	// Track metrics
 	ruleMatchedTotal.WithLabelValues("RepeatedXidError", event.NodeName).Inc()
+	r.recordMatchedEntityMetric("RepeatedXidError", event.NodeName, event, true)
 
 	if len(event.EntitiesImpacted) > 0 {
 		fatalEventsPublishedTotal.WithLabelValues(event.EntitiesImpacted[0].EntityValue).Inc()

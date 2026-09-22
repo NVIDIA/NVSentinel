@@ -16,17 +16,21 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"go.opentelemetry.io/otel/attribute"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/kubeconfig"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 )
@@ -42,8 +46,28 @@ Hence, ignoring this file as part of unit testing for now.
 type K8sConnectorConfig struct {
 	MaxNodeConditionMessageLength int64
 	CompactedHealthEventMsgLen    int64
+	// MaxRetries limits retries per write. Zero selects DefaultMaxRetries.
+	MaxRetries int
+	// MaxRetryDuration bounds processing of the whole batch, including API calls.
+	MaxRetryDuration time.Duration
 }
 
+// DefaultMaxRetries allows retries throughout the default one-minute batch window.
+const DefaultMaxRetries = 25
+
+// DefaultMaxRetryDuration bounds the time a batch holds the Kubernetes queue.
+const DefaultMaxRetryDuration = time.Minute
+
+// MaxAllowedRetryDuration limits operator-configured batch windows to five minutes.
+const MaxAllowedRetryDuration = 5 * time.Minute
+
+// K8sConnector writes health events to the cluster as node conditions and
+// Kubernetes Events. A batch costs API calls only when it changes what the
+// cluster shows: the node status update is skipped when every condition would
+// keep its status, reason and message, and the Event write is skipped for a
+// fault whose Event was written less than nodeEventRefreshInterval ago. So a
+// monitor that reports every cycle, or a resent batch, costs nothing until
+// something changes; the condition's heartbeat time moves with those changes.
 type K8sConnector struct {
 	clientset  kubernetes.Interface
 	ringBuffer *ringbuffer.RingBuffer
@@ -51,10 +75,15 @@ type K8sConnector struct {
 	ctx        context.Context
 	config     K8sConnectorConfig
 
-	// nodeEventNames caches the last written event name per dedupe key;
-	// see writeNodeEvent. nodeEventMu guards only the lazy init.
-	nodeEventMu    sync.Mutex
-	nodeEventNames *expirable.LRU[string, string]
+	prepareWrites  func(context.Context, *protos.HealthEvents) []kubernetesWrite
+	retryBaseDelay time.Duration
+	retryMaxDelay  time.Duration
+
+	// nodeEvents remembers, per node and check, the Kubernetes Events written
+	// for its faults (message to Event name and write time); see
+	// writeNodeEvent. nodeEventMu guards it, including the maps it holds.
+	nodeEventMu sync.Mutex
+	nodeEvents  *expirable.LRU[string, map[string]rememberedEvent]
 }
 
 // NewK8sConnector creates a K8sConnector with the given Kubernetes client, ring buffer, and configuration.
@@ -63,15 +92,31 @@ func NewK8sConnector(
 	ringBuffer *ringbuffer.RingBuffer,
 	stopCh <-chan struct{}, ctx context.Context,
 	cfg K8sConnectorConfig) *K8sConnector {
-	return &K8sConnector{
+	if cfg.MaxRetries == 0 {
+		cfg.MaxRetries = DefaultMaxRetries
+	}
+
+	if cfg.MaxRetryDuration == 0 {
+		cfg.MaxRetryDuration = DefaultMaxRetryDuration
+	}
+
+	connector := &K8sConnector{
 		clientset:  client,
 		ringBuffer: ringBuffer,
 		stopCh:     stopCh,
 		ctx:        ctx,
 		config:     cfg,
+
+		retryBaseDelay: ringbuffer.DefaultBaseDelay,
+		retryMaxDelay:  ringbuffer.DefaultMaxDelay,
 	}
+	connector.prepareWrites = connector.prepareHealthEventWrites
+
+	return connector
 }
 
+// InitializeK8sConnector validates configuration and constructs a connector with
+// a Kubernetes client. Zero retries uses the default; negative values are rejected.
 func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
 	qps float32, burst int, stopCh <-chan struct{}, cfg K8sConnectorConfig,
 	kubeconfigPath string,
@@ -84,6 +129,15 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 	if cfg.CompactedHealthEventMsgLen <= 0 {
 		return nil, nil, fmt.Errorf("CompactedHealthEventMsgLen must be greater than 0, got %d",
 			cfg.CompactedHealthEventMsgLen)
+	}
+
+	if cfg.MaxRetries < 0 {
+		return nil, nil, fmt.Errorf("maxRetries must not be negative, got %d", cfg.MaxRetries)
+	}
+
+	if cfg.MaxRetryDuration < 0 || cfg.MaxRetryDuration > MaxAllowedRetryDuration {
+		return nil, nil, fmt.Errorf("maxRetryDuration must be between 0 and %s, got %s",
+			MaxAllowedRetryDuration, cfg.MaxRetryDuration)
 	}
 
 	config, err := kubeconfig.Load(kubeconfigPath)
@@ -108,9 +162,22 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 	return kubernetesConnector, clientSet, nil
 }
 
+// ProcessBatch applies one batch to the cluster: node conditions and
+// Kubernetes Events for every processable event. It is the entry point for
+// callers that hold no queue (the deployment platform connector) and returns
+// failures to the caller for retry. The queued path retries in place.
+func (r *K8sConnector) ProcessBatch(ctx context.Context, healthEvents *protos.HealthEvents) error {
+	return r.processHealthEvents(ctx, healthEvents)
+}
+
+// FetchAndProcessHealthMetric processes batches sequentially, completing all
+// retry attempts for the current batch before consuming another one.
 func (r *K8sConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 	for {
 		select {
+		case <-ctx.Done():
+			slog.InfoContext(ctx, "Context canceled, exiting Kubernetes connector processing loop")
+			return
 		case <-r.stopCh:
 			slog.InfoContext(r.ctx, "k8sConnector queue received stop signal")
 			return
@@ -121,24 +188,199 @@ func (r *K8sConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 				return
 			}
 
-			healthEvents := queuedHealthEvents.Events
-
-			batchCtx, span := tracing.StartSpanWithLinkFromSpanContext(
-				ctx, queuedHealthEvents.ParentSpanContext, "platform_connector.k8s.fetch_and_process_health_metric")
-
-			if err := r.processHealthEvents(batchCtx, healthEvents); err != nil {
-				slog.ErrorContext(batchCtx, "Not able to process healthEvent", "error", err)
-				tracing.RecordError(span, err)
-				span.SetAttributes(
-					attribute.String("platform_connector.k8s.error.type", "not_able_to_process_health_event"),
-					attribute.String("platform_connector.k8s.error.message", err.Error()),
-				)
-				r.ringBuffer.HealthMetricEleProcessingFailed(queuedHealthEvents)
-			} else {
-				r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
-			}
-
-			span.End()
+			r.processQueuedHealthEvents(ctx, queuedHealthEvents)
 		}
+	}
+}
+
+// processQueuedHealthEvents records the terminal outcome and releases the batch.
+func (r *K8sConnector) processQueuedHealthEvents(
+	ctx context.Context,
+	queuedHealthEvents *ringbuffer.QueuedHealthEvents,
+) {
+	healthEvents := queuedHealthEvents.Events
+	if healthEvents == nil || len(healthEvents.GetEvents()) == 0 {
+		r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
+		return
+	}
+
+	batchCtx, span := tracing.StartSpanWithLinkFromSpanContext(
+		ctx, queuedHealthEvents.ParentSpanContext, "platform_connector.k8s.fetch_and_process_health_metric")
+	defer span.End()
+
+	retryCount, err := r.processHealthEventsWithRetry(batchCtx, healthEvents)
+	if err == nil {
+		r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
+		return
+	}
+
+	tracing.RecordError(span, err)
+	span.SetAttributes(
+		attribute.String("platform_connector.k8s.error.type", "not_able_to_process_health_event"),
+		attribute.String("platform_connector.k8s.error.message", err.Error()),
+		attribute.Int("platform_connector.k8s.retry_count", retryCount),
+		attribute.Int("platform_connector.k8s.max_retries", r.config.MaxRetries),
+		attribute.String("platform_connector.k8s.max_retry_duration", r.config.MaxRetryDuration.String()),
+	)
+
+	level := slog.LevelError
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		level = slog.LevelInfo
+	}
+
+	slog.Log(batchCtx, level, "Kubernetes batch finished with unsuccessful writes",
+		"error", err, "retryCount", retryCount, "eventCount", len(healthEvents.GetEvents()))
+	// Discard releases the item; it never schedules a retry. Write outcomes were
+	// already recorded individually before completing this batch.
+	r.ringBuffer.Discard(queuedHealthEvents)
+}
+
+// processHealthEventsWithRetry holds the batch until its individual writes finish.
+// Successful and permanent writes are never retried because another write fails.
+func (r *K8sConnector) processHealthEventsWithRetry(
+	ctx context.Context,
+	healthEvents *protos.HealthEvents,
+) (int, error) {
+	prepareWrites := r.prepareWrites
+	if prepareWrites == nil {
+		prepareWrites = r.prepareHealthEventWrites
+	}
+
+	writes := prepareWrites(ctx, healthEvents)
+
+	duration := r.config.MaxRetryDuration
+	if duration == 0 {
+		duration = DefaultMaxRetryDuration
+	}
+
+	batchCtx, cancel := context.WithTimeout(ctx, duration)
+	defer cancel()
+	// Shutdown must also interrupt an in-flight API call, not only backoff.
+	go func() {
+		select {
+		case <-r.stopCh:
+			cancel()
+		case <-batchCtx.Done():
+		}
+	}()
+
+	var failures []error
+
+	dropReasons := make(map[string]bool)
+	totalRetries := 0
+
+	for _, write := range writes {
+		retries, err := r.processWriteWithRetry(batchCtx, write.run)
+		totalRetries += retries
+
+		if err == nil {
+			continue
+		}
+
+		reason := writeDropReason(ctx, err)
+		droppedWritesCounter.WithLabelValues(write.operation, reason).Inc()
+		dropReasons[reason] = true
+		failures = append(failures, fmt.Errorf("%s write for node %s (%s): %w",
+			write.operation, write.nodeName, reason, err))
+
+		level := slog.LevelWarn
+		if reason == "shutdown" {
+			level = slog.LevelInfo
+		}
+
+		slog.Log(ctx, level, "Discarding unsuccessful Kubernetes write", "operation", write.operation,
+			"node", write.nodeName, "reason", reason, "retryCount", retries, "error", err)
+	}
+
+	for reason := range dropReasons {
+		droppedBatchesCounter.WithLabelValues(reason).Inc()
+	}
+
+	return totalRetries, errors.Join(failures...)
+}
+
+// processWriteWithRetry retries one operation without repeating completed writes.
+func (r *K8sConnector) processWriteWithRetry(ctx context.Context, run func(context.Context) error) (int, error) {
+	retryDelay, maxRetryDelay := r.retryDelays()
+
+	for retries := 0; ; retries++ {
+		select {
+		case <-ctx.Done():
+			return retries, ctx.Err()
+		case <-r.stopCh:
+			return retries, context.Canceled
+		default:
+		}
+
+		err := run(ctx)
+		if err == nil {
+			return retries, nil
+		}
+
+		if ctx.Err() != nil {
+			return retries, ctx.Err()
+		}
+
+		if !isKubernetesConnectorRetryableError(err) || retries >= r.config.MaxRetries {
+			return retries, err
+		}
+
+		slog.WarnContext(ctx, "Retrying unsuccessful Kubernetes write in place",
+			"error", err, "retryCount", retries+1, "retryDelay", retryDelay)
+
+		if err := waitForKubernetesRetry(ctx, r.stopCh, retryDelay); err != nil {
+			return retries + 1, err
+		}
+
+		retryDelay = min(retryDelay*2, maxRetryDelay)
+	}
+}
+
+// retryDelays supplies production defaults for connectors constructed without NewK8sConnector.
+func (r *K8sConnector) retryDelays() (time.Duration, time.Duration) {
+	retryDelay := r.retryBaseDelay
+	if retryDelay <= 0 {
+		retryDelay = ringbuffer.DefaultBaseDelay
+	}
+
+	maxRetryDelay := r.retryMaxDelay
+	if maxRetryDelay <= 0 {
+		maxRetryDelay = ringbuffer.DefaultMaxDelay
+	}
+
+	return retryDelay, maxRetryDelay
+}
+
+// writeDropReason provides bounded labels for alertable terminal outcomes.
+func writeDropReason(parent context.Context, err error) string {
+	switch {
+	case parent.Err() != nil || errors.Is(err, context.Canceled):
+		return "shutdown"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "retry_timeout"
+	case isKubernetesConnectorRetryableError(err):
+		return "retry_exhausted"
+	default:
+		return "permanent_error"
+	}
+}
+
+// isKubernetesConnectorRetryableError includes conflicts and transient API or transport failures.
+func isKubernetesConnectorRetryableError(err error) bool {
+	return apierrors.IsConflict(err) || isTemporaryError(err)
+}
+
+// waitForKubernetesRetry waits for backoff unless context cancellation or connector shutdown interrupts it.
+func waitForKubernetesRetry(ctx context.Context, stopCh <-chan struct{}, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-stopCh:
+		return context.Canceled
+	case <-timer.C:
+		return nil
 	}
 }

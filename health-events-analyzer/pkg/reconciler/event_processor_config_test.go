@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -57,7 +58,8 @@ func TestNewEventProcessorConfig_HandlerFailure_PreservesRecoveryReplay(t *testi
 			watcher.events <- processorConfigTestEvent("later-source")
 			close(watcher.events)
 
-			processor := client.NewEventProcessor(watcher, nil, newEventProcessorConfig(test.rules))
+			processorConfig := newEventProcessorConfig(HealthEventsAnalyzerReconcilerConfig{HealthEventsAnalyzerRules: test.rules})
+			processor := client.NewEventProcessor(watcher, nil, processorConfig)
 			transientErr := fmt.Errorf("derived transition was not persisted")
 
 			var handled []string
@@ -115,4 +117,45 @@ func (e processorConfigTestEvent) UnmarshalDocument(value any) error {
 	event.HealthEvent = &protos.HealthEvent{Id: string(e)}
 
 	return nil
+}
+
+func TestNewEventProcessorConfig_ConcurrentRecovery_PreservesReplay(t *testing.T) {
+	for _, permanent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("permanent=%t", permanent), func(t *testing.T) {
+			watcher := &processorConfigTestWatcher{events: make(chan client.Event, 2)}
+			watcher.events <- processorConfigTestEvent("failed-transition")
+			watcher.events <- processorConfigTestEvent("later-source")
+			close(watcher.events)
+			cfg := newEventProcessorConfig(HealthEventsAnalyzerReconcilerConfig{
+				Workers: 2,
+				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{
+					{EvaluateRule: true, Recovery: &config.RecoveryMapping{}},
+				}},
+			})
+			processor := client.NewEventProcessor(watcher, nil, cfg)
+			var handled []string
+			processor.SetEventHandler(client.EventHandlerFunc(func(_ context.Context, event *model.HealthEventWithStatus) error {
+				handled = append(handled, event.HealthEvent.GetId())
+				if event.HealthEvent.GetId() == "failed-transition" {
+					err := fmt.Errorf("derived transition failed")
+					if permanent {
+						return client.PermanentError(err)
+					}
+					return err
+				}
+				return nil
+			}))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			require.NoError(t, processor.Start(ctx))
+			if permanent {
+				require.Equal(t, []string{"failed-transition", "later-source"}, handled)
+				require.NotEmpty(t, watcher.marked)
+				require.Equal(t, "later-source", watcher.marked[len(watcher.marked)-1])
+			} else {
+				require.Equal(t, []string{"failed-transition"}, handled)
+				require.Empty(t, watcher.marked)
+			}
+		})
+	}
 }

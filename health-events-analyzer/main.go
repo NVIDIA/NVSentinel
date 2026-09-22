@@ -137,6 +137,10 @@ func run() error {
 	certConfig := flags.RegisterDatabaseCertFlags()
 	processingStrategyFlag := flag.String("processing-strategy", "EXECUTE_REMEDIATION",
 		"Event processing strategy for analyzer output: EXECUTE_REMEDIATION or STORE_ONLY")
+	workersFlag := flag.Int("workers", 1,
+		"Number of concurrent worker goroutines for event processing partitioned by node (default: 1)")
+	maxInFlightFlag := flag.Int("max-in-flight", 1000,
+		"Maximum number of uncheckpointed in-flight events before applying backpressure (default: 1000)")
 
 	flag.Parse()
 
@@ -178,6 +182,8 @@ func run() error {
 		Pipeline:                  pipeline,
 		HealthEventsAnalyzerRules: tomlConfig,
 		Publisher:                 pub,
+		Workers:                   *workersFlag,
+		MaxInFlight:               *maxInFlightFlag,
 	}
 
 	rec := reconciler.NewReconciler(reconcilerCfg)

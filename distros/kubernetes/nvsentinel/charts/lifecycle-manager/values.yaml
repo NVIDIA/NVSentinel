@@ -91,7 +91,7 @@ config:
   tests:
     dcgm-diag-test:
       provider: k8s-job-provider
-      image: nvcr.io/nvidia/cloud-native/dcgm:4.5.2-1-ubuntu22.04
+      image: nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04
       # Add dcgmi diag retries for runtime errors which indicate that dcgmi diag failed to run compared to
       # the command failing due to detecting a GPU health issue. Specifically, we have observed that dcgm-diag-test
       # retries can result in a DCGM_ST_IN_USE runtime error because a previous request to nv-hostengine does not
@@ -132,6 +132,21 @@ config:
       minimumNodesPerBatch: 1
       batchFailurePolicy: fail
 
+  newNodeValidation:
+    condition: NewNodeValidationRequested
+    batchPeriodSeconds: 900
+    criteria:
+      - name: recently-joined
+        expression: >-
+          has(node.metadata.creationTimestamp) &&
+          now() - timestamp(node.metadata.creationTimestamp) < duration("30m")
+      - name: gpu-present
+        expression: >-
+          has(node.metadata.labels) && "nvidia.com/gpu.present" in node.metadata.labels &&
+          node.metadata.labels["nvidia.com/gpu.present"] == "true"
+    newNodeTests:
+      - dcgm-diag-test
+
   templates:
     "k8s-job-template.yaml": |
       apiVersion: batch/v1
@@ -169,6 +184,20 @@ config:
 controllers:
   validationRequest:
     enabled: true
+  maintenanceRequest:
+    # Enable the MaintenanceRequest controller and its validating webhook.
+    # When true, the deployment also mounts the platform-connector socket
+    # and the controller publishes health events for accepted MRs.
+    #
+    # An MR may name any node, so with global.platformConnectorAuth.enabled
+    # the deployment additionally projects a ServiceAccount token and the
+    # umbrella chart adds this ServiceAccount to the cross-node allowlist.
+    # When authentication is enabled, the projected token and the cross-node
+    # allowlist entry are both required. Without either one, platform-connector
+    # pins events to this pod's node and rejects other node names as
+    # node_mismatch. When authentication is disabled, it accepts events for any
+    # node without checking the caller's identity.
+    enabled: false
 
 leaderElection:
   enabled: true

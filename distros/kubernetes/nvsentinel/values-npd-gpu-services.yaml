@@ -1,0 +1,152 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# --------------------------------------------------------------------------
+# Opt-in remediation policies for the GPU system-service Node Conditions
+# published by the ADR-050 NPD CustomPluginMonitor configuration.
+#
+# NVSentinel does not install or configure NPD. Apply this overlay only after
+# applying the ADR-050 reference NPD configuration (plugin scripts plus
+# monitor JSON) to the cluster's NPD installation: each policy below matches
+# a condition type declared there.
+#
+# The NPDFabricManagerNotInstalled policy pairs with the optional
+# check_fm_installed.sh rule: enable it only on fleets that declare Fabric
+# Manager required (NVSwitch platforms).
+#
+# Helm replaces lists rather than merging their entries. Applying this
+# overlay replaces any previously configured KOM policy list, including
+# custom policies. Before each install or upgrade, add every policy that must
+# be retained to the list below. The default ReplaceNotReadyNode policy is
+# repeated here so applying this overlay preserves it; clusters already using
+# values-npd-remediation.yaml merge the two policy lists into one file.
+# --------------------------------------------------------------------------
+
+global:
+  kubernetesObjectMonitor:
+    enabled: true
+
+kubernetes-object-monitor:
+  policies:
+    - name: ReplaceNotReadyNode
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.exists(c,
+            c.type == "Ready"
+            && c.status != "True"
+            && timestamp(c.lastTransitionTime) + duration("7200s") < now)
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "Node has been in NotReady state for an extended period and needs to be replaced"
+        recommendedAction: REPLACE_VM
+        errorCode:
+          - NODE_NOT_READY_TIMEOUT
+        drainOverrides:
+          skip: true
+
+    # Detects when the ADR-050 NPD liveness check reports that the
+    # nvidia-fabricmanager unit is loaded but not active.
+    - name: NPDFabricManagerDown
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.exists(c,
+            c.type == "FabricManagerDown" &&
+            c.status != "False")
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "NPD reported nvidia-fabricmanager is not running"
+        recommendedAction: RESTART_BM
+        errorCode:
+          - NPD_FABRIC_MANAGER_NOT_RUNNING
+
+    # Detects when the ADR-050 NPD flap check reports that
+    # nvidia-fabricmanager is crash-looping (restart threshold reached
+    # within the sliding window).
+    - name: NPDFabricManagerFlapping
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.exists(c,
+            c.type == "FabricManagerFlapping" &&
+            c.status != "False")
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "NPD reported nvidia-fabricmanager is crash-looping"
+        recommendedAction: RESTART_BM
+        errorCode:
+          - NPD_FABRIC_MANAGER_FLAPPING
+
+    # Detects when the optional ADR-050 NPD presence check reports that the
+    # nvidia-fabricmanager unit is absent on a host the operator declared to
+    # require Fabric Manager. There is no unit to restart and a reboot will
+    # not install one, so the action is CONTACT_SUPPORT rather than
+    # RESTART_BM.
+    - name: NPDFabricManagerNotInstalled
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.exists(c,
+            c.type == "FabricManagerNotInstalled" &&
+            c.status != "False")
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "NPD reported the nvidia-fabricmanager unit is not installed"
+        recommendedAction: CONTACT_SUPPORT
+        errorCode:
+          - NPD_FABRIC_MANAGER_NOT_INSTALLED
+
+    # Detects when the ADR-050 NPD service check reports that
+    # nvidia-persistenced is loaded but not active. Non-fatal: persistenced
+    # affects initialization latency and settings persistence, not active
+    # workload correctness.
+    - name: NPDNvidiaPersistencedDown
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.exists(c,
+            c.type == "NvidiaPersistencedDown" &&
+            c.status != "False")
+      healthEvent:
+        componentClass: Node
+        isFatal: false
+        message: "NPD reported nvidia-persistenced is not running"
+        recommendedAction: CONTACT_SUPPORT
+        errorCode:
+          - NPD_NVIDIA_PERSISTENCED_NOT_RUNNING

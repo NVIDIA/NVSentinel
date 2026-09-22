@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	preflightv1alpha1 "github.com/nvidia/nvsentinel/preflight/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
@@ -38,7 +37,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
@@ -77,8 +75,6 @@ func run() error {
 	flag.StringVar(&certDir, "cert-dir", "/certs", "Directory containing TLS certificates")
 	flag.StringVar(&configFile, "config", "/etc/preflight/config.yaml", "Path to config file")
 
-	rateLimits := kubeclient.RegisterRateLimitFlags()
-
 	flag.Parse()
 
 	cfg, err := config.Load(configFile)
@@ -98,7 +94,7 @@ func run() error {
 	defer stop()
 
 	if cfg.GangCoordination.Enabled {
-		if err := setupGangCoordination(ctx, cfg, stop, *rateLimits); err != nil {
+		if err := setupGangCoordination(ctx, cfg, stop); err != nil {
 			return err
 		}
 	}
@@ -112,15 +108,14 @@ func run() error {
 	return runHTTPServer(ctx, mux, certDir, port)
 }
 
-func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context.CancelFunc,
-	rateLimits kubeclient.RateLimitConfig) error {
-	restConfig, err := rest.InClusterConfig()
+// setupGangCoordination builds the client from ctrl.GetConfig(), which disables client-side
+// rate limiting in favour of API Priority and Fairness. preflight is synchronous on the Pod
+// admission path, so client-side throttling becomes admission latency against a fixed
+// webhook deadline rather than harmless queueing.
+func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context.CancelFunc) error {
+	restConfig, err := ctrl.GetConfig()
 	if err != nil {
-		return fmt.Errorf("failed to get in-cluster config: %w", err)
-	}
-
-	if err := rateLimits.Apply(restConfig); err != nil {
-		return fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
+		return fmt.Errorf("failed to get Kubernetes client config: %w", err)
 	}
 
 	scheme := runtime.NewScheme()

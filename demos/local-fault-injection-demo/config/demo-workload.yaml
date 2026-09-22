@@ -1,0 +1,45 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-workload
+  namespace: default
+  labels:
+    app: gpu-workload
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-workload
+  template:
+    metadata:
+      labels:
+        app: gpu-workload
+    spec:
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: workload
+          image: busybox:stable
+          command: ["sh", "-c", "echo 'training job running'; sleep infinity"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

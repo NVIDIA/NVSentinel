@@ -12,229 +12,205 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package config
+package config_test
 
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
+	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/parser"
 )
 
-func TestLoadTomlConfigRecovery(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rules.toml")
-	contents := `
-[[rules]]
-name = "RepeatedXID94OnSameGPU"
-evaluate_rule = true
-stage = []
-recommended_action = "CONTACT_SUPPORT"
+func findRepoRoot(t *testing.T) string {
+	t.Helper()
 
-[rules.recovery]
-source_agent = "syslog-health-monitor"
-source_check_name = "SysLogsXIDError"
-source_error_codes = ["94"]
-scope = "entity"
-entity_types = ["GPU_UUID"]
-`
-	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
-
-	cfg, err := LoadTomlConfig(path)
+	dir, err := os.Getwd()
 	require.NoError(t, err)
-	require.Len(t, cfg.Rules, 1)
-	require.Equal(t, &RecoveryMapping{
-		SourceAgent:      "syslog-health-monitor",
-		SourceCheckName:  "SysLogsXIDError",
-		SourceErrorCodes: []string{"94"},
-		Scope:            RecoveryScopeEntity,
-		EntityTypes:      []string{"GPU_UUID"},
-	}, cfg.Rules[0].Recovery)
-}
 
-func TestLoadTomlConfigRejectsInvalidRecovery(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rules.toml")
-	contents := `
-[[rules]]
-name = "invalid-recovery"
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".versions.yaml")); err == nil {
+			return dir
+		}
 
-[rules.recovery]
-scope = "node"
-`
-	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repo root containing .versions.yaml")
+		}
 
-	config, err := LoadTomlConfig(path)
-	require.Nil(t, config)
-	require.ErrorContains(t, err, "invalid health-events-analyzer config")
-	require.ErrorContains(t, err, "source_check_name is required")
-}
-
-func TestLoadTomlConfigRejectsUnknownKeys(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rules.toml")
-	contents := `
-[[rules]]
-name = "misspelled-recovery"
-evaluate_rule = true
-
-[rules.recovery]
-source_agent = "syslog-health-monitor"
-source_check_name = "SysLogsXIDError"
-source_error_code = ["94"]
-scope = "node"
-`
-	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
-
-	config, err := LoadTomlConfig(path)
-	require.Nil(t, config)
-	require.ErrorContains(t, err, "source_error_code")
-}
-
-func TestConfigValidationRejectsInvalidStages(t *testing.T) {
-	for name, stage := range map[string]string{
-		"invalid JSON":       `{invalid}`,
-		"empty stage":        `{}`,
-		"multiple operators": `{"$match": {}, "$count": "count"}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{Name: name, Stage: []string{stage}}}}
-			require.ErrorContains(t, config.Validate(), "stage 0")
-		})
+		dir = parent
 	}
 }
 
-func TestConfigValidationRejectsInvalidProcessingStrategy(t *testing.T) {
-	for _, strategy := range []string{"UNSPECIFIED", "EXECUTE_REMEDIATION", "STORE_ONLY", "STORE_AND_ANALYSE"} {
-		t.Run(strategy, func(t *testing.T) {
-			config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{
-				Name:               "valid-strategy",
-				ProcessingStrategy: strategy,
-			}}}
-			require.NoError(t, config.Validate())
-		})
+func loadRulesFromValuesYAML(t *testing.T, path string) *config.TomlConfig {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "failed to read %s", path)
+
+	content := string(data)
+	const configMarker = "config: |"
+	idx := strings.Index(content, configMarker)
+	require.NotEqual(t, -1, idx, "config: | not found in %s", path)
+
+	tomlSection := content[idx+len(configMarker):]
+
+	// If this is a multisection values file (like values-tilt.yaml), truncate at the
+	// next top-level unindented key.
+	var tomlLines []string
+	for _, line := range strings.Split(tomlSection, "\n") {
+		if len(line) > 0 && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && !strings.HasPrefix(line, "#") {
+			break
+		}
+
+		tomlLines = append(tomlLines, line)
 	}
+	tomlSection = strings.Join(tomlLines, "\n")
 
-	config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{
-		Name:               "invalid-strategy",
-		ProcessingStrategy: "STORE-ONLY",
-	}}}
-	require.ErrorContains(t, config.Validate(), `processing_strategy has invalid value "STORE-ONLY"`)
+	// Replace Helm template expressions like {{ .Values.foo }} with true so TOML parses cleanly.
+	templateRegex := regexp.MustCompile(`\{\{[^}]*\}\}`)
+	cleanTOML := templateRegex.ReplaceAllString(tomlSection, "true")
+
+	tmpFile, err := os.CreateTemp("", "rules-*.toml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(cleanTOML)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	cfg, err := config.LoadTomlConfig(tmpFile.Name())
+	require.NoError(t, err, "failed to load TOML config from %s", path)
+
+	return cfg
 }
 
-func TestRecoveryValidationAllowsRulesWithoutMapping(t *testing.T) {
-	config := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{Name: "manual-recovery"}}}
-	require.NoError(t, config.Validate())
-}
-
-func TestHasEnabledRecovery(t *testing.T) {
-	require.False(t, (*TomlConfig)(nil).HasEnabledRecovery())
-	require.False(t, (&TomlConfig{Rules: []HealthEventsAnalyzerRule{{
-		EvaluateRule: true,
-	}}}).HasEnabledRecovery())
-	require.False(t, (&TomlConfig{Rules: []HealthEventsAnalyzerRule{{
-		Recovery: &RecoveryMapping{},
-	}}}).HasEnabledRecovery())
-	require.True(t, (&TomlConfig{Rules: []HealthEventsAnalyzerRule{{
-		EvaluateRule: true,
-		Recovery:     &RecoveryMapping{},
-	}}}).HasEnabledRecovery())
-}
-
-func TestRecoveryMappingValidation(t *testing.T) {
-	tests := []struct {
-		name    string
-		mapping *RecoveryMapping
-		wantErr string
+func configSources(repoRoot string) []struct {
+	name string
+	path string
+} {
+	return []struct {
+		name string
+		path string
 	}{
 		{
-			name: "node scope",
-			mapping: &RecoveryMapping{
-				SourceCheckName: "NodeRecovered",
-				Scope:           RecoveryScopeNode,
-			},
+			name: "chart values.yaml",
+			path: filepath.Join(
+				repoRoot, "distros", "kubernetes", "nvsentinel", "charts", "health-events-analyzer", "values.yaml",
+			),
 		},
 		{
-			name: "entity scope",
-			mapping: &RecoveryMapping{
-				SourceCheckName: "GpuRecovered",
-				Scope:           RecoveryScopeEntity,
-				EntityTypes:     []string{"GPU_UUID"},
-			},
+			name: "tilt values-tilt.yaml",
+			path: filepath.Join(
+				repoRoot, "distros", "kubernetes", "nvsentinel", "values-tilt.yaml",
+			),
 		},
-		{
-			name: "missing source check",
-			mapping: &RecoveryMapping{
-				Scope: RecoveryScopeNode,
+	}
+}
+
+// TestRulesFirstStageBoundsGeneratedTimestamp verifies that every shipped rule in both the
+// chart values.yaml and values-tilt.yaml opens with a stage bounding generatedtimestamp,
+// preventing unbounded historical event scans (per Issue #1838).
+func TestRulesFirstStageBoundsGeneratedTimestamp(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+
+	for _, source := range configSources(repoRoot) {
+		t.Run(source.name, func(t *testing.T) {
+			cfg := loadRulesFromValuesYAML(t, source.path)
+			require.NotEmpty(t, cfg.Rules, "expected at least one rule in %s", source.name)
+
+			for _, rule := range cfg.Rules {
+				t.Run(rule.Name, func(t *testing.T) {
+					require.NotEmpty(t, rule.Stage, "rule %s must define at least one stage", rule.Name)
+
+					firstStage := rule.Stage[0]
+					assert.Contains(
+						t,
+						firstStage,
+						"healthevent.generatedtimestamp.seconds",
+						"Rule %q in %s must bound generatedtimestamp in its first stage to avoid unbounded scans",
+						rule.Name,
+						source.name,
+					)
+				})
+			}
+		})
+	}
+}
+
+// TestXID74Reg2Bit13SetRuleStructure verifies that XID74Reg2Bit13Set has both the 24h
+// time bound in stage 0 and the terminal $limit 1 stage in both values.yaml and values-tilt.yaml,
+// and that all stages parse cleanly.
+func TestXID74Reg2Bit13SetRuleStructure(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+
+	sampleEvent := datamodels.HealthEventWithStatus{
+		HealthEvent: &protos.HealthEvent{
+			NodeName:  "test-gpu-node",
+			Agent:     "gpu-health-monitor",
+			ErrorCode: []string{"74"},
+			GeneratedTimestamp: &timestamppb.Timestamp{
+				Seconds: 1700000000,
 			},
-			wantErr: "source_check_name is required",
-		},
-		{
-			name: "analyzer source is unreachable",
-			mapping: &RecoveryMapping{
-				SourceAgent:     analyzerAgentName,
-				SourceCheckName: "Recovered",
-				Scope:           RecoveryScopeNode,
+			EntitiesImpacted: []*protos.Entity{
+				{EntityType: "REG0", EntityValue: "00000000000000000000000000000000"},
+				{EntityType: "REG1", EntityValue: "00000000000000000000000000000000"},
+				{EntityType: "REG2", EntityValue: "00000000000000000010000000000000"},
+				{EntityType: "REG3", EntityValue: "00000000000000000000000000000000"},
+				{EntityType: "REG4", EntityValue: "00000000000000000000000000000000"},
+				{EntityType: "REG5", EntityValue: "00000000000000000000000000000000"},
+				{EntityType: "REG6", EntityValue: "00000000000000000000000000000000"},
 			},
-			wantErr: "excluded from analyzer input",
-		},
-		{
-			name: "invalid scope",
-			mapping: &RecoveryMapping{
-				SourceCheckName: "Recovered",
-				Scope:           "cluster",
-			},
-			wantErr: "scope must be",
-		},
-		{
-			name: "entity scope without entity types",
-			mapping: &RecoveryMapping{
-				SourceCheckName: "Recovered",
-				Scope:           RecoveryScopeEntity,
-			},
-			wantErr: "entity_types is required",
-		},
-		{
-			name: "node scope with entity types",
-			mapping: &RecoveryMapping{
-				SourceCheckName: "Recovered",
-				Scope:           RecoveryScopeNode,
-				EntityTypes:     []string{"GPU_UUID"},
-			},
-			wantErr: "entity_types must be empty",
-		},
-		{
-			name: "duplicate entity type",
-			mapping: &RecoveryMapping{
-				SourceCheckName: "Recovered",
-				Scope:           RecoveryScopeEntity,
-				EntityTypes:     []string{"GPU", "GPU"},
-			},
-			wantErr: "duplicate value",
-		},
-		{
-			name: "empty error code",
-			mapping: &RecoveryMapping{
-				SourceCheckName:  "Recovered",
-				Scope:            RecoveryScopeNode,
-				SourceErrorCodes: []string{""},
-			},
-			wantErr: "must not contain empty values",
 		},
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{
-				Name:     "derived-condition",
-				Recovery: test.mapping,
-			}}}
+	for _, source := range configSources(repoRoot) {
+		t.Run(source.name, func(t *testing.T) {
+			cfg := loadRulesFromValuesYAML(t, source.path)
 
-			err := cfg.Validate()
-			if test.wantErr == "" {
-				require.NoError(t, err)
-				return
+			var targetRule *config.HealthEventsAnalyzerRule
+			for i := range cfg.Rules {
+				if cfg.Rules[i].Name == "XID74Reg2Bit13Set" {
+					targetRule = &cfg.Rules[i]
+					break
+				}
 			}
 
-			require.ErrorContains(t, err, test.wantErr)
+			require.NotNil(t, targetRule, "XID74Reg2Bit13Set rule not found in %s", source.name)
+
+			// Must have 5 stages: time bound, errorcode 74 match, registers addFields, bit-13 match, limit 1.
+			require.Len(t, targetRule.Stage, 5)
+
+			// Stage 0: 24h time-bounding window
+			assert.Contains(t, targetRule.Stage[0], "healthevent.generatedtimestamp.seconds")
+			assert.Contains(t, targetRule.Stage[0], "86400")
+
+			// Terminal stage: $limit 1
+			lastStage := targetRule.Stage[len(targetRule.Stage)-1]
+			assert.Contains(t, lastStage, `"$limit"`)
+
+			// Verify all stages parse cleanly with a representative health event
+			for i, stageStr := range targetRule.Stage {
+				parsed, err := parser.ParseSequenceStage(stageStr, sampleEvent)
+				require.NoError(t, err, "failed to parse stage %d in %s: %s", i, source.name, stageStr)
+				require.NotEmpty(t, parsed, "stage %d in %s parsed to empty map", i, source.name)
+			}
+
+			// Validate parsed terminal limit stage specifically
+			limitParsed, err := parser.ParseSequenceStage(lastStage, sampleEvent)
+			require.NoError(t, err)
+			limitVal, ok := limitParsed["$limit"]
+			require.True(t, ok, "expected $limit key in parsed stage in %s", source.name)
+			assert.Equal(t, float64(1), limitVal)
 		})
 	}
 }

@@ -30,12 +30,32 @@ The circuit breaker monitors how many nodes are cordoned over a sliding time win
 - NVSentinel continues monitoring and detecting issues
 - Node events and conditions are still updated for visibility
 - No additional nodes will be cordoned until you manually reset the breaker
+- **No node is uncordoned either.** Fault quarantine halts every health event while tripped, healthy events included, so a node that recovers stays cordoned
 
 > **⚠️ Important: Manual Intervention Required**
 > 
 > The circuit breaker will **NOT** automatically reset itself. Once tripped, it remains in the TRIPPED state indefinitely until a human operator investigates the issue and manually resets it. This is by design to prevent the system from repeatedly cordoning nodes when there may be a systematic problem that requires human attention.
 
 Think of it as a "pause button" that activates automatically when something seems wrong, but requires manual action to resume.
+
+### Health status, event processing, and schedulability are separate
+
+A tripped breaker splits three signals that normally move together. Read each one on its own:
+
+| Signal | Written by | Frozen by a tripped breaker? |
+|---|---|---|
+| Node condition, such as `GpuDcgmConnectivityFailure` | Platform connectors | No. Conditions keep updating, and a recovered node reports healthy |
+| Health event processing | Fault quarantine | Yes. All events halt until you reset the breaker and restart the deployment |
+| Node schedulability, the cordon | Fault quarantine | Yes. The node stays cordoned after its condition clears |
+
+A healthy node condition is therefore not proof that the node is back in service. Platform connectors clears the condition, but only fault quarantine can uncordon the node, and a tripped breaker stops it from acting. Check the cordon and the breaker status separately:
+
+```bash
+kubectl get node {NODE_NAME}                                        # look for SchedulingDisabled
+kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}'
+```
+
+This gap is most visible on small clusters, where the default 50% threshold can trip on the first cordon. See [Small clusters](#small-clusters).
 
 ## Configuration
 
@@ -58,8 +78,43 @@ Only nodes labeled `nvidia.com/gpu.present=true` are included when calculating t
 
 **Recommended Settings:**
 - For production clusters with 10+ GPU nodes: Keep enabled with 50% threshold
-- For small clusters (< 10 GPU nodes): Consider disabling or using a higher percentage
+- For small clusters (< 10 GPU nodes): See [Small clusters](#small-clusters) below
 - For a fleet of differently sized clusters: set both, so one config bounds every cluster
+
+### Small clusters
+
+The breaker trips when the nodes cordoned in the window reach `ceil(gpuNodes × percentage / 100)`. That formula rounds up, so the threshold falls to a single node on the smallest clusters. The table below assumes the default `maxNodes: 0`, which leaves the percentage as the only bound:
+
+| GPU nodes | Trips at, `percentage: 50` | Trips at, `percentage: 100` |
+|---|---|---|
+| 1 | 1st cordon | 1st cordon |
+| 2 | 1st cordon | 2nd cordon |
+| 3 | 2nd cordon | 3rd cordon |
+| 4 | 2nd cordon | 4th cordon |
+| 10 | 5th cordon | 10th cordon |
+
+With `maxNodes` set above `0`, the effective threshold is `min(ceil(gpuNodes × percentage / 100), maxNodes)`, capped at the fleet size. The lower bound wins, so `maxNodes: 1` trips on the first cordon at any percentage and every row above collapses to "1st cordon".
+
+On a one-GPU-node cluster, **no percentage avoids the trip**, because one cordoned node is always the whole fleet and the threshold is clamped to the fleet size. The first cordon trips the breaker, which then blocks the healthy event that would uncordon the node.
+
+Disable the breaker on test, demo, and single-node clusters:
+
+```yaml
+fault-quarantine:
+  circuitBreaker:
+    enabled: false
+```
+
+On clusters of two to nine GPU nodes you can keep the breaker and raise the threshold instead, so that a single fault does not trip it:
+
+```yaml
+fault-quarantine:
+  circuitBreaker:
+    enabled: true
+    percentage: 100    # trip only when every GPU node is cordoned
+```
+
+Keep the breaker enabled on production clusters. It is the only automatic limit on how much of your fleet NVSentinel can take out of service.
 
 ## Monitoring the Circuit Breaker
 
@@ -106,7 +161,7 @@ These metrics can be used to:
 
 ## What To Do When It Trips
 
-If the circuit breaker has tripped, it means a significant percentage of your nodes have been cordoned recently. Follow these steps to investigate and resolve:
+If the circuit breaker has tripped, it means a significant percentage of your nodes have been cordoned recently. This section explains what to look for and why. For the operational procedure, with the exact commands in order, work through the [circuit breaker runbook](./runbooks/circuit-breaker.md) instead.
 
 ### Step 1: Identify Affected Nodes
 
@@ -154,19 +209,24 @@ Based on your findings:
 
 **The circuit breaker will NOT automatically reset.** Once tripped, NVSentinel will block all new remediation actions and remain in this protective state until you manually intervene. This ensures that any systematic issues are investigated and resolved before resuming automated remediation.
 
-Once you've investigated and addressed the root cause, reset the circuit breaker:
+Once you've investigated and addressed the root cause, reset the breaker by patching the ConfigMap back to `CLOSED` and restarting fault quarantine. The [circuit breaker runbook](./runbooks/circuit-breaker.md) carries the full procedure, including the investigation steps that come first. Follow it rather than improvising the commands.
 
-```bash
-# Delete the circuit breaker ConfigMap
-kubectl delete cm circuit-breaker -n nvsentinel
+The one decision the reset asks of you is the **cursor**, which controls what happens to the health events that accumulated while the breaker was tripped:
 
-# Restart the fault quarantine service
-kubectl rollout restart deploy fault-quarantine -n nvsentinel
-```
+| Cursor | Effect | Use when |
+|---|---|---|
+| `CREATE` | Discards the accumulated events and starts from the latest | After a long outage, or when replaying the backlog would trip the breaker again |
+| `RESUME` (default) | Processes every event that accumulated while tripped | You are confident the backlog will not re-trip the breaker |
+
+`CREATE` deletes the change stream resume token, then reverts to `RESUME` on its own once consumed, so you never set it back by hand.
+
+Deleting the ConfigMap also resets the breaker. Fault quarantine recreates it as `CLOSED` with the cursor at `RESUME` when it next starts, so deleting is equivalent to choosing `RESUME`. It carries the same re-trip risk without making the choice visible. Prefer the patch.
+
+Remember that resetting the breaker does not uncordon anything. It only lets fault quarantine act again. Uncordon recovered nodes as part of the runbook procedure.
 
 > **⚠️ Warning**
 > 
-> This is the **only** way to reset a tripped circuit breaker. Only perform this reset after you've:
+> Only reset after you've:
 > 1. Investigated why it tripped
 > 2. Addressed any underlying issues
 > 3. Verified that the conditions that caused the trip have been resolved
@@ -187,7 +247,13 @@ kubectl rollout restart deploy fault-quarantine -n nvsentinel
 - This suggests an ongoing issue. Don't repeatedly reset - investigate the root cause first. Remember, the breaker will NOT automatically close, so repeated tripping after manual resets indicates a persistent problem.
 
 **Q: Will the circuit breaker reset itself after some time?**
-- No. The circuit breaker requires manual intervention to reset. It will remain in the TRIPPED state indefinitely until you delete the ConfigMap and restart the deployment.
+- No. The circuit breaker requires manual intervention to reset. It will remain in the TRIPPED state indefinitely until you reset it and restart the deployment. See [Resetting the Circuit Breaker](#resetting-the-circuit-breaker).
+
+**Q: The node reports healthy, but it is still cordoned. Why?**
+- A tripped breaker halts every health event, including the healthy event that would uncordon the node. Platform connectors still clears the node condition, which is why the node looks recovered while it stays cordoned. Uncordon the recovered nodes first, then reset the breaker, following the [runbook](./runbooks/circuit-breaker.md) in that order: a `RESUME` reset replays the events that accumulated while tripped, so fault quarantine can act on those nodes before you finish the manual cleanup. See [Health status, event processing, and schedulability are separate](#health-status-event-processing-and-schedulability-are-separate).
+
+**Q: My single-node test cluster tripped the breaker on the first fault**
+- Expected at any percentage: one cordoned node is the whole fleet. Disable the breaker on single-node clusters. See [Small clusters](#small-clusters).
 
 **Q: Can I disable the circuit breaker?**
 - Yes, set `enabled: false` in your Helm values and upgrade the release. However, this removes an important safety mechanism.

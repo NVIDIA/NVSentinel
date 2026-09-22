@@ -280,6 +280,15 @@ func TestNonRecoveryRuleWithRealProvider(t *testing.T) {
 }
 
 func TestRecoveryWatcherAcknowledgesAfterStorageWithRealProvider(t *testing.T) {
+	for _, workers := range []int{1, 2} {
+		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
+			testRecoveryWatcherAcknowledgesAfterStorage(t, workers)
+		})
+	}
+}
+
+func testRecoveryWatcherAcknowledgesAfterStorage(t *testing.T, workers int) {
+	t.Helper()
 	if os.Getenv(recoveryIntegrationEnv) != "1" {
 		t.Skipf("set %s=1 with a real provider configuration", recoveryIntegrationEnv)
 	}
@@ -324,6 +333,7 @@ func TestRecoveryWatcherAcknowledgesAfterStorageWithRealProvider(t *testing.T) {
 	}
 	reconciler := &Reconciler{
 		config: HealthEventsAnalyzerReconcilerConfig{
+			Workers:                   workers,
 			HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{rule}},
 			Publisher: publisher.NewPublisher(
 				sink,
@@ -360,7 +370,7 @@ func TestRecoveryWatcherAcknowledgesAfterStorageWithRealProvider(t *testing.T) {
 	}
 
 	processor := client.NewEventProcessor(observingWatcher, database,
-		newEventProcessorConfig(reconciler.config.HealthEventsAnalyzerRules))
+		newEventProcessorConfig(reconciler.config))
 	processor.SetEventHandler(client.EventHandlerFunc(reconciler.processHealthEvent))
 	processorDone := make(chan error, 1)
 	go func() { processorDone <- processor.Start(ctx) }()

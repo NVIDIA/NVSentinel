@@ -28,7 +28,18 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
-func NewEventQueueManager() EventQueueManager {
+const (
+	// DefaultRequeueBackoffBase is the default base duration for exponential backoff on drain requeues.
+	DefaultRequeueBackoffBase = 10 * time.Second
+	// MaxRequeueBackoff is the maximum ceiling for exponential backoff on drain requeues.
+	MaxRequeueBackoff = 2 * time.Minute
+)
+
+func NewEventQueueManager(requeueBackoffBase time.Duration) EventQueueManager {
+	if requeueBackoffBase <= 0 {
+		requeueBackoffBase = DefaultRequeueBackoffBase
+	}
+
 	priorityState := newNodePriorityState()
 	baseQueue := workqueue.NewTypedWithConfig(workqueue.TypedQueueConfig[NodeEvent]{
 		Queue: newNodeEventPriorityQueue(priorityState),
@@ -37,13 +48,16 @@ func NewEventQueueManager() EventQueueManager {
 		Queue: baseQueue,
 	})
 
+	rateLimiter := workqueue.NewTypedItemExponentialFailureRateLimiter[NodeEvent](requeueBackoffBase, MaxRequeueBackoff)
+
 	mgr := &eventQueueManager{
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
-			workqueue.NewTypedItemExponentialFailureRateLimiter[NodeEvent](10*time.Second, 2*time.Minute),
+			rateLimiter,
 			workqueue.TypedRateLimitingQueueConfig[NodeEvent]{
 				DelayingQueue: delayingQueue,
 			},
 		),
+		rateLimiter:   rateLimiter,
 		shutdown:      make(chan struct{}),
 		priorityState: priorityState,
 	}

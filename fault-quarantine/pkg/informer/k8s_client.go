@@ -45,6 +45,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 )
 
 var customBackoff = wait.Backoff{
@@ -69,18 +70,20 @@ type FaultQuarantineClient struct {
 // configured client-go rate limits.
 func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
-	rateLimits kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
+	rateLimits kubeclient.RateLimitConfig, retained nodecache.Keys) (*FaultQuarantineClient, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Kubernetes config: %w", err)
 	}
 
-	return newFaultQuarantineClient(config, dryRun, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, rateLimits)
+	return newFaultQuarantineClient(
+		config, dryRun, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, rateLimits, retained,
+	)
 }
 
 func newFaultQuarantineClient(config *rest.Config, dryRun bool,
 	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
-	rateLimits kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
+	rateLimits kubeclient.RateLimitConfig, retained nodecache.Keys) (*FaultQuarantineClient, error) {
 	if err := rateLimits.Apply(config); err != nil {
 		return nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
@@ -99,7 +102,7 @@ func newFaultQuarantineClient(config *rest.Config, dryRun bool,
 		return nil, fmt.Errorf("error creating dynamic client: %w", err)
 	}
 
-	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue)
+	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, retained)
 	if err != nil {
 		return nil, fmt.Errorf("error creating node informer: %w", err)
 	}

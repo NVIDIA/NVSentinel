@@ -38,6 +38,18 @@ logLevel: info
 # STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources (i.e., no node conditions, no quarantine, no drain, no remediation).
 processingStrategy: EXECUTE_REMEDIATION
 
+# Number of concurrent workers for event processing partitioned by node (default: 1)
+workers: 1
+
+# Maximum number of uncheckpointed in-flight events before applying backpressure (default: 1000)
+maxInFlight: 1000
+
+# Registers rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}.
+# Off by default: entity labels add a series per GPU/GPC/TPC/SM on each node.
+# rule_matched_total already reports that a rule fired without this.
+# GPU UUID is never used as entity_value; PCI or GPU index is exported instead.
+ruleMatchedEntityMetricEnabled: false
+
 # Enable flags for the rules to be evaluated.
 enableMultipleRemediationsRule: true
 enableRepeatedXIDErrorOnSameGPURule: true
@@ -241,13 +253,23 @@ config: |
       }
     }
     ''',
+    # Only the most recent previous sticky XID can satisfy the 3 hour bound, so a
+    # scalar $max over the same window answers the question without materialising
+    # every previous event. Pushing $$ROOT made this stage quadratic in both data
+    # and work; see issue #1851.
     '''
     {
       "$setWindowFields": {
         "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
         "output": {
-          "allPreviousEvents": {
-            "$push": "$$ROOT",
+          "lastStickyTimestamp": {
+            "$max": {
+              "$cond": {
+                "if": "$isStickyXid",
+                "then": "$healthevent.generatedtimestamp.seconds",
+                "else": null
+              }
+            },
             "window": {"documents": ["unbounded", -1]}
           }
         }
@@ -261,23 +283,10 @@ config: |
           "$cond": {
             "if": "$isStickyXid",
             "then": {
-              "$anyElementTrue": {
-                "$map": {
-                  "input": "$allPreviousEvents",
-                  "as": "prevEvent",
-                  "in": {
-                    "$and": [
-                      {
-                        "$in": [
-                          {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                          ["74", "79", "95", "109", "119"]
-                        ]
-                      },
-                      {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 10800]}
-                    ]
-                  }
-                }
-              }
+              "$and": [
+                {"$ne": ["$lastStickyTimestamp", null]},
+                {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 10800]}
+              ]
             },
             "else": false
           }
@@ -494,13 +503,23 @@ config: |
       }
     }
     ''',
+    # Only the most recent previous sticky XID can satisfy the 3 hour bound, so a
+    # scalar $max over the same window answers the question without materialising
+    # every previous event. Pushing $$ROOT made this stage quadratic in both data
+    # and work; see issue #1851.
     '''
     {
       "$setWindowFields": {
         "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
         "output": {
-          "allPreviousEvents": {
-            "$push": "$$ROOT",
+          "lastStickyTimestamp": {
+            "$max": {
+              "$cond": {
+                "if": "$isStickyXid",
+                "then": "$healthevent.generatedtimestamp.seconds",
+                "else": null
+              }
+            },
             "window": {"documents": ["unbounded", -1]}
           }
         }
@@ -514,23 +533,10 @@ config: |
           "$cond": {
             "if": "$isStickyXid",
             "then": {
-              "$anyElementTrue": {
-                "$map": {
-                  "input": "$allPreviousEvents",
-                  "as": "prevEvent",
-                  "in": {
-                    "$and": [
-                      {
-                        "$in": [
-                          {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                          ["74", "79", "95", "109", "119"]
-                        ]
-                      },
-                      {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 10800]}
-                    ]
-                  }
-                }
-              }
+              "$and": [
+                {"$ne": ["$lastStickyTimestamp", null]},
+                {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 10800]}
+              ]
             },
             "else": false
           }
@@ -846,13 +852,23 @@ config: |
       }
     }
     ''',
+    # Only the most recent previous sticky XID can satisfy the 3 hour bound, so a
+    # scalar $max over the same window answers the question without materialising
+    # every previous event. Pushing $$ROOT made this stage quadratic in both data
+    # and work; see issue #1851.
     '''
     {
       "$setWindowFields": {
         "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
         "output": {
-          "allPreviousEvents": {
-            "$push": "$$ROOT",
+          "lastStickyTimestamp": {
+            "$max": {
+              "$cond": {
+                "if": "$isStickyXid",
+                "then": "$healthevent.generatedtimestamp.seconds",
+                "else": null
+              }
+            },
             "window": {"documents": ["unbounded", -1]}
           }
         }
@@ -866,23 +882,10 @@ config: |
           "$cond": {
             "if": "$isStickyXid",
             "then": {
-              "$anyElementTrue": {
-                "$map": {
-                  "input": "$allPreviousEvents",
-                  "as": "prevEvent",
-                  "in": {
-                    "$and": [
-                      {
-                        "$in": [
-                          {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                          ["74", "79", "95", "109", "119"]
-                        ]
-                      },
-                      {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 10800]}
-                    ]
-                  }
-                }
-              }
+              "$and": [
+                {"$ne": ["$lastStickyTimestamp", null]},
+                {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 10800]}
+              ]
             },
             "else": false
           }
@@ -1304,13 +1307,23 @@ config: |
       }
     }
     ''',
+    # Only the most recent previous sticky XID can satisfy the 3 hour bound, so a
+    # scalar $max over the same window answers the question without materialising
+    # every previous event. Pushing $$ROOT made this stage quadratic in both data
+    # and work; see issue #1851.
     '''
     {
       "$setWindowFields": {
         "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
         "output": {
-          "allPreviousEvents": {
-            "$push": "$$ROOT",
+          "lastStickyTimestamp": {
+            "$max": {
+              "$cond": {
+                "if": "$isStickyXid",
+                "then": "$healthevent.generatedtimestamp.seconds",
+                "else": null
+              }
+            },
             "window": {"documents": ["unbounded", -1]}
           }
         }
@@ -1324,23 +1337,10 @@ config: |
           "$cond": {
             "if": "$isStickyXid",
             "then": {
-              "$anyElementTrue": {
-                "$map": {
-                  "input": "$allPreviousEvents",
-                  "as": "prevEvent",
-                  "in": {
-                    "$and": [
-                      {
-                        "$in": [
-                          {"$arrayElemAt": ["$$prevEvent.healthevent.errorcode", 0]},
-                          ["74", "79", "95", "109", "119"]
-                        ]
-                      },
-                      {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$$prevEvent.healthevent.generatedtimestamp.seconds"]}, 10800]}
-                    ]
-                  }
-                }
-              }
+              "$and": [
+                {"$ne": ["$lastStickyTimestamp", null]},
+                {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 10800]}
+              ]
             },
             "else": false
           }
@@ -2651,6 +2651,28 @@ config: |
       {
         "$match": {
           "$expr": {
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
+            ]
+          }
+        }
+      }
+      ''',
+      '''
+      {
+        "$match": {
+          "$expr": {
             "$eq": [
               "this.healthevent.errorcode.0",
               "74"
@@ -2701,6 +2723,7 @@ config: |
         }
       }
       ''',
+      '{"$limit": 1}'
     ]
 
     [[rules]]
