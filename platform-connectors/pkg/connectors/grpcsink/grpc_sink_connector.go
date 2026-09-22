@@ -167,15 +167,6 @@ func (g *GRPCSinkConnector) sendHealthEvents(ctx context.Context, healthEvents *
 	return nil
 }
 
-// ShutdownRingBuffer drains the ring buffer and stops the processing loop.
-func (g *GRPCSinkConnector) ShutdownRingBuffer() {
-	if g.ringBuffer != nil {
-		slog.Info("Shutting down gRPC sink connector ring buffer with drain")
-		g.ringBuffer.ShutDownHealthMetricQueue()
-		slog.Info("gRPC sink connector ring buffer drained successfully")
-	}
-}
-
 // Close closes the underlying gRPC client connection.
 func (g *GRPCSinkConnector) Close() error {
 	if g.conn != nil {

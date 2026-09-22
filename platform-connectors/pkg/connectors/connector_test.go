@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -64,6 +65,10 @@ func (f *fake) ProcessBatch(ctx context.Context, _ *pb.HealthEvents) error {
 
 func batch() *pb.HealthEvents {
 	return &pb.HealthEvents{Events: []*pb.HealthEvent{{NodeName: "node-a", CheckName: "check"}}}
+}
+
+func failures(name, reason string) float64 {
+	return testutil.ToFloat64(bestEffortFailures.WithLabelValues(name, reason))
 }
 
 // TestSet_EveryMemberGetsTheBatch: the happy path hands the batch to every
@@ -149,4 +154,77 @@ func TestSet_CallerCancellationReachesTheMembers(t *testing.T) {
 
 	err := Set{blocking}.ProcessBatch(ctx, batch())
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+// TestBestEffort_FailureIsCountedNotReturned: the wrapped connector's failure
+// is counted as failed and the batch succeeds anyway.
+func TestBestEffort_FailureIsCountedNotReturned(t *testing.T) {
+	before := failures("k8s-failed", reasonFailed)
+
+	c := BestEffort("k8s-failed", &fake{err: errors.New("node not found")}, time.Second)
+	require.NoError(t, c.ProcessBatch(context.Background(), batch()))
+	require.Equal(t, before+1, failures("k8s-failed", reasonFailed))
+}
+
+// TestBestEffort_TimeoutIsBoundedAndCounted: a hung connector cannot hold the
+// batch past the bound; the timeout is counted separately from a failure.
+func TestBestEffort_TimeoutIsBoundedAndCounted(t *testing.T) {
+	before := failures("k8s-timeout", reasonTimedOut)
+
+	c := BestEffort("k8s-timeout", &fake{block: true}, 50*time.Millisecond)
+
+	start := time.Now()
+	require.NoError(t, c.ProcessBatch(context.Background(), batch()))
+	require.Less(t, time.Since(start), 2*time.Second)
+	require.Equal(t, before+1, failures("k8s-timeout", reasonTimedOut))
+	require.Zero(t, failures("k8s-timeout", reasonFailed))
+}
+
+// TestBestEffort_CancelledRequestIsNotAFailure: when the caller gives up, the
+// connector ends with the request and nothing is counted, since the batch is
+// not acknowledged and will be resent.
+func TestBestEffort_CancelledRequestIsNotAFailure(t *testing.T) {
+	c := BestEffort("k8s-cancelled", &fake{block: true}, time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+
+	require.NoError(t, c.ProcessBatch(ctx, batch()))
+	require.Zero(t, failures("k8s-cancelled", reasonFailed))
+	require.Zero(t, failures("k8s-cancelled", reasonTimedOut))
+}
+
+// TestSet_BestEffortMemberDoesNotFailTheBatch: the deployment shape. The
+// store decides; a failing or slow best-effort member is counted, and the
+// batch is acknowledged once the store is done.
+func TestSet_BestEffortMemberDoesNotFailTheBatch(t *testing.T) {
+	store := &fake{}
+	conditions := &fake{err: errors.New("conflict")}
+
+	set := Set{store, BestEffort("k8s-set", conditions, time.Second)}
+	require.NoError(t, set.ProcessBatch(context.Background(), batch()))
+	require.EqualValues(t, 1, store.calls.Load())
+	require.EqualValues(t, 1, conditions.calls.Load(), "the best-effort member runs alongside the store")
+}
+
+// TestSet_DeciderFailureLeavesBestEffortToFinish: when the store fails, a
+// best-effort member still running finishes its work, bounded by its own
+// timeout, and the reply carries the store's error; work that finished is
+// not counted as a failure.
+func TestSet_DeciderFailureLeavesBestEffortToFinish(t *testing.T) {
+	store := &fake{err: errors.New("primary stepped down")}
+	conditions := &fake{delay: 50 * time.Millisecond}
+
+	set := Set{store, BestEffort("k8s-finish", conditions, time.Minute)}
+
+	err := set.ProcessBatch(context.Background(), batch())
+
+	require.ErrorContains(t, err, "primary stepped down")
+	require.EqualValues(t, 1, conditions.calls.Load())
+	require.Nil(t, conditions.endedBy.Load(), "the best-effort member was not cancelled")
+	require.Zero(t, failures("k8s-finish", reasonFailed))
+	require.Zero(t, failures("k8s-finish", reasonTimedOut))
 }

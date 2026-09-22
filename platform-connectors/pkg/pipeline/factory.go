@@ -20,19 +20,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 )
 
 type Options struct {
 	KubeconfigPath string
-	// The deployment platform connector sets the fields below so the metadata
-	// transformer is sized for the whole fleet instead of one node. Zero keeps
-	// the value of the transformer's config file, or the Kubernetes client
-	// default for the rate limit.
-	KubeClientQPS         float32
-	KubeClientBurst       int
-	NodeMetadataCacheSize int
-	NodeMetadataCacheTTL  time.Duration
+	// KubeClientQPS and KubeClientBurst rate-limit the metadata transformer's
+	// Kubernetes client; zero keeps the client-go default.
+	KubeClientQPS   float32
+	KubeClientBurst int
 }
 
 // Factory creates a Transformer from its pipeline config and shared options.
@@ -57,15 +52,6 @@ func Register(name string, factory Factory) {
 // named stage is present in the pipeline config but disabled.
 func RegisterDisabledCheck(name string, check DisabledCheck) {
 	disabledChecks[name] = check
-}
-
-func Create(cfg *Config, opts Options) (Transformer, error) {
-	factory, ok := registry[cfg.Name]
-	if !ok {
-		return nil, fmt.Errorf("unknown transformer: %s", cfg.Name)
-	}
-
-	return factory(cfg, opts)
 }
 
 // NewFromRawConfig creates a Pipeline from the parsed platform connector
