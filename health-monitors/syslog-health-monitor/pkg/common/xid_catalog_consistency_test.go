@@ -61,32 +61,21 @@ var handledElsewhere = map[string]string{
 	"WORKFLOW_NVLINK5_ERR": "XIDs 144-150: resolved from column F of the 'Xid 144-150 Decode' sheet by parseNVL5Row",
 }
 
-// looksLikeBucketToken reports whether a cell holds a machine-readable bucket
-// identifier rather than free-text guidance for a human.
+// cellByColumn returns the trimmed value of a cell by its spreadsheet column letter.
 //
-// The assertions below depend on this distinction. Most rows carry a
-// token such as RESET_GPU. The XID 163 to 170 rows instead carry prose, for example
-// "Should only be seen when ECC is disabled. Either ECC should be enabled (to enable
-// row-remapping) or boot re-attempted with shifted WPR." Prose cannot match a case and
-// so lands on CONTACT_SUPPORT, which is the correct outcome for guidance a human must
-// read, but it is a different mechanism from an unmatched token and must not be
-// reported as one.
-func looksLikeBucketToken(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return false
-	}
-
-	for _, r := range s {
-		isUpper := r >= 'A' && r <= 'Z'
-		isDigit := r >= '0' && r <= '9'
-
-		if !isUpper && !isDigit && r != '_' {
-			return false
+// Selecting by coordinate rather than by slice index is required for correctness, not
+// style. xlsxreader omits empty cells and does not pad Row.Cells, so the Nth element is
+// the Nth *populated* cell, not column N. In this workbook the XID 163 to 170 rows have
+// an empty column I and a populated column L, so row.Cells[8] on those rows yields the
+// column L note rather than the resolution bucket.
+func cellByColumn(row xlsxreader.Row, column string) string {
+	for _, cell := range row.Cells {
+		if cell.Column == column {
+			return strings.TrimSpace(cell.Value)
 		}
 	}
 
-	return true
+	return ""
 }
 
 // stagedForFutureCatalogue are non-default cases in MapActionStringToProto that no
@@ -97,10 +86,10 @@ func looksLikeBucketToken(s string) bool {
 // TestEveryMapperCaseIsReachable stops reporting the entry as unreachable and the entry
 // should be deleted from this list.
 var stagedForFutureCatalogue = map[string]string{
-	"RECOVER_FEATURE_RESET_GPU": "XID 163: row I164 holds prose, not a token, and that prose " +
-		"(\"reload the driver or reset the GPU\") is what this case was written against",
-	"WORKFLOW_XID_168": "XID 168: row I169 holds prose, not a token, and that prose " +
-		"(\"boot re-attempted with shifted WPR\") is what this case was written against",
+	"RECOVER_FEATURE_RESET_GPU": "XID 163: bucket cell Xids!I164 is empty. The column L note on that " +
+		"row (\"reload the driver or reset the GPU\") is what this case was written against",
+	"WORKFLOW_XID_168": "XID 168: bucket cell Xids!I169 is empty. The column L note on that " +
+		"row (\"boot re-attempted with shifted WPR\") is what this case was written against",
 	"RESET_FABRIC": "no catalogue cell currently selects this bucket, in any sheet",
 }
 
@@ -130,12 +119,14 @@ func readCatalogueBuckets(t *testing.T) []catalogueBucket {
 
 	rowIndex := 0
 	for row := range xl.ReadRows("Xids") {
+		require.NoErrorf(t, row.Error, "failed to read row %d of the Xids sheet", rowIndex+1)
+
 		rowIndex++
-		if rowIndex == 1 || len(row.Cells) < 9 {
+		if rowIndex == 1 {
 			continue
 		}
 
-		if v := strings.TrimSpace(row.Cells[8].Value); v != "" {
+		if v := cellByColumn(row, "I"); v != "" {
 			buckets = append(buckets, catalogueBucket{
 				value: v,
 				where: "Xids!I" + strconv.Itoa(rowIndex),
@@ -149,22 +140,18 @@ func readCatalogueBuckets(t *testing.T) []catalogueBucket {
 
 	rowIndex = 0
 	for row := range xl.ReadRows(decodeSheet) {
+		require.NoErrorf(t, row.Error, "failed to read row %d of the %s sheet", rowIndex+1, decodeSheet)
+
 		rowIndex++
 		if rowIndex == 1 {
 			continue
 		}
 
-		for _, cell := range row.Cells {
-			if cell.Column != "F" {
-				continue
-			}
-
-			if v := strings.TrimSpace(cell.Value); v != "" {
-				buckets = append(buckets, catalogueBucket{
-					value: v,
-					where: decodeSheet + "!F" + strconv.Itoa(rowIndex),
-				})
-			}
+		if v := cellByColumn(row, "F"); v != "" {
+			buckets = append(buckets, catalogueBucket{
+				value: v,
+				where: decodeSheet + "!F" + strconv.Itoa(rowIndex),
+			})
 		}
 	}
 
@@ -180,7 +167,6 @@ func readCatalogueBuckets(t *testing.T) []catalogueBucket {
 // CONTACT_SUPPORT, which is indistinguishable from a genuine vendor escalation.
 func TestEveryCatalogueBucketResolves(t *testing.T) {
 	unresolved := map[string][]string{}
-	prose := map[string][]string{}
 
 	for _, b := range readCatalogueBuckets(t) {
 		normalised := strings.ToUpper(strings.TrimSpace(b.value))
@@ -194,24 +180,9 @@ func TestEveryCatalogueBucketResolves(t *testing.T) {
 			// Intentionally a human decision.
 		case handledElsewhere[normalised] != "":
 			// Another code path acts on this XID before the bucket is consulted.
-		case !looksLikeBucketToken(normalised):
-			// Free-text guidance for a human. CONTACT_SUPPORT is the right landing
-			// place, but record it so a sheet that grows more prose stays visible.
-			prose[b.where] = append(prose[b.where], normalised)
 		default:
 			unresolved[normalised] = append(unresolved[normalised], b.where)
 		}
-	}
-
-	if len(prose) > 0 {
-		cells := make([]string, 0, len(prose))
-		for where := range prose {
-			cells = append(cells, where)
-		}
-
-		sort.Strings(cells)
-		t.Logf("%d cells hold free-text guidance rather than a bucket token, so they resolve "+
-			"to CONTACT_SUPPORT for a human to read: %s", len(cells), strings.Join(cells, ", "))
 	}
 
 	if len(unresolved) == 0 {
