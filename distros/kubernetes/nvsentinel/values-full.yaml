@@ -1268,6 +1268,20 @@ labeler:
   # on all nodes with nvidia.com/gpu.present=true, skipping driver pod detection.
   assumeDriverInstalled: false
 
+  # DCGM pod discovery
+  # Comma-separated values of the `app` pod label used to find the DCGM pod on each node.
+  # The default matches both the classic GPU Operator DCGM DaemonSet (nvidia-dcgm) and the
+  # GPUCluster/DRA-mode one (nvidia-dcgm-dra).
+  dcgmAppLabel: "nvidia-dcgm,nvidia-dcgm-dra"
+
+  # Driver pod discovery
+  # Value of the `app` pod label used to find the GPU Operator driver pod on each node.
+  driverAppLabel: "nvidia-driver-daemonset"
+
+  # GKE driver installer discovery
+  # Value of the `k8s-app` pod label used to find the GKE driver installer pod on each node.
+  gkeInstallerAppLabel: "nvidia-driver-installer"
+
   # Expected device count labels
   # Writes current/expected device-count labels from node labels or DRA ResourceSlice data.
   expectedDeviceCounts:
