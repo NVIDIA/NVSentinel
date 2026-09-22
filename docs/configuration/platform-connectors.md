@@ -236,7 +236,7 @@ Healthy events are not downgraded by deduplication. Before they continue downstr
 ### Operational Notes
 
 - Dedup state is in-memory only and is cleared on platform-connectors pod restart.
-- The dedup counter is exposed as `nvsentinel_platform_connector_dedup_store_and_analyse_total{check,node,err_code}`.
+- The dedup counter is exposed as `nvsentinel_platform_connector_dedup_store_and_analyse_total{check,err_code}`. It carries no node label, because the deployment platform connector runs the transformer for the whole fleet; the node is in the log line.
 - `entitiesImpacted` and `errorCode` are canonicalized as sets for keying; ordering differences do not create distinct events.
 
 ## Prometheus Connector
@@ -293,7 +293,7 @@ Enables Kubernetes connector for creating node conditions and events.
 
 Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `25`; positive integers override the default. Negative and non-integer values are rejected. An existing explicit value, such as `3`, still limits each write to that retry count.
 
-These settings apply to the node-local Kubernetes queue. Synchronous `ProcessBatch` callers receive errors directly and retry unacknowledged requests.
+These settings apply to the node-local Kubernetes queue. On the deployment platform connector the Kubernetes connector runs inside the request as best effort within the `ConditionUpdateTimeout` of the `deployment` object in its config.json; a failure or timeout is counted in `platform_connector_best_effort_failures_total{connector="kubernetes"}` and the batch is acknowledged anyway.
 
 Each node status update and Kubernetes Event write has its own retry state. Successful writes are not repeated when another write fails. Permanent errors are skipped without preventing other writes from retrying. A node status update applies all condition changes for that node together.
 

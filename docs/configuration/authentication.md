@@ -182,9 +182,12 @@ cluster already uses.
 | `node_claim_mismatch` | The token was issued on another node. |
 | `unbound_cross_node_token` | An allowlisted caller presented a token bound to no pod. |
 | `cross_node_claim_absent` | Pod-bound, but the pod was never scheduled. |
+| `token_missing` | Deployment platform connector only: the caller presented no token. There is no local node to pin a tokenless caller to. |
+| `unbound_token` | Deployment platform connector only: the token is bound to no pod. |
+| `node_claim_absent` | Deployment platform connector only: the token is bound to a pod that never scheduled, so there is no node to pin its events to. |
 | `missing_node_name` | An event carried no node name and none could be stamped. |
 | `token_invalid` | TokenReview rejected the token. |
-| `malformed_credentials` | The authorization header was duplicated, or did not use the Bearer scheme. A *completely absent* header is not a violation — that caller is accepted and pinned to the connector's node. |
+| `malformed_credentials` | The authorization header was duplicated, or did not use the Bearer scheme. On the node-local socket a *completely absent* header is not a violation — that caller is accepted and pinned to the connector's node; on the deployment platform connector it is counted as `token_missing`. |
 | `validator_unavailable` / `validator_timeout` / `validator_error` | The API server could not be reached, or returned no identity. With `failOpenOnUnavailable: true`, `validator_unavailable` and `validator_timeout` still increment this counter but fall back to a degraded node-local scope instead of rejecting the request — see [`failOpenOnUnavailable`](#failopenonunavailable) for how that scope treats a blank vs. a differently-named node. |
 
 A healthy cluster reports zero violations. A sustained non-zero
@@ -201,3 +204,20 @@ A healthy cluster reports zero violations. A sustained non-zero
 Upgrade the chart and the images together. New images against an old chart do
 not start: the connector requires `enableNodeBindingAuth` to be present, and an
 old chart does not write it.
+
+## Deployment platform connector
+
+The deployment platform connector reads the same node-binding settings as the
+DaemonSet, from the same `config.json`: `enableNodeBindingAuth`, `AuthAudience`
+and `AuthCrossNodeServiceAccounts` mean exactly what they mean above, and node
+binding must be enabled for it (the connector refuses to start otherwise). One
+thing differs because it has no local node: **every caller must present a
+token**, bound to a running pod on a scheduled node. The node named in that
+token is the node the caller may report on; the cross-node list is the only
+way to name other nodes. `AuthMode: audit` and `AuthFailOpenOnUnavailable` are
+socket settings: with no node to fall back on, the deployment platform
+connector always enforces, and logs a warning when either is set.
+
+Both roles read one `AuthAudience`, so a monitor's token stays valid when it
+switches from the socket to the Deployment; how the chart projects that token
+for a publisher is described with the chart.

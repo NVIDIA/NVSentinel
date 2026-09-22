@@ -15,8 +15,9 @@
 package ringbuffer
 
 import (
+	"errors"
+
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -24,53 +25,69 @@ const workqueueLabel = "workqueue"
 
 type prometheusMetricsProvider struct{}
 
+// register adds c to the default registry, or returns the collector already
+// registered under its name: a queue of a given name is created once per
+// process in production, but tests build the connector set repeatedly.
+func register[C prometheus.Collector](c C) C {
+	if err := prometheus.Register(c); err != nil {
+		var are prometheus.AlreadyRegisteredError
+		if errors.As(err, &are) {
+			return are.ExistingCollector.(C)
+		}
+
+		panic(err)
+	}
+
+	return c
+}
+
 func (prometheusMetricsProvider) NewDepthMetric(name string) workqueue.GaugeMetric {
-	return promauto.NewGaugeVec(prometheus.GaugeOpts{
+	return register(prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "platform_connector_workqueue_depth_" + name,
 		Help: "Current depth of Platform connector workqueue",
-	}, []string{workqueueLabel}).WithLabelValues(name)
+	}, []string{workqueueLabel})).WithLabelValues(name)
 }
 
 func (prometheusMetricsProvider) NewAddsMetric(name string) workqueue.CounterMetric {
-	return promauto.NewCounterVec(prometheus.CounterOpts{
+	return register(prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "platform_connector_workqueue_adds_total_" + name,
 		Help: "Total number of adds handled by Platform connector workqueue",
-	}, []string{workqueueLabel}).WithLabelValues(name)
+	}, []string{workqueueLabel})).WithLabelValues(name)
 }
 
 func (prometheusMetricsProvider) NewLatencyMetric(name string) workqueue.HistogramMetric {
-	return promauto.NewHistogramVec(prometheus.HistogramOpts{
+	return register(prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "platform_connector_workqueue_latency_seconds_" + name,
 		Help:    "How long an item stays in Platform connector workqueue before being requested",
 		Buckets: prometheus.ExponentialBuckets(0.01, 2, 12),
-	}, []string{workqueueLabel}).WithLabelValues(name)
+	}, []string{workqueueLabel})).WithLabelValues(name)
 }
 
 func (prometheusMetricsProvider) NewWorkDurationMetric(name string) workqueue.HistogramMetric {
-	return promauto.NewHistogramVec(prometheus.HistogramOpts{
+	return register(prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "platform_connector_workqueue_work_duration_seconds_" + name,
 		Help:    "How long processing an item from Platform connector workqueue takes",
 		Buckets: prometheus.ExponentialBuckets(0.01, 2, 12),
-	}, []string{workqueueLabel}).WithLabelValues(name)
+	}, []string{workqueueLabel})).WithLabelValues(name)
 }
 
 func (prometheusMetricsProvider) NewRetriesMetric(name string) workqueue.CounterMetric {
-	return promauto.NewCounterVec(prometheus.CounterOpts{
+	return register(prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "platform_connector_workqueue_retries_total_" + name,
 		Help: "Total number of retries handled by Platform connector workqueue",
-	}, []string{workqueueLabel}).WithLabelValues(name)
+	}, []string{workqueueLabel})).WithLabelValues(name)
 }
 
 func (prometheusMetricsProvider) NewLongestRunningProcessorSecondsMetric(name string) workqueue.SettableGaugeMetric {
-	return promauto.NewGaugeVec(prometheus.GaugeOpts{
+	return register(prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "platform_connector_workqueue_longest_running_processor_seconds_" + name,
 		Help: "How many seconds the longest running processor for Platform connector workqueue has been running",
-	}, []string{workqueueLabel}).WithLabelValues(name)
+	}, []string{workqueueLabel})).WithLabelValues(name)
 }
 
 func (prometheusMetricsProvider) NewUnfinishedWorkSecondsMetric(name string) workqueue.SettableGaugeMetric {
-	return promauto.NewGaugeVec(prometheus.GaugeOpts{
+	return register(prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "platform_connector_workqueue_unfinished_work_seconds_" + name,
 		Help: "The total time in seconds of work in progress in Platform connector workqueue",
-	}, []string{workqueueLabel}).WithLabelValues(name)
+	}, []string{workqueueLabel})).WithLabelValues(name)
 }

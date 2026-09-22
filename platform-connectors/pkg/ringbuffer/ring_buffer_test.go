@@ -146,9 +146,9 @@ func TestRingBuffer_DequeueWithCancelledContext(t *testing.T) {
 	}
 }
 
-func TestRingBuffer_HealthMetricEleProcessingFailed(t *testing.T) {
+func TestRingBuffer_Discard(t *testing.T) {
 	ctx := context.Background()
-	ringBuffer := NewRingBuffer("testProcessingFailed", ctx)
+	ringBuffer := NewRingBuffer("testDiscard", ctx)
 
 	healthEvent := &protos.HealthEvent{
 		CheckName:          "GpuXidError",
@@ -167,10 +167,10 @@ func TestRingBuffer_HealthMetricEleProcessingFailed(t *testing.T) {
 		t.Errorf("Unexpected quit signal during normal operation")
 	}
 
-	ringBuffer.HealthMetricEleProcessingFailed(item)
+	ringBuffer.Discard(item)
 
 	if ringBuffer.CurrentLength() != 0 {
-		t.Errorf("Expected queue length 0 after marking as failed, got %d", ringBuffer.CurrentLength())
+		t.Errorf("Expected queue length 0 after Discard, got %d", ringBuffer.CurrentLength())
 	}
 }
 
@@ -274,4 +274,15 @@ func TestRingBuffer_ProcessBatchQueuesWithTheCallerSpan(t *testing.T) {
 	}
 
 	rb.HealthMetricEleProcessingCompleted(queued)
+}
+
+func TestRingBuffer_EnqueueAfterShutdownIsNoOp(t *testing.T) {
+	ringBuffer := NewRingBuffer("testEnqueueAfterShutdown", context.Background())
+	ringBuffer.ShutDownHealthMetricQueue()
+
+	ringBuffer.Enqueue(NewQueuedHealthEvents(&protos.HealthEvents{}))
+
+	if ringBuffer.CurrentLength() != 0 {
+		t.Errorf("Expected queue length 0 after shutdown, got %d", ringBuffer.CurrentLength())
+	}
 }

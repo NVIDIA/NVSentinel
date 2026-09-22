@@ -56,14 +56,6 @@ func newFromConfig(cfg *pipeline.Config, opts pipeline.Options) (pipeline.Transf
 		return nil, fmt.Errorf("failed to load metadata configuration: %w", err)
 	}
 
-	if opts.NodeMetadataCacheSize > 0 {
-		metadataCfg.CacheSize = opts.NodeMetadataCacheSize
-	}
-
-	if opts.NodeMetadataCacheTTL > 0 {
-		metadataCfg.CacheTTL = opts.NodeMetadataCacheTTL
-	}
-
 	if err := metadataCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid metadata configuration: %w", err)
 	}

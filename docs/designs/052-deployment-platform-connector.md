@@ -125,7 +125,7 @@ Clients retry, so a batch could be stored twice if the server stored it but the 
 The key is enforced per event rather than per batch, because MongoDB can store part of a batch and fail the rest. The server builds each event's key from the caller's pod UID, the client's key and the event's position in the batch, so two callers can never collide. A partial unique index rejects duplicates, and a duplicate on that index counts as success, so a retry inserts only the events that are still missing. The key is mandatory, its format is checked, and the server always writes the key into the stored event itself; it never trusts a key already present in an incoming event.
 
 - A client uses one key per batch and keeps using that same key every time it retries that batch. It must also send the same events with it, because the server only compares keys; it never compares the events themselves. If a client reused a key for a different batch, that batch would be silently treated as a duplicate and dropped.
-- The unique index must exist before any replica writes, otherwise duplicates from that time would never be caught. So a small Job that ships with the Helm release creates the index once, and every replica checks that the index is really there, with the right field, uniqueness and filter, before it reports itself ready. A replica that is not ready receives no traffic, so no client can write before the guarantee is in place. It is a plain Job, not a Helm hook: replicas are not ready until the index exists, and a post-install hook runs only once the pods are ready, so the two would wait for each other. The index definition lives once in `store-client`, shared by the Job and the replicas' readiness check, and covers PostgreSQL too.
+- The unique index must exist before any replica writes, otherwise duplicates from that time would never be caught. So a small Job that ships with the Helm release creates the index once, and every replica checks that the index is really there, with the right field, uniqueness and filter, before it reports itself ready; one that has waited five minutes without it exits, so a missing index is visible as a crash loop rather than a pod that is quietly not ready. A replica that is not ready is out of the Service and refuses any batch that still reaches it over an existing connection with a retryable error, so no client can write before the guarantee is in place. It is a plain Job, not a Helm hook: replicas are not ready until the index exists, and a post-install hook runs only once the pods are ready, so the two would wait for each other. The index definition lives once in `store-client`, shared by the Job and the replicas' readiness check, and covers PostgreSQL too.
 - The index is partial: it only covers documents that have the key field. The millions of events written before this change have no key, so they are left alone and nothing has to be rewritten. Both MongoDB and PostgreSQL support this kind of index.
 
 **Normal write and retry:**
@@ -160,7 +160,7 @@ flowchart LR
 
 ### Authentication
 
-Monitors authenticate exactly as they do on the socket today (ADR-030): a projected ServiceAccount token on every request, checked through TokenReview, with the same cross-node allowlist for the four components that report about other nodes (csp-health-monitor, kubernetes-object-monitor, slurm-drain-monitor, health-events-analyzer). The check moves to the central service under its own audience, so the event path still has exactly one token validation. Three things change:
+Monitors authenticate exactly as they do on the socket today (ADR-030): a projected ServiceAccount token on every request, checked through TokenReview, with the same cross-node allowlist for the five components that report about other nodes (csp-health-monitor, kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor, health-events-analyzer). The check moves to the central service under the same audience, so a monitor keeps its token when it switches over and the event path still has exactly one token validation. Three things change:
 
 - Every caller must present a token. The socket accepted callers with no credential and filled in its own node name for them. Over the network there is no local node to fall back on, so a batch without a pod-bound token is rejected.
 - Node scope comes from the token instead of the connector. The socket checked that a token's node claim matched the node it was running on. The central service has no node of its own, so it pins each batch to the node named in the caller's token.
@@ -239,7 +239,6 @@ global:
       mode: required   # cert-manager issued certificate; the only alternative is
                        # the explicitly named insecureDevelopmentMode
     auth:
-      audience: "platform-connector-deployment.nvsentinel.nvidia.com"
       tokenExpirationSeconds: 3600
 
 platformConnector:
@@ -294,7 +293,7 @@ If a datastore outage longer than the monitors' retry window ever has to be surv
 ### Negative
 
 - The write path now depends on one central service. If it is down, every monitor's writes stop at once and the whole fleet buffers in its clients for the retry window, where today a platform connector pod failure affects only its own node.
-- Custom or token-less socket publishers, and the injected preflight checks that run under tenant ServiceAccounts, cannot publish to the central service as they are, because they cannot be put on the allowlist. Each must be deprecated together with the socket, keep a thin node-local shim, or get its own identity and a network rule that lets it in. That decision is outside this ADR but has to be made before the DaemonSet is removed.
+- Token-less socket publishers, including the injected preflight checks that run under tenant ServiceAccounts without a projected token, cannot publish to the central service as they are, because every caller must present a pod-bound token. Each must be deprecated together with the socket, keep a thin node-local shim, or mount a projected token and get a network rule that lets it in. That decision is outside this ADR but has to be made before the DaemonSet is removed.
 - The server keeps no buffer. A datastore outage is felt by every monitor at once, a MongoDB primary election shows up as a burst of retries, and an outage longer than the monitors' retry window loses events at the edge, as it does today.
 - Node condition updates are best effort, and when a batch changes the node they add Kubernetes API latency to the acknowledgement. After a failed update or a client time-out a condition can be wrong until the monitor next reports that entity, which for a monitor that reports only changes can be a long time.
 
@@ -317,7 +316,7 @@ If a datastore outage longer than the monitors' retry window ever has to be surv
 
 ### Pinning each node to one replica
 
-**Rejected.** Give the replicas stable names and have each monitor pick its replica by hashing its node name, so one replica is the only writer for a node, as the DaemonSet pod is today. Order per node holds while that replica is up. But every rollout, crash or node drain takes it down, and then either the nodes pinned to it stop publishing until it is back, so a third of the fleet pauses on every restart, or they fail over to another replica and the ordering problem comes straight back. The safe version needs a hand-off protocol in the database, and the four components that report about many nodes would have to split each batch by node and hold a connection to every replica.
+**Rejected.** Give the replicas stable names and have each monitor pick its replica by hashing its node name, so one replica is the only writer for a node, as the DaemonSet pod is today. Order per node holds while that replica is up. But every rollout, crash or node drain takes it down, and then either the nodes pinned to it stop publishing until it is back, so a third of the fleet pauses on every restart, or they fail over to another replica and the ordering problem comes straight back. The safe version needs a hand-off protocol in the database, and the five components that report about many nodes would have to split each batch by node and hold a connection to every replica.
 
 ### Node conditions from a change-stream consumer
 

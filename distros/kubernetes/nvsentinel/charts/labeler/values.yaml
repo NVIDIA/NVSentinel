@@ -80,6 +80,28 @@ expectedDeviceCounts:
       expectedCountOverrides: []
       currentExpression: |
         int(node.metadata.labels['nvidia.com/gpu.count'])
+    # Detect GPUs in GPUCluster (DRA) mode of GPU Operator.
+    # Uncomment and adapt per environment.
+    # - name: gpu-dra
+    #   enabled: true
+    #   labels:
+    #     current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+    #     expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+    #   groupingLabels:
+    #     - node.kubernetes.io/instance-type
+    #   expectedCountOverrides: []
+    #   currentExpression: |
+    #     sum(resourceSlices
+    #       .filter(rs, rs.spec.driver == 'gpu.nvidia.com' && has(rs.spec.devices))
+    #       .map(rs, rs.spec.devices
+    #         .filter(d,
+    #           has(d.attributes) &&
+    #           'type' in d.attributes &&
+    #           has(d.attributes['type'].string) &&
+    #           d.attributes['type'].string == 'gpu'
+    #         )
+    #         .size()
+    #       ))
     - name: nic
       enabled: true
       labels:

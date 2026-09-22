@@ -254,7 +254,4 @@ func TestProcessBatch_CountsEveryEventWithoutARingBuffer(t *testing.T) {
 
 	assert.Equal(t, fatalBefore+2, counter(t, "node-1", "gpu-health-monitor", "GpuMemWatch", "RESTART_VM", "true", "false"))
 	assert.Equal(t, healthyBefore+1, counter(t, "node-1", "gpu-health-monitor", "GpuMemWatch", "NONE", "false", "true"))
-
-	// Shutting down without a ring buffer is a no-op, not a crash.
-	connector.ShutdownRingBuffer(context.Background())
 }
