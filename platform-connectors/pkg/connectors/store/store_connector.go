@@ -123,7 +123,6 @@ func createClientFactory(databaseClientCertMountPath string) (*factory.ClientFac
 }
 
 func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context) {
-	// Build an in-memory cache of entity states from existing documents in the database
 	for {
 		select {
 		case <-ctx.Done():
@@ -199,14 +198,6 @@ func (r *DatabaseStoreConnector) batchKey(item *ringbuffer.QueuedHealthEvents) s
 	}
 
 	return item.BatchKey
-}
-
-func (r *DatabaseStoreConnector) ShutdownRingBuffer(ctx context.Context) {
-	if r.ringBuffer != nil {
-		slog.InfoContext(ctx, "Shutting down database store connector ring buffer with drain")
-		r.ringBuffer.ShutDownHealthMetricQueue()
-		slog.InfoContext(ctx, "Database store connector ring buffer drained successfully")
-	}
 }
 
 // Disconnect closes the database client connection

@@ -42,7 +42,8 @@ Ring buffer operations:
 - `Enqueue(data)` - Add health events to queue
 - `Dequeue()` - Get next event for processing
 - `HealthMetricEleProcessingCompleted(data)` - Mark event as successfully processed
-- `HealthMetricEleProcessingFailed(data)` - Trigger retry with backoff
+- `AddRateLimited(data)` - Trigger retry with backoff
+- `Discard(data)` - Drop an item for good
 
 Metrics automatically exposed:
 - `platform_connector_workqueue_depth_{name}` - current queue depth
