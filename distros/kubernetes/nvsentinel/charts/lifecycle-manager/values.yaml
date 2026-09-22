@@ -102,10 +102,23 @@ config:
         - sh
         - -c
         - |
+          # Only one DCGM Service exists per cluster: nvidia-dcgm-dra in GPU Operator
+          # GPUCluster (DRA) mode, nvidia-dcgm otherwise. Use the first name that resolves.
+          host=""
+          for h in nvidia-dcgm-dra.gpu-operator.svc nvidia-dcgm.gpu-operator.svc; do
+            if getent hosts "$h" >/dev/null 2>&1; then
+              host="$h"
+              break
+            fi
+          done
+          if [ -z "$host" ]; then
+            echo "no DCGM hostengine Service resolved (tried nvidia-dcgm-dra.gpu-operator.svc, nvidia-dcgm.gpu-operator.svc)" >&2
+            exit 1
+          fi
           i=0
           max=10
           while [ "$i" -lt "$max" ]; do
-            dcgmi diag --host nvidia-dcgm.gpu-operator.svc:5555 --run 2 --json > /tmp/dcgm-diag-out.json 2>&1
+            dcgmi diag --host "$host:5555" --run 2 --json > /tmp/dcgm-diag-out.json 2>&1
             rc=$?
             cat /tmp/dcgm-diag-out.json
 

@@ -1077,9 +1077,10 @@ gpu-health-monitor:
     
     # DCGM service endpoint
     service:
-      # Service endpoint in format: servicename.namespace.svc
-      # Default GPU Operator deployment uses: nvidia-dcgm.gpu-operator.svc
-      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      # Service endpoint in format: servicename.namespace.svc. Comma-separated hosts are
+      # tried in order; only one exists per cluster (nvidia-dcgm-dra in GPU Operator
+      # GPUCluster/DRA mode, nvidia-dcgm otherwise).
+      endpoint: "nvidia-dcgm-dra.gpu-operator.svc,nvidia-dcgm.gpu-operator.svc"
       
       # DCGM service port
       # Default DCGM port is 5555
@@ -2105,7 +2106,8 @@ preflight:
     # DCGM diagnostic - runs DCGM diag against allocated GPUs
     # Env vars:
     #   DCGM_DIAG_LEVEL       - diagnostic depth 1-4 (default 2)
-    #   DCGM_HOSTENGINE_ADDR  - hostengine gRPC endpoint (default nvidia-dcgm.gpu-operator.svc:5555)
+    #   DCGM_HOSTENGINE_ADDR  - comma-separated hostengine gRPC endpoints tried in order
+    #                           (default nvidia-dcgm-dra.gpu-operator.svc:5555,nvidia-dcgm.gpu-operator.svc:5555)
     - name: preflight-dcgm-diag
       inheritUserEnv: false
       inheritUserVolumeMounts: false

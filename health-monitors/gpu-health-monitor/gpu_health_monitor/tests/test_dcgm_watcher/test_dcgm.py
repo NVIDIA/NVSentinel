@@ -2361,3 +2361,38 @@ class TestDCGMWatcherHangSafeOrdering:
         watcher.start([], stop_event)
 
         assert observed["operation"] == "dcgm_thermal_margin"
+
+
+@patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+def test_remote_handle_falls_back_to_next_address(mock_handle):
+    """The first listed address fails; the second connects. The list is walked afresh on every connect."""
+    handle = MagicMock()
+    mock_handle.side_effect = [RuntimeError("no such host"), handle, RuntimeError("no such host"), handle]
+    watcher = dcgm.DCGMWatcher(
+        dcgm.types.DCGMWatcherConfig(
+            addr="nvidia-dcgm-dra.gpu-operator.svc:5555, nvidia-dcgm.gpu-operator.svc:5555",
+            poll_interval_seconds=10,
+            dcgm_k8s_service_enabled=True,
+        ),
+        callbacks=[],
+    )
+
+    assert watcher._create_dcgm_handle() is handle
+    assert watcher._create_dcgm_handle() is handle
+
+    assert [c.kwargs["ipAddress"] for c in mock_handle.call_args_list] == [
+        "nvidia-dcgm-dra.gpu-operator.svc:5555",
+        "nvidia-dcgm.gpu-operator.svc:5555",
+        "nvidia-dcgm-dra.gpu-operator.svc:5555",
+        "nvidia-dcgm.gpu-operator.svc:5555",
+    ]
+
+
+@patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle", side_effect=RuntimeError("no such host"))
+def test_remote_handle_raises_when_no_address_connects(mock_handle):
+    watcher = dcgm.DCGMWatcher(
+        dcgm.types.DCGMWatcherConfig(addr="a:5555,b:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=True),
+        callbacks=[],
+    )
+    with pytest.raises(RuntimeError, match="Unable to connect to any DCGM address: a:5555.*b:5555"):
+        watcher._create_dcgm_handle()

@@ -383,3 +383,29 @@ class TestDCGMStatusDetection:
     )
     def test_ignores_untyped_errors(self, err: Exception) -> None:
         assert get_dcgm_status_name(err) == ""
+
+
+class TestDCGMDiagnosticConnect:
+    """Tests for hostengine address fallback."""
+
+    @patch("dcgm_diag.diag.pydcgm.DcgmHandle")
+    def test_connect_falls_back_to_next_listed_address(self, mock_handle_class: MagicMock) -> None:
+        handle = MagicMock()
+        mock_handle_class.side_effect = [Exception("no such host"), handle]
+
+        diag = DCGMDiagnostic(hostengine_addr="nvidia-dcgm-dra.gpu-operator.svc:5555,nvidia-dcgm.gpu-operator.svc:5555")
+        diag._connect()
+
+        assert diag._handle is handle
+        assert [c.kwargs["ipAddress"] for c in mock_handle_class.call_args_list] == [
+            "nvidia-dcgm-dra.gpu-operator.svc:5555",
+            "nvidia-dcgm.gpu-operator.svc:5555",
+        ]
+
+    @patch("dcgm_diag.diag.pydcgm.DcgmHandle")
+    def test_connect_raises_when_no_address_works(self, mock_handle_class: MagicMock) -> None:
+        mock_handle_class.side_effect = Exception("no such host")
+
+        diag = DCGMDiagnostic(hostengine_addr="a:5555,b:5555")
+        with pytest.raises(RuntimeError, match="Unable to connect to any DCGM hostengine: a:5555.*b:5555"):
+            diag._connect()

@@ -230,6 +230,9 @@ class DCGMWatcher:
         metadata_reader: MetadataReader | None = None,
     ) -> None:
         self._addr = config.addr
+        self._addrs = types.split_dcgm_addrs(config.addr)
+        if not self._addrs:
+            raise ValueError("DCGM address is required")
         self._poll_interval_seconds = config.poll_interval_seconds
         self._callbacks = callbacks
         self._imex_monitoring_enabled = config.imex_monitoring_enabled
@@ -1017,15 +1020,27 @@ class DCGMWatcher:
             log.info(f"Successfully started embedded DCGM hostengine listening on {host}:{port}")
             return dcgm_handle
 
-        if self._dcgm_k8s_service_enabled:
-            log.info(f"DCGM k8s service enabled. Using {self._addr}")
-        else:
-            log.info(f"DCGM k8s service disabled. Using {self._addr}")
-        dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
-        log.info("Successfully created DCGM handle")
-        return dcgm_handle
+        log.info(
+            f"DCGM k8s service {'enabled' if self._dcgm_k8s_service_enabled else 'disabled'}. Trying {self._addrs}"
+        )
+        # Only one DCGM Service exists per cluster (nvidia-dcgm-dra in GPU Operator
+        # GPUCluster mode, nvidia-dcgm otherwise), so a wrong name fails fast at DNS.
+        # Try each address in order on every connect.
+        errors: list[str] = []
+        for addr in self._addrs:
+            try:
+                dcgm_handle = pydcgm.DcgmHandle(ipAddress=addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+            except Exception as e:
+                errors.append(f"{addr}: {e}")
+                continue
+            log.info(f"Successfully created DCGM handle to {addr}")
+            return dcgm_handle
+        raise RuntimeError(f"Unable to connect to any DCGM address: {'; '.join(errors)}")
 
     def _parse_local_dcgm_addr(self) -> tuple[str, int]:
+        if len(self._addrs) != 1:
+            raise ValueError(f"local-managed mode requires exactly one DCGM address, got {self._addr}")
+
         if ":" not in self._addr:
             raise ValueError(f"DCGM address must be host:port, got {self._addr}")
 

@@ -175,3 +175,18 @@ def test_cli_rejects_non_positive_connect_timeout() -> None:
 
     assert result.exit_code == 2
     assert "not in the range" in result.output
+
+
+@patch("gpu_health_monitor.wait_for_dcgm.pydcgm.DcgmHandle")
+def test_dcgm_is_ready_falls_back_to_next_listed_address(dcgm_handle_factory: MagicMock) -> None:
+    """The first address fails to connect; the second is ready."""
+    dcgm_handle = MagicMock()
+    dcgm_handle.GetSystem.return_value.discovery.GetEntityGroupEntities.return_value = [0]
+    dcgm_handle_factory.side_effect = [RuntimeError("no such host"), dcgm_handle]
+
+    assert dcgm_is_ready("nvidia-dcgm-dra.gpu-operator.svc:5555, nvidia-dcgm.gpu-operator.svc:5555") is True
+
+    assert [c.kwargs["ipAddress"] for c in dcgm_handle_factory.call_args_list] == [
+        "nvidia-dcgm-dra.gpu-operator.svc:5555",
+        "nvidia-dcgm.gpu-operator.svc:5555",
+    ]

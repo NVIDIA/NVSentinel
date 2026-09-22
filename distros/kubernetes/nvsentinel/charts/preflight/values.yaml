@@ -141,8 +141,10 @@ initContainers:
       repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
       tag: ""
     env:
+      # Comma-separated hostengine addresses tried in order; only one DCGM Service exists
+      # per cluster (nvidia-dcgm-dra in GPU Operator GPUCluster mode, nvidia-dcgm otherwise).
       - name: DCGM_HOSTENGINE_ADDR
-        value: "nvidia-dcgm.gpu-operator.svc:5555"
+        value: "nvidia-dcgm-dra.gpu-operator.svc:5555,nvidia-dcgm.gpu-operator.svc:5555"
       # Diagnostic level (maps to dcgmi diag -r <level>):
       #   1 = Short  (~30 s)   - software deployment checks only
       #   2 = Medium (~2 min)  - adds PCIe bandwidth and basic GPU stress tests

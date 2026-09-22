@@ -115,3 +115,8 @@ class CallbackInterface(abc.ABC):
         Return True (or None) once the hang has been recorded.
         """
         pass
+
+
+def split_dcgm_addrs(addr: str) -> list[str]:
+    """Split a comma-separated list of DCGM host:port addresses, dropping blanks."""
+    return [a.strip() for a in addr.split(",") if a.strip()]

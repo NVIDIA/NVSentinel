@@ -26,6 +26,8 @@ import dcgm_fields
 import dcgm_structs
 import pydcgm
 
+from gpu_health_monitor.dcgm_watcher.types import split_dcgm_addrs
+
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
 
 
@@ -35,6 +37,11 @@ def _configure_logging() -> None:
 
 
 def dcgm_is_ready(dcgm_addr: str) -> bool:
+    """Return true when any of the comma-separated addresses is ready."""
+    return any(_dcgm_is_ready_at(addr) for addr in split_dcgm_addrs(dcgm_addr))
+
+
+def _dcgm_is_ready_at(dcgm_addr: str) -> bool:
     """Return true after a DCGM connection and GPU discovery both succeed."""
     dcgm_handle = None
     try:
@@ -122,7 +129,7 @@ def _exit_on_sigterm(_signum: int, _frame: FrameType | None) -> NoReturn:
 
 
 @click.command()
-@click.option("--dcgm-addr", required=True, help="Host:Port where DCGM is running")
+@click.option("--dcgm-addr", required=True, help="Comma-separated host:port list where DCGM may be running")
 @click.option(
     "--retry-interval-seconds",
     type=click.FloatRange(min=0.0, min_open=True),
