@@ -184,14 +184,8 @@ func setupControllers(
 	}
 
 	if enableValidationController {
-		reconciler, err := controller.NewValidationRequestReconciler(mgr.GetClient(), mgr.GetAPIReader(),
-			mgr.GetScheme(), cfg, namespace)
-		if err != nil {
-			return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
-		}
-
-		if err := reconciler.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("failed to create ValidationRequest controller: %w", err)
+		if err := setupValidationController(mgr, cfg, validation, namespace); err != nil {
+			return err
 		}
 	}
 
@@ -209,6 +203,42 @@ func setupControllers(
 	}
 
 	// +kubebuilder:scaffold:builder
+	return nil
+}
+
+func setupValidationController(
+	mgr ctrl.Manager, cfg *config.Config, validation *v1alpha1.ValidationConfiguration, namespace string,
+) error {
+	reconciler, err := controller.NewValidationRequestReconciler(mgr.GetClient(), mgr.GetAPIReader(),
+		mgr.GetScheme(), cfg, namespace)
+	if err != nil {
+		return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
+	}
+
+	if err := reconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to create ValidationRequest controller: %w", err)
+	}
+
+	if validation.Spec.NewNodeValidation != nil {
+		if err := setupNodeValidationController(mgr, cfg); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func setupNodeValidationController(mgr ctrl.Manager, cfg *config.Config) error {
+	nodeReconciler, err := controller.NewNodeValidationReconciler(mgr.GetClient(), mgr.GetAPIReader(),
+		mgr.GetScheme(), cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
+	}
+
+	if err := nodeReconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to create NodeValidation controller: %w", err)
+	}
+
 	return nil
 }
 

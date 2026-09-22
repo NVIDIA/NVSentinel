@@ -998,9 +998,9 @@ func CountSchedulableNodes(nodeList v1.NodeList) int {
 	return count
 }
 
-// GetRealNodeNames returns up to count distinct real (non-KWOK) worker node names.
-// Prefers schedulable workers, falls back to unschedulable workers if needed.
-func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string, error) {
+// AllRealNodeNames returns every real (non-KWOK) worker node name, schedulable
+// ones first.
+func AllRealNodeNames(ctx context.Context, c klient.Client) ([]string, error) {
 	var nodeList v1.NodeList
 
 	err := c.Resources().List(ctx, &nodeList,
@@ -1021,6 +1021,17 @@ func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string
 		if node.Spec.Unschedulable {
 			names = append(names, node.Name)
 		}
+	}
+
+	return names, nil
+}
+
+// GetRealNodeNames returns up to count distinct real (non-KWOK) worker node names.
+// Prefers schedulable workers, falls back to unschedulable workers if needed.
+func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string, error) {
+	names, err := AllRealNodeNames(ctx, c)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(names) < count {
@@ -2564,7 +2575,8 @@ func containsAllExpectedParts(actual, expected string) bool {
 	return matchCount > 0
 }
 
-// SetNodeConditionStatus sets a node condition to a specific status for testing purposes.
+// SetNodeConditionStatus sets a node condition to a specific status for testing purposes. If remove is true,
+// conditionType is instead removed from the node's status entirely and status is ignored.
 func SetNodeConditionStatus(
 	ctx context.Context,
 	t *testing.T,
@@ -2572,6 +2584,7 @@ func SetNodeConditionStatus(
 	nodeName string,
 	conditionType v1.NodeConditionType,
 	status v1.ConditionStatus,
+	remove bool,
 ) {
 	t.Helper()
 
@@ -2584,10 +2597,16 @@ func SetNodeConditionStatus(
 
 			found := false
 			modified := false
+			conditions := make([]v1.NodeCondition, 0, len(node.Status.Conditions))
 
 			for i := range node.Status.Conditions {
 				if node.Status.Conditions[i].Type == conditionType {
 					found = true
+
+					if remove {
+						modified = true
+						continue
+					}
 
 					if node.Status.Conditions[i].Status != status {
 						node.Status.Conditions[i].Status = status
@@ -2595,14 +2614,14 @@ func SetNodeConditionStatus(
 						node.Status.Conditions[i].LastHeartbeatTime = metav1.Now()
 						modified = true
 					}
-
-					break
 				}
+
+				conditions = append(conditions, node.Status.Conditions[i])
 			}
 
-			if !found {
+			if !found && !remove {
 				now := metav1.Now()
-				node.Status.Conditions = append(node.Status.Conditions, v1.NodeCondition{
+				conditions = append(conditions, v1.NodeCondition{
 					Type:               conditionType,
 					Status:             status,
 					LastTransitionTime: now,
@@ -2616,6 +2635,8 @@ func SetNodeConditionStatus(
 			if !modified {
 				return nil
 			}
+
+			node.Status.Conditions = conditions
 
 			return client.Resources().UpdateStatus(ctx, node)
 		})

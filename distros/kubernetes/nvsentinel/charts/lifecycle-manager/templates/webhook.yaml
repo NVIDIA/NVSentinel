@@ -71,7 +71,6 @@ webhooks:
         operations:
           - CREATE
           - UPDATE
-          - DELETE
         resources:
           - validationrequests
         scope: "Cluster"

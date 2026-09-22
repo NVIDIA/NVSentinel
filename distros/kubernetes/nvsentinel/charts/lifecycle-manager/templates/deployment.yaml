@@ -55,6 +55,21 @@ spec:
             {{- if .Values.controllers.validationRequest.enabled }}
             - "--config=/etc/nvsentinel/lifecycle-manager/config.yaml"
             {{- end }}
+            - "--enable-maintenance-controller={{ .Values.controllers.maintenanceRequest.enabled }}"
+            {{- if .Values.controllers.maintenanceRequest.enabled }}
+            {{- $socketPath := ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}
+            - "--platform-connector-socket=unix:///var/run/nvsentinel/{{ base $socketPath }}"
+            {{- if include "lifecycle-manager.pcAuth.enabled" . }}
+            {{- /* A MaintenanceRequest names any node in the cluster, so this
+                 Deployment reports on nodes other than its own and must present
+                 an allowlisted token to platform-connector. The matching
+                 allowlist entry is derived by the umbrella chart's
+                 nvsentinel.pcAuth.crossNodeUsernames from this same feature
+                 gate; without the token the events are pinned to whichever node
+                 this pod happens to run on and rejected as node_mismatch. */}}
+            - "--platform-connector-token-path={{ include "lifecycle-manager.pcAuth.tokenPath" . }}"
+            {{- end }}
+            {{- end }}
             - "--webhook-cert-path={{ .Values.webhook.certDir }}"
             - "--webhook-cert-name=tls.crt"
             - "--webhook-cert-key=tls.key"
@@ -118,6 +133,14 @@ spec:
             - name: webhook-certs
               mountPath: {{ .Values.webhook.certDir }}
               readOnly: true
+            {{- if .Values.controllers.maintenanceRequest.enabled }}
+            - name: platform-connector-socket
+              mountPath: /var/run/nvsentinel
+              readOnly: true
+            {{- if include "lifecycle-manager.pcAuth.enabled" . }}
+            {{- include "lifecycle-manager.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.metrics.tls.enabled }}
             - name: metrics-certs
               mountPath: {{ .Values.metrics.tls.certDir }}
@@ -132,6 +155,15 @@ spec:
         - name: templates
           configMap:
             name: {{ include "lifecycle-manager.fullname" . }}-templates
+        {{- end }}
+        {{- if .Values.controllers.maintenanceRequest.enabled }}
+        - name: platform-connector-socket
+          hostPath:
+            path: /var/run/nvsentinel
+            type: DirectoryOrCreate
+        {{- if include "lifecycle-manager.pcAuth.enabled" . }}
+        {{- include "lifecycle-manager.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
         {{- end }}
         - name: webhook-certs
           secret:

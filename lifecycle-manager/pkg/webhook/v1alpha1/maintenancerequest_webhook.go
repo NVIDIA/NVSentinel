@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
@@ -58,6 +59,15 @@ func (*MaintenanceRequestDefaulter) Default(
 
 	if healthEvent.Metadata == nil {
 		healthEvent.Metadata = make(map[string]string)
+	}
+
+	requesterAgent := healthEvent.Agent
+	healthEvent.Agent = managed.MRAgentName
+
+	if requesterAgent != "" && requesterAgent != managed.MRAgentName {
+		healthEvent.Metadata[managed.MRRequesterAgentMetadataKey] = requesterAgent
+	} else {
+		delete(healthEvent.Metadata, managed.MRRequesterAgentMetadataKey)
 	}
 
 	healthEvent.Metadata["maintenanceRequestName"] = obj.Name
