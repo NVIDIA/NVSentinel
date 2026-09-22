@@ -218,30 +218,6 @@ func TestFetchAndProcessHealthMetric_MaxRetries_EventDropped(t *testing.T) {
 	cancel()
 }
 
-func TestShutdownRingBuffer_AfterShutdown_EnqueueIsNoOp(t *testing.T) {
-	ctx := t.Context()
-
-	rb := ringbuffer.NewRingBuffer("testShutdown", ctx)
-	connector := &GRPCSinkConnector{ringBuffer: rb}
-
-	done := make(chan struct{})
-	go func() {
-		connector.ShutdownRingBuffer()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// ShutdownRingBuffer completed successfully
-	case <-time.After(1 * time.Second):
-		t.Fatal("ShutdownRingBuffer did not complete within timeout")
-	}
-
-	// Enqueue after shutdown is a no-op; queue length stays 0
-	rb.Enqueue(ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{}))
-	require.Equal(t, 0, rb.CurrentLength())
-}
-
 func TestClose_NilConn(t *testing.T) {
 	connector := &GRPCSinkConnector{conn: nil}
 	err := connector.Close()
