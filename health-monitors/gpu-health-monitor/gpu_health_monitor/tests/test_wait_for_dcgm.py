@@ -177,16 +177,23 @@ def test_cli_rejects_non_positive_connect_timeout() -> None:
     assert "not in the range" in result.output
 
 
-@patch("gpu_health_monitor.wait_for_dcgm.pydcgm.DcgmHandle")
-def test_dcgm_is_ready_falls_back_to_next_listed_address(dcgm_handle_factory: MagicMock) -> None:
-    """The first address fails to connect; the second is ready."""
-    dcgm_handle = MagicMock()
-    dcgm_handle.GetSystem.return_value.discovery.GetEntityGroupEntities.return_value = [0]
-    dcgm_handle_factory.side_effect = [RuntimeError("no such host"), dcgm_handle]
+@patch("gpu_health_monitor.wait_for_dcgm.multiprocessing.get_context")
+def test_dcgm_is_ready_with_timeout_probes_each_address_separately(get_context: MagicMock) -> None:
+    """A hung first address is terminated and the second address is probed under its own timeout."""
+    hung = MagicMock(pid=1)
+    hung.is_alive.side_effect = [True, True, False, False]
+    ready = MagicMock(pid=2, exitcode=0)
+    ready.is_alive.return_value = False
+    get_context.return_value.Process.side_effect = [hung, ready]
 
-    assert dcgm_is_ready("nvidia-dcgm-dra.gpu-operator.svc:5555, nvidia-dcgm.gpu-operator.svc:5555") is True
+    assert (
+        dcgm_is_ready_with_timeout("nvidia-dcgm-dra.gpu-operator.svc:5555, nvidia-dcgm.gpu-operator.svc:5555", 4)
+        is True
+    )
 
-    assert [c.kwargs["ipAddress"] for c in dcgm_handle_factory.call_args_list] == [
-        "nvidia-dcgm-dra.gpu-operator.svc:5555",
-        "nvidia-dcgm.gpu-operator.svc:5555",
+    assert [c.kwargs["args"] for c in get_context.return_value.Process.call_args_list] == [
+        ("nvidia-dcgm-dra.gpu-operator.svc:5555",),
+        ("nvidia-dcgm.gpu-operator.svc:5555",),
     ]
+    hung.terminate.assert_called_once_with()
+    ready.join.assert_called_once_with(timeout=4)

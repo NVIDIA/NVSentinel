@@ -37,11 +37,6 @@ def _configure_logging() -> None:
 
 
 def dcgm_is_ready(dcgm_addr: str) -> bool:
-    """Return true when any of the comma-separated addresses is ready."""
-    return any(_dcgm_is_ready_at(addr) for addr in split_dcgm_addrs(dcgm_addr))
-
-
-def _dcgm_is_ready_at(dcgm_addr: str) -> bool:
     """Return true after a DCGM connection and GPU discovery both succeed."""
     dcgm_handle = None
     try:
@@ -88,7 +83,16 @@ def _stop_process(process: multiprocessing.Process) -> None:
 
 
 def dcgm_is_ready_with_timeout(dcgm_addr: str, connect_timeout_seconds: float) -> bool:
-    """Run a functional DCGM readiness check with a hard process timeout."""
+    """Probe each comma-separated address in its own process with a hard timeout.
+
+    Returns true on the first ready address; a hung or failed address never
+    delays the ones after it.
+    """
+    return any(_dcgm_is_ready_at_with_timeout(addr, connect_timeout_seconds) for addr in split_dcgm_addrs(dcgm_addr))
+
+
+def _dcgm_is_ready_at_with_timeout(dcgm_addr: str, connect_timeout_seconds: float) -> bool:
+    """Run one functional DCGM readiness check with a hard process timeout."""
     process = multiprocessing.get_context("spawn").Process(
         target=_probe_process_entrypoint,
         args=(dcgm_addr,),

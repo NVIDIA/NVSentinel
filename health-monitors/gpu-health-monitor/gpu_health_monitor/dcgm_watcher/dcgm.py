@@ -1024,8 +1024,8 @@ class DCGMWatcher:
             f"DCGM k8s service {'enabled' if self._dcgm_k8s_service_enabled else 'disabled'}. Trying {self._addrs}"
         )
         # Only one DCGM Service exists per cluster (nvidia-dcgm-dra in GPU Operator
-        # GPUCluster mode, nvidia-dcgm otherwise), so a wrong name fails fast at DNS.
-        # Try each address in order on every connect.
+        # GPUCluster mode, nvidia-dcgm otherwise), so the wrong name simply fails to
+        # connect. Try each address in order on every connect.
         errors: list[str] = []
         for addr in self._addrs:
             try:
@@ -1041,10 +1041,11 @@ class DCGMWatcher:
         if len(self._addrs) != 1:
             raise ValueError(f"local-managed mode requires exactly one DCGM address, got {self._addr}")
 
-        if ":" not in self._addr:
-            raise ValueError(f"DCGM address must be host:port, got {self._addr}")
+        addr = self._addrs[0]
+        if ":" not in addr:
+            raise ValueError(f"DCGM address must be host:port, got {addr}")
 
-        host, port_text = self._addr.rsplit(":", 1)
+        host, port_text = addr.rsplit(":", 1)
         host = host.strip("[]")
         if host == "localhost":
             host = "127.0.0.1"
