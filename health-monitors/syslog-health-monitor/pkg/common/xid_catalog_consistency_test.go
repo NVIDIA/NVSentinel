@@ -61,22 +61,10 @@ var handledElsewhere = map[string]string{
 	"WORKFLOW_NVLINK5_ERR": "XIDs 144-150: resolved from column F of the 'Xid 144-150 Decode' sheet by parseNVL5Row",
 }
 
-// cellByColumn returns the trimmed value of a cell by its spreadsheet column letter.
-//
-// Selecting by coordinate rather than by slice index is required for correctness, not
-// style. xlsxreader omits empty cells and does not pad Row.Cells, so the Nth element is
-// the Nth *populated* cell, not column N. In this workbook the XID 163 to 170 rows have
-// an empty column I and a populated column L, so row.Cells[8] on those rows yields the
-// column L note rather than the resolution bucket.
-func cellByColumn(row xlsxreader.Row, column string) string {
-	for _, cell := range row.Cells {
-		if cell.Column == column {
-			return strings.TrimSpace(cell.Value)
-		}
-	}
-
-	return ""
-}
+// These tests deliberately use the production cellByColumn from common.go rather than
+// a copy, so that the loader and the checks cannot disagree about which cell holds the
+// resolution bucket. A private copy here would have let processDataRow keep reading the
+// wrong column while the tests passed.
 
 // stagedForFutureCatalogue are non-default cases in MapActionStringToProto that no
 // current catalogue cell selects. They are kept deliberately so that a future workbook
@@ -213,6 +201,72 @@ func TestEveryCatalogueBucketResolves(t *testing.T) {
 		"human triage add it to manualTriageBuckets in this file.")
 
 	t.Fatal(b.String())
+}
+
+// TestLoaderAgreesWithColumnI exercises the real loader rather than re-reading the
+// workbook the way the checks above do, and asserts it resolved every XID from column
+// I and nothing else.
+//
+// Without this, the other tests read column I directly and so cannot see a loader that
+// reads a different cell. That is not hypothetical: processDataRow previously indexed
+// row.Cells[8] positionally, which on the XID 163 to 170 rows is column L, so the
+// loader mapped a human-readable note as if it were a resolution bucket. Both halves
+// below are needed; the absent half is the one that catches it.
+func TestLoaderAgreesWithColumnI(t *testing.T) {
+	loaded, err := LoadErrorResolutionMap()
+	require.NoError(t, err, "the embedded catalogue must load")
+	require.NotEmpty(t, loaded, "loaded an empty resolution map")
+
+	xl, err := xlsxreader.NewReader(embeddedXidCatalog)
+	require.NoError(t, err)
+
+	var checkedPresent, checkedAbsent int
+
+	rowIndex := 0
+
+	for row := range xl.ReadRows("Xids") {
+		require.NoErrorf(t, row.Error, "failed to read row %d of the Xids sheet", rowIndex+1)
+
+		rowIndex++
+		if rowIndex == 1 {
+			continue
+		}
+
+		codeStr := cellByColumn(row, "B")
+		if codeStr == "" {
+			continue
+		}
+
+		code, convErr := strconv.Atoi(codeStr)
+		if convErr != nil {
+			continue
+		}
+
+		bucket := cellByColumn(row, "I")
+		if bucket == "" {
+			// An empty bucket must leave the XID out of the map entirely, so the
+			// caller's CONTACT_SUPPORT default applies. If a note from a later
+			// column leaked in, the code would be present instead.
+			require.NotContainsf(t, loaded, code,
+				"XID %d has an empty bucket at Xids!I%d but is present in the loaded map, "+
+					"which means the loader read some other cell on that row", code, rowIndex)
+
+			checkedAbsent++
+
+			continue
+		}
+
+		require.Containsf(t, loaded, code, "XID %d has bucket %q at Xids!I%d but is missing from the loaded map",
+			code, bucket, rowIndex)
+		require.Equalf(t, MapActionStringToProto(bucket), loaded[code].RecommendedAction,
+			"XID %d at Xids!I%d resolved differently by the loader than by the mapper", code, rowIndex)
+
+		checkedPresent++
+	}
+
+	require.NotZero(t, checkedPresent, "checked no populated buckets")
+	require.NotZerof(t, checkedAbsent, "checked no empty buckets, so the half of this test that "+
+		"catches a mis-read cell did not run")
 }
 
 // mapperCaseStrings extracts the string literals from the case clauses of the type
