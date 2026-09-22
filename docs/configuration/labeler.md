@@ -75,6 +75,25 @@ labeler:
   assumeDriverInstalled: false
 ```
 
+## DCGM Pod Discovery
+
+Comma-separated values of the `app` pod label used to find the DCGM pod on each node. The default matches both the classic GPU Operator DCGM DaemonSet and the GPUCluster (DRA) mode one, so the correct pod is found in either mode without per-cluster configuration.
+
+```yaml
+labeler:
+  dcgmAppLabel: "nvidia-dcgm,nvidia-dcgm-dra"
+```
+
+## Driver Pod Discovery
+
+Pod label values used to find the driver pod on each node: the `app` label of the GPU Operator driver pod, and the `k8s-app` label of the GKE driver installer pod. The defaults match GPU Operator and GKE.
+
+```yaml
+labeler:
+  driverAppLabel: "nvidia-driver-daemonset"
+  gkeInstallerAppLabel: "nvidia-driver-installer"
+```
+
 ## DCGM Bootstrap Gating
 
 Controls whether the DCGM pod must be ready before the DCGM version label is set for the first time on a node.
