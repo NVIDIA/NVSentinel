@@ -120,6 +120,20 @@ List of node label keys to include in health event enrichment. Only labels in th
 
 > Note: The complete default list is defined in `distros/kubernetes/nvsentinel/values.yaml`
 
+#### skipNodeLabel
+Node label, as `key=value`, that marks a node NVSentinel must not act on. Events from a node carrying this label are downgraded to `STORE_ONLY`: NVSentinel records them for audit but performs no remediation and no Kubernetes side effects.
+
+```yaml
+platformConnector:
+  transformers:
+    MetadataAugmentor:
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
+```
+
+Leave it empty to disable the behavior. The value must match the key and value that `commons/pkg/managed` defines, so change it only together with that constant. Only the exact value opts a node out; any other value, including an absent label or a typo, leaves the node managed normally. Label a node to hand it to another owner — a hardware team working on it, or an external remediation system — without disabling NVSentinel for the rest of the fleet.
+
+> **Important:** `MetadataAugmentor` enforces this gate, so removing the transformer from `transformers` while `skipNodeLabel` is still set stops the gate from applying. The connector logs a warning at startup and keeps remediating opted-out nodes.
+
 ### Example
 
 ```yaml
@@ -269,6 +283,61 @@ attention right now" without querying the datastore. See
 [Prometheus Connector Metrics](../METRICS.md#prometheus-connector-metrics) for the label
 rationale and example queries.
 
+## gRPC Sink Connector
+
+Forwards each health event to an external gRPC server, which receives the full `HealthEvent` proto with no truncation. The server implements the existing `PlatformConnector.HealthEventOccurredV1` RPC, so no new proto definitions are needed. Use it to feed an organization-specific remediation or analytics pipeline alongside the store and Kubernetes connectors.
+
+```yaml
+platformConnector:
+  grpcSinkConnector:
+    enabled: false
+    target: ""        # gRPC server address, e.g. "my-service.example.com:50051"
+    maxRetries: 3
+    tokenPath: ""
+```
+
+### Parameters
+
+#### enabled
+Turns the connector on. Disabled by default, like the other optional connectors.
+
+#### target
+Address of the receiving gRPC server, as `host:port`. Required when the connector is enabled.
+
+#### maxRetries
+Retry attempts with exponential backoff before the connector drops the event. Total send attempts are `1 + maxRetries`. The per-RPC timeout is fixed at 10 seconds; a target that does not answer inside that window counts as a failure and is retried.
+
+#### tokenPath
+Path to a projected Kubernetes ServiceAccount token. When set, the connector attaches the token as a Bearer header on every RPC, and the receiving server validates it with the TokenReview API. Empty disables authentication, which matches the other internal NVSentinel gRPC connections.
+
+```yaml
+platformConnector:
+  grpcSinkConnector:
+    tokenPath: "/var/run/secrets/nvsentinel/grpcsink/token"
+```
+
+The target must be an external sink, not another NVSentinel platform connector. A connector's own token is bound to the node its pod runs on, and a receiving connector rejects a token whose node claim names a different node, so chaining connectors cannot authenticate. Fan-in belongs to the datastore, which every connector already writes to.
+
+Restrict which pods can reach the target with a network policy. See [ADR-033](../designs/033-grpc-sink-connector.md) for the design rationale.
+
+## Datastore Client Certificates
+
+Where each store client looks for its TLS client certificate. The paths must match what the datastore chart issues certificates for.
+
+```yaml
+platformConnector:
+  mongodbStore:
+    enabled: false
+    clientCertMountPath: "/etc/ssl/mongo-client"
+    maxRetries: 3
+  postgresqlStore:
+    clientCertMountPath: "/etc/ssl/client-certs"
+```
+
+When a PostgreSQL client certificate is mounted, the platform connector runs a `fix-cert-permissions` init container first, because the PostgreSQL client rejects a key file that is group-readable or world-readable. `mongodbStore.maxRetries` bounds the retries on a failed store write before the event is dropped.
+
+To rotate certificates without restarting pods, see [Client Certificate Rotation](./README.md#client-certificate-rotation).
+
 ## Kubernetes Connector
 
 Configures the Kubernetes API client for creating node conditions and events.
@@ -337,6 +406,11 @@ A failed queue item is explicitly discarded; this operation does not requeue it.
 
 #### maxNodeConditionMessageLength
 Maximum length of node condition messages in characters.
+
+#### compactedHealthEventMsgLen
+Budget, in bytes, for the part of each event's message that precedes its recommended action. The default is `72` and it must be greater than zero.
+
+One node condition message can carry several health events. The connector compacts only when their combined length exceeds `maxNodeConditionMessageLength`: it first drops messages with a duplicate identity (same error code, entity and recommended action), then shortens each remaining message's free-text diagnostic to this budget while keeping the entity identifiers that recovery needs. If the result still does not fit, the last entry is truncated. Lower this value to fit more events into one condition; raise it to keep more of each event's original text.
 
 #### qps
 Queries per second allowed to the Kubernetes API server.

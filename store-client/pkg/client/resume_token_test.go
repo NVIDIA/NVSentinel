@@ -42,10 +42,6 @@ func (m *mockResumeTokenDBClient) InsertManyIdempotent(context.Context, []any) (
 	return nil, nil
 }
 
-func (m *mockResumeTokenDBClient) EnsureHealthEventIdempotencyIndex(context.Context) error {
-	return nil
-}
-
 func (m *mockResumeTokenDBClient) VerifyHealthEventIdempotencyIndex(context.Context) error {
 	return nil
 }

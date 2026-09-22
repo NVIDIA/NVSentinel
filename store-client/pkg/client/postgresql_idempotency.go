@@ -40,13 +40,46 @@ const (
 	healthEventIdempotencyKeyJSONPath = "{healthevent,metadata," +
 		datastore.HealthEventIdempotencyKeyMetadataField + "}"
 
-	// dropIdempotencyIndexStatement removes a leftover INVALID build, or a
-	// mismatched definition, of the idempotency index without blocking
-	// writers. It must run outside a transaction block, like the CONCURRENTLY
-	// create it makes room for.
-	dropIdempotencyIndexStatement = "DROP INDEX CONCURRENTLY IF EXISTS " +
+	// DropIdempotencyIndexStatement removes a leftover INVALID build, or an
+	// index of another definition, without blocking writers. Like the
+	// CONCURRENTLY create it makes room for, it must run outside a
+	// transaction block.
+	DropIdempotencyIndexStatement = "DROP INDEX CONCURRENTLY IF EXISTS " +
 		datastore.HealthEventIdempotencyIndexName
+
+	// CreateIdempotencyIndexStatement builds the idempotency index without
+	// blocking writers: CONCURRENTLY, so the health event inserts of the
+	// other components go on during the build. IF NOT EXISTS skips an index
+	// of that name whatever its state, so a caller verifies the result with
+	// VerifyHealthEventIdempotencyIndex and drops a leftover first.
+	CreateIdempotencyIndexStatement = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " +
+		datastore.HealthEventIdempotencyIndexName + " ON " + healthEventsTableName +
+		" ((document #>> '" + healthEventIdempotencyKeyJSONPath + "')) " +
+		"WHERE (document #>> '" + healthEventIdempotencyKeyJSONPath + "') IS NOT NULL"
 )
+
+// IdempotencyIndexBuildInProgress reports whether another session is still
+// building an index of the idempotency index's name on the health events
+// table, so that a caller repairing an index that verifies as INVALID does
+// not abort a build that is simply not finished.
+func (c *PostgreSQLClient) IdempotencyIndexBuildInProgress(ctx context.Context) (bool, error) {
+	query := `
+		SELECT EXISTS (
+		    SELECT 1
+		    FROM pg_stat_progress_create_index p
+		    JOIN pg_class idx ON idx.oid = p.index_relid
+		    WHERE idx.relname = $1 AND p.relid = to_regclass($2))`
+
+	var building bool
+
+	if err := c.db.QueryRowContext(ctx, query,
+		datastore.HealthEventIdempotencyIndexName, healthEventsTableName).Scan(&building); err != nil {
+		return false, fmt.Errorf("failed to check whether idempotency index %s on table %s is being built: %w",
+			datastore.HealthEventIdempotencyIndexName, healthEventsTableName, err)
+	}
+
+	return building, nil
+}
 
 // InsertManyIdempotent inserts documents one at a time, in order, through
 // InsertManyIdempotentWith. The idempotency index lives on the health events
@@ -158,108 +191,16 @@ func ClassifyPostgresDocumentError(documentIndex int, err error) (datastore.Bulk
 	return docErr, true
 }
 
-// EnsureHealthEventIdempotencyIndex makes sure the partial unique expression
-// index that enforces per-event idempotency keys exists with the expected
-// definition. The predicate covers only documents that carry the key, so
-// existing rows need no backfill.
-//
-// The index is built CONCURRENTLY so the build never blocks writers: every
-// health event in the fleet lands in this table, and it may already hold
-// millions of rows. CONCURRENTLY cannot run inside a transaction block, and
-// c.db is the pool handle, so each statement below runs autocommitted on its
-// own connection. Since a concurrent build takes many times longer than a
-// locking one, callers must not treat a nil return as "index ready"; that is
-// what VerifyHealthEventIdempotencyIndex is for.
-//
-// An index of this name that does not enforce the key, either another
-// definition or the invalid leftover of a failed build (which IF NOT EXISTS
-// would otherwise skip forever), is dropped (also CONCURRENTLY) and rebuilt:
-// the name is ours, and the index Job is how an operator repairs the index.
-// An index that another session is still building is left alone, because
-// dropping it would block behind that build and then discard its result.
-func (c *PostgreSQLClient) EnsureHealthEventIdempotencyIndex(ctx context.Context) error {
-	switch verifyErr := c.VerifyHealthEventIdempotencyIndex(ctx); {
-	case verifyErr == nil:
-		return nil
-	case errors.Is(verifyErr, datastore.ErrIndexMissing):
-	case errors.Is(verifyErr, datastore.ErrIndexMismatch):
-		building, err := c.idempotencyIndexBuildInProgress(ctx)
-		if err != nil {
-			return err
-		}
-
-		if building {
-			return fmt.Errorf("idempotency index %s on table %s is still being built by another session; retry later: %w",
-				datastore.HealthEventIdempotencyIndexName, healthEventsTableName, verifyErr)
-		}
-
-		if _, err := c.db.ExecContext(ctx, dropIdempotencyIndexStatement); err != nil {
-			return fmt.Errorf("failed to drop mismatched idempotency index %s on table %s: %w",
-				datastore.HealthEventIdempotencyIndexName, healthEventsTableName, err)
-		}
-	default:
-		return fmt.Errorf("failed to check idempotency index %s on table %s: %w",
-			datastore.HealthEventIdempotencyIndexName, healthEventsTableName, verifyErr)
-	}
-
-	//nolint:gosec // G201: all operands are package-level constants, no external input
-	createStatement := fmt.Sprintf(
-		"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s ((document #>> '%s')) "+
-			"WHERE (document #>> '%s') IS NOT NULL",
-		datastore.HealthEventIdempotencyIndexName,
-		healthEventsTableName,
-		healthEventIdempotencyKeyJSONPath,
-		healthEventIdempotencyKeyJSONPath,
-	)
-
-	if _, err := c.db.ExecContext(ctx, createStatement); err != nil {
-		return fmt.Errorf("failed to ensure idempotency index %s on table %s: %w",
-			datastore.HealthEventIdempotencyIndexName, healthEventsTableName, err)
-	}
-
-	// IF NOT EXISTS skips an existing index without error even when that
-	// index is a leftover INVALID build or another session's build still in
-	// progress; the verification reports it so the caller retries later.
-	if err := c.VerifyHealthEventIdempotencyIndex(ctx); err != nil {
-		return fmt.Errorf("idempotency index %s on table %s is not usable after the build: %w",
-			datastore.HealthEventIdempotencyIndexName, healthEventsTableName, err)
-	}
-
-	return nil
-}
-
-// idempotencyIndexBuildInProgress reports whether another session is still
-// building an index of our name.
-func (c *PostgreSQLClient) idempotencyIndexBuildInProgress(ctx context.Context) (bool, error) {
-	query := `
-		SELECT EXISTS (
-		    SELECT 1
-		    FROM pg_stat_progress_create_index p
-		    JOIN pg_class idx ON idx.oid = p.index_relid
-		    WHERE idx.relname = $1 AND p.relid = to_regclass($2))`
-
-	var building bool
-
-	if err := c.db.QueryRowContext(ctx, query,
-		datastore.HealthEventIdempotencyIndexName, healthEventsTableName).Scan(&building); err != nil {
-		return false, fmt.Errorf("failed to check whether idempotency index %s on table %s is being built: %w",
-			datastore.HealthEventIdempotencyIndexName, healthEventsTableName, err)
-	}
-
-	return building, nil
-}
-
 // VerifyHealthEventIdempotencyIndex returns nil only when the idempotency index
 // exists with the expected name, key expression, uniqueness, partial predicate,
 // and a valid (completed) build per pg_index.indisvalid. A missing index yields
 // datastore.ErrIndexMissing; any other deviation yields datastore.ErrIndexMismatch,
 // both wrapped with detail.
 //
-// The CONCURRENTLY build started by EnsureHealthEventIdempotencyIndex keeps
-// indisvalid false until it completes, so this also returns
-// datastore.ErrIndexMismatch while that build is still running (or after it
-// failed). Callers that gate readiness on this check therefore keep waiting
-// until the index actually enforces uniqueness.
+// A build still running in another session, or one that failed, leaves
+// indisvalid false, so this also returns datastore.ErrIndexMismatch then.
+// Callers that gate readiness on this check therefore keep waiting until the
+// index actually enforces uniqueness.
 func (c *PostgreSQLClient) VerifyHealthEventIdempotencyIndex(ctx context.Context) error {
 	// to_regclass resolves the table through the current search_path, so a
 	// same-named table in another (invisible) schema cannot satisfy the check;
@@ -360,7 +301,7 @@ func indexKeyList(indexDef string) string {
 }
 
 // verifyPostgresIdempotencyIndexDefinition checks the catalog view of the
-// idempotency index against the definition Ensure creates: exactly one key,
+// idempotency index against the definition the datastore setup creates: exactly one key,
 // the bare idempotency key expression (not wrapped in another expression),
 // unique, and a predicate of exactly "key IS NOT NULL" (no extra terms, which
 // would leave rows outside the index).

@@ -311,12 +311,6 @@ func (c *PostgreSQLDatabaseClient) insertSingleDocument(
 	return id, nil
 }
 
-// EnsureHealthEventIdempotencyIndex idempotently creates the partial unique
-// expression index that enforces per-event idempotency keys on health events.
-func (c *PostgreSQLDatabaseClient) EnsureHealthEventIdempotencyIndex(ctx context.Context) error {
-	return client.NewPostgreSQLClientFromDB(c.db, c.tableName).EnsureHealthEventIdempotencyIndex(ctx)
-}
-
 // VerifyHealthEventIdempotencyIndex checks the full idempotency index definition,
 // returning datastore.ErrIndexMissing or datastore.ErrIndexMismatch on deviation.
 func (c *PostgreSQLDatabaseClient) VerifyHealthEventIdempotencyIndex(ctx context.Context) error {

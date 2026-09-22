@@ -15,7 +15,7 @@ NVSentinel's health monitors (GPU, syslog, CSP) continuously detect failures at 
 - **Fast failure**: Without preflight, a bad interconnect is typically discovered minutes into training when NCCL operations hang or bandwidth drops. Preflight fails the pod in seconds, before any compute is wasted
 - **Multi-node validation**: Single-node monitors can't verify cross-node fabric health. The gang-aware `nccl-allreduce` check exercises the real multi-node path end-to-end
 
-If a preflight check fails, the pod stays in `Init:Error`, a health event enters the standard NVSentinel pipeline, and the node proceeds through quarantine and remediation — the same workflow the runtime monitors use.
+If a preflight check fails, the pod stays in `Init:Error` and a health event enters the standard NVSentinel pipeline. Fatal events — the hardware and interconnect findings — take the node through quarantine and remediation, the same workflow the runtime monitors use. Coordination and configuration failures are reported as non-fatal, so they block the pod without cordoning the node.
 
 ## How It Works
 
@@ -26,7 +26,7 @@ Preflight runs as a Deployment with a mutating admission webhook:
 3. **Init container injection**: The webhook injects diagnostic init containers into the pod spec (appended after existing init containers by default; set `initContainerPlacement: prepend` to insert before)
 4. **Checks run**: Init containers execute sequentially before the main workload starts
 5. **Health reporting**: Each check reports results as health events via the Platform Connector (gRPC over Unix domain socket)
-6. **Pass/fail**: If all checks pass (exit code 0), the main containers start normally. If any check fails, the pod stays in `Init:Error` and a health event triggers quarantine
+6. **Pass/fail**: If all checks pass (exit code 0), the main containers start normally. If any check fails, the pod stays in `Init:Error`, and a fatal health event triggers quarantine. See [exit codes](./configuration/preflight.md#1-check-the-exit-code) for what each code means per check
 
 ### Available Checks
 
@@ -46,7 +46,7 @@ The `preflight-nccl-allreduce` check requires coordination across all nodes in a
 2. **ConfigMap-based coordination** — the gang controller writes peer information (IPs, ranks) into a ConfigMap that init containers poll until all members are registered
 3. **PyTorch distributed bootstrap** — once all peers are known, the check uses `torchrun` to execute a multi-node NCCL all-reduce benchmark
 
-Gang coordination requires a gang-aware scheduler and `gangCoordination.enabled: true` (default).
+Gang coordination requires a gang-aware scheduler and `gangCoordination.enabled: true` (default). The native path needs Kubernetes 1.35 or later; on an earlier cluster, configure a PodGroup-based scheduler or turn gang coordination off. For a single node, a single GPU, or a cluster with no gang-aware scheduler, see [Single-node and single-GPU clusters](./configuration/preflight.md#single-node-and-single-gpu-clusters).
 
 ## Configuration
 

@@ -8,7 +8,7 @@ Preflight is a mutating admission webhook that injects GPU diagnostic init conta
 - Helm subchart is off by default; enable with `global.preflight.enabled` (see below).
 - cert-manager (or OpenShift service CA) for webhook TLS—same expectation as the rest of the NVSentinel chart.
 - DCGM reachable from injected init containers (typically the NVIDIA GPU Operator's DCGM / hostengine service). Configure the endpoint via `DCGM_HOSTENGINE_ADDR` on the `preflight-dcgm-diag` init container.
-- Multi-node / gang checks (e.g. `preflight-nccl-allreduce`): enable gang coordination and configure gang discovery for your scheduler (see below).
+- Multi-node / gang checks (e.g. `preflight-nccl-allreduce`): enable gang coordination and configure gang discovery for your scheduler (see below). The default gang discovery uses the native Kubernetes gang APIs, which need Kubernetes 1.35 or later. On an earlier cluster, configure a PodGroup-based scheduler or turn gang coordination off — see [Single-node and single-GPU clusters](#single-node-and-single-gpu-clusters).
 
 ## Enable preflight
 
@@ -29,6 +29,70 @@ kubectl label namespace {namespace} nvsentinel.nvidia.com/preflight=enabled
 ```
 
 The chart default `namespaceSelector` matches that label.
+
+### Single-node and single-GPU clusters
+
+The chart enables gang coordination by default, and the default `gangDiscovery` (`{}`) selects native Kubernetes gang discovery. Preflight validates that discoverer against the cluster at startup, so on a cluster older than Kubernetes 1.35 the preflight pod does not start. Its log names the requirement:
+
+```bash
+kubectl -n nvsentinel logs deploy/preflight
+```
+
+```text
+"level":"ERROR","msg":"Fatal error","error":"failed to create gang discoverer resolver: failed to create default gang discoverer: kubernetes native gang API not available (requires K8s 1.35 Workload or K8s 1.36+ PodGroup)"
+```
+
+A single node has no gang to coordinate. Turn coordination off and inject only the single-node GPU check:
+
+```yaml
+global:
+  preflight:
+    enabled: true
+
+preflight:
+  gangCoordination:
+    enabled: false
+  initContainers:
+    - name: preflight-dcgm-diag
+      image:
+        repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
+        tag: ""
+      env:
+        - name: DCGM_HOSTENGINE_ADDR
+          value: "nvidia-dcgm.gpu-operator.svc:5555"
+        - name: DCGM_DIAG_LEVEL
+          value: "2"
+      volumeMounts:
+        - name: nvsentinel-socket
+          mountPath: /var/run
+```
+
+Helm replaces the `initContainers` list rather than merging it, so this example also drops the two NCCL checks:
+
+- `preflight-nccl-allreduce` needs gang coordination. With coordination off, the webhook injects no gang environment, the check exits `2` (`NCCL_GANG_CONFIG_ERROR`), and the pod stays in `Init:Error`.
+- `preflight-nccl-loopback` measures the GPU-to-GPU path on the node, which a single-GPU node does not have. Keep it on a multi-GPU node and set `BW_THRESHOLD_GBPS` for the interconnect — approximately `15` for PCIe, `150` for NVLink.
+
+The same values apply to a multi-node cluster whose scheduler is not gang-aware. If your scheduler does use PodGroups (Volcano, Run:ai / OSMO), keep gang coordination on and configure [gang discovery](#gang-discovery) instead — that path works on any Kubernetes version that runs the scheduler.
+
+### Image cache
+
+Runs a DaemonSet that holds every configured check image on matching nodes, so the kubelet treats the images as in use and its garbage collector does not evict them.
+
+```yaml
+preflight:
+  imageCache:
+    enabled: false
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
+    podAnnotations: {}
+```
+
+Off by default. Enable it where image pulls are slow or metered: preflight runs on the pod admission path, so a cold pull of a multi-gigabyte CUDA check image delays every GPU workload start on that node. The cost is one small pod per node, plus the disk the cached images occupy.
 
 ## Init container placement
 
@@ -80,7 +144,7 @@ The webhook automatically injects these env vars into every init container (you 
 
 For gang-aware containers the webhook also injects `GANG_ID`, `GANG_CONFIG_DIR`, `GANG_TIMEOUT_SECONDS`, and `POD_NAME`.
 
-By default, the built-in checks use curated environments and do not inherit matching env vars or volume mounts from workload containers. To intentionally mirror workload NCCL/fabric configuration for a specific check, set `inheritUserEnv: true` and/or `inheritUserVolumeMounts: true` on that `initContainers` entry.
+`inheritUserEnv` and `inheritUserVolumeMounts` both default to `true` when omitted, and the chart sets both to `true` on each built-in check. Every check therefore mirrors the workload's NCCL and fabric configuration by default — see [Fabric-specific NCCL configuration](#fabric-specific-nccl-configuration) for the patterns that decide what is copied. Set either flag to `false` on an `initContainers` entry to give that check a curated environment instead.
 
 ### preflight-dcgm-diag
 
@@ -176,21 +240,22 @@ initContainers:
 
 ### Fabric-specific NCCL configuration
 
-When a check opts in with `inheritUserEnv` or `inheritUserVolumeMounts`, the webhook copies matching NCCL env vars and volume mounts from the pod's main containers using glob patterns:
+When a check has `inheritUserEnv` or `inheritUserVolumeMounts` enabled (the default for both), the webhook copies matching NCCL env vars and volume mounts from the pod's main containers using glob patterns:
 
 ```yaml
 ncclEnvPatterns:    ["NCCL_*", "FI_*", "LD_LIBRARY_PATH", "UCX_*", "TORCH_NCCL_*", "CUDA_DEVICE_ORDER"]
 volumeMountPatterns: ["host-opt-amazon*", "nvtcpxo-*", "nccl-*", "dev-shm"]
 ```
 
-This means if your training container already has the correct `NCCL_TOPO_FILE`, `FI_PROVIDER`, or `LD_LIBRARY_PATH`, an opted-in preflight init container can inherit them with no manual configuration.
-Inheritance is per init container. The built-in checks set `inheritUserEnv: false` and `inheritUserVolumeMounts: false` by default to avoid workload-specific NCCL tuning poisoning preflight checks. Enable the flags only for checks that should intentionally mirror the workload environment:
+This means if your training container already has the correct `NCCL_TOPO_FILE`, `FI_PROVIDER`, or `LD_LIBRARY_PATH`, a preflight init container inherits them with no manual configuration.
+
+Inheritance is per init container and is on by default. Chart-defined env wins on a name conflict, so an inherited value only fills a name the check does not set itself. Set the flags to `false` on a check whose environment must not depend on workload NCCL tuning:
 
 ```yaml
 initContainers:
   - name: preflight-nccl-allreduce
-    inheritUserEnv: true
-    inheritUserVolumeMounts: true
+    inheritUserEnv: false
+    inheritUserVolumeMounts: false
 ```
 
 For standalone testing (e.g. busybox main container), use `ncclAllreduceExtraEnv` and `gangCoordination.extraHostPathMounts` to provide fabric config explicitly.
@@ -203,7 +268,7 @@ Two discovery mechanisms are supported:
 
 ### Native Kubernetes: schedulingGroup / workloadRef
 
-The default when `gangDiscovery` is left empty (`{}`). Preflight first uses the Kubernetes 1.36 native PodGroup API when available, then falls back to the Kubernetes 1.35 native Workload API.
+The default when `gangDiscovery` is left empty (`{}`). Preflight first uses the Kubernetes 1.36 native PodGroup API when available, then falls back to the Kubernetes 1.35 native Workload API. Neither exists before Kubernetes 1.35, and preflight validates the discoverer at startup, so on an earlier cluster the pod fails to start — see [Single-node and single-GPU clusters](#single-node-and-single-gpu-clusters).
 
 > The `PodGroup` resource (`scheduling.k8s.io/v1alpha2`) and `spec.schedulingGroup` are alpha in Kubernetes 1.36 and disabled by default. Enable the `GenericWorkload` feature gate on the API server and scheduler to use this path.
 
@@ -485,6 +550,8 @@ ConfigMaps are labeled `nvsentinel.nvidia.com/managed-by: preflight` and named w
 
 ### Key `gangCoordination` values
 
+Set `enabled: false` when there is no gang to coordinate — a single node, or a scheduler that is not gang-aware. Drop `preflight-nccl-allreduce` from `initContainers` at the same time; see [Single-node and single-GPU clusters](#single-node-and-single-gpu-clusters).
+
 ```yaml
 gangCoordination:
   enabled: true
@@ -516,6 +583,40 @@ For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integr
 | Gang coordination (timeouts, topology, mounts) | `preflight.gangCoordination` |
 | Namespace selector for the webhook | `preflight.namespaceSelector` |
 | Pod-level selector for the webhook | `preflight.objectSelector` |
+
+## Webhook
+
+TLS and admission behaviour for the mutating webhook.
+
+```yaml
+preflight:
+  webhook:
+    port: 8443
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    createIssuer: true
+    certIssuer: ""
+    caCertificateName: ""
+    # certProvider: openshift-service-ca
+```
+
+### failurePolicy
+What the API server does when the webhook does not answer. `Fail` rejects the pod, so a webhook outage blocks GPU pod creation in opted-in namespaces. `Ignore` admits the pod without preflight checks, trading the gate for availability.
+
+### timeoutSeconds
+How long the API server waits for the webhook, up to the Kubernetes maximum of 30. The default is `10`. Preflight resolves gang membership during admission, so a cluster with slow PodGroup lookups may need more; every GPU pod creation waits on this call, so raise it only as far as the lookups need.
+
+### createIssuer
+Creates the two-tier cert-manager CA for the webhook certificate. Set it to `false` to use a CA you already run, and then set `certIssuer` and `caCertificateName`.
+
+### certIssuer
+Name of the existing cert-manager issuer to sign the webhook certificate. Used only when `createIssuer` is `false`.
+
+### caCertificateName
+Name of the existing CA certificate whose bundle is injected into the webhook configuration. Used only when `createIssuer` is `false`. Without it the API server cannot verify the webhook, and admission fails closed under `failurePolicy: Fail`.
+
+### certProvider
+`cert-manager` by default. Set it to `openshift-service-ca` on OpenShift to issue the webhook certificate with the built-in service-ca-operator instead of cert-manager.
 
 ## Object selector (pod-level filtering)
 
@@ -561,11 +662,31 @@ kubectl -n {namespace} get pod {pod-name} -o jsonpath=\
 '{range .status.initContainerStatuses[*]}{.name}{"\t"}{.state.terminated.exitCode}{"\n"}{end}'
 ```
 
-| Exit code | Meaning | Node effect |
-|---------|---------|-------------|
-| `0` | Check passed | None |
-| `1` | Check failed (GPU/interconnect unhealthy) | A fatal health event is emitted and the node is **cordoned**. It stays cordoned until the node is remediated or manually uncordoned. |
-| `2` | Configuration error in the init container | Node is **not cordoned**. |
+Each check has its own codes:
+
+| Exit code | `preflight-dcgm-diag` | `preflight-nccl-loopback` | `preflight-nccl-allreduce` |
+|---|---|---|---|
+| `0` | Passed, or reported a non-fatal finding | Passed | Passed |
+| `1` | Fatal test failure, DCGM unreachable, or a configuration error | Test failed: bandwidth below threshold, or the benchmark did not run | Test failed: bandwidth degraded, all-reduce timeout, or NCCL init failure |
+| `2` | — | Configuration error | Gang configuration error (`NCCL_GANG_CONFIG_ERROR`) |
+| `3` | — | Could not send the health event | Gang formation timed out (`NCCL_GANG_TIMEOUT`) |
+| `4` | — | — | Could not send the health event |
+
+The exit code decides whether the pod starts. The health event decides what happens to the node: Fault Quarantine cordons on preflight events with `isFatal: true` only. Hardware findings are fatal, and coordination or configuration problems are not — so a gang timeout holds the pod in `Init:Error` without cordoning the node.
+
+A check that fails before it can report sends no event at all. A `preflight-dcgm-diag` configuration error (exit `1`) and a `preflight-nccl-loopback` configuration error (exit `2`) both block the pod and leave no event to find.
+
+When `processingStrategy` is `STORE_ONLY`, a check reports its result and then exits `0`, logging `Check failed (STORE_ONLY — not blocking pod)`, so the event is recorded and the workload still starts. The gang stage of `preflight-nccl-allreduce` runs before the benchmark and returns exit `2` or `3` directly, so `STORE_ONLY` does not unblock a gang failure.
+
+#### A check can exit `0` and still report an unhealthy GPU
+
+`preflight-dcgm-diag` sends one health event for each DCGM test result. Three outcomes report a problem without failing the gate:
+
+- A test result of `warn`.
+- A test result of `fail` whose error code has no actionable remediation — `DCGM_FR_XID_ERROR`, for example.
+- A `DCGM_ST_*` status that still prevents the diagnostic from completing after `DCGM_DIAG_STATUS_RETRY_MAX_ATTEMPTS` attempts.
+
+Each one emits an unhealthy event with `isFatal: false`, and the check exits `0`, so a warning or an infrastructure problem does not block the workload. The node then carries a preflight health event, and a node condition, while staying schedulable. A non-fatal event can still carry a recommended action, so read the event rather than inferring the finding from the exit code.
 
 ### 2. Check health events
 
