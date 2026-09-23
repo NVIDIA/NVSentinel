@@ -599,11 +599,7 @@ func (b *SQLFilterBuilder) handleNeBool(jsonPath string, v bool) (string, error)
 	b.argIndex++
 	b.args = append(b.args, v)
 
-	if v {
-		return fmt.Sprintf("((%s)::boolean = false OR %s IS NULL)", jsonPath, jsonPath), nil
-	}
-
-	return fmt.Sprintf("(%s)::boolean = true", jsonPath), nil
+	return fmt.Sprintf("(%s)::boolean IS DISTINCT FROM $%d", jsonPath, b.argIndex), nil
 }
 
 // handleNeString handles $ne with string value.
@@ -611,7 +607,7 @@ func (b *SQLFilterBuilder) handleNeString(jsonPath string, v string) (string, er
 	b.argIndex++
 	b.args = append(b.args, v)
 
-	return fmt.Sprintf("(%s IS NULL OR %s != $%d)", jsonPath, jsonPath, b.argIndex), nil
+	return fmt.Sprintf("%s IS DISTINCT FROM $%d", jsonPath, b.argIndex), nil
 }
 
 // handleNeDefault handles $ne with default value type.
@@ -619,7 +615,7 @@ func (b *SQLFilterBuilder) handleNeDefault(jsonPath string, v any) (string, erro
 	b.argIndex++
 	b.args = append(b.args, fmt.Sprintf("%v", v))
 
-	return fmt.Sprintf("(%s IS NULL OR %s != $%d)", jsonPath, jsonPath, b.argIndex), nil
+	return fmt.Sprintf("%s IS DISTINCT FROM $%d", jsonPath, b.argIndex), nil
 }
 
 // handleInOperator handles $in operator.

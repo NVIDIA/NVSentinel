@@ -1,0 +1,39 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+suite: node annotation recovery permissions
+templates:
+  - node-recovery-rbac.yaml
+tests:
+  - it: grants no node permissions by default
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: grants node access and binds the analyzer service account when enabled
+    set:
+      nodeRecovery.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 2
+      - equal:
+          path: rules[0].resources
+          value: [nodes]
+        documentIndex: 0
+      - equal:
+          path: rules[0].verbs
+          value: [get, list, watch, patch]
+        documentIndex: 0
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+        documentIndex: 1

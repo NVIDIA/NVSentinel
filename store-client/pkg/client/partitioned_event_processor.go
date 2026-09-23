@@ -318,8 +318,9 @@ func (p *PartitionedEventProcessor) handleProcessError(
 		return newUncheckpointedEventError(processErr)
 	}
 
-	if p.config.MarkProcessedOnError {
-		slog.Warn("Marking failed event as processed due to MarkProcessedOnError=true", "eventID", eventID)
+	if IsPermanentError(processErr) || p.config.MarkProcessedOnError {
+		slog.Warn("Checkpointing event after processing failure", "eventID", eventID,
+			"permanent", IsPermanentError(processErr), "markProcessedOnError", p.config.MarkProcessedOnError)
 
 		p.onTaskCompleted(ctx, seq)
 
@@ -345,13 +346,15 @@ func (p *PartitionedEventProcessor) handleTask(ctx context.Context, task *partit
 	if err != nil {
 		p.updateMetrics("unmarshal_error", "", time.Since(startTime), false)
 
-		if p.config.MarkProcessedOnError {
-			p.onTaskCompleted(ctx, seq)
-
-			return nil
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			return newUncheckpointedEventError(err)
 		}
 
-		return newUncheckpointedEventError(err)
+		// Decode and document-ID failures are deterministic. Match the serial
+		// processor: poison records must not block recovery replay forever.
+		p.onTaskCompleted(ctx, seq)
+
+		return nil
 	}
 
 	eventCtx := ctx

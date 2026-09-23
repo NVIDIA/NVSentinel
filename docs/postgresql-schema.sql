@@ -133,6 +133,7 @@ AND (
     OR document->'healtheventstatus'->>'faultquarantinerecovery' = ''
 );
 CREATE INDEX IF NOT EXISTS idx_health_events_updated_desc ON health_events(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_health_events_analyzer_lookup ON health_events (node_name, event_type, created_at DESC, (document->'healthevent'->>'agent'));
 
 -- Unique partial index behind the idempotency keys the platform connectors write
 -- (ADR 052). This script creates it without CONCURRENTLY, which cannot run inside

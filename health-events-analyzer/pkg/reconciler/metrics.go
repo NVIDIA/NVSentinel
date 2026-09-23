@@ -72,6 +72,28 @@ var (
 		[]string{labelRuleName, labelNodeName, "entity_type", "entity_value"},
 	)
 
+	recoveryEventsPublishedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_recovery_events_published_total",
+			Help: "Total number of derived healthy transitions published by recovery-enabled rules.",
+		},
+		[]string{labelRuleName, "scope"},
+	)
+	recoveryPersistenceTimeoutsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_recovery_persistence_timeouts_total",
+			Help: "Total derived transitions not observed in the store before the persistence deadline.",
+		},
+		[]string{labelRuleName, "state"},
+	)
+	recoveryStoredDocumentDecodeErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_recovery_stored_document_decode_errors_total",
+			Help: "Total stored health event documents skipped because they could not be decoded or scoped.",
+		},
+		[]string{labelRuleName, "lookup", "classification"},
+	)
+
 	mongoQueryExecutionDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "mongo_query_execution_duration_seconds",

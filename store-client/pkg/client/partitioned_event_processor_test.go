@@ -443,4 +443,52 @@ func TestPartitionedEventProcessor_RetainFailedCheckpointForShutdownRetry(t *tes
 	assert.Contains(t, baseWatcher.markedTokens, "event-1", "event-1 should be marked during shutdown retry")
 }
 
-
+func TestPartitionedEventProcessor_RecoveryErrorPolicy(t *testing.T) {
+	transient := errors.New("store unavailable")
+	tests := []struct {
+		name       string
+		decodeErr  error
+		idErr      error
+		handlerErr error
+		wantStop   bool
+	}{
+		{name: "malformed document", decodeErr: errors.New("invalid JSON")},
+		{name: "invalid document ID", idErr: errors.New("invalid ID")},
+		{name: "permanent handler failure", handlerErr: PermanentError(errors.New("invalid stored record"))},
+		{name: "transient handler failure", handlerErr: transient, wantStop: true},
+		{name: "mixed handler failures", handlerErr: errors.Join(PermanentError(errors.New("invalid rule")), transient), wantStop: true},
+		{name: "decode timeout", decodeErr: context.DeadlineExceeded, wantStop: true},
+		{name: "permanent wrapped timeout", handlerErr: PermanentError(context.DeadlineExceeded), wantStop: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := newEventProcessorTestEvent("first")
+			first.unmarshalErr = tt.decodeErr
+			first.documentIDErr = tt.idErr
+			watcher := newEventProcessorTestWatcher(first, newEventProcessorTestEvent("second"))
+			processor := NewEventProcessor(watcher, nil, EventProcessorConfig{Workers: 2, MarkProcessedOnError: false})
+			var handled []string
+			processor.SetEventHandler(EventHandlerFunc(func(_ context.Context, event *model.HealthEventWithStatus) error {
+				handled = append(handled, event.HealthEvent.Id)
+				if event.HealthEvent.Id == "first" {
+					return tt.handlerErr
+				}
+				return nil
+			}))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			require.NoError(t, processor.Start(ctx))
+			if tt.wantStop {
+				require.NotContains(t, handled, "second")
+				require.Empty(t, watcher.markedTokens)
+			} else {
+				require.Contains(t, handled, "second")
+				require.NotEmpty(t, watcher.markedTokens)
+				require.Equal(t, "second", watcher.markedTokens[len(watcher.markedTokens)-1])
+			}
+			if tt.decodeErr != nil || tt.idErr != nil {
+				require.NotContains(t, handled, "first")
+			}
+		})
+	}
+}

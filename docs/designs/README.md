@@ -71,3 +71,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 055 | [Health Monitors — NVCRE Certification Monitor](055-nvcre-certification-monitor.md) |
 | 056 | [Performance — Concurrent Node-Partitioned Event Processing](056-concurrent-node-partitioned-event-processing.md) |
 | 058 | [Authentication — Host-Native Metadata Collector (proposed)](058-metadata-collector-host-authentication.md) |
+| 059 | [Health Events Analyzer — Derived-Condition Recovery](059-derived-condition-recovery.md) |

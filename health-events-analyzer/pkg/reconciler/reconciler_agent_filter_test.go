@@ -112,7 +112,7 @@ func TestGetPipelineStages_AlwaysIncludesAgentFilter(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			pipeline, err := reconciler.getPipelineStages(tc.rule, tc.event)
+			pipeline, err := reconciler.getPipelineStages(tc.rule, tc.event, nil)
 			require.NoError(t, err, "getPipelineStages should not return an error")
 
 			// Verify pipeline has at least the agent filter stage
@@ -163,7 +163,7 @@ func TestGetPipelineStages_AlwaysIncludesNodeFilter(t *testing.T) {
 		},
 	}
 
-	pipeline, err := reconciler.getPipelineStages(rule, event)
+	pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 	require.NoError(t, err)
 	require.Len(t, pipeline, 3)
 
@@ -199,7 +199,7 @@ func TestGetPipelineStages_AgentFilterPreventsInfiniteLoop(t *testing.T) {
 		},
 	}
 
-	pipeline, err := reconciler.getPipelineStages(rule, eventFromAnalyzer)
+	pipeline, err := reconciler.getPipelineStages(rule, eventFromAnalyzer, nil)
 	require.NoError(t, err)
 
 	// Extract the agent filter from the first stage
@@ -240,7 +240,7 @@ func TestGetPipelineStages_AgentFilterPosition(t *testing.T) {
 		},
 	}
 
-	pipeline, err := reconciler.getPipelineStages(rule, event)
+	pipeline, err := reconciler.getPipelineStages(rule, event, nil)
 	require.NoError(t, err)
 
 	// Pipeline should have: 1 agent filter + 3 configured stages = 4 total

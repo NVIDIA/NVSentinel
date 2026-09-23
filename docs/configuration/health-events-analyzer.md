@@ -198,11 +198,99 @@ stage = [
 ]
 ```
 
+Configuration is decoded strictly. Unknown TOML keys, malformed JSON stages,
+and stages containing zero or multiple aggregation operators fail startup instead
+of silently changing rule behavior.
+
+Upgrade note: custom keys that older releases ignored now prevent analyzer startup.
+Remove or correct unknown keys before deploying this version.
+
 The full default ruleset — including all aggregation pipeline stage definitions — is in the chart's `values.yaml` at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. Refer to that file when writing or reviewing custom rules.
+
+### Derived-condition recovery
+
+The design rationale and alternatives are documented in [ADR-059](../designs/059-derived-condition-recovery.md). Recovery is opt-in per rule. An operator can request it with a node annotation after repairing and verifying the affected hardware; no custom health-event publisher is required.
+
+#### Configure annotation recovery
+
+Enable the analyzer's node permissions in Helm values:
+
+```yaml
+health-events-analyzer:
+  nodeRecovery:
+    enabled: true
+```
+
+This grants the analyzer `get`, `list`, `watch`, and `patch` on nodes. It does not grant access to node status. The operator needs permission to annotate the node. Add a recovery block to each affected rule in the chart's `config` value, preserving the rest of the ruleset:
+
+```toml
+[rules.recovery]
+annotation_key = "nvsentinel.nvidia.com/recover-repeated-xid"
+scope = "entity"
+entity_types = ["GPU_UUID"]
+```
+
+Use a different qualified annotation key for each rule. For a node-scoped condition, use `scope = "node"` and omit `entity_types`. Entity scope requires one or more entity types; requests for a specific entity must supply exactly one non-empty value for every configured type. `evaluate_rule=false` disables recovery for that rule. Annotation mappings cannot also specify `source_agent`, `source_check_name`, or `source_error_codes`.
+
+#### Request recovery after verification
+
+Repair the node or GPU and complete the required health checks first. Record the successful verification time in UTC. For example, after verifying GPU `GPU-actual-uuid` on `node-1`:
+
+```bash
+verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+kubectl annotate node node-1 --overwrite \
+  "nvsentinel.nvidia.com/recover-repeated-xid={\"recoveredAt\":\"${verified_at}\",\"entities\":[{\"entityType\":\"GPU_UUID\",\"entityValue\":\"GPU-actual-uuid\"}]}"
+```
+
+Replace the node name, GPU UUID, and annotation key with the configured values. Capture the timestamp after verification, not before repair. It must be an RFC3339 timestamp, cannot be in the future, and cannot precede the current node object's creation. Retain the same timestamp and entity identity when retrying the same verification result.
+
+To recover every active identity for that rule on the node, annotate with only the verification timestamp:
+
+```bash
+verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+kubectl annotate node node-1 --overwrite \
+  "nvsentinel.nvidia.com/recover-repeated-xid=${verified_at}"
+```
+
+This node-wide form also works for entity-scoped rules. Use it only after verifying all affected entities. A scoped JSON request clears only that entity's condition.
+
+The analyzer publishes a healthy event for each matching active derived fault older than the verification timestamp. It preserves the derived identity, including the rule name, component class, version, and configured entity set, sets `isHealthy=true`, `isFatal=false`, and `recommendedAction=NONE`, and applies the rule's processing strategy. Set `processing_strategy="EXECUTE_REMEDIATION"` on the rule when the healthy transition must update the node condition; `STORE_ONLY` only records it.
+
+The analyzer removes the annotation only after all required healthy transitions are visible in the event store. Transient datastore, publisher, and annotation-update failures are retried, including after analyzer restart. Cleanup checks both the node UID and original annotation value so it cannot remove a replacement request. Invalid requests remain on the node and are logged. Requests with no matching active fault, or with a verification time older than the latest fault, are consumed without publishing a healthy event or creating a new history boundary.
+
+A completed request's verification timestamp is retained in the derived healthy event. Later evaluations exclude events stored or generated at or before that boundary, including after analyzer restart, so old history cannot immediately recreate the recovered condition. A newer fault is not cleared by replaying an older verification request. Requests and restored boundaries are tied to the current node UID.
+
+Confirm the stored healthy event from `health-events-analyzer`, then inspect the node condition and fault-quarantine state. Annotation removal confirms storage, not completion of downstream Kubernetes writes. Other active faults can keep the node cordoned; fault-quarantine still owns the final uncordon decision.
+
+#### Optional monitor-driven recovery
+
+For workflows that already produce verified healthy events, a rule can use a source mapping instead of an annotation:
+
+```toml
+[rules.recovery]
+source_agent = "syslog-health-monitor"
+source_check_name = "SysLogsXIDError"
+scope = "entity"
+entity_types = ["GPU_UUID"]
+```
+
+A successful GPU reset with `WRITE_SYSLOG_EVENT=true` (the default) writes `GPU reset executed: <GPU_UUID>, success: true`. With successful GPU metadata lookup, the syslog health monitor converts it to a healthy `SysLogsXIDError` event containing the GPU UUID and PCI address. A failed reset emits an unhealthy event and does not request recovery. Use this mapping only when successful reset is sufficient to resolve the derived fault.
+
+`source_check_name` and `scope` are required. `source_agent` is optional; omit it only when multiple trusted producers may supply recovery. Analyzer output is excluded from its input stream, so `source_agent = "health-events-analyzer"` is rejected. Optional `source_error_codes` requires at least one matching code; successful GPU-reset events do not carry a code. An entity-scoped healthy source with no entities requests node-wide recovery; partial identities are rejected. Healthy events using `STORE_ONLY` are not analyzer inputs.
+
+The source mapping provides the same derived-state checks and history boundary. A monitor may instead publish the complete derived healthy identity directly, but that alone does not reset rule history; see [direct publishing](../designs/059-derived-condition-recovery.md#have-another-monitor-publish-the-derived-healthy-event-directly).
+
+#### Delivery and replay
+
+For recovery-enabled rules, a source event is normally checkpointed only after its derived transition is visible in the store. If the platform connector accepts but loses a queued event, the analyzer republishes it. If storage is still unconfirmed after two minutes, event processing stops without acknowledging the source, allowing replay after restart. Annotation requests remain available for retry. Recovery and source processing are serialized per node so recovery cannot overtake an in-flight derived fault.
+
+Deterministic failures tied to a rule or stored record are logged, checkpointed, and skipped so a poison event cannot halt every later event. Transient datastore and publisher failures stop the shared event processor for replay whenever recovery is enabled. Without enabled recovery mappings, handler failures retain the default checkpoint-and-continue behavior. With one worker, checkpoint failures stop processing. With multiple workers, the processor retains the last safe checkpoint and retries it on later completions and shutdown, without advancing past an unresolved event.
+
+Only source-event mappings widen the process-wide watcher to admit healthy events; annotation-only mappings do not. Healthy events are offered only to recovery mappings. Rules without a recovery block retain manual-recovery behavior. If a matching rule input lacks a required entity type, its derived fault is still published and requires manual recovery.
 
 ### MultipleRemediations Rule
 
-The `MultipleRemediations` rule fires when five or more remediations have been performed on the same node within the preceding 7 days. Unlike other rules, **it applies a node condition that NVSentinel does not automatically clear**, because the rule does not emit healthy events.
+The `MultipleRemediations` rule fires when five or more remediations have been performed on the same node within the preceding 7 days. Its default configuration has no recovery mapping, so **it applies a node condition that NVSentinel does not automatically clear**.
 
 After the underlying hardware issue is resolved, remove the condition manually:
 
