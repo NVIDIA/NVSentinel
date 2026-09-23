@@ -472,6 +472,10 @@ class TestPlatformConnectors(unittest.TestCase):
         Both halves matter. The clear half is the one that catches a narrowed
         recovery: zeroing a single assumed code would leave the switch's other codes
         reading 1 for the process lifetime.
+
+        The partial WARN step in the middle is deliberate. A FAIL followed straight
+        by PASS only exercises the full-recovery branch, so a regression in the
+        per-code recovery branch would still pass every assertion.
         """
         temp_file_path = metadata_file()
         processor = platform_connector.PlatformConnectorEventProcessor(
@@ -496,12 +500,12 @@ class TestPlatformConnectors(unittest.TestCase):
 
         def fake_labels(**kwargs: Any) -> unittest.mock.MagicMock:
             child = unittest.mock.MagicMock()
-            key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"])
+            key = (kwargs["event_type"], kwargs["switch_id"], kwargs["error_code"])
             child.set.side_effect = lambda value: observed.__setitem__(key, value)
             return child
 
         try:
-            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
+            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_switch_events") as gauge:
                 gauge.labels.side_effect = fake_labels
 
                 processor.health_event_occurred(
@@ -528,6 +532,31 @@ class TestPlatformConnectors(unittest.TestCase):
 
                 assert observed == {
                     ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_FATAL_ERROR"): 1,
+                    ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_NVLINK_DOWN"): 1,
+                }
+
+                # Partial recovery: the fatal code clears while the link stays down.
+                # This is the per-code branch, which a FAIL straight to PASS skips.
+                processor.health_event_occurred(
+                    {
+                        "DCGM_HEALTH_WATCH_NVSWITCH_FATAL": dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.WARN,
+                            entity_failures={
+                                (dcgm_fields.DCGM_FE_SWITCH, 3): [
+                                    dcgmtypes.ErrorDetails(
+                                        code="DCGM_FR_NVSWITCH_NVLINK_DOWN",
+                                        message="switch 3 link down",
+                                    ),
+                                ]
+                            },
+                        )
+                    },
+                    [],
+                    [3],
+                )
+
+                assert observed == {
+                    ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_FATAL_ERROR"): 0,
                     ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_NVLINK_DOWN"): 1,
                 }
 

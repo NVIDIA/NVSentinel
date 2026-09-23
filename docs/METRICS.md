@@ -285,7 +285,8 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `health_events_direct_publish_succeed`            | Counter   | -                                  | Batches the deployment platform connector acknowledged (direct mode)                          |
 | `health_events_direct_publish_dropped`            | Counter   | `reason`                           | Direct-mode batches given up on; the same reasons as the Go publisher's `dropped_total`                   |
 | `health_events_direct_publish_retries`            | Counter   | -                                  | Direct-mode send attempts that failed and were retried                                                    |
-| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `error_code` | Total number of active health events at any given time |
+| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `error_code` | Total number of active GPU health events at any given time |
+| `dcgm_health_active_switch_events`                | Gauge     | `event_type`, `switch_id`, `error_code` | Total number of active NVSwitch health events at any given time. Separate from `dcgm_health_active_events` because switch and GPU ids are distinct sequences that both start at 0 |
 | `dcgm_api_latency`                                | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
 | `dcgm_reconcile_time`                             | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
 | `number_of_health_watches`                        | Gauge     | -                                  | Number of DCGM health watches available                                                                   |

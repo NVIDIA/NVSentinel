@@ -59,6 +59,15 @@ dcgm_health_active_events = Gauge(
     labelnames=["event_type", "gpu_id", "error_code"],
 )
 
+# Switches get their own gauge rather than sharing gpu_id: switch and GPU ids are
+# separate sequences both starting at 0, so one label would make gpu_id="3" match
+# GPU 3 and switch 3 at once.
+dcgm_health_active_switch_events = Gauge(
+    "dcgm_health_active_switch_events",
+    "Active health events by watch type, NVSwitch, and error code",
+    labelnames=["event_type", "switch_id", "error_code"],
+)
+
 dcgm_connectivity_consecutive_observations = Gauge(
     "dcgm_connectivity_consecutive_observations",
     "Consecutive DCGM connectivity observations by result",
