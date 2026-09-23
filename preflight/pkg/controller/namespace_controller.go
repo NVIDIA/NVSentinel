@@ -29,14 +29,18 @@ const preflightNamespaceLabel = "nvsentinel.nvidia.com/preflight"
 // NamespaceReconciler keeps ActiveNamespaces in sync with the set of namespaces
 // that carry the preflight-enabled label. It is the source of truth that the
 // pod cache transform uses to decide whether to retain full gang fields or emit
-// a minimal stub.
+// a minimal stub. When a CABundleSync is given it also keeps the platform
+// connector CA ConfigMap copy present in every active namespace.
 type NamespaceReconciler struct {
 	client.Client
 	active *ActiveNamespaces
+	caSync *CABundleSync
 }
 
-func NewNamespaceReconciler(c client.Client, active *ActiveNamespaces) *NamespaceReconciler {
-	return &NamespaceReconciler{Client: c, active: active}
+// NewNamespaceReconciler builds the reconciler. caSync is nil when the checks
+// publish to the socket or do not verify the server.
+func NewNamespaceReconciler(c client.Client, active *ActiveNamespaces, caSync *CABundleSync) *NamespaceReconciler {
+	return &NamespaceReconciler{Client: c, active: active, caSync: caSync}
 }
 
 func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -57,10 +61,21 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, fmt.Errorf("failed to get namespace %s: %w", req.Name, err)
 	}
 
-	if ns.DeletionTimestamp == nil && ns.Labels[preflightNamespaceLabel] == "enabled" {
-		r.active.Add(ns.Name)
-	} else {
+	if ns.DeletionTimestamp != nil || ns.Labels[preflightNamespaceLabel] != "enabled" {
 		r.active.Remove(ns.Name)
+
+		return ctrl.Result{}, nil
+	}
+
+	r.active.Add(ns.Name)
+
+	// Returning the error makes controller-runtime requeue, so a copy the
+	// webhook could not create (fail-open there) is retried here.
+	if r.caSync != nil {
+		if err := r.caSync.Ensure(ctx, ns.Name); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to ensure platform connector CA ConfigMap in namespace %s: %w",
+				ns.Name, err)
+		}
 	}
 
 	return ctrl.Result{}, nil

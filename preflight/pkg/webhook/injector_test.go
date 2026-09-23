@@ -1055,6 +1055,313 @@ func TestInjectConnectorToken(t *testing.T) {
 	})
 }
 
+// healthPublishConfig is testConfig with the projected token and a direct
+// publishing target that verifies the server with the CA ConfigMap copy.
+func healthPublishConfig() *config.Config {
+	cfg := testConfig()
+	cfg.ConnectorTokenAudience = "nvsentinel-platform-connector"
+	cfg.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+	cfg.ConnectorTokenExpirationSeconds = 3600
+	cfg.HealthPublishTarget = "platform-connector-deployment.nvsentinel.svc.cluster.local:50051"
+	cfg.HealthPublishCAFile = "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"
+
+	return cfg
+}
+
+// healthPublishInsecureConfig is the same target in the insecure development
+// mode, so no CA is involved.
+func healthPublishInsecureConfig() *config.Config {
+	cfg := healthPublishConfig()
+	cfg.HealthPublishCAFile = ""
+	cfg.HealthPublishInsecure = true
+
+	return cfg
+}
+
+// injectedContainers runs the full injection on pod and returns the injected
+// init containers and every patch.
+func injectedContainers(t *testing.T, cfg *config.Config, pod *corev1.Pod) ([]corev1.Container, []PatchOperation) {
+	t.Helper()
+
+	patches, _, err := NewInjector(cfg, nil).InjectInitContainers(context.Background(), pod)
+	require.NoError(t, err)
+
+	p := findPatchByPath(patches, "/spec/initContainers")
+	require.NotNil(t, p, "expected /spec/initContainers patch")
+	containers, ok := p.Value.([]corev1.Container)
+	require.True(t, ok)
+	require.NotEmpty(t, containers)
+
+	return containers, patches
+}
+
+// TestInjectHealthPublish covers direct publishing: the HEALTH_PUBLISH_* env,
+// the CA ConfigMap mount and volume, the NetworkPolicy label, and that none of
+// it appears in socket mode.
+func TestInjectHealthPublish(t *testing.T) {
+	const labelPath = "/metadata/labels/nvsentinel.nvidia.com~1health-publisher"
+
+	t.Run("nothing injected when the target is empty", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ConnectorTokenAudience = "nvsentinel-platform-connector"
+		cfg.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+		cfg.ConnectorTokenExpirationSeconds = 3600
+
+		containers, patches := injectedContainers(t, cfg, gpuPod())
+
+		for _, e := range containers[0].Env {
+			assert.NotContains(t, e.Name, "HEALTH_PUBLISH_", "socket mode must not see direct mode env")
+		}
+
+		assert.False(t, hasVolumeMount(containers[0], HealthPublishCAConfigMapName))
+		assert.Nil(t, findVolume(extractVolumes(t, patches), HealthPublishCAConfigMapName))
+		assert.Nil(t, findPatchByPath(patches, "/metadata/labels"))
+		assert.Nil(t, findPatchByPath(patches, labelPath))
+		// The socket env and volume stay in place.
+		assert.Equal(t, "/var/run/nvsentinel/nvsentinel.sock", findEnv(containers[0].Env, "PLATFORM_CONNECTOR_SOCKET"))
+		assert.NotNil(t, findVolume(extractVolumes(t, patches), nvsentinelSocketVolumeName))
+	})
+
+	t.Run("env, CA mount, CA volume and label with a CA", func(t *testing.T) {
+		containers, patches := injectedContainers(t, healthPublishConfig(), gpuPod())
+		c := containers[0]
+
+		assert.Equal(t, "platform-connector-deployment.nvsentinel.svc.cluster.local:50051",
+			findEnv(c.Env, "HEALTH_PUBLISH_TARGET"))
+		assert.Equal(t, "/var/run/secrets/nvsentinel/platform-connector/token",
+			findEnv(c.Env, "HEALTH_PUBLISH_TOKEN_PATH"))
+		assert.Equal(t, "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt",
+			findEnv(c.Env, "HEALTH_PUBLISH_TLS_CA_FILE"))
+		assert.False(t, hasEnvVar(c, "HEALTH_PUBLISH_INSECURE"))
+		// The socket env is still injected: the chart mounts the socket in both modes.
+		assert.Equal(t, "/var/run/nvsentinel/nvsentinel.sock", findEnv(c.Env, "PLATFORM_CONNECTOR_SOCKET"))
+		assert.Equal(t, "/var/run/secrets/nvsentinel/platform-connector/token",
+			findEnv(c.Env, "PLATFORM_CONNECTOR_TOKEN_PATH"))
+
+		var caMount *corev1.VolumeMount
+
+		for i := range c.VolumeMounts {
+			if c.VolumeMounts[i].Name == HealthPublishCAConfigMapName {
+				caMount = &c.VolumeMounts[i]
+			}
+		}
+
+		require.NotNil(t, caMount, "expected the CA ConfigMap mount")
+		assert.Equal(t, "/etc/nvsentinel/platform-connector-deployment-ca", caMount.MountPath)
+		assert.True(t, caMount.ReadOnly)
+		// The CA mount follows the token mount so inherited user mounts at
+		// that path are skipped later.
+		assert.Equal(t, connectorTokenVolumeName, c.VolumeMounts[0].Name)
+		assert.Equal(t, HealthPublishCAConfigMapName, c.VolumeMounts[1].Name)
+
+		vol := requireVolume(t, extractVolumes(t, patches), HealthPublishCAConfigMapName)
+		require.NotNil(t, vol.ConfigMap)
+		assert.Equal(t, "nvsentinel-platform-connector-ca", vol.ConfigMap.Name)
+		assert.Nil(t, vol.ConfigMap.Optional, "the CA copy must not be optional")
+		require.Len(t, vol.ConfigMap.Items, 1)
+		assert.Equal(t, "ca.crt", vol.ConfigMap.Items[0].Key)
+		assert.Equal(t, "ca.crt", vol.ConfigMap.Items[0].Path)
+
+		labels := findPatchByPath(patches, "/metadata/labels")
+		require.NotNil(t, labels, "expected the labels map to be added")
+		assert.Equal(t, "add", labels.Op)
+		assert.Equal(t, map[string]string{"nvsentinel.nvidia.com/health-publisher": "true"}, labels.Value)
+		assert.Nil(t, findPatchByPath(patches, labelPath))
+	})
+
+	t.Run("insecure env and no CA pieces when insecure", func(t *testing.T) {
+		containers, patches := injectedContainers(t, healthPublishInsecureConfig(), gpuPod())
+		c := containers[0]
+
+		assert.Equal(t, "platform-connector-deployment.nvsentinel.svc.cluster.local:50051",
+			findEnv(c.Env, "HEALTH_PUBLISH_TARGET"))
+		assert.Equal(t, "/var/run/secrets/nvsentinel/platform-connector/token",
+			findEnv(c.Env, "HEALTH_PUBLISH_TOKEN_PATH"))
+		assert.Equal(t, "true", findEnv(c.Env, "HEALTH_PUBLISH_INSECURE"))
+		assert.False(t, hasEnvVar(c, "HEALTH_PUBLISH_TLS_CA_FILE"))
+		assert.False(t, hasVolumeMount(c, HealthPublishCAConfigMapName))
+		assert.Nil(t, findVolume(extractVolumes(t, patches), HealthPublishCAConfigMapName))
+		// The label depends on the target, not on the CA.
+		assert.NotNil(t, findPatchByPath(patches, "/metadata/labels"))
+	})
+
+	t.Run("label patch with existing labels targets the escaped key", func(t *testing.T) {
+		pod := gpuPod()
+		pod.Labels = map[string]string{"app": "train"}
+
+		_, patches := injectedContainers(t, healthPublishConfig(), pod)
+
+		assert.Nil(t, findPatchByPath(patches, "/metadata/labels"), "must not replace the labels map")
+		p := findPatchByPath(patches, labelPath)
+		require.NotNil(t, p, "expected a patch on the escaped label key")
+		assert.Equal(t, "add", p.Op)
+		assert.Equal(t, "true", p.Value)
+	})
+
+	t.Run("our own CA volume on the pod is not duplicated", func(t *testing.T) {
+		injector := &Injector{cfg: healthPublishConfig()}
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{injector.healthPublishCAVolume()}}}
+
+		require.NoError(t, injector.ValidateHealthPublishCAVolume(pod))
+
+		for _, p := range injector.injectVolumes(pod, nil) {
+			if vol, ok := p.Value.(corev1.Volume); ok {
+				assert.NotEqual(t, HealthPublishCAConfigMapName, vol.Name)
+			}
+		}
+	})
+
+	t.Run("CA mount wins over an inherited user mount at the same path", func(t *testing.T) {
+		// injectHealthPublishCAMount runs before inheritUserConfig, so a user
+		// mount at the CA path is dropped by mergeVolumeMounts and the check
+		// reads our copy, not the user's volume.
+		cfg := healthPublishConfig()
+		cfg.VolumeMountPatterns = []string{"nvtcpxo-*"}
+
+		pod := gpuPod()
+		pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
+			{Name: "nvtcpxo-ca", MountPath: healthPublishCAMountPath},
+		}
+
+		containers, _ := injectedContainers(t, cfg, pod)
+		c := containers[0]
+
+		var atCAPath []string
+
+		for _, m := range c.VolumeMounts {
+			if m.MountPath == healthPublishCAMountPath {
+				atCAPath = append(atCAPath, m.Name)
+			}
+		}
+
+		assert.Equal(t, []string{HealthPublishCAConfigMapName}, atCAPath,
+			"only the injected CA mount may sit at the CA path")
+		assert.False(t, hasVolumeMount(c, "nvtcpxo-ca"), "the user mount at the CA path is not inherited")
+	})
+
+	t.Run("CA mount is idempotent", func(t *testing.T) {
+		injector := &Injector{cfg: healthPublishConfig()}
+		container := &corev1.Container{}
+
+		injector.injectHealthPublishCAMount(container)
+		injector.injectHealthPublishCAMount(container)
+		assert.Len(t, container.VolumeMounts, 1)
+	})
+}
+
+func TestValidateHealthPublishCAVolume(t *testing.T) {
+	// Injected checks trust the server named by the bundle in this volume. A
+	// workload that declares its own volume by that name would choose which
+	// server the check trusts, so admission refuses the pod.
+	ours := (&Injector{cfg: healthPublishConfig()}).healthPublishCAVolume()
+
+	tests := []struct {
+		name    string
+		volume  *corev1.Volume
+		wantErr bool
+	}{
+		{name: "no colliding volume", volume: nil},
+		{name: "our own projection is accepted", volume: &ours},
+		{
+			name:    "workload-supplied emptyDir is refused",
+			volume:  &corev1.Volume{Name: HealthPublishCAConfigMapName, EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			wantErr: true,
+		},
+		{
+			name: "ConfigMap with another name is refused",
+			volume: &corev1.Volume{
+				Name: HealthPublishCAConfigMapName,
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					Name:  "workload-supplied",
+					Items: []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "ConfigMap projecting other keys is refused",
+			volume: &corev1.Volume{
+				Name: HealthPublishCAConfigMapName,
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					Name:  "nvsentinel-platform-connector-ca",
+					Items: []corev1.KeyToPath{{Key: "other.crt", Path: "ca.crt"}},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "ConfigMap without items is refused",
+			volume: &corev1.Volume{
+				Name:      HealthPublishCAConfigMapName,
+				ConfigMap: &corev1.ConfigMapVolumeSource{Name: "nvsentinel-platform-connector-ca"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "optional projection is refused",
+			volume: &corev1.Volume{
+				Name: HealthPublishCAConfigMapName,
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					Name:     "nvsentinel-platform-connector-ca",
+					Items:    []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}},
+					Optional: new(true),
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			injector := &Injector{cfg: healthPublishConfig()}
+
+			pod := &corev1.Pod{}
+			if tt.volume != nil {
+				pod.Spec.Volumes = []corev1.Volume{*tt.volume}
+			}
+
+			err := injector.ValidateHealthPublishCAVolume(pod)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), HealthPublishCAConfigMapName)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("the full injection refuses a foreign volume by that name", func(t *testing.T) {
+		pod := gpuPod()
+		pod.Spec.Volumes = []corev1.Volume{
+			{Name: HealthPublishCAConfigMapName, EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		}
+
+		_, _, err := NewInjector(healthPublishConfig(), nil).InjectInitContainers(context.Background(), pod)
+		require.Error(t, err)
+	})
+
+	t.Run("no check at all in insecure mode", func(t *testing.T) {
+		injector := &Injector{cfg: healthPublishInsecureConfig()}
+		pod := &corev1.Pod{
+			Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: HealthPublishCAConfigMapName}}},
+		}
+
+		require.NoError(t, injector.ValidateHealthPublishCAVolume(pod))
+	})
+
+	t.Run("no check at all in socket mode", func(t *testing.T) {
+		injector := &Injector{cfg: testConfig()}
+		pod := &corev1.Pod{
+			Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: HealthPublishCAConfigMapName}}},
+		}
+
+		require.NoError(t, injector.ValidateHealthPublishCAVolume(pod))
+	})
+}
+
 func TestValidateConnectorTokenVolume(t *testing.T) {
 	// Injected checks read their credential out of the volume with this name.
 	// A workload that declares its own volume by that name would otherwise

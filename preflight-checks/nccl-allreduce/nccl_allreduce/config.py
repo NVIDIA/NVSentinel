@@ -15,6 +15,8 @@
 """Configuration for NCCL all-reduce preflight check."""
 
 import os
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .protos import health_event_pb2 as pb
@@ -27,6 +29,97 @@ DEFAULT_MESSAGE_SIZES = "4G,8G"
 DEFAULT_BENCHMARK_ITERS = 20
 DEFAULT_WARMUP_ITERS = 5
 DEFAULT_REDUCE_OP = "sum"
+# How long a health event is retried against the deployment platform connector
+# before the send is given up. Same default as the shared Go client.
+DEFAULT_PUBLISH_RETRY_WINDOW_SECONDS = 300.0
+
+# Environment contract (identical names in the shared Go client).
+TARGET_ENV = "HEALTH_PUBLISH_TARGET"
+INSECURE_ENV = "HEALTH_PUBLISH_INSECURE"
+TLS_CA_FILE_ENV = "HEALTH_PUBLISH_TLS_CA_FILE"
+TLS_SERVER_NAME_ENV = "HEALTH_PUBLISH_TLS_SERVER_NAME"
+TOKEN_PATH_ENV = "HEALTH_PUBLISH_TOKEN_PATH"
+RETRY_WINDOW_ENV = "HEALTH_PUBLISH_RETRY_WINDOW"
+
+# Go-style durations ("5m", "1m30s", "500ms"); bare numbers are rejected the
+# same way Go's time.ParseDuration rejects them, so both clients read the
+# same value the same way.
+_DURATION_PATTERN = re.compile(r"^(?:\d+(?:\.\d+)?(?:ms|s|m|h))+$")
+_DURATION_COMPONENT = re.compile(r"(\d+(?:\.\d+)?)(ms|s|m|h)")
+_UNIT_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+
+
+def _parse_duration(text: str) -> float:
+    """Parse a Go-style duration string into seconds."""
+    candidate = text.strip()
+    if not _DURATION_PATTERN.match(candidate):
+        raise ValueError(f"invalid duration {text!r}: expected a Go-style duration such as '5m' or '90s'")
+    return sum(float(value) * _UNIT_SECONDS[unit] for value, unit in _DURATION_COMPONENT.findall(candidate))
+
+
+def _bool_env(environ: Mapping[str, str], name: str) -> bool:
+    """A boolean setting in the vocabulary Go's strconv.ParseBool accepts; anything else is refused."""
+    raw = environ.get(name, "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if lowered in ("1", "t", "true"):
+        return True
+    if lowered in ("0", "f", "false"):
+        return False
+    raise ValueError(f"invalid {name} {raw!r}: must be true or false")
+
+
+@dataclass(frozen=True)
+class DirectPublisherConfig:
+    """HEALTH_PUBLISH_* settings for publishing straight to the deployment platform connector."""
+
+    target: str
+    insecure: bool
+    ca_file: str | None
+    server_name_override: str | None
+    token_path: str
+    retry_window_seconds: float
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> "DirectPublisherConfig | None":
+        """The direct mode settings, or None when HEALTH_PUBLISH_TARGET is unset or blank.
+
+        A set target with missing or invalid companion settings raises
+        ValueError: a misconfigured check must fail as a config error, not
+        silently fall back to the socket.
+        """
+        if environ is None:
+            environ = os.environ
+        target = environ.get(TARGET_ENV, "").strip()
+        if not target:
+            return None
+
+        insecure = _bool_env(environ, INSECURE_ENV)
+        ca_file = environ.get(TLS_CA_FILE_ENV, "").strip() or None
+        if not insecure and not ca_file:
+            raise ValueError(f"{TLS_CA_FILE_ENV} is required when {TARGET_ENV} is set unless {INSECURE_ENV}=true")
+
+        token_path = environ.get(TOKEN_PATH_ENV, "").strip()
+        if not token_path:
+            # The server authenticates every publish; there is no token-less mode.
+            raise ValueError(f"{TOKEN_PATH_ENV} is required when {TARGET_ENV} is set")
+
+        retry_window_raw = environ.get(RETRY_WINDOW_ENV, "").strip()
+        retry_window_seconds = (
+            _parse_duration(retry_window_raw) if retry_window_raw else DEFAULT_PUBLISH_RETRY_WINDOW_SECONDS
+        )
+        if retry_window_seconds <= 0:
+            raise ValueError(f"invalid {RETRY_WINDOW_ENV} {retry_window_raw!r}: must be a positive duration")
+
+        return cls(
+            target=target,
+            insecure=insecure,
+            ca_file=ca_file,
+            server_name_override=environ.get(TLS_SERVER_NAME_ENV, "").strip() or None,
+            token_path=token_path,
+            retry_window_seconds=retry_window_seconds,
+        )
 
 
 @dataclass
@@ -49,6 +142,9 @@ class Config:
         token_path: Optional file path of a projected ServiceAccount token
             presented as a bearer credential on Platform Connector calls.
             None leaves the calls unauthenticated (current behavior).
+        publish: Set when the check publishes straight to the deployment
+            platform connector (HEALTH_PUBLISH_TARGET). None keeps the
+            node-local socket.
     """
 
     gang_config_dir: str
@@ -64,6 +160,7 @@ class Config:
     pod_name: str
     processing_strategy: int
     token_path: str | None = None
+    publish: DirectPublisherConfig | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -113,6 +210,8 @@ class Config:
         except ValueError as err:
             raise ValueError(f"Invalid PROCESSING_STRATEGY: {strategy_str}") from err
 
+        publish = DirectPublisherConfig.from_env()
+
         return cls(
             gang_config_dir=gang_config_dir,
             bw_threshold_gbps=bw_threshold_gbps,
@@ -127,6 +226,7 @@ class Config:
             pod_name=pod_name,
             processing_strategy=processing_strategy,
             token_path=token_path,
+            publish=publish,
         )
 
 

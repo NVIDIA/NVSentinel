@@ -170,7 +170,7 @@ sys.modules["pynvml"] = pynvml_mock
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove all DCGM-related env vars."""
     for key in list(os.environ.keys()):
-        if key.startswith(("DCGM_", "PLATFORM_", "NODE_", "PROCESSING_")):
+        if key.startswith(("DCGM_", "PLATFORM_", "NODE_", "PROCESSING_", "HEALTH_PUBLISH_")):
             monkeypatch.delenv(key, raising=False)
 
 

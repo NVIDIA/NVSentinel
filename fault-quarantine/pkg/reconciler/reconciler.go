@@ -2255,8 +2255,25 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 
 	// The rule labels are deliberately left on the node, as the taints are: a
 	// manual uncordon means an operator took the node over, so fault-quarantine
-	// drops its own cordon bookkeeping and leaves the fault markings in place.
-	// TestE2ECordonAndTaint_ManualUncordon asserts this.
+	// leaves the fault markings in place. TestE2ECordonAndTaint_ManualUncordon
+	// asserts this.
+	//
+	// The cordon bookkeeping labels (cordon-by/cordon-reason/cordon-timestamp)
+	// are removed here, as the automatic uncordon path already does. The manual
+	// path historically left them behind, so a node returned to service kept
+	// cordon-by=NVSentinel and any consumer attributing a cordon would
+	// mis-attribute the node's next cordon. They are removed only when NVSentinel
+	// still owns the cordon-by label: some users reuse the same key for their own
+	// purposes and a blind removal would drop their label. The ownership guard is
+	// carried into the update callback (see ConditionalLabelRemoval) so it is
+	// re-checked against the freshly fetched Node on every conflict retry, not
+	// decided once from a possibly stale cache.
+	cordonLabels := &informer.ConditionalLabelRemoval{
+		Keys:       []string{r.cordonedByLabelKey, r.cordonedReasonLabelKey, r.cordonedTimestampLabelKey},
+		GuardKey:   r.cordonedByLabelKey,
+		GuardValue: cordonlabels.ServiceName,
+	}
+
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
 		return fmt.Errorf("failed to read applied labels for manually uncordoned node %s: %w", nodeName, err)
@@ -2276,6 +2293,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		annotationsToRemove,
 		newAnnotations,
 		labelsToRemove,
+		cordonLabels,
 	); err != nil {
 		slog.ErrorContext(ctx, "Failed to clean up manually uncordoned node", "node", nodeName, "error", err)
 		metrics.ProcessingErrors.WithLabelValues("manual_uncordon_cleanup_error").Inc()

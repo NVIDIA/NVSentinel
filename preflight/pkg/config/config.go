@@ -15,6 +15,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -101,6 +102,22 @@ type FileConfig struct {
 	// token the check cannot find at the path it was told to read.
 	ConnectorTokenMountPath         string `yaml:"connectorTokenMountPath,omitempty"`
 	ConnectorTokenExpirationSeconds int64  `yaml:"connectorTokenExpirationSeconds,omitempty"`
+
+	// HealthPublishTarget, when set, is the host:port of the deployment
+	// platform connector Service. The injected checks then publish their
+	// health events there over TLS with the projected token instead of the
+	// node-local socket. Empty keeps the socket mode.
+	HealthPublishTarget string `yaml:"healthPublishTarget,omitempty"`
+
+	// HealthPublishCAFile is the CA bundle path inside the preflight
+	// controller pod. The controller copies it into a ConfigMap in every
+	// namespace it injects into, and the checks read that copy to verify the
+	// server.
+	HealthPublishCAFile string `yaml:"healthPublishCAFile,omitempty"`
+
+	// HealthPublishInsecure lets the checks send plaintext to the target.
+	// Development only; it replaces the CA settings.
+	HealthPublishInsecure bool `yaml:"healthPublishInsecure,omitempty"`
 
 	// GangDiscovery is the cluster-wide default gang discovery configuration.
 	// Per-namespace overrides are expressed as PreflightConfig custom
@@ -352,6 +369,10 @@ func (c *FileConfig) validate() error {
 		return err
 	}
 
+	if err := c.validateHealthPublish(); err != nil {
+		return err
+	}
+
 	if c.GangCoordination.Enabled {
 		timeout, err := time.ParseDuration(c.GangCoordination.Timeout)
 		if err != nil {
@@ -418,6 +439,45 @@ func (c *FileConfig) validateConnectorToken() error {
 	if c.ConnectorTokenMountPath != "" && !strings.HasPrefix(c.ConnectorTokenMountPath, "/") {
 		return fmt.Errorf("connectorTokenMountPath must be an absolute path, got %q",
 			c.ConnectorTokenMountPath)
+	}
+
+	return nil
+}
+
+// validateHealthPublish checks the direct publishing settings. Without a
+// target none of the other healthPublish* settings may be set. With a target
+// the checks need the projected token, and exactly one way to trust the
+// server: the CA file, or the insecure development mode.
+func (c *FileConfig) validateHealthPublish() error {
+	caFileSet := c.HealthPublishCAFile != ""
+
+	if c.HealthPublishTarget == "" {
+		if caFileSet || c.HealthPublishInsecure {
+			return errors.New(
+				"healthPublish* settings need healthPublishTarget: set it to the deployment " +
+					"platform connector address, or remove healthPublishCAFile and " +
+					"healthPublishInsecure")
+		}
+
+		return nil
+	}
+
+	if c.ConnectorTokenAudience == "" || c.ConnectorTokenMountPath == "" ||
+		c.ConnectorTokenExpirationSeconds == 0 {
+		return errors.New(
+			"healthPublishTarget is set but the connector token settings are not: direct " +
+				"publishing needs the projected token, so set connectorTokenAudience, " +
+				"connectorTokenMountPath and connectorTokenExpirationSeconds")
+	}
+
+	if caFileSet == c.HealthPublishInsecure {
+		return errors.New(
+			"healthPublishTarget needs exactly one of healthPublishCAFile or healthPublishInsecure: true")
+	}
+
+	if caFileSet && !strings.HasPrefix(c.HealthPublishCAFile, "/") {
+		return fmt.Errorf("healthPublishCAFile must be an absolute path, got %q",
+			c.HealthPublishCAFile)
 	}
 
 	return nil

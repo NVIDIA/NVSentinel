@@ -42,6 +42,12 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// caEnsureTimeout bounds the CA ConfigMap copy on the admission path. It stays
+// well under the webhook timeout (10 s in the chart) so a slow API server
+// cannot turn this fail-open step into a rejected admission; a namespace whose
+// copy timed out is retried by the sync on its next tick.
+const caEnsureTimeout = 3 * time.Second
+
 var (
 	version = "dev"
 	commit  = "none"
@@ -49,6 +55,7 @@ var (
 
 	resolver       *gang.DiscovererResolver
 	onGangRegister webhook.GangRegistrationFunc
+	ensureCA       webhook.EnsureCAFunc
 )
 
 func main() {
@@ -88,18 +95,23 @@ func run() error {
 	slog.Info("Configuration loaded",
 		"initContainers", len(cfg.InitContainers),
 		"gpuResourceNames", cfg.GPUResourceNames,
-		"gangCoordinationEnabled", cfg.GangCoordination.Enabled)
+		"gangCoordinationEnabled", cfg.GangCoordination.Enabled,
+		"healthPublishTarget", cfg.HealthPublishTarget)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if cfg.GangCoordination.Enabled {
-		if err := setupGangCoordination(ctx, cfg, stop); err != nil {
+	// The manager is needed for gang coordination and for keeping the platform
+	// connector CA copies current when the checks verify the deployment over
+	// TLS. The insecure development mode has no CA to copy, so it runs without
+	// a manager, a namespace watch or a metrics listener.
+	if cfg.GangCoordination.Enabled || cfg.HealthPublishCAFile != "" {
+		if err := setupManager(ctx, cfg, stop); err != nil {
 			return err
 		}
 	}
 
-	handler := webhook.NewHandler(cfg, resolver, onGangRegister)
+	handler := webhook.NewHandler(cfg, resolver, onGangRegister, ensureCA)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", handler.HandleMutate)
@@ -108,11 +120,14 @@ func run() error {
 	return runHTTPServer(ctx, mux, certDir, port)
 }
 
-// setupGangCoordination builds the client from ctrl.GetConfig(), which disables client-side
+// setupManager builds the controller-runtime manager, the namespace reconciler
+// that always runs with it, the CA bundle sync when the checks verify the
+// deployment platform connector, and the gang pieces when gang coordination is
+// enabled. It builds the client from ctrl.GetConfig(), which disables client-side
 // rate limiting in favour of API Priority and Fairness. preflight is synchronous on the Pod
 // admission path, so client-side throttling becomes admission latency against a fixed
 // webhook deadline rather than harmless queueing.
-func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context.CancelFunc) error {
+func setupManager(ctx context.Context, cfg *config.Config, stop context.CancelFunc) error {
 	restConfig, err := ctrl.GetConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get Kubernetes client config: %w", err)
@@ -131,6 +146,57 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 	if err != nil {
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
+
+	var caSync *controller.CABundleSync
+
+	if cfg.HealthPublishCAFile != "" {
+		caSync = controller.NewCABundleSync(mgr.GetClient(), mgr.GetAPIReader(), cfg.HealthPublishCAFile)
+
+		if err := mgr.Add(caSync); err != nil {
+			return fmt.Errorf("failed to add CA bundle sync: %w", err)
+		}
+
+		// Fail-open: the pod is admitted even when the copy could not be
+		// written; Ensure records the namespace and the sync retries it on
+		// its next tick.
+		ensureCA = func(reqCtx context.Context, namespace string) {
+			ensureCtx, cancel := context.WithTimeout(reqCtx, caEnsureTimeout)
+			defer cancel()
+
+			if err := caSync.Ensure(ensureCtx, namespace); err != nil {
+				slog.Error("Failed to ensure platform connector CA ConfigMap",
+					"namespace", namespace,
+					"configMap", webhook.HealthPublishCAConfigMapName,
+					"error", err)
+			}
+		}
+	}
+
+	nsReconciler := controller.NewNamespaceReconciler(mgr.GetClient(), activeNamespaces, caSync)
+	if err := nsReconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to setup namespace controller: %w", err)
+	}
+
+	if cfg.GangCoordination.Enabled {
+		if err := setupGangCoordination(cfg, mgr); err != nil {
+			return err
+		}
+	}
+
+	go func() {
+		if err := mgr.Start(ctx); err != nil {
+			slog.Error("Controller manager failed, initiating shutdown", "error", err)
+			stop()
+		}
+	}()
+
+	return nil
+}
+
+// setupGangCoordination registers the gang discoverer resolver, the gang
+// controller and the PreflightConfig reconciler with the manager.
+func setupGangCoordination(cfg *config.Config, mgr ctrl.Manager) error {
+	var err error
 
 	resolver, err = gang.NewResolverFromConfig(
 		cfg,
@@ -168,19 +234,7 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 		return fmt.Errorf("failed to setup PreflightConfig controller: %w", err)
 	}
 
-	nsReconciler := controller.NewNamespaceReconciler(mgr.GetClient(), activeNamespaces)
-	if err := nsReconciler.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to setup namespace controller: %w", err)
-	}
-
 	onGangRegister = gangController.RegisterPod
-
-	go func() {
-		if err := mgr.Start(ctx); err != nil {
-			slog.Error("Controller manager failed, initiating shutdown", "error", err)
-			stop()
-		}
-	}()
 
 	discovererName := "kubernetes"
 	if cfg.GangDiscovery.Name != "" {
