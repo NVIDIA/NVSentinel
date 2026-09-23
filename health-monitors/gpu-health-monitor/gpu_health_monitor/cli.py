@@ -74,7 +74,7 @@ def _init_event_processor(
 
 
 @click.command()
-@click.option("--dcgm-addr", type=str, help="Host:Port where DCGM is running", required=True)
+@click.option("--dcgm-addr", type=str, help="Comma-separated host:port list where DCGM may be running", required=True)
 @click.option(
     "--dcgm-mode",
     type=click.Choice(["remote", "local-managed"]),

@@ -153,7 +153,7 @@ Runs DCGM diagnostics against every GPU allocated to the pod via the remote host
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `DCGM_DIAG_LEVEL` | `2` | Diagnostic depth: 1 = short (approx 30 s, software deployment checks), 2 = medium (approx 2 min, adds PCIe and basic GPU stress), 3 = long (approx 15 min, adds Diagnostic plugin stress), 4 = xlong (1-2 hr, extended stress) |
-| `DCGM_HOSTENGINE_ADDR` | `nvidia-dcgm.gpu-operator.svc:5555` | DCGM hostengine gRPC endpoint |
+| `DCGM_HOSTENGINE_ADDR` | `nvidia-dcgm-dra.gpu-operator.svc:5555,nvidia-dcgm.gpu-operator.svc:5555` | Comma-separated DCGM hostengine gRPC endpoints, tried in order. Only one exists per cluster (`nvidia-dcgm-dra` in GPU Operator GPUCluster mode) |
 | `DCGM_DIAG_STATUS_RETRY_MAX_ATTEMPTS` | `10` | Maximum diagnostic attempts when DCGM returns a `DCGM_ST_*` status while starting/running diagnostics |
 | `DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS` | `10` | Delay between `DCGM_ST_*` retry attempts |
 
@@ -167,7 +167,7 @@ initContainers:
       tag: ""
     env:
       - name: DCGM_HOSTENGINE_ADDR
-        value: "nvidia-dcgm.gpu-operator.svc:5555"
+        value: "nvidia-dcgm-dra.gpu-operator.svc:5555,nvidia-dcgm.gpu-operator.svc:5555"
       - name: DCGM_DIAG_LEVEL
         value: "2"
       - name: DCGM_DIAG_STATUS_RETRY_MAX_ATTEMPTS

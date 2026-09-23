@@ -126,10 +126,18 @@ corresponding chart-local values.
 {{- end }}
 
 {{/*
-DCGM address for the selected source mode.
+DCGM address list for the selected source mode. The endpoint may be a
+comma-separated list of hosts (only one DCGM Service exists per cluster:
+nvidia-dcgm-dra in GPU Operator GPUCluster mode, nvidia-dcgm otherwise);
+the port is appended to each and the monitor tries them in order.
 */}}
 {{- define "gpu-health-monitor.dcgmAddr" -}}
-{{- printf "%s:%v" (include "gpu-health-monitor.dcgmEndpoint" .) (include "gpu-health-monitor.dcgmPort" .) }}
+{{- $port := include "gpu-health-monitor.dcgmPort" . -}}
+{{- $addrs := list -}}
+{{- range splitList "," (include "gpu-health-monitor.dcgmEndpoint" .) -}}
+{{- $addrs = append $addrs (printf "%s:%s" (trim .) $port) -}}
+{{- end -}}
+{{- join "," $addrs -}}
 {{- end }}
 
 {{/*

@@ -27,9 +27,10 @@ dcgm:
   mode: operator-service
   # Enable DCGM Kubernetes service for GPU metrics collection
   dcgmK8sServiceEnabled: true
-  # GPU Operator DCGM service used by operator-service mode.
+  # GPU Operator DCGM service used by operator-service mode. Comma-separated hosts
+  # are tried in order; only one exists per cluster (nvidia-dcgm-dra in GPUCluster mode).
   service:
-    endpoint: "nvidia-dcgm.gpu-operator.svc"
+    endpoint: "nvidia-dcgm-dra.gpu-operator.svc,nvidia-dcgm.gpu-operator.svc"
     port: 5555
   # Externally owned hostengine used by external-hostengine mode.
   externalHostengine:
