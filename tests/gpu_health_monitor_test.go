@@ -251,25 +251,16 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, metadata)
 
 		t.Logf("Restarting GPU health monitor pod %s to load metadata", gpuHealthMonitorPod.Name)
-		err = helpers.DeletePod(ctx, t, client, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name, false)
-		require.NoError(t, err, "failed to restart GPU health monitor pod")
-		helpers.WaitForPodsDeleted(ctx, t, client, helpers.NVSentinelNamespace, []string{gpuHealthMonitorPod.Name})
-
-		t.Logf("Waiting for GPU health monitor pod to be ready on node %s", testNodeName)
-		pods, err := helpers.GetPodsOnNode(ctx, client.Resources(), testNodeName)
-		require.NoError(t, err, "failed to get pods on node %s", testNodeName)
-
-		newGPUHealthMonitorPodName := ""
-		for _, pod := range pods {
-			if strings.Contains(pod.Name, "gpu-health-monitor") && pod.Name != gpuHealthMonitorPod.Name {
-				newGPUHealthMonitorPodName = pod.Name
-				break
-			}
-		}
-
-		require.NotEmpty(t, newGPUHealthMonitorPodName, "new GPU health monitor pod name not found")
-
-		helpers.WaitForPodsRunning(ctx, t, client, helpers.NVSentinelNamespace, []string{newGPUHealthMonitorPodName})
+		newGPUHealthMonitorPodName := helpers.RestartDaemonSetPodOnNode(
+			ctx,
+			t,
+			client,
+			helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName,
+			"gpu-health-monitor",
+			testNodeName,
+			gpuHealthMonitorPod.Name,
+		)
 
 		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
 		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
