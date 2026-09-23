@@ -5736,7 +5736,9 @@ func TestE2E_ManualUncordonPreservesForeignCordonByLabel(t *testing.T) {
 		common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
 	}
 	labels := map[string]string{
-		"k8s.nvidia.com/cordon-by": "some-other-controller",
+		"k8s.nvidia.com/cordon-by":        "some-other-controller",
+		"k8s.nvidia.com/cordon-reason":    "some-other-reason",
+		"k8s.nvidia.com/cordon-timestamp": "2024-01-01T00-00-00Z",
 	}
 
 	createE2ETestNode(ctx, t, nodeName, annotations, labels, nil, true)
@@ -5786,6 +5788,10 @@ func TestE2E_ManualUncordonPreservesForeignCordonByLabel(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "some-other-controller", node.Labels["k8s.nvidia.com/cordon-by"],
 		"foreign cordon-by label must be preserved")
+	assert.Equal(t, "some-other-reason", node.Labels["k8s.nvidia.com/cordon-reason"],
+		"foreign cordon-reason label must be preserved")
+	assert.Equal(t, "2024-01-01T00-00-00Z", node.Labels["k8s.nvidia.com/cordon-timestamp"],
+		"foreign cordon-timestamp label must be preserved")
 }
 
 // TestE2E_ManualUncordonMultipleEvents tests that manual uncordon works with multiple events on the same node
