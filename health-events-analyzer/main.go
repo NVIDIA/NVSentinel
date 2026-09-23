@@ -96,7 +96,7 @@ func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStor
 
 func createPipeline(config *config.TomlConfig) any {
 	builder := client.GetPipelineBuilder()
-	if !config.HasEnabledRecovery() {
+	if !config.HasSourceRecovery() {
 		return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
 	}
 

@@ -51,8 +51,10 @@ type recoveryBoundary struct {
 }
 
 type derivedState struct {
-	boundary  recoveryBoundary
-	isHealthy bool
+	componentClass string
+	version        uint32
+	boundary       recoveryBoundary
+	isHealthy      bool
 }
 
 type recoveryTarget struct {
@@ -371,7 +373,11 @@ func recoveryEntityKey(nodeName string, entities []*protos.Entity) string {
 }
 
 func recoverySourceMatches(mapping *config.RecoveryMapping, event *protos.HealthEvent) bool {
-	if mapping == nil || event == nil || !event.IsHealthy || event.CheckName != mapping.SourceCheckName {
+	if mapping == nil || mapping.AnnotationKey != "" {
+		return false
+	}
+
+	if event == nil || !event.IsHealthy || event.CheckName != mapping.SourceCheckName {
 		return false
 	}
 
@@ -383,13 +389,9 @@ func recoverySourceMatches(mapping *config.RecoveryMapping, event *protos.Health
 		return true
 	}
 
-	for _, eventCode := range event.ErrorCode {
-		if slices.Contains(mapping.SourceErrorCodes, eventCode) {
-			return true
-		}
-	}
-
-	return false
+	return slices.ContainsFunc(event.ErrorCode, func(eventCode string) bool {
+		return slices.Contains(mapping.SourceErrorCodes, eventCode)
+	})
 }
 
 func recoveryStateKey(ruleName string, identity recoveryIdentity) string {
@@ -630,6 +632,10 @@ func (r *Reconciler) latestRecoverySource(
 	rule config.HealthEventsAnalyzerRule,
 	identity recoveryIdentity,
 ) (*datamodels.HealthEventWithStatus, error) {
+	if rule.Recovery.AnnotationKey != "" {
+		return r.latestAnnotationRecovery(ctx, rule, identity)
+	}
+
 	return r.findLatestMatchingEvent(ctx, &rule, &identity, rule.Name, "recovery_source", r.recoveryLookupFilter(
 		rule.Recovery.SourceAgent, rule.Recovery.SourceCheckName, identity.nodeName,
 	), func(candidate *datamodels.HealthEventWithStatus) bool {
@@ -702,8 +708,8 @@ func (r *Reconciler) currentDerivedState(
 	}
 
 	return derivedState{
-		boundary:  boundaryFromEvent(latest),
-		isHealthy: latest.HealthEvent.IsHealthy,
+		boundary: boundaryFromEvent(latest), isHealthy: latest.HealthEvent.IsHealthy,
+		componentClass: latest.HealthEvent.ComponentClass, version: latest.HealthEvent.Version,
 	}, true, nil
 }
 
@@ -750,8 +756,8 @@ func (r *Reconciler) currentDerivedStatesForNode(
 		}
 
 		state := derivedState{
-			boundary:  boundaryFromEvent(&candidate),
-			isHealthy: candidate.HealthEvent.IsHealthy,
+			boundary: boundaryFromEvent(&candidate), isHealthy: candidate.HealthEvent.IsHealthy,
+			componentClass: candidate.HealthEvent.ComponentClass, version: candidate.HealthEvent.Version,
 		}
 
 		current, found := states[identity.key]
@@ -967,6 +973,11 @@ func sameRecoverySource(
 	source *datamodels.HealthEventWithStatus,
 ) bool {
 	if candidate == nil || candidate.HealthEvent == nil || source == nil || source.HealthEvent == nil {
+		return false
+	}
+
+	request := source.HealthEvent.Metadata[annotationRequestKey]
+	if request != "" && candidate.HealthEvent.Metadata[annotationRequestKey] != request {
 		return false
 	}
 

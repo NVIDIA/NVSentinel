@@ -242,6 +242,40 @@ gpu-health-monitor:
     suppressedErrorCodes: []
 ```
 
+## GPU Thermal Margin Detection
+
+`GpuThermalMarginWatch` reads DCGM field 153, the margin in degrees to the GPU's slowdown temperature limit, and fails a GPU whose margin reaches the hardware slowdown threshold. It reads the field directly because DCGM's own thermal health watch does not report the margin.
+
+```yaml
+gpu-health-monitor:
+  dcgmFieldsMonitoring:
+    gpuTempLimitMonitoringEnabled: true
+    gpuTempLimitStoreOnly: true
+```
+
+### gpuTempLimitMonitoringEnabled
+
+Enables the watch. On by default.
+
+### gpuTempLimitStoreOnly
+
+Dry run. When true, this check's events are emitted with `processingStrategy=STORE_ONLY`, so they are persisted and exported as metrics but excluded from the remediation pipeline: no node condition and no cordon. Defaults to true, so the watch is observable before it can act. Set it to `false` once you have confirmed the thresholds suit your hardware and cooling.
+
+To interpret a firing check, see the [GPU Thermal Margin runbook](../runbooks/gpu-thermal-margin.md).
+
+## NVLink Suppression on Unbridged PCIe Cards
+
+Suppresses the NVLink-down fault on PCIe cards that have NVLink silicon but no bridge fitted. DCGM otherwise reports those permanently inactive links as a fatal fault with `RESTART_VM`.
+
+```yaml
+gpu-health-monitor:
+  suppressNvlinkDownOnUnbridgedPcie: "False"
+```
+
+The value is a quoted string, not a boolean.
+
+Leave it `"False"` if any GPU pool uses NVLink bridges. An unbridged card and a card whose bridge was already dead when metadata was collected look identical, so enabling suppression on a bridged pool could hide a real bridge failure that was present at boot. GPUs with no NVLink silicon at all, such as L40 and A40, are suppressed regardless of this value.
+
 ## Hardware Power Brake Detection
 
 `GpuPowerBrakeWatch` fails a GPU whose clocks-event-reasons mask has the hardware power brake bit (`0x80`) set, meaning the power delivery path is forcing clocks down. It reads `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` directly, in the same way `GpuThermalMarginWatch` reads field 153, because DCGM's POWER health watch does not report the brake.

@@ -79,6 +79,19 @@ A consumed `CREATE` request skips cold start and records its creation time. Late
 
 Cold-start activity is exposed through `fault_quarantine_cold_start_events_total{result=...}` and `fault_quarantine_cold_start_duration_seconds`.
 
+### GPU Node Label
+
+Label selector, as `key=value`, that identifies GPU nodes. The node informer watches only matching nodes, and the circuit breaker counts only those nodes when it measures the cordoned percentage.
+
+```yaml
+fault-quarantine:
+  gpuNodeLabel: "nvidia.com/gpu.present=true"
+```
+
+The default matches the label the NVIDIA GPU Operator applies. Override it when your cluster labels GPU nodes differently.
+
+A selector that matches no node gives the circuit breaker a node count of zero. It then logs `Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes` and returns an error instead of a decision, so check this value first when the breaker behaves unexpectedly on a cluster with non-standard labels.
+
 ### Label Prefix
 
 Defines the prefix for all node labels created by the module to track cordon/uncordon lifecycle.

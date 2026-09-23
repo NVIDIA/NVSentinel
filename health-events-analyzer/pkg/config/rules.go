@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
@@ -31,10 +33,11 @@ const (
 	analyzerAgentName                 = "health-events-analyzer"
 )
 
-// RecoveryMapping identifies the healthy source event that resolves a derived
-// condition. Rules without this block retain the existing manual-recovery
+// RecoveryMapping identifies a node annotation or healthy source event that
+// resolves a derived condition. Rules without this block retain the existing manual-recovery
 // behavior.
 type RecoveryMapping struct {
+	AnnotationKey    string        `toml:"annotation_key"`
 	SourceAgent      string        `toml:"source_agent"`
 	SourceCheckName  string        `toml:"source_check_name"`
 	SourceErrorCodes []string      `toml:"source_error_codes"`
@@ -75,6 +78,34 @@ func (c *TomlConfig) HasEnabledRecovery() bool {
 	return false
 }
 
+func (c *TomlConfig) HasAnnotationRecovery() bool {
+	if c == nil {
+		return false
+	}
+
+	for _, rule := range c.Rules {
+		if rule.EvaluateRule && rule.Recovery != nil && rule.Recovery.AnnotationKey != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (c *TomlConfig) HasSourceRecovery() bool {
+	if c == nil {
+		return false
+	}
+
+	for _, rule := range c.Rules {
+		if rule.EvaluateRule && rule.Recovery != nil && rule.Recovery.AnnotationKey == "" {
+			return true
+		}
+	}
+
+	return false
+}
+
 func LoadTomlConfig(path string) (*TomlConfig, error) {
 	var config TomlConfig
 	if err := configmanager.LoadTOMLConfigStrict(path, &config); err != nil {
@@ -89,6 +120,8 @@ func LoadTomlConfig(path string) (*TomlConfig, error) {
 }
 
 func (c *TomlConfig) Validate() error {
+	annotationKeys := make(map[string]string)
+
 	for i := range c.Rules {
 		if err := c.Rules[i].validateProcessingStrategy(); err != nil {
 			return fmt.Errorf("rule %q: %w", c.Rules[i].Name, err)
@@ -100,6 +133,15 @@ func (c *TomlConfig) Validate() error {
 
 		if err := c.Rules[i].validateRecovery(); err != nil {
 			return fmt.Errorf("rule %q: %w", c.Rules[i].Name, err)
+		}
+
+		if recovery := c.Rules[i].Recovery; recovery != nil && recovery.AnnotationKey != "" {
+			if previous, exists := annotationKeys[recovery.AnnotationKey]; exists {
+				return fmt.Errorf("rules %q and %q share recovery.annotation_key %q",
+					previous, c.Rules[i].Name, recovery.AnnotationKey)
+			}
+
+			annotationKeys[recovery.AnnotationKey] = c.Rules[i].Name
 		}
 	}
 
@@ -142,12 +184,8 @@ func (r *HealthEventsAnalyzerRule) validateRecovery() error {
 	recovery.SourceAgent = strings.TrimSpace(recovery.SourceAgent)
 	recovery.SourceCheckName = strings.TrimSpace(recovery.SourceCheckName)
 
-	if recovery.SourceCheckName == "" {
-		return fmt.Errorf("recovery.source_check_name is required")
-	}
-
-	if recovery.SourceAgent == analyzerAgentName {
-		return fmt.Errorf("recovery.source_agent %q is excluded from analyzer input", analyzerAgentName)
+	if err := recovery.validateTrigger(); err != nil {
+		return err
 	}
 
 	switch recovery.Scope {
@@ -184,6 +222,32 @@ func validateUniqueNonEmpty(field string, values []string) error {
 		}
 
 		seen[values[i]] = struct{}{}
+	}
+
+	return nil
+}
+
+func (r *RecoveryMapping) validateTrigger() error {
+	r.AnnotationKey = strings.TrimSpace(r.AnnotationKey)
+	if r.AnnotationKey != "" {
+		problems := validation.IsQualifiedName(r.AnnotationKey)
+		if len(problems) > 0 || !strings.Contains(r.AnnotationKey, "/") {
+			return fmt.Errorf("recovery.annotation_key must be a qualified Kubernetes annotation key")
+		}
+
+		if r.SourceAgent != "" || r.SourceCheckName != "" || len(r.SourceErrorCodes) != 0 {
+			return fmt.Errorf("recovery.annotation_key cannot be combined with source event fields")
+		}
+
+		return nil
+	}
+
+	if r.SourceCheckName == "" {
+		return fmt.Errorf("recovery.source_check_name is required unless annotation_key is configured")
+	}
+
+	if r.SourceAgent == analyzerAgentName {
+		return fmt.Errorf("recovery.source_agent %q is excluded from analyzer input", analyzerAgentName)
 	}
 
 	return nil

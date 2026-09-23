@@ -238,3 +238,34 @@ func TestRecoveryMappingValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestAnnotationRecoveryConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mapping RecoveryMapping
+		wantErr string
+	}{
+		{name: "annotation only", mapping: RecoveryMapping{AnnotationKey: "nvsentinel.nvidia.com/recover-xid", Scope: RecoveryScopeNode}},
+		{name: "unqualified key", mapping: RecoveryMapping{AnnotationKey: "recover", Scope: RecoveryScopeNode}, wantErr: "qualified"},
+		{name: "invalid key", mapping: RecoveryMapping{AnnotationKey: "nvsentinel.nvidia.com/recover xid", Scope: RecoveryScopeNode}, wantErr: "qualified"},
+		{name: "mixed triggers", mapping: RecoveryMapping{AnnotationKey: "nvsentinel.nvidia.com/recover-xid", SourceCheckName: "Recovered", Scope: RecoveryScopeNode}, wantErr: "cannot be combined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{Name: "xid", EvaluateRule: true, Recovery: &tc.mapping}}}
+			err := cfg.Validate()
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, cfg.HasAnnotationRecovery())
+			require.False(t, cfg.HasSourceRecovery())
+			require.True(t, cfg.HasEnabledRecovery())
+			cfg.Rules[0].EvaluateRule = false
+			require.False(t, cfg.HasAnnotationRecovery())
+		})
+	}
+	mapping := &RecoveryMapping{AnnotationKey: "nvsentinel.nvidia.com/recover-xid", Scope: RecoveryScopeNode}
+	cfg := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{Name: "a", Recovery: mapping}, {Name: "b", Recovery: mapping}}}
+	require.ErrorContains(t, cfg.Validate(), "share recovery.annotation_key")
+}

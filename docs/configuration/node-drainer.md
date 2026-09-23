@@ -81,6 +81,17 @@ node-drainer:
   partialDrainEnabled: true
 ```
 
+### Partial Drain Entity Metric
+
+Registers `node_drainer_partial_drains_total{node, entity_type, entity_value}`.
+
+```yaml
+node-drainer:
+  partialDrainEntityMetricEnabled: false
+```
+
+Off by default because `entity_value` holds a GPU UUID, which adds one time series per GPU in the fleet. The `drain_scope` label on `node_drainer_events_processed_total` already separates partial drains from full ones without that cardinality. Enable this only when you need per-GPU attribution and your Prometheus can carry the extra series.
+
 ### Eviction Timeout
 
 Grace period in seconds applied to pod eviction requests in Immediate mode only.

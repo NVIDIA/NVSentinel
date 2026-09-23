@@ -310,3 +310,55 @@ janitor:
 
 ### certProvider
 cert-manager is a required dependency. The webhook certificate is issued by the `certIssuer` ClusterIssuer and renewed automatically.
+
+## Metrics TLS
+
+Serves the Prometheus metrics endpoint over TLS, with a cert-manager issued certificate.
+
+```yaml
+janitor:
+  metrics:
+    tls:
+      enabled: false
+      certDir: "/tmp/k8s-metrics-server/metrics-certs"
+      issuerName: ""
+      issuerKind: "Issuer"
+      issuerGroup: ""
+      duration: "2160h"
+      renewBefore: "720h"
+      organization: "NVIDIA"
+```
+
+### enabled
+Turns on TLS for the metrics endpoint. Off by default. Your scrape configuration must then trust the issuing CA, or Prometheus stops collecting janitor metrics.
+
+### certDir
+Directory where the metrics server reads its certificate and key.
+
+### issuerName
+cert-manager issuer that signs the certificate. Falls back to `webhook.certIssuer` when empty.
+
+### issuerKind
+`Issuer` for a namespaced issuer, or `ClusterIssuer` for a cluster-scoped one. Defaults to `Issuer`, so set it to `ClusterIssuer` when `issuerName` names one.
+
+### issuerGroup
+API group of the issuer. Leave empty for cert-manager's own issuers; set it only for an external issuer implementation.
+
+### duration
+Certificate lifetime. Defaults to `2160h`, which is 90 days.
+
+### renewBefore
+How long before expiry cert-manager renews the certificate. Defaults to `720h`, which is 30 days. It must stay shorter than `duration`.
+
+### organization
+Organization name in the certificate subject.
+
+## Inactive Values
+
+The janitor chart carries `autoscaling`, `livenessProbe`, `readinessProbe`, `podSecurityContext` and `securityContext` in `values.yaml`, but no template reads them. They are Helm scaffold left from the chart's creation:
+
+- `autoscaling` renders no HorizontalPodAutoscaler. The Deployment always uses `replicaCount`.
+- `livenessProbe` and `readinessProbe` add no probes to the pod.
+- `podSecurityContext` and `securityContext` are not applied. The only pod security context the chart sets is `fsGroup: 65532`, added automatically when `global.auditLogging.enabled` is true.
+
+Setting any of them changes nothing. Do not rely on them.

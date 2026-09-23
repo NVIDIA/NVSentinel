@@ -135,6 +135,14 @@ AND (
 CREATE INDEX IF NOT EXISTS idx_health_events_updated_desc ON health_events(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_health_events_analyzer_lookup ON health_events (node_name, event_type, created_at DESC, (document->'healthevent'->>'agent'));
 
+-- Unique partial index behind the idempotency keys the platform connectors write
+-- (ADR 052). This script creates it without CONCURRENTLY, which cannot run inside
+-- a transaction; the components verify it at start and build or rebuild it
+-- CONCURRENTLY when it is missing or broken, one component at a time under an
+-- advisory lock.
+CREATE UNIQUE INDEX IF NOT EXISTS healthevent_idempotency_key_unique ON health_events ((document #>> '{healthevent,metadata,idempotencyKey}'))
+WHERE (document #>> '{healthevent,metadata,idempotencyKey}') IS NOT NULL;
+
 -- GIN index for flexible JSON querying
 CREATE INDEX IF NOT EXISTS idx_health_events_document_gin ON health_events USING GIN (document);
 

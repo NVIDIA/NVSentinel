@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/client-go/kubernetes"
+
 	multierror "github.com/hashicorp/go-multierror"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -66,9 +68,13 @@ type HealthEventsAnalyzerReconcilerConfig struct {
 	Publisher                 *publisher.PublisherConfig
 	Workers                   int
 	MaxInFlight               int
+	KubernetesClient          kubernetes.Interface
 }
 
 type Reconciler struct {
+	nodeRecovery   *nodeRecoveryController
+	nodeProcessing nodeProcessingLocks
+	nodeUIDs       map[string]string
 	config         HealthEventsAnalyzerReconcilerConfig
 	datastore      datastore.DataStore
 	databaseClient client.DatabaseClient // MongoDB-specific client for aggregation
@@ -185,11 +191,27 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Starting health events analyzer with unified event processor...")
 
 	// Start the event processor
-	return r.eventProcessor.Start(ctx)
+	return r.runProcessors(ctx)
 }
 
 // processHealthEvent handles individual health events and implements the EventHandler interface
 func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.HealthEventWithStatus) error {
+	if r.nodeRecovery != nil {
+		unlock, err := r.nodeProcessing.acquire(ctx, event.HealthEvent.GetNodeName())
+		if err != nil {
+			return fmt.Errorf("lock node event processing: %w", err)
+		}
+		defer unlock()
+
+		if err := r.processNodeAnnotations(ctx, event.HealthEvent.GetNodeName()); err != nil {
+			return err
+		}
+	}
+
+	return r.processHealthEventLocked(ctx, event)
+}
+
+func (r *Reconciler) processHealthEventLocked(ctx context.Context, event *datamodels.HealthEventWithStatus) error {
 	startTime := time.Now()
 
 	traceID := tracing.TraceIDFromMetadata(event.HealthEvent.GetMetadata())
@@ -487,8 +509,8 @@ func (r *Reconciler) publishRuleMatch(
 	}
 
 	r.rememberDerivedState(rule.Name, identity, derivedState{
-		boundary:  persistedBoundary,
-		isHealthy: false,
+		boundary: persistedBoundary, isHealthy: false,
+		componentClass: event.HealthEvent.ComponentClass, version: event.HealthEvent.Version,
 	})
 
 	return published, nil

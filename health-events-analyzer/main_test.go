@@ -43,6 +43,13 @@ func TestCreatePipelineRequiresEnabledRecovery(t *testing.T) {
 			}}},
 			want: builder.BuildProcessableNonFatalUnhealthyInsertsPipeline(),
 		},
+
+		"annotation does not widen source input": {
+			config: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{{
+				EvaluateRule: true, Recovery: &config.RecoveryMapping{AnnotationKey: "nvsentinel.nvidia.com/recover-xid"},
+			}}},
+			want: builder.BuildProcessableNonFatalUnhealthyInsertsPipeline(),
+		},
 		"enabled recovery rule": {
 			config: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{{
 				EvaluateRule: true,

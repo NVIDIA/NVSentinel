@@ -353,6 +353,31 @@ mongodb-store:
   collectionExpirySeconds: 604800  # 7 days
 ```
 
+### SCRAM Application User
+
+The initialization Job creates a SCRAM-SHA-256 user with `readWrite` access to the NVSentinel database when `mongodb.tls.enabled` is `false`. With TLS on, MongoDB uses X.509 certificate users instead and this user is not created.
+
+```yaml
+mongodb-store:
+  scramAppUser:
+    username: nvsentinel
+    existingSecret: ""
+    passwordKey: "mongodb-root-password"
+```
+
+#### Parameters
+
+##### username
+Name of the application user created in MongoDB.
+
+##### existingSecret
+Secret holding this user's password. Empty falls back to the MongoDB root password secret, which works out of the box but gives the application the same credential as the administrator. For production, create a dedicated Secret and name it here.
+
+##### passwordKey
+Key inside that Secret holding the password.
+
+This only provisions the user. To use it, build `MONGODB_URI` from the username, the resolved password, and the host and database — creating the user does not change what the modules connect with.
+
 ### Initialization Job Placement
 
 Configures node placement for initialization jobs (applies to both backends).
@@ -390,6 +415,34 @@ Node selector for scheduling MongoDB replica pods.
 
 ##### tolerations
 Tolerations for MongoDB pods to run on tainted nodes.
+
+### Pod Priority
+
+`global.priorityClassName` and `global.systemPriorityClassName` do not apply to the MongoDB pods. Both backends come from vendored upstream charts that do not read NVSentinel's `global` values, so a release rendered with only those globals leaves the MongoDB StatefulSet with no `priorityClassName`.
+
+Set it through the backend's own key:
+
+```yaml
+# Bitnami MongoDB
+mongodb-store:
+  mongodb:
+    priorityClassName: system-cluster-critical
+
+# Percona (note: priorityClass, not priorityClassName)
+mongodb-store:
+  psmdb-db:
+    replsets:
+      rs0:
+        priorityClass: system-cluster-critical
+```
+
+The Bitnami chart takes separate keys for the arbiter and hidden members — `mongodb.arbiter.priorityClassName` and `mongodb.hidden.priorityClassName` — if you run them.
+
+Give the datastore at least the priority you give the modules that depend on it. A preempted datastore stops fault detection for the whole cluster, while the health monitors keep running at their own higher priority and cannot persist what they find.
+
+The `create-mongodb-database` initialization Job takes no priority class from any key. It runs once and completes, so it is scheduled against whatever capacity is free at the time.
+
+See [Pod Priority](./README.md#pod-priority) for the settings that do apply to NVSentinel's own components.
 
 ### Metrics Exporter
 

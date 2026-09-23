@@ -50,6 +50,11 @@ maxInFlight: 1000
 # GPU UUID is never used as entity_value; PCI or GPU index is exported instead.
 ruleMatchedEntityMetricEnabled: false
 
+# Grant node read/watch/patch permissions for rules with recovery.annotation_key.
+# Configure annotation_key and recovery scope in the affected rule below.
+nodeRecovery:
+  enabled: false
+
 # Enable flags for the rules to be evaluated.
 enableMultipleRemediationsRule: true
 enableRepeatedXIDErrorOnSameGPURule: true

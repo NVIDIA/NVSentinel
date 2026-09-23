@@ -71,11 +71,6 @@ func (m *MockDatabaseClient) InsertManyIdempotent(ctx context.Context, documents
 	return args.Get(0).(*client.InsertManyResult), args.Error(1)
 }
 
-func (m *MockDatabaseClient) EnsureHealthEventIdempotencyIndex(ctx context.Context) error {
-	args := m.Called(ctx)
-	return args.Error(0)
-}
-
 func (m *MockDatabaseClient) VerifyHealthEventIdempotencyIndex(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)

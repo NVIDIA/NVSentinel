@@ -189,6 +189,41 @@ Profile name within the credentials file. Defaults to `DEFAULT`. Ignored when `c
 ### principalId
 OCI principal OCID used for Workload Identity. Required when `credentialsFile` is empty.
 
+## Nebius
+
+For Nebius Managed Kubernetes (MK8s) clusters. The provider uses the official [Nebius Go SDK](https://github.com/nebius/gosdk) and authenticates with a service account key or an IAM token. The identity needs the `compute.instances.stop` and `compute.instances.start` permissions.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "nebius"
+    nebius:
+      serviceAccountKeySecret: "nebius-sa-credentials"
+```
+
+Configure exactly one credential. Prefer a service account key: IAM tokens expire and need a manual refresh, so they suit testing rather than production.
+
+### serviceAccountKeySecret
+Secret holding the service account key file under the key `sa-credentials.json`. The chart mounts it at `/etc/nebius` and sets `NEBIUS_SA_KEY_FILE` for you. This is the recommended production option.
+
+### serviceAccountKeyFile
+Path to a service account key file already present inside the container, in the JSON format the Nebius SDK documents. Passed as `NEBIUS_SA_KEY_FILE`. Use this when you mount the credential yourself.
+
+### iamToken
+A Nebius IAM token supplied directly, passed as `NEBIUS_IAM_TOKEN`. Obtain one with `nebius iam get-access-token`. For testing only — the token expires and remediation stops working when it does.
+
+### iamTokenSecretRef
+Secret holding an IAM token, as an alternative to writing the token into Helm values. Keeps the token out of your values file, but it still expires.
+
+```yaml
+janitor-provider:
+  csp:
+    nebius:
+      iamTokenSecretRef:
+        name: nebius-janitor-token
+        key: token
+```
+
 ## Lambda
 
 Reboot maps to the Lambda power-cycle operation (a host-level power cycle, not a guest restart) and terminate maps to the Lambda terminate operation. Nodes must carry `spec.providerID` in the form `lambda://<instanceID>`.
