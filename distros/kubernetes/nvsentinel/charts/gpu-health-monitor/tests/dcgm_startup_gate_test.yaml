@@ -45,7 +45,7 @@ tests:
           path: spec.template.spec.initContainers[0].args
           value:
             - --dcgm-addr
-            - nvidia-dcgm.gpu-operator.svc:5555
+            - nvidia-dcgm-dra.gpu-operator.svc:5555,nvidia-dcgm.gpu-operator.svc:5555
             - --retry-interval-seconds
             - "7"
             - --connect-timeout-seconds

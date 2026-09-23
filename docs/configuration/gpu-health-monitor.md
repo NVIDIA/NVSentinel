@@ -92,9 +92,11 @@ global:
     mode: operator-service
     enabled: true
     service:
-      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      endpoint: "nvidia-dcgm-dra.gpu-operator.svc,nvidia-dcgm.gpu-operator.svc"
       port: 5555
 ```
+
+The endpoint may be a comma-separated list of hosts. The monitor tries them in order on every connect. Only one DCGM Service exists per cluster: `nvidia-dcgm-dra` in GPU Operator GPUCluster (DRA) mode and `nvidia-dcgm` otherwise, so the default works in both modes without per mode configuration.
 
 To use a service in another namespace, override its endpoint:
 
