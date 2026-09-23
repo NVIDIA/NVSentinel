@@ -68,6 +68,22 @@ def metadata_file():
     return f.name
 
 
+_env_patch: Any = None
+
+
+def setUpModule() -> None:
+    """These tests exercise the socket path; a direct-mode environment leaking in from the shell would silently switch the processor over."""
+    global _env_patch
+    _env_patch = unittest.mock.patch.dict(
+        os.environ, {k: v for k, v in os.environ.items() if not k.startswith("HEALTH_PUBLISH_")}, clear=True
+    )
+    _env_patch.start()
+
+
+def tearDownModule() -> None:
+    _env_patch.stop()
+
+
 class PlatformConnectorServicer(platformconnector_pb2_grpc.PlatformConnectorServicer):
     def __init__(self) -> None:
         self.health_events: platformconnector_pb2.HealthEvents = None
@@ -80,6 +96,80 @@ class PlatformConnectorServicer(platformconnector_pb2_grpc.PlatformConnectorServ
 
 
 class TestPlatformConnectors(unittest.TestCase):
+
+    def test_blocked_publish_serializes_polls(self) -> None:
+        """While the first fault publish is blocked (an outage in direct mode), a repeated fault poll waits its turn
+        under the event lock; when publishing resumes it finds the cache already published and sends nothing, so
+        the fault goes out once. A healthy poll afterwards publishes the recovery and the cache ends healthy."""
+        temp_file_path = metadata_file()
+        processor = platform_connector.PlatformConnectorEventProcessor(
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={"GPU_ERROR": "CONTACT_SUPPORT"},
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            ),
+            exit=Event(),
+        )
+        pcie_check = processor._convert_dcgm_watch_name_to_check_name("DCGM_HEALTH_WATCH_PCIE")
+        release = Event()
+        first_fault_started = Event()
+        sends: list[list[platformconnector_pb2.HealthEvent]] = []
+
+        def blocking_send(
+            events: list[platformconnector_pb2.HealthEvent],
+            delivery_timeout_seconds: float | None = None,
+        ) -> bool:
+            sends.append(list(events))
+            # The first PCIe fault publish blocks, as it would during an outage;
+            # the startup events the first poll may publish before it do not.
+            is_pcie_fault = any(event.checkName == pcie_check and not event.isHealthy for event in events)
+            if is_pcie_fault and not first_fault_started.is_set():
+                first_fault_started.set()
+                assert release.wait(10.0), "the test releases the first fault publish"
+            return True
+
+        processor.send_health_event_with_retries = blocking_send
+        fault = {
+            "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.FAIL,
+                entity_failures={0: [dcgmtypes.ErrorDetails(code="GPU_ERROR", message="GPU 0 failed")]},
+            )
+        }
+        healthy = {
+            "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(status=dcgmtypes.HealthStatus.PASS, entity_failures={})
+        }
+
+        try:
+            polls = [Thread(target=processor.health_event_occurred, args=(fault, [0]))]
+            polls[0].start()
+            assert first_fault_started.wait(5.0), "the first fault publish is in progress"
+            polls.append(Thread(target=processor.health_event_occurred, args=(fault, [0])))
+            polls[1].start()
+            # The repeated poll is queued on the lock behind the blocked publish.
+            polls[1].join(0.2)
+            assert polls[1].is_alive(), "the repeated poll waits behind the blocked publish"
+            release.set()
+            for poll in polls:
+                poll.join(10.0)
+                assert not poll.is_alive()
+
+            def pcie_sends() -> list[list[bool]]:
+                return [
+                    [event.isHealthy for event in batch if event.checkName == pcie_check]
+                    for batch in sends
+                    if any(event.checkName == pcie_check for event in batch)
+                ]
+
+            assert pcie_sends() == [[False]], "the fault once, nothing from the queued poll: %r" % (sends,)
+            processor.health_event_occurred(healthy, [0])
+            assert pcie_sends() == [[False], [True]], "then the recovery: %r" % (sends,)
+            key = processor._build_cache_key(pcie_check, "GPU", "0")
+            assert processor.entity_cache[key].is_healthy
+        finally:
+            os.remove(temp_file_path)
 
     def test_partial_evaluation_does_not_clear_unobserved_gpu(self):
         """Only a GPU with a valid sample may create or clear a field-watch event."""

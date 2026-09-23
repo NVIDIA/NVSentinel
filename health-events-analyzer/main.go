@@ -27,10 +27,10 @@ import (
 
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -99,24 +99,35 @@ func createPipeline() any {
 	return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
 }
 
+// connectToPlatform routes the dial through the shared healthpub environment
+// switch. With HEALTH_PUBLISH_TARGET set it connects directly to the
+// deployment platform connector and the publisher runs in direct mode;
+// otherwise it dials the node-local socket with exactly today's options (an
+// insecure transport plus the token interceptor for tokenPath). The publisher
+// owns the connection in both modes and closes it in Close.
 func connectToPlatform(socket, tokenPath string, processingStrategy protos.ProcessingStrategy) (
-	*publisher.PublisherConfig, *grpc.ClientConn, error) {
-	opts := append(
-		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
-		grpcclient.DialOptions(tokenPath)...,
-	)
+	*publisher.PublisherConfig, error) {
+	conn, platformConnectorClient, pubOpt, err := healthpub.DialFromEnvOr(func() (*grpc.ClientConn, error) {
+		// Legacy socket mode: dial the node-local socket exactly as today.
+		// Logged here so the socket path and token flag are only reported
+		// when the socket is what actually gets dialed; DialFromEnvOr logs
+		// the direct-mode dial itself.
+		slog.Info("Dialing platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
 
-	slog.Info("Dialing platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
+		socketConn, dialErr := grpc.NewClient(socket, grpcclient.InsecureDialOptions(tokenPath)...)
+		if dialErr != nil {
+			return nil, fmt.Errorf("socket %s: %w", socket, dialErr)
+		}
 
-	conn, err := grpc.NewClient(socket, opts...)
+		return socketConn, nil
+	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to dial platform connector UDS %s: %w", socket, err)
+		return nil, fmt.Errorf("health-events-analyzer: failed to dial platform connector: %w", err)
 	}
 
-	platformConnectorClient := protos.NewPlatformConnectorClient(conn)
-	pub := publisher.NewPublisher(platformConnectorClient, processingStrategy)
+	slog.Info("Platform connector client created", "target", conn.Target())
 
-	return pub, conn, nil
+	return publisher.NewPublisher(platformConnectorClient, processingStrategy, pubOpt), nil
 }
 
 func run() error {
@@ -157,11 +168,13 @@ func run() error {
 
 	slog.Info("Event handling strategy configured", "processingStrategy", *processingStrategyFlag)
 
-	pub, conn, err := connectToPlatform(*socket, *socketTokenPath, protos.ProcessingStrategy(value))
+	pub, err := connectToPlatform(*socket, *socketTokenPath, protos.ProcessingStrategy(value))
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+
+	// Closes the publisher and the connection it owns.
+	defer pub.Close()
 
 	// Parse the TOML content
 	tomlConfig, err := config.LoadTomlConfig(*tomlConfigPath)

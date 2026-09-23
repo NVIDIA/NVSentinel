@@ -35,6 +35,24 @@ health_events_insertion_skipped_pc_unavailable = Counter(
     "Total number of health-event sends skipped because the platform-connector Unix socket was missing",
 )
 
+# Direct-mode publisher metrics: the monitor publishes straight to the
+# central deployment platform connector, one batch at a time.
+health_events_direct_publish_succeed = Counter(
+    "health_events_direct_publish_succeed",
+    "Total number of health-event batches delivered to the deployment platform connector",
+)
+
+health_events_direct_publish_dropped = Counter(
+    "health_events_direct_publish_dropped",
+    "Total number of health-event batches dropped by the direct publisher, by reason",
+    labelnames=["reason"],
+)
+
+health_events_direct_publish_retries = Counter(
+    "health_events_direct_publish_retries",
+    "Total number of direct-publish send retries",
+)
+
 dcgm_health_active_events = Gauge(
     "dcgm_health_active_events",
     "Active health events by watch type, GPU, and error code",

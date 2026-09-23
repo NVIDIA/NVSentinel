@@ -28,9 +28,9 @@ from gpu_health_monitor.protos import (
 )
 from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
+from . import direct_publisher as direct_publisher_mod
 from . import metrics
 from time import monotonic, sleep
-import re
 
 import dcgm_fields
 
@@ -46,31 +46,19 @@ GPU_ONLY_FIELD_HEALTH_WATCHES = frozenset(
 # Critical events are emitted while the DCGM loop is about to enter cleanup or
 # is already hung. Keep delivery bounded well inside the liveness restart budget.
 CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
-# Only transport-level failures are worth another attempt. Every other status
-# is a deterministic verdict from platform-connector (PERMISSION_DENIED,
-# UNAUTHENTICATED, INVALID_ARGUMENT, ...) that will come back identical on the
-# next attempt, so retrying it just spends the whole backoff budget - roughly
-# six minutes at MAX_RETRIES=10 - before reporting the same failure.
+# Socket path only: transport-level failures are worth another attempt. Every
+# other status is a deterministic verdict from platform-connector
+# (PERMISSION_DENIED, UNAUTHENTICATED, INVALID_ARGUMENT, ...) that will come
+# back identical on the next attempt, so retrying it just spends the whole
+# backoff budget - roughly six minutes at MAX_RETRIES=10 - before reporting
+# the same failure. The direct publisher has its own set and retries
+# UNAUTHENTICATED, since the projected token rotates.
 RETRYABLE_STATUS_CODES = frozenset(
     {
         grpc.StatusCode.UNAVAILABLE,
         grpc.StatusCode.DEADLINE_EXCEEDED,
     }
 )
-
-
-def _rpc_status_code(error: grpc.RpcError) -> grpc.StatusCode | None:
-    """The status code carried by a gRPC failure, or None when it carries none.
-
-    Failures raised by a live channel are ``grpc.Call`` instances and always
-    carry a code. A bare ``grpc.RpcError`` does not; it expresses no verdict
-    either way, so callers keep treating it as retryable.
-    """
-    code_getter = getattr(error, "code", None)
-    if not callable(code_getter):
-        return None
-    code = code_getter()
-    return code if isinstance(code, grpc.StatusCode) else None
 
 
 def _serialized_event_state(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -80,6 +68,37 @@ def _serialized_event_state(method: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
         with self._event_lock:
             return method(self, *args, **kwargs)
+
+    return wrapper
+
+
+def _serialized_critical_event(method: Callable[..., bool]) -> Callable[..., bool]:
+    """Serialize a critical event like _serialized_event_state, but wait for the
+    lock no longer than the event's own delivery budget.
+
+    A periodic poll holds the lock while its publish is blocked, up to the
+    direct publisher's retry window. A critical event is published from the
+    DCGM watcher thread right before a cleanup that may hang, with a 15 s
+    budget; waiting longer than that would stall the watcher (and its
+    liveness), so a lock not obtained in time counts as not delivered, and
+    the watcher retries on its next cycle, as it does when the publish itself
+    runs out of time.
+    """
+
+    @wraps(method)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> bool:
+        if not self._event_lock.acquire(timeout=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS):
+            log.warning(
+                "%s: a health event publish is still in progress after %.0f s; the critical event is not "
+                "delivered now and is retried on the next cycle",
+                method.__name__,
+                CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
+            )
+            return False
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._event_lock.release()
 
     return wrapper
 
@@ -148,6 +167,16 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         # unhealthy event even if Helm config changed in between.
         self._dcgm_unresponsive_strategy: platformconnector_pb2.ProcessingStrategy | None = None
         self._restore_dcgm_unresponsive_state()
+        # Direct mode: when HEALTH_PUBLISH_TARGET is set, publishes go over
+        # the network to the deployment platform connector, one batch at a
+        # time, instead of the node-local socket. When the variable is unset
+        # this is None and socket behavior is unchanged.
+        self._direct_publisher = direct_publisher_mod.maybe_create_from_env()
+
+    def close(self) -> None:
+        """Stops the direct-mode publisher, if one is running; a publish in progress ends at once."""
+        if self._direct_publisher is not None:
+            self._direct_publisher.close()
 
     def read_old_system_bootid_from_state_file(self) -> str:
         bootid = ""
@@ -377,6 +406,26 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 raise
 
     def health_event_occurred(
+        self,
+        health_details: dict[str, dcgmtypes.HealthDetails],
+        gpu_ids: list[int],
+        switch_ids: list[int] | None = None,
+    ) -> None:
+        """Publish the transitions one DCGM poll shows against the last published state.
+
+        The watcher delivers health snapshots one at a time, in poll order, and
+        a publish can block for up to the retry window during a platform
+        connector outage in direct mode. Deciding, publishing and committing the
+        cache happen under the processor's event lock, shared with the critical
+        events, so a critical event waits for a publish in progress instead of
+        racing its cache update, and a fault seen by several polls during an
+        outage is published once while a recovery seen afterwards is not lost
+        to a stale cache.
+        """
+        with self._event_lock:
+            self._publish_health_snapshot(health_details, gpu_ids, switch_ids)
+
+    def _publish_health_snapshot(
         self,
         health_details: dict[str, dcgmtypes.HealthDetails],
         gpu_ids: list[int],
@@ -737,18 +786,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         if not self._token_path:
             return None
         try:
-            with open(self._token_path) as token_file:
-                token = token_file.read()
+            token = direct_publisher_mod.read_bearer_token(self._token_path, "platform-connector token file")
         except OSError as e:
             log.error("Failed to read platform-connector token from %s: %s", self._token_path, e)
             raise
-        # An empty file is a broken mount, not a credential. Publishing
-        # "Bearer " gets a generic authentication error back from the server and
-        # sends whoever debugs it looking at RBAC and audiences; failing here
-        # names the actual problem.
-        if not token:
+        except ValueError:
             log.error("Platform-connector token file %s is empty", self._token_path)
-            raise ValueError(f"platform-connector token file {self._token_path} is empty")
+            raise
         return [("authorization", "Bearer " + token)]
 
     def send_health_event_with_retries(
@@ -763,8 +807,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         and `False` is returned. The caller's cache must be left untouched so
         the next poll re-emits with a fresh `generatedTimestamp`.
 
-        Every gRPC call is bounded by ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled
-        connector cannot block a worker indefinitely. When
+        On the socket path every gRPC call is bounded by
+        ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled connector cannot block a
+        worker indefinitely. When
         ``delivery_timeout_seconds`` is set (critical pre-cleanup paths), the
         overall retry budget is also capped; ordinary health events keep the
         existing MAX_RETRIES backoff without an overall deadline.
@@ -777,11 +822,23 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         deterministic rejection, so the loop stops on the first one and reports
         the failure immediately.
 
+        In direct mode (HEALTH_PUBLISH_TARGET set) the direct publisher sends
+        the batch, one batch at a time across all threads, and this method
+        waits for its outcome: True once the server has stored it, False when
+        it was rejected, dropped, or (with ``delivery_timeout_seconds``) not
+        delivered in time, in which case the batch is withdrawn (an attempt
+        the server had already stored is a duplicate it tolerates). Retries,
+        the retry window and the stable idempotency key are the publisher's
+        job. The socket-presence gate only governs the socket path.
+
         Returns:
             True on success. False if the socket was missing, a non-retryable
             status came back, or all retries were exhausted. Callers must update
             their cache only on True.
         """
+        if self._direct_publisher is not None:
+            return self._direct_publisher.publish(health_events, timeout=delivery_timeout_seconds)
+
         if not self._is_platform_connector_socket_present():
             metrics.health_events_insertion_skipped_pc_unavailable.inc()
             log.warning(
@@ -825,7 +882,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     return True
                 except grpc.RpcError as e:
                     log.error(f"Failed to send health event {health_events} to UDS: {e}")
-                    code = _rpc_status_code(e)
+                    code = direct_publisher_mod.rpc_status_code(e)
                     if code is not None and code not in RETRYABLE_STATUS_CODES:
                         # The same request will earn the same status next time,
                         # so stop here instead of spending the backoff budget.
@@ -864,7 +921,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         )
         return False
 
-    @_serialized_event_state
+    @_serialized_critical_event
     def dcgm_connectivity_failed(self) -> bool:
         """Handle a DCGM connectivity failure.
 
@@ -962,7 +1019,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 log.error(f"Exception while sending DCGM connectivity failure events: {e}")
                 raise
 
-    @_serialized_event_state
+    @_serialized_critical_event
     def dcgm_probe_unresponsive(
         self,
         operation: str,

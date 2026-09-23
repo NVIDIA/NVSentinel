@@ -81,6 +81,24 @@ db.$MONGODB_COLLECTION_NAME.createIndex({
   'healthevent.entitiesimpacted.entityvalue': 1,
   'healthevent.generatedtimestamp.seconds': 1
 });
+// Health-events-analyzer scopes every rule to one node and one time window.
+// The index above is multikey on entitiesimpacted, so it emits several keys per
+// document. These two are not multikey and emit one key per document, and they
+// put the equality fields the rules filter on ahead of the time range.
+// 16 of the 22 shipped rules filter on ishealthy.
+db.$MONGODB_COLLECTION_NAME.createIndex({
+  'healthevent.nodename': 1,
+  'healthevent.ishealthy': 1,
+  'healthevent.generatedtimestamp.seconds': 1
+});
+// MultipleRemediations is the only rule reading faultremediated, and the only
+// one with a 7-day window, so it examines the most documents of any rule.
+db.$MONGODB_COLLECTION_NAME.createIndex({
+  'healthevent.nodename': 1,
+  'healtheventstatus.faultremediated.value': 1,
+  'healthevent.isfatal': 1,
+  'healthevent.generatedtimestamp.seconds': 1
+});
 {{- if .Values.mongodb.tls.enabled }}
 // Create X.509 users (TLS only)
 var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');

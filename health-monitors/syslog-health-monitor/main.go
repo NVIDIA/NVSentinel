@@ -28,9 +28,9 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -119,18 +119,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(root, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	conn, err := dialPlatformConnector(ctx, *platformConnectorSocket, *platformConnectorTokenPath)
+	client, pubOpt, err := dialPlatformConnector(ctx, *platformConnectorSocket, *platformConnectorTokenPath)
 	if err != nil {
 		return err
 	}
-
-	defer func() {
-		if closeErr := conn.Close(); closeErr != nil {
-			slog.Error("Error closing gRPC connection", "error", closeErr)
-		}
-	}()
-
-	client := pb.NewPlatformConnectorClient(conn)
 
 	checks, err = buildChecksFromFlag()
 	if err != nil {
@@ -145,20 +137,41 @@ func run() error {
 
 	preInitializeMetrics(nodeName, checks)
 
-	monitor, pollingInterval, err := createSyslogMonitor(nodeName, checks, client)
+	monitor, pollingInterval, err := createSyslogMonitor(nodeName, checks, client, pubOpt)
 	if err != nil {
 		return err
 	}
 
+	// Closes the publisher and the connection it owns.
+	defer monitor.Close()
+
 	// Health checker reports unhealthy if the polling loop has not completed
-	// an iteration within 3x the polling interval.
+	// an iteration within 3x the polling interval, unless the loop is waiting
+	// for the deployment platform connector to store a batch: that is the
+	// server being away, not the loop hanging, and must not restart the pod.
 	healthChecker := server.NewPollingHealthChecker(3 * pollingInterval)
+	healthChecker.AllowWaitingOn(monitor.WaitingOnServer)
 
 	srv, portInt, err := createMetricsServer(healthChecker)
 	if err != nil {
 		return err
 	}
 
+	return runServerAndLoop(ctx, srv, portInt, nodeName, monitor, pollingInterval, healthChecker)
+}
+
+// runServerAndLoop runs the metrics server and the journal polling loop under
+// one errgroup, gating the polling loop on XID-sidecar readiness when the
+// sidecar is enabled.
+func runServerAndLoop(
+	ctx context.Context,
+	srv server.Server,
+	portInt int,
+	nodeName string,
+	monitor *fd.SyslogMonitor,
+	pollingInterval time.Duration,
+	healthChecker *server.PollingHealthChecker,
+) error {
 	g, gCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
@@ -170,6 +183,16 @@ func run() error {
 
 		return nil
 	})
+
+	// The healthy events a reboot left pending go out now, with the health
+	// endpoint served and before the XID sidecar wait: they do not need the
+	// sidecar, and on main they went out from the constructor, ahead of it. A
+	// failure is retried by the first run of the loop.
+	healthChecker.MarkAlive()
+
+	if err := monitor.FlushPostReboot(gCtx); err != nil {
+		slog.Error("Pending post-reboot bootID flush failed at start; the polling loop retries it", "error", err)
+	}
 
 	if err := waitForSidecarIfEnabled(gCtx, nodeName); err != nil {
 		return err
@@ -222,20 +245,27 @@ func validateNodeName() (string, error) {
 	return nodeName, nil
 }
 
-func dialPlatformConnector(ctx context.Context, socket, tokenPath string) (*grpc.ClientConn, error) {
-	dialOpts := append(
-		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
-		grpcclient.DialOptions(tokenPath)...,
-	)
+// dialPlatformConnector routes the dial through the shared healthpub
+// environment switch: with HEALTH_PUBLISH_TARGET set the client talks to the
+// deployment platform connector directly, otherwise today's node-local socket
+// dial runs unchanged (the same bounded retry dial, socket presence plus
+// readiness wait, against the same target and token path). The option hands
+// the connection to the publisher, which closes it in Close.
+func dialPlatformConnector(ctx context.Context, socket, tokenPath string) (
+	pb.PlatformConnectorClient, healthpub.Option, error,
+) {
+	_, client, pubOpt, err := healthpub.DialFromEnvOr(func() (*grpc.ClientConn, error) {
+		// Legacy socket mode: the bounded socket wait and readiness gate are
+		// part of today's startup contract, so dial exactly as before.
+		slog.Info("Creating gRPC client to platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
 
-	slog.Info("Creating gRPC client to platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
-
-	conn, err := dialWithRetry(ctx, socket, dialOpts...)
+		return dialWithRetry(ctx, socket, grpcclient.InsecureDialOptions(tokenPath)...)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create gRPC client after retries: %w", err)
+		return nil, nil, fmt.Errorf("syslog-health-monitor: failed to dial platform connector: %w", err)
 	}
 
-	return conn, nil
+	return client, pubOpt, nil
 }
 
 // kernelOriginChecks lists checks whose source events are emitted by the kernel
@@ -376,6 +406,7 @@ func createSyslogMonitor(
 	nodeName string,
 	list []fd.CheckDefinition,
 	client pb.PlatformConnectorClient,
+	pubOpts ...healthpub.Option,
 ) (*fd.SyslogMonitor, time.Duration, error) {
 	value, ok := pb.ProcessingStrategy_value[*processingStrategyFlag]
 	if !ok {
@@ -426,6 +457,7 @@ func createSyslogMonitor(
 		cancellationsCfg,
 		*platformConnectorSocket,
 		mustParseDuration(*bootLookbackWindowFlag),
+		pubOpts...,
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error creating syslog health monitor: %w", err)
@@ -481,23 +513,19 @@ func runPollingLoop(
 			slog.Info("Performing scheduled health check run...")
 
 			for {
-				// Mark alive on every attempt, not just on success, so the
-				// liveness probe detects a frozen loop rather than a failed
-				// dependency: on sustained failure this retry loop never
-				// returns to the outer ticker, and backoff (≤30s) is far
-				// shorter than the staleness threshold.
+				// Mark alive before and after every attempt, not just on
+				// success, so the liveness probe detects a frozen loop rather
+				// than a failed dependency: on sustained failure this retry
+				// loop never returns to the outer ticker, a run itself can
+				// last a publish retry window in direct mode, and only the
+				// backoff sleep (≤30s) stays uncovered, far shorter than the
+				// staleness threshold.
 				healthChecker.MarkAlive()
 
-				if err := monitor.Run(); err != nil {
-					if backoff == 0 {
-						backoff = 2 * time.Second
-					} else {
-						backoff *= 2
-					}
+				if err := monitor.Run(ctx); err != nil {
+					healthChecker.MarkAlive()
 
-					if backoff > 30*time.Second {
-						backoff = 30 * time.Second
-					}
+					backoff = nextBackoff(backoff)
 
 					slog.Error("Health check run failed; will retry after backoff", "error", err, "backoff", backoff)
 
@@ -521,6 +549,15 @@ func runPollingLoop(
 			}
 		}
 	}
+}
+
+// nextBackoff doubles the retry pause, from two seconds up to thirty.
+func nextBackoff(prev time.Duration) time.Duration {
+	if prev == 0 {
+		return 2 * time.Second
+	}
+
+	return min(prev*2, 30*time.Second)
 }
 
 func waitForSidecarIfEnabled(ctx context.Context, nodeName string) error {

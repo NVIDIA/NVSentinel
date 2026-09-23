@@ -121,7 +121,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize components: %w", err)
 	}
-	defer components.GRPCConn.Close()
+
+	// Closes the publisher and the connection it owns.
+	defer components.Publisher.Close()
 
 	slog.Info("Starting manager")
 

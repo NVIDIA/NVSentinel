@@ -25,6 +25,7 @@ import (
 	"os"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -77,4 +78,11 @@ func DialOptions(tokenPath string) []grpc.DialOption {
 	}
 
 	return []grpc.DialOption{grpc.WithUnaryInterceptor(TokenInterceptor(tokenPath))}
+}
+
+// InsecureDialOptions are DialOptions over a plaintext transport: the dial
+// options of the node-local socket, where the kernel, not TLS, keeps the
+// token on the node.
+func InsecureDialOptions(tokenPath string) []grpc.DialOption {
+	return append([]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, DialOptions(tokenPath)...)
 }

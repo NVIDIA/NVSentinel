@@ -27,7 +27,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -42,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
@@ -70,7 +70,6 @@ type Params struct {
 
 type Components struct {
 	Manager   ctrl.Manager
-	GRPCConn  *grpc.ClientConn
 	Publisher *publisher.Publisher
 	Evaluator *policy.Evaluator
 	Config    *config.Config
@@ -88,31 +87,34 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	slog.Info("Loaded policy configuration", "policies", len(cfg.Policies))
 
-	conn, err := dialPlatformConnector(params.PlatformConnectorSocket, params.PlatformConnectorToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to platform connector: %w", err)
-	}
-
-	pcClient := pb.NewPlatformConnectorClient(conn)
-
 	strategyValue, ok := pb.ProcessingStrategy_value[params.ProcessingStrategy]
 	if !ok {
-		conn.Close()
 		return nil, fmt.Errorf("unexpected processingStrategy value: %q", params.ProcessingStrategy)
 	}
 
 	slog.Info("Event handling strategy configured", "processingStrategy", params.ProcessingStrategy)
 
-	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue))
+	// With HEALTH_PUBLISH_TARGET set the client talks to the deployment
+	// platform connector directly; otherwise the legacy socket dial runs, with
+	// its bounded wait for the socket file. The option hands the connection to
+	// the publisher, which closes it in Close.
+	_, pcClient, pubOpt, err := healthpub.DialFromEnvOr(func() (*grpc.ClientConn, error) {
+		return dialPlatformConnectorSocket(params.PlatformConnectorSocket, params.PlatformConnectorToken)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to platform connector: %w", err)
+	}
+
+	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue), pubOpt)
 
 	mgr, lookupGVKs, err := createManager(params, cfg.Policies)
 	if err != nil {
-		conn.Close()
+		pub.Close()
 		return nil, fmt.Errorf("failed to create manager: %w", err)
 	}
 
 	if err := setupHealthChecks(mgr); err != nil {
-		conn.Close()
+		pub.Close()
 		return nil, fmt.Errorf("failed to setup health checks: %w", err)
 	}
 
@@ -121,7 +123,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 	// which would start a cluster-wide informer for it and hold it in full.
 	celEnv, err := celenv.NewEnvironment(mgr.GetAPIReader())
 	if err != nil {
-		conn.Close()
+		pub.Close()
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
 
@@ -129,19 +131,18 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	evaluator, err := policy.NewEvaluator(celEnv, cfg.Policies)
 	if err != nil {
-		conn.Close()
+		pub.Close()
 		return nil, fmt.Errorf("failed to create policy evaluator: %w", err)
 	}
 
 	if err := registerControllers(mgr, evaluator, pub, cfg.Policies,
 		params.MaxConcurrentReconciles); err != nil {
-		conn.Close()
+		pub.Close()
 		return nil, fmt.Errorf("failed to register controllers: %w", err)
 	}
 
 	return &Components{
 		Manager:   mgr,
-		GRPCConn:  conn,
 		Publisher: pub,
 		Evaluator: evaluator,
 		Config:    cfg,
@@ -394,13 +395,8 @@ func registerControllers(
 	return nil
 }
 
-func dialPlatformConnector(socket, tokenPath string) (*grpc.ClientConn, error) {
+func dialPlatformConnectorSocket(socket, tokenPath string) (*grpc.ClientConn, error) {
 	socketPath := strings.TrimPrefix(socket, "unix://")
-
-	dialOpts := append(
-		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
-		grpcclient.DialOptions(tokenPath)...,
-	)
 
 	slog.Info("Dialing platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
 
@@ -416,7 +412,7 @@ func dialPlatformConnector(socket, tokenPath string) (*grpc.ClientConn, error) {
 			return nil, fmt.Errorf("socket not found after retries: %w", err)
 		}
 
-		conn, err := grpc.NewClient(socket, dialOpts...)
+		conn, err := grpc.NewClient(socket, grpcclient.InsecureDialOptions(tokenPath)...)
 		if err != nil {
 			slog.Warn("Failed to create gRPC client", "attempt", attempt, "error", err)
 

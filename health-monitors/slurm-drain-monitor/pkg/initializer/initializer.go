@@ -25,7 +25,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -36,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/controller"
@@ -62,9 +62,9 @@ type Params struct {
 
 // Components holds initialized components.
 type Components struct {
-	Manager  ctrl.Manager
-	GRPCConn *grpc.ClientConn
-	Config   *config.Config
+	Manager   ctrl.Manager
+	Publisher *publisher.Publisher
+	Config    *config.Config
 }
 
 // InitializeAll loads config, dials platform connector, creates parser and publisher,
@@ -74,14 +74,14 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 	logrLogger := logr.FromSlogHandler(slogHandler)
 	ctrllog.SetLogger(logrLogger)
 
-	conn, pr, pub, cfg, err := initConnAndClients(ctx, params)
+	pr, pub, cfg, err := initConnAndClients(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 
 	cacheOpts, err := buildCacheOptions(cfg, params.ResyncPeriod)
 	if err != nil {
-		conn.Close()
+		pub.Close()
 
 		return nil, err
 	}
@@ -94,13 +94,13 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOpts)
 	if err != nil {
-		conn.Close()
+		pub.Close()
 
 		return nil, fmt.Errorf("failed to create manager: %w", err)
 	}
 
 	if err := setupHealthProbes(mgr); err != nil {
-		conn.Close()
+		pub.Close()
 
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 			MaxConcurrentReconciles: params.MaxConcurrentReconciles,
 		}).
 		Complete(reconciler); err != nil {
-		conn.Close()
+		pub.Close()
 
 		return nil, fmt.Errorf("failed to create controller: %w", err)
 	}
@@ -120,52 +120,54 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 	slog.Info("Registered drain reconciler")
 
 	return &Components{
-		Manager:  mgr,
-		GRPCConn: conn,
-		Config:   cfg,
+		Manager:   mgr,
+		Publisher: pub,
+		Config:    cfg,
 	}, nil
 }
 
+// initConnAndClients loads the config, dials platform-connector and builds
+// the parser and publisher; the publisher owns the connection.
 func initConnAndClients(ctx context.Context, params Params) (
-	*grpc.ClientConn, *parser.Parser, *publisher.Publisher, *config.Config, error,
+	*parser.Parser, *publisher.Publisher, *config.Config, error,
 ) {
 	cfg, err := config.Load(params.ConfigPath)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to load config: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
 	if err := validateRecommendedActions(cfg); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("config validation failed: %w", err)
+		return nil, nil, nil, fmt.Errorf("config validation failed: %w", err)
 	}
 
 	slog.Info("Loaded slurm-drain-monitor config", "namespace", cfg.Namespace, "patterns", len(cfg.Patterns))
 
-	conn, err := dialPlatformConnector(ctx, params.PlatformConnectorSocket, params.PlatformConnectorToken)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to connect to platform connector: %w", err)
-	}
-
-	pcClient := pb.NewPlatformConnectorClient(conn)
 	strategyValue, ok := pb.ProcessingStrategy_value[params.ProcessingStrategy]
-
 	if !ok {
-		conn.Close()
-
-		return nil, nil, nil, nil, fmt.Errorf("unexpected processingStrategy value: %q", params.ProcessingStrategy)
+		return nil, nil, nil, fmt.Errorf("unexpected processingStrategy value: %q", params.ProcessingStrategy)
 	}
 
 	slog.Info("Event handling strategy configured", "processingStrategy", params.ProcessingStrategy)
 
 	pr, err := parser.New(cfg.ReasonDelimiter, cfg.Patterns)
 	if err != nil {
-		conn.Close()
-
-		return nil, nil, nil, nil, fmt.Errorf("failed to create parser: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create parser: %w", err)
 	}
 
-	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue))
+	// With HEALTH_PUBLISH_TARGET set the client talks to the deployment
+	// platform connector directly; otherwise the legacy socket dial runs, with
+	// its bounded wait for the socket file. The option hands the connection to
+	// the publisher, which closes it in Close.
+	_, pcClient, pubOpt, err := healthpub.DialFromEnvOr(func() (*grpc.ClientConn, error) {
+		return dialPlatformConnectorSocket(ctx, params.PlatformConnectorSocket, params.PlatformConnectorToken)
+	})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to connect to platform connector: %w", err)
+	}
 
-	return conn, pr, pub, cfg, nil
+	pub := publisher.New(pcClient, params.PlatformConnectorSocket, pb.ProcessingStrategy(strategyValue), pubOpt)
+
+	return pr, pub, cfg, nil
 }
 
 func validateRecommendedActions(cfg *config.Config) error {
@@ -240,13 +242,8 @@ func setupHealthProbes(mgr ctrl.Manager) error {
 	return nil
 }
 
-func dialPlatformConnector(ctx context.Context, socket, tokenPath string) (*grpc.ClientConn, error) {
+func dialPlatformConnectorSocket(ctx context.Context, socket, tokenPath string) (*grpc.ClientConn, error) {
 	socketPath := strings.TrimPrefix(socket, "unix://")
-
-	dialOpts := append(
-		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
-		grpcclient.DialOptions(tokenPath)...,
-	)
 
 	slog.Info("Dialing platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
 
@@ -267,7 +264,7 @@ func dialPlatformConnector(ctx context.Context, socket, tokenPath string) (*grpc
 			return nil, fmt.Errorf("socket not found after retries: %w", err)
 		}
 
-		conn, err := grpc.NewClient(socket, dialOpts...)
+		conn, err := grpc.NewClient(socket, grpcclient.InsecureDialOptions(tokenPath)...)
 		if err != nil {
 			slog.Warn("Failed to create gRPC client", "attempt", attempt, "error", err)
 

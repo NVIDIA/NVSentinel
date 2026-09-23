@@ -197,8 +197,8 @@ func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.H
 	// Process the event using existing business logic
 	publishedNewEvent, err := r.handleEvent(ctx, event)
 	if err != nil {
-		// Return error - EventProcessor will NOT mark as processed
-		// Event will be retried on next pod restart
+		// The event processor checkpoints failed events too
+		// (MarkProcessedOnError), so this is counted and logged, not replayed.
 		totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
 		slog.ErrorContext(ctx, "Failed to process health event", "error", err, "nodeName", labelValue)
 

@@ -25,6 +25,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 type fakePlatformConnectorClient struct {
@@ -146,4 +147,31 @@ func TestPublish_AnySourceEvent_DoesNotMutateCaller(t *testing.T) {
 	require.True(t, src.GetGeneratedTimestamp().AsTime().Equal(sourceTime))
 	require.Equal(t, "syslog-health-monitor", src.GetAgent())
 	require.NotContains(t, src.GetMetadata(), sourceGeneratedTimestampMetadataKey)
+}
+
+// TestPublish_SourceWithIdempotencyKey_DropsTheIngestionKey: a source read
+// back from the datastore carries the key the deployment platform connector
+// stamped on it. The derived event must not inherit it: on the socket path
+// the stored copy would collide with the source's document and be dropped
+// after the analyzer was already acknowledged.
+func TestPublish_SourceWithIdempotencyKey_DropsTheIngestionKey(t *testing.T) {
+	client := &fakePlatformConnectorClient{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	src := sourceEvent(time.Date(2026, 8, 21, 8, 27, 36, 0, time.UTC))
+	src.Metadata = map[string]string{
+		datastore.HealthEventIdempotencyKeyMetadataField: "pod-uid#client-key#0",
+		"providerID": "aws:///us-east-1a/i-123",
+	}
+
+	err := pub.Publish(context.Background(), src,
+		protos.RecommendedAction_NONE, "XIDErrorSoloNoBurst", "no action", nil)
+	require.NoError(t, err)
+
+	published := client.events.GetEvents()[0]
+	require.NotContains(t, published.GetMetadata(), datastore.HealthEventIdempotencyKeyMetadataField,
+		"the source document's key would collide with the derived event on the socket path")
+	require.Equal(t, "aws:///us-east-1a/i-123", published.GetMetadata()["providerID"], "other metadata is kept")
+	require.Equal(t, "pod-uid#client-key#0", src.GetMetadata()[datastore.HealthEventIdempotencyKeyMetadataField],
+		"the caller's event is untouched")
 }

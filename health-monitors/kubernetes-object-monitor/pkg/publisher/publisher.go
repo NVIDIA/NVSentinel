@@ -37,13 +37,21 @@ type Publisher struct {
 	processingStrategy pb.ProcessingStrategy
 }
 
-// New constructs a Publisher. target must match the gRPC target string
-// used to dial client (typically "unix:///var/run/nvsentinel.sock").
-func New(client pb.PlatformConnectorClient, target string, processingStrategy pb.ProcessingStrategy) *Publisher {
+// New constructs a Publisher. target is the platform-connector socket target
+// (typically "unix:///var/run/nvsentinel.sock"); opts are forwarded to
+// healthpub.New, the initializer passing the option healthpub.DialFromEnvOr
+// returns.
+func New(client pb.PlatformConnectorClient, target string, processingStrategy pb.ProcessingStrategy,
+	opts ...healthpub.Option) *Publisher {
 	return &Publisher{
-		pub:                healthpub.New(client, target, agentName),
+		pub:                healthpub.New(client, target, agentName, opts...),
 		processingStrategy: processingStrategy,
 	}
+}
+
+// Close shuts down the publisher and the connection it owns.
+func (p *Publisher) Close() {
+	p.pub.CloseOrWarn()
 }
 
 // PublishHealthEvent publishes a health event to the platform connector.

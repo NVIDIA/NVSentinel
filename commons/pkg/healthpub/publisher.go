@@ -191,6 +191,14 @@ func (p *Publisher) Close() error {
 	return p.closeErr
 }
 
+// CloseOrWarn is Close for callers with nothing to do about a close error
+// but log it.
+func (p *Publisher) CloseOrWarn() {
+	if err := p.Close(); err != nil {
+		slog.Warn("Error closing the health event publisher.", "error", err)
+	}
+}
+
 // WaitingOnServer reports whether a batch is pending in direct mode: a caller
 // blocked in Publish is then waiting for the deployment platform connector,
 // not hung, and a monitor's liveness check can stay green while this is true.

@@ -14,8 +14,10 @@
 package syslogmonitor
 
 import (
+	"context"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 )
@@ -64,7 +66,6 @@ type syslogMonitorState struct {
 type SyslogMonitor struct {
 	nodeName              string
 	checks                []CheckDefinition
-	pcClient              pb.PlatformConnectorClient
 	defaultAgentName      string
 	defaultComponentClass string
 	processingStrategy    pb.ProcessingStrategy
@@ -81,11 +82,8 @@ type SyslogMonitor struct {
 	checkToHandlerMap map[string]types.Handler
 	// Endpoint to the XID analyser service
 	xidAnalyserEndpoint string
-	// gRPC target string used to dial pcClient, set at construction.
-	// "" disables the healthpub gate.
-	platformConnectorTarget string
-	// Non-empty when handleBootIDChange detected a reboot but at least
-	// one post-reboot healthy event was deferred (PC unavailable). Holds
+	// Non-empty from the moment handleBootIDChange detects a reboot until
+	// the post-reboot healthy events have been delivered. Holds
 	// the new BootID to be persisted once tryFlushPostRebootBootIDClear
 	// successfully delivers all events. Run() retries the flush at the
 	// top of every poll cycle, bounding recovery to one polling cadence
@@ -101,6 +99,13 @@ type SyslogMonitor struct {
 	// bootLookbackWindow limits how far back the post-reboot journal scan
 	// reaches. Configurable via --boot-lookback-window CLI flag.
 	bootLookbackWindow time.Duration
+	// pub is the long-lived publisher, in socket or direct mode.
+	pub *healthpub.Publisher
+	// runCtx bounds the publishes of the current run: when it ends, at
+	// shutdown, a publish waiting on the deployment platform connector returns
+	// with its batch withdrawn. The context of the most recent Run; nil before
+	// the first, as in tests.
+	runCtx context.Context
 }
 
 // CheckDefinition matches the structure of each check in the YAML config file

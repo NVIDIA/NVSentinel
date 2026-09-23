@@ -15,6 +15,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -25,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
@@ -256,8 +258,9 @@ func (r *ResourceReconciler) handleUnhealthyTransition(
 	resourceInfo *config.ResourceInfo,
 ) error {
 	if err := r.publisher.PublishHealthEvent(ctx, p, nodeName, false, resourceInfo); err != nil {
-		metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
-		return fmt.Errorf("failed to publish unhealthy event: %w", err)
+		if !rejectedForGood(err, p, nodeName, "unhealthy") {
+			return fmt.Errorf("failed to publish unhealthy event: %w", err)
+		}
 	}
 
 	r.matchStatesMu.Lock()
@@ -273,6 +276,24 @@ func (r *ResourceReconciler) handleUnhealthyTransition(
 	return nil
 }
 
+// rejectedForGood reports whether the platform connector refused the events
+// for good, counting the rejection and logging it: a requeue would get the
+// same answer, so the caller lets the state advance. Any other publish error
+// is counted as a gRPC error and left to the caller to return.
+func rejectedForGood(err error, p *config.Policy, nodeName, kind string) bool {
+	if !errors.Is(err, healthpub.ErrPublishRejected) {
+		metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
+
+		return false
+	}
+
+	metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "rejected").Inc()
+	slog.Error("Platform connector rejected the event for good; not retrying it",
+		"event", kind, "policy", p.Name, "node", nodeName, "error", err)
+
+	return true
+}
+
 func (r *ResourceReconciler) handleHealthyTransition(
 	ctx context.Context,
 	p *config.Policy,
@@ -281,8 +302,9 @@ func (r *ResourceReconciler) handleHealthyTransition(
 	resourceInfo *config.ResourceInfo,
 ) error {
 	if err := r.publisher.PublishHealthEvent(ctx, p, nodeName, true, resourceInfo); err != nil {
-		metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
-		return fmt.Errorf("failed to publish healthy event: %w", err)
+		if !rejectedForGood(err, p, nodeName, "healthy") {
+			return fmt.Errorf("failed to publish healthy event: %w", err)
+		}
 	}
 
 	r.matchStatesMu.Lock()

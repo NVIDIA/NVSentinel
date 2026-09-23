@@ -27,10 +27,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 )
 
@@ -497,7 +501,7 @@ func TestJournalProcessingLogic(t *testing.T) {
 
 	// Create new mock client to track events clearly
 	mockPCClient := &mockPlatformConnectorClient{}
-	sm.pcClient = mockPCClient
+	sm.pub = healthpub.New(mockPCClient, "tcp://test", sm.defaultAgentName)
 
 	// Next execution should process only new entries since the last cursor
 	err = sm.executeCheck(check)
@@ -750,7 +754,7 @@ func TestBootIDChange_StateNotPersistedWhenSendSkipped(t *testing.T) {
 	// BootID. Previously this was a regression: executeCheck →
 	// saveCurrentState would overwrite on-disk BootID with
 	// sm.currentBootID, breaking the retry guarantee after one cycle.
-	assert.NoError(t, sm.Run())
+	assert.NoError(t, sm.Run(context.Background()))
 
 	loaded = readState(t, stateFilePath)
 	assert.Equal(t, oldBootID, loaded.BootID,
@@ -762,7 +766,7 @@ func TestBootIDChange_StateNotPersistedWhenSendSkipped(t *testing.T) {
 	// drain and persist the new BootID within one cycle.
 	require.NoError(t, os.WriteFile(socketPathTest, nil, 0o644))
 
-	assert.NoError(t, sm.Run())
+	assert.NoError(t, sm.Run(context.Background()))
 
 	loaded = readState(t, stateFilePath)
 	assert.Equal(t, expectedBootID, loaded.BootID,
@@ -861,7 +865,7 @@ func TestBootIDChange_ProcessesEntriesFromBootStart(t *testing.T) {
 	assert.False(t, hasCursor, "cursor must be cleared after boot-ID change")
 
 	// Run the first poll cycle.
-	assert.NoError(t, sm.Run())
+	assert.NoError(t, sm.Run(context.Background()))
 
 	// Entries from boot start must have been processed (cursor advanced).
 	cursor, exists := sm.checkLastCursors[check.Name]
@@ -935,7 +939,7 @@ func TestBootIDChange_SecondPollResumesFromCursor(t *testing.T) {
 	assert.NoError(t, err)
 
 	// First Run: processes from boot start.
-	assert.NoError(t, sm.Run())
+	assert.NoError(t, sm.Run(context.Background()))
 	assert.False(t, sm.postRebootInit, "postRebootInit must be cleared after first Run")
 
 	firstCursor := sm.checkLastCursors[check.Name]
@@ -951,7 +955,7 @@ func TestBootIDChange_SecondPollResumesFromCursor(t *testing.T) {
 	mockJournal.Closed = false
 
 	// Second Run: must resume from cursor, not re-scan from boot start.
-	assert.NoError(t, sm.Run())
+	assert.NoError(t, sm.Run(context.Background()))
 
 	secondCursor := sm.checkLastCursors[check.Name]
 	assert.Equal(t, "cursor-3", secondCursor,
@@ -1019,7 +1023,7 @@ func TestNoBootChange_StillSeeksTail(t *testing.T) {
 
 	// Run: should seek to tail (initializeJournalFromTail), saving cursor
 	// at the last entry without processing historical entries.
-	assert.NoError(t, sm.Run())
+	assert.NoError(t, sm.Run(context.Background()))
 
 	// SeekTail positions at the last entry; Previous() moves back one;
 	// cursor is saved at that position. No entries are processed in this
@@ -1077,7 +1081,7 @@ func TestRunMultipleChecks(t *testing.T) {
 	)
 	assert.NoError(t, err)
 
-	err = sm.Run()
+	err = sm.Run(context.Background())
 	assert.NoError(t, err)
 
 	assert.NotNil(t, sm.checkToHandlerMap[XIDErrorCheck], "XID handler should be initialized")
@@ -1412,7 +1416,7 @@ func TestBootStartScanDone_PersistedAfterScan(t *testing.T) {
 	assert.True(t, sm.postRebootInit)
 
 	// Run completes the scan.
-	assert.NoError(t, sm.Run())
+	assert.NoError(t, sm.Run(context.Background()))
 	assert.False(t, sm.postRebootInit)
 
 	// Verify state file has BootStartScanDone: true.
@@ -1568,4 +1572,194 @@ func TestBootStartScanDone_NormalRestart(t *testing.T) {
 
 	// Normal restart: postRebootInit must remain false.
 	assert.False(t, sm.postRebootInit, "postRebootInit must be false when BootStartScanDone is true")
+}
+
+// countingHandler wraps a handler and counts ProcessLine calls; lines
+// containing "unparseable" fail as a handler error.
+type countingHandler struct {
+	inner types.Handler
+	calls int
+}
+
+func (h *countingHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
+	h.calls++
+
+	if strings.Contains(message, "unparseable") {
+		return nil, errors.New("forced handler failure")
+	}
+
+	return h.inner.ProcessLine(message)
+}
+
+// TestExecuteCheck_UndeliveredEventStopsThePassWithoutBusyLooping: when the
+// publisher does not deliver the batch (missing socket, or a direct-mode
+// publisher that gave the batch up), the pass stops at that entry, keeps the
+// cursor and reports the failure, so the next poll retries it; it must neither
+// re-run the handler in a tight loop nor skip the entry. A line the handler
+// cannot process is skipped and the pass goes on.
+func TestExecuteCheck_UndeliveredEventStopsThePassWithoutBusyLooping(t *testing.T) {
+	check := CheckDefinition{Name: "mockCheck", JournalPath: TEST_JOURNAL_PATH}
+
+	fakeJournal := NewFakeJournal()
+	fakeJournal.AddEntryWithMessage("nothing", "cursor-1")
+
+	fakeJournalFactory := NewFakeJournalFactory()
+	fakeJournalFactory.AddJournal(check.JournalPath, fakeJournal)
+
+	testStateFile := "/tmp/test-syslog-monitor-state-publish-rejection.json"
+	defer os.Remove(testStateFile)
+
+	mockPCClient := &mockPlatformConnectorClient{}
+	sm, err := NewSyslogMonitorWithFactory(TEST_NODE, []CheckDefinition{check}, mockPCClient,
+		TEST_AGENT, TEST_COMPONENT, "60s", testStateFile, fakeJournalFactory,
+		"http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "", nil, "tcp://test", 30*time.Minute)
+	require.NoError(t, err)
+
+	handler := &countingHandler{inner: &mockHandler{
+		nodeName: "test", defaultAgentName: "syslog-health-monitor", defaultComponentClass: "GPU", checkName: "mockCheck",
+	}}
+	sm.checkToHandlerMap["mockCheck"] = handler
+
+	require.NoError(t, sm.executeCheck(check), "first run initializes the cursor")
+
+	cursorBefore := sm.checkLastCursors[check.Name]
+	// Count from here.
+	publishedBefore := len(mockPCClient.RecordedHealthEvents)
+
+	fakeJournal.AddEntryWithMessage("unparseable line", "cursor-2")
+	fakeJournal.AddEntryWithMessage("sxid123 first", "cursor-3")
+	fakeJournal.AddEntryWithMessage("sxid123 second", "cursor-4")
+
+	// A unix target whose socket does not exist makes every Publish return
+	// ErrPlatformConnectorUnavailable at once, like a direct-mode publisher
+	// whose retry window ended.
+	sm.pub = healthpub.New(mockPCClient, "unix:///nonexistent/nvsentinel/pc.sock", sm.defaultAgentName)
+
+	require.ErrorIs(t, sm.executeCheck(check), errSendFailed, "the pass reports the undelivered event")
+
+	assert.Len(t, mockPCClient.RecordedHealthEvents, publishedBefore, "nothing was accepted")
+	assert.Equal(t, 2, handler.calls, "the unparseable line is skipped, the rejected line handled once")
+	assert.Equal(t, "cursor-2", sm.checkLastCursors[check.Name],
+		"the cursor moves past the skipped line and stops before the rejected one")
+	assert.NotEqual(t, cursorBefore, sm.checkLastCursors[check.Name])
+
+	// The connector is back: the next poll resumes at the rejected entry.
+	sm.pub = healthpub.New(mockPCClient, "tcp://test", sm.defaultAgentName)
+	require.NoError(t, sm.executeCheck(check))
+
+	assert.Len(t, mockPCClient.RecordedHealthEvents, publishedBefore+2,
+		"both matching lines are published after recovery")
+	assert.Equal(t, "cursor-4", sm.checkLastCursors[check.Name])
+}
+
+// rejectingPlatformConnectorClient answers the calls up to rejectThrough with
+// InvalidArgument, the status a server gives a batch it will never accept,
+// and records the rest like mockPlatformConnectorClient.
+type rejectingPlatformConnectorClient struct {
+	mockPlatformConnectorClient
+	calls         int
+	rejectThrough int
+}
+
+func (m *rejectingPlatformConnectorClient) HealthEventOccurredV1(
+	ctx context.Context, events *pb.HealthEvents, opts ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	m.calls++
+	if m.calls <= m.rejectThrough {
+		return nil, status.Error(codes.InvalidArgument, "health event failed validation")
+	}
+
+	return m.mockPlatformConnectorClient.HealthEventOccurredV1(ctx, events, opts...)
+}
+
+// TestExecuteCheck_RejectedEventIsSkippedNotRetried: a batch the platform
+// connector refuses for good is skipped like a line the handler cannot
+// process: the cursor moves past it and the pass goes on, instead of stopping
+// at the entry and offering the same batch again on every poll.
+func TestExecuteCheck_RejectedEventIsSkippedNotRetried(t *testing.T) {
+	check := CheckDefinition{Name: "mockCheck", JournalPath: TEST_JOURNAL_PATH}
+
+	fakeJournal := NewFakeJournal()
+	fakeJournal.AddEntryWithMessage("nothing", "cursor-1")
+
+	fakeJournalFactory := NewFakeJournalFactory()
+	fakeJournalFactory.AddJournal(check.JournalPath, fakeJournal)
+
+	testStateFile := "/tmp/test-syslog-monitor-state-publish-rejected.json"
+	defer os.Remove(testStateFile)
+
+	client := &rejectingPlatformConnectorClient{}
+	sm, err := NewSyslogMonitorWithFactory(TEST_NODE, []CheckDefinition{check}, client,
+		TEST_AGENT, TEST_COMPONENT, "60s", testStateFile, fakeJournalFactory,
+		"http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "", nil, "tcp://test", 30*time.Minute)
+	require.NoError(t, err)
+
+	handler := &countingHandler{inner: &mockHandler{
+		nodeName: "test", defaultAgentName: "syslog-health-monitor", defaultComponentClass: "GPU", checkName: "mockCheck",
+	}}
+	sm.checkToHandlerMap["mockCheck"] = handler
+
+	require.NoError(t, sm.executeCheck(check), "first run initializes the cursor")
+
+	// Count from here, and refuse exactly the next batch.
+	publishedBefore := len(client.RecordedHealthEvents)
+	client.rejectThrough = client.calls + 1
+
+	fakeJournal.AddEntryWithMessage("sxid123 first", "cursor-2")
+	fakeJournal.AddEntryWithMessage("sxid123 second", "cursor-3")
+
+	require.NoError(t, sm.executeCheck(check))
+
+	assert.Equal(t, 2, handler.calls, "each line is handled once")
+	assert.Len(t, client.RecordedHealthEvents, publishedBefore+1,
+		"the rejected batch is skipped and the next one is published")
+	assert.Equal(t, "cursor-3", sm.checkLastCursors[check.Name], "the cursor moves past the rejected entry")
+}
+
+// TestBootIDChange_RejectedFlushDoesNotBlockTheChecks: the post-reboot flush
+// runs from Run(), not the constructor, and a healthy event the platform
+// connector refuses for good counts as flushed: the new BootID is persisted
+// and the checks run, instead of every cycle re-offering the same batch.
+func TestBootIDChange_RejectedFlushDoesNotBlockTheChecks(t *testing.T) {
+	stateFilePath := t.TempDir() + "/state.json"
+
+	initialState := syslogMonitorState{
+		BootID:           "boot-1",
+		CheckLastCursors: map[string]string{"bootCheck": "old-cursor"},
+	}
+	stateData, err := json.Marshal(initialState)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(stateFilePath, stateData, 0o644))
+
+	check := CheckDefinition{Name: "bootCheck", JournalPath: TEST_JOURNAL_PATH}
+
+	mockJournal := &MockJournal{
+		Entries:         []MockJournalEntry{{Message: "entry1", Cursor: "cursor-1", BootID: "boot-2"}},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+
+	client := &rejectingPlatformConnectorClient{rejectThrough: 1}
+	sm, err := NewSyslogMonitorWithFactory(TEST_NODE, []CheckDefinition{check}, client,
+		TEST_AGENT, TEST_COMPONENT, "60s", stateFilePath, mockFactory,
+		"http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "", nil, "tcp://test", 30*time.Minute)
+	require.NoError(t, err)
+
+	pending := sm.pendingPostRebootBootID
+	require.NotEmpty(t, pending, "the constructor leaves the flush to Run()")
+	require.Empty(t, client.RecordedHealthEvents)
+
+	require.NoError(t, sm.Run(context.Background()))
+
+	require.Empty(t, sm.pendingPostRebootBootID, "a rejected healthy event counts as flushed")
+	require.Equal(t, 1, client.calls, "the rejected batch is offered once")
+
+	persisted, err := os.ReadFile(stateFilePath)
+	require.NoError(t, err)
+	require.Contains(t, string(persisted), pending, "the new BootID is persisted")
 }

@@ -19,6 +19,7 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -53,14 +54,25 @@ type Publisher struct {
 }
 
 // New constructs a Publisher backed by the given Platform Connector gRPC
-// client. target must match the gRPC target string used to dial client
-// (typically "unix:///var/run/nvsentinel.sock"); healthpub derives the
-// socket-presence gate from it.
-func New(client pb.PlatformConnectorClient, target string, processingStrategy pb.ProcessingStrategy) *Publisher {
+// client. target is the platform-connector socket target (typically
+// "unix:///var/run/nvsentinel.sock"); opts are forwarded to healthpub.New, the
+// initializer passing the option healthpub.DialFromEnvOr returns.
+func New(client pb.PlatformConnectorClient, target string, processingStrategy pb.ProcessingStrategy,
+	opts ...healthpub.Option) *Publisher {
 	return &Publisher{
-		pub:                healthpub.New(client, target, agentName),
+		pub:                healthpub.New(client, target, agentName, opts...),
 		processingStrategy: processingStrategy,
 	}
+}
+
+// Close shuts down the publisher and the connection it owns. A publisher from
+// NewForTesting has none.
+func (p *Publisher) Close() {
+	if p.pub == nil {
+		return
+	}
+
+	p.pub.CloseOrWarn()
 }
 
 // NewForTesting creates a Publisher that delegates to the provided function.
@@ -123,6 +135,14 @@ func (p *Publisher) PublishHealthEvent(
 
 	if err := p.pub.Publish(ctx, healthEvents); err != nil {
 		metrics.HealthEventPublishErrors.WithLabelValues(nodeName, strconv.FormatBool(isHealthy)).Inc()
+
+		if errors.Is(err, healthpub.ErrPublishRejected) {
+			// Refused for good: retrying would get the same answer.
+			slog.Error("Platform connector rejected the health event for good; not retrying it",
+				"node", nodeName, "isHealthy", isHealthy, "error", err)
+
+			return nil
+		}
 
 		return fmt.Errorf("failed to send health event for node %s: %w", nodeName, err)
 	}

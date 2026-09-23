@@ -15,10 +15,14 @@
 package initializer
 
 import (
+	"context"
+	"net"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -66,4 +70,28 @@ func TestStripNodeForCache_NoAnnotationYieldsNilMap(t *testing.T) {
 func TestStripNodeForCache_RejectsNonNode(t *testing.T) {
 	_, err := stripNodeForCache(&corev1.ConfigMap{})
 	require.Error(t, err)
+}
+
+// TestDialPlatformConnectorSocket_WaitsForAReadyServer: the legacy socket dial
+// waits for the socket file and a ready connection, and the returned
+// connection targets the socket that was passed in. A real gRPC server answers
+// on the socket because the dial waits for readiness.
+func TestDialPlatformConnectorSocket_WaitsForAReadyServer(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "pc.sock")
+	lis, err := net.Listen("unix", sock)
+	require.NoError(t, err)
+
+	srv := grpc.NewServer()
+	go func() { _ = srv.Serve(lis) }()
+
+	t.Cleanup(srv.Stop)
+
+	target := "unix://" + sock
+
+	conn, err := dialPlatformConnectorSocket(context.Background(), target, "")
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = conn.Close() })
+
+	assert.Equal(t, target, conn.Target(), "the socket dial targets the configured socket")
 }

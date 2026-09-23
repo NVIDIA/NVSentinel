@@ -1826,6 +1826,37 @@ health-events-analyzer:
         }
       }
       ''',
+      # Collapse to one document per GPU before the $lookup below. That
+      # sub-query reads only currentNodeName, which the mandatory first stage
+      # already pins to a single node, and gpuUuid. Every event on the same GPU
+      # therefore asks it the same question, so running it once per event makes
+      # cost grow with the square of the node's event rate. Grouping first caps
+      # the sub-queries at the number of GPUs on the node.
+      '''
+      {
+        "$group": {
+          "_id": {
+            "$arrayElemAt": [
+              {
+                "$map": {
+                  "input": {
+                    "$filter": {
+                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                    }
+                  },
+                  "in": "$$this.entityvalue"
+                }
+              },
+              0
+            ]
+          },
+          "doc": {"$first": "$$ROOT"}
+        }
+      }
+      ''',
+      # Restore the document shape the $lookup expects.
+      '{"$replaceRoot": {"newRoot": "$doc"}}',
       '''
       {
         "$lookup": {
@@ -1923,7 +1954,10 @@ health-events-analyzer:
           }
         }
       }
-      '''
+      ''',
+      # The reconciler only tests whether the result is non-empty, so stop at
+      # the first match rather than returning every surviving document.
+      '{"$limit": 1}'
     ]
 
     [[rules]]
@@ -2324,6 +2358,37 @@ health-events-analyzer:
         }
       }
       ''',
+      # Collapse to one document per GPU before the $lookup below. That
+      # sub-query reads only currentNodeName, which the mandatory first stage
+      # already pins to a single node, and gpuUuid. Every event on the same GPU
+      # therefore asks it the same question, so running it once per event makes
+      # cost grow with the square of the node's event rate. Grouping first caps
+      # the sub-queries at the number of GPUs on the node.
+      '''
+      {
+        "$group": {
+          "_id": {
+            "$arrayElemAt": [
+              {
+                "$map": {
+                  "input": {
+                    "$filter": {
+                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                    }
+                  },
+                  "in": "$$this.entityvalue"
+                }
+              },
+              0
+            ]
+          },
+          "doc": {"$first": "$$ROOT"}
+        }
+      }
+      ''',
+      # Restore the document shape the $lookup expects.
+      '{"$replaceRoot": {"newRoot": "$doc"}}',
       '''
       {
         "$lookup": {
@@ -2421,7 +2486,10 @@ health-events-analyzer:
           }
         }
       }
-      '''
+      ''',
+      # The reconciler only tests whether the result is non-empty, so stop at
+      # the first match rather than returning every surviving document.
+      '{"$limit": 1}'
     ]
 
     [[rules]]
@@ -3171,6 +3239,37 @@ health-events-analyzer:
         }
       }
       ''',
+      # Collapse to one document per GPU before the $lookup below. That
+      # sub-query reads only currentNodeName, which the mandatory first stage
+      # already pins to a single node, and gpuUuid. Every event on the same GPU
+      # therefore asks it the same question, so running it once per event makes
+      # cost grow with the square of the node's event rate. Grouping first caps
+      # the sub-queries at the number of GPUs on the node.
+      '''
+      {
+        "$group": {
+          "_id": {
+            "$arrayElemAt": [
+              {
+                "$map": {
+                  "input": {
+                    "$filter": {
+                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                    }
+                  },
+                  "in": "$$this.entityvalue"
+                }
+              },
+              0
+            ]
+          },
+          "doc": {"$first": "$$ROOT"}
+        }
+      }
+      ''',
+      # Restore the document shape the $lookup expects.
+      '{"$replaceRoot": {"newRoot": "$doc"}}',
       '''
       {
         "$lookup": {
@@ -3268,7 +3367,10 @@ health-events-analyzer:
           }
         }
       }
-      '''
+      ''',
+      # The reconciler only tests whether the result is non-empty, so stop at
+      # the first match rather than returning every surviving document.
+      '{"$limit": 1}'
     ]
 
     [[rules]]
@@ -3354,6 +3456,37 @@ health-events-analyzer:
         }
       }
       ''',
+      # Collapse to one document per GPU before the $lookup below. That
+      # sub-query reads only currentNodeName, which the mandatory first stage
+      # already pins to a single node, and gpuUuid. Every event on the same GPU
+      # therefore asks it the same question, so running it once per event makes
+      # cost grow with the square of the node's event rate. Grouping first caps
+      # the sub-queries at the number of GPUs on the node.
+      '''
+      {
+        "$group": {
+          "_id": {
+            "$arrayElemAt": [
+              {
+                "$map": {
+                  "input": {
+                    "$filter": {
+                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                    }
+                  },
+                  "in": "$$this.entityvalue"
+                }
+              },
+              0
+            ]
+          },
+          "doc": {"$first": "$$ROOT"}
+        }
+      }
+      ''',
+      # Restore the document shape the $lookup expects.
+      '{"$replaceRoot": {"newRoot": "$doc"}}',
       '''
       {
         "$lookup": {
@@ -3451,7 +3584,10 @@ health-events-analyzer:
           }
         }
       }
-      '''
+      ''',
+      # The reconciler only tests whether the result is non-empty, so stop at
+      # the first match rather than returning every surviving document.
+      '{"$limit": 1}'
     ]
 
     [[rules]]

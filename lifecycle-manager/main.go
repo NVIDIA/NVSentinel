@@ -27,7 +27,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -47,7 +46,6 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/internal/controller"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
@@ -242,12 +240,23 @@ func setupNodeValidationController(mgr ctrl.Manager, cfg *config.Config) error {
 	return nil
 }
 
-// newPublisher creates a healthpub.Publisher backed by a gRPC connection
-// to the platform-connector socket. Returns (nil, nil) when the
+// closePublisher closes the publisher's connection on shutdown; nil when the
 // maintenance controller is disabled.
+func closePublisher(publisher *healthpub.Publisher) {
+	if publisher != nil {
+		publisher.CloseOrWarn()
+	}
+}
+
+// newPublisher creates the MaintenanceRequest controller's health event
+// publisher. Returns (nil, nil) when the maintenance controller is disabled.
+//
+// The HEALTH_PUBLISH_* environment selects a direct TLS connection to the
+// deployment platform connector; otherwise the node-local socket is dialed
+// as before. The publisher owns the connection and closes it in Close.
 //
 // A MaintenanceRequest names any node in the cluster, but this component
-// is a Deployment running on one. platform-connector therefore scopes it
+// is a Deployment running on one. The platform connector therefore scopes it
 // to its own node unless it presents a projected ServiceAccount token
 // whose identity is on the cross-node allowlist, so tokenPath must be set
 // wherever node-binding auth is enabled. An empty tokenPath contributes no
@@ -259,26 +268,19 @@ func newPublisher(
 		return nil, nil
 	}
 
-	opts := append(
-		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
-		grpcclient.DialOptions(tokenPath)...,
-	)
+	_, client, pubOpt, err := healthpub.DialFromEnvOr(func() (*grpc.ClientConn, error) {
+		slog.Info("Dialing platform-connector",
+			"socket", socketTarget, "tokenAuthEnabled", tokenPath != "")
 
-	slog.Info("Dialing platform-connector",
-		"socket", socketTarget, "tokenAuthEnabled", tokenPath != "")
-
-	conn, err := grpc.NewClient(socketTarget, opts...)
+		return grpc.NewClient(socketTarget, grpcclient.InsecureDialOptions(tokenPath)...)
+	})
 	if err != nil {
 		slog.Error("Failed to create gRPC client for platform-connector", "error", err)
 
 		return nil, fmt.Errorf("create platform-connector gRPC client: %w", err)
 	}
 
-	return healthpub.New(
-		pb.NewPlatformConnectorClient(conn),
-		socketTarget,
-		"maintenance-controller",
-	), nil
+	return healthpub.New(client, socketTarget, "maintenance-controller", pubOpt), nil
 }
 
 func run() error {
@@ -328,7 +330,8 @@ func run() error {
 		"Enable the MaintenanceRequest controller and webhook.")
 	flag.StringVar(&platformConnectorSocket, "platform-connector-socket",
 		"unix:///var/run/nvsentinel.sock",
-		"gRPC target for the platform-connector socket used by the MaintenanceRequest controller.")
+		"gRPC target for the platform-connector socket used by the MaintenanceRequest controller. "+
+			"HEALTH_PUBLISH_TARGET, when set, points the controller at the deployment platform connector instead.")
 	flag.StringVar(&platformConnectorTokenPath, "platform-connector-token-path", "",
 		"Path to a projected ServiceAccount token presented to platform-connector. "+
 			"A MaintenanceRequest names any node in the cluster, so this is required for "+
@@ -395,6 +398,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	defer closePublisher(publisher)
 
 	if err := setupControllers(
 		mgr, cfg, enableValidationController, enableMaintenanceController, publisher, namespace,

@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/metrics"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/parser"
 )
@@ -141,11 +143,9 @@ func (r *DrainReconciler) handleNoExternalDrain(
 		nn = nodeName
 	}
 
-	if err := r.publisher.PublishDrainEvents(ctx, prev.reasons, nn, true, podNamespace, podName); err != nil {
-		metrics.HealthEventsPublishErrors.WithLabelValues("grpc_error").Inc()
-		slog.Error("Failed to publish healthy event", "pod", key, "node", nn, "error", err)
-
-		return ctrl.Result{}, fmt.Errorf("failed to publish healthy event for pod %s: %w", key, err)
+	if err := publishOutcome(r.publisher.PublishDrainEvents(ctx, prev.reasons, nn, true, podNamespace, podName),
+		"healthy events", key, nn); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	r.mu.Lock()
@@ -180,13 +180,9 @@ func (r *DrainReconciler) handleExternalDrain(
 	// If previously matched with a different message, publish healthy for old reasons first
 	// to give the downstream pipeline a clean transition before new unhealthy events.
 	if wasMatched {
-		if err := r.publisher.PublishDrainEvents(
-			ctx, prev.reasons, prev.nodeName, true, podNamespace, podName,
-		); err != nil {
-			metrics.HealthEventsPublishErrors.WithLabelValues("grpc_error").Inc()
-			slog.Error("Failed to publish healthy event before re-match", "pod", key, "node", prev.nodeName, "error", err)
-
-			return ctrl.Result{}, fmt.Errorf("failed to publish healthy event before re-match for pod %s: %w", key, err)
+		healthy := r.publisher.PublishDrainEvents(ctx, prev.reasons, prev.nodeName, true, podNamespace, podName)
+		if err := publishOutcome(healthy, "healthy events before the re-match", key, prev.nodeName); err != nil {
+			return ctrl.Result{}, err
 		}
 
 		r.mu.Lock()
@@ -200,13 +196,9 @@ func (r *DrainReconciler) handleExternalDrain(
 		metrics.ExternalDrainsDetected.WithLabelValues(reason.PatternName).Inc()
 	}
 
-	if err := r.publisher.PublishDrainEvents(
-		ctx, reasons, nodeName, false, podNamespace, podName,
-	); err != nil {
-		metrics.HealthEventsPublishErrors.WithLabelValues("grpc_error").Inc()
-		slog.Error("Failed to publish drain events", "pod", key, "node", nodeName, "error", err)
-
-		return ctrl.Result{}, fmt.Errorf("failed to publish unhealthy events for pod %s: %w", key, err)
+	if err := publishOutcome(r.publisher.PublishDrainEvents(ctx, reasons, nodeName, false, podNamespace, podName),
+		"drain events", key, nodeName); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	r.mu.Lock()
@@ -276,4 +268,28 @@ func findDrainCondition(pod *corev1.Pod) (corev1.PodCondition, bool) {
 	}
 
 	return corev1.PodCondition{}, false
+}
+
+// publishOutcome turns a publish result into the reconciler's: nil when the
+// events went out, and nil too when the platform connector refused them for
+// good, since a requeue would get the same answer (the rejection is counted
+// and logged and the caller carries on as if published); any other failure is
+// counted and logged and returned, so the request is requeued.
+func publishOutcome(err error, what, key, nodeName string) error {
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, healthpub.ErrPublishRejected) {
+		metrics.HealthEventsPublishErrors.WithLabelValues("rejected").Inc()
+		slog.Error("Platform connector rejected the events for good; not retrying them",
+			"events", what, "pod", key, "node", nodeName, "error", err)
+
+		return nil
+	}
+
+	metrics.HealthEventsPublishErrors.WithLabelValues("grpc_error").Inc()
+	slog.Error("Failed to publish "+what, "pod", key, "node", nodeName, "error", err)
+
+	return fmt.Errorf("failed to publish %s for pod %s: %w", what, key, err)
 }

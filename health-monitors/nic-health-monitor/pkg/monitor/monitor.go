@@ -19,6 +19,7 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -56,20 +57,25 @@ type NICHealthMonitor struct {
 // NewNICHealthMonitor constructs a NICHealthMonitor. The allChecks
 // slice is automatically partitioned into state and counter categories
 // based on each check's name. Checks must be transactional so a failed
-// publication can never consume a health boundary — the monitor commits
-// staged state only after successful delivery. target must match the
-// gRPC target string used to dial pcClient (typically
-// "unix:///var/run/nvsentinel.sock").
+// publication can never consume a health boundary: the monitor commits
+// staged state only after the publisher has delivered the batch, in either
+// mode, or when the server has refused it for good.
+// target must match the gRPC target string used to dial pcClient
+// (typically "unix:///var/run/nvsentinel.sock"). pubOpts are forwarded to the shared
+// healthpub publisher; main passes the option DialFromEnvOr returns, which
+// hands the publisher its connection and, when HEALTH_PUBLISH_TARGET selects
+// the deployment platform connector, puts it in direct mode.
 func NewNICHealthMonitor(
 	nodeName string,
 	pcClient pb.PlatformConnectorClient,
 	target string,
 	allChecks []checks.TransactionalCheck,
 	stateInterval time.Duration,
+	pubOpts ...healthpub.Option,
 ) *NICHealthMonitor {
 	m := &NICHealthMonitor{
 		nodeName:      nodeName,
-		pub:           healthpub.New(pcClient, target, agentName),
+		pub:           healthpub.New(pcClient, target, agentName, pubOpts...),
 		stateInterval: stateInterval,
 	}
 
@@ -105,6 +111,16 @@ func (m *NICHealthMonitor) RunCounterChecks(ctx context.Context) error {
 // StateInterval returns the configurable state polling interval.
 func (m *NICHealthMonitor) StateInterval() time.Duration { return m.stateInterval }
 
+// Close shuts down the publisher and the connection it owns.
+func (m *NICHealthMonitor) Close() {
+	m.pub.CloseOrWarn()
+}
+
+// WaitingOnServer reports whether a publish is waiting for the deployment
+// platform connector within its retry window, so the liveness check can tell
+// a loop that waits from one that hangs. False in socket mode.
+func (m *NICHealthMonitor) WaitingOnServer() bool { return m.pub.WaitingOnServer() }
+
 // runChecks executes the checks in a category and sends any resulting
 // events in a single batch per check. Check errors are logged and do
 // not cancel the remaining checks.
@@ -124,8 +140,10 @@ func (m *NICHealthMonitor) runChecks(
 }
 
 // runOneCheck prepares one check, publishes its events, and commits the
-// staged state only after successful delivery so a failed publication
-// cannot consume a health boundary.
+// staged state only after the publisher has delivered the batch, so a failed
+// publication cannot consume a health boundary. A batch the server refuses
+// for good is committed too: offering it again on every tick would get the
+// same answer.
 func (m *NICHealthMonitor) runOneCheck(ctx context.Context, chk checks.TransactionalCheck, category string) {
 	events, err := chk.Prepare()
 	if err != nil {
@@ -150,6 +168,14 @@ func (m *NICHealthMonitor) runOneCheck(ctx context.Context, chk checks.Transacti
 	batch := &pb.HealthEvents{Version: 1, Events: events}
 
 	if err := m.pub.Publish(ctx, batch); err != nil {
+		if errors.Is(err, healthpub.ErrPublishRejected) {
+			chk.Commit()
+			slog.Error("Platform connector rejected health events for good; dropping them",
+				"check", chk.Name(), "count", len(events), "error", err)
+
+			return
+		}
+
 		chk.Discard()
 		slog.Error("Failed to send health events",
 			"check", chk.Name(), "error", err)
@@ -161,8 +187,8 @@ func (m *NICHealthMonitor) runOneCheck(ctx context.Context, chk checks.Transacti
 	m.logSentEvents(chk.Name(), events)
 }
 
-// logSentEvents records the per-event log line and delivery metric after
-// a batch has been published.
+// logSentEvents records the per-event log line and the HealthEventsSent
+// metric once Publish has delivered a batch.
 func (m *NICHealthMonitor) logSentEvents(checkName string, events []*pb.HealthEvent) {
 	for _, evt := range events {
 		slog.Info("Health event sent",
