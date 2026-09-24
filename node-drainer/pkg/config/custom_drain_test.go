@@ -34,10 +34,17 @@ statusConditionType = "DrainComplete"
 statusConditionStatus = "True"
 `
 
+// nativeEvictionRules is what the nodes outside the selector are drained with. A scoped
+// custom drain is rejected without it, so it prefixes every scoped config below.
+const nativeEvictionRules = `[[userNamespaces]]
+name = "*"
+mode = "AllowCompletion"
+`
+
 // TestCustomDrainNodeMatcher_Selector_SplitsNodesBetweenDrainPaths
 // checks selector semantics for the nodes custom drain owns.
 func TestCustomDrainNodeMatcher_Selector_SplitsNodesBetweenDrainPaths(t *testing.T) {
-	cfg, err := LoadTomlConfigFromString(validCustomDrain +
+	cfg, err := LoadTomlConfigFromString(nativeEvictionRules + validCustomDrain +
 		`nodeSelector = "scheduler in (slurm,lsf),!drain.example.com/native"` + "\n")
 	require.NoError(t, err)
 
@@ -115,6 +122,15 @@ func TestLoadTomlConfigFromString_ScopedCustomDrain_AcceptsNativeEvictionRules(t
 			require.Equal(t, "scheduler=slurm", cfg.CustomDrain.NodeSelector)
 		})
 	}
+}
+
+// TestLoadTomlConfigFromString_ScopedCustomDrain_RequiresNativeEvictionRules
+// rejects a selector that leaves the unmatched nodes with no drain rule at all. Without
+// it the evaluator has no namespace and no policy to act on, so it marks those nodes
+// drained and logs a success without evicting a single pod.
+func TestLoadTomlConfigFromString_ScopedCustomDrain_RequiresNativeEvictionRules(t *testing.T) {
+	_, err := LoadTomlConfigFromString(validCustomDrain + "nodeSelector = \"scheduler=slurm\"\n")
+	require.ErrorContains(t, err, "customDrain.nodeSelector requires userNamespaces or podDrainPolicies")
 }
 
 // TestLoadTomlConfigFromString_InvalidNodeSelector_ReturnsValidationError

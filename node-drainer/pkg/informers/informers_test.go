@@ -194,9 +194,9 @@ func TestNodeTransformRetainsEventAndEvaluatorFields(t *testing.T) {
 	assert.Empty(t, transformedNode.Status)
 }
 
-// TestNodeTransformRetainsOnlyRequestedLabels keeps the node cache small when
+// TestNodeTransform_RequestedLabels_RetainsOnlyRequestedLabels keeps the node cache small when
 // customDrain.nodeSelector needs a label to pick the drain path.
-func TestNodeTransformRetainsOnlyRequestedLabels(t *testing.T) {
+func TestNodeTransform_RequestedLabels_RetainsOnlyRequestedLabels(t *testing.T) {
 	t.Parallel()
 
 	node := &v1.Node{

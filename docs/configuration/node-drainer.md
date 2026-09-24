@@ -227,7 +227,11 @@ node-drainer:
 
 An empty or omitted `nodeSelector` keeps the original behavior: every node goes through custom
 drain, and configuring `userNamespaces` or `podDrainPolicies` alongside it is rejected at startup.
-An invalid selector is also rejected at startup.
+
+A `nodeSelector` with neither `userNamespaces` nor `podDrainPolicies` is rejected at startup as
+well: the unmatched nodes would reach the built-in eviction path with no namespace and no policy to
+act on, and be marked drained while their pods keep running. An invalid selector is also rejected at
+startup.
 
 The drain path is chosen per health event from the node's labels as the informer cache holds them,
 so relabelling a node changes the path taken by subsequent events. A node the cache cannot resolve

@@ -638,7 +638,9 @@ sets. To hand only part of the cluster to the plugin, set `customDrain.nodeSelec
 
 ```yaml
 node-drainer:
-  userNamespaces: []            # must be empty when customDrain is enabled
+  userNamespaces: []            # must be empty when customDrain owns the whole cluster;
+                                # with customDrain.nodeSelector set, keep it configured for
+                                # the unmatched nodes instead
   customDrain:
     enabled: true
     templateConfigMapName: "demo-drain-template"

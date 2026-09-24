@@ -88,42 +88,12 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	configurePartialDrain(ctx, configs.tomlCfg)
 
-	clientSet, restConfig, err := initializeKubernetesClient(params)
+	kube, err := initializeKubeComponents(ctx, params, configs.tomlCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize kubernetes client: %w", err)
+		return nil, err
 	}
 
-	slog.InfoContext(ctx, "Successfully initialized kubernetes client")
-
-	dynamicClient, restMapper, err := initializeDynamicClientAndMapper(restConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize dynamic client and mapper: %w", err)
-	}
-
-	podPolicies, err := config.CompilePodDrainPolicies(configs.tomlCfg.PodDrainPolicies)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile pod drain policies: %w", err)
-	}
-
-	customDrainNodes, err := config.CompileCustomDrainNodeSelector(configs.tomlCfg.CustomDrain)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile custom drain node selector: %w", err)
-	}
-
-	informersInstance, err := initializeInformers(
-		clientSet,
-		&configs.tomlCfg.NotReadyTimeoutMinutes,
-		configs.tomlCfg.DrainGPUPods,
-		params.DryRun,
-		configs.tomlCfg.SystemNamespaces,
-		customDrainNodes.LabelKeys(),
-		podPolicies.LabelKeys()...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("error while initializing informers: %w", err)
-	}
-
-	stateManager := initializeStateManager(clientSet)
+	stateManager := initializeStateManager(kube.clientSet)
 
 	// IMPORTANT: Preserves ClientName="node-drainer" for resume token lookups
 	clientTokenConfig := client.TokenConfig{
@@ -156,8 +126,8 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	defer closeOnError(&closeOnErr, dsComponents.databaseClient.Close, "database client")
 
 	reconcilerInstance, err := initializeReconciler(
-		reconcilerCfg, params.DryRun, clientSet, informersInstance,
-		dsComponents.databaseClient, ds.HealthEventStore(), dynamicClient, restMapper,
+		reconcilerCfg, params.DryRun, kube.clientSet, kube.informers,
+		dsComponents.databaseClient, ds.HealthEventStore(), kube.dynamicClient, kube.restMapper,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize reconciler: %w", err)
@@ -170,7 +140,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	closeOnErr = false
 
 	return &Components{
-		Informers:          informersInstance,
+		Informers:          kube.informers,
 		EventWatcher:       dsComponents.eventWatcher,
 		QueueManager:       queueManager,
 		Reconciler:         reconcilerInstance,
@@ -179,6 +149,63 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		CustomDrainEnabled: configs.tomlCfg.CustomDrain.Enabled,
 		StartFresh:         dsComponents.resumeControlDecision.StartFresh,
 		ColdStartAfterTime: dsComponents.resumeControlDecision.ColdStartCutoff,
+	}, nil
+}
+
+// kubeComponents holds the Kubernetes clients and the informers they feed.
+type kubeComponents struct {
+	clientSet     kubernetes.Interface
+	dynamicClient dynamic.Interface
+	restMapper    *restmapper.DeferredDiscoveryRESTMapper
+	informers     *informers.Informers
+}
+
+// initializeKubeComponents builds the Kubernetes clients and the informers. The pod drain
+// policies and the custom drain node selector are compiled here because the informers need
+// their label keys: those are the only labels kept in the caches.
+func initializeKubeComponents(
+	ctx context.Context, params InitializationParams, tomlCfg *config.TomlConfig,
+) (*kubeComponents, error) {
+	clientSet, restConfig, err := initializeKubernetesClient(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize kubernetes client: %w", err)
+	}
+
+	slog.InfoContext(ctx, "Successfully initialized kubernetes client")
+
+	dynamicClient, restMapper, err := initializeDynamicClientAndMapper(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize dynamic client and mapper: %w", err)
+	}
+
+	podPolicies, err := config.CompilePodDrainPolicies(tomlCfg.PodDrainPolicies)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile pod drain policies: %w", err)
+	}
+
+	customDrainNodes, err := config.CompileCustomDrainNodeSelector(tomlCfg.CustomDrain)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile custom drain node selector: %w", err)
+	}
+
+	informersInstance, err := initializeInformers(
+		clientSet,
+		&tomlCfg.NotReadyTimeoutMinutes,
+		tomlCfg.DrainGPUPods,
+		params.DryRun,
+		tomlCfg.SystemNamespaces,
+		customDrainNodes.LabelKeys(),
+		podPolicies.LabelKeys()...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error while initializing informers: %w", err)
+	}
+
+	return &kubeComponents{
+		clientSet:     clientSet,
+		dynamicClient: dynamicClient,
+		restMapper:    restMapper,
+		informers:     informersInstance,
 	}, nil
 }
 
