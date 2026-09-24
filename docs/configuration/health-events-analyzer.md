@@ -191,6 +191,7 @@ name        = "RuleName"
 description = "Human-readable description"
 recommended_action = "CONTACT_SUPPORT"   # or RUN_DCGMEUD, NONE, etc.
 evaluate_rule = true                     # Helm template expression; maps to the enable flag
+when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"   # Optional CEL; see below
 stage = [
   '{ "$match": { ... } }',              # MongoDB aggregation pipeline stages as JSON strings
   '{ "$count": "count" }',
@@ -199,6 +200,31 @@ stage = [
 ```
 
 The full default ruleset — including all aggregation pipeline stage definitions — is in the chart's `values.yaml` at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. Refer to that file when writing or reviewing custom rules.
+
+### Skip Rules That Cannot Match
+
+Each enabled rule sends one query to the datastore for each event. Most rules apply to only one XID or one check. For all other events the query cannot match, but the datastore still reads the events of the node to answer it.
+
+The optional `when` field prevents this. It is a CEL expression over the incoming event. The analyzer runs the stages of the rule only when `when` is true. When it is false, the analyzer sends no query and the rule does not match.
+
+```toml
+[[rules]]
+name = "XID74Reg0ECCParityError"
+evaluate_rule = true
+when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
+stage = [ ... ]
+```
+
+The expression can read these fields of the incoming event: `agent`, `checkName`, `componentClass`, `errorCode`, `isFatal`, `isHealthy`, `recommendedAction`, `nodeName`, `metadata`, and `message`. `errorCode` is a list and `metadata` is a map. The platform connector overrides and the event exporter filter use the same fields.
+
+**The expression must be true for every event that the stages can match.** If it is false for such an event, the analyzer misses that match. To write it safely, copy the stage of the rule that compares `this.` fields to constants. For example, the stage `{"$match": {"$expr": {"$eq": ["this.healthevent.errorcode.0", "74"]}}}` becomes the `when` in the example above. The analyzer resolves `this.healthevent.errorcode.0` to null when the event has no error code, so check `size(event.errorCode) > 0` before you read `event.errorCode[0]`.
+
+The analyzer handles `when` as follows:
+
+- If `when` is empty or not set, the analyzer runs the rule for every event.
+- If `when` does not compile or does not return a boolean, the analyzer does not start. The error names the rule.
+- If `when` fails for an event, the analyzer runs the query of the rule and logs a warning. A failure costs a query, but it does not hide a match.
+
 
 ### MultipleRemediations Rule
 

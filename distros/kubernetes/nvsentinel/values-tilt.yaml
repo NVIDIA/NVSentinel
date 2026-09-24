@@ -450,6 +450,7 @@ health-events-analyzer:
     description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
+    when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || event.errorCode[0] != '31')"
     stage = [
       '''
       {
@@ -719,6 +720,7 @@ health-events-analyzer:
     recommended_action = "RUN_DCGMEUD"
     message = "if DCGM EUD tests pass, run field diagnostics"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '31'"
     stage = [
       '''
       {
@@ -968,6 +970,7 @@ health-events-analyzer:
     message = "App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support"
     recommended_action = "NONE"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '31'"
     stage = [
       '''
       {
@@ -1067,6 +1070,7 @@ health-events-analyzer:
     message = "if DCGM EUD tests pass, run field diagnostics" 
     recommended_action = "RUN_DCGMEUD"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '13'"
     stage = [
       '''
       {
@@ -1371,6 +1375,7 @@ health-events-analyzer:
     message = "App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support"
     recommended_action = "NONE"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '13'"
     stage = [
       '''
       {
@@ -1521,6 +1526,7 @@ health-events-analyzer:
     message = "App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support"
     recommended_action = "NONE"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] in ['13', '31']"
     stage = [
       '''
       {
@@ -1744,6 +1750,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (1 or 20) is set in register 0, unexpected error please open an NVBug"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -1966,6 +1973,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (4 or 5) is set in register 0 and its repeating on same NVLink and GPU, likely a HW issue with ECC/Parity"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -2138,6 +2146,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (8, 9, 12, 16, 17, 24 or 28) is set in register 0 and its repeating on same GPU, could be a hardware issue, request to check link mechanical connections and run field diagnosis if issue persists"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -2276,6 +2285,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (21 or 22) is set in register 0, could be a marginal SI (signal integrity) issue, request to check link mechanical connections and run field diagnosis if issue persists"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -2498,6 +2508,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (27 or 29) is set in register 0 and its repeating on same GPU, unexpected error please open NVBug"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -2631,6 +2642,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (0, 1, 2 or 6) is set in register 2 and its repeating on same NVLink and GPU, likely a HW issue with ECC/Parity"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -2805,6 +2817,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "bit 13 is set in register 2, its an unexpected error please open an NVBug"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -2891,6 +2904,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (16 or 19) is set in register 2 and its repeating on same GPU, request for field diagnosis"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -3024,6 +3038,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (17 or 18) is set in register 2 and its repeating on same GPU, request for field diagnosis"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -3157,6 +3172,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (16 or 17) is set in register 3, unexpected error please open an NVBug"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -3379,6 +3395,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "bit 18 is set in register 3, reset of fabric is required"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -3596,6 +3613,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "one of the bits (18, 19, 21, 22, 24, 25, 27, 28) is set in register 4 and its repeating on same NVLink, likely a HW issue with ECC/Parity"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -3774,6 +3792,7 @@ health-events-analyzer:
     recommended_action = "NONE"
     message = "one of the bits (20, 23, 26, 29) is set in register 4, request for field diagnosis if user jobs are interrupted or error occurs repeatedly"
     evaluate_rule = true
+    when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
     stage = [
       '''
       {
@@ -3948,6 +3967,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "Repeated non-fatal NIC driver kernel-log error of the same type on this node - auto-recovery is failing or hardware is unstable; investigate driver, firmware, cooling, power, or cabling"
     evaluate_rule = true
+    when = "event.agent == 'syslog-health-monitor' && event.checkName == 'SysLogsNICDriverError' && event.isFatal == false && event.isHealthy == false && size(event.errorCode) > 0 && event.errorCode[0] in ['netdev_watchdog', 'port_module_high_temp', 'pci_power_insufficient', 'module_unplugged', 'mlx5_tx_timeout_detected', 'mlx5_rx_timeout_detected']"
     stage = [
       '''
       {
@@ -4018,6 +4038,7 @@ health-events-analyzer:
     recommended_action = "CONTACT_SUPPORT"
     message = "Repeated non-fatal NIC port degradation on the same port - counter has cleared and re-tripped, or multiple non-fatal counters are degrading; investigate physical layer, cable, optics, or adapter"
     evaluate_rule = true
+    when = "event.agent == 'nic-health-monitor' && event.isFatal == false && event.isHealthy == false && event.checkName in ['InfiniBandDegradationCheck', 'EthernetDegradationCheck']"
     stage = [
       '''
       {

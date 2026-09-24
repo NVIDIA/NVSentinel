@@ -263,6 +263,10 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 			continue
 		}
 
+		if !ruleApplies(ctx, rule, event) {
+			continue
+		}
+
 		published, err := r.processRule(ctx, rule, event)
 		if err != nil {
 			multiErr = multierror.Append(multiErr, err)
@@ -291,6 +295,28 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 	}
 
 	return publishedNewEvent, nil
+}
+
+// ruleApplies reports whether rule's query must run for event. A false when expression skips
+// the query, which cannot match. A when expression that fails falls back to running the query,
+// so a broken expression costs a query but cannot hide a match.
+func ruleApplies(ctx context.Context, rule config.HealthEventsAnalyzerRule,
+	event *datamodels.HealthEventWithStatus) bool {
+	applies, err := rule.Applies(event.HealthEvent)
+	if err != nil {
+		ruleWhenErrorsTotal.WithLabelValues(rule.Name).Inc()
+		slog.WarnContext(ctx, "Rule when expression failed, evaluating the rule anyway",
+			"rule_name", rule.Name, "error", err)
+
+		return true
+	}
+
+	if !applies {
+		ruleSkippedTotal.WithLabelValues(rule.Name).Inc()
+		slog.DebugContext(ctx, "Skipping rule, its when expression is false", "rule_name", rule.Name)
+	}
+
+	return applies
 }
 
 // handleXidDetector handles XID burst detection and history clearing
