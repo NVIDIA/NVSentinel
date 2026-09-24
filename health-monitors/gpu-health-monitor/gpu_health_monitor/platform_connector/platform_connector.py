@@ -448,6 +448,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             # Collect pending cache and metric updates to apply only after successful send
             pending_cache_updates: dict[str, EntityCacheEntry] = {}
             pending_metric_updates: list[tuple[str, int, str, int]] = []  # (event_type, gpu_id, code, value)
+            # (event_type, switch_id, code, value)
+            pending_switch_metric_updates: list[tuple[str, int, str, int]] = []
 
             for watch_name, details in health_details.items():
                 check_name = self._convert_dcgm_watch_name_to_check_name(watch_name)
@@ -681,6 +683,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     processingStrategy=platformconnector_pb2.STORE_ONLY,
                                 )
                             )
+                            pending_switch_metric_updates.append((check_name, switch_id, failure_details.code, 1))
 
                         entry = self.entity_cache.get(key)
                         if details.is_complete and entry is not None:
@@ -707,6 +710,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                             processingStrategy=platformconnector_pb2.STORE_ONLY,
                                         )
                                     )
+                                    pending_switch_metric_updates.append((check_name, switch_id, recovered_code, 0))
 
                         continue
 
@@ -716,6 +720,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     entry = self.entity_cache.get(key)
                     if entry is not None and entry.is_healthy:
                         continue
+
+                    if entry is not None:
+                        # entry is the pre-reset state, so active_errors still names every
+                        # code that needs clearing. Zeroing one assumed code would leave
+                        # the others reading 1 for the process lifetime.
+                        for code in sorted(entry.active_errors):
+                            pending_switch_metric_updates.append((check_name, switch_id, code, 0))
 
                     pending_cache_updates[key] = EntityCacheEntry()
                     health_events.append(
@@ -748,6 +759,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         for event_type, gpu_id, error_code, value in pending_metric_updates:
                             metrics.dcgm_health_active_events.labels(
                                 event_type=event_type, gpu_id=gpu_id, error_code=error_code
+                            ).set(value)
+                        for event_type, switch_id, error_code, value in pending_switch_metric_updates:
+                            metrics.dcgm_health_active_switch_events.labels(
+                                event_type=event_type, switch_id=switch_id, error_code=error_code
                             ).set(value)
                 except Exception as e:
                     log.error(f"Exception while sending health events: {e}")

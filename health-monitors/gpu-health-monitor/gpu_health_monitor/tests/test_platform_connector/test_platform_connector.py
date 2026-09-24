@@ -461,6 +461,122 @@ class TestPlatformConnectors(unittest.TestCase):
         finally:
             os.unlink(temp_file_path)
 
+    def test_active_events_metric_covers_nvswitch_entities(self) -> None:
+        """NVSwitch faults must reach the gauge, and recovery must zero every code.
+
+        The NVSwitch branch previously appended to health_events and to the entity
+        cache but never to pending_metric_updates, so a switch fault was recorded in
+        the datastore and appeared in no Prometheus metric. Being STORE_ONLY it is
+        also absent from health_events_total, so the gauge is its only exposure.
+
+        Both halves matter. The clear half is the one that catches a narrowed
+        recovery: zeroing a single assumed code would leave the switch's other codes
+        reading 1 for the process lifetime.
+
+        The partial WARN step in the middle is deliberate. A FAIL followed straight
+        by PASS only exercises the full-recovery branch, so a regression in the
+        per-code recovery branch would still pass every assertion.
+        """
+        temp_file_path = metadata_file()
+        processor = platform_connector.PlatformConnectorEventProcessor(
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={
+                    "DCGM_FR_NVSWITCH_FATAL_ERROR": "CONTACT_SUPPORT",
+                    "DCGM_FR_NVSWITCH_NVLINK_DOWN": "CONTACT_SUPPORT",
+                },
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            ),
+            exit=Event(),
+        )
+        processor.send_health_event_with_retries = (
+            lambda events, delivery_timeout_seconds=None: True  # type: ignore[method-assign]
+        )
+
+        observed: dict[tuple[str, Any, str], int] = {}
+
+        def fake_labels(**kwargs: Any) -> unittest.mock.MagicMock:
+            child = unittest.mock.MagicMock()
+            key = (kwargs["event_type"], kwargs["switch_id"], kwargs["error_code"])
+            child.set.side_effect = lambda value: observed.__setitem__(key, value)
+            return child
+
+        try:
+            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_switch_events") as gauge:
+                gauge.labels.side_effect = fake_labels
+
+                processor.health_event_occurred(
+                    {
+                        "DCGM_HEALTH_WATCH_NVSWITCH_FATAL": dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.FAIL,
+                            entity_failures={
+                                (dcgm_fields.DCGM_FE_SWITCH, 3): [
+                                    dcgmtypes.ErrorDetails(
+                                        code="DCGM_FR_NVSWITCH_FATAL_ERROR",
+                                        message="switch 3 fatal",
+                                    ),
+                                    dcgmtypes.ErrorDetails(
+                                        code="DCGM_FR_NVSWITCH_NVLINK_DOWN",
+                                        message="switch 3 link down",
+                                    ),
+                                ]
+                            },
+                        )
+                    },
+                    [],
+                    [3],
+                )
+
+                assert observed == {
+                    ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_FATAL_ERROR"): 1,
+                    ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_NVLINK_DOWN"): 1,
+                }
+
+                # Partial recovery: the fatal code clears while the link stays down.
+                # This is the per-code branch, which a FAIL straight to PASS skips.
+                processor.health_event_occurred(
+                    {
+                        "DCGM_HEALTH_WATCH_NVSWITCH_FATAL": dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.WARN,
+                            entity_failures={
+                                (dcgm_fields.DCGM_FE_SWITCH, 3): [
+                                    dcgmtypes.ErrorDetails(
+                                        code="DCGM_FR_NVSWITCH_NVLINK_DOWN",
+                                        message="switch 3 link down",
+                                    ),
+                                ]
+                            },
+                        )
+                    },
+                    [],
+                    [3],
+                )
+
+                assert observed == {
+                    ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_FATAL_ERROR"): 0,
+                    ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_NVLINK_DOWN"): 1,
+                }
+
+                processor.health_event_occurred(
+                    {
+                        "DCGM_HEALTH_WATCH_NVSWITCH_FATAL": dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.PASS, entity_failures={}
+                        )
+                    },
+                    [],
+                    [3],
+                )
+
+                assert observed == {
+                    ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_FATAL_ERROR"): 0,
+                    ("GpuNvswitchFatalWatch", 3, "DCGM_FR_NVSWITCH_NVLINK_DOWN"): 0,
+                }
+        finally:
+            os.unlink(temp_file_path)
+
     def test_health_event_reports_healthy_nvswitch_after_restart(self) -> None:
         temp_file_path = metadata_file()
         with tempfile.NamedTemporaryFile(delete=False) as state_file:
