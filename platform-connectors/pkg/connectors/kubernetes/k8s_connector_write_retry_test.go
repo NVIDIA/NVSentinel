@@ -197,8 +197,8 @@ func TestProcessHealthEventsWithRetry_MixedDrops_CountsWritesAndBatches(t *testi
 	_, err := connector.processHealthEventsWithRetry(t.Context(), &protos.HealthEvents{})
 	require.ErrorIs(t, err, permanent)
 	require.ErrorIs(t, err, transient)
-	require.Equal(t, 2.0, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error")))
-	require.Equal(t, 1.0, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_condition", "retry_exhausted")))
+	require.Equal(t, 2.0, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error", "false")))
+	require.Equal(t, 1.0, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_condition", "retry_exhausted", "false")))
 	require.Equal(t, 1.0, testutil.ToFloat64(droppedBatchesCounter.WithLabelValues("permanent_error")))
 	require.Equal(t, 1.0, testutil.ToFloat64(droppedBatchesCounter.WithLabelValues("retry_exhausted")))
 }
@@ -223,8 +223,8 @@ func TestProcessHealthEventsWithRetry_Deadline_CoversCallsAndLaterWrites(t *test
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 		require.Equal(t, time.Minute, time.Since(start))
 		require.Zero(t, secondCalls)
-		require.Equal(t, 1.0, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_condition", "retry_timeout")))
-		require.Equal(t, 1.0, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "retry_timeout")))
+		require.Equal(t, 1.0, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_condition", "retry_timeout", "false")))
+		require.Equal(t, 1.0, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "retry_timeout", "false")))
 		require.Equal(t, 1.0, testutil.ToFloat64(droppedBatchesCounter.WithLabelValues("retry_timeout")))
 	})
 }
@@ -317,4 +317,69 @@ func TestInitializeK8sConnector_InvalidRetryDuration_ReturnsError(t *testing.T) 
 			require.ErrorContains(t, err, "maxRetryDuration must be between")
 		})
 	}
+}
+
+// TestProcessHealthEventsWithRetry_Drops_SeparateClearsFromSets checks that the
+// is_healthy label reaches the counter, so a lost clear and a lost set dropped for
+// the same reason land on different series. Without it both collapse into one
+// count, and "we dropped N writes" cannot say whether a fault is now latched with
+// nothing left to clear it.
+func TestProcessHealthEventsWithRetry_Drops_SeparateClearsFromSets(t *testing.T) {
+	droppedWritesCounter.Reset()
+	droppedBatchesCounter.Reset()
+	connector := retryTestConnector(1, nil)
+	permanent := fmt.Errorf("invalid write")
+	connector.prepareWrites = func(context.Context, *protos.HealthEvents) []kubernetesWrite {
+		return []kubernetesWrite{
+			{operation: "node_condition", isHealthy: true, run: func(context.Context) error { return permanent }},
+			{operation: "node_condition", isHealthy: false, run: func(context.Context) error { return permanent }},
+			{operation: "node_condition", isHealthy: false, run: func(context.Context) error { return permanent }},
+		}
+	}
+	_, err := connector.processHealthEventsWithRetry(t.Context(), &protos.HealthEvents{})
+	require.ErrorIs(t, err, permanent)
+	require.Equal(t, 1.0,
+		testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_condition", "permanent_error", "true")))
+	require.Equal(t, 2.0,
+		testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_condition", "permanent_error", "false")))
+	// One batch regardless of direction: the batch counter is per terminal reason.
+	require.Equal(t, 1.0, testutil.ToFloat64(droppedBatchesCounter.WithLabelValues("permanent_error")))
+}
+
+// TestPrepareHealthEventWrites_ConditionWriteFlagsContainedRecovery covers the
+// derivation rather than the plumbing. A node_condition write carries every event
+// grouped for its node, so isHealthy means "contains at least one recovery". A node
+// whose group is all faults must not be reported as a clear.
+// Only events that are healthy or fatal reach the condition path, so the
+// fault-only node here must be fatal or it produces no node_condition write at
+// all and the false case would go untested.
+func TestPrepareHealthEventWrites_ConditionWriteFlagsContainedRecovery(t *testing.T) {
+	event := func(node string, healthy, fatal bool) *protos.HealthEvent {
+		return &protos.HealthEvent{
+			NodeName: node, Agent: "prepare-test", CheckName: "GPUWarning",
+			IsHealthy: healthy, IsFatal: fatal, GeneratedTimestamp: timestamppb.New(time.Now()),
+		}
+	}
+	connector := retryTestConnector(1, nil)
+	writes := connector.prepareHealthEventWrites(t.Context(), &protos.HealthEvents{
+		Events: []*protos.HealthEvent{
+			// mixed group: a fatal fault and a recovery on the same node
+			event("node-mixed", false, true), event("node-mixed", true, false),
+			// fatal-fault-only group
+			event("node-faults", false, true),
+		},
+	})
+
+	byNode := map[string]bool{}
+	for _, w := range writes {
+		if w.operation == "node_condition" {
+			byNode[w.nodeName] = w.isHealthy
+		}
+	}
+	// Assert presence separately: a missing key reads as false and would let a
+	// derivation that always returns true pass unnoticed.
+	require.Contains(t, byNode, "node-mixed")
+	require.Contains(t, byNode, "node-faults")
+	require.True(t, byNode["node-mixed"], "a group containing a recovery must flag as a clear")
+	require.False(t, byNode["node-faults"], "a group of only faults must not flag as a clear")
 }
