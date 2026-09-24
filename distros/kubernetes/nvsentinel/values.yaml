@@ -509,6 +509,13 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
+  # Target relabeling applied to every endpoint, e.g. to attach the node name to
+  # metrics that do not carry it:
+  #   relabelings:
+  #     - sourceLabels: [__meta_kubernetes_pod_node_name]
+  #       targetLabel: node
+  # relabelings: []
+  # metricRelabelings: []  # Sample relabeling applied after the scrape
 
 # DaemonSet rolling update strategy for the platform-connectors DaemonSet.
 # type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
