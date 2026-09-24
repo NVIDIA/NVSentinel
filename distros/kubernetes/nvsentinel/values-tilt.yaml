@@ -390,6 +390,8 @@ node-drainer:
 health-events-analyzer:
   logLevel: debug
 
+  ruleConcurrency: 8
+
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:

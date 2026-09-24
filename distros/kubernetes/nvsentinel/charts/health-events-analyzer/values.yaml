@@ -44,6 +44,11 @@ workers: 1
 # Maximum number of uncheckpointed in-flight events before applying backpressure (default: 1000)
 maxInFlight: 1000
 
+# Maximum number of rule queries that run at the same time for one event (default: 1).
+# 1 runs the queries one at a time. A higher value shortens event handling but uses more
+# datastore CPU for each event.
+ruleConcurrency: 1
+
 # Registers rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}.
 # Off by default: entity labels add a series per GPU/GPC/TPC/SM on each node.
 # rule_matched_total already reports that a rule fired without this.

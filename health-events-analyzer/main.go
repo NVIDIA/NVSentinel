@@ -148,6 +148,8 @@ func run() error {
 		"Number of concurrent worker goroutines for event processing partitioned by node (default: 1)")
 	maxInFlightFlag := flag.Int("max-in-flight", 1000,
 		"Maximum number of uncheckpointed in-flight events before applying backpressure (default: 1000)")
+	ruleConcurrencyFlag := flag.Int("rule-concurrency", 1,
+		"Maximum number of rule queries that run at the same time for one event (default: 1, one at a time)")
 
 	flag.Parse()
 
@@ -193,6 +195,7 @@ func run() error {
 		Publisher:                 pub,
 		Workers:                   *workersFlag,
 		MaxInFlight:               *maxInFlightFlag,
+		RuleConcurrency:           *ruleConcurrencyFlag,
 	}
 
 	rec := reconciler.NewReconciler(reconcilerCfg)

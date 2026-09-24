@@ -77,6 +77,7 @@ The Health Events Analyzer partitions incoming events across a concurrent worker
 health-events-analyzer:
   workers: 1       # Number of concurrent workers (default: 1)
   maxInFlight: 1000 # Maximum uncheckpointed in-flight events before backpressure (default: 1000)
+  ruleConcurrency: 1 # Maximum rule queries that run at the same time for one event (default: 1)
 ```
 
 #### Scaling Workers by Datastore Event Rate
@@ -95,6 +96,28 @@ Use the following reference table to configure `workers` and `maxInFlight` based
 | $> 1,500$ events/s | `64` | `8000` | ~3,500 events/s | 15,000+ nodes |
 
 `maxInFlight` bounds uncheckpointed in-flight events in memory. When in-flight events reach this limit, stream ingestion pauses until workers resolve earlier events. Increase `maxInFlight` proportionally for larger worker counts to absorb bursty event traffic without stalling ingestion.
+
+#### Concurrent Rule Evaluation
+
+The analyzer runs one datastore query for each enabled rule when it evaluates an event. By default, it runs these queries one at a time. `ruleConcurrency` sets the maximum number of rule queries that run at the same time for one event.
+
+`workers` and `ruleConcurrency` work at different levels:
+
+- `workers` evaluates events from different nodes at the same time.
+- `ruleConcurrency` evaluates the rules for one event at the same time.
+
+The analyzer keeps the events from one node in order. Thus, more workers cannot process a burst of events from one node faster. A higher `ruleConcurrency` can.
+
+The rule results do not change. The analyzer publishes the matched events in rule order, as it does when it runs the queries one at a time.
+
+The analyzer runs the same queries, and each query examines the same documents. But in measurements on MongoDB, the datastore used more CPU for each event when the queries ran at the same time. 
+
+Use these guidelines:
+
+- Keep the default of `1` if the datastore CPU is near its limit. More CPU for each event can decrease throughput.
+- If the datastore has spare CPU, set `ruleConcurrency` to `4` or `8`.
+
+The analyzer can run up to `workers` × `ruleConcurrency` rule queries at the same time.
 
 ### Matched-entity metric
 

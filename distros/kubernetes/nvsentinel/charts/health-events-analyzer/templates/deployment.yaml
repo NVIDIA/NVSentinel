@@ -91,6 +91,9 @@ spec:
           {{- if .Values.maxInFlight }}
           - "--max-in-flight={{ .Values.maxInFlight }}"
           {{- end }}
+          {{- if gt (int .Values.ruleConcurrency) 1 }}
+          - "--rule-concurrency={{ .Values.ruleConcurrency }}"
+          {{- end }}
           {{- if include "nvsentinel.pcAuth.enabled" . }}
           {{- /* Republished events keep the original event's node name, so this
                  component reports on nodes other than its own and must present

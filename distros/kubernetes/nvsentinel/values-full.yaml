@@ -1013,6 +1013,12 @@ health-events-analyzer:
   # Increase proportionally when running with 16+ workers (e.g. 2000-4000) to avoid false stalls.
   maxInFlight: 1000
 
+  # Maximum number of rule queries that run at the same time for one event (default: 1)
+  # The analyzer runs one query for each enabled rule. At 1 they run one at a time.
+  # A higher value shortens event handling, and it also speeds up a burst of events
+  # from one node, which more workers cannot do because events for one node stay in order.
+  ruleConcurrency: 1
+
   # Registers rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}.
   # Off by default: entity labels add a series per GPU/GPC/TPC/SM on each node.
   # rule_matched_total already reports that a rule fired without this.
