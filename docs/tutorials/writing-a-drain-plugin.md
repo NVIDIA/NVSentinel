@@ -632,11 +632,15 @@ data:
 
 **b. node-drainer Helm values** pointing at your CR. `customDrain` is mutually exclusive with
 `userNamespaces` (leave the latter empty), and the condition fields must match what your controller
-sets:
+sets. To hand only part of the cluster to the plugin, set `customDrain.nodeSelector` and keep
+`userNamespaces` configured for the rest — see
+[Scoping custom drain to part of the cluster](../configuration/node-drainer.md#scoping-custom-drain-to-part-of-the-cluster):
 
 ```yaml
 node-drainer:
-  userNamespaces: []            # must be empty when customDrain is enabled
+  userNamespaces: []            # must be empty when customDrain owns the whole cluster;
+                                # with customDrain.nodeSelector set, keep it configured for
+                                # the unmatched nodes instead
   customDrain:
     enabled: true
     templateConfigMapName: "demo-drain-template"
