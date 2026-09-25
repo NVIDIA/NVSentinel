@@ -23,33 +23,30 @@ false positives from NTP clock adjustments.
 import socket
 import threading
 import time
-from dataclasses import dataclass, field
 from http.server import ThreadingHTTPServer
 
 from prometheus_client import MetricsHandler
 
 
-@dataclass
-class _LastReconcile:
+class _last_reconcile:
     """Thread-safe tracker for the last successful reconcile timestamp.
 
     Uses time.monotonic() for NTP-immune elapsed time measurement.
     Module-scoped singleton — one tracker per process.
     """
 
-    lock: threading.Lock = field(default_factory=threading.Lock)
-    timestamp: float = field(default_factory=time.monotonic)
+    _lock = threading.Lock()
+    _timestamp: float = time.monotonic()
 
-    def mark_alive(self) -> None:
-        with self.lock:
-            self.timestamp = time.monotonic()
+    @classmethod
+    def mark_alive(cls) -> None:
+        with cls._lock:
+            cls._timestamp = time.monotonic()
 
-    def seconds_since_last(self) -> float:
-        with self.lock:
-            return time.monotonic() - self.timestamp
-
-
-_last_reconcile = _LastReconcile()
+    @classmethod
+    def seconds_since_last(cls) -> float:
+        with cls._lock:
+            return time.monotonic() - cls._timestamp
 
 
 # Module-level staleness threshold (seconds). Set by start_server().
