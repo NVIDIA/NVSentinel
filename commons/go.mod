@@ -21,7 +21,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.46.0
 	golang.org/x/sync v0.23.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260825221802-da73d73af1c5
-	google.golang.org/grpc v1.83.2
+	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	k8s.io/api v0.37.0
