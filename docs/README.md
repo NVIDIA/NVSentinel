@@ -61,6 +61,7 @@ Individual component feature documentation:
 - [Fault Quarantine](./fault-quarantine.md)
 - [Node Drainer](./node-drainer.md)
 - [Fault Remediation](./fault-remediation.md)
+- [Validation](./validation.md)
 - [Kubernetes Object Monitor](./kubernetes-object-monitor.md)
 - [NVCRE Certification Monitor](./nvcre-certification-monitor.md)
 - [Circuit Breaker](./circuit-breaker.md)

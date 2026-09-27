@@ -172,7 +172,9 @@ include('../lifecycle-manager/Tiltfile')
 values_files = [
     '../distros/kubernetes/nvsentinel/values.yaml',
     '../distros/kubernetes/nvsentinel/values-tilt.yaml',
-    '../distros/kubernetes/nvsentinel/values-tilt-socket.yaml'  # Ensures /var/run exists for socket
+    '../distros/kubernetes/nvsentinel/values-tilt-socket.yaml',  # Ensures /var/run exists for socket
+    '../distros/kubernetes/nvsentinel/values-nvcre.yaml',
+    '../distros/kubernetes/nvsentinel/values-tilt-nvcre.yaml',
 ]
 
 # Add datastore-specific values
@@ -332,7 +334,7 @@ local_resource(
 
 k8s_resource(
     'lifecycle-manager',
-    resource_deps=['wait-for-lifecycle-manager-cert'],
+    resource_deps=['wait-for-lifecycle-manager-cert', 'nvcre-certification-crd'],
 )
 
 if use_percona:

@@ -333,6 +333,10 @@ timeoutSeconds which ensures groups make progress.
 - The MaxConcurrentGroups limit, which specifies the maximum number of running TestGroups, has been reached.
 - A previous TestGroup attempt has a resource stuck deleting. This could be caused by foregroundDeletion waiting on
 child resources to be deleted, custom finalizers, or a delay in pod deletion.
+- A node referenced in the TestGroup overlaps with a different pending TestGroup that is blocked for the reason above
+(its previous attempt's resource is stuck deleting). In other words, the pending TestGroup with the stuck deleting
+resource will block other TestGroups which reference a subset of the same nodes (so it behaves as if its status
+was running).
 - Note that we check if nodes are deleted or not ready prior to starting new TestGroups so it's possible that a pending
 TestGroup is marked as Failed without ever starting an attempt, if removing its deleted nodes drops it below the
 minimum required for a test with a BatchFailurePolicy of fail. No attempt is created in this case, so no failure
@@ -670,12 +674,19 @@ func (r *ValidationRequestReconciler) startPendingTestGroup(ctx context.Context,
 		}
 	}
 
-	isBlocked, err := r.checkPendingTestGroupBlocked(ctx, validationRequest, currentPendingTestGroup)
+	isBlocked, blockedByPendingDeletion, err := r.checkPendingTestGroupBlocked(ctx, validationRequest,
+		currentPendingTestGroup)
 	if err != nil {
 		return false, err
 	}
 
 	if isBlocked {
+		if blockedByPendingDeletion {
+			for _, n := range currentPendingTestGroup.Nodes {
+				runningTestGroupNodes[n] = true
+			}
+		}
+
 		return false, nil
 	}
 
@@ -701,35 +712,38 @@ func (r *ValidationRequestReconciler) startPendingTestGroup(ctx context.Context,
 }
 
 func (r *ValidationRequestReconciler) checkPendingTestGroupBlocked(ctx context.Context,
-	validationRequest *v1alpha1.ValidationRequest, currentPendingTestGroup *v1alpha1.TestGroupStatus) (bool, error) {
+	validationRequest *v1alpha1.ValidationRequest,
+	currentPendingTestGroup *v1alpha1.TestGroupStatus) (blocked, blockedByPendingDeletion bool, err error) {
 	deletedNodes, nodesFailingReadiness, err := r.fetchDeletedAndNotReadyNodes(ctx, currentPendingTestGroup)
 	if err != nil {
-		return false, fmt.Errorf("checking group nodes for %q: %w", currentPendingTestGroup.Name, err)
+		return false, false, fmt.Errorf("checking group nodes for %q: %w", currentPendingTestGroup.Name, err)
 	}
 
 	if len(deletedNodes) > 0 {
 		nextPhase := removeDeletedNodesFromTestGroup(validationRequest, currentPendingTestGroup, deletedNodes, r.Config)
 		if nextPhase != v1alpha1.PhasePending {
-			return true, nil
+			return true, false, nil
 		}
 	}
 
+	if len(currentPendingTestGroup.Attempts) > 0 {
+		previousAttempt := currentPendingTestGroup.Attempts[len(currentPendingTestGroup.Attempts)-1]
+
+		deleted, err := r.checkTestGroupObjectDeleted(ctx, currentPendingTestGroup, previousAttempt.ObjectName)
+		if err != nil {
+			return false, false, fmt.Errorf("checking previous attempt %q is deleted: %w", previousAttempt.ObjectName, err)
+		}
+
+		blockedByPendingDeletion = !deleted
+	}
+
+	// If the current TestGroup has both a test object stuck deleting and a NodeReadinessViolation, we will still
+	// include all nodes in runningTestGroupNodes.
 	if len(nodesFailingReadiness) > 0 {
-		return true, nil
+		return true, blockedByPendingDeletion, nil
 	}
 
-	if len(currentPendingTestGroup.Attempts) == 0 {
-		return false, nil
-	}
-
-	previousAttempt := currentPendingTestGroup.Attempts[len(currentPendingTestGroup.Attempts)-1]
-
-	deleted, err := r.checkTestGroupObjectDeleted(ctx, currentPendingTestGroup, previousAttempt.ObjectName)
-	if err != nil {
-		return false, fmt.Errorf("checking previous attempt %q is deleted: %w", previousAttempt.ObjectName, err)
-	}
-
-	return !deleted, nil
+	return blockedByPendingDeletion, blockedByPendingDeletion, nil
 }
 
 func terminalPhase(hasFailedTestGroups bool, validationRequest *v1alpha1.ValidationRequest) v1alpha1.Phase {
