@@ -16,24 +16,22 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
-	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
 func (r *Reconciler) runProcessors(ctx context.Context) error {
@@ -48,15 +46,14 @@ func (r *Reconciler) runProcessors(ctx context.Context) error {
 			return fmt.Errorf("load Kubernetes configuration for annotation recovery: %w", err)
 		}
 
-		restConfig.Timeout = 30 * time.Second
-
 		kube, err = kubernetes.NewForConfig(restConfig)
 		if err != nil {
 			return fmt.Errorf("create Kubernetes client for annotation recovery: %w", err)
 		}
 	}
 
-	controller, err := newNodeRecoveryController(kube, r.config.HealthEventsAnalyzerRules, r.reconcileNodeRecovery)
+	controller, err := newNodeRecoveryController(kube, r.config.HealthEventsAnalyzerRules,
+		r.reconcileNodeRecovery)
 	if err != nil {
 		return err
 	}
@@ -84,218 +81,203 @@ func (r *Reconciler) runProcessors(ctx context.Context) error {
 }
 
 func (r *Reconciler) reconcileNodeRecovery(ctx context.Context, nodeName string) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
 	unlock, err := r.nodeProcessing.acquire(ctx, nodeName)
 	if err != nil {
-		return fmt.Errorf("lock node recovery: %w", err)
+		return err
 	}
 	defer unlock()
 
-	return r.processNodeAnnotations(ctx, nodeName)
-}
-
-// Called with the same node lock used by source-event processing.
-func (r *Reconciler) processNodeAnnotations(ctx context.Context, nodeName string) error {
 	node, err := r.nodeRecovery.nodes.Get(nodeName)
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
 
 	if err != nil {
-		return fmt.Errorf("read node recovery annotations: %w", err)
+		return fmt.Errorf("read recovery node: %w", err)
 	}
 
-	r.observeNodeUID(node)
-
+	var result error
 	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
-		if err := r.processRuleAnnotation(ctx, node, rule); err != nil {
-			return err
-		}
+		result = errors.Join(result, r.processRuleAnnotation(ctx, node, rule))
 	}
 
-	return nil
+	return result
 }
 
 func (r *Reconciler) processRuleAnnotation(ctx context.Context, node *corev1.Node,
-	rule config.HealthEventsAnalyzerRule,
-) error {
-	if !rule.EvaluateRule || rule.Recovery == nil || rule.Recovery.AnnotationKey == "" {
+	rule config.HealthEventsAnalyzerRule) error {
+	if !rule.EvaluateRule || rule.Recovery == nil {
 		return nil
 	}
 
-	value := node.Annotations[rule.Recovery.AnnotationKey]
+	key := rule.Recovery.AnnotationKey
+
+	value := node.Annotations[key]
 	if value == "" {
 		return nil
 	}
 
-	source, err := parseAnnotationRecovery(node, rule, value, time.Now())
+	request, err := parseAnnotationRecovery(node, rule, value, time.Now())
 	if err != nil {
-		slog.ErrorContext(ctx, "Invalid recovery annotation; correct the request",
-			"node", node.Name, "rule", rule.Name, "error", err)
+		return r.nodeRecovery.report(ctx, node, key, value, "RecoveryInvalid",
+			fmt.Sprintf("Rule %s: %s", rule.Name, err), true)
+	}
 
+	requestID := request.HealthEvent.Metadata[annotationRequestKey]
+
+	terminalKey := node.Name + "\x00" + rule.Name
+	if previous, found := r.terminalRequests.Load(terminalKey); found && previous == requestID {
+		return r.reportRecoveryFailure(ctx, node, rule, value, requestID, healthpub.ErrPublishRejected)
+	}
+
+	recovered, err := r.recoverFromAnnotation(ctx, request, rule)
+	if err != nil {
+		return r.reportRecoveryFailure(ctx, node, rule, value, requestID, err)
+	}
+
+	reason := "RecoverySkipped"
+	if recovered > 0 {
+		reason = "RecoveryCompleted"
+	}
+
+	return r.nodeRecovery.report(ctx, node, key, value, reason,
+		fmt.Sprintf("Rule %s: %d recovered identities stored for verification time %s. Annotation retained.",
+			rule.Name, recovered, request.HealthEvent.Metadata[annotationVerifiedAtKey]), false)
+}
+
+func (r *Reconciler) reportRecoveryFailure(ctx context.Context, node *corev1.Node,
+	rule config.HealthEventsAnalyzerRule, value, requestID string, err error) error {
+	slog.ErrorContext(ctx, "Annotation recovery failed", "node", node.Name, "rule", rule.Name, "error", err)
+
+	if errors.Is(err, healthpub.ErrPublishRejected) {
+		r.terminalRequests.Store(node.Name+"\x00"+rule.Name, requestID)
+	}
+
+	if reportErr := r.nodeRecovery.report(ctx, node, rule.Recovery.AnnotationKey, value, "RecoveryFailed",
+		fmt.Sprintf("Rule %s recovery failed; see analyzer logs. Annotation retained.", rule.Name), true); reportErr != nil {
+		return reportErr
+	}
+
+	if errors.Is(err, healthpub.ErrPublishRejected) {
 		return nil
 	}
 
-	if err := r.recoverFromAnnotation(ctx, source, rule); err != nil {
-		if client.IsPermanentError(err) {
-			slog.ErrorContext(ctx, "Recovery annotation retained after permanent stored-state failure",
-				"node", node.Name, "rule", rule.Name, "error", err)
-
-			return nil
-		}
-
-		return err
-	}
-
-	return r.nodeRecovery.removeRequest(ctx, node, rule.Recovery.AnnotationKey, value)
+	return err
 }
 
-func (r *Reconciler) recoverFromAnnotation(ctx context.Context, source *datamodels.HealthEventWithStatus,
-	rule config.HealthEventsAnalyzerRule,
-) error {
-	identity, nodeWide, valid := recoveryIdentityForSource(rule, source.HealthEvent)
-	if !valid {
-		return fmt.Errorf("annotation recovery identity does not match rule %q", rule.Name)
-	}
-
-	targets, err := r.recoveryTargets(ctx, rule, identity, nodeWide)
+func (r *Reconciler) recoverFromAnnotation(ctx context.Context, request *datamodels.HealthEventWithStatus,
+	rule config.HealthEventsAnalyzerRule) (int, error) {
+	states, err := r.derivedStatesForNode(ctx, rule, request.HealthEvent.NodeName)
 	if err != nil {
-		return fmt.Errorf("read annotation recovery targets: %w", err)
+		return 0, err
 	}
 
-	sourceBoundary := boundaryFromEvent(source)
-	for _, target := range targets {
-		if target.state.isHealthy || !boundaryAfter(sourceBoundary, target.state.boundary) {
+	requested, scoped := recoveryIdentityForEvent(rule, request.HealthEvent)
+	recovered := 0
+
+	for _, state := range states {
+		identity, _ := recoveryIdentityForEvent(rule, state.HealthEvent)
+		if scoped && identity.key != requested.key {
 			continue
 		}
 
-		event := proto.Clone(source.HealthEvent).(*protos.HealthEvent)
-		event.ComponentClass = target.state.componentClass
-		event.Version = target.state.version
-		scopedSource := *source
-		scopedSource.HealthEvent = event
+		if state.HealthEvent.IsHealthy {
+			if state.HealthEvent.Metadata[annotationRequestKey] == request.HealthEvent.Metadata[annotationRequestKey] {
+				recovered++
+			}
 
-		storedBoundary, published, err := r.publishRecoveryUntilStored(ctx, &scopedSource, rule, target.identity)
+			continue
+		}
+
+		if !request.HealthEvent.GeneratedTimestamp.AsTime().After(state.HealthEvent.GeneratedTimestamp.AsTime()) {
+			continue
+		}
+
+		event := recoveryEvent(state.HealthEvent, identity.entities, request.HealthEvent.Metadata)
+
+		if err := r.publishRecoveryUntilStored(ctx, event, rule, identity); err != nil {
+			return recovered, err
+		}
+
+		recovered++
+	}
+
+	return recovered, nil
+}
+
+func recoveryEvent(fault *protos.HealthEvent, entities []*protos.Entity,
+	metadata map[string]string) *protos.HealthEvent {
+	event := proto.Clone(fault).(*protos.HealthEvent)
+
+	event.EntitiesImpacted = entities
+	if event.Metadata == nil {
+		event.Metadata = make(map[string]string)
+	}
+
+	for key, value := range metadata {
+		event.Metadata[key] = value
+	}
+
+	return event
+}
+
+func (r *Reconciler) publishRecoveryUntilStored(ctx context.Context, event *protos.HealthEvent,
+	rule config.HealthEventsAnalyzerRule, identity recoveryIdentity) error {
+	// Direct-mode Publish already confirms durable storage. Socket mode only
+	// confirms queue acceptance, so check storage immediately and then poll.
+	_, err := r.config.Publisher.PublishRecovery(ctx, event, rule)
+	if err != nil {
+		return err
+	}
+
+	if r.config.Publisher.AcknowledgesStorage() {
+		return nil
+	}
+
+	return r.waitForRecoveryStorage(ctx, event, rule, identity)
+}
+
+func (r *Reconciler) waitForRecoveryStorage(ctx context.Context, event *protos.HealthEvent,
+	rule config.HealthEventsAnalyzerRule, identity recoveryIdentity) error {
+	poll, republish := r.recoveryPoll, r.recoveryRepublish
+	if poll <= 0 {
+		poll = 250 * time.Millisecond
+	}
+
+	if republish <= 0 {
+		republish = 30 * time.Second
+	}
+
+	nextPublish := time.Now().Add(republish)
+
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+
+	for {
+		found, err := r.recoveryStored(ctx, event, rule, identity)
 		if err != nil {
-			return fmt.Errorf("publish annotation recovery for rule %q: %w", rule.Name, err)
+			return err
 		}
 
-		r.rememberRecoveryBoundary(rule.Name, target.identity, sourceBoundary)
-		r.rememberDerivedState(rule.Name, target.identity, derivedState{
-			boundary: storedBoundary, isHealthy: true,
-			componentClass: target.state.componentClass, version: target.state.version,
-		})
+		if found {
+			return nil
+		}
 
-		if published {
-			recoveryEventsPublishedTotal.WithLabelValues(rule.Name, string(rule.Recovery.Scope)).Inc()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+
+		if !time.Now().Before(nextPublish) {
+			if _, err := r.config.Publisher.PublishRecovery(ctx, event, rule); err != nil {
+				return err
+			}
+
+			nextPublish = time.Now().Add(republish)
 		}
 	}
-
-	return nil
-}
-
-// A completed annotation request leaves its boundary in the derived healthy
-// event. No intermediate healthy source event is needed for restart recovery.
-func (r *Reconciler) latestAnnotationRecovery(ctx context.Context, rule config.HealthEventsAnalyzerRule,
-	identity recoveryIdentity,
-) (*datamodels.HealthEventWithStatus, error) {
-	if r.nodeRecovery == nil {
-		return nil, fmt.Errorf("annotation recovery requires a synchronized node cache")
-	}
-
-	node, err := r.nodeRecovery.nodes.Get(identity.nodeName)
-	if apierrors.IsNotFound(err) {
-		return nil, nil
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("read recovery node identity: %w", err)
-	}
-
-	latest, err := r.findLatestMatchingEvent(ctx, &rule, &identity, rule.Name, "annotation_recovery",
-		r.recoveryLookupFilter(agentName, rule.Name, identity.nodeName),
-		func(candidate *datamodels.HealthEventWithStatus) bool {
-			return annotationRecoveryMatches(candidate, rule, identity, string(node.UID))
-		})
-	if err != nil || latest == nil {
-		return nil, err
-	}
-
-	return annotationRecoverySource(latest, node)
-}
-
-func annotationRecoveryMatches(candidate *datamodels.HealthEventWithStatus, rule config.HealthEventsAnalyzerRule,
-	identity recoveryIdentity, nodeUID string,
-) bool {
-	event := candidate.HealthEvent
-	if !event.IsHealthy || event.Metadata[annotationMetadataKey] != rule.Recovery.AnnotationKey ||
-		event.Metadata[annotationNodeUIDKey] != nodeUID || event.Metadata[annotationRequestKey] == "" {
-		return false
-	}
-
-	candidateIdentity, valid := recoveryIdentityForEvent(rule, event)
-
-	return valid && candidateIdentity.key == identity.key
-}
-
-func annotationRecoverySource(latest *datamodels.HealthEventWithStatus, node *corev1.Node) (
-	*datamodels.HealthEventWithStatus, error,
-) {
-	timestamp := latest.HealthEvent.Metadata[publisher.SourceGeneratedTimestampMetadataKey]
-
-	recoveredAt, err := time.Parse(time.RFC3339Nano, timestamp)
-	if err != nil {
-		return nil, client.PermanentError(fmt.Errorf("decode stored annotation recovery boundary: %w", err))
-	}
-
-	if recoveredAt.Before(node.CreationTimestamp.Time) ||
-		recoveredAt.After(latest.HealthEvent.GeneratedTimestamp.AsTime()) {
-		return nil, client.PermanentError(
-			fmt.Errorf("stored annotation recovery boundary is outside the node lifetime or recovery time"),
-		)
-	}
-
-	latest.CreatedAt = recoveredAt
-	latest.HealthEvent = proto.Clone(latest.HealthEvent).(*protos.HealthEvent)
-	latest.HealthEvent.GeneratedTimestamp = timestamppb.New(recoveredAt)
-
-	return latest, nil
-}
-
-func (r *Reconciler) observeNodeUID(node *corev1.Node) {
-	r.recoveryMu.Lock()
-	defer r.recoveryMu.Unlock()
-
-	if r.nodeUIDs == nil {
-		r.nodeUIDs = make(map[string]string)
-	}
-
-	previous := r.nodeUIDs[node.Name]
-
-	r.nodeUIDs[node.Name] = string(node.UID)
-	if previous == "" || previous == string(node.UID) {
-		return
-	}
-
-	for key := range r.recoveryLoaded {
-		if recoveryKeyForNode(key, node.Name) {
-			delete(r.recoveryLoaded, key)
-		}
-	}
-
-	for key := range r.recoveryBoundaries {
-		if recoveryKeyForNode(key, node.Name) {
-			delete(r.recoveryBoundaries, key)
-		}
-	}
-
-	for key := range r.derivedStates {
-		if recoveryKeyForNode(key, node.Name) {
-			delete(r.derivedStates, key)
-		}
-	}
-}
-
-func recoveryKeyForNode(key, node string) bool {
-	_, identity, _ := strings.Cut(key, "\x00")
-	return identity == node || strings.HasPrefix(identity, node+"|")
 }

@@ -11,28 +11,49 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 {{- if .Values.nodeRecovery.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: {{ include "health-events-analyzer.fullname" . }}-node-recovery
-  labels:
-    {{- include "health-events-analyzer.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list", "watch", "patch"]
+    resources: [nodes]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: {{ include "health-events-analyzer.fullname" . }}-node-recovery
-  labels:
-    {{- include "health-events-analyzer.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "health-events-analyzer.fullname" . }}-node-recovery
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "health-events-analyzer.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "health-events-analyzer.fullname" . }}-recovery-events
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "health-events-analyzer.fullname" . }}-recovery-events
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "health-events-analyzer.fullname" . }}-recovery-events
 subjects:
   - kind: ServiceAccount
     name: {{ include "health-events-analyzer.fullname" . }}

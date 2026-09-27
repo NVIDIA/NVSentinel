@@ -18,10 +18,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -41,16 +39,13 @@ const (
 	jsonbDocumentColumn = "document"
 
 	// MongoDB query operators
-	opLTE    = "$lte"
-	opEQ     = "$eq"
-	opGTE    = "$gte"
-	opGT     = "$gt"
-	opLT     = "$lt"
-	opNE     = "$ne"
-	opIn     = "$in"
-	opExists = "$exists"
-	opAnd    = "$and"
-	opOr     = "$or"
+	opLTE = "$lte"
+	opEQ  = "$eq"
+	opGTE = "$gte"
+	opGT  = "$gt"
+	opLT  = "$lt"
+	opNE  = "$ne"
+	opIn  = "$in"
 
 	// MongoDB aggregation stages and update operators
 	opMatch = "$match"
@@ -67,9 +62,6 @@ const (
 	// SQL constants
 	orderDESC     = "DESC"
 	sqlTrueClause = "TRUE"
-	sqlDistinct   = "IS DISTINCT FROM"
-	createdAtSQL  = "created_at"
-	updatedAtSQL  = "updated_at"
 
 	// SQL window frame bounds
 	frameBoundUnbounded  = "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"
@@ -642,8 +634,6 @@ func (c *PostgreSQLClient) CountDocuments(ctx context.Context, filter any, opts 
 //
 //nolint:gocyclo,cyclop,gocognit // Complexity 11: handles pipeline type conversion and stage routing - acceptable
 func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline any) (Cursor, error) {
-	pipeline, pipelineOptions := ResolvePipelineStageOptions(pipeline)
-
 	// Convert pipeline to slice of stages
 	var stages []map[string]any
 
@@ -682,7 +672,7 @@ func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline any) (Cursor,
 	}
 
 	// Build SQL query from pipeline stages
-	query, args, err := c.buildAggregationQuery(stages, pipelineOptions)
+	query, args, err := c.buildAggregationQuery(stages)
 	if err != nil {
 		return nil, err
 	}
@@ -776,13 +766,6 @@ func resolveSQLFilter(filter any) (string, []any, bool) {
 // buildWhereClause converts filters to a PostgreSQL WHERE clause.
 // Accepts a *query.Builder (via ToSQL interface) or a legacy map[string]interface{} filter.
 func (c *PostgreSQLClient) buildWhereClause(filter any) (string, []any, error) {
-	return c.buildWhereClauseWithOptions(filter, false)
-}
-
-func (c *PostgreSQLClient) buildWhereClauseWithOptions(
-	filter any,
-	extendedFilters bool,
-) (string, []any, error) {
 	if filter == nil {
 		return sqlTrueClause, []any{}, nil
 	}
@@ -804,38 +787,17 @@ func (c *PostgreSQLClient) buildWhereClauseWithOptions(
 		return sqlTrueClause, []any{}, nil
 	}
 
-	return c.buildWhereClauseMapWithOptions(filterMap, 1, extendedFilters)
-}
-
-//nolint:cyclop // Handles the small set of opt-in logical and field filter forms.
-func (c *PostgreSQLClient) buildWhereClauseMapWithOptions(
-	filterMap map[string]any,
-	startParam int,
-	extendedFilters bool,
-) (string, []any, error) {
-	if len(filterMap) == 0 {
-		return sqlTrueClause, nil, nil
-	}
-
 	var (
 		conditions []string
 		args       []any
 	)
 
-	paramCount := startParam
-	keys := make([]string, 0, len(filterMap))
+	paramCount := 1
 
-	for key := range filterMap {
-		keys = append(keys, key)
-	}
-
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		value := filterMap[key]
-
-		switch key {
-		case "$expr":
+	for key, value := range filterMap {
+		// Handle special operators
+		if key == "$expr" {
+			// Handle $expr operator which allows aggregation expressions in match
 			exprCondition, err := c.buildExprCondition(value)
 			if err != nil {
 				return "", nil, err
@@ -844,27 +806,14 @@ func (c *PostgreSQLClient) buildWhereClauseMapWithOptions(
 			conditions = append(conditions, exprCondition)
 
 			continue
-		case opAnd, opOr:
-			if !extendedFilters {
-				break
-			}
-
-			condition, logicalArgs, err := c.buildLogicalWhereClause(key, value, paramCount, extendedFilters)
-			if err != nil {
-				return "", nil, err
-			}
-
-			conditions = append(conditions, condition)
-			args = append(args, logicalArgs...)
-			paramCount += len(logicalArgs)
-
-			continue
 		}
 
 		// Check if value is a map containing comparison operators
 		if valueMap, ok := value.(map[string]any); ok {
 			// Handle comparison operators: {"count": {opGTE: 5}} → document->>'count' >= 5
-			condition, valueArgs, err := c.buildFieldComparison(key, valueMap, paramCount, extendedFilters)
+			jsonPath := c.buildJSONPath(key)
+
+			condition, valueArgs, err := c.buildFieldComparison(jsonPath, valueMap, paramCount)
 			if err != nil {
 				return "", nil, err
 			}
@@ -879,11 +828,10 @@ func (c *PostgreSQLClient) buildWhereClauseMapWithOptions(
 		// Simple equality check on JSONB fields
 		// Example: {"nodeName": "node-1"} → document->>'nodeName' = $1
 		// Example: {"healthevent.nodename": "node-1"} → document->'healthevent'->>'nodename' = $1
-		jsonPath := c.buildJSONPathWithOptions(key, extendedFilters)
-		condition, valueArgs := buildScalarComparison(jsonPath, "=", value, paramCount, extendedFilters)
-		conditions = append(conditions, condition)
-		args = append(args, valueArgs...)
-		paramCount += len(valueArgs)
+		jsonPath := c.buildJSONPath(key)
+		conditions = append(conditions, fmt.Sprintf("%s = $%d", jsonPath, paramCount))
+		args = append(args, value)
+		paramCount++
 	}
 
 	whereClause := strings.Join(conditions, " AND ")
@@ -891,116 +839,37 @@ func (c *PostgreSQLClient) buildWhereClauseMapWithOptions(
 	return whereClause, args, nil
 }
 
-func (c *PostgreSQLClient) buildLogicalWhereClause(
-	operator string,
-	value any,
-	startParam int,
-	extendedFilters bool,
-) (string, []any, error) {
-	logicalValues, ok := logicalFilterValues(value)
-	if !ok || len(logicalValues) == 0 {
-		return "", nil, datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("%s must contain at least one filter", operator),
-			fmt.Errorf("got type %T", value),
-		)
-	}
-
-	logicalConditions := make([]string, 0, len(logicalValues))
-	logicalArgs := make([]any, 0)
-	paramCount := startParam
-
-	for i, logicalValue := range logicalValues {
-		logicalMap, ok := logicalValue.(map[string]any)
-		if !ok {
-			return "", nil, datastore.NewValidationError(
-				datastore.ProviderPostgreSQL,
-				fmt.Sprintf("%s filter %d must be a map", operator, i),
-				fmt.Errorf("got type %T", logicalValue),
-			)
-		}
-
-		condition, args, err := c.buildWhereClauseMapWithOptions(logicalMap, paramCount, extendedFilters)
-		if err != nil {
-			return "", nil, fmt.Errorf("build %s filter %d: %w", operator, i, err)
-		}
-
-		logicalConditions = append(logicalConditions, condition)
-		logicalArgs = append(logicalArgs, args...)
-		paramCount += len(args)
-	}
-
-	joiner := " OR "
-	if operator == opAnd {
-		joiner = " AND "
-	}
-
-	return "(" + strings.Join(logicalConditions, joiner) + ")", logicalArgs, nil
-}
-
-func logicalFilterValues(value any) ([]any, bool) {
-	switch value := value.(type) {
-	case []any:
-		return value, true
-	case []map[string]any:
-		values := make([]any, len(value))
-		for i := range value {
-			values[i] = value[i]
-		}
-
-		return values, true
-	case datastore.Array:
-		return []any(value), true
-	default:
-		return nil, false
-	}
-}
-
 // buildFieldComparison builds a comparison condition for a field with operators
 // Handles operators like $gte, $gt, $lte, $lt, $eq, $ne
 func (c *PostgreSQLClient) buildFieldComparison(
-	fieldPath string,
+	jsonPath string,
 	operators map[string]any,
 	startParam int,
-	extendedFilters bool,
 ) (string, []any, error) {
 	var (
 		conditions []string
 		args       []any
 	)
 
-	jsonPath := c.buildJSONPathWithOptions(fieldPath, extendedFilters)
 	paramCount := startParam
 
-	operatorNames := make([]string, 0, len(operators))
+	for op, value := range operators {
+		var sqlOp string
 
-	for op := range operators {
-		operatorNames = append(operatorNames, op)
-	}
-
-	sort.Strings(operatorNames)
-
-	for _, op := range operatorNames {
-		value := operators[op]
-
-		if op == opExists && extendedFilters {
-			existsPath := jsonPath
-			if jsonPath != createdAtSQL && jsonPath != updatedAtSQL {
-				existsPath = c.buildJSONPathAsJSONBWithOptions(fieldPath, true)
-			}
-
-			condition, err := buildExistsCondition(existsPath, value)
-			if err != nil {
-				return "", nil, err
-			}
-
-			conditions = append(conditions, condition)
-
-			continue
-		}
-
-		sqlOperator, ok := sqlComparisonOperator(op)
-		if !ok {
+		switch op {
+		case opGTE:
+			sqlOp = ">="
+		case opGT:
+			sqlOp = ">"
+		case opLTE:
+			sqlOp = "<="
+		case opLT:
+			sqlOp = "<"
+		case opEQ:
+			sqlOp = "="
+		case opNE:
+			sqlOp = "!="
+		default:
 			return "", nil, datastore.NewQueryError(
 				datastore.ProviderPostgreSQL,
 				fmt.Sprintf("unsupported comparison operator: %s", op),
@@ -1008,10 +877,9 @@ func (c *PostgreSQLClient) buildFieldComparison(
 			)
 		}
 
-		condition, valueArgs := buildScalarComparison(jsonPath, sqlOperator, value, paramCount, extendedFilters)
-		conditions = append(conditions, condition)
-		args = append(args, valueArgs...)
-		paramCount += len(valueArgs)
+		conditions = append(conditions, fmt.Sprintf("%s %s $%d", jsonPath, sqlOp, paramCount))
+		args = append(args, value)
+		paramCount++
 	}
 
 	condition := strings.Join(conditions, " AND ")
@@ -1019,144 +887,11 @@ func (c *PostgreSQLClient) buildFieldComparison(
 	return condition, args, nil
 }
 
-func buildExistsCondition(jsonPath string, value any) (string, error) {
-	exists, ok := value.(bool)
-	if !ok {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$exists value must be a boolean",
-			fmt.Errorf("got type %T", value),
-		)
-	}
-
-	if exists {
-		return jsonPath + " IS NOT NULL", nil
-	}
-
-	return jsonPath + " IS NULL", nil
-}
-
-func sqlComparisonOperator(operator string) (string, bool) {
-	switch operator {
-	case opGTE:
-		return ">=", true
-	case opGT:
-		return ">", true
-	case opLTE:
-		return "<=", true
-	case opLT:
-		return "<", true
-	case opEQ:
-		return "=", true
-	case opNE:
-		return sqlDistinct, true
-	default:
-		return "", false
-	}
-}
-
-func buildScalarComparison(
-	jsonPath, operator string,
-	value any,
-	parameter int,
-	typed bool,
-) (string, []any) {
-	if !typed {
-		return fmt.Sprintf("%s %s $%d", jsonPath, operator, parameter), []any{value}
-	}
-
-	if value == nil {
-		if operator == "!=" || operator == sqlDistinct {
-			return jsonPath + " IS NOT NULL", nil
-		}
-
-		return jsonPath + " IS NULL", nil
-	}
-
-	expression, argument := typedComparisonOperand(jsonPath, value)
-	if operator == sqlDistinct {
-		reflected := reflect.ValueOf(value)
-		if reflected.IsValid() && reflected.Kind() == reflect.Bool {
-			expression = fmt.Sprintf(
-				"CASE WHEN %s IN ('true', 'false') THEN (%s)::boolean END",
-				jsonPath, jsonPath,
-			)
-		}
-	}
-
-	return fmt.Sprintf("%s %s $%d", expression, operator, parameter), []any{argument}
-}
-
-func typedComparisonOperand(jsonPath string, value any) (string, any) {
-	if jsonPath == createdAtSQL || jsonPath == updatedAtSQL {
-		return jsonPath, value
-	}
-
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return jsonPath, value
-	}
-
-	if reflected.Kind() == reflect.Bool {
-		return fmt.Sprintf(
-			"CASE WHEN %s IS NULL THEN false WHEN %s IN ('true', 'false') THEN (%s)::boolean END",
-			jsonPath, jsonPath, jsonPath,
-		), value
-	}
-
-	if isJSONNumber(reflected.Kind()) {
-		return fmt.Sprintf(
-			"CASE WHEN %s ~ '^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$' THEN (%s)::numeric END",
-			jsonPath, jsonPath,
-		), formatJSONNumber(reflected, value)
-	}
-
-	return jsonPath, value
-}
-
-func isJSONNumber(kind reflect.Kind) bool {
-	return kind >= reflect.Int && kind <= reflect.Float64 && kind != reflect.Uintptr
-}
-
-func formatJSONNumber(reflected reflect.Value, fallback any) any {
-	kind := reflected.Kind()
-	if kind >= reflect.Int && kind <= reflect.Int64 {
-		return strconv.FormatInt(reflected.Int(), 10)
-	}
-
-	if kind >= reflect.Uint && kind <= reflect.Uint64 {
-		return strconv.FormatUint(reflected.Uint(), 10)
-	}
-
-	if kind == reflect.Float32 || kind == reflect.Float64 {
-		return strconv.FormatFloat(reflected.Float(), 'g', -1, reflected.Type().Bits())
-	}
-
-	return fallback
-}
-
 // buildExprCondition converts MongoDB $expr operator to PostgreSQL SQL
 // This handles aggregation expressions used in $match stages
+//
+//nolint:cyclop,gocognit // Complexity acceptable: handles logical and comparison operators in $match $expr
 func (c *PostgreSQLClient) buildExprCondition(expr any) (string, error) {
-	condition, err := c.buildExprConditionValue(expr)
-	if err == nil {
-		return condition, nil
-	}
-
-	var datastoreErr *datastore.DatastoreError
-	if errors.As(err, &datastoreErr) {
-		return "", err
-	}
-
-	return "", datastore.NewValidationError(
-		datastore.ProviderPostgreSQL,
-		"invalid $expr",
-		err,
-	)
-}
-
-//nolint:cyclop,gocognit // Complexity acceptable: handles logical and comparison operators in $match $expr.
-func (c *PostgreSQLClient) buildExprConditionValue(expr any) (string, error) {
 	exprMap, ok := expr.(map[string]any)
 	if !ok {
 		return "", datastore.NewValidationError(
@@ -1166,18 +901,10 @@ func (c *PostgreSQLClient) buildExprConditionValue(expr any) (string, error) {
 		)
 	}
 
-	if len(exprMap) != 1 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$expr must contain exactly one operator",
-			fmt.Errorf("got %d operators", len(exprMap)),
-		)
-	}
-
 	// Handle logical and comparison operators
 	for op, value := range exprMap {
 		switch op {
-		case opAnd:
+		case "$and":
 			// Handle logical AND
 			andArray, ok := value.([]any)
 			if !ok {
@@ -1209,7 +936,7 @@ func (c *PostgreSQLClient) buildExprConditionValue(expr any) (string, error) {
 
 			return fmt.Sprintf("(%s)", strings.Join(conditions, " AND ")), nil
 
-		case opOr:
+		case "$or":
 			// Handle logical OR
 			orArray, ok := value.([]any)
 			if !ok {
@@ -1641,7 +1368,7 @@ func (c *PostgreSQLClient) buildExprValue(value any) (string, error) {
 					"sql", sql)
 
 				return sql, nil
-			case opAnd:
+			case "$and":
 				// $and performs logical AND on array of expressions: [expr1, expr2, ...]
 				// PostgreSQL: (expr1 AND expr2 AND ...)
 				operandArray, ok := operand.([]any)
@@ -1989,14 +1716,6 @@ func normalizeFieldName(fieldName string) string {
 	return fieldName
 }
 
-func normalizeFieldNameWithOptions(fieldName string, extendedFilters bool) string {
-	if extendedFilters && fieldName == "processingstrategy" {
-		return "processingStrategy"
-	}
-
-	return normalizeFieldName(fieldName)
-}
-
 // buildJSONPathAsJSONB converts a MongoDB-style field path to PostgreSQL JSONB path expression
 // that preserves JSONB type (using -> for all parts, including the last one).
 // This is used in aggregation expressions where we need to preserve arrays/objects.
@@ -2006,19 +1725,12 @@ func normalizeFieldNameWithOptions(fieldName string, extendedFilters bool) strin
 //	"healthevent.entitiesimpacted" → "document->'healthevent'->'entitiesImpacted'"
 //	"status.metadata" → "document->'status'->'metadata'"
 func (c *PostgreSQLClient) buildJSONPathAsJSONB(fieldPath string) string {
-	return c.buildJSONPathAsJSONBWithOptions(fieldPath, false)
-}
-
-func (c *PostgreSQLClient) buildJSONPathAsJSONBWithOptions(
-	fieldPath string,
-	extendedFilters bool,
-) string {
 	parts := strings.Split(fieldPath, ".")
 	path := jsonbDocumentColumn
 
 	for _, part := range parts {
 		// Normalize field name to camelCase and use -> to keep JSONB type
-		normalizedPart := normalizeFieldNameWithOptions(part, extendedFilters)
+		normalizedPart := normalizeFieldName(part)
 		path = fmt.Sprintf("%s->'%s'", path, normalizedPart)
 	}
 
@@ -2033,24 +1745,11 @@ func (c *PostgreSQLClient) buildJSONPathAsJSONBWithOptions(
 //	"healthevent.nodename" → "document->'healthevent'->>'nodeName'"
 //	"status.message" → "document->'status'->>'message'"
 func (c *PostgreSQLClient) buildJSONPath(fieldPath string) string {
-	return c.buildJSONPathWithOptions(fieldPath, false)
-}
-
-func (c *PostgreSQLClient) buildJSONPathWithOptions(fieldPath string, extendedFilters bool) string {
-	if extendedFilters {
-		switch strings.ToLower(fieldPath) {
-		case "createdat":
-			return createdAtSQL
-		case "updatedat":
-			return updatedAtSQL
-		}
-	}
-
 	parts := strings.Split(fieldPath, ".")
 
 	if len(parts) == 1 {
 		// Simple field: document->>'fieldName'
-		normalizedPart := normalizeFieldNameWithOptions(parts[0], extendedFilters)
+		normalizedPart := normalizeFieldName(parts[0])
 
 		return fmt.Sprintf("%s->>'%s'", jsonbDocumentColumn, normalizedPart)
 	}
@@ -2061,7 +1760,7 @@ func (c *PostgreSQLClient) buildJSONPathWithOptions(fieldPath string, extendedFi
 	path := jsonbDocumentColumn
 
 	for i, part := range parts {
-		normalizedPart := normalizeFieldNameWithOptions(part, extendedFilters)
+		normalizedPart := normalizeFieldName(part)
 		if i == len(parts)-1 {
 			// Last part: use ->> to get text value
 			path = fmt.Sprintf("%s->>'%s'", path, normalizedPart)
@@ -2129,30 +1828,19 @@ func (c *PostgreSQLClient) convertDatastoreValue(value any) any {
 }
 
 // buildAggregationQuery builds SQL query from MongoDB aggregation pipeline stages
-func (c *PostgreSQLClient) buildAggregationQuery(
-	stages []map[string]any,
-	options PipelineOptions,
-) (string, []any, error) {
+func (c *PostgreSQLClient) buildAggregationQuery(stages []map[string]any) (string, []any, error) {
 	builder := &aggregationQueryBuilder{
 		client: c,
 		query:  fmt.Sprintf("SELECT id, document FROM %s", c.table),
 	}
 
 	for i, stage := range stages {
-		builder.extendedFilters = options.extendedFiltersForStage(i)
-		builder.rejectExtendedOperators = options.rejectExtendedOperatorsForStage(i)
-
 		if err := builder.processStage(i, stage); err != nil {
 			return "", nil, err
 		}
 	}
 
-	query, err := builder.buildFinalQuery()
-	if err != nil {
-		return "", nil, err
-	}
-
-	return query, builder.args, nil
+	return builder.buildFinalQuery(), builder.args, nil
 }
 
 // aggregationQueryBuilder helps build aggregation queries with reduced complexity
@@ -2171,9 +1859,7 @@ type aggregationQueryBuilder struct {
 	addFields    map[string]any // Fields to add via $addFields
 	// postCountMatch stores $match conditions that come AFTER $count
 	// These filter the count result, not the source rows
-	postCountMatch          map[string]any
-	extendedFilters         bool
-	rejectExtendedOperators bool
+	postCountMatch map[string]any
 }
 
 // windowFieldsSpec holds the specification for $setWindowFields
@@ -2218,7 +1904,7 @@ func (b *aggregationQueryBuilder) processStage(stageIndex int, stage map[string]
 		case "$addFields":
 			return b.processAddFields(value)
 		case "$project", "$lookup", "$unwind", "$facet":
-			return datastore.NewValidationError(
+			return datastore.NewQueryError(
 				datastore.ProviderPostgreSQL,
 				fmt.Sprintf("aggregation operator %s not yet supported", operator),
 				fmt.Errorf("complex aggregation requires custom SQL implementation"),
@@ -2245,12 +1931,6 @@ func (b *aggregationQueryBuilder) processMatch(value any) error {
 		)
 	}
 
-	if b.extendedFilters || b.rejectExtendedOperators {
-		if err := validateAnalyzerMatchShape(matchMap, b.extendedFilters); err != nil {
-			return err
-		}
-	}
-
 	// If $count has already been processed, this is a post-count $match
 	// that should filter the count result, not the source rows
 	if b.isCount {
@@ -2259,7 +1939,7 @@ func (b *aggregationQueryBuilder) processMatch(value any) error {
 		return nil
 	}
 
-	whereClause, matchArgs, err := b.client.buildWhereClauseWithOptions(matchMap, b.extendedFilters)
+	whereClause, matchArgs, err := b.client.buildWhereClause(matchMap)
 	if err != nil {
 		return err
 	}
@@ -2269,100 +1949,6 @@ func (b *aggregationQueryBuilder) processMatch(value any) error {
 	b.args = append(b.args, matchArgs...)
 
 	return nil
-}
-
-func validateAnalyzerMatchShape(matchMap map[string]any, extendedFilters bool) error {
-	for field, value := range matchMap {
-		if err := validateAnalyzerMatchEntry(field, value, extendedFilters); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func validateAnalyzerMatchEntry(field string, value any, extendedFilters bool) error {
-	if field == "$expr" {
-		return nil
-	}
-
-	if field == opAnd || field == opOr {
-		return validateAnalyzerLogicalMatch(field, value, extendedFilters)
-	}
-
-	if strings.HasPrefix(field, "$") {
-		return datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("aggregation operator %s is not supported in PostgreSQL $match", field),
-			nil,
-		)
-	}
-
-	return validateAnalyzerFieldMatch(field, value)
-}
-
-func validateAnalyzerLogicalMatch(operator string, value any, extendedFilters bool) error {
-	if !extendedFilters {
-		return datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("aggregation operator %s requires extended filters", operator),
-			nil,
-		)
-	}
-
-	logicalValues, ok := logicalFilterValues(value)
-	if !ok || len(logicalValues) == 0 {
-		return nil
-	}
-
-	for _, logicalValue := range logicalValues {
-		logicalMap, ok := logicalValue.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		if err := validateAnalyzerMatchShape(logicalMap, true); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func validateAnalyzerFieldMatch(field string, value any) error {
-	if operators, ok := value.(map[string]any); ok {
-		for operator, operand := range operators {
-			if _, supported := sqlComparisonOperator(operator); supported && isCompositeMatchValue(operand) {
-				return nonScalarMatchValueError(field, operand)
-			}
-		}
-
-		return nil
-	}
-
-	if isCompositeMatchValue(value) {
-		return nonScalarMatchValueError(field, value)
-	}
-
-	return nil
-}
-
-func isCompositeMatchValue(value any) bool {
-	if value == nil {
-		return false
-	}
-
-	kind := reflect.ValueOf(value).Kind()
-
-	return kind == reflect.Array || kind == reflect.Map || kind == reflect.Slice
-}
-
-func nonScalarMatchValueError(field string, value any) error {
-	return datastore.NewValidationError(
-		datastore.ProviderPostgreSQL,
-		fmt.Sprintf("$match field %q requires a scalar comparison value", field),
-		fmt.Errorf("got type %T", value),
-	)
 }
 
 func (b *aggregationQueryBuilder) processSort(value any) error {
@@ -2585,7 +2171,7 @@ func (b *aggregationQueryBuilder) processAddFields(value any) error {
 	return nil
 }
 
-func (b *aggregationQueryBuilder) buildFinalQuery() (string, error) {
+func (b *aggregationQueryBuilder) buildFinalQuery() string {
 	// Handle $count operator
 	if b.isCount {
 		return b.buildCountQuery()
@@ -2593,25 +2179,25 @@ func (b *aggregationQueryBuilder) buildFinalQuery() (string, error) {
 
 	// Handle $group operator
 	if b.groupBy != nil {
-		return b.buildGroupQuery(), nil
+		return b.buildGroupQuery()
 	}
 
 	// Handle $setWindowFields operator
 	if b.windowFields != nil {
-		return b.buildWindowFieldsQuery(), nil
+		return b.buildWindowFieldsQuery()
 	}
 
 	// Handle $addFields operator
 	if b.addFields != nil {
-		return b.buildAddFieldsQuery(), nil
+		return b.buildAddFieldsQuery()
 	}
 
 	// Standard query
-	return b.buildStandardQuery(), nil
+	return b.buildStandardQuery()
 }
 
 // buildCountQuery builds the SQL for $count aggregation with optional post-count filtering
-func (b *aggregationQueryBuilder) buildCountQuery() (string, error) {
+func (b *aggregationQueryBuilder) buildCountQuery() string {
 	subquery := b.query
 	if len(b.whereClauses) > 0 {
 		subquery += " WHERE " + strings.Join(b.whereClauses, " AND ")
@@ -2626,7 +2212,7 @@ func (b *aggregationQueryBuilder) buildCountQuery() (string, error) {
 		return b.buildPostCountFilter(countQuery)
 	}
 
-	return countQuery, nil
+	return countQuery
 }
 
 // buildStandardQuery builds a standard SELECT query with WHERE, ORDER BY, LIMIT, OFFSET
@@ -2655,105 +2241,51 @@ func (b *aggregationQueryBuilder) buildStandardQuery() string {
 // buildPostCountFilter wraps a count query with a WHERE clause to filter the count result.
 // This handles the MongoDB pattern: $count -> $match (filter on count)
 // Example: {$match: {count: {$gte: 5}}} after $count should return empty if count < 5
-func (b *aggregationQueryBuilder) buildPostCountFilter(countQuery string) (string, error) {
+func (b *aggregationQueryBuilder) buildPostCountFilter(countQuery string) string {
 	// Build WHERE conditions for the count result
 	conditions := []string{}
-	fields := make([]string, 0, len(b.postCountMatch))
 
-	for field := range b.postCountMatch {
-		fields = append(fields, field)
-	}
-
-	sort.Strings(fields)
-
-	for _, field := range fields {
-		value := b.postCountMatch[field]
-
-		condition, err := b.buildPostCountCondition(field, value)
-		if err != nil {
-			return "", err
+	for field, value := range b.postCountMatch {
+		condition := b.buildPostCountCondition(field, value)
+		if condition != "" {
+			conditions = append(conditions, condition)
 		}
-
-		conditions = append(conditions, condition)
 	}
 
 	if len(conditions) == 0 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"post-count $match must contain at least one supported condition",
-			nil,
-		)
+		return countQuery
 	}
 
 	// Wrap the count query and apply the filter on the result
 	// The count result is in document->>'countField', so we filter on that
 	return fmt.Sprintf("SELECT * FROM (%s) as count_result WHERE %s",
-		countQuery, strings.Join(conditions, " AND ")), nil
+		countQuery, strings.Join(conditions, " AND "))
 }
 
 // buildPostCountCondition builds a single condition for filtering count results
-func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value any) (string, error) {
-	if strings.HasPrefix(field, "$") {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("operator %s is not supported in a post-count $match", field),
-			nil,
-		)
-	}
-
+func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value any) string {
 	// The count result is stored as document->>'field'
 	// We need to cast it to a number for comparison
 	fieldPath := fmt.Sprintf("(document->>'%s')::bigint", field)
 
 	switch v := value.(type) {
 	case map[string]any:
-		if len(v) == 0 {
-			return "", datastore.NewValidationError(
-				datastore.ProviderPostgreSQL,
-				fmt.Sprintf("post-count $match field %q must contain a comparison operator", field),
-				nil,
-			)
-		}
+		// Handle comparison operators like {$gte: 5}
+		for op, opValue := range v {
+			if sqlOp := b.mapComparisonOperator(op); sqlOp != "" {
+				b.args = append(b.args, opValue)
 
-		operatorNames := make([]string, 0, len(v))
-		for op := range v {
-			operatorNames = append(operatorNames, op)
-		}
-
-		sort.Strings(operatorNames)
-
-		conditions := make([]string, 0, len(operatorNames))
-		for _, op := range operatorNames {
-			opValue := v[op]
-
-			sqlOp := b.mapComparisonOperator(op)
-			if sqlOp == "" {
-				return "", datastore.NewValidationError(
-					datastore.ProviderPostgreSQL,
-					fmt.Sprintf("unsupported post-count comparison operator: %s", op),
-					nil,
-				)
+				return fmt.Sprintf("%s %s $%d", fieldPath, sqlOp, len(b.args))
 			}
-
-			if isCompositeMatchValue(opValue) {
-				return "", nonScalarMatchValueError(field, opValue)
-			}
-
-			b.args = append(b.args, opValue)
-			conditions = append(conditions, fmt.Sprintf("%s %s $%d", fieldPath, sqlOp, len(b.args)))
 		}
-
-		return strings.Join(conditions, " AND "), nil
 	default:
-		if isCompositeMatchValue(v) {
-			return "", nonScalarMatchValueError(field, v)
-		}
-
 		// Direct equality comparison
 		b.args = append(b.args, v)
 
-		return fmt.Sprintf("%s = $%d", fieldPath, len(b.args)), nil
+		return fmt.Sprintf("%s = $%d", fieldPath, len(b.args))
 	}
+
+	return ""
 }
 
 // mapComparisonOperator maps MongoDB comparison operators to SQL operators

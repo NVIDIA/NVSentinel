@@ -28,7 +28,7 @@ import (
 )
 
 func annotationRule() config.HealthEventsAnalyzerRule {
-	rule := recoveryRule(config.RecoveryScopeEntity)
+	rule := config.HealthEventsAnalyzerRule{Name: "RepeatedXID94OnSameGPU", EvaluateRule: true, RecommendedAction: "CONTACT_SUPPORT"}
 	rule.Recovery = &config.RecoveryMapping{AnnotationKey: "nvsentinel.nvidia.com/recover-xid", Scope: config.RecoveryScopeEntity, EntityTypes: []string{"GPU_UUID"}}
 	return rule
 }

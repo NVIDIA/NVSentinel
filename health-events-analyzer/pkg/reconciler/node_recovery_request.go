@@ -32,9 +32,10 @@ import (
 )
 
 const (
-	annotationMetadataKey = "analyzer_recovery_annotation"
-	annotationNodeUIDKey  = "analyzer_recovery_node_uid"
-	annotationRequestKey  = "analyzer_recovery_request"
+	annotationMetadataKey   = "analyzer_recovery_annotation"
+	annotationNodeUIDKey    = "analyzer_recovery_node_uid"
+	annotationRequestKey    = "analyzer_recovery_request"
+	annotationVerifiedAtKey = "analyzer_recovery_verified_at"
 )
 
 type annotationRecoveryRequest struct {
@@ -87,9 +88,10 @@ func parseAnnotationRecovery(node *corev1.Node, rule config.HealthEventsAnalyzer
 			Version: 1, Agent: agentName, CheckName: rule.Name, NodeName: node.Name, IsHealthy: true,
 			GeneratedTimestamp: timestamppb.New(timestamp), EntitiesImpacted: entities,
 			Metadata: map[string]string{
-				annotationMetadataKey: rule.Recovery.AnnotationKey,
-				annotationNodeUIDKey:  string(node.UID),
-				annotationRequestKey:  hex.EncodeToString(digest[:]),
+				annotationMetadataKey:   rule.Recovery.AnnotationKey,
+				annotationVerifiedAtKey: timestamp.UTC().Format(time.RFC3339Nano),
+				annotationNodeUIDKey:    string(node.UID),
+				annotationRequestKey:    hex.EncodeToString(digest[:]),
 			},
 		},
 		HealthEventStatus: &protos.HealthEventStatus{},

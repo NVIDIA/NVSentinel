@@ -207,6 +207,21 @@ discover_dcgm_target() {
     local dcgm_addr
     dcgm_addr=$(kubectl get pod -n "$GPU_HM_NS" "$GPU_HM_POD" -o json 2>/dev/null \
         | jq -r '.spec.containers[0].args // [] | index("--dcgm-addr") as $i | if $i then .[$i + 1] else empty end')
+    
+    # --dcgm-addr may be a comma-separated candidate list (GPU Operator GPUCluster
+    # and ClusterPolicy DCGM Service names); only one exists per cluster, so use
+    # the first candidate whose host resolves from the monitor pod.
+    if [[ "$dcgm_addr" == *,* ]]; then
+        local candidate first=""
+        for candidate in ${dcgm_addr//,/ }; do
+            first=${first:-$candidate}
+            if kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- getent hosts "${candidate%:*}" >/dev/null 2>&1; then
+                dcgm_addr=$candidate
+                break
+            fi
+        done
+        [[ "$dcgm_addr" == *,* ]] && dcgm_addr=$first
+    fi
     DCGM_HOST=${UAT_DCGM_HOST:-${dcgm_addr:-localhost:5555}}
     log "Using monitor pod for DCGM injection: $GPU_HM_NS/$GPU_HM_POD (dcgmi host: $DCGM_HOST)"
 }

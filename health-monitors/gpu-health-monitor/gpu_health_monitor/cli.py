@@ -16,7 +16,7 @@ import os
 import click, configparser, signal, sys
 import logging as log
 from importlib.metadata import version as get_package_version
-from threading import Event
+from threading import Event, Thread
 from gpu_health_monitor.healthz import start_server as start_health_server
 import csv
 from .dcgm_watcher import dcgm
@@ -327,10 +327,22 @@ def cli(
     probe_deadline_seconds = dcgm_config.getfloat("ProbeDeadlineSeconds", fallback=poll_interval * 3)
     prom_server, t = start_health_server(port, staleness_seconds=poll_interval * 3)
 
-    def process_exit_signal(signum, frame):
-        exit.set()
+    def shut_down():
+        # On its own thread, not in the signal handler: the signal may land
+        # while the main thread is inside a publish and holds the publisher's
+        # lock, which close() needs (a no-op in socket mode).
+        for event_processor in enabled_event_processors:
+            event_processor.close()
         prom_server.shutdown()
         t.join()
+
+    def process_exit_signal(signum, frame):
+        exit.set()
+        # A second signal must not re-enter this handler while the thread is
+        # being started: Thread.start() holds a lock this handler would wait on.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        Thread(target=shut_down, name="shutdown").start()
 
     signal.signal(signal.SIGTERM, process_exit_signal)
     signal.signal(signal.SIGINT, process_exit_signal)

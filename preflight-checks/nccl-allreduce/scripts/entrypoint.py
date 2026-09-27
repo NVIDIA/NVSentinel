@@ -51,6 +51,7 @@ from dataclasses import dataclass
 # Add parent directory to path for imports when running as script
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from nccl_allreduce.config import DirectPublisherConfig
 from nccl_allreduce.errors import NCCLError
 from nccl_allreduce.gang import GangConfig, GangWaiter
 from nccl_allreduce.health import HealthReporter
@@ -271,11 +272,22 @@ def _report_error(error: NCCLError, message: str) -> None:
     except ValueError:
         processing_strategy = pb.ProcessingStrategy.EXECUTE_REMEDIATION
 
+    # The same credentials and destination the benchmark uses after torchrun:
+    # without them the platform connector refuses the event.
+    token_path = os.getenv("PLATFORM_CONNECTOR_TOKEN_PATH") or None
+    try:
+        publish = DirectPublisherConfig.from_env()
+    except ValueError as err:
+        log.warning("Cannot send health event: invalid HEALTH_PUBLISH_* settings", extra={"error": str(err)})
+        return
+
     try:
         reporter = HealthReporter(
             socket_path=connector_socket,
             node_name=node_name,
             processing_strategy=processing_strategy,
+            token_path=token_path,
+            publish=publish,
         )
         reporter.send_failure(error, message)
     except RuntimeError as err:

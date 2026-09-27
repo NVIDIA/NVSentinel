@@ -16,23 +16,28 @@ package reconciler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
@@ -40,68 +45,117 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
-type annotationTestDatabase struct {
+type recoveryTestDB struct {
 	client.DatabaseClient
-	mu          sync.Mutex
-	events      []datamodels.HealthEventWithStatus
-	unavailable bool
-	readError   error
+	mu            sync.Mutex
+	events        []datamodels.HealthEventWithStatus
+	failure       error
+	decodeFailure error
+	finds         atomic.Int32
 }
 
-func (d *annotationTestDatabase) Find(context.Context, any, *client.FindOptions) (client.Cursor, error) {
+func (d *recoveryTestDB) append(event *protos.HealthEvent) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.readError != nil {
-		return nil, d.readError
+	d.events = append(d.events, datamodels.HealthEventWithStatus{CreatedAt: time.Now(),
+		HealthEvent: proto.Clone(event).(*protos.HealthEvent), HealthEventStatus: &protos.HealthEventStatus{}})
+}
+
+func (d *recoveryTestDB) Find(_ context.Context, filter any, _ *client.FindOptions) (client.Cursor, error) {
+	d.finds.Add(1)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failure != nil {
+		return nil, d.failure
 	}
-	if d.unavailable {
-		return nil, fmt.Errorf("store unavailable")
-	}
-	return newHealthEventCursor(append([]datamodels.HealthEventWithStatus(nil), d.events...)...), nil
-}
-
-func (d *annotationTestDatabase) append(event datamodels.HealthEventWithStatus) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.events = append(d.events, event)
-}
-
-func (d *annotationTestDatabase) setUnavailable(value bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.unavailable = value
-}
-
-type annotationTestSink struct {
-	database *annotationTestDatabase
-	captured chan *protos.HealthEvent
-}
-
-func (s *annotationTestSink) HealthEventOccurredV1(_ context.Context, events *protos.HealthEvents,
-	_ ...grpc.CallOption,
-) (*emptypb.Empty, error) {
-	for _, event := range events.Events {
-		event = proto.Clone(event).(*protos.HealthEvent)
-		s.captured <- event
-		if s.database != nil {
-			s.database.append(storedEvent(time.Now().UTC(), event))
+	cursor := &recoveryTestCursor{decodeFailure: d.decodeFailure}
+	for _, event := range d.events {
+		if matchesRecoveryFilter(event.HealthEvent, filter.(map[string]any)) {
+			cursor.events = append(cursor.events, event)
 		}
+	}
+	return cursor, nil
+}
+
+func matchesRecoveryFilter(event *protos.HealthEvent, filter map[string]any) bool {
+	fields := map[string]any{"healthevent.agent": event.Agent, "healthevent.checkname": event.CheckName,
+		fieldNodeName: event.NodeName, "healthevent.ishealthy": event.IsHealthy}
+	for key, value := range filter {
+		var got any
+		if strings.HasPrefix(key, "healthevent.metadata.") {
+			got = event.Metadata[strings.TrimPrefix(key, "healthevent.metadata.")]
+		} else {
+			got = fields[key]
+		}
+		if got != value {
+			return false
+		}
+	}
+	return true
+}
+
+type recoveryTestCursor struct {
+	events        []datamodels.HealthEventWithStatus
+	position      int
+	decodeFailure error
+}
+
+func (c *recoveryTestCursor) Next(context.Context) bool {
+	c.position++
+	return c.position <= len(c.events)
+}
+func (c *recoveryTestCursor) Decode(out any) error {
+	if c.decodeFailure != nil {
+		return c.decodeFailure
+	}
+	*out.(*datamodels.HealthEventWithStatus) = c.events[c.position-1]
+	return nil
+}
+func (c *recoveryTestCursor) Close(context.Context) error { return nil }
+func (c *recoveryTestCursor) Err() error                  { return nil }
+func (c *recoveryTestCursor) All(context.Context, any) error {
+	return fmt.Errorf("unused cursor operation")
+}
+
+type recoveryTestSink struct {
+	database *recoveryTestDB
+	captured chan *protos.HealthEvent
+	reject   bool
+	calls    atomic.Int32
+}
+
+func (s *recoveryTestSink) HealthEventOccurredV1(_ context.Context, events *protos.HealthEvents,
+	_ ...grpc.CallOption) (*emptypb.Empty, error) {
+	s.calls.Add(1)
+	if s.reject {
+		return nil, status.Error(codes.InvalidArgument, "invalid test event")
+	}
+	for _, event := range events.Events {
+		copied := proto.Clone(event).(*protos.HealthEvent)
+		if s.database != nil {
+			s.database.append(copied)
+		}
+		s.captured <- copied
 	}
 	return &emptypb.Empty{}, nil
 }
 
-func newAnnotationTestReconciler(database *annotationTestDatabase, sink *annotationTestSink) *Reconciler {
-	rule := annotationRule()
-	return &Reconciler{
-		config: HealthEventsAnalyzerReconcilerConfig{
-			HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{rule}},
-			Publisher:                 publisher.NewPublisher(sink, protos.ProcessingStrategy_EXECUTE_REMEDIATION),
-		},
-		databaseClient: database, recoveryPoll: time.Millisecond, recoveryRepublish: time.Second,
-	}
+func testRecoveryFault(node, gpu string) *protos.HealthEvent {
+	return &protos.HealthEvent{Version: 1, Agent: agentName, CheckName: annotationRule().Name,
+		NodeName: node, ComponentClass: "GPU", IsFatal: true, ErrorCode: []string{"94"},
+		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU_UUID", EntityValue: gpu}},
+		GeneratedTimestamp: timestamppb.New(time.Now().Add(-time.Millisecond)),
+		ProcessingStrategy: protos.ProcessingStrategy_EXECUTE_REMEDIATION}
 }
 
-func startAnnotationTestController(t *testing.T, kube kubernetes.Interface, r *Reconciler) func() {
+func newRecoveryReconciler(db *recoveryTestDB, sink *recoveryTestSink, opts ...healthpub.Option) *Reconciler {
+	return &Reconciler{config: HealthEventsAnalyzerReconcilerConfig{
+		HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{annotationRule()}},
+		Publisher:                 publisher.NewPublisher(sink, protos.ProcessingStrategy_EXECUTE_REMEDIATION, opts...),
+	}, databaseClient: db, recoveryPoll: time.Millisecond, recoveryRepublish: 100 * time.Millisecond}
+}
+
+func startRecoveryController(t *testing.T, kube kubernetes.Interface, r *Reconciler) func() {
 	t.Helper()
 	controller, err := newNodeRecoveryController(kube, r.config.HealthEventsAnalyzerRules, r.reconcileNodeRecovery)
 	require.NoError(t, err)
@@ -114,40 +168,45 @@ func startAnnotationTestController(t *testing.T, kube kubernetes.Interface, r *R
 	t.Cleanup(stop)
 	select {
 	case <-controller.ready:
-	case err := <-done:
-		t.Fatalf("controller stopped: %v", err)
 	case <-time.After(10 * time.Second):
-		t.Fatal("node cache did not synchronize")
+		t.Fatal("node cache did not sync")
 	}
 	return stop
 }
 
-func setRecoveryAnnotation(t *testing.T, kube kubernetes.Interface, name, value string) *corev1.Node {
+func createRecoveryNode(t *testing.T, kube kubernetes.Interface, name string) *corev1.Node {
 	t.Helper()
-	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{annotationRule().Recovery.AnnotationKey: value}}})
-	require.NoError(t, err)
-	node, err := kube.CoreV1().Nodes().Patch(t.Context(), name, types.MergePatchType, patch, metav1.PatchOptions{})
+	node, err := kube.CoreV1().Nodes().Create(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}, metav1.CreateOptions{})
 	require.NoError(t, err)
 	return node
 }
 
-func requireAnnotationRemoved(t *testing.T, kube kubernetes.Interface, name string) {
+func annotateRecoveryNode(t *testing.T, kube kubernetes.Interface, node *corev1.Node, request string) {
+	t.Helper()
+	current, err := kube.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	current.Annotations = map[string]string{annotationRule().Recovery.AnnotationKey: request}
+	_, err = kube.CoreV1().Nodes().Update(t.Context(), current, metav1.UpdateOptions{})
+	require.NoError(t, err)
+}
+
+func requireRecoveryEvent(t *testing.T, kube kubernetes.Interface, node *corev1.Node, reason string) {
 	t.Helper()
 	require.Eventually(t, func() bool {
-		node, err := kube.CoreV1().Nodes().Get(t.Context(), name, metav1.GetOptions{})
-		return err == nil && node.Annotations[annotationRule().Recovery.AnnotationKey] == ""
+		events, err := kube.CoreV1().Events("default").List(t.Context(), metav1.ListOptions{})
+		if err != nil {
+			return false
+		}
+		for _, event := range events.Items {
+			if event.InvolvedObject.UID == node.UID && event.Reason == reason {
+				return true
+			}
+		}
+		return false
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
-func activeAnnotationFault(node, gpu string, at time.Time) datamodels.HealthEventWithStatus {
-	event := derivedEvent(at, false, gpu)
-	event.HealthEvent.NodeName = node
-	event.HealthEvent.ComponentClass = "GPU"
-	event.HealthEvent.Version = 1
-	return event
-}
-
-func TestNodeRecovery_RealAPIServer(t *testing.T) {
+func TestAnnotationRecovery_RealAPIServer_RetainsRequestsAndReportsResults(t *testing.T) {
 	server := &envtest.Environment{}
 	restConfig, err := server.Start()
 	require.NoError(t, err)
@@ -155,143 +214,226 @@ func TestNodeRecovery_RealAPIServer(t *testing.T) {
 	kube, err := kubernetes.NewForConfig(restConfig)
 	require.NoError(t, err)
 
-	t.Run("storage confirmation, identity, restart, and stale replay", func(t *testing.T) {
-		node, err := kube.CoreV1().Nodes().Create(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "recovery-storage"}}, metav1.CreateOptions{})
-		require.NoError(t, err)
-		database := &annotationTestDatabase{}
-		database.append(activeAnnotationFault(node.Name, "GPU-a", time.Now().UTC().Add(-time.Millisecond)))
-		database.append(activeAnnotationFault(node.Name, "GPU-b", time.Now().UTC().Add(-time.Millisecond)))
-		sink := &annotationTestSink{captured: make(chan *protos.HealthEvent, 16)}
-		reconciler := newAnnotationTestReconciler(database, sink)
-		stop := startAnnotationTestController(t, kube, reconciler)
-		recoveredAt := time.Now().UTC()
-		request := fmt.Sprintf(`{"recoveredAt":%q,"entities":[{"entityType":"GPU_UUID","entityValue":"GPU-a"}]}`, recoveredAt.Format(time.RFC3339Nano))
-		setRecoveryAnnotation(t, kube, node.Name, request)
-		var published *protos.HealthEvent
+	t.Run("storage confirmation, restart and stale request", func(t *testing.T) {
+		node := createRecoveryNode(t, kube, "recovery-storage")
+		db := &recoveryTestDB{}
+		fault := testRecoveryFault(node.Name, "GPU-a")
+		fault.QuarantineOverrides = &protos.BehaviourOverrides{Force: true}
+		fault.CustomRecommendedAction = "test-action"
+		db.append(fault)
+		db.append(testRecoveryFault(node.Name, "GPU-b"))
+		sink := &recoveryTestSink{captured: make(chan *protos.HealthEvent, 20)}
+		r := newRecoveryReconciler(db, sink)
+		stop := startRecoveryController(t, kube, r)
+		verified := time.Now().UTC()
+		request := fmt.Sprintf(`{"recoveredAt":%q,"entities":[{"entityType":"GPU_UUID","entityValue":"GPU-a"}]}`, verified.Format(time.RFC3339Nano))
+		annotateRecoveryNode(t, kube, node, request)
+		var clear *protos.HealthEvent
 		select {
-		case published = <-sink.captured:
+		case clear = <-sink.captured:
 		case <-time.After(5 * time.Second):
-			t.Fatal("no derived recovery published")
+			t.Fatal("clear not published")
 		}
-		require.True(t, published.IsHealthy)
-		require.False(t, published.IsFatal)
-		require.Equal(t, "health-events-analyzer", published.Agent)
-		require.Equal(t, annotationRule().Name, published.CheckName)
-		require.Equal(t, "GPU", published.ComponentClass)
-		require.EqualValues(t, 1, published.Version)
-		require.Equal(t, protos.RecommendedAction_NONE, published.RecommendedAction)
-		require.Equal(t, protos.ProcessingStrategy_EXECUTE_REMEDIATION, published.ProcessingStrategy)
-		require.Equal(t, []*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-a"}}, published.EntitiesImpacted)
-		require.NotEmpty(t, published.Metadata[annotationRequestKey])
+		require.True(t, clear.IsHealthy)
+		require.False(t, clear.IsFatal)
+		require.EqualValues(t, 1, clear.Version)
+		require.Equal(t, "GPU", clear.ComponentClass)
+		require.Empty(t, clear.ErrorCode)
+		require.Nil(t, clear.QuarantineOverrides)
+		require.Empty(t, clear.CustomRecommendedAction)
+		require.Equal(t, protos.RecommendedAction_NONE, clear.RecommendedAction)
+		require.Equal(t, protos.ProcessingStrategy_EXECUTE_REMEDIATION, clear.ProcessingStrategy)
+		require.Equal(t, "GPU-a", clear.EntitiesImpacted[0].EntityValue)
+		require.Never(t, func() bool {
+			events, err := kube.CoreV1().Events("default").List(t.Context(), metav1.ListOptions{})
+			require.NoError(t, err)
+			for _, event := range events.Items {
+				if event.InvolvedObject.UID == node.UID && event.Reason == "RecoveryCompleted" {
+					return true
+				}
+			}
+			return false
+		}, 30*time.Millisecond, 5*time.Millisecond, "queue acceptance must not report stored recovery")
+		db.append(clear)
+		requireRecoveryEvent(t, kube, node, "RecoveryCompleted")
 		current, err := kube.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
 		require.NoError(t, err)
-		require.Equal(t, request, current.Annotations[annotationRule().Recovery.AnnotationKey], "RPC acceptance is not storage confirmation")
-		database.append(storedEvent(time.Now().UTC(), published))
-		requireAnnotationRemoved(t, kube, node.Name)
+		require.Equal(t, request, current.Annotations[annotationRule().Recovery.AnnotationKey])
 		stop()
-
-		restartedSink := &annotationTestSink{database: database, captured: make(chan *protos.HealthEvent, 16)}
-		restarted := newAnnotationTestReconciler(database, restartedSink)
-		startAnnotationTestController(t, kube, restarted)
-		boundary, err := restarted.recoveryBoundaryForEvent(t.Context(), annotationRule(), published)
-		require.NoError(t, err)
-		require.NotNil(t, boundary)
-		require.True(t, recoveredAt.Equal(boundary.createdAt))
-		require.True(t, recoveredAt.Equal(boundary.generated.AsTime()))
-		other := proto.Clone(published).(*protos.HealthEvent)
-		other.EntitiesImpacted[0].EntityValue = "GPU-b"
-		otherIdentity, ok := recoveryIdentityForEvent(annotationRule(), other)
+		nextSink := &recoveryTestSink{database: db, captured: make(chan *protos.HealthEvent, 20)}
+		restarted := newRecoveryReconciler(db, nextSink)
+		startRecoveryController(t, kube, restarted)
+		identity, ok := recoveryIdentityForEvent(annotationRule(), clear)
 		require.True(t, ok)
-		state, found, err := restarted.currentDerivedState(t.Context(), annotationRule(), otherIdentity)
+		boundary, err := restarted.latestRecoveryTime(t.Context(), annotationRule(), identity)
 		require.NoError(t, err)
-		require.True(t, found)
-		require.False(t, state.isHealthy, "another GPU must remain faulty")
-		database.append(activeAnnotationFault(node.Name, "GPU-a", time.Now().UTC()))
-		setRecoveryAnnotation(t, kube, node.Name, request)
-		requireAnnotationRemoved(t, kube, node.Name)
-		require.Empty(t, restartedSink.captured, "the old request must not clear the newer fault")
+		require.True(t, boundary.Equal(verified))
+		require.NoError(t, restarted.reconcileNodeRecovery(t.Context(), node.Name))
+		require.Zero(t, nextSink.calls.Load(), "startup replay must not publish another clear")
+		db.append(testRecoveryFault(node.Name, "GPU-a"))
+		require.NoError(t, restarted.reconcileNodeRecovery(t.Context(), node.Name))
+		require.Zero(t, nextSink.calls.Load(), "old verification cannot clear a new fault")
+		states, err := restarted.derivedStatesForNode(t.Context(), annotationRule(), node.Name)
+		require.NoError(t, err)
+		for _, state := range states {
+			require.False(t, state.HealthEvent.IsHealthy)
+		}
+		// Recreating the Kubernetes node must invalidate the old UID's boundary.
+		require.NoError(t, kube.CoreV1().Nodes().Delete(t.Context(), node.Name, metav1.DeleteOptions{}))
+		recreated := createRecoveryNode(t, kube, node.Name)
+		require.NotEqual(t, node.UID, recreated.UID)
+		require.Eventually(t, func() bool {
+			n, err := restarted.nodeRecovery.nodes.Get(node.Name)
+			return err == nil && n.UID == recreated.UID
+		}, time.Second, 10*time.Millisecond)
+		boundary, err = restarted.latestRecoveryTime(t.Context(), annotationRule(), identity)
+		require.NoError(t, err)
+		require.True(t, boundary.IsZero())
 	})
 
-	t.Run("startup request retries after store outage", func(t *testing.T) {
-		node, err := kube.CoreV1().Nodes().Create(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "recovery-retry"}}, metav1.CreateOptions{})
-		require.NoError(t, err)
-		database := &annotationTestDatabase{}
-		database.append(activeAnnotationFault(node.Name, "GPU-a", time.Now().UTC().Add(-time.Millisecond)))
-		database.append(activeAnnotationFault(node.Name, "GPU-b", time.Now().UTC().Add(-time.Millisecond)))
-		database.setUnavailable(true)
-		sink := &annotationTestSink{database: database, captured: make(chan *protos.HealthEvent, 16)}
+	t.Run("node-wide request retries store failure", func(t *testing.T) {
+		node := createRecoveryNode(t, kube, "recovery-retry")
+		db := &recoveryTestDB{failure: fmt.Errorf("temporary store failure")}
+		db.append(testRecoveryFault(node.Name, "GPU-a"))
+		db.append(testRecoveryFault(node.Name, "GPU-b"))
 		request := time.Now().UTC().Format(time.RFC3339Nano)
-		setRecoveryAnnotation(t, kube, node.Name, request)
-		reconciler := newAnnotationTestReconciler(database, sink)
-		startAnnotationTestController(t, kube, reconciler)
-		require.ErrorContains(t, reconciler.reconcileNodeRecovery(t.Context(), node.Name), "store unavailable")
-		current, err := kube.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
-		require.NoError(t, err)
-		require.Equal(t, request, current.Annotations[annotationRule().Recovery.AnnotationKey])
-		require.Empty(t, sink.captured)
-		database.setUnavailable(false)
-		requireAnnotationRemoved(t, kube, node.Name)
-		require.Len(t, sink.captured, 2, "node-wide recovery must clear both active GPU identities")
-		first, second := <-sink.captured, <-sink.captured
-		require.NotEqual(t, first.EntitiesImpacted[0].EntityValue, second.EntitiesImpacted[0].EntityValue)
+		annotateRecoveryNode(t, kube, node, request)
+		sink := &recoveryTestSink{database: db, captured: make(chan *protos.HealthEvent, 20)}
+		startRecoveryController(t, kube, newRecoveryReconciler(db, sink))
+		requireRecoveryEvent(t, kube, node, "RecoveryFailed")
+		require.Zero(t, sink.calls.Load())
+		db.mu.Lock()
+		db.failure = nil
+		db.mu.Unlock()
+		requireRecoveryEvent(t, kube, node, "RecoveryCompleted")
+		require.EqualValues(t, 2, sink.calls.Load())
 	})
 
-	t.Run("invalid annotation remains visible", func(t *testing.T) {
-		node, err := kube.CoreV1().Nodes().Create(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "recovery-invalid"}}, metav1.CreateOptions{})
+	t.Run("recovery preserves downstream class and version identities", func(t *testing.T) {
+		node := createRecoveryNode(t, kube, "recovery-variants")
+		db := &recoveryTestDB{}
+		fault := testRecoveryFault(node.Name, "GPU-a")
+		db.append(fault)
+		fault.Version = 2
+		db.append(fault)
+		fault.ComponentClass = "accelerator"
+		db.append(fault)
+		annotateRecoveryNode(t, kube, node, time.Now().UTC().Format(time.RFC3339Nano))
+		sink := &recoveryTestSink{database: db, captured: make(chan *protos.HealthEvent, 10)}
+		r := newRecoveryReconciler(db, sink)
+		startRecoveryController(t, kube, r)
+		requireRecoveryEvent(t, kube, node, "RecoveryCompleted")
+		require.EqualValues(t, 3, sink.calls.Load())
+		states, err := r.derivedStatesForNode(t.Context(), annotationRule(), node.Name)
 		require.NoError(t, err)
-		request := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
-		setRecoveryAnnotation(t, kube, node.Name, request)
-		sink := &annotationTestSink{captured: make(chan *protos.HealthEvent, 1)}
-		reconciler := newAnnotationTestReconciler(&annotationTestDatabase{}, sink)
-		startAnnotationTestController(t, kube, reconciler)
-		require.NoError(t, reconciler.reconcileNodeRecovery(t.Context(), node.Name))
-		current, err := kube.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
-		require.NoError(t, err)
-		require.Equal(t, request, current.Annotations[annotationRule().Recovery.AnnotationKey])
-		require.Empty(t, sink.captured)
+		require.Len(t, states, 3)
+		for _, state := range states {
+			require.True(t, state.HealthEvent.IsHealthy)
+		}
 	})
 
-	t.Run("permanent stored-state failure retains request without blocking source processing", func(t *testing.T) {
-		node, err := kube.CoreV1().Nodes().Create(t.Context(), &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: "recovery-permanent"},
+	t.Run("malformed stored data fails closed", func(t *testing.T) {
+		node := createRecoveryNode(t, kube, "recovery-malformed")
+		db := &recoveryTestDB{decodeFailure: fmt.Errorf("malformed stored record")}
+		db.append(testRecoveryFault(node.Name, "GPU-a"))
+		annotateRecoveryNode(t, kube, node, time.Now().UTC().Format(time.RFC3339Nano))
+		sink := &recoveryTestSink{captured: make(chan *protos.HealthEvent, 1)}
+		startRecoveryController(t, kube, newRecoveryReconciler(db, sink))
+		requireRecoveryEvent(t, kube, node, "RecoveryFailed")
+		require.Zero(t, sink.calls.Load())
+	})
+
+	t.Run("invalid timestamp does not recover", func(t *testing.T) {
+		node := createRecoveryNode(t, kube, "recovery-invalid")
+		annotateRecoveryNode(t, kube, node, time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano))
+		sink := &recoveryTestSink{captured: make(chan *protos.HealthEvent, 1)}
+		startRecoveryController(t, kube, newRecoveryReconciler(&recoveryTestDB{}, sink))
+		requireRecoveryEvent(t, kube, node, "RecoveryInvalid")
+		require.Zero(t, sink.calls.Load())
+	})
+
+	t.Run("permanent rejection is attempted only once", func(t *testing.T) {
+		node := createRecoveryNode(t, kube, "recovery-rejected")
+		db := &recoveryTestDB{}
+		db.append(testRecoveryFault(node.Name, "GPU-a"))
+		annotateRecoveryNode(t, kube, node, time.Now().UTC().Format(time.RFC3339Nano))
+		sink := &recoveryTestSink{reject: true}
+
+		restricted, grantEvents := recoveryReadOnlyClient(t, kube, restConfig)
+		r := newRecoveryReconciler(db, sink)
+		startRecoveryController(t, restricted, r)
+		require.Eventually(t, func() bool { return sink.calls.Load() == 1 }, time.Second, time.Millisecond)
+		// Event creation is forbidden. Retrying that report must never resubmit
+		// the permanently rejected health event.
+		require.ErrorContains(t, r.reconcileNodeRecovery(t.Context(), node.Name), "forbidden")
+		require.EqualValues(t, 1, sink.calls.Load())
+		grantEvents()
+		require.Eventually(t, func() bool {
+			return r.reconcileNodeRecovery(t.Context(), node.Name) == nil
+		}, 5*time.Second, 10*time.Millisecond)
+		requireRecoveryEvent(t, kube, node, "RecoveryFailed")
+		require.EqualValues(t, 1, sink.calls.Load())
+		// Event permissions must not grant Node writes.
+		_, err := restricted.CoreV1().Nodes().Update(t.Context(), node, metav1.UpdateOptions{})
+		require.ErrorContains(t, err, "forbidden")
+	})
+}
+
+func TestPublishRecovery_DirectMode_DoesNotPollStorage(t *testing.T) {
+	t.Setenv("HEALTH_PUBLISH_TARGET", "127.0.0.1:1")
+	t.Setenv("HEALTH_PUBLISH_TOKEN_PATH", "/unused-test-token")
+	t.Setenv("HEALTH_PUBLISH_INSECURE", "true")
+	_, _, option, err := healthpub.DialFromEnvOr(nil)
+	require.NoError(t, err)
+	// The real direct-mode publisher uses this in-memory transport. Its successful
+	// response models the deployment connector's durable acknowledgment.
+	db := &recoveryTestDB{}
+	sink := &recoveryTestSink{captured: make(chan *protos.HealthEvent, 1)}
+	r := newRecoveryReconciler(db, sink, option)
+	t.Cleanup(r.config.Publisher.Close)
+	fault := testRecoveryFault("node-direct", "GPU-a")
+	identity, ok := recoveryIdentityForEvent(annotationRule(), fault)
+	require.True(t, ok)
+	require.NoError(t, r.publishRecoveryUntilStored(t.Context(), fault, annotationRule(), identity))
+	require.Zero(t, db.finds.Load())
+	require.EqualValues(t, 1, sink.calls.Load())
+}
+
+func TestEventProcessor_AnnotationRecovery_KeepsCheckpointAndContinue(t *testing.T) {
+	cfg := newEventProcessorConfig(HealthEventsAnalyzerReconcilerConfig{
+		HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{annotationRule()}}, Workers: 2,
+	})
+	require.True(t, cfg.MarkProcessedOnError)
+}
+
+func recoveryReadOnlyClient(t *testing.T, admin kubernetes.Interface, cfg *rest.Config) (kubernetes.Interface, func()) {
+	t.Helper()
+	name := "recovery-node-reader"
+	_, err := admin.RbacV1().ClusterRoles().Create(t.Context(), &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"get", "list", "watch"}}},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	subjects := []rbacv1.Subject{{Kind: "User", Name: name, APIGroup: rbacv1.GroupName}}
+	_, err = admin.RbacV1().ClusterRoleBindings().Create(t.Context(), &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: name}, Subjects: subjects,
+		RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: name, APIGroup: rbacv1.GroupName},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	impersonated := rest.CopyConfig(cfg)
+	impersonated.Impersonate.UserName = name
+	restricted, err := kubernetes.NewForConfig(impersonated)
+	require.NoError(t, err)
+	return restricted, func() {
+		_, err := admin.RbacV1().Roles("default").Create(t.Context(), &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"events"}, Verbs: []string{"create"}}},
 		}, metav1.CreateOptions{})
 		require.NoError(t, err)
-		request := time.Now().UTC().Format(time.RFC3339Nano)
-		setRecoveryAnnotation(t, kube, node.Name, request)
-		database := &annotationTestDatabase{readError: client.PermanentError(fmt.Errorf("malformed stored event"))}
-		sink := &annotationTestSink{captured: make(chan *protos.HealthEvent, 1)}
-		reconciler := newAnnotationTestReconciler(database, sink)
-		startAnnotationTestController(t, kube, reconciler)
-		require.NoError(t, reconciler.reconcileNodeRecovery(t.Context(), node.Name))
-		current, err := kube.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
+		_, err = admin.RbacV1().RoleBindings("default").Create(t.Context(), &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name}, Subjects: subjects,
+			RoleRef: rbacv1.RoleRef{Kind: "Role", Name: name, APIGroup: rbacv1.GroupName},
+		}, metav1.CreateOptions{})
 		require.NoError(t, err)
-		require.Equal(t, request, current.Annotations[annotationRule().Recovery.AnnotationKey])
-		require.Empty(t, sink.captured)
-	})
-
-	t.Run("cleanup preserves replacement requests and node identities", func(t *testing.T) {
-		node, err := kube.CoreV1().Nodes().Create(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "recovery-replacement"}}, metav1.CreateOptions{})
-		require.NoError(t, err)
-		original := setRecoveryAnnotation(t, kube, node.Name, "original")
-		setRecoveryAnnotation(t, kube, node.Name, "replacement")
-		controller, err := newNodeRecoveryController(kube, &config.TomlConfig{}, nil)
-		require.NoError(t, err)
-		t.Cleanup(controller.queue.ShutDown)
-		require.NoError(t, controller.removeRequest(t.Context(), original, annotationRule().Recovery.AnnotationKey, "original"))
-		current, err := kube.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
-		require.NoError(t, err)
-		require.Equal(t, "replacement", current.Annotations[annotationRule().Recovery.AnnotationKey])
-		require.NoError(t, kube.CoreV1().Nodes().Delete(t.Context(), node.Name, metav1.DeleteOptions{}))
-		require.Eventually(t, func() bool {
-			_, err := kube.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
-			return apierrors.IsNotFound(err)
-		}, time.Second, 10*time.Millisecond)
-		_, err = kube.CoreV1().Nodes().Create(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: node.Name, Annotations: map[string]string{annotationRule().Recovery.AnnotationKey: "original"}}}, metav1.CreateOptions{})
-		require.NoError(t, err)
-		require.NoError(t, controller.removeRequest(t.Context(), original, annotationRule().Recovery.AnnotationKey, "original"))
-		current, err = kube.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
-		require.NoError(t, err)
-		require.NotEqual(t, original.UID, current.UID)
-		require.Equal(t, "original", current.Annotations[annotationRule().Recovery.AnnotationKey])
-	})
+	}
 }

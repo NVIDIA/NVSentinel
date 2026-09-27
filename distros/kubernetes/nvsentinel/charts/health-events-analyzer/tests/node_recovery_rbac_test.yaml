@@ -11,29 +11,46 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-suite: node annotation recovery permissions
+
+suite: annotation recovery permissions
 templates:
   - node-recovery-rbac.yaml
 tests:
-  - it: grants no node permissions by default
+  - it: grants no recovery access by default
     asserts:
       - hasDocuments:
           count: 0
-  - it: grants node access and binds the analyzer service account when enabled
+  - it: reads nodes and creates Events without permission to modify nodes
     set:
       nodeRecovery.enabled: true
     asserts:
       - hasDocuments:
-          count: 2
+          count: 4
+      - equal:
+          path: rules[0].verbs
+          value: [get, list, watch]
+        documentIndex: 0
       - equal:
           path: rules[0].resources
           value: [nodes]
         documentIndex: 0
       - equal:
           path: rules[0].verbs
-          value: [get, list, watch, patch]
-        documentIndex: 0
+          value: [create]
+        documentIndex: 2
       - equal:
-          path: subjects[0].kind
-          value: ServiceAccount
-        documentIndex: 1
+          path: rules[0].resources
+          value: [events]
+        documentIndex: 2
+      - equal:
+          path: roleRef.kind
+          value: Role
+        documentIndex: 3
+      - equal:
+          path: metadata.namespace
+          value: default
+        documentIndex: 2
+      - equal:
+          path: metadata.namespace
+          value: default
+        documentIndex: 3

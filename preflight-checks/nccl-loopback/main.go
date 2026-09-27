@@ -61,7 +61,16 @@ func run() int {
 		return exitConfigError
 	}
 
-	exitCode := execute(ctx, cfg)
+	// The reporter is built before the benchmark so a bad publishing
+	// environment fails as a configuration error before any GPU work.
+	reporter, err := health.NewReporter(cfg.ConnectorSocket, cfg.NodeName, cfg.ProcessingStrategy, cfg.TokenPath)
+	if err != nil {
+		slog.Error("Platform connector configuration error", "error", err)
+		return exitConfigError
+	}
+	defer reporter.Close()
+
+	exitCode := execute(ctx, cfg, reporter)
 
 	if exitCode != exitSuccess && cfg.ProcessingStrategy == pb.ProcessingStrategy_STORE_ONLY {
 		slog.Warn("Check failed (STORE_ONLY — not blocking pod)")
@@ -71,7 +80,7 @@ func run() int {
 	return exitCode
 }
 
-func execute(ctx context.Context, cfg *config.Config) int {
+func execute(ctx context.Context, cfg *config.Config, reporter *health.Reporter) int {
 	slog.Info("Configuration loaded",
 		"bw_threshold_gbps", cfg.BWThresholdGbps,
 		"skip_bandwidth_check", cfg.SkipBandwidthCheck,
@@ -79,13 +88,6 @@ func execute(ctx context.Context, cfg *config.Config) int {
 		"num_gpus", cfg.NumGPUs,
 		"binary", cfg.NCCLTestBinaryPath,
 		"node_name", cfg.NodeName)
-
-	reporter := health.NewReporter(
-		cfg.ConnectorSocket,
-		cfg.NodeName,
-		cfg.ProcessingStrategy,
-		cfg.TokenPath,
-	)
 
 	runner := benchmark.NewRunner(cfg.NCCLTestBinaryPath)
 

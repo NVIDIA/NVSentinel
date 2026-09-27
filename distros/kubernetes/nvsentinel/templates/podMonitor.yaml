@@ -37,6 +37,14 @@ spec:
       {{- if .Values.podMonitor.scrapeTimeout }}
       scrapeTimeout: {{ .Values.podMonitor.scrapeTimeout }}
       {{- end }}
+      {{- with .Values.podMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     - port: cleanup-metrics
       path: {{ .Values.podMonitor.metricsPath | default "/metrics" }}
       {{- if .Values.podMonitor.interval }}
@@ -44,5 +52,13 @@ spec:
       {{- end }}
       {{- if .Values.podMonitor.scrapeTimeout }}
       scrapeTimeout: {{ .Values.podMonitor.scrapeTimeout }}
+      {{- end }}
+      {{- with .Values.podMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
 {{- end }}

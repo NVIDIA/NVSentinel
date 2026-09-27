@@ -49,6 +49,7 @@ const (
 	queryTypeHealthy            = "healthy"
 	failureReasonMapping        = "mapping"
 	failureReasonUDS            = "uds"
+	failureReasonRejected       = "rejected"
 	failureReasonDBUpdate       = "db_update"
 	defaultMonitorInterval      = 5 * time.Minute
 )
@@ -57,7 +58,6 @@ const (
 // corresponding health signals to NVSentinel through the UDS connector.
 type Engine struct {
 	store              datastore.Store
-	udsClient          pb.PlatformConnectorClient
 	pub                *healthpub.Publisher
 	config             *config.Config
 	pollInterval       time.Duration
@@ -70,7 +70,10 @@ type Engine struct {
 // NewEngine constructs a ready-to-run Engine instance. udsTarget must
 // match the gRPC target string used to dial udsClient (typically
 // "unix:/var/run/nvsentinel.sock"); pass "" in tests to disable the
-// healthpub socket-existence gate.
+// healthpub socket-existence gate. pubOpts are forwarded to the shared
+// healthpub publisher; main passes the option DialFromEnvOr returns, which
+// hands the publisher its connection and, when HEALTH_PUBLISH_TARGET selects
+// the deployment platform connector, puts it in direct mode.
 func NewEngine(
 	cfg *config.Config,
 	store datastore.Store,
@@ -78,18 +81,26 @@ func NewEngine(
 	udsTarget string,
 	k8sClient kubernetes.Interface,
 	processingStrategy pb.ProcessingStrategy,
+	pubOpts ...healthpub.Option,
 ) *Engine {
+	opts := append([]healthpub.Option{
+		healthpub.WithRetryPolicy(udsMaxRetries, udsRetryDelay, 1.5, 0.1),
+	}, pubOpts...)
+
 	return &Engine{
-		config:    cfg,
-		store:     store,
-		udsClient: udsClient,
-		pub: healthpub.New(udsClient, udsTarget, agentName,
-			healthpub.WithRetryPolicy(udsMaxRetries, udsRetryDelay, 1.5, 0.1)),
+		config:             cfg,
+		store:              store,
+		pub:                healthpub.New(udsClient, udsTarget, agentName, opts...),
 		pollInterval:       time.Duration(cfg.MaintenanceEventPollIntervalSeconds) * time.Second,
 		k8sClient:          k8sClient,
 		monitorInterval:    defaultMonitorInterval,
 		processingStrategy: processingStrategy,
 	}
+}
+
+// Close shuts down the publisher and the connection it owns.
+func (e *Engine) Close() {
+	e.pub.CloseOrWarn()
 }
 
 // Start begins the polling loop and blocks until ctx is cancelled.
@@ -296,11 +307,20 @@ func (e *Engine) processAndSendTrigger(
 	}
 
 	udsErr := e.sendHealthEventWithRetry(ctx, healthEvent)
-	if udsErr != nil {
+
+	switch {
+	case errors.Is(udsErr, healthpub.ErrPublishRejected):
+		// Refused for good: resending the same event on every poll would get
+		// the same answer, so it is counted here and its status still
+		// advances below.
+		metrics.TriggerFailures.WithLabelValues(triggerType, failureReasonRejected).Inc()
+		slog.Error("Platform connector rejected the health event for good; not resending it",
+			"triggerType", triggerType, "eventID", event.EventID, "error", udsErr)
+	case udsErr != nil:
 		metrics.TriggerFailures.WithLabelValues(triggerType, failureReasonUDS).Inc()
 
 		return fmt.Errorf(
-			"failed to send %s health event via UDS for event %s after retries: %w",
+			"failed to send %s health event to the platform connector for event %s after retries: %w",
 			triggerType,
 			event.EventID,
 			udsErr,
@@ -435,14 +455,14 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 	metrics.TriggerUDSSendDuration.Observe(time.Since(sendStart).Seconds())
 
 	if err == nil {
-		slog.Debug("Successfully sent health event via UDS",
+		slog.Debug("Successfully sent health event to the platform connector",
 			"node", healthEvent.NodeName,
 			"check", healthEvent.CheckName)
 
 		return nil
 	}
 
-	// Connector-unavailable skips are not UDS failures — the gRPC call
+	// Connector-unavailable skips are not send failures: the gRPC call
 	// never happened. Don't increment TriggerUDSSendErrors for them.
 	if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
 		slog.Warn("Skipped health event send: platform-connector unavailable. "+
@@ -454,7 +474,7 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 	}
 
 	metrics.TriggerUDSSendErrors.Inc()
-	slog.Error("Failed to send health event via UDS",
+	slog.Error("Failed to send health event to the platform connector",
 		"node", healthEvent.NodeName,
 		"error", err)
 

@@ -809,6 +809,18 @@ func (c *FaultQuarantineClient) handleUncordon(
 	}
 }
 
+// ConditionalLabelRemoval removes Keys from a Node only while that Node still
+// has GuardKey set to GuardValue. It is evaluated inside the update callback so
+// the ownership check is re-run against the freshly fetched Node on every
+// conflict retry, rather than being decided once from a possibly stale cache.
+// This prevents a concurrent owner change from causing a retry to strip another
+// controller's labels.
+type ConditionalLabelRemoval struct {
+	Keys       []string
+	GuardKey   string
+	GuardValue string
+}
+
 // HandleManualUncordonCleanup atomically removes FQ annotations/taints/labels and adds manual uncordon annotation
 // This is used when a node is manually uncordoned while having FQ quarantine state
 func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
@@ -817,6 +829,7 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 	annotationsToRemove []string,
 	annotationsToAdd map[string]string,
 	labelsToRemove []string,
+	conditionalLabels *ConditionalLabelRemoval,
 ) error {
 	updateFn := func(node *v1.Node) error {
 		if len(annotationsToRemove) > 0 || len(annotationsToAdd) > 0 {
@@ -824,6 +837,14 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 		}
 
 		c.removeLabels(ctx, node, labelsToRemove, nodename)
+
+		// Re-check ownership against the live Node before removing the cordon
+		// bookkeeping labels. Evaluated here (not by the caller) so it holds on
+		// every conflict-retried invocation with a fresh Node.
+		if conditionalLabels != nil && len(conditionalLabels.Keys) > 0 &&
+			node.Labels[conditionalLabels.GuardKey] == conditionalLabels.GuardValue {
+			c.removeLabels(ctx, node, conditionalLabels.Keys, nodename)
+		}
 
 		return nil
 	}

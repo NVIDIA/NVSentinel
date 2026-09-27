@@ -24,8 +24,10 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
 )
 
+// publishFailOnceClient fails the first call with the given status.
 type publishFailOnceClient struct {
 	calls int
+	code  codes.Code
 }
 
 func (c *publishFailOnceClient) HealthEventOccurredV1(
@@ -33,7 +35,7 @@ func (c *publishFailOnceClient) HealthEventOccurredV1(
 ) (*emptypb.Empty, error) {
 	c.calls++
 	if c.calls == 1 {
-		return nil, status.Error(codes.InvalidArgument, "injected terminal publish failure")
+		return nil, status.Error(c.code, "injected publish failure")
 	}
 
 	return &emptypb.Empty{}, nil
@@ -93,8 +95,11 @@ func (c *stagedTestCheck) Discard() {
 	c.pending = false
 }
 
+// TestRunChecks_PublishFailureDiscardsAndReemits: a failure the server may
+// not repeat (here an expired token) leaves the transition staged, so the
+// next tick prepares and sends it again.
 func TestRunChecks_PublishFailureDiscardsAndReemits(t *testing.T) {
-	client := &publishFailOnceClient{}
+	client := &publishFailOnceClient{code: codes.Unauthenticated}
 	check := &stagedTestCheck{}
 	monitor := NewNICHealthMonitor("node1", client, "127.0.0.1:5555",
 		[]checks.TransactionalCheck{check}, time.Second)
@@ -113,4 +118,24 @@ func TestRunChecks_PublishFailureDiscardsAndReemits(t *testing.T) {
 	// Once committed, a zero-event poll still commits its latest observation.
 	require.NoError(t, monitor.RunStateChecks(context.Background()))
 	assert.Equal(t, 2, check.commitCalls)
+}
+
+// TestRunChecks_PermanentRejectionConsumesTheTransition: a batch the server
+// refuses for good would be refused again on every tick, so the transition is
+// committed and not re-emitted.
+func TestRunChecks_PermanentRejectionConsumesTheTransition(t *testing.T) {
+	client := &publishFailOnceClient{code: codes.InvalidArgument}
+	check := &stagedTestCheck{}
+	monitor := NewNICHealthMonitor("node1", client, "127.0.0.1:5555",
+		[]checks.TransactionalCheck{check}, time.Second)
+
+	require.NoError(t, monitor.RunStateChecks(context.Background()))
+	assert.True(t, check.committed, "the rejected transition is consumed")
+	assert.Equal(t, 1, check.commitCalls)
+	assert.Equal(t, 0, check.discardCalls)
+	assert.Equal(t, 1, client.calls)
+
+	// The next poll has nothing new to say; the rejected batch is not re-sent.
+	require.NoError(t, monitor.RunStateChecks(context.Background()))
+	assert.Equal(t, 1, client.calls, "no re-emit of a rejected batch")
 }

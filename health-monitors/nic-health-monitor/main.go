@@ -30,9 +30,9 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -131,23 +131,10 @@ func run() error {
 
 	stateManager, rebooted, scopeChanged := loadStateManager(rc.cfg)
 
-	dialOpts := append(
-		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
-		grpcclient.DialOptions(*platformConnectorTokenPath)...,
-	)
-
-	conn, err := dialWithRetry(ctx, *platformConnectorSocket, dialOpts...)
+	client, pubOpt, err := dialPlatformConnector(ctx, *platformConnectorSocket, *platformConnectorTokenPath)
 	if err != nil {
-		return fmt.Errorf("failed to create gRPC client after retries: %w", err)
+		return err
 	}
-
-	defer func() {
-		if closeErr := conn.Close(); closeErr != nil {
-			slog.Error("Error closing gRPC connection", "error", closeErr)
-		}
-	}()
-
-	client := pb.NewPlatformConnectorClient(conn)
 
 	// State checks re-baseline after both real reboots and discovery-scope
 	// changes; counter checks only after real reboots — a scope change
@@ -161,9 +148,32 @@ func run() error {
 	}
 
 	nicMonitor := monitor.NewNICHealthMonitor(rc.nodeName, client, *platformConnectorSocket,
-		enabledChecks, rc.statePollingInterval)
+		enabledChecks, rc.statePollingInterval, pubOpt)
+	// Closes the publisher and the connection it owns.
+	defer nicMonitor.Close()
 
 	return runServerAndLoops(ctx, rc, nicMonitor)
+}
+
+// dialPlatformConnector routes the dial through the shared healthpub
+// environment switch: with HEALTH_PUBLISH_TARGET set the client talks to the
+// deployment platform connector directly, otherwise today's node-local socket
+// dial runs unchanged (the same bounded retry dial, socket presence plus
+// readiness wait, against the same target and token path). The option hands
+// the connection to the publisher, which closes it in Close.
+func dialPlatformConnector(ctx context.Context, socket, tokenPath string) (
+	pb.PlatformConnectorClient, healthpub.Option, error,
+) {
+	_, client, pubOpt, err := healthpub.DialFromEnvOr(func() (*grpc.ClientConn, error) {
+		// Legacy socket mode: the bounded socket wait and readiness gate are
+		// part of today's startup contract, so dial exactly as before.
+		return dialWithRetry(ctx, socket, grpcclient.InsecureDialOptions(tokenPath)...)
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("nic-health-monitor: failed to dial platform connector: %w", err)
+	}
+
+	return client, pubOpt, nil
 }
 
 // discoveryScope fingerprints the configuration that decides which
@@ -325,6 +335,9 @@ func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monit
 	// counter loop deliberately does not mark it: at its 1s cadence it
 	// would mask a frozen state loop.
 	healthChecker := server.NewPollingHealthChecker(3 * rc.statePollingInterval)
+	// A loop waiting for the deployment platform connector to store a batch is
+	// the server being away, not the loop hanging; it must not restart the pod.
+	healthChecker.AllowWaitingOn(nicMonitor.WaitingOnServer)
 
 	srv := server.NewServer(
 		server.WithPort(rc.metricsPort),

@@ -214,3 +214,77 @@ func TestXID74Reg2Bit13SetRuleStructure(t *testing.T) {
 		})
 	}
 }
+
+// TestLookupRulesGroupByGPUBeforeJoin guards the shape of the XID 74 "solo" rules.
+//
+// Their $lookup is a correlated self-join whose sub-pipeline reads only the node
+// name, which the reconciler's mandatory first stage already pins to one node,
+// and the GPU UUID. Run once per surviving document it re-reads the node's whole
+// lookback window each time, so cost grows with the square of the node's event
+// rate: measured at 1.2 s for a single rule on a node holding 4.5k events in its
+// 24 hour window, against 15 ms for the same rule's siblings.
+//
+// Grouping by GPU first caps the sub-queries at the number of GPUs on the node.
+// This test fails if a $lookup is ever reintroduced without that guard, or if the
+// group key stops matching the GPU UUID the join correlates on.
+func TestLookupRulesGroupByGPUBeforeJoin(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+
+	for _, source := range configSources(repoRoot) {
+		t.Run(source.name, func(t *testing.T) {
+			cfg := loadRulesFromValuesYAML(t, source.path)
+			require.NotEmpty(t, cfg.Rules, "expected at least one rule in %s", source.name)
+
+			lookupRules := 0
+
+			for _, rule := range cfg.Rules {
+				lookupAt := -1
+
+				for i, stage := range rule.Stage {
+					if strings.Contains(stage, `"$lookup"`) {
+						lookupAt = i
+						break
+					}
+				}
+
+				if lookupAt < 0 {
+					continue
+				}
+
+				lookupRules++
+
+				t.Run(rule.Name, func(t *testing.T) {
+					require.GreaterOrEqual(t, lookupAt, 2,
+						"rule %q must reduce to one document per GPU before its $lookup", rule.Name)
+
+					group, replaceRoot := rule.Stage[lookupAt-2], rule.Stage[lookupAt-1]
+
+					assert.Contains(t, group, `"$group"`,
+						"rule %q must $group immediately before its $lookup so the join runs "+
+							"once per GPU, not once per event", rule.Name)
+					assert.Contains(t, group, "GPU_UUID",
+						"rule %q must group on the GPU UUID the $lookup correlates on", rule.Name)
+					assert.Contains(t, replaceRoot, `"$replaceRoot"`,
+						"rule %q must restore the document shape the $lookup expects", rule.Name)
+
+					// Parse rather than string-match, so a widened bound such as
+					// {"$limit": 2} cannot satisfy the assertion. The terminal stage
+					// carries no "this." reference, so an empty event resolves it.
+					lastStage := rule.Stage[len(rule.Stage)-1]
+
+					limitParsed, err := parser.ParseSequenceStage(lastStage, datamodels.HealthEventWithStatus{})
+					require.NoError(t, err, "failed to parse terminal stage of rule %q", rule.Name)
+
+					limitVal, ok := limitParsed["$limit"]
+					require.True(t, ok, "rule %q must end in $limit, got %s", rule.Name, lastStage)
+
+					assert.Equal(t, float64(1), limitVal,
+						"rule %q must stop at the first match; the reconciler only tests "+
+							"whether the result is non-empty", rule.Name)
+				})
+			}
+
+			assert.NotZero(t, lookupRules, "expected at least one $lookup rule in %s", source.name)
+		})
+	}
+}

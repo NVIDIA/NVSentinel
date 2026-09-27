@@ -16,17 +16,16 @@ package reconciler
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
-	"strings"
+
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -127,7 +126,7 @@ func (c *nodeRecoveryController) run(ctx context.Context, workers int) error {
 
 	workersDone.Go(func() { c.informer.Run(ctx.Done()) })
 
-	syncCtx, stopSync := context.WithTimeout(ctx, 30*time.Second)
+	syncCtx, stopSync := context.WithTimeout(ctx, 5*time.Minute)
 	defer stopSync()
 
 	if !cache.WaitForCacheSync(syncCtx.Done(), c.informer.HasSynced) {
@@ -170,38 +169,36 @@ func (c *nodeRecoveryController) processNext(ctx context.Context) bool {
 	return true
 }
 
-func (c *nodeRecoveryController) removeRequest(ctx context.Context, node *corev1.Node, key, value string) error {
-	path := "/metadata/annotations/" + strings.ReplaceAll(strings.ReplaceAll(key, "~", "~0"), "/", "~1")
+// Report a deterministic Event instead of mutating the node. Create-only RBAC
+// is sufficient; a repeated report for this request returns AlreadyExists.
+// Node Events use the default namespace because their object reference is cluster-scoped.
+func (c *nodeRecoveryController) report(ctx context.Context, node *corev1.Node,
+	key, value, reason, message string, warning bool) error {
+	digest := sha256.Sum256([]byte(string(node.UID) + "\x00" + key + "\x00" + value + "\x00" + reason))
 
-	patch, err := json.Marshal([]annotationPatchOperation{
-		{Op: "test", Path: "/metadata/uid", Value: string(node.UID)},
-		{Op: "test", Path: path, Value: value},
-		{Op: "remove", Path: path},
-	})
-	if err != nil {
-		return fmt.Errorf("encode recovery annotation cleanup: %w", err)
+	eventType := corev1.EventTypeNormal
+	if warning {
+		eventType = corev1.EventTypeWarning
 	}
 
-	_, err = c.client.CoreV1().Nodes().Patch(ctx, node.Name, types.JSONPatchType, patch, metav1.PatchOptions{})
-	if err == nil || apierrors.IsNotFound(err) {
-		return nil
-	}
-	// An operator may replace the request while its transition is being stored.
-	// Only inspect the API after a failed conditional patch, not during polling.
-	current, getErr := c.client.CoreV1().Nodes().Get(ctx, node.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(getErr) {
-		return nil
-	}
-
-	if getErr == nil && (current.UID != node.UID || current.Annotations[key] != value) {
-		return nil
+	now := metav1.Now()
+	event := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("hea-recovery-%x", digest[:16]), Namespace: metav1.NamespaceDefault,
+		},
+		InvolvedObject: corev1.ObjectReference{Kind: "Node", APIVersion: "v1", Name: node.Name, UID: node.UID},
+		Source:         corev1.EventSource{Component: agentName},
+		Type:           eventType, Reason: reason, Message: message,
+		FirstTimestamp: now, LastTimestamp: now, Count: 1,
 	}
 
-	return fmt.Errorf("remove completed recovery annotation: %w", err)
-}
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
-type annotationPatchOperation struct {
-	Op    string `json:"op"`
-	Path  string `json:"path"`
-	Value string `json:"value,omitempty"`
+	_, err := c.client.CoreV1().Events(metav1.NamespaceDefault).Create(requestCtx, event, metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("report recovery result: %w", err)
+	}
+
+	return nil
 }

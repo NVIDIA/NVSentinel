@@ -16,83 +16,58 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 const (
+	agentName = "health-events-analyzer"
+
 	maxRetries int           = 5
 	delay      time.Duration = 5 * time.Second
 
-	// SourceGeneratedTimestampMetadataKey carries the triggering event's generated timestamp,
-	// which the derived event replaces with its own.
-	SourceGeneratedTimestampMetadataKey = "source_generated_timestamp"
+	// Carries the triggering event's generated timestamp, which the derived event replaces
+	// with its own.
+	sourceGeneratedTimestampMetadataKey = "source_generated_timestamp"
 )
 
 type PublisherConfig struct {
-	platformConnectorClient protos.PlatformConnectorClient
-	processingStrategy      protos.ProcessingStrategy
+	pub                *healthpub.Publisher
+	processingStrategy protos.ProcessingStrategy
 }
 
-func isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	if s, ok := status.FromError(err); ok {
-		if s.Code() == codes.Unavailable {
-			return true
-		}
-	}
-
-	return false
-}
-
+// sendHealthEventWithRetry forwards health events through the shared
+// healthpub publisher, which retries with the policy set in NewPublisher (see
+// healthpub.Publish for what is retried in each mode). A batch the server
+// refuses for good comes back as healthpub.ErrPublishRejected and is returned
+// as is, so the caller marks the event processed instead of replaying it
+// forever.
 func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEvents *protos.HealthEvents) error {
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.grpc.publish")
 	defer span.End()
 
-	backoff := wait.Backoff{
-		Steps:    maxRetries,
-		Duration: delay,
-		Factor:   2,
-		Jitter:   0.1,
-	}
+	if err := p.pub.Publish(ctx, healthEvents); err != nil {
+		if errors.Is(err, healthpub.ErrPublishRejected) {
+			slog.ErrorContext(ctx, "Platform connector rejected the health event for good; it will not be retried",
+				"error", err)
+			fatalEventPublishingError.WithLabelValues("event_rejected").Inc()
+			tracing.RecordError(span, err)
 
-	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
-		_, err := p.platformConnectorClient.HealthEventOccurredV1(ctx, healthEvents)
-		if err == nil {
-			slog.DebugContext(ctx, "Successfully sent health events", "events", healthEvents)
-
-			return true, nil
+			return err
 		}
 
-		if isRetryableError(err) {
-			slog.ErrorContext(ctx, "Retryable error occurred", "error", err)
-			fatalEventPublishingError.WithLabelValues("retryable_error").Inc()
-
-			return false, nil
-		}
-
-		slog.ErrorContext(ctx, "Non-retryable error occurred", "error", err)
-		fatalEventPublishingError.WithLabelValues("non_retryable_error").Inc()
-
-		return false, fmt.Errorf("non retryable error occurred while sending health event: %w", err)
-	})
-	if err != nil {
 		slog.ErrorContext(ctx, "All retry attempts to send health event failed", "error", err)
 		fatalEventPublishingError.WithLabelValues("event_publishing_to_UDS_error").Inc()
 
@@ -105,17 +80,31 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 		return fmt.Errorf("all retry attempts to send health event failed: %w", err)
 	}
 
+	slog.DebugContext(ctx, "Successfully sent health events", "events", healthEvents)
+
 	return nil
 }
 
 // NewPublisher creates a PublisherConfig that sends health events to the
-// platform-connector via gRPC.
+// platform-connector via gRPC. opts are forwarded to healthpub.New, main
+// passing the option healthpub.DialFromEnvOr returns. The publisher target is
+// empty because the analyzer never gated sends on the node-local socket file:
+// the retry policy alone reproduces its previous socket-mode behavior.
 func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
-	processingStrategy protos.ProcessingStrategy) *PublisherConfig {
+	processingStrategy protos.ProcessingStrategy, opts ...healthpub.Option) *PublisherConfig {
+	pubOpts := append([]healthpub.Option{
+		healthpub.WithRetryPolicy(maxRetries, delay, 2, 0.1),
+	}, opts...)
+
 	return &PublisherConfig{
-		platformConnectorClient: platformConnectorClient,
-		processingStrategy:      processingStrategy,
+		pub:                healthpub.New(platformConnectorClient, "", agentName, pubOpts...),
+		processingStrategy: processingStrategy,
 	}
+}
+
+// Close shuts down the publisher and the connection it owns.
+func (p *PublisherConfig) Close() {
+	p.pub.CloseOrWarn()
 }
 
 // Publish clones the incoming health event, updates the fields defined by the
@@ -123,62 +112,51 @@ func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
 // stamps its own generated timestamp, and sends the resulting event to the
 // platform-connector with retries.
 func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent,
+	action protos.RecommendedAction, ruleName, message string, rule *config.HealthEventsAnalyzerRule) error {
+	_, err := p.publish(ctx, event, action, ruleName, message, rule, false)
+	return err
+}
+
+func (p *PublisherConfig) PublishRecovery(ctx context.Context, event *protos.HealthEvent,
+	rule config.HealthEventsAnalyzerRule) (*protos.HealthEvent, error) {
+	return p.publish(ctx, event, protos.RecommendedAction_NONE, rule.Name,
+		"Operator verified recovery", &rule, true)
+}
+
+func (p *PublisherConfig) AcknowledgesStorage() bool { return p.pub.AcknowledgesStorage() }
+
+func (p *PublisherConfig) publish(ctx context.Context, event *protos.HealthEvent,
 	recommendedAction protos.RecommendedAction, ruleName string, message string,
-	rule *config.HealthEventsAnalyzerRule) error {
-	return p.publish(ctx, event, publishOptions{
-		recommendedAction: recommendedAction,
-		ruleName:          ruleName,
-		message:           message,
-		rule:              rule,
-	})
-}
-
-// PublishRecovery publishes the healthy transition for a derived condition.
-// Error codes are intentionally empty so downstream consumers clear every
-// failure for the selected derived condition and entity scope.
-func (p *PublisherConfig) PublishRecovery(
-	ctx context.Context,
-	event *protos.HealthEvent,
-	ruleName string,
-	entities []*protos.Entity,
-	rule *config.HealthEventsAnalyzerRule,
-) error {
-	return p.publish(ctx, event, publishOptions{
-		recommendedAction: protos.RecommendedAction_NONE,
-		ruleName:          ruleName,
-		message:           fmt.Sprintf("Recovered derived condition %s", ruleName),
-		rule:              rule,
-		isHealthy:         true,
-		entities:          entities,
-	})
-}
-
-type publishOptions struct {
-	recommendedAction protos.RecommendedAction
-	ruleName          string
-	message           string
-	rule              *config.HealthEventsAnalyzerRule
-	isHealthy         bool
-	entities          []*protos.Entity
-}
-
-func (p *PublisherConfig) publish(ctx context.Context, event *protos.HealthEvent, options publishOptions) error {
+	rule *config.HealthEventsAnalyzerRule, healthy bool) (*protos.HealthEvent, error) {
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.publish")
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("health_events_analyzer.publish.rule_name", options.ruleName),
-		attribute.String("health_events_analyzer.publish.recommended_action", options.recommendedAction.String()),
-		attribute.Bool("health_events_analyzer.publish.is_healthy", options.isHealthy),
+		attribute.String("health_events_analyzer.publish.rule_name", ruleName),
+		attribute.String("health_events_analyzer.publish.recommended_action", recommendedAction.String()),
 	)
 
 	newEvent := proto.Clone(event).(*protos.HealthEvent)
 
-	newEvent.Agent = "health-events-analyzer"
-	newEvent.CheckName = options.ruleName
-	newEvent.RecommendedAction = options.recommendedAction
-	newEvent.IsHealthy = options.isHealthy
-	newEvent.Message = options.message
+	// The source's idempotency key belongs to ingestion. Current platform
+	// connectors stamp their own key on the derived event, but during a chart
+	// upgrade a node-local connector of the previous version can still be
+	// serving this node: it stores metadata as received, and the inherited key
+	// would make the unique index refuse the derived event.
+	delete(newEvent.Metadata, datastore.HealthEventIdempotencyKeyMetadataField)
+
+	newEvent.Agent = agentName
+	newEvent.CheckName = ruleName
+	newEvent.RecommendedAction = recommendedAction
+
+	newEvent.IsHealthy = healthy
+	if healthy {
+		newEvent.ErrorCode = nil
+		newEvent.QuarantineOverrides = nil
+		newEvent.CustomRecommendedAction = ""
+	}
+
+	newEvent.Message = message
 
 	// The clone inherits the triggering event's timestamp, which dates the derived event to
 	// the original fault rather than to detection. The source value is kept in metadata.
@@ -187,7 +165,7 @@ func (p *PublisherConfig) publish(ctx context.Context, event *protos.HealthEvent
 			newEvent.Metadata = make(map[string]string, 1)
 		}
 
-		newEvent.Metadata[SourceGeneratedTimestampMetadataKey] = src.AsTime().UTC().Format(time.RFC3339Nano)
+		newEvent.Metadata[sourceGeneratedTimestampMetadataKey] = src.AsTime().UTC().Format(time.RFC3339Nano)
 	}
 
 	newEvent.GeneratedTimestamp = timestamppb.New(time.Now())
@@ -195,35 +173,25 @@ func (p *PublisherConfig) publish(ctx context.Context, event *protos.HealthEvent
 	// Default from module configuration, with an optional rule-level override.
 	newEvent.ProcessingStrategy = p.processingStrategy
 
-	if options.rule != nil && options.rule.ProcessingStrategy != "" {
-		value, ok := protos.ProcessingStrategy_value[options.rule.ProcessingStrategy]
+	if rule != nil && rule.ProcessingStrategy != "" {
+		value, ok := protos.ProcessingStrategy_value[rule.ProcessingStrategy]
 		if !ok {
 			span.SetAttributes(
 				attribute.String("health_events_analyzer.error.type", "invalid_processing_strategy"),
 				attribute.String("health_events_analyzer.error.message",
-					fmt.Sprintf("unexpected processingStrategy: %q", options.rule.ProcessingStrategy)),
+					fmt.Sprintf("unexpected processingStrategy: %q", rule.ProcessingStrategy)),
 			)
-			tracing.RecordError(span, fmt.Errorf("unexpected processingStrategy value: %q", options.rule.ProcessingStrategy))
+			tracing.RecordError(span, fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy))
 
-			return client.PermanentError(
-				fmt.Errorf("unexpected processingStrategy value: %q", options.rule.ProcessingStrategy),
-			)
+			return nil, fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy)
 		}
 
 		newEvent.ProcessingStrategy = protos.ProcessingStrategy(value)
 	}
 
-	switch {
-	case options.isHealthy:
+	if recommendedAction == protos.RecommendedAction_NONE {
 		newEvent.IsFatal = false
-		newEvent.ErrorCode = nil
-		newEvent.EntitiesImpacted = cloneEntities(options.entities)
-		newEvent.QuarantineOverrides = nil
-		newEvent.DrainOverrides = nil
-		newEvent.CustomRecommendedAction = ""
-	case options.recommendedAction == protos.RecommendedAction_NONE:
-		newEvent.IsFatal = false
-	default:
+	} else {
 		newEvent.IsFatal = true
 	}
 
@@ -232,22 +200,9 @@ func (p *PublisherConfig) publish(ctx context.Context, event *protos.HealthEvent
 		Events:  []*protos.HealthEvent{newEvent},
 	}
 
-	return p.sendHealthEventWithRetry(ctx, req)
-}
-
-func cloneEntities(entities []*protos.Entity) []*protos.Entity {
-	if len(entities) == 0 {
-		return nil
+	if err := p.sendHealthEventWithRetry(ctx, req); err != nil {
+		return nil, err
 	}
 
-	clones := make([]*protos.Entity, 0, len(entities))
-	for _, entity := range entities {
-		if entity == nil {
-			continue
-		}
-
-		clones = append(clones, proto.Clone(entity).(*protos.Entity))
-	}
-
-	return clones
+	return newEvent, nil
 }

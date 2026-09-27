@@ -10,8 +10,8 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 - [Labeler Module](#labeler)
 - [Janitor](#janitor)
 - [Platform Connectors](#platform-connectors)
-- [Health Events Analyzer](#health-events-analyzer)
 - [Health Monitors](#health-monitors)
+  - [Health Event Publisher](#health-event-publisher)
   - [GPU Health Monitor](#gpu-health-monitor)
   - [Syslog Health Monitor](#syslog-health-monitor)
   - [CSP Health Monitor](#csp-health-monitor)
@@ -256,25 +256,21 @@ These metrics track the internal ring buffer workqueue performance:
 
 ---
 
-## Health Events Analyzer
+## Health Monitors
 
-| Metric Name | Type | Labels | Description |
-|------------|------|--------|-------------|
-| `health_event_analyzer_events_received_total` | Counter | `node_name` | Total analyzer input events received from the watcher |
-| `health_event_analyzer_events_successfully_processed_total` | Counter | - | Total analyzer input events processed successfully |
-| `health_event_analyzer_event_processing_errors` | Counter | `error_type` | Total analyzer processing errors |
-| `health_event_analyzer_event_handling_duration_seconds` | Histogram | - | Analyzer event handling duration, with buckets from 100 ms through about 205 s |
-| `mongo_query_execution_duration_seconds` | Histogram | `rule_name` | Rule aggregation duration for either supported datastore provider |
-| `rule_matched_total` | Counter | `rule_name`, `node_name` | Total matching rule evaluations |
-| `fatal_events_published_total` | Counter | `entity_value` | Total derived unhealthy events published |
-| `health_event_analyzer_recovery_events_published_total` | Counter | `rule_name`, `scope` | Total derived healthy transitions published by recovery-enabled rules |
-| `health_event_analyzer_recovery_persistence_timeouts_total` | Counter | `rule_name`, `state` | Total derived transitions not observed in the store before the persistence deadline |
-| `health_event_analyzer_recovery_stored_document_decode_errors_total` | Counter | `rule_name`, `lookup`, `classification` | Stored health event decode or identity failures observed during recovery lookups, including out-of-scope rows; repeated observations within one persistence wait are counted once |
-| `fatal_event_publishing_errors` | Counter | `error_type` | Total gRPC publication errors |
+### Health Event Publisher
+
+The Go health monitors send their events through the shared publishing client (`commons/pkg/healthpub`). The `monitor` label names the monitor. The socket rows apply to the node-local path; the direct-mode rows apply only when a monitor publishes to the deployment platform connector (`HEALTH_PUBLISH_TARGET` set, which the chart's `publishTo: deployment` does once the chart ships).
+
+| Metric Name                                                       | Type    | Labels              | Description                                                                                                                                                                       |
+|-------------------------------------------------------------------|---------|---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `nvsentinel_health_events_publisher_skipped_pc_unavailable_total` | Counter | `monitor`           | Socket-path sends skipped because the node-local platform connector socket was missing                                                                                            |
+| `nvsentinel_health_events_publisher_sends_success_total`          | Counter | `monitor`           | Batches the platform connector acknowledged, on either path                                                                                                                       |
+| `nvsentinel_health_events_publisher_sends_error_total`            | Counter | `monitor`, `code`   | Socket-path sends that failed after retries, by gRPC status code                                                                                                                  |
+| `nvsentinel_health_events_publisher_dropped_total`                | Counter | `monitor`, `reason` | Direct-mode batches given up on: `rejected` (the server refuses the batch for good, or it exceeds the 4 MiB message limit), `retry_window_exhausted`, `shutdown`, `withdrawn` (the caller stopped waiting: its context ended or its timeout expired, and the batch was taken back)               |
+| `nvsentinel_health_events_publisher_retries_total`                | Counter | `monitor`           | Direct-mode send attempts that failed and were retried inside the batch's retry window                                                                                            |
 
 ---
-
-## Health Monitors
 
 ### GPU Health Monitor
 
@@ -285,7 +281,12 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `dcgm_health_events_publish_time_to_grpc_channel` | Histogram | `operation_name`                   | Amount of time spent in publishing DCGM health events on the gRPC channel                                 |
 | `health_events_insertion_to_uds_succeed`          | Counter   | -                                  | Total number of successful insertions of health events to UDS                                             |
 | `health_events_insertion_to_uds_error`            | Counter   | -                                  | Total number of failed insertions of health events to UDS                                                 |
-| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `error_code` | Total number of active health events at any given time |
+| `health_events_insertion_skipped_pc_unavailable`  | Counter   | -                                  | Sends skipped because the node-local platform connector socket was missing                                |
+| `health_events_direct_publish_succeed`            | Counter   | -                                  | Batches the deployment platform connector acknowledged (direct mode)                          |
+| `health_events_direct_publish_dropped`            | Counter   | `reason`                           | Direct-mode batches given up on; the same reasons as the Go publisher's `dropped_total`                   |
+| `health_events_direct_publish_retries`            | Counter   | -                                  | Direct-mode send attempts that failed and were retried                                                    |
+| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `error_code` | Total number of active GPU health events at any given time |
+| `dcgm_health_active_switch_events`                | Gauge     | `event_type`, `switch_id`, `error_code` | Total number of active NVSwitch health events at any given time. Separate from `dcgm_health_active_events` because switch and GPU ids are distinct sequences that both start at 0 |
 | `dcgm_api_latency`                                | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
 | `dcgm_reconcile_time`                             | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
 | `number_of_health_watches`                        | Gauge     | -                                  | Number of DCGM health watches available                                                                   |

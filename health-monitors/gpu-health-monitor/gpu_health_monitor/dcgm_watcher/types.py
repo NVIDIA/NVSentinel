@@ -80,6 +80,9 @@ class FieldDetails:
 
 
 class CallbackInterface(abc.ABC):
+    def close(self) -> None:
+        """Releases what the processor holds; called once at shutdown. A no-op by default."""
+
     @abc.abstractmethod
     def health_event_occurred(
         self,
