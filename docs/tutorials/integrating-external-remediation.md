@@ -384,7 +384,7 @@ The external system can be a Kubernetes controller, a script, or an operator who
 3. **Write the result only at the end.** Set `ExternalRemediationComplete=True` only when the repair is complete. Set `False` only when the external system stops work on the node.
 4. **Keep janitor's condition.** Read the ExternalRemediationRequest, replace or add only the `ExternalRemediationComplete` entry, and then update the status.
 5. **Ignore closed requests.** When `status.completionTime` is set, janitor already took the node back. Take no action on the node.
-6. **Stop when the request disappears.** If an operator deletes the ExternalRemediationRequest, NVSentinel manages the node again. Stop all work on the node.
+6. **Stop when someone deletes the request.** When `metadata.deletionTimestamp` is set, janitor returns the node to NVSentinel before Kubernetes removes the object. Stop all work on the node when this field appears.
 
 For a reference implementation of rule 4, see the `SetExtRRComplete` function in [tests/helpers/kube.go](../../tests/helpers/kube.go). It uses the Kubernetes unstructured client, which reads and writes any object as a map. The external system then does not need NVSentinel Go types.
 

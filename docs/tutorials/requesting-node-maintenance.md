@@ -403,17 +403,30 @@ lifecycle-manager cannot publish the clearing event. Use the `EmitFailed` fix in
 
 If you cannot repair platform-connector, remove the finalizer yourself.
 
-> **Safety:** If you remove the finalizer, lifecycle-manager does not publish the clearing event. The node then stays cordoned until you uncordon it.
+> **Safety:** If you remove the finalizer, lifecycle-manager does not publish the clearing event. The node stays cordoned until you uncordon it. An uncordon also cancels every other active fault on the node, so check the other faults first.
 
 ```bash
 kubectl patch maintenancerequest "maintenance-${NODE}" --type=merge -p '{"metadata":{"finalizers":null}}'
-kubectl uncordon "$NODE"
 # Expected:
 # maintenancerequest.nvsentinel.dgxc.nvidia.com/maintenance-<node-name> patched
+```
+
+Show the health events that keep the node cordoned:
+
+```bash
+kubectl get node "$NODE" -o jsonpath='{.metadata.annotations.quarantineHealthEvent}'
+# Expected: a list of the health events that keep the node cordoned.
+```
+
+If the list contains only the `checkName` of your MaintenanceRequest, uncordon the node:
+
+```bash
+kubectl uncordon "$NODE"
+# Expected:
 # node/<node-name> uncordoned
 ```
 
-For what NVSentinel does when you uncordon a node, see [Cancelling Break-Fix Workflows](../cancelling-breakfix.md).
+If the list contains other checks, keep the node cordoned. Uncordon it only after those faults clear. For what NVSentinel does when you uncordon a node, see [Cancelling Break-Fix Workflows](../cancelling-breakfix.md).
 
 ### The node stays cordoned after you delete the MaintenanceRequest
 

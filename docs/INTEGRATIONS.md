@@ -655,7 +655,7 @@ This prevents duplicate remediation requests for nodes with ongoing maintenance.
 
 ### External Remediation and Planned Maintenance
 
-For a repair that NVSentinel cannot do itself, fault-remediation can create an ExternalRemediationRequest. NVSentinel then stops managing the node until the external system reports the result. See [Integrating External Remediation](./tutorials/integrating-external-remediation.md).
+For a repair that NVSentinel cannot do itself, fault-remediation can create an ExternalRemediationRequest. NVSentinel then stops managing the node. NVSentinel manages the node again when the external system reports that the repair is complete, or when someone deletes the ExternalRemediationRequest. See [Integrating External Remediation](./tutorials/integrating-external-remediation.md).
 
 To tell NVSentinel about planned maintenance, create a MaintenanceRequest. NVSentinel then cordons and drains the node. See [Requesting Node Maintenance](./tutorials/requesting-node-maintenance.md).
 
