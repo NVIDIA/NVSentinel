@@ -49,6 +49,9 @@ data:
     {{- if .Values.customDrain.enabled }}
     [customDrain]
       enabled = true
+      {{- with .Values.customDrain.nodeSelector }}
+      nodeSelector = {{ . | quote }}
+      {{- end }}
       templateMountPath = {{ .Values.customDrain.templateMountPath | quote }}
       templateFileName = {{ .Values.customDrain.templateFileName | quote }}
       namespace = {{ .Values.customDrain.namespace | quote }}
