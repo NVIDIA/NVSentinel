@@ -39,8 +39,12 @@ const (
 var (
 	droppedWritesCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "k8s_platform_connector_dropped_writes_total",
-		Help: "Kubernetes writes discarded by operation and reason, including unattempted writes at deadline or shutdown",
-	}, []string{"operation", "reason"})
+		Help: "Kubernetes writes discarded by operation, reason and health direction, including unattempted " +
+			"writes at deadline or shutdown. is_healthy separates a lost clear, which can leave a fault " +
+			"standing with nothing to clear it, from a lost set, which the next change re-reports. For " +
+			"node_condition one write carries every event grouped for that node, so is_healthy=\"true\" " +
+			"means the write contained at least one recovery, not that all of it was recoveries",
+	}, []string{"operation", "reason", "is_healthy"})
 
 	droppedBatchesCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "k8s_platform_connector_dropped_batches_total",

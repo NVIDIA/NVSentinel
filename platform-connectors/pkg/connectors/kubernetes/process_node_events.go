@@ -990,6 +990,12 @@ func (r *K8sConnector) createK8sEvent(ctx context.Context, healthEvent *protos.H
 type kubernetesWrite struct {
 	operation string
 	nodeName  string
+	// isHealthy distinguishes a write that clears from one that sets, so a drop
+	// can be read as "self-corrects on the next change" or "a fault is now
+	// latched with nothing left to clear it". A node_condition write carries
+	// every event grouped for its node, so there it means "contains at least
+	// one recovery" rather than "is entirely recoveries".
+	isHealthy bool
 	run       func(context.Context) error
 }
 
@@ -1039,7 +1045,8 @@ func (r *K8sConnector) prepareHealthEventWrites(
 		nodeEvents := eventsByNode[nodeName]
 		writes = append(writes, kubernetesWrite{
 			operation: "node_condition", nodeName: nodeName,
-			run: func(ctx context.Context) error { return r.processNodeConditionUpdates(ctx, nodeEvents) },
+			isHealthy: slices.ContainsFunc(nodeEvents, func(e *protos.HealthEvent) bool { return e.IsHealthy }),
+			run:       func(ctx context.Context) error { return r.processNodeConditionUpdates(ctx, nodeEvents) },
 		})
 	}
 
@@ -1049,6 +1056,7 @@ func (r *K8sConnector) prepareHealthEventWrites(
 			// erase the memory before an earlier fault has finished retrying.
 			writes = append(writes, kubernetesWrite{
 				operation: "node_event", nodeName: healthEvent.NodeName,
+				isHealthy: true,
 				run: func(context.Context) error {
 					r.forgetNodeCheck(healthEvent.NodeName, healthEvent.CheckName, entityKeys(healthEvent))
 
@@ -1066,6 +1074,7 @@ func (r *K8sConnector) prepareHealthEventWrites(
 		write := &nodeEventWrite{event: r.createK8sEvent(ctx, healthEvent), entities: entityKeys(healthEvent)}
 		writes = append(writes, kubernetesWrite{
 			operation: "node_event", nodeName: healthEvent.NodeName,
+			isHealthy: false,
 			run: func(ctx context.Context) error {
 				start := time.Now()
 				skipped, err := r.writeNodeEvent(ctx, write, healthEvent.NodeName)

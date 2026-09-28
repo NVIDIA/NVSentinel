@@ -188,7 +188,7 @@ func TestProcessHealthEventsWithRetry_AmbiguousEventCreate_ReconcilesPersistedOc
 			node := fmt.Sprintf("ambiguous-create-%d", i)
 			events := &protos.HealthEvents{Events: []*protos.HealthEvent{{NodeName: node, Agent: "retry-test", CheckName: "GPUWarning",
 				GeneratedTimestamp: timestamppb.Now()}}}
-			beforeDrops := testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error"))
+			beforeDrops := testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error", "false"))
 			beforeBatches := testutil.ToFloat64(droppedBatchesCounter.WithLabelValues("permanent_error"))
 			retries, err := connector.processHealthEventsWithRetry(ctx, events)
 			switch {
@@ -216,13 +216,13 @@ func TestProcessHealthEventsWithRetry_AmbiguousEventCreate_ReconcilesPersistedOc
 			name := expected.Name
 			if tc.wantError != "" {
 				require.False(t, cached, "unverified or mismatched events must not populate the cache")
-				require.Equal(t, beforeDrops+1, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error")))
+				require.Equal(t, beforeDrops+1, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error", "false")))
 				require.Equal(t, beforeBatches+1, testutil.ToFloat64(droppedBatchesCounter.WithLabelValues("permanent_error")))
 				return
 			}
 			require.True(t, cached)
 			require.Equal(t, stored.Items[0].Name, name)
-			require.Equal(t, beforeDrops, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error")))
+			require.Equal(t, beforeDrops, testutil.ToFloat64(droppedWritesCounter.WithLabelValues("node_event", "permanent_error", "false")))
 			require.Equal(t, beforeBatches, testutil.ToFloat64(droppedBatchesCounter.WithLabelValues("permanent_error")))
 			// A repeat inside main's refresh interval makes no API call.
 			_, err = connector.processHealthEventsWithRetry(ctx, events)
