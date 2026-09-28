@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -278,7 +279,7 @@ func (r *K8sConnector) processHealthEventsWithRetry(
 		}
 
 		reason := writeDropReason(ctx, err)
-		droppedWritesCounter.WithLabelValues(write.operation, reason).Inc()
+		droppedWritesCounter.WithLabelValues(write.operation, reason, strconv.FormatBool(write.isHealthy)).Inc()
 		dropReasons[reason] = true
 		failures = append(failures, fmt.Errorf("%s write for node %s (%s): %w",
 			write.operation, write.nodeName, reason, err))
@@ -289,7 +290,8 @@ func (r *K8sConnector) processHealthEventsWithRetry(
 		}
 
 		slog.Log(ctx, level, "Discarding unsuccessful Kubernetes write", "operation", write.operation,
-			"node", write.nodeName, "reason", reason, "retryCount", retries, "error", err)
+			"node", write.nodeName, "reason", reason, "isHealthy", write.isHealthy,
+			"retryCount", retries, "error", err)
 	}
 
 	for reason := range dropReasons {

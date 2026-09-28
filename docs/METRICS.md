@@ -189,6 +189,8 @@ sum(rate(platform_connector_auth_violations_total{reason=~"node_mismatch|token_i
 | `k8s_platform_connector_node_event_operations_total` | Counter | `operation`, `status` | Total number of node event operations by type and status. Operation values: `create`, `update`. Status values: `success`, `failed`, `skipped` (a repeat of a fault whose Event was written less than 10 minutes ago is skipped; later repeats refresh the Event) |
 | `k8s_platform_connector_node_condition_update_duration_milliseconds` | Histogram | - | Duration of node condition updates in milliseconds. Uses linear buckets (0, 10, 500) |
 | `k8s_platform_connector_node_event_update_create_duration_milliseconds` | Histogram | - | Duration of node event updates/creations in milliseconds. Uses linear buckets (0, 10, 500) |
+| `k8s_platform_connector_dropped_writes_total` | Counter | `operation`, `reason`, `is_healthy` | Kubernetes writes discarded, including unattempted writes at deadline or shutdown. `is_healthy` separates a lost clear, which can leave a fault standing with nothing left to clear it, from a lost set, which the next change re-reports. For `operation="node_condition"` one write carries every event grouped for that node, so `is_healthy="true"` means the write contained at least one recovery, not that all of it was recoveries |
+| `k8s_platform_connector_dropped_batches_total` | Counter | `reason` | Batches containing discarded Kubernetes writes, counted once per terminal reason. Deliberately not labelled by health direction: one batch can contain both |
 
 ### Prometheus Connector Metrics
 
