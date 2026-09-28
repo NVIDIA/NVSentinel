@@ -231,6 +231,25 @@ func (b *slidingWindowBreaker) tripThreshold(totalNodes int) (int, Bound) {
 	return threshold, bound
 }
 
+// standingBoundReached reports whether the number of nodes NVSentinel currently holds
+// quarantined has reached TripMaxCordonedNodes, and returns that count for logging.
+//
+// The window bounds limit the rate of cordoning, not the total, so a rate that stays under
+// the threshold still cordons without limit given enough windows. This bound is the only
+// one that caps how many nodes are held at once. Opt-in: zero disables it.
+func (b *slidingWindowBreaker) standingBoundReached(ctx context.Context) (int, bool, error) {
+	if b.cfg.TripMaxCordonedNodes <= 0 {
+		return -1, false, nil
+	}
+
+	cordonedNodes, err := b.cfg.K8sClient.GetCordonedNodes(ctx)
+	if err != nil {
+		return -1, false, fmt.Errorf("failed to get cordoned node count: %w", err)
+	}
+
+	return cordonedNodes, cordonedNodes >= b.cfg.TripMaxCordonedNodes, nil
+}
+
 // IsTripped checks if the circuit breaker should prevent further node cordoning.
 // It returns true if:
 // 1. The breaker is already in TRIPPED state, OR
@@ -274,20 +293,22 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 
 	b.mu.Unlock()
 
-	// The window bounds above limit the rate of cordoning, not the total. A rate that stays
-	// under the threshold still cordons without limit given enough windows, so this standing
-	// bound is the only one that caps how many nodes are held at once. Opt-in: zero disables.
+	// Only consulted when the window bounds have not already tripped. The standing bound can
+	// add a reason to trip but must never remove one: a lookup failure here would otherwise
+	// return early and leave a breaker unlatched that the window bounds had already earned.
 	cordonedNodes := -1
 
-	if b.cfg.TripMaxCordonedNodes > 0 {
-		cordonedNodes, err = b.cfg.K8sClient.GetCordonedNodes(ctx)
+	if !shouldTrip {
+		var reached bool
+
+		cordonedNodes, reached, err = b.standingBoundReached(ctx)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to get cordoned node count", "error", err)
 
-			return false, fmt.Errorf("failed to get cordoned node count: %w", err)
+			return false, err
 		}
 
-		if cordonedNodes >= b.cfg.TripMaxCordonedNodes {
+		if reached {
 			threshold, bindingBound = b.cfg.TripMaxCordonedNodes, boundMaxCordonedNodes
 			shouldTrip = true
 		}

@@ -838,3 +838,48 @@ func TestValidateBounds_StandingBoundOnly_IsAccepted(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "maxCordonedNodes must not be negative")
 }
+
+func TestIsTripped_WindowBoundReachedAndCordonedLookupFails_StillTrips(t *testing.T) {
+	ctx := context.Background()
+
+	k8sClient := setupTestClient(t)
+	k8sClient.cordonedNodesErr = fmt.Errorf("informer cache not synced")
+
+	nodeName := fmt.Sprintf("both-bounds-node-%s", generateTestID()[:6])
+	createTestNode(ctx, t, nodeName)
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	})
+
+	require.Eventually(t, func() bool {
+		n, err := k8sClient.GetTotalNodes(ctx)
+		return err == nil && n > 0
+	}, 5*time.Second, 50*time.Millisecond, "NodeInformer should see the test node")
+
+	configMapName := "test-both-" + generateTestID()[:8]
+
+	b, err := NewSlidingWindowBreaker(ctx, Config{
+		Window:               1 * time.Minute,
+		TripMaxNodes:         1,
+		TripMaxCordonedNodes: 10,
+		K8sClient:            k8sClient,
+		ConfigMapName:        configMapName,
+		ConfigMapNamespace:   "default",
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().ConfigMaps("default").Delete(
+			context.Background(), configMapName, metav1.DeleteOptions{})
+	})
+
+	// The window bound is already satisfied. A failure reading the standing bound must not
+	// stop the breaker latching for a reason it had already earned.
+	b.AddCordonEvent("some-cordoned-node")
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.True(t, tripped, "window bound reached should trip even if the cordoned lookup would fail")
+	require.Equal(t, StateTripped, b.CurrentState())
+}
