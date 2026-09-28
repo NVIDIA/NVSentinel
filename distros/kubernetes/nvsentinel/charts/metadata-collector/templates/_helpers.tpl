@@ -41,6 +41,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 
 {{/*
+GPU Operator installation mode from global.gpuOperator.mode. Defaults to
+clusterpolicy; any value other than clusterpolicy or gpucluster fails rendering.
+*/}}
+{{- define "metadata-collector.gpuOperatorMode" -}}
+{{- $mode := ((.Values.global).gpuOperator).mode | default "clusterpolicy" -}}
+{{- if not (has $mode (list "clusterpolicy" "gpucluster")) -}}
+{{- fail (printf "global.gpuOperator.mode must be clusterpolicy or gpucluster, got %q" $mode) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end }}
+
+{{/*
 Whether the Prometheus metrics endpoint is enabled, as a template-truthy string.
 
 Must be a real YAML boolean. Go-template truthiness would otherwise decide it for us: the string

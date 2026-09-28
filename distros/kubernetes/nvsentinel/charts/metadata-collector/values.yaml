@@ -32,6 +32,9 @@ resources:
 # clusters with no matching RuntimeClass). In NRI mode, also mount host driver
 # libraries via additionalHostVolumes / additionalVolumeMounts (and extraEnv
 # if LD_LIBRARY_PATH is needed).
+# Ignored when global.gpuOperator.mode is gpucluster: that mode has no
+# RuntimeClass, and the DaemonSet instead holds a DRA admin-access claim on the
+# node's GPUs so the DRA driver injects the driver libraries via CDI.
 runtimeClassName: "nvidia"
 
 # Extra environment variables for the metadata-collector container (optional).

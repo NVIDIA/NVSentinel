@@ -52,6 +52,42 @@ Runtime class name that provides GPU device access. Required for NVML to query G
 - `nvidia-legacy` - Legacy NVIDIA runtime
 - Empty string - Uses the default cluster runtime. Used for CRI-O environments and for NRI-mode clusters (see below)
 
+## GPUCluster (DRA) mode
+
+GPU Operator 26.7's `GPUCluster` mode deploys no Container Toolkit and no `nvidia` RuntimeClass, so the default `runtimeClassName: nvidia` fails admission. Select the mode when the GPU Operator is installed in GPUCluster mode:
+
+```yaml
+global:
+  gpuOperator:
+    mode: gpucluster   # clusterpolicy (default) | gpucluster
+```
+
+In `gpucluster` mode the DaemonSet drops `runtimeClassName` and holds a DRA admin-access claim on the node's GPUs instead, the same way GPU Operator runs its own DCGM DaemonSet; the DRA driver injects the driver libraries via CDI, and admin access does not consume the GPUs.
+
+Label the NVSentinel namespace once, before the install or upgrade that switches to GPUCluster mode. Kubernetes accepts admin-access claims only from a labelled namespace and rejects the chart's `ResourceClaimTemplate` otherwise, which fails the Helm release; the chart checks the label first and prints this command if it is missing:
+
+```bash
+kubectl label namespace nvsentinel resource.kubernetes.io/admin-access=true
+```
+
+With ArgoCD, set it where the namespace is created so it follows the mode switch:
+
+```yaml
+syncPolicy:
+  syncOptions: [CreateNamespace=true]
+  managedNamespaceMetadata:
+    labels:
+      resource.kubernetes.io/admin-access: "true"
+```
+
+Switching modes in order:
+
+1. Label the namespace (once).
+2. Switch the GPU Operator to `GPUCluster` mode.
+3. `helm upgrade` with `global.gpuOperator.mode: gpucluster`.
+
+Switching back needs only steps 2 and 3 with `clusterpolicy`; the label stays. `clusterpolicy` mode renders exactly as before.
+
 ## Host-path driver access (NRI-mode clusters)
 
 On clusters where GPU Operator is configured for CDI + NRI device injection, a `RuntimeClass` matching `operator.runtimeClass` is often never created. Setting `runtimeClassName` then fails admission, and leaving it unset crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND`. Requesting `nvidia.com/gpu` works but reserves a GPU for the DaemonSet.

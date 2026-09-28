@@ -1,0 +1,52 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: resourceclaimtemplate
+templates:
+  - templates/resourceclaimtemplate.yaml
+set:
+  global.metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+tests:
+  - it: must render nothing in clusterpolicy mode
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: must render an admin-access claim on all gpu.nvidia.com devices in gpucluster mode
+    capabilities:
+      apiVersions:
+        - resource.k8s.io/v1
+    set:
+      global.gpuOperator.mode: gpucluster
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ResourceClaimTemplate
+      - equal:
+          path: metadata.name
+          value: metadata-collector-admin-gpus
+      - equal:
+          path: spec.spec.devices.requests[0].exactly
+          value:
+            deviceClassName: gpu.nvidia.com
+            allocationMode: All
+            adminAccess: true
+
+  - it: must fail in gpucluster mode without the resource.k8s.io/v1 API
+    set:
+      global.gpuOperator.mode: gpucluster
+    asserts:
+      - failedTemplate:
+          errorPattern: needs the resource.k8s.io/v1 API
