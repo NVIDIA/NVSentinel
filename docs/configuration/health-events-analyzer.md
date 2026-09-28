@@ -77,6 +77,7 @@ The Health Events Analyzer partitions incoming events across a concurrent worker
 health-events-analyzer:
   workers: 1       # Number of concurrent workers (default: 1)
   maxInFlight: 1000 # Maximum uncheckpointed in-flight events before backpressure (default: 1000)
+  ruleConcurrency: 1 # Maximum rule queries that run at the same time for one event (default: 1)
 ```
 
 #### Scaling Workers by Datastore Event Rate
@@ -95,6 +96,28 @@ Use the following reference table to configure `workers` and `maxInFlight` based
 | $> 1,500$ events/s | `64` | `8000` | ~3,500 events/s | 15,000+ nodes |
 
 `maxInFlight` bounds uncheckpointed in-flight events in memory. When in-flight events reach this limit, stream ingestion pauses until workers resolve earlier events. Increase `maxInFlight` proportionally for larger worker counts to absorb bursty event traffic without stalling ingestion.
+
+#### Concurrent Rule Evaluation
+
+The analyzer runs one datastore query for each enabled rule when it evaluates an event. By default, it runs these queries one at a time. `ruleConcurrency` sets the maximum number of rule queries that run at the same time for one event.
+
+`workers` and `ruleConcurrency` work at different levels:
+
+- `workers` evaluates events from different nodes at the same time.
+- `ruleConcurrency` evaluates the rules for one event at the same time.
+
+The analyzer keeps the events from one node in order. Thus, more workers cannot process a burst of events from one node faster. A higher `ruleConcurrency` can.
+
+The rule results do not change. The analyzer publishes the matched events in rule order, as it does when it runs the queries one at a time.
+
+The analyzer runs the same queries, and each query examines the same documents. But in measurements on MongoDB, the datastore used more CPU for each event when the queries ran at the same time. 
+
+Use these guidelines:
+
+- Keep the default of `1` if the datastore CPU is near its limit. More CPU for each event can decrease throughput.
+- If the datastore has spare CPU, set `ruleConcurrency` to `4` or `8`.
+
+The analyzer can run up to `workers` × `ruleConcurrency` rule queries at the same time.
 
 ### Matched-entity metric
 
@@ -191,6 +214,7 @@ name        = "RuleName"
 description = "Human-readable description"
 recommended_action = "CONTACT_SUPPORT"   # or RUN_DCGMEUD, NONE, etc.
 evaluate_rule = true                     # Helm template expression; maps to the enable flag
+when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"   # Optional CEL; see below
 stage = [
   '{ "$match": { ... } }',              # MongoDB aggregation pipeline stages as JSON strings
   '{ "$count": "count" }',
@@ -199,6 +223,31 @@ stage = [
 ```
 
 The full default ruleset — including all aggregation pipeline stage definitions — is in the chart's `values.yaml` at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. Refer to that file when writing or reviewing custom rules.
+
+### Skip Rules That Cannot Match
+
+Each enabled rule sends one query to the datastore for each event. Most rules apply to only one XID or one check. For all other events the query cannot match, but the datastore still reads the events of the node to answer it.
+
+The optional `when` field prevents this. It is a CEL expression over the incoming event. The analyzer runs the stages of the rule only when `when` is true. When it is false, the analyzer sends no query and the rule does not match.
+
+```toml
+[[rules]]
+name = "XID74Reg0ECCParityError"
+evaluate_rule = true
+when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
+stage = [ ... ]
+```
+
+The expression can read these fields of the incoming event: `agent`, `checkName`, `componentClass`, `errorCode`, `isFatal`, `isHealthy`, `recommendedAction`, `nodeName`, `metadata`, and `message`. `errorCode` is a list and `metadata` is a map. The platform connector overrides and the event exporter filter use the same fields.
+
+**The expression must be true for every event that the stages can match.** If it is false for such an event, the analyzer misses that match. To write it safely, copy the stage of the rule that compares `this.` fields to constants. For example, the stage `{"$match": {"$expr": {"$eq": ["this.healthevent.errorcode.0", "74"]}}}` becomes the `when` in the example above. The analyzer resolves `this.healthevent.errorcode.0` to null when the event has no error code, so check `size(event.errorCode) > 0` before you read `event.errorCode[0]`.
+
+The analyzer handles `when` as follows:
+
+- If `when` is empty or not set, the analyzer runs the rule for every event.
+- If `when` does not compile or does not return a boolean, the analyzer does not start. The error names the rule.
+- If `when` fails for an event, the analyzer runs the query of the rule and logs a warning. A failure costs a query, but it does not hide a match.
+
 
 ### MultipleRemediations Rule
 
