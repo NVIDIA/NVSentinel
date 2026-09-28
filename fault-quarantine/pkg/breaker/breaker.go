@@ -192,6 +192,9 @@ const (
 	// boundFleetSize is reported when a configured bound exceeded the fleet size and was
 	// clamped to it.
 	boundFleetSize Bound = "fleetSize"
+	// boundMaxCordonedNodes is reported when the standing count of quarantined nodes, rather
+	// than the rate inside Window, is what tripped the breaker.
+	boundMaxCordonedNodes Bound = "maxCordonedNodes"
 )
 
 // tripThreshold returns the recent-cordon count that trips the breaker for the given GPU
@@ -264,15 +267,39 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	b.slideWindow(now)
 	recentCordonedNodes := b.sumBuckets()
 	threshold, bindingBound := b.tripThreshold(totalNodes)
-	shouldTrip := recentCordonedNodes >= threshold
+	// A threshold of 0 means no window bound is configured. Comparing against it with >=
+	// would trip on every evaluation with no cordons at all, so the rate check only
+	// applies when a window bound actually exists.
+	shouldTrip := bindingBound != boundNone && recentCordonedNodes >= threshold
 
 	b.mu.Unlock()
 
+	// The window bounds above limit the rate of cordoning, not the total. A rate that stays
+	// under the threshold still cordons without limit given enough windows, so this standing
+	// bound is the only one that caps how many nodes are held at once. Opt-in: zero disables.
+	cordonedNodes := -1
+
+	if b.cfg.TripMaxCordonedNodes > 0 {
+		cordonedNodes, err = b.cfg.K8sClient.GetCordonedNodes(ctx)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to get cordoned node count", "error", err)
+
+			return false, fmt.Errorf("failed to get cordoned node count: %w", err)
+		}
+
+		if cordonedNodes >= b.cfg.TripMaxCordonedNodes {
+			threshold, bindingBound = b.cfg.TripMaxCordonedNodes, boundMaxCordonedNodes
+			shouldTrip = true
+		}
+	}
+
 	slog.DebugContext(ctx, "Recent cordoned nodes status",
 		"recentCordonedNodes", recentCordonedNodes,
+		"cordonedNodes", cordonedNodes,
 		"totalNodes", totalNodes,
 		"tripPercentage", b.cfg.TripPercentage,
 		"tripMaxNodes", b.cfg.TripMaxNodes,
+		"tripMaxCordonedNodes", b.cfg.TripMaxCordonedNodes,
 		"threshold", threshold,
 		"bindingBound", bindingBound)
 

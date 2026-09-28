@@ -83,6 +83,19 @@ type testK8sClient struct {
 	clientset      kubernetes.Interface
 	informer       cache.SharedIndexInformer
 	informerSynced cache.InformerSynced
+
+	// cordonedNodes is what GetCordonedNodes reports. Production reads this from the
+	// quarantine informer index; tests set it directly to drive the standing bound.
+	cordonedNodes    int
+	cordonedNodesErr error
+}
+
+func (c *testK8sClient) GetCordonedNodes(ctx context.Context) (int, error) {
+	if c.cordonedNodesErr != nil {
+		return 0, c.cordonedNodesErr
+	}
+
+	return c.cordonedNodes, nil
 }
 
 func (c *testK8sClient) GetTotalNodes(ctx context.Context) (int, error) {
@@ -639,7 +652,7 @@ func TestValidateBounds_RejectsConfigsThatCannotLimit(t *testing.T) {
 			// Would leave threshold 0, and IsTripped compares with >=, so the breaker
 			// would trip immediately with no cordons.
 			name:    "neither bound set is rejected",
-			wantErr: "requires percentage or maxNodes",
+			wantErr: "requires percentage, maxNodes or maxCordonedNodes",
 		},
 		{
 			// NaN passes every ordinary comparison, then becomes int(NaN) == 0, which trips
@@ -699,5 +712,129 @@ func TestNewSlidingWindowBreaker_NoBoundsConfigured_ReturnsError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, b)
-	assert.Contains(t, err.Error(), "requires percentage or maxNodes")
+	assert.Contains(t, err.Error(), "requires percentage, maxNodes or maxCordonedNodes")
+}
+
+// newStandingBoundBreaker builds a breaker whose only configured limit is the standing
+// bound, with the fake reporting cordonedNodes. The window bounds are left off so these
+// tests exercise the standing bound alone.
+func newStandingBoundBreaker(
+	t *testing.T, ctx context.Context, maxCordonedNodes, cordonedNodes int, cordonedErr error,
+) (CircuitBreaker, *testK8sClient) {
+	t.Helper()
+
+	k8sClient := setupTestClient(t)
+	k8sClient.cordonedNodes = cordonedNodes
+	k8sClient.cordonedNodesErr = cordonedErr
+
+	nodeName := fmt.Sprintf("standing-node-%s", generateTestID()[:6])
+	createTestNode(ctx, t, nodeName)
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	})
+
+	require.Eventually(t, func() bool {
+		n, err := k8sClient.GetTotalNodes(ctx)
+		return err == nil && n > 0
+	}, 5*time.Second, 50*time.Millisecond, "NodeInformer should see the test node")
+
+	configMapName := "test-standing-" + generateTestID()[:8]
+
+	b, err := NewSlidingWindowBreaker(ctx, Config{
+		Window:               1 * time.Second,
+		TripMaxCordonedNodes: maxCordonedNodes,
+		K8sClient:            k8sClient,
+		ConfigMapName:        configMapName,
+		ConfigMapNamespace:   "default",
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().ConfigMaps("default").Delete(
+			context.Background(), configMapName, metav1.DeleteOptions{})
+	})
+
+	return b, k8sClient
+}
+
+func TestIsTripped_StandingBoundReached_Trips(t *testing.T) {
+	ctx := context.Background()
+	// No cordon events are added, so only the standing bound can trip this.
+	b, _ := newStandingBoundBreaker(t, ctx, 3, 3, nil)
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.True(t, tripped, "standing bound reached should trip the breaker")
+	require.Equal(t, StateTripped, b.CurrentState())
+}
+
+func TestIsTripped_StandingBoundNotReached_DoesNotTrip(t *testing.T) {
+	ctx := context.Background()
+	b, _ := newStandingBoundBreaker(t, ctx, 5, 4, nil)
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, tripped, "one below the standing bound should not trip")
+	require.Equal(t, StateClosed, b.CurrentState())
+}
+
+func TestIsTripped_StandingBoundDisabled_IgnoresCordonedCount(t *testing.T) {
+	ctx := context.Background()
+	// maxCordonedNodes is 0, so the feature is off even though many nodes are cordoned.
+	// A window bound is required for the config to be valid at all.
+	k8sClient := setupTestClient(t)
+	k8sClient.cordonedNodes = 500
+
+	nodeName := fmt.Sprintf("disabled-node-%s", generateTestID()[:6])
+	createTestNode(ctx, t, nodeName)
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	})
+
+	require.Eventually(t, func() bool {
+		n, err := k8sClient.GetTotalNodes(ctx)
+		return err == nil && n > 0
+	}, 5*time.Second, 50*time.Millisecond, "NodeInformer should see the test node")
+
+	configMapName := "test-disabled-" + generateTestID()[:8]
+
+	b, err := NewSlidingWindowBreaker(ctx, Config{
+		Window:             1 * time.Second,
+		TripMaxNodes:       1000,
+		K8sClient:          k8sClient,
+		ConfigMapName:      configMapName,
+		ConfigMapNamespace: "default",
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().ConfigMaps("default").Delete(
+			context.Background(), configMapName, metav1.DeleteOptions{})
+	})
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, tripped, "a zero standing bound must not act on the cordoned count")
+}
+
+func TestIsTripped_CordonedNodeLookupFails_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	b, _ := newStandingBoundBreaker(t, ctx, 3, 0, fmt.Errorf("informer cache not synced"))
+
+	// A failed lookup must surface rather than being read as "under the bound", which
+	// would silently disable the guard exactly when the cluster state is unknown.
+	_, err := b.IsTripped(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cordoned node count")
+}
+
+func TestValidateBounds_StandingBoundOnly_IsAccepted(t *testing.T) {
+	require.NoError(t, Config{TripMaxCordonedNodes: 5}.validateBounds(),
+		"the standing bound alone should satisfy the at-least-one-bound requirement")
+
+	err := Config{TripMaxCordonedNodes: -1}.validateBounds()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "maxCordonedNodes must not be negative")
 }
