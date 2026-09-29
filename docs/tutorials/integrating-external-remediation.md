@@ -12,7 +12,7 @@ By the end you will have:
 
 > **Just want the AI to do it?** Jump to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
 
-> **Safety:** Use a test node that has no important workloads. When NVSentinel releases a node, it stops its health monitors on that node. NVSentinel does not take the node back until the external system reports that the repair is complete.
+> **Safety:** Use a test node that has no important workloads. When NVSentinel releases a node, it stops its health monitors on that node. NVSentinel takes the node back when the external system reports that the repair is complete. NVSentinel also takes the node back when an operator deletes the ExternalRemediationRequest, or when janitor deletes it at the time limit in section 2.
 
 ---
 
@@ -58,7 +58,7 @@ To release the node, janitor makes two changes to the node in one update:
 
 | Change | Value | Effect |
 | --- | --- | --- |
-| Taint | `nvsentinel.dgxc.nvidia.com/external-remediation=<name>:NoSchedule` | Kubernetes does not schedule new pods on the node. The taint value is the name of the ExternalRemediationRequest. |
+| Taint | `nvsentinel.dgxc.nvidia.com/external-remediation=<name>:NoSchedule` | Kubernetes does not schedule new pods on the node, unless a pod tolerates the taint. The taint value is the name of the ExternalRemediationRequest. |
 | Label | `nvsentinel.dgxc.nvidia.com/managed=false` | NVSentinel stops managing the node. |
 
 The `managed=false` label has two results:
