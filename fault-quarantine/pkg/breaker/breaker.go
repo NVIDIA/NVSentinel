@@ -192,6 +192,9 @@ const (
 	// boundFleetSize is reported when a configured bound exceeded the fleet size and was
 	// clamped to it.
 	boundFleetSize Bound = "fleetSize"
+	// boundMaxCordonedNodes is reported when the standing count of quarantined nodes, rather
+	// than the rate inside Window, is what tripped the breaker.
+	boundMaxCordonedNodes Bound = "maxCordonedNodes"
 )
 
 // tripThreshold returns the recent-cordon count that trips the breaker for the given GPU
@@ -226,6 +229,25 @@ func (b *slidingWindowBreaker) tripThreshold(totalNodes int) (int, Bound) {
 	}
 
 	return threshold, bound
+}
+
+// standingBoundReached reports whether the number of nodes NVSentinel currently holds
+// quarantined has reached TripMaxCordonedNodes, and returns that count for logging.
+//
+// The window bounds limit the rate of cordoning, not the total, so a rate that stays under
+// the threshold still cordons without limit given enough windows. This bound is the only
+// one that caps how many nodes are held at once. Opt-in: zero disables it.
+func (b *slidingWindowBreaker) standingBoundReached(ctx context.Context) (int, bool, error) {
+	if b.cfg.TripMaxCordonedNodes <= 0 {
+		return -1, false, nil
+	}
+
+	cordonedNodes, err := b.cfg.K8sClient.GetCordonedNodes(ctx)
+	if err != nil {
+		return -1, false, fmt.Errorf("failed to get cordoned node count: %w", err)
+	}
+
+	return cordonedNodes, cordonedNodes >= b.cfg.TripMaxCordonedNodes, nil
 }
 
 // IsTripped checks if the circuit breaker should prevent further node cordoning.
@@ -264,15 +286,41 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	b.slideWindow(now)
 	recentCordonedNodes := b.sumBuckets()
 	threshold, bindingBound := b.tripThreshold(totalNodes)
-	shouldTrip := recentCordonedNodes >= threshold
+	// A threshold of 0 means no window bound is configured. Comparing against it with >=
+	// would trip on every evaluation with no cordons at all, so the rate check only
+	// applies when a window bound actually exists.
+	shouldTrip := bindingBound != boundNone && recentCordonedNodes >= threshold
 
 	b.mu.Unlock()
 
+	// Only consulted when the window bounds have not already tripped. The standing bound can
+	// add a reason to trip but must never remove one: a lookup failure here would otherwise
+	// return early and leave a breaker unlatched that the window bounds had already earned.
+	cordonedNodes := -1
+
+	if !shouldTrip {
+		var reached bool
+
+		cordonedNodes, reached, err = b.standingBoundReached(ctx)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to get cordoned node count", "error", err)
+
+			return false, err
+		}
+
+		if reached {
+			threshold, bindingBound = b.cfg.TripMaxCordonedNodes, boundMaxCordonedNodes
+			shouldTrip = true
+		}
+	}
+
 	slog.DebugContext(ctx, "Recent cordoned nodes status",
 		"recentCordonedNodes", recentCordonedNodes,
+		"cordonedNodes", cordonedNodes,
 		"totalNodes", totalNodes,
 		"tripPercentage", b.cfg.TripPercentage,
 		"tripMaxNodes", b.cfg.TripMaxNodes,
+		"tripMaxCordonedNodes", b.cfg.TripMaxCordonedNodes,
 		"threshold", threshold,
 		"bindingBound", bindingBound)
 
