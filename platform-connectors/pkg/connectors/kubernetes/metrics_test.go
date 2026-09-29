@@ -15,11 +15,15 @@
 package kubernetes
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // gatherFamily returns the named metric family from the default registry, or nil when
@@ -77,27 +81,66 @@ func TestInitMetrics_BeforeAnyEvent_CountersArePresentAtZero(t *testing.T) {
 
 // The reasons initMetrics pre-creates must be exactly what writeDropReason can return.
 // Without this, adding a branch there silently leaves that series uninitialised again.
+//
+// The inputs below are built independently of dropReasons and drive the real selector,
+// so a branch returning something the slice does not contain fails here. Comparing the
+// gathered labels against dropReasons alone would be circular, because initMetrics
+// creates those labels from that same slice.
 func TestWriteDropReason_EveryReturnValue_IsPreInitialised(t *testing.T) {
 	resetAndInit()
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cases := []struct {
+		name   string
+		parent context.Context
+		err    error
+	}{
+		{"parent cancelled", cancelled, errors.New("write failed")},
+		{"error is context.Canceled", context.Background(), context.Canceled},
+		{"deadline exceeded", context.Background(), context.DeadlineExceeded},
+		{"conflict is retryable", context.Background(), apierrors.NewConflict(
+			schema.GroupResource{Resource: "nodes"}, "node-1", errors.New("conflict"))},
+		{"unclassified", context.Background(), errors.New("boom")},
+	}
+
+	gathered := gatheredReasons(t)
+	returned := make(map[string]bool, len(cases))
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := writeDropReason(tc.parent, tc.err)
+			returned[reason] = true
+			require.Truef(t, gathered[reason],
+				"writeDropReason returned %q, which has no pre-initialised series", reason)
+		})
+	}
+
+	// Guards the other direction: a pre-initialised reason the selector can never
+	// return would publish a series that stays at zero forever.
+	require.Len(t, gathered, len(returned),
+		"pre-initialised reasons that no writeDropReason branch returns: gathered=%v returned=%v",
+		gathered, returned)
+}
+
+func gatheredReasons(t *testing.T) map[string]bool {
+	t.Helper()
 
 	family := gatherFamily(t, "k8s_platform_connector_dropped_batches_total")
 	require.NotNil(t, family)
 
-	got := make(map[string]bool, len(family.GetMetric()))
+	reasons := make(map[string]bool, len(family.GetMetric()))
 
 	for _, m := range family.GetMetric() {
 		for _, l := range m.GetLabel() {
 			if l.GetName() == "reason" {
-				got[l.GetValue()] = true
+				reasons[l.GetValue()] = true
 			}
 		}
 	}
 
-	for _, reason := range dropReasons {
-		require.Truef(t, got[reason], "reason %q is returned by writeDropReason but not pre-initialised", reason)
-	}
-
-	require.Len(t, got, len(dropReasons), "pre-initialised reasons that writeDropReason never returns")
+	return reasons
 }
 
 // Control for the test above: a CounterVec really does export nothing until it has a
