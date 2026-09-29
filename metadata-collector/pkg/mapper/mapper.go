@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -90,7 +91,17 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		return nil, fmt.Errorf("got an error creating Kubelet HTTPS client: %w", err)
 	}
 
-	grpcClient, err := NewKubeletGRPClient(ctx)
+	node, err := nodeName()
+	if err != nil {
+		return nil, fmt.Errorf("determine node name: %w", err)
+	}
+
+	draResolver, err := newDRADeviceResolver(ctx, k8sClient, node)
+	if err != nil {
+		return nil, fmt.Errorf("create DRA device resolver: %w", err)
+	}
+
+	grpcClient, err := NewKubeletGRPClient(ctx, draResolver)
 	if err != nil {
 		return nil, fmt.Errorf("got an error creating Kubelet gRPC client: %w", err)
 	}
@@ -101,6 +112,16 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		kubeletGRPCClient:  grpcClient,
 		kubernetesClient:   k8sClient,
 	}, nil
+}
+
+// nodeName prefers the downward-API NODE_NAME the chart sets and falls back to the hostname, which is the node's
+// on this host-network DaemonSet and in host-native runs.
+func nodeName() (string, error) {
+	if name := os.Getenv("NODE_NAME"); name != "" {
+		return name, nil
+	}
+
+	return os.Hostname()
 }
 
 // loadRESTConfig uses only the explicit file, or in-cluster credentials when path is empty.
@@ -162,7 +183,7 @@ func hasClientCredentials(config *rest.Config) bool {
 /*
 This function will add a devices annotation to all pods running on the given node which have been allocated a GPU
 device. The annotation is named dgxc.nvidia.com/devices with keys as the device resource name, either nvidia.com/gpu or
-nvidia.com/pgpu, and values a list of GPU UUIDs for the corresponding devices.
+nvidia.com/pgpu, or the DRA driver name gpu.nvidia.com, and values a list of GPU UUIDs for the corresponding devices.
 
 Example annotation:
 

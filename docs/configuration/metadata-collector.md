@@ -135,7 +135,7 @@ Explicit configurations must use HTTPS, verify server certificates, and provide 
 
 Provision credentials at node runtime. Keep kubeconfig and credential files accessible only to the service account or root. Kubeconfigs are trusted input: client-go can execute a configured credential plugin.
 
-- The Kubernetes API identity needs `patch` on pods in each workload namespace.
+- The Kubernetes API identity needs `patch` on pods in each workload namespace, and `list` and `watch` on `resourceslices` in `resource.k8s.io` to map DRA GPU allocations. Set `NODE_NAME` so the collector watches only this node's slices; it falls back to the hostname.
 - The kubelet identity needs permission to read `/pods`. With fine-grained kubelet authorization, use `get` on `nodes/pods`. Other configurations require `get` on `nodes/proxy`, which grants broader access.
 - The process needs access to `/var/lib/kubelet/pod-resources/kubelet.sock`, NVIDIA devices and libraries, and its output directory.
 

@@ -36,7 +36,7 @@ The JSON file persists on the node and is read by health monitors via a shared v
 GPU-to-pod mapping annotation:
 
 1. To discover all pods running on the given node, this component will call the Kubelet /pods HTTPS endpoint.
-2. To discover the GPU devices allocated to each pod, this component will leverage the Kubelet PodResourcesLister gRPC service.
+2. To discover the GPU devices allocated to each pod, this component will leverage the Kubelet PodResourcesLister gRPC service. Device-plugin allocations (`nvidia.com/gpu`, `nvidia.com/pgpu`) already carry GPU UUIDs. DRA allocations (GPU Operator GPUCluster mode, driver `gpu.nvidia.com`) arrive as pool and device names such as `gpu-0`, which are resolved to UUIDs through the node's `ResourceSlice` objects and written under the `gpu.nvidia.com` key. The kubelet reports DRA allocations only with the `KubeletPodResourcesDynamicResources` feature gate, on by default since Kubernetes 1.34.
 3. If any pod has a change in its GPU device allocation, we will update the tracking annotation on the pod object.
 4. The Metadata Collector will run this logic in a loop on a fixed threshold to continually update the mapping for new and existing pods.
 
