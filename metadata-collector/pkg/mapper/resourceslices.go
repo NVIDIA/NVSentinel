@@ -79,9 +79,6 @@ func newDRADeviceResolver(ctx context.Context, client kubernetes.Interface,
 	return storeResolver(informer.GetStore()), nil
 }
 
-// storeResolver scans the cached slices on each call.
-// ponytail: a node carries a few slices with at most a few dozen devices, so one scan per 30s poll beats
-// maintaining an index; add a (pool, device) index if slices ever grow past that.
 func storeResolver(store cache.Store) draDeviceResolver {
 	return func(poolName, deviceName string) (string, bool) {
 		for _, obj := range store.List() {
