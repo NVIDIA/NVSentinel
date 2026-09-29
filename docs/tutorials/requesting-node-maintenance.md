@@ -203,7 +203,9 @@ EOF
 | `message` | No | A description that operators see. |
 | `spec.startTime` | No | When the maintenance starts. The time must be in the future. |
 
-This MaintenanceRequest uses `recommendedAction: NONE`. NVSentinel cordons and drains the node, and then does no other work. To make NVSentinel do more work after the drain, change `recommendedAction`:
+This MaintenanceRequest uses `recommendedAction: NONE`. NVSentinel cordons and drains the node, and then does no other work. To make NVSentinel do more work after the drain, change `recommendedAction`.
+
+fault-remediation selects the work after the drain. Its configuration maps each `recommendedAction` to a maintenance resource. The table shows the result with the default fault-remediation configuration. If you changed `maintenance.actions` in the fault-remediation Helm values, the result can be different.
 
 | `recommendedAction` | What NVSentinel does after the drain |
 | --- | --- |

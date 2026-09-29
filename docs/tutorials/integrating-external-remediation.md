@@ -68,8 +68,6 @@ The `managed=false` label has two results:
 
 To take the node back, janitor removes the taint and the label.
 
-A health event starts the handover when it sets `recommendedAction: CUSTOM` and `customRecommendedAction: external-remediation`. Section 3 shows how to register this action.
-
 NVSentinel never contacts the external system. The external system watches the cluster for new ExternalRemediationRequests. When the repair is complete, the external system writes the result on the same ExternalRemediationRequest.
 
 For the design rationale and limitations, see [ADR-040](../designs/040-external-remediation-request.md).
@@ -382,7 +380,7 @@ The external system can be a Kubernetes controller, a script, or an operator who
 1. **Start work only after the release.** Watch ExternalRemediationRequests. Start a repair only when `NVSentinelOwnershipReleased` is `True`.
 2. **Do each repair one time.** A restart of the controller can run the same step again before the controller writes the result. Use the name of the ExternalRemediationRequest as a durable key for an action that must run only once, such as a support ticket.
 3. **Write the result only at the end.** Set `ExternalRemediationComplete=True` only when the repair is complete. Set `False` only when the external system stops work on the node.
-4. **Keep janitor's condition.** Read the ExternalRemediationRequest, replace or add only the `ExternalRemediationComplete` entry, and then update the status.
+4. **Change only the `ExternalRemediationComplete` condition.** NVSentinel owns all other fields in the ExternalRemediationRequest. A status update replaces the full `conditions` list. Read the ExternalRemediationRequest first, replace or add only the `ExternalRemediationComplete` entry, and then update the status.
 5. **Ignore closed requests.** When `status.completionTime` is set, janitor already took the node back. Take no action on the node.
 6. **Stop when someone deletes the request.** When `metadata.deletionTimestamp` is set, janitor returns the node to NVSentinel before Kubernetes removes the object. Stop all work on the node when this field appears.
 
