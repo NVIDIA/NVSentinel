@@ -35,6 +35,8 @@ import (
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 )
 
+const recoveryRequestResyncPeriod = time.Minute
+
 type nodeRecoveryController struct {
 	client    kubernetes.Interface
 	informer  cache.SharedIndexInformer
@@ -46,9 +48,9 @@ type nodeRecoveryController struct {
 }
 
 func newNodeRecoveryController(kube kubernetes.Interface, rules *config.TomlConfig,
-	reconcile func(context.Context, string) error,
+	reconcile func(context.Context, string) error, resyncPeriod time.Duration,
 ) (*nodeRecoveryController, error) {
-	informer := coreinformers.NewNodeInformer(kube, 0, cache.Indexers{})
+	informer := coreinformers.NewNodeInformer(kube, resyncPeriod, cache.Indexers{})
 	c := &nodeRecoveryController{
 		client: kube, informer: informer, nodes: corelisters.NewNodeLister(informer.GetIndexer()),
 		ready: make(chan struct{}), keys: make(map[string]bool), reconcile: reconcile,
@@ -105,9 +107,12 @@ func (c *nodeRecoveryController) enqueueChanged(oldObj, newObj any) {
 	}
 
 	previous, _ := oldObj.(*corev1.Node)
+	// A resync replays cached Nodes without another API list. Retained requests
+	// must be retried when an older fault reaches storage after an earlier scan.
+	resync := previous != nil && previous.ResourceVersion == node.ResourceVersion
 	for key := range c.keys {
 		changed := previous == nil || previous.UID != node.UID || previous.Annotations[key] != node.Annotations[key]
-		if node.Annotations[key] != "" && changed {
+		if node.Annotations[key] != "" && (changed || resync) {
 			c.queue.Add(node.Name)
 			return
 		}

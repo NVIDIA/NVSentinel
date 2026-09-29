@@ -157,7 +157,13 @@ func newRecoveryReconciler(db *recoveryTestDB, sink *recoveryTestSink, opts ...h
 
 func startRecoveryController(t *testing.T, kube kubernetes.Interface, r *Reconciler) func() {
 	t.Helper()
-	controller, err := newNodeRecoveryController(kube, r.config.HealthEventsAnalyzerRules, r.reconcileNodeRecovery)
+	return startRecoveryControllerWithResync(t, kube, r, recoveryRequestResyncPeriod)
+}
+
+func startRecoveryControllerWithResync(t *testing.T, kube kubernetes.Interface, r *Reconciler,
+	resyncPeriod time.Duration) func() {
+	t.Helper()
+	controller, err := newNodeRecoveryController(kube, r.config.HealthEventsAnalyzerRules, r.reconcileNodeRecovery, resyncPeriod)
 	require.NoError(t, err)
 	r.nodeRecovery = controller
 	ctx, cancel := context.WithCancel(t.Context())

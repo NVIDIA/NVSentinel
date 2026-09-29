@@ -44,7 +44,11 @@ type UserNamespace struct {
 }
 
 type CustomDrainConfig struct {
-	Enabled               bool     `toml:"enabled"`
+	Enabled bool `toml:"enabled"`
+	// NodeSelector restricts custom drain to the nodes it matches, using standard
+	// label selector syntax. Nodes that do not match keep the built-in eviction path.
+	// An empty selector sends every node through custom drain.
+	NodeSelector          string   `toml:"nodeSelector"`
 	TemplateMountPath     string   `toml:"templateMountPath"`
 	TemplateFileName      string   `toml:"templateFileName"`
 	Namespace             string   `toml:"namespace"`
@@ -109,6 +113,37 @@ func LoadTomlConfigFromString(configString string) (*TomlConfig, error) {
 	return validateAndSetDefaults(&config)
 }
 
+// validateCustomDrainScope makes sure exactly one drain path owns every node.
+//
+// Without a node selector custom drain owns them all, so the built-in eviction rules would
+// never run and configuring them is a mistake. With a selector the unmatched nodes fall back
+// to those rules, and leaving both of them empty is worse than a misconfiguration: the
+// evaluator finds no namespace and no policy to act on, so it marks the node drained and
+// reports "All pods evicted successfully" without having evicted anything.
+func validateCustomDrainScope(config *TomlConfig, scoped bool) error {
+	if scoped {
+		if len(config.UserNamespaces) == 0 && len(config.PodDrainPolicies) == 0 {
+			return fmt.Errorf("customDrain.nodeSelector requires userNamespaces or podDrainPolicies " +
+				"to be configured: nodes outside the selector take the built-in eviction path and " +
+				"would be marked drained without evicting any pod")
+		}
+
+		return nil
+	}
+
+	if len(config.UserNamespaces) > 0 {
+		return fmt.Errorf("cannot use both customDrain.enabled=true and userNamespaces configuration " +
+			"unless customDrain.nodeSelector is set")
+	}
+
+	if len(config.PodDrainPolicies) > 0 {
+		return fmt.Errorf("cannot use both customDrain.enabled=true and podDrainPolicies configuration " +
+			"unless customDrain.nodeSelector is set")
+	}
+
+	return nil
+}
+
 // validateCustomDrainConfig checks required custom-drain fields, rejects conflicting
 // drain policies, and supplies the default timeout when custom draining is enabled.
 func validateCustomDrainConfig(config *TomlConfig) error {
@@ -116,12 +151,13 @@ func validateCustomDrainConfig(config *TomlConfig) error {
 		return nil
 	}
 
-	if len(config.UserNamespaces) > 0 {
-		return fmt.Errorf("cannot use both customDrain.enabled=true and userNamespaces configuration")
+	matcher, err := CompileCustomDrainNodeSelector(config.CustomDrain)
+	if err != nil {
+		return err
 	}
 
-	if len(config.PodDrainPolicies) > 0 {
-		return fmt.Errorf("cannot use both customDrain.enabled=true and podDrainPolicies configuration")
+	if err := validateCustomDrainScope(config, matcher.IsScoped()); err != nil {
+		return err
 	}
 
 	requiredFields := map[string]string{

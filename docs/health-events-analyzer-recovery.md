@@ -42,7 +42,7 @@ For one GPU, supply JSON with the actual GPU identity and your verification time
 kubectl annotate node worker-1 recovery.nvsentinel.nvidia.com/repeated-xid='{"recoveredAt":"2026-09-27T14:30:00Z","entities":[{"entityType":"GPU_UUID","entityValue":"GPU-123"}]}' --overwrite
 ```
 
-Replace the example date with your recorded verification time. The JSON selector must contain exactly one value for each configured entity type. A timestamp-only request clears every eligible active identity for this rule; use it only when your verification covered all of them. A request with no eligible active fault does not create a healthy event or a history boundary.
+Replace the example date with your recorded verification time. The JSON selector must contain exactly one value for each configured entity type. A timestamp-only request clears every eligible active identity for this rule; use it only when your verification covered all of them. A request with no eligible persisted fault does not create a healthy event or a history boundary. It stays on the Node and is checked again, so an older fault that reaches storage later can still be recovered without editing the annotation.
 
 ## Check the result
 
@@ -56,13 +56,13 @@ kubectl describe node worker-1
 | Event reason | Meaning |
 |---|---|
 | `RecoveryCompleted` | Matching healthy derived events were stored, including a replay of an already completed request. |
-| `RecoverySkipped` | No active fault was eligible for this request's identity and verification time. |
+| `RecoverySkipped` | No persisted fault was eligible on this attempt; the retained request will be checked again. |
 | `RecoveryInvalid` | Fix the annotation format, timestamp, or entity selector. |
 | `RecoveryFailed` | Read analyzer logs for the store or publication error; the request remains visible. |
 
 Storage confirmation is followed by normal downstream reconciliation. Check that the rule's Node condition becomes `False` and that quarantine is released. Another active fault can legitimately keep the node cordoned. Rules using `STORE_ONLY` or `STORE_AND_ANALYSE` do not request downstream remediation or condition updates.
 
-The analyzer retains the annotation after processing. For a later repair, verify again and replace it with the new time. An old retained timestamp cannot clear a newer derived fault. To remove the operator's request manually:
+The analyzer retains the annotation after processing and rechecks retained requests from its Node cache once a minute. This also covers additional eligible identities whose faults arrive after an earlier recovery completes. Retries add a store query per configured recovery rule on an annotated node; queueing and transient failures can delay an attempt. For a later repair, verify again and replace it with the new time. An old retained timestamp cannot clear a newer derived fault. Removing the annotation stops these retries, so wait until outstanding fault events have reached storage and recovery is complete. To remove the operator's request manually:
 
 ```sh
 kubectl annotate node worker-1 recovery.nvsentinel.nvidia.com/repeated-xid-

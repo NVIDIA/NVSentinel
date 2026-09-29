@@ -53,7 +53,7 @@ func (r *Reconciler) runProcessors(ctx context.Context) error {
 	}
 
 	controller, err := newNodeRecoveryController(kube, r.config.HealthEventsAnalyzerRules,
-		r.reconcileNodeRecovery)
+		r.reconcileNodeRecovery, recoveryRequestResyncPeriod)
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,8 @@ func (r *Reconciler) processRuleAnnotation(ctx context.Context, node *corev1.Nod
 	}
 
 	return r.nodeRecovery.report(ctx, node, key, value, reason,
-		fmt.Sprintf("Rule %s: %d recovered identities stored for verification time %s. Annotation retained.",
+		fmt.Sprintf("Rule %s: %d recovered identities stored for verification time %s. "+
+			"Annotation retained and periodically rechecked.",
 			rule.Name, recovered, request.HealthEvent.Metadata[annotationVerifiedAtKey]), false)
 }
 

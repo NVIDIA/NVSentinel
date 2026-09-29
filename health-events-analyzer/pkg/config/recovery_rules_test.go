@@ -20,6 +20,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func TestLoadTomlConfig_ExistingUnknownKeysAndInvalidStages_StillLoads(t *testing.T) {
@@ -64,4 +66,26 @@ func TestRecoveryMapping_Validation_RejectsUnsafeContracts(t *testing.T) {
 	mapping := &RecoveryMapping{AnnotationKey: "nvsentinel.nvidia.com/recover-xid", Scope: RecoveryScopeNode}
 	cfg := &TomlConfig{Rules: []HealthEventsAnalyzerRule{{Name: "one", Recovery: mapping}, {Name: "two", Recovery: mapping}}}
 	require.ErrorContains(t, cfg.Validate(), "share")
+}
+
+// Loading recovery mappings must preserve the CEL gate introduced on main.
+func TestLoadTomlConfig_RecoveryPreservesWhenGate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+[[rules]]
+name = "recovery-with-gate"
+evaluate_rule = true
+when = "event.isFatal == true"
+[rules.recovery]
+annotation_key = "nvsentinel.nvidia.com/recover-xid"
+scope = "node"
+`), 0600))
+	cfg, err := LoadTomlConfig(path)
+	require.NoError(t, err)
+	require.True(t, cfg.HasAnnotationRecovery())
+	for _, fatal := range []bool{false, true} {
+		applies, err := cfg.Rules[0].Applies(&protos.HealthEvent{IsFatal: fatal})
+		require.NoError(t, err)
+		require.Equal(t, fatal, applies)
+	}
 }

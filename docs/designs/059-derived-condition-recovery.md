@@ -25,7 +25,7 @@ scope = "entity"
 entity_types = ["GPU_UUID"]
 ```
 
-The chart's `health-events-analyzer.nodeRecovery.enabled: true` grants the analyzer `get`, `list`, and `watch` on Nodes, plus `create` on Events in the `default` namespace. It never patches Nodes. Node Events use `default` because their object reference is cluster-scoped. The informer performs an initial list and watches annotation changes; it has a five-minute startup sync deadline, with no global HTTP timeout closing watches. Individual Event writes have a 30-second deadline.
+The chart's `health-events-analyzer.nodeRecovery.enabled: true` grants the analyzer `get`, `list`, and `watch` on Nodes, plus `create` on Events in the `default` namespace. It never patches Nodes. Node Events use `default` because their object reference is cluster-scoped. The informer performs an initial list, watches annotation changes, and resyncs its in-memory cache once a minute to requeue retained requests without polling the Kubernetes API; it has a five-minute startup sync deadline, with no global HTTP timeout closing watches. Individual Event writes have a 30-second deadline.
 
 The annotation value is either an RFC3339 verification timestamp or JSON containing `recoveredAt` and `entities`. After verifying the whole node, an operator can request recovery for every active identity belonging to this rule:
 
@@ -44,11 +44,13 @@ The operator supplies the time when verification finished, not the time the anal
 
 The annotation controller and source-event processing serialize work per node. Recovery runs on its own retry queue. It reads the latest derived state for each identity and publishes healthy events only for eligible active faults, preserving their agent/check identity, component class, version, and configured entities. Recovery events are nonfatal, use action `NONE`, and follow the rule's processing strategy. Normal fault publication follows the existing path without a database acknowledgment poll.
 
+If an annotation arrives before a fault is persisted, the first scan can find nothing. It must not consume the request or create a history boundary. Periodic cache resync retries the retained annotation so that an eligible older fault is recovered when it reaches storage, including a fault for another identity arriving after partial completion. Newer faults remain ineligible under the same verification timestamp.
+
 Direct-mode publication already acknowledges durable storage. Socket-mode recovery checks storage after queue acceptance before reporting success. Each reconciliation is bounded to two minutes. A permanent `ErrPublishRejected` ends the attempt immediately; that request is suppressed until its value changes or the analyzer restarts. Transient store or publication errors retry with backoff. A malformed stored record fails the request and produces a Warning Event. None of these paths changes the source processor's checkpoint-and-continue policy.
 
 Published recovery metadata records the Node UID, annotation key, request digest, and verification time. Subsequent rule queries read this persisted boundary and exclude events generated or stored at or before verification. This survives analyzer restarts and prevents old history from re-firing a recovered condition. A recreated Node has a different UID and does not inherit the old boundary. The event store's normal retention policy also applies to recovery records; deployments must retain them at least as long as rule history can be queried.
 
-The request annotation is retained after success or failure. The operator may replace it after verifying a later repair or remove it manually; removing it does not erase the persisted recovery boundary. `RecoveryCompleted` means the healthy event was stored. Platform-connectors and fault-quarantine subsequently clear conditions and release quarantine through their normal processing; unrelated active faults can keep the node cordoned. `RecoverySkipped` means there was no eligible active fault, `RecoveryInvalid` describes an invalid request, and `RecoveryFailed` points to the analyzer logs. Kubernetes Events expire normally and are not a permanent audit ledger.
+The request annotation is retained after success or failure. The operator may replace it after verifying a later repair or remove it manually once in-flight fault events have reached storage and recovery is complete; removing it does not erase the persisted recovery boundary. `RecoveryCompleted` means the healthy event was stored. Platform-connectors and fault-quarantine subsequently clear conditions and release quarantine through their normal processing; unrelated active faults can keep the node cordoned. `RecoverySkipped` means there was no eligible persisted fault on that attempt and the retained request will be rechecked, `RecoveryInvalid` describes an invalid request, and `RecoveryFailed` points to the analyzer logs. Kubernetes Events expire normally and are not a permanent audit ledger.
 
 ## Rationale
 
@@ -68,7 +70,7 @@ The request annotation is retained after success or failure. The operator may re
 ### Negative
 
 - Operators remain responsible for deciding whether repair is verified.
-- Socket mode needs a bounded storage check, and enabled rules add queries for recovery history.
+- Socket mode needs a bounded storage check, and enabled rules add queries for recovery history. Retained annotations also require periodic store queries until the operator removes them.
 - Annotation recovery is not supported with PostgreSQL in this version.
 
 ### Mitigations
