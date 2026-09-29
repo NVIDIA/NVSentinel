@@ -34,6 +34,11 @@ const (
 // K8sClientOperations defines the minimal interface needed by the circuit breaker
 type K8sClientOperations interface {
 	GetTotalNodes(ctx context.Context) (int, error)
+	// GetCordonedNodes returns how many nodes NVSentinel currently holds quarantined.
+	// Only nodes quarantined by NVSentinel are counted: other controllers cordon nodes
+	// too, for example GPU operator upgrade flows, and those must not consume this
+	// breaker's budget.
+	GetCordonedNodes(ctx context.Context) (int, error)
 	EnsureCircuitBreakerConfigMap(ctx context.Context, name, namespace string, initialStatus State) error
 	ReadCircuitBreakerState(ctx context.Context, name, namespace string) (State, error)
 	WriteCircuitBreakerState(ctx context.Context, name, namespace string, status State) error
@@ -91,6 +96,16 @@ type Config struct {
 	// grows cannot silently raise the effective limit.
 	TripMaxNodes int
 
+	// TripMaxCordonedNodes is a standing bound: the breaker trips when this many nodes
+	// are quarantined by NVSentinel at once, regardless of when they were cordoned.
+	// Zero disables it, and it is off by default.
+	//
+	// The two bounds above count cordon events inside Window, so neither limits how many
+	// nodes end up cordoned in total: a rate that stays under the threshold can cordon a
+	// whole fleet over enough windows. This bound is a level rather than a rate and is
+	// the only one that caps that.
+	TripMaxCordonedNodes int
+
 	// K8sClient provides operations for node counts and ConfigMap state persistence
 	K8sClient K8sClientOperations
 
@@ -136,8 +151,13 @@ func (c Config) validateBounds() error {
 		return fmt.Errorf("circuit breaker maxNodes must not be negative, got %d", c.TripMaxNodes)
 	}
 
-	if c.TripPercentage == 0 && c.TripMaxNodes == 0 {
-		return errors.New("circuit breaker requires percentage or maxNodes to be set to a positive value")
+	if c.TripMaxCordonedNodes < 0 {
+		return fmt.Errorf("circuit breaker maxCordonedNodes must not be negative, got %d", c.TripMaxCordonedNodes)
+	}
+
+	if c.TripPercentage == 0 && c.TripMaxNodes == 0 && c.TripMaxCordonedNodes == 0 {
+		return errors.New(
+			"circuit breaker requires percentage, maxNodes or maxCordonedNodes to be set to a positive value")
 	}
 
 	return nil
