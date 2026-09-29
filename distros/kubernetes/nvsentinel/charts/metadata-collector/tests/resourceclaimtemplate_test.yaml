@@ -18,17 +18,14 @@ templates:
 set:
   global.metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 tests:
-  - it: must render nothing in clusterpolicy mode
+  - it: must render nothing by default
     asserts:
       - hasDocuments:
           count: 0
 
-  - it: must render an admin-access claim on all gpu.nvidia.com devices in gpucluster mode
-    capabilities:
-      apiVersions:
-        - resource.k8s.io/v1
+  - it: must render an admin-access claim on all gpu.nvidia.com devices in GPUCluster mode
     set:
-      global.gpuOperator.mode: gpucluster
+      global.gpuDraEnabled: true
     asserts:
       - hasDocuments:
           count: 1
@@ -43,10 +40,3 @@ tests:
             deviceClassName: gpu.nvidia.com
             allocationMode: All
             adminAccess: true
-
-  - it: must fail in gpucluster mode without the resource.k8s.io/v1 API
-    set:
-      global.gpuOperator.mode: gpucluster
-    asserts:
-      - failedTemplate:
-          errorPattern: needs the resource.k8s.io/v1 API

@@ -174,11 +174,10 @@ global:
   # For production, typically enable all modules except healthEventsAnalyzer.
   ################################################################################
   
-  # GPU Operator installation mode. Supported values: clusterpolicy, gpucluster.
-  # In gpucluster mode metadata-collector holds a DRA admin-access GPU claim
-  # instead of using the nvidia RuntimeClass.
-  gpuOperator:
-    mode: clusterpolicy
+  # Set true when GPUs are managed through DRA (GPU Operator GPUCluster mode).
+  # metadata-collector then holds a DRA admin-access GPU claim instead of using
+  # the nvidia RuntimeClass.
+  gpuDraEnabled: false
 
   # GPU Health Monitor - monitors GPU hardware health via DCGM
   # Detects: XID errors, thermal issues, ECC errors, memory errors, NVLink failures

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- $gpuCluster := eq (include "metadata-collector.gpuOperatorMode" .) "gpucluster" }}
+{{- $gpuCluster := include "metadata-collector.gpuDraEnabled" . }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:

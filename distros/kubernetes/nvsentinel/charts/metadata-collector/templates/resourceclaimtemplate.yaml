@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if eq (include "metadata-collector.gpuOperatorMode" .) "gpucluster" }}
-{{- if not (.Capabilities.APIVersions.Has "resource.k8s.io/v1") }}
-{{- fail "global.gpuOperator.mode=gpucluster needs the resource.k8s.io/v1 API (Kubernetes 1.34+); when rendering offline pass --api-versions resource.k8s.io/v1" }}
-{{- end }}
+{{- if include "metadata-collector.gpuDraEnabled" . }}
 {{- /* The API server rejects this template unless the namespace is labelled. lookup is empty under helm template and in unit tests, so this only fires against a live cluster. */}}
 {{- with lookup "v1" "Namespace" "" .Release.Namespace }}
 {{- if ne (index .metadata.labels "resource.kubernetes.io/admin-access" | default "") "true" }}
-{{- fail (printf "global.gpuOperator.mode=gpucluster needs namespace %q labelled resource.kubernetes.io/admin-access=true before install or upgrade, or the API server rejects the admin-access GPU claim template: kubectl label namespace %s resource.kubernetes.io/admin-access=true" .metadata.name .metadata.name) }}
+{{- fail (printf "global.gpuDraEnabled=true needs namespace %q labelled resource.kubernetes.io/admin-access=true before install or upgrade, or the API server rejects the admin-access GPU claim template: kubectl label namespace %s resource.kubernetes.io/admin-access=true" .metadata.name .metadata.name) }}
 {{- end }}
 {{- end }}
 # Admin-access claim on every GPU of the node, the same pattern GPU Operator uses

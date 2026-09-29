@@ -54,15 +54,14 @@ Runtime class name that provides GPU device access. Required for NVML to query G
 
 ## GPUCluster (DRA) mode
 
-GPU Operator 26.7's `GPUCluster` mode deploys no Container Toolkit and no `nvidia` RuntimeClass, so the default `runtimeClassName: nvidia` fails admission. Select the mode when the GPU Operator is installed in GPUCluster mode:
+If the GPU Operator is installed in `GPUCluster` (DRA) mode, there is no Container Toolkit and no `nvidia` RuntimeClass, so the default `runtimeClassName: nvidia` fails admission. Enable GPUCluster mode:
 
 ```yaml
 global:
-  gpuOperator:
-    mode: gpucluster   # clusterpolicy (default) | gpucluster
+  gpuDraEnabled: true   # default false
 ```
 
-In `gpucluster` mode the DaemonSet drops `runtimeClassName` and holds a DRA admin-access claim on the node's GPUs instead, the same way GPU Operator runs its own DCGM DaemonSet; the DRA driver injects the driver libraries via CDI, and admin access does not consume the GPUs.
+With it enabled the DaemonSet drops `runtimeClassName` and holds a DRA admin-access claim on the node's GPUs instead, the same way GPU Operator runs its own DCGM DaemonSet; the DRA driver injects the driver libraries via CDI, and admin access does not consume the GPUs.
 
 Label the NVSentinel namespace once, before the install or upgrade that switches to GPUCluster mode. Kubernetes accepts admin-access claims only from a labelled namespace and rejects the chart's `ResourceClaimTemplate` otherwise, which fails the Helm release; the chart checks the label first and prints this command if it is missing:
 
@@ -70,23 +69,13 @@ Label the NVSentinel namespace once, before the install or upgrade that switches
 kubectl label namespace nvsentinel resource.kubernetes.io/admin-access=true
 ```
 
-With ArgoCD, set it where the namespace is created so it follows the mode switch:
-
-```yaml
-syncPolicy:
-  syncOptions: [CreateNamespace=true]
-  managedNamespaceMetadata:
-    labels:
-      resource.kubernetes.io/admin-access: "true"
-```
-
 Switching modes in order:
 
 1. Label the namespace (once).
 2. Switch the GPU Operator to `GPUCluster` mode.
-3. `helm upgrade` with `global.gpuOperator.mode: gpucluster`.
+3. `helm upgrade` with `global.gpuDraEnabled: true`.
 
-Switching back needs only steps 2 and 3 with `clusterpolicy`; the label stays. `clusterpolicy` mode renders exactly as before.
+Switching back needs only steps 2 and 3 with `false`; the label stays. With the default `false` the chart renders exactly as before.
 
 ## Host-path driver access (NRI-mode clusters)
 

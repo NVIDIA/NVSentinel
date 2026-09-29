@@ -86,12 +86,9 @@ tests:
             name: LD_LIBRARY_PATH
             value: /usr/local/nvidia/lib
 
-  - it: must hold a DRA admin-access claim and omit runtimeClassName in gpucluster mode
-    capabilities:
-      apiVersions:
-        - resource.k8s.io/v1
+  - it: must hold a DRA admin-access claim and omit runtimeClassName in GPUCluster mode
     set:
-      global.gpuOperator.mode: gpucluster
+      global.gpuDraEnabled: true
     asserts:
       - notExists:
           path: spec.template.spec.runtimeClassName
@@ -108,9 +105,9 @@ tests:
           path: spec.template.spec.volumes
           count: 3
 
-  - it: must fail on an unknown global.gpuOperator.mode
+  - it: must fail on a quoted global.gpuDraEnabled
     set:
-      global.gpuOperator.mode: dra
+      global.gpuDraEnabled: "false"
     asserts:
       - failedTemplate:
-          errorPattern: global.gpuOperator.mode must be clusterpolicy or gpucluster
+          errorPattern: global.gpuDraEnabled must be a boolean
