@@ -35,6 +35,31 @@ const (
 	OperationUpdate = "update"
 )
 
+// Write kinds for the dropped-write metrics. These name what the write targets,
+// unlike OperationCreate/OperationUpdate above, which name the API verb.
+const (
+	WriteNodeCondition = "node_condition"
+	WriteNodeEvent     = "node_event"
+)
+
+// Terminal reasons a Kubernetes write is discarded. writeDropReason returns exactly
+// one of these, and initMetrics below pre-creates a series for each, so the two must
+// stay in step.
+const (
+	DropReasonShutdown       = "shutdown"
+	DropReasonRetryTimeout   = "retry_timeout"
+	DropReasonRetryExhausted = "retry_exhausted"
+	DropReasonPermanentError = "permanent_error"
+)
+
+// dropReasons is every value writeDropReason can return.
+var dropReasons = []string{
+	DropReasonShutdown,
+	DropReasonRetryTimeout,
+	DropReasonRetryExhausted,
+	DropReasonPermanentError,
+}
+
 // prometheus metrics
 var (
 	droppedWritesCounter = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -75,3 +100,47 @@ var (
 		Buckets: prometheus.ExponentialBuckets(10, 2, 12),
 	})
 )
+
+func init() {
+	initMetrics()
+}
+
+// initMetrics creates every label combination these counters can report, at zero.
+//
+// A CounterVec with no children exports nothing at all: no series, no # HELP, no # TYPE.
+// That makes an empty query ambiguous, because "nothing was dropped" and "the component
+// is not running, not scraped, or was renamed" look identical, and it means an alert has
+// no series to evaluate a rate() against until the first occurrence has already happened,
+// which is the event the alert exists to catch.
+//
+// Every label value here is a compile-time constant, so this is 16 + 4 + 3 + 5 series and
+// cannot grow with the fleet.
+func initMetrics() {
+	for _, operation := range []string{WriteNodeCondition, WriteNodeEvent} {
+		for _, reason := range dropReasons {
+			for _, isHealthy := range []string{"true", "false"} {
+				droppedWritesCounter.WithLabelValues(operation, reason, isHealthy)
+			}
+		}
+	}
+
+	for _, reason := range dropReasons {
+		droppedBatchesCounter.WithLabelValues(reason)
+	}
+
+	for _, status := range []string{StatusSuccess, StatusFailed, StatusSkipped} {
+		nodeConditionUpdateCounter.WithLabelValues(status)
+	}
+
+	// Only the pairs the code can actually report. A create is never skipped, so
+	// initialising the full cross product would publish a series that can never move.
+	for _, pair := range [][2]string{
+		{OperationCreate, StatusSuccess},
+		{OperationCreate, StatusFailed},
+		{OperationUpdate, StatusSuccess},
+		{OperationUpdate, StatusFailed},
+		{OperationUpdate, StatusSkipped},
+	} {
+		nodeEventOperationsCounter.WithLabelValues(pair[0], pair[1])
+	}
+}

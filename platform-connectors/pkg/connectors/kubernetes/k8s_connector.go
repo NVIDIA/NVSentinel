@@ -285,7 +285,7 @@ func (r *K8sConnector) processHealthEventsWithRetry(
 			write.operation, write.nodeName, reason, err))
 
 		level := slog.LevelWarn
-		if reason == "shutdown" {
+		if reason == DropReasonShutdown {
 			level = slog.LevelInfo
 		}
 
@@ -357,13 +357,13 @@ func (r *K8sConnector) retryDelays() (time.Duration, time.Duration) {
 func writeDropReason(parent context.Context, err error) string {
 	switch {
 	case parent.Err() != nil || errors.Is(err, context.Canceled):
-		return "shutdown"
+		return DropReasonShutdown
 	case errors.Is(err, context.DeadlineExceeded):
-		return "retry_timeout"
+		return DropReasonRetryTimeout
 	case isKubernetesConnectorRetryableError(err):
-		return "retry_exhausted"
+		return DropReasonRetryExhausted
 	default:
-		return "permanent_error"
+		return DropReasonPermanentError
 	}
 }
 
