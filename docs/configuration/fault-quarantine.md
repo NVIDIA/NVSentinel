@@ -151,7 +151,11 @@ Nodes cordoned by anything other than NVSentinel are not counted, so a GPU opera
 
 The two kinds of bound compose rather than compete: keep `percentage` or `maxNodes` to bound a burst, and add `maxCordonedNodes` to bound the standing total. It is evaluated only when the window bounds have not already tripped, so it can add a reason to trip but never remove one.
 
-At least one of `percentage`, `maxNodes` and `maxCordonedNodes` must be positive, and a negative value for any of them is rejected rather than ignored. The breaker refuses to start otherwise, so it cannot be silently reduced to a no-op while `enabled: true`. For the same reason, a threshold above the fleet size is clamped to the fleet size rather than being left unreachable, and the `bound` label described below reports `fleetSize` when that happens. To turn the breaker off, use `enabled: false` rather than an unreachable threshold.
+At least one of `percentage`, `maxNodes` and `maxCordonedNodes` must be positive, and a negative value for any of them is rejected rather than ignored. The breaker refuses to start otherwise, so it cannot be silently reduced to a no-op while `enabled: true`.
+
+For the same reason, a **window** threshold above the fleet size is clamped to the fleet size rather than being left unreachable, and the `bound` label described below reports `fleetSize` when that happens. This clamp applies to `percentage` and `maxNodes` only. `maxCordonedNodes` is compared directly against the current count of nodes NVSentinel holds quarantined and is not clamped, so it never reports `fleetSize`.
+
+To turn the breaker off, use `enabled: false` rather than an unreachable threshold.
 
 #### duration
 Time window for tracking cordon events. The circuit breaker counts unique node cordons within this sliding window.
