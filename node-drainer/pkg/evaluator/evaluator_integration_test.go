@@ -117,6 +117,7 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		false,
 		dryRun,
 		tomlConfig.SystemNamespaces,
+		nil,
 	)
 	require.NoError(t, err)
 	go func() { _ = informersInstance.Run(ctx) }()
