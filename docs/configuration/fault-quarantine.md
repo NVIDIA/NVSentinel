@@ -123,6 +123,7 @@ fault-quarantine:
     enabled: true
     percentage: 50
     maxNodes: 0
+    maxCordonedNodes: 0
     duration: "5m"
 ```
 
@@ -139,14 +140,25 @@ Maximum absolute number of nodes that can be quarantined within the time window,
 
 When both bounds are set, **the lower one binds**. This is the point of the setting: a percentage silently tracks fleet growth, so a limit chosen for a 100 node cluster becomes three times as permissive at 300 nodes, while an absolute bound does not move. Fleet-wide operators can therefore express "no more than X% *and* never more than N nodes" in one config that stays correct as clusters grow.
 
-At least one of `percentage` and `maxNodes` must be positive, and a negative value for either is rejected rather than ignored. The breaker refuses to start otherwise, so it cannot be silently reduced to a no-op while `enabled: true`. For the same reason, a threshold above the fleet size is clamped to the fleet size rather than being left unreachable, and the `bound` label described below reports `fleetSize` when that happens. To turn the breaker off, use `enabled: false` rather than an unreachable threshold.
+#### maxCordonedNodes
+Standing cap on how many nodes NVSentinel holds quarantined **at once**, counting only its own cordons. Defaults to `0`, which disables it.
+
+This is the only bound that limits a total. `percentage` and `maxNodes` both count cordon events inside `duration`, so they limit the *rate* of cordoning and not the number of nodes that end up cordoned: a rate that stays just under the threshold still reaches the whole fleet given enough windows. On a 300 node cluster, `maxNodes: 5` with a `5m` window permits 4 cordons every window indefinitely, which is the entire fleet in about six hours without ever tripping.
+
+Lengthening `duration` is not a substitute. The window is bucketed at one second, so `24h` allocates 86,400 buckets and the sliding-window advance is O(steps x buckets); it also trips on a day's accumulated churn rather than on how many nodes are actually out of service.
+
+Nodes cordoned by anything other than NVSentinel are not counted, so a GPU operator upgrade or an operator's own `kubectl cordon` does not consume this budget.
+
+The two kinds of bound compose rather than compete: keep `percentage` or `maxNodes` to bound a burst, and add `maxCordonedNodes` to bound the standing total. It is evaluated only when the window bounds have not already tripped, so it can add a reason to trip but never remove one.
+
+At least one of `percentage`, `maxNodes` and `maxCordonedNodes` must be positive, and a negative value for any of them is rejected rather than ignored. The breaker refuses to start otherwise, so it cannot be silently reduced to a no-op while `enabled: true`. For the same reason, a threshold above the fleet size is clamped to the fleet size rather than being left unreachable, and the `bound` label described below reports `fleetSize` when that happens. To turn the breaker off, use `enabled: false` rather than an unreachable threshold.
 
 #### duration
 Time window for tracking cordon events. The circuit breaker counts unique node cordons within this sliding window.
 
 ### Observability
 
-`fault_quarantine_breaker_threshold_nodes{bound}` reports the effective threshold in nodes, with `bound` naming what produced it: `percentage`, `maxNodes`, or `fleetSize` when a configured bound exceeded the cluster size and was clamped. `fault_quarantine_breaker_utilization` keeps its existing meaning, the recent cordon count as a fraction of GPU nodes, so existing dashboards and alerts are unaffected.
+`fault_quarantine_breaker_threshold_nodes{bound}` reports the effective threshold in nodes, with `bound` naming what produced it: `percentage`, `maxNodes`, `maxCordonedNodes` when the standing bound is what tripped, or `fleetSize` when a configured bound exceeded the cluster size and was clamped. `fault_quarantine_breaker_utilization` keeps its existing meaning, the recent cordon count as a fraction of GPU nodes, so existing dashboards and alerts are unaffected.
 
 ### Configuration Examples
 
@@ -181,6 +193,16 @@ circuitBreaker:
   enabled: true
   percentage: 0
   maxNodes: 2
+  duration: "5m"
+```
+
+Burst bound plus a standing bound, for "no more than 5 cordons in any 5 minutes, and never more than 20 nodes out of service at once":
+```yaml
+circuitBreaker:
+  enabled: true
+  percentage: 0
+  maxNodes: 5
+  maxCordonedNodes: 20
   duration: "5m"
 ```
 
