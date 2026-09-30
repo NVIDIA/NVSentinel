@@ -26,6 +26,10 @@ navigation:
         path: tutorials/writing-a-drain-plugin.md
       - page: Plugin Custom Remediation
         path: tutorials/plugin-custom-remediation.md
+      - page: Requesting Node Maintenance
+        path: tutorials/requesting-node-maintenance.md
+      - page: Integrating External Remediation
+        path: tutorials/integrating-external-remediation.md
 
   - section: Architecture
     contents:
