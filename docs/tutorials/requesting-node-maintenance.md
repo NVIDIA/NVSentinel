@@ -69,7 +69,29 @@ lifecycle-manager:
 
 This setting also installs two webhooks and a ClusterRole. A webhook makes the Kubernetes API server check each MaintenanceRequest before it stores the object. Webhooks and ClusterRoles apply to the full cluster, so this step needs cluster-admin access.
 
-> **Note:** This change restarts the platform-connector pod on every node. While a platform-connector pod restarts, it cannot receive health events from its node.
+> **Note:** If platform-connector authentication is enabled (`global.platformConnectorAuth.enabled: true`), this change restarts the platform-connector pod on every node. The chart adds lifecycle-manager to the list of callers that platform-connector accepts. While a platform-connector pod restarts, it cannot receive health events from its node.
+
+Before you upgrade, make sure that the lifecycle-manager CRDs are in the cluster. Helm installs CRDs only when it installs a chart for the first time. It does not install them during `helm upgrade`.
+
+```bash
+kubectl get crd maintenancerequests.nvsentinel.dgxc.nvidia.com validationrequests.nvsentinel.nvidia.com
+# Expected:
+# NAME                                             CREATED AT
+# maintenancerequests.nvsentinel.dgxc.nvidia.com   <timestamp>
+# validationrequests.nvsentinel.nvidia.com         <timestamp>
+```
+
+If the command returns `NotFound`, apply the CRDs from the chart:
+
+```bash
+NVSENTINEL_VERSION="<v1.25.0 or later>"
+
+helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar
+kubectl apply -f nvsentinel/charts/lifecycle-manager/crds/
+# Expected:
+# customresourcedefinition.apiextensions.k8s.io/maintenancerequests.nvsentinel.dgxc.nvidia.com created
+# customresourcedefinition.apiextensions.k8s.io/validationrequests.nvsentinel.nvidia.com created
+```
 
 Apply the values file. The `--reset-then-reuse-values` flag applies the new chart defaults, then keeps your current values.
 
@@ -359,7 +381,17 @@ If the `HealthEventEmitted` condition is `True` but the node does not show `Sche
 
    If the `MANAGED` column or the `MANAGEDBYNVSENTINEL` column shows `false`, the node is opted out.
 
-3. **The circuit breaker tripped.** fault-quarantine stops all cordons when too many nodes are cordoned.
+3. **The circuit breaker tripped.** fault-quarantine stops all cordons when too many nodes are cordoned. First, make sure that the circuit breaker is enabled:
+
+   ```bash
+   kubectl get deployment fault-quarantine -n nvsentinel -o yaml | grep -o "circuit-breaker-enabled=[a-z]*"
+   # Expected when the circuit breaker is enabled:
+   # circuit-breaker-enabled=true
+   ```
+
+   If the value is `false`, the circuit breaker does not stop cordons, so go to the next cause. The `circuit-breaker` ConfigMap can keep an old `TRIPPED` value after the circuit breaker is disabled.
+
+   If the value is `true`, check the circuit breaker state:
 
    ```bash
    kubectl get configmap circuit-breaker -n nvsentinel -o jsonpath='{.data.status}'
@@ -468,11 +500,17 @@ Follow these requirements:
    - Confirm that the target node exists and runs no important workloads.
    - Confirm that the node has neither nvsentinel.dgxc.nvidia.com/managed=false
      nor k8saas.nvidia.com/ManagedByNVSentinel=false.
-   - Confirm that the circuit-breaker ConfigMap reports status CLOSED.
+   - If fault-quarantine runs with --circuit-breaker-enabled=true, confirm that
+     the circuit-breaker ConfigMap reports status CLOSED.
 
 2. If the controller is not enabled, enable it.
    - Write a values file that sets both keys to true.
-   - Tell me that this upgrade restarts platform-connector on every node.
+   - Check that the CRDs maintenancerequests.nvsentinel.dgxc.nvidia.com and
+     validationrequests.nvsentinel.nvidia.com exist. If they do not, pull the
+     chart with helm pull --untar and kubectl apply its
+     charts/lifecycle-manager/crds/ folder. Helm does not install CRDs on upgrade.
+   - If global.platformConnectorAuth.enabled is true, tell me that this upgrade
+     restarts platform-connector on every node.
    - Run helm upgrade with --reset-then-reuse-values and the values file. Do not
      use --reuse-values: it passes null for global.platformConnectorAuth.enabled,
      and the chart rejects null.
