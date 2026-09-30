@@ -167,20 +167,27 @@ func (w *NVMLWrapper) UUIDsByMinor() (map[int]string, error) {
 
 	uuids := make(map[int]string, count)
 
+	// A GPU that has fallen off the bus fails its own calls; skip it so the healthy GPUs still resolve.
 	for index := 0; index < count; index++ {
 		device, ret := nvml.DeviceGetHandleByIndex(index)
 		if ret != nvml.SUCCESS {
-			return nil, fmt.Errorf("failed to get device handle for GPU %d: %v", index, nvml.ErrorString(ret))
+			slog.Warn("Skipping GPU without a device handle", "index", index, "error", nvml.ErrorString(ret))
+
+			continue
 		}
 
 		minor, ret := device.GetMinorNumber()
 		if ret != nvml.SUCCESS {
-			return nil, fmt.Errorf("failed to get minor number for GPU %d: %v", index, nvml.ErrorString(ret))
+			slog.Warn("Skipping GPU without a minor number", "index", index, "error", nvml.ErrorString(ret))
+
+			continue
 		}
 
 		uuid, ret := device.GetUUID()
 		if ret != nvml.SUCCESS {
-			return nil, fmt.Errorf("failed to get UUID for GPU %d: %v", index, nvml.ErrorString(ret))
+			slog.Warn("Skipping GPU without a UUID", "index", index, "minor", minor, "error", nvml.ErrorString(ret))
+
+			continue
 		}
 
 		uuids[minor] = uuid

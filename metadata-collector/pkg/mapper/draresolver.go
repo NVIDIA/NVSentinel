@@ -23,7 +23,7 @@ const (
 	draGPUDriverName = "gpu.nvidia.com"
 	// draGPUDeviceNameFormat is how the NVIDIA DRA driver names a full GPU from its minor number, the N in
 	// /dev/nvidiaN. It mirrors GpuInfo.CanonicalName() in cmd/gpu-kubelet-plugin/deviceinfo.go
-	// (https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/495bf4c59b9423080aa1fe2163955f44a495012c/cmd/gpu-kubelet-plugin/deviceinfo.go#L122),
+	// (https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/495bf4c/cmd/gpu-kubelet-plugin/deviceinfo.go#L122),
 	// which the driver keeps on purpose because the minor is fixed for as long as the GPU stays on the bus.
 	draGPUDeviceNameFormat = "gpu-%d"
 )
