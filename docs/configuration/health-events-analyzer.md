@@ -69,6 +69,25 @@ Events are persisted and ingested by the Health Events Analyzer for rule evaluat
 #### STORE_ONLY
 Observability-only mode. Derived events are persisted and exported but do not modify any cluster resources. Use this mode to shadow-test new or customised rules in production before enabling full remediation.
 
+### Operator Recovery
+
+Recovery is disabled by default. With MongoDB, enable Node watches and namespaced Event reporting and add a `[rules.recovery]` mapping to each configured aggregation rule that needs operator recovery:
+
+```yaml
+health-events-analyzer:
+  nodeRecovery:
+    enabled: true
+```
+
+```toml
+[rules.recovery]
+annotation_key = "recovery.nvsentinel.nvidia.com/repeated-xid"
+scope = "entity"
+entity_types = ["GPU_UUID"]
+```
+
+Use `scope = "node"` without `entity_types` for node-wide rules. Each annotation key must be unique. The operator writes the time when hardware verification completed; the analyzer retains the annotation and reports the result as a Kubernetes Event. Healthy-source triggers and PostgreSQL recovery are not supported. See the [operator guide](../health-events-analyzer-recovery.md) for commands, entity selection, timestamps, and result handling.
+
 ### Concurrent Event Processing
 
 The Health Events Analyzer partitions incoming events across a concurrent worker pool by node name. Events for distinct nodes are evaluated concurrently, while events for the same node are processed in strict chronological order. Checkpoints advance using a low-water mark tracker to guarantee at-least-once delivery without head-of-line blocking.

@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: health-events-analyzer-config
+  namespace: nvsentinel
+data:
+  config.toml: |
+    [[rules]]
+    name = "AnnotationRecoveryTest"
+    description = "Two source events on one GPU require operator verification"
+    recommended_action = "CONTACT_SUPPORT"
+    evaluate_rule = true
+    processing_strategy = "EXECUTE_REMEDIATION"
+    stage = [
+      '{"$match":{"healthevent.agent":"annotation-recovery-test","healthevent.checkname":"RecoveryTestInput","healthevent.ishealthy":false}}',
+      '{"$count":"count"}',
+      '{"$match":{"count":{"$gte":2}}}'
+    ]
+    [rules.recovery]
+    annotation_key = "test.nvsentinel.nvidia.com/recover"
+    scope = "entity"
+    entity_types = ["GPU_UUID"]
