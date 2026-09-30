@@ -212,6 +212,16 @@ controllers:
     # node without checking the caller's identity.
     enabled: false
 
+# Where the MaintenanceRequest controller publishes its health events:
+#   socket     - the node-local platform connector DaemonSet Unix socket
+#                (the default node-local path)
+#   deployment - directly to the central platform-connector-deployment gRPC
+#                service (requires platformConnector.deployment.enabled on
+#                the umbrella chart).
+# Read only while controllers.maintenanceRequest.enabled is true; the
+# validation controller publishes nothing.
+publishTo: socket
+
 leaderElection:
   enabled: true
 

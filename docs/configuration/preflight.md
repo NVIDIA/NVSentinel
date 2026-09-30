@@ -141,6 +141,8 @@ The webhook automatically injects these env vars into every init container (you 
 | `NODE_NAME` | Downward API (`spec.nodeName`) | Kubernetes node name for health events |
 | `PLATFORM_CONNECTOR_SOCKET` | Chart `connectorSocket` | Unix socket for the platform-connector gRPC endpoint |
 | `PROCESSING_STRATEGY` | Chart `processingStrategy` | `EXECUTE_REMEDIATION` or `STORE_ONLY` — controls downstream action |
+| `PLATFORM_CONNECTOR_TOKEN_PATH` | Chart `global.platformConnectorAuth` | Projected token the check presents, when platform-connector auth is on |
+| `HEALTH_PUBLISH_TARGET`, `HEALTH_PUBLISH_TOKEN_PATH`, `HEALTH_PUBLISH_TLS_CA_FILE` (or `HEALTH_PUBLISH_INSECURE`) | Chart `publishTo: deployment` | Direct connection to the deployment platform connector, see [below](#publishing-to-the-deployment-platform-connector) |
 
 For gang-aware containers the webhook also injects `GANG_ID`, `GANG_CONFIG_DIR`, `GANG_TIMEOUT_SECONDS`, and `POD_NAME`.
 
@@ -570,11 +572,34 @@ gangCoordination:
 
 For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integration](../designs/026-preflight-checks.md) and `mirrorResourceClaims` above.
 
+## Publishing to the deployment platform connector
+
+By default the checks report through the node-local platform connector socket that the webhook mounts into the pod. A cluster can also run the [deployment platform connector](platform-connectors.md#deployment-platform-connector). Then set `preflight.publishTo: deployment`, and the checks publish directly to the deployment platform connector, like the health monitors do. Preflight then no longer needs the node-local DaemonSet. This setting needs `platformConnector.deployment.enabled: true` and platform-connector auth on. The chart refuses the other combinations.
+
+What changes for an injected pod:
+
+- Every check gets `HEALTH_PUBLISH_TARGET`, `HEALTH_PUBLISH_TOKEN_PATH` and `HEALTH_PUBLISH_TLS_CA_FILE`. The target is the Service of the deployment platform connector. The token is the same projected token as on the socket path, minted against the pod's own ServiceAccount. The socket env and mount stay as they are. The checks ignore them while the target is set.
+- The CA bundle comes from a ConfigMap named `nvsentinel-platform-connector-ca`. The preflight controller keeps this ConfigMap in every namespace that it injects into, because a pod cannot mount a Secret from the NVSentinel namespace. The controller creates it when a pod is admitted and for every labelled namespace. It rewrites every copy when cert-manager rotates the CA. The pod mounts it at `/etc/nvsentinel/platform-connector-deployment-ca`.
+- The pod gets the label `nvsentinel.nvidia.com/health-publisher: "true"`. The network policy of the deployment platform connector admits pods with this label in the namespaces that `preflight.namespaceSelector` selects. These are the namespaces that the webhook injects into. The policy cannot match workload pods on the host network. For such pods, set `preflight.hostNetworkWorkloads: true`. The chart then opens the gRPC rule to every source, and the caller token is the only gate.
+
+A check waits at most five minutes in total for an unreachable deployment platform connector. This budget is `HEALTH_PUBLISH_RETRY_WINDOW`, a client default. One attempt lasts at most 30 seconds. After the budget is spent, each later report of the same run gets one attempt of 5 seconds. Thus a check that sends many reports, like `preflight-dcgm-diag`, waits through one outage at most. The deployment platform connector refuses a report for good when the report is invalid or names another node. The check then gives up that report at once.
+
+An incomplete direct-mode environment is a configuration error. Examples are a target without a token path, no CA bundle without `HEALTH_PUBLISH_INSECURE`, or a bad `HEALTH_PUBLISH_RETRY_WINDOW`. A configuration error gives exit `1` for `preflight-dcgm-diag` and exit `2` for the two NCCL checks.
+
+The [exit codes](#1-check-the-exit-code) below do not change:
+
+- A report that the check cannot deliver still gives exit `3` for `preflight-nccl-loopback` and exit `4` for `preflight-nccl-allreduce`.
+- `preflight-dcgm-diag` still keeps its diagnostic verdict.
+- `STORE_ONLY` still turns a test failure into exit `0`. Configuration errors keep their exit code.
+
+The events, and what Fault Quarantine does with them, are the same on both paths.
+
 ## Key Helm values (subchart)
 
 | Area | Location |
 |------|-----------|
 | Webhook TLS, failure policy, cert provider | `preflight.webhook` |
+| Where the checks publish (socket or deployment), host-network workloads | `preflight.publishTo`, `preflight.hostNetworkWorkloads` |
 | Init container placement (append/prepend) | `preflight.initContainerPlacement` |
 | Injected init container images and env | `preflight.initContainers` |
 | GPU / network resource names | `preflight.gpuResourceNames`, `preflight.networkResourceNames` |

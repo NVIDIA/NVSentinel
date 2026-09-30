@@ -56,6 +56,8 @@ rather than letting it be created and silently ignored.
 > therefore rolls platform-connector across every node. This is true of enabling any
 > cross-node publisher, not specific to this one, but it is worth scheduling deliberately.
 
+By default the controller publishes through the socket. With `lifecycle-manager.publishTo: deployment`, it publishes to the [deployment platform connector](./platform-connectors.md#deployment-platform-connector) instead. The chart then sets the `HEALTH_PUBLISH_*` environment variables on the pod. The controller presents the same projected token as on the socket path. The socket mount stays in the pod, but the controller does not use it.
+
 ### Authentication
 
 This is the part most easily missed. A `MaintenanceRequest` may name **any** node, but

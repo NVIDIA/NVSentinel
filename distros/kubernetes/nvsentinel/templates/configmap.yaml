@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{ if include "nvsentinel.pcDaemonset.enabled" . -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,76 +20,10 @@ metadata:
   labels:
     {{- include "nvsentinel.labels" . | nindent 4 }}
 data:
-  config.json: |
-    {
-      "enableK8sPlatformConnector": "{{ .Values.platformConnector.k8sConnector.enabled }}",
-      "K8sConnectorQps": {{ printf "%.2f" .Values.platformConnector.k8sConnector.qps }},
-      "K8sConnectorBurst": {{ .Values.platformConnector.k8sConnector.burst }},
-      "K8sConnectorMaxRetries": {{ .Values.platformConnector.k8sConnector.maxRetries }},
-      "K8sConnectorMaxRetryDuration": {{ .Values.platformConnector.k8sConnector.maxRetryDuration | quote }},
-      "MaxNodeConditionMessageLength": {{ .Values.platformConnector.k8sConnector.maxNodeConditionMessageLength }},
-      "CompactedHealthEventMsgLen": {{ .Values.platformConnector.k8sConnector.compactedHealthEventMsgLen }},
-      "StoreConnectorMaxRetries": {{ .Values.platformConnector.mongodbStore.maxRetries }},
-      "enableMongoDBStorePlatformConnector": "{{ or .Values.global.mongodbStore.enabled (and .Values.global.datastore (eq (default "" .Values.global.datastore.provider) "mongodb")) }}",
-      "enablePostgresDBStorePlatformConnector": {{ if and .Values.global.datastore .Values.global.datastore.provider }}{{ eq .Values.global.datastore.provider "postgresql" | quote }}{{ else }}"false"{{ end }}
-      ,"enableNodeBindingAuth": "{{ include "nvsentinel.pcAuth.enabled" . | default "false" }}"
-      ,"AuthAudience": "{{ include "nvsentinel.pcAuth.audience" . }}"
-      ,"AuthCrossNodeServiceAccounts": {{ include "nvsentinel.pcAuth.crossNodeUsernames" . }}
-      ,"AuthMode": "{{ include "nvsentinel.pcAuth.mode" . }}"
-      ,"AuthFailOpenOnUnavailable": "{{ include "nvsentinel.pcAuth.failOpenOnUnavailable" . | default "false" }}"
-      ,"enableGRPCSinkConnector": "{{ .Values.platformConnector.grpcSinkConnector.enabled }}"
-      ,"GRPCSinkTarget": "{{ .Values.platformConnector.grpcSinkConnector.target }}"
-      ,"GRPCSinkConnectorMaxRetries": {{ .Values.platformConnector.grpcSinkConnector.maxRetries }}
-      ,"GRPCSinkTokenPath": "{{ .Values.platformConnector.grpcSinkConnector.tokenPath }}"
-      ,"enablePromPlatformConnector": "{{ .Values.platformConnector.promConnector.enabled }}"
-      {{- $pipeline := (.Values.platformConnector.pipeline | default list) }}
-      {{- with .Values.platformConnector.dedup }}
-      {{- $pipeline = append $pipeline (dict "name" "Deduplicator" "enabled" .enabled "config" "/etc/config/dedup.toml") }}
-      {{- end }}
-      ,"pipeline": {{ $pipeline | toJson }}
-    }
-  {{- if .Values.platformConnector.dedup }}
-  dedup.toml: |
-    suppressionWindow = "{{ .Values.platformConnector.dedup.suppressionWindow }}"
-    cleanupInterval = "{{ .Values.platformConnector.dedup.cleanupInterval }}"
-    includeChecks = {{ .Values.platformConnector.dedup.includeChecks | default list | toJson }}
+  {{- $files := dict "context" . "k8sQps" .Values.platformConnector.k8sConnector.qps "k8sBurst" .Values.platformConnector.k8sConnector.burst }}
+  {{- with .Values.platformConnector.transformers.MetadataAugmentor }}
+  {{- $_ := set $files "cacheSize" .cacheSize }}
+  {{- $_ := set $files "cacheTTL" (printf "%vs" .cacheTTLSeconds) }}
   {{- end }}
-  {{- if .Values.platformConnector.transformers.MetadataAugmentor }}
-  metadata.toml: |
-    cacheSize = {{ .Values.platformConnector.transformers.MetadataAugmentor.cacheSize }}
-    cacheTTL = "{{ .Values.platformConnector.transformers.MetadataAugmentor.cacheTTLSeconds }}s"
-    {{- with .Values.platformConnector.transformers.MetadataAugmentor.allowedLabels }}
-    allowedLabels = {{ . | toJson }}
-    {{- end }}
-    {{- with .Values.platformConnector.transformers.MetadataAugmentor.skipNodeLabel }}
-    skipNodeLabel = {{ . | quote }}
-    {{- end }}
-  {{- end }}
-  {{- if .Values.platformConnector.transformers.OverrideTransformer }}
-  overrides.toml: |
-    {{- $overrideEnabled := false }}
-    {{- range .Values.platformConnector.pipeline }}
-      {{- if eq .name "OverrideTransformer" }}
-        {{- $overrideEnabled = .enabled }}
-      {{- end }}
-    {{- end }}
-    enabled = {{ $overrideEnabled }}
-    {{- range .Values.platformConnector.transformers.OverrideTransformer.rules }}
-
-    [[rules]]
-    name = {{ .name | quote }}
-    when = {{ .when | quote }}
-    override = { {{- $pairs := list -}}
-      {{- if hasKey .override "isFatal" -}}
-        {{- $pairs = append $pairs (printf "isFatal = %v" .override.isFatal) -}}
-      {{- end -}}
-      {{- if hasKey .override "isHealthy" -}}
-        {{- $pairs = append $pairs (printf "isHealthy = %v" .override.isHealthy) -}}
-      {{- end -}}
-      {{- if .override.recommendedAction -}}
-        {{- $pairs = append $pairs (printf "recommendedAction = %q" .override.recommendedAction) -}}
-      {{- end -}}
-      {{- $pairs | join ", " -}}
-    }
-    {{- end }}
-  {{- end }}
+  {{- regexReplaceAll "(?m)^ +$" (include "nvsentinel.platformConnector.configFiles" $files | nindent 2) "" }}
+{{- end }}

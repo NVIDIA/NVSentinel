@@ -141,3 +141,59 @@ the workload never starts and the reason is a long way from the values file.
 {{- end -}}
 {{- int64 $v -}}
 {{- end -}}
+
+{{/*
+Copies of the nvsentinel.publish.* and nvsentinel.pcDeployment.tlsMode helpers
+in distros/kubernetes/nvsentinel/templates/_helpers.tpl, renamed because Helm
+template names are global; this chart also renders standalone. Keep them in step.
+*/}}
+{{- define "lifecycle-manager.publish.enabled" -}}
+{{- $v := .Values.publishTo | default "socket" -}}
+{{- if not (or (eq $v "socket") (eq $v "deployment")) -}}
+{{- fail (printf "lifecycle-manager.publishTo must be \"socket\" or \"deployment\", got %q." $v) -}}
+{{- end -}}
+{{- if eq $v "deployment" -}}true{{- end -}}
+{{- end -}}
+
+{{- define "lifecycle-manager.publish.tlsMode" -}}
+{{- $mode := (((((.Values.global).platformConnectorDeployment)).tls).mode) | default "required" -}}
+{{- if not (or (eq $mode "required") (eq $mode "insecureDevelopmentMode")) -}}
+{{- fail (printf "global.platformConnectorDeployment.tls.mode must be \"required\" or \"insecureDevelopmentMode\", got %q." $mode) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}
+
+{{- define "lifecycle-manager.publish.envVars" -}}
+{{- if include "lifecycle-manager.publish.enabled" . -}}
+- name: HEALTH_PUBLISH_TARGET
+  value: "platform-connector-deployment.{{ .Release.Namespace }}.svc.cluster.local:{{ ((((.Values.global).platformConnectorDeployment)).grpcPort) | default 50051 }}"
+- name: HEALTH_PUBLISH_TOKEN_PATH
+  value: {{ include "lifecycle-manager.pcAuth.tokenPath" . | quote }}
+{{- if eq (include "lifecycle-manager.publish.tlsMode" .) "required" }}
+- name: HEALTH_PUBLISH_TLS_CA_FILE
+  value: "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"
+{{- else }}
+- name: HEALTH_PUBLISH_INSECURE
+  value: "true"
+{{- end }}
+{{- end -}}
+{{- end -}}
+
+{{- define "lifecycle-manager.publish.volumeMounts" -}}
+{{- if and (include "lifecycle-manager.publish.enabled" .) (eq (include "lifecycle-manager.publish.tlsMode" .) "required") -}}
+- name: platform-connector-deployment-ca
+  mountPath: /etc/nvsentinel/platform-connector-deployment-ca
+  readOnly: true
+{{- end -}}
+{{- end -}}
+
+{{- define "lifecycle-manager.publish.volumes" -}}
+{{- if and (include "lifecycle-manager.publish.enabled" .) (eq (include "lifecycle-manager.publish.tlsMode" .) "required") -}}
+- name: platform-connector-deployment-ca
+  secret:
+    secretName: platform-connector-deployment-grpc-cert
+    items:
+      - key: ca.crt
+        path: ca.crt
+{{- end -}}
+{{- end -}}

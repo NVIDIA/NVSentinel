@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{- $gpuCluster := include "metadata-collector.gpuDraEnabled" . }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -44,6 +45,11 @@ spec:
       {{- end }}
       hostNetwork: true
       hostPID: true
+      {{- if $gpuCluster }}
+      resourceClaims:
+        - name: gpus
+          resourceClaimTemplateName: {{ include "metadata-collector.fullname" . }}-admin-gpus
+      {{- end }}
       containers:
         - name: metadata-collector
           securityContext:
@@ -83,6 +89,10 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+            {{- if $gpuCluster }}
+            claims:
+              - name: gpus
+            {{- end }}
           volumeMounts:
             - name: output
               mountPath: /var/lib/nvsentinel
@@ -128,6 +138,6 @@ spec:
       {{- with (.Values.global.priorityClassName | default .Values.priorityClassName) }}
       priorityClassName: {{ . | quote }}
       {{- end }}
-      {{- if .Values.runtimeClassName }}
+      {{- if and .Values.runtimeClassName (not $gpuCluster) }}
       runtimeClassName: {{ .Values.runtimeClassName }}
       {{- end }}

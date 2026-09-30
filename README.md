@@ -55,6 +55,9 @@ NVSENTINEL_VERSION=v1.25.0
 
 kubectl create namespace nvsentinel --dry-run=client -o yaml | kubectl apply -f -
 
+# Label the namespcae if the GPU Operator is running in GPUCluster (DRA) mode:
+# kubectl label namespace nvsentinel resource.kubernetes.io/admin-access=true
+
 # Fresh datastore only. If a MongoDB volume already exists without this Secret,
 # recover the original password instead — a new one locks NVSentinel out of that data.
 kubectl get secret mongodb -n nvsentinel >/dev/null 2>&1 || kubectl create secret generic mongodb -n nvsentinel \
@@ -67,6 +70,7 @@ helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --wait
 
 # --set labeler.assumeDriverInstalled=true       # GPU nodes use host-installed drivers
+# --set global.gpuDraEnabled=true                # GPU Operator in GPUCluster (DRA) mode
 # --set global.mongodbStore.enabled=true         # Protect: cordon
 # --set global.faultQuarantine.enabled=true      # Protect: cordon
 # --set global.nodeDrainer.enabled=true          # Protect: + drain
