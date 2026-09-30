@@ -23,6 +23,8 @@ entity_types = ["GPU_UUID"]
 
 Keep the rule's existing stages and other settings. Match `entity_types` to the identity used by that rule. A GPC/TPC rule may need `GPU_UUID`, `GPC`, and `TPC`; a NIC rule needs the entity type its monitor actually supplies. A node-wide or cross-GPU rule uses `scope = "node"` and omits `entity_types`. Events missing required identity fields remain on the existing manual recovery path.
 
+If the derived fault should cordon the node, configure a fault-quarantine rule that matches its `health-events-analyzer` agent and rule name (`checkName`). The default quarantine rules do not match analyzer events. Recovery releases quarantine through fault-quarantine's normal healthy-event handling.
+
 Rules without a recovery block do not acquire automatic recovery behavior. There is no healthy-source trigger in this version. In particular, stopping XID error logs is not an explicit healthy transition. The built-in Go XID burst detector is outside these configurable mappings.
 
 ## Request recovery

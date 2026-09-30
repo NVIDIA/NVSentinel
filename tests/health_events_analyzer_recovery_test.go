@@ -41,6 +41,7 @@ func TestHealthEventsAnalyzerAnnotationRecovery(t *testing.T) {
 	var testCtx *helpers.HealthEventsAnalyzerTestContext
 	var request string
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/health-events-analyzer-recovery-quarantine.yaml")
 		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c,
 			"data/health-events-analyzer-annotation.yaml", "health-events-analyzer-recovery", "")
 		return ctx
@@ -83,6 +84,7 @@ func TestHealthEventsAnalyzerAnnotationRecovery(t *testing.T) {
 		return ctx
 	})
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		defer helpers.RestoreQuarantineConfig(ctx, t, c)
 		if testCtx == nil {
 			return ctx
 		}
