@@ -40,6 +40,17 @@ data:
     connectorTokenExpirationSeconds: {{ include "preflight.pcAuth.expirationSeconds" . }}
     {{- end }}
     processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
+    {{- if include "preflight.publish.enabled" . }}
+    {{- if not (include "preflight.pcAuth.enabled" .) }}
+    {{- fail "preflight.publishTo is \"deployment\" but global.platformConnectorAuth.enabled is false. Every direct send carries the projected token, so platform-connector auth must be enabled." }}
+    {{- end }}
+    healthPublishTarget: {{ printf "platform-connector-deployment.%s.svc.cluster.local:%v" .Release.Namespace ((((.Values.global).platformConnectorDeployment).grpcPort) | default 50051) | quote }}
+    {{- if eq (include "preflight.publish.tlsMode" .) "required" }}
+    healthPublishCAFile: "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"
+    {{- else }}
+    healthPublishInsecure: true
+    {{- end }}
+    {{- end }}
     gangDiscovery:
       {{- toYaml .Values.gangDiscovery | nindent 6 }}
     gangCoordination:

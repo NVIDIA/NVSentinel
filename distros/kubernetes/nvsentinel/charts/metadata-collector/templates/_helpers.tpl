@@ -41,6 +41,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 
 {{/*
+GPU Operator installation mode from global.gpuDraEnabled. Defaults to
+false;
+*/}}
+{{- define "metadata-collector.gpuDraEnabled" -}}
+{{- $enabled := (.Values.global | default dict).gpuDraEnabled | default false -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail (printf "global.gpuDraEnabled must be a boolean (true or false), got %s %#v" (kindOf $enabled) $enabled) -}}
+{{- end -}}
+{{- if $enabled -}}true{{- end -}}
+{{- end }}
+
+{{/*
 Whether the Prometheus metrics endpoint is enabled, as a template-truthy string.
 
 Must be a real YAML boolean. Go-template truthiness would otherwise decide it for us: the string

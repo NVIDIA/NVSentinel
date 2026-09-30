@@ -85,6 +85,10 @@ clientCertMountPath: /etc/ssl/client-certs
 # Pod priority for this component. Overridden by the matching global when that is set.
 priorityClassName: ""
 
+# Where health events go: socket (the node-local platform connector, default) or
+# deployment (the deployment platform connector; needs platformConnector.deployment.enabled).
+publishTo: socket
+
 config: |
   # The node condition for these rules needs to be removed manually because health-events-analyzer does not publish healthy events to clear it.
   # Please run the command below to remove the node condition:

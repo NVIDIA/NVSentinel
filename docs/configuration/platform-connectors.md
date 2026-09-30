@@ -429,6 +429,59 @@ platformConnector:
     burst: 20
 ```
 
+## Deployment Platform Connector
+
+The platform connector binary can also run as a central Deployment (`--mode=deployment`). This page calls it the deployment platform connector. A publisher on `publishTo: deployment` sends its events directly to the deployment platform connector over TLS, with a bearer token. It does not use the socket of the node-local DaemonSet. The design is [ADR 052](../designs/052-deployment-platform-connector.md).
+
+The deployment platform connector is off by default. To move to it, do these steps in this order:
+
+1. Set `platformConnector.deployment.enabled: true` on the umbrella chart. Keep every publisher on `publishTo: socket`. The chart then renders the Deployment, its Service, its certificate and its network policy. The replicas need the idempotency index. The datastore setup creates it, like every other index. On MongoDB, the setup Job creates it. The upgrade to a chart version that adds the index runs the Job again, because the Job script changed. On PostgreSQL, the components that set up the tables create it when they start: fault-quarantine, fault-remediation, health-events-analyzer and node-drainer. The platform connector does not create it. A replica exits when it has waited five minutes for the index. Thus a missing index shows as CrashLoopBackOff, not as a pod that is quietly not ready. The replica tries again after each restart until the index exists. Wait until the replicas are ready.
+2. Move the publishers to the deployment platform connector, then turn off the DaemonSet:
+   1. Set `publishTo: deployment` on each enabled monitor subchart: `gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `kubernetes-object-monitor`, `slurm-drain-monitor`, `csp-health-monitor`, `nvcre-certification-monitor` and `health-events-analyzer`.
+   2. If the MaintenanceRequest controller of the lifecycle manager is on, set `lifecycle-manager.publishTo: deployment`. See [Lifecycle Manager](lifecycle-manager.md#maintenancerequest-controller).
+   3. If preflight is on, set `preflight.publishTo: deployment`. The webhook then gives each injected check the target, the token path and the CA bundle, and puts the publisher label on the tenant pod. The preflight controller keeps a copy of the CA bundle in a ConfigMap named `nvsentinel-platform-connector-ca`, in each namespace that it injects into. It updates the copies when cert-manager rotates the CA. See [Preflight](preflight.md#publishing-to-the-deployment-platform-connector).
+   4. Set `platformConnector.daemonset.enabled: false` last. This removes the DaemonSet and its RBAC. The chart refuses this value while an enabled publisher still uses `publishTo: socket`. The gpu monitor still mounts the socket directory `/var/run/nvsentinel` of the node, and this directory must exist. The DaemonSet creates it, and it is gone after a node restart because `/var/run` is not persistent. Thus keep the DaemonSet while the gpu monitor runs, or create the directory on each node in another way.
+
+A publisher on `publishTo: deployment` gets its connection settings from the chart as `HEALTH_PUBLISH_*` environment variables: the target, the token path and the CA bundle. With `global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode`, the publisher gets `HEALTH_PUBLISH_INSECURE=true` instead of the CA bundle. The token is the same projected token that the publisher uses on the socket path. See [Authentication](authentication.md#deployment-platform-connector). The client in the publisher works as follows:
+
+- The retry window is 5 minutes. This is a client default. To change it, set `HEALTH_PUBLISH_RETRY_WINDOW` on the pod.
+- The request timeout is fixed at 30 seconds.
+- The client sends one batch at a time. Its publish call returns only after the deployment platform connector stores the batch. Thus a monitor marks an event as reported only when it is stored. The node-local socket connector, by contrast, acknowledges a batch when it queues it.
+- If the deployment platform connector is unreachable, the client retries until the retry window ends. Then it drops the batch and reports the failure. The monitor sends the event again on its next cycle.
+- The pause between two attempts is at most 30 seconds. The client retries the connection at most 10 seconds apart. Thus the client delivers a batch within about 30 seconds after the deployment platform connector comes back.
+- A monitor can stop waiting earlier, because its context ended or its own timeout expired. The client then withdraws the batch at once, also when the batch is already on the wire.
+- An attempt can be cut or time out after the batch is stored. This can leave a duplicate next to the event that the monitor sends again. The deployment platform connector tolerates this duplicate.
+- The deployment platform connector can refuse a batch for good. It does this when the batch is invalid or names a node that the monitor may not report on. The client then reports the batch as rejected at once and does not retry. The syslog monitor skips such a journal entry. The NIC monitor and the health events analyzer drop the event and count it.
+- `nvsentinel_health_events_publisher_dropped_total` counts the drops by reason. See [METRICS.md](../METRICS.md#health-event-publisher).
+
+The deployment platform connector has its own network policy for the gRPC port. The metrics port is open through the chart's `metrics-access` policy, like for the other components. The gRPC port admits these pods:
+
+- Every pod in the release namespace.
+- Pods with the label `nvsentinel.nvidia.com/health-publisher: "true"` in the namespace of each entry in `global.platformConnectorAuth.crossNodeServiceAccounts`. A publisher that this chart does not ship must put the label on its pods itself.
+- Pods with the same label in the namespaces that the preflight webhook injects into, while `preflight.publishTo` is `deployment`. The policy uses `preflight.namespaceSelector`, so the webhook and the policy select the same namespaces. The webhook puts the label on the tenant pods.
+
+Two publishers can run on the host network:
+
+- The gpu monitor, when `useHostNetworking` is set or the DCGM mode (`global.dcgm.mode`) is `external-hostengine`.
+- The preflight checks, when their workload pods use the host network (`preflight.hostNetworkWorkloads: true`).
+
+A CNI that enforces network policies identifies such a pod by its node, not by its labels. Thus, while such a publisher uses the deployment platform connector, the chart opens the gRPC rule to every source. The chart annotates the policy to say so, and prints the same note at install and upgrade time. In all cases, the caller token decides who may publish. On a CNI that does not enforce network policies, the policy has no effect.
+
+The server settings are under `platformConnector.deployment` in `values.yaml`. The chart puts them in three places:
+
+- The Deployment spec gets the replicas, the placement and the resources.
+- The `DATASTORE_MAX_CONNECTIONS` environment variable gets the datastore pool size, `datastore.maxPoolSize`.
+- The config file of the deployment platform connector, in the ConfigMap `platform-connector-deployment`, gets the other settings. These are the TokenReview cache and rate limit, the condition update timeout, the connection ages and buffers, the Kubernetes client rate limit and the node metadata cache.
+
+The chart renders this config file from the same template as the config file of the DaemonSet, so both roles read the same keys. The file of the deployment platform connector has fleet sizing and a `deployment` object with its own settings. The gRPC port and the TLS mode are under `global.platformConnectorDeployment` (`grpcPort`, `tls.mode`), because the publisher subcharts read them too. The container args carry only `--mode=deployment`, the config path, the metrics port, the listener settings (`--listen-addr`, and `--tls-cert-dir` or `--tls-insecure-development-mode`) and the datastore client certificate flag.
+
+The replicas verify the idempotency index once, before they become ready. To restore the datastore from a backup:
+
+1. Scale the Deployment to zero.
+2. Restore the datastore.
+3. Run the datastore setup again, so that the index exists. On MongoDB, delete the completed setup Job, then upgrade or sync. On PostgreSQL, restart a component that sets up the tables.
+4. Scale the Deployment back up. The replicas verify the index again when they start.
+
 ## Kubernetes Authentication
 
 Platform Connectors uses in-cluster Kubernetes authentication by default. In that mode it authenticates with the pod ServiceAccount and no extra flags are required.

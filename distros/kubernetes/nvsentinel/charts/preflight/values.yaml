@@ -104,6 +104,25 @@ webhook:
 # Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY
 processingStrategy: "EXECUTE_REMEDIATION"
 
+# Where the injected checks publish their health events:
+#   socket     - the node-local platform connector DaemonSet Unix socket
+#                (the default)
+#   deployment - directly to the central platform-connector-deployment gRPC
+#                service (requires platformConnector.deployment.enabled on
+#                the umbrella chart). The webhook then gives every injected
+#                check the target, the token path and the CA bundle, labels
+#                the pod for the connector's network policy, and the
+#                controller keeps a copy of the CA bundle in every namespace
+#                it injects into (ConfigMap nvsentinel-platform-connector-ca).
+publishTo: socket
+
+# Set to true when the workload pods that receive preflight checks run on the
+# host network and publishTo is deployment. A CNI that enforces NetworkPolicy
+# sees such a pod as its node, not as its labels, so the deployment platform
+# connector's gRPC rule cannot select it; the umbrella chart then admits every
+# source on that port and the caller token alone decides who may publish.
+hostNetworkWorkloads: false
+
 # Controls where preflight init containers are placed relative to existing
 # init containers in the pod spec.
 # "append" (default): add after existing init containers — ensures

@@ -119,7 +119,28 @@ global:
     # verbatim against the username TokenReview reports, so the namespace must
     # be a DNS-1123 label and the name a DNS-1123 subdomain — nothing is
     # trimmed or normalised for you.
+    # Entries apply to both the socket and the deployment platform connector;
+    # the deployment's network policy admits their namespace.
     crossNodeServiceAccounts: []
+
+  # Connection facts of the deployment platform connector: the single place
+  # the gRPC port and TLS mode are set. The server templates (listener,
+  # Service, Certificate, NetworkPolicy) and the publisher subcharts (which
+  # can only read global values) all read from here, so the two sides of the
+  # connection cannot disagree. Every field is optional; the defaults below
+  # apply when unset.
+  #
+  # tls.mode "required" is a cert-manager issued server certificate, verified
+  # by the publishers against the mounted CA. The only alternative is the
+  # explicitly named "insecureDevelopmentMode" (plaintext listener); the
+  # caller token crosses the pod network in gRPC metadata, so never use it
+  # outside development.
+  #
+  # platformConnectorDeployment:
+  #   grpcPort: 50051
+  #   tls:
+  #     mode: required
+  platformConnectorDeployment: {}
 
   # Datastore configuration
   # By default, datastore is not configured (internal mongodb-config ConfigMap is used).
@@ -211,6 +232,11 @@ global:
 
   # Shared metadata path used by metadata-collector and syslog-health-monitor
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+
+  # Set true when GPUs are managed through DRA (GPU Operator GPUCluster mode).
+  # metadata-collector then holds a DRA admin-access GPU claim instead of using
+  # the nvidia RuntimeClass.
+  gpuDraEnabled: false
 
   # DCGM (Data Center GPU Manager) configuration
   # Used by gpu-health-monitor
@@ -322,6 +348,109 @@ networkPolicy:
 platformConnector:
   # Local fallback, overridden by global.priorityClassName when that is set.
   priorityClassName: ""
+
+  # The deployment platform connector: the platform connector binary in its
+  # central role (--mode=deployment). Experimental; the switchover flag
+  # deploys the central Deployment, and monitors follow their own publishTo
+  # setting. Server-only knobs live here; the connection facts the publishers
+  # share (gRPC port and TLS mode) live under global.platformConnectorDeployment,
+  # the only place subcharts can read them from. Publishers present the same
+  # global.platformConnectorAuth token as on the socket.
+  deployment:
+    # Must be a real YAML boolean (true or false); a quoted "false" is a
+    # string, not this setting, and is refused rather than read as false.
+    #
+    # Switch over in order: enable this with every publisher on "socket", wait
+    # for ready replicas, set publishTo "deployment" on the publishers, then
+    # turn daemonset off. Steps, index and restore notes:
+    # docs/configuration/platform-connectors.md#deployment-platform-connector
+    enabled: false
+    # Two or more keep the write path up through node drains (a disruption
+    # budget allows one replica down at a time). A single replica gets no
+    # disruption budget, so a drain interrupts ingestion until it is
+    # rescheduled; the monitors retry inside their window meanwhile.
+    replicas: 3
+    # Placement of the central Deployment; never inherits the DaemonSet's
+    # tolerate-everything list. global.systemNodeSelector and
+    # global.systemNodeTolerations take precedence when set, as for the other
+    # central components; the priority class comes only from
+    # global.systemPriorityClassName.
+    nodeSelector: {}
+    tolerations: []
+    # Per replica. Memory grows with the monitor pods connected to it (about
+    # one connection per node per replica, each holding the connections.*
+    # buffers plus connection state); size from a load test before a large
+    # fleet.
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    auth:
+      # TokenReview verdict cache entries per replica: every caller token in
+      # the fleet plus the extra ones that exist while tokens rotate.
+      tokenCacheSize: 500000
+      # TokenReview client rate limit per replica. Sized for the worst case
+      # of every monitor pod of a 100,000-node fleet writing in every cache
+      # window, about 830 TokenReviews per second per replica; the limiter
+      # only queues requests, so a limit below the real rate delays every
+      # acknowledgement rather than rejecting any.
+      tokenReviewQps: 1000
+      tokenReviewBurst: 2000
+    datastore:
+      # Database connections per replica; must cover the writes in flight at
+      # once.
+      maxPoolSize: 10
+    # Bounded wait for the node condition update inside one request. The
+    # datastore write alone decides the reply; a slower update is counted and
+    # the node shows the old state until the monitor next reports.
+    conditionUpdateTimeout: "10s"
+    connections:
+      # A monitor stays on one replica while its connection lives. Closing
+      # connections after this age spreads monitors back across replicas
+      # after a rollout; closing idle ones frees their memory.
+      maxAge: "10m"
+      maxIdle: "5m"
+      # Bytes gRPC buffers per connection for reading and for writing. The
+      # grpc-go default is 32768 each; health event batches are small, so
+      # smaller buffers cost nothing but cut the memory each connected
+      # monitor pod holds.
+      readBufferBytes: 8192
+      writeBufferBytes: 8192
+    kubernetes:
+      # Kubernetes API client rate limit per replica, applied to each of its
+      # two clients: the one reading nodes and updating conditions and
+      # Events, and the one reading node metadata. Every batch that carries
+      # a healthy or fatal event reads the node once to decide whether the
+      # condition changes, so this client needs about one read per such
+      # batch: a few thousand batches per second across the fleet is about a
+      # thousand per replica. Node metadata reads per second per replica are
+      # at most the number of nodes divided by the cache TTL in seconds
+      # (every replica caches every node it sees). The values under
+      # platformConnector.k8sConnector and
+      # platformConnector.transformers.MetadataAugmentor size these for one
+      # node; the replicas serve the whole fleet, so they are set here and
+      # rendered into the Deployment's own config file.
+      qps: 1000
+      burst: 2000
+      # Nodes whose metadata is cached per replica.
+      nodeMetadataCacheSize: 200000
+      # How long a node's cached metadata is reused. A node opted out with
+      # the skip label takes up to this long to be honored by the replicas.
+      nodeMetadataCacheTtl: "10m"
+
+  # The node-local platform connector DaemonSet (the Unix-socket ingestion
+  # path, writing directly to the database). Turn it off only once every
+  # publisher's publishTo is "deployment", the preflight checks and the
+  # lifecycle manager's MaintenanceRequest controller included (the last step
+  # of the switchover, see deployment.enabled); the render refuses the
+  # combination otherwise. Must be a real YAML boolean (true or false); a
+  # quoted "false" is a string, not this setting, and is refused rather than
+  # read as false.
+  daemonset:
+    enabled: true
 
   image:
     repository: ghcr.io/nvidia/nvsentinel/platform-connectors

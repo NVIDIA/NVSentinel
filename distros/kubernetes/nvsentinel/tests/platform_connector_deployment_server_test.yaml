@@ -1,0 +1,359 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: deployment platform connector server shape and TLS
+release:
+  namespace: nvsentinel
+templates:
+  - templates/platform-connector-deployment-deployment.yaml
+  - templates/platform-connector-deployment-certificate.yaml
+  - templates/platform-connector-deployment-service.yaml
+  - templates/platform-connector-deployment-pdb.yaml
+  # Loaded only because the Deployment includes it for its checksum/config
+  # annotation; no test targets it directly.
+  - templates/platform-connector-deployment-configmap.yaml
+tests:
+  - it: serves plaintext with no certificate wiring in insecureDevelopmentMode
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--tls-insecure-development-mode"
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: "--tls-cert-dir=/etc/nvsentinel/platform-connector-deployment/tls"
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: grpc-tls
+          any: true
+      - hasDocuments:
+          count: 0
+        template: templates/platform-connector-deployment-certificate.yaml
+
+  # The only TLS modes are "required" and the explicitly named
+  # "insecureDevelopmentMode"; a typo must not become a plaintext listener.
+  - it: refuses an unknown TLS mode
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      global.platformConnectorDeployment.tls.mode: disabled
+    asserts:
+      - failedTemplate:
+          errorPattern: must be "required" or "insecureDevelopmentMode"
+
+  # A long-lived CA signs the short-lived server certificate, so a renewal
+  # does not change the trust anchor. Publisher pods mount ca.crt from the
+  # server secret, so its name is a cross-chart contract.
+  - it: signs the server certificate with a separate CA into the secret the server mounts
+    template: templates/platform-connector-deployment-certificate.yaml
+    set:
+      platformConnector.deployment.enabled: true
+    asserts:
+      - equal:
+          path: spec.isCA
+          value: true
+        documentIndex: 1
+      - equal:
+          path: spec.secretName
+          value: platform-connector-deployment-ca
+        documentIndex: 1
+      - equal:
+          path: spec.issuerRef.name
+          value: platform-connector-deployment-selfsigned-issuer
+        documentIndex: 1
+      - equal:
+          path: spec.ca.secretName
+          value: platform-connector-deployment-ca
+        documentIndex: 2
+      - equal:
+          path: spec.secretName
+          value: platform-connector-deployment-grpc-cert
+        documentIndex: 3
+      - equal:
+          path: spec.issuerRef.name
+          value: platform-connector-deployment-ca-issuer
+        documentIndex: 3
+      # A commonName would exceed the 64 character limit for a long namespace
+      # and fail issuance.
+      - isNull:
+          path: spec.commonName
+        documentIndex: 3
+      - lengthEqual:
+          path: spec.dnsNames
+          count: 3
+        documentIndex: 3
+      # The name the publishers dial must be one of them.
+      - contains:
+          path: spec.dnsNames
+          content: platform-connector-deployment.nvsentinel.svc.cluster.local
+        documentIndex: 3
+      - isNull:
+          path: spec.isCA
+        documentIndex: 3
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: grpc-tls
+            secret:
+              secretName: platform-connector-deployment-grpc-cert
+        template: templates/platform-connector-deployment-deployment.yaml
+
+  # The central pod must stay off tainted nodes, so it never inherits the
+  # global or DaemonSet tolerations or priority classes. Its name label must
+  # differ from the DaemonSet's, whose selector would claim the pod.
+  - it: runs the deployment role under its own label with no inherited placement or audit wiring
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      platformConnector.tolerations:
+        - operator: Exists
+      global.tolerations:
+        - operator: Exists
+      platformConnector.priorityClassName: node-agent
+      global.priorityClassName: system-node-critical
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--mode=deployment"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.failureThreshold
+          value: 30
+      # Startup must not wait for the idempotency index, which gates readiness.
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /healthz
+      # Room for the 20 s drain plus two 5 s shutdown steps before SIGKILL.
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 40
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/name"]
+          value: platform-connector-deployment
+      - notExists:
+          path: spec.template.spec.nodeSelector
+      - notExists:
+          path: spec.template.spec.tolerations
+      - notExists:
+          path: spec.template.spec.priorityClassName
+      - notExists:
+          path: spec.template.spec.securityContext
+      - notExists:
+          path: spec.template.spec.initContainers
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUDIT_ENABLED
+          any: true
+
+  - it: refuses a gRPC port that is not a port
+    template: templates/platform-connector-deployment-service.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      global.platformConnectorDeployment.grpcPort: abc
+    asserts:
+      - failedTemplate:
+          errorPattern: global.platformConnectorDeployment.grpcPort must be a positive integer
+
+  - it: refuses a gRPC port above 65535
+    template: templates/platform-connector-deployment-service.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      global.platformConnectorDeployment.grpcPort: 70000
+    asserts:
+      - failedTemplate:
+          errorPattern: global.platformConnectorDeployment.grpcPort must be at most 65535
+
+  # The certificate copy makes the key private (0600); it must run as the
+  # user that reads it, or the server starts without a readable key.
+  - it: runs the PostgreSQL certificate copy as the server user
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      platformConnector.postgresqlStore.clientCertMountPath: /etc/ssl/client-certs
+      global.datastore.provider: postgresql
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: fix-cert-permissions
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          value: 65532
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 65532
+
+  # Password-authenticated PostgreSQL has no client certificate Secret: the
+  # server must not mount one, or every replica waits for a Secret that never
+  # comes. Same rule as the DaemonSet.
+  - it: mounts no client certificate for password-authenticated PostgreSQL
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      platformConnector.postgresqlStore.clientCertMountPath: /etc/ssl/client-certs
+      global.datastore.provider: postgresql
+      global.datastore.credentialsFromSecret.name: postgres-password
+    asserts:
+      - isNull:
+          path: spec.template.spec.initContainers
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: postgresql-client-cert-original
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
+          any: true
+
+  - it: places the server on the system pool when the global system placement is set
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      platformConnector.deployment.tolerations:
+        - key: ignored
+          operator: Exists
+      platformConnector.priorityClassName: ignored
+      global.systemNodeSelector:
+        node-role.kubernetes.io/system: "true"
+      global.systemNodeTolerations:
+        - key: dedicated
+          operator: Equal
+          value: system
+          effect: NoSchedule
+      global.systemPriorityClassName: system-cluster-critical
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            node-role.kubernetes.io/system: "true"
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: dedicated
+              operator: Equal
+              value: system
+              effect: NoSchedule
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: system-cluster-critical
+
+  # The server writes node conditions and Events, so the audit log the
+  # DaemonSet keeps covers it too, with the same wiring.
+  - it: wires audit logging into the server pod when enabled
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      global.auditLogging.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 65532
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: fix-audit-log-permissions
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AUDIT_ENABLED
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: audit-logs
+            mountPath: /var/log/nvsentinel
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: audit-logs
+            hostPath:
+              path: /var/log/nvsentinel
+              type: DirectoryOrCreate
+
+  - it: applies platformConnector.deployment.tolerations to the server pod
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      platformConnector.deployment.tolerations:
+        - key: dedicated
+          operator: Equal
+          value: system
+          effect: NoSchedule
+    asserts:
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: dedicated
+              operator: Equal
+              value: system
+              effect: NoSchedule
+
+  # The fixed pool is the point of this mode: a value the server would ignore
+  # (and replace with the driver default) is refused at render time.
+  - it: refuses a non-positive datastore pool size
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      platformConnector.deployment.datastore.maxPoolSize: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: platformConnector.deployment.datastore.maxPoolSize must be a positive integer
+
+  # Replicas must be a positive integer; the disruption budget only makes
+  # sense with two or more of them.
+  - it: refuses zero replicas
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      platformConnector.deployment.replicas: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: platformConnector.deployment.replicas must be a positive integer
+
+  - it: renders the disruption budget for the default replica count
+    template: templates/platform-connector-deployment-pdb.yaml
+    set:
+      platformConnector.deployment.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+
+  - it: renders no disruption budget for a single replica
+    template: templates/platform-connector-deployment-pdb.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      platformConnector.deployment.replicas: 1
+    asserts:
+      - hasDocuments:
+          count: 0

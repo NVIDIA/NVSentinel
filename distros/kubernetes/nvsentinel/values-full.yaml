@@ -69,6 +69,14 @@ global:
     # publishers this chart does not ship. Absent means none; null is refused.
     crossNodeServiceAccounts: []
 
+  # Connection facts of the deployment platform connector, shared with the
+  # publishers. See docs/configuration/platform-connectors.md.
+  platformConnectorDeployment:
+    grpcPort: 50051
+    tls:
+      # "required" or "insecureDevelopmentMode" (development only).
+      mode: required
+
   # Docker image configuration
   image:
     # Image tag to use for all NVSentinel containers
@@ -174,6 +182,11 @@ global:
   # For production, typically enable all modules except healthEventsAnalyzer.
   ################################################################################
   
+  # Set true when GPUs are managed through DRA (GPU Operator GPUCluster mode).
+  # metadata-collector then holds a DRA admin-access GPU claim instead of using
+  # the nvidia RuntimeClass.
+  gpuDraEnabled: false
+
   # GPU Health Monitor - monitors GPU hardware health via DCGM
   # Detects: XID errors, thermal issues, ECC errors, memory errors, NVLink failures
   # Requires: NVIDIA GPU Operator with DCGM installed
@@ -443,6 +456,43 @@ platformConnector:
       #     isFatal: false
       #     recommendedAction: "CONTACT_SUPPORT"
 
+  # The deployment platform connector (central Deployment, experimental). See
+  # docs/configuration/platform-connectors.md#deployment-platform-connector.
+  deployment:
+    enabled: false
+    replicas: 3
+    nodeSelector: {}
+    tolerations: []
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    auth:
+      tokenCacheSize: 500000
+      tokenReviewQps: 1000
+      tokenReviewBurst: 2000
+    datastore:
+      maxPoolSize: 10
+    conditionUpdateTimeout: "10s"
+    connections:
+      maxAge: "10m"
+      maxIdle: "5m"
+      readBufferBytes: 8192
+      writeBufferBytes: 8192
+    kubernetes:
+      qps: 1000
+      burst: 2000
+      nodeMetadataCacheSize: 200000
+      nodeMetadataCacheTtl: "10m"
+
+  # The node-local DaemonSet; turn off only once every publisher publishes to
+  # the deployment. See docs/configuration/platform-connectors.md.
+  daemonset:
+    enabled: true
+
 # Unix socket path for inter-process communication
 # Health monitors connect to platform-connectors via this socket
 # Must be accessible by both monitors and platform-connectors
@@ -462,6 +512,10 @@ lifecycle-manager:
     # Disabled by default because this is an opt-in API.
     maintenanceRequest:
       enabled: false
+
+  # Where the MaintenanceRequest controller's health events go: socket or
+  # deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
 
 ################################################################################
 # FAULT-QUARANTINE MODULE CONFIGURATION
@@ -1036,6 +1090,9 @@ health-events-analyzer:
   # Valid values: EXECUTE_REMEDIATION, STORE_ONLY
   processingStrategy: EXECUTE_REMEDIATION
 
+  # Where health events go: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
+
 ################################################################################
 # KUBERNETES-OBJECT-MONITOR CONFIGURATION
 #
@@ -1046,6 +1103,9 @@ kubernetes-object-monitor:
   # Maximum time to wait for informer caches to synchronize on startup.
   # Large clusters may require a longer timeout while caches are populated.
   cacheSyncTimeout: 10m
+
+  # Where health events go: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
 
 ################################################################################
 # NVCRE-CERTIFICATION-MONITOR CONFIGURATION
@@ -1063,6 +1123,9 @@ nvcre-certification-monitor:
   policies:
     - name: certification-failures
       match: "(failedNode.reason == 'ThresholdViolation') || (failedNode.reason == 'WorkloadFailed')"
+
+  # Where health events go: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
 
 ################################################################################
 # GPU-HEALTH-MONITOR CONFIGURATION
@@ -1231,6 +1294,9 @@ gpu-health-monitor:
   affinity: {}
   tolerations: []
   podAnnotations: {}
+
+  # Where health events go: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
 
 ################################################################################
 # LABELER CONFIGURATION
@@ -2358,6 +2424,13 @@ preflight:
   # Network policy to allow API server -> webhook traffic
   networkPolicy:
     enabled: true
+
+  # Where the injected checks publish: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
+
+  # True when the workload pods run on the host network; the deployment
+  # platform connector's gRPC rule then admits every source. See docs/configuration/platform-connectors.md.
+  hostNetworkWorkloads: false
 
 ################################################################################
 # END OF CONFIGURATION

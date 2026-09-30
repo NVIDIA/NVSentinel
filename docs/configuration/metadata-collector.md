@@ -52,6 +52,31 @@ Runtime class name that provides GPU device access. Required for NVML to query G
 - `nvidia-legacy` - Legacy NVIDIA runtime
 - Empty string - Uses the default cluster runtime. Used for CRI-O environments and for NRI-mode clusters (see below)
 
+## GPUCluster (DRA) mode
+
+If the GPU Operator is installed in `GPUCluster` (DRA) mode, there is no Container Toolkit and no `nvidia` RuntimeClass, so the default `runtimeClassName: nvidia` fails admission. Enable GPUCluster mode:
+
+```yaml
+global:
+  gpuDraEnabled: true   # default false
+```
+
+With it enabled the DaemonSet drops `runtimeClassName` and holds a DRA admin-access claim on the node's GPUs instead, the same way GPU Operator runs its own DCGM DaemonSet; the DRA driver injects the driver libraries via CDI, and admin access does not consume the GPUs.
+
+Label the NVSentinel namespace once, before the install or upgrade that switches to GPUCluster mode. Kubernetes accepts admin-access claims only from a labelled namespace and rejects the chart's `ResourceClaimTemplate` otherwise, which fails the Helm release:
+
+```bash
+kubectl label namespace nvsentinel resource.kubernetes.io/admin-access=true
+```
+
+Switching modes in order:
+
+1. Label the namespace (once).
+2. Switch the GPU Operator to `GPUCluster` mode.
+3. `helm upgrade` with `global.gpuDraEnabled: true`.
+
+Switching back needs only steps 2 and 3 with `false`; the label stays. With the default `false` the chart renders exactly as before.
+
 ## Host-path driver access (NRI-mode clusters)
 
 On clusters where GPU Operator is configured for CDI + NRI device injection, a `RuntimeClass` matching `operator.runtimeClass` is often never created. Setting `runtimeClassName` then fails admission, and leaving it unset crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND`. Requesting `nvidia.com/gpu` works but reserves a GPU for the DaemonSet.

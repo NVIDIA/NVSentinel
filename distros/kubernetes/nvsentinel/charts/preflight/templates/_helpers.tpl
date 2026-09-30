@@ -157,6 +157,40 @@ Uses global.socketPath with unix:// prefix
 
 
 {{/*
+Whether the injected checks publish to the deployment platform connector.
+Renders "true" for publishTo "deployment", nothing for "socket", and fails on
+anything else. Kept under the preflight.* prefix for the reason given below.
+*/}}
+{{- define "preflight.publish.enabled" -}}
+{{- $v := .Values.publishTo | default "socket" -}}
+{{- if not (or (eq $v "socket") (eq $v "deployment")) -}}
+{{- fail (printf "preflight.publishTo must be \"socket\" or \"deployment\", got %q." $v) -}}
+{{- end -}}
+{{- if eq $v "deployment" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Whether the controller copies the deployment platform connector's CA bundle
+into the tenant namespaces: publishing to the deployment with TLS required.
+The insecure development mode sends no CA, so nothing is copied.
+*/}}
+{{- define "preflight.publish.caCopy" -}}
+{{- if and (include "preflight.publish.enabled" .) (eq (include "preflight.publish.tlsMode" .) "required") -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+TLS mode of the deployment platform connector, a copy of the umbrella's
+nvsentinel.pcDeployment.tlsMode with the same two accepted values.
+*/}}
+{{- define "preflight.publish.tlsMode" -}}
+{{- $mode := ((((.Values.global).platformConnectorDeployment).tls).mode) | default "required" -}}
+{{- if not (or (eq $mode "required") (eq $mode "insecureDevelopmentMode")) -}}
+{{- fail (printf "global.platformConnectorDeployment.tls.mode must be \"required\" or \"insecureDevelopmentMode\", got %q." $mode) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}
+
+{{/*
 Whether platform-connector auth is on, refusing the value shapes Go-template
 truthiness would misread.
 

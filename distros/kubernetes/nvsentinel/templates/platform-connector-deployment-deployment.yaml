@@ -1,0 +1,204 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{- if include "nvsentinel.pcDeployment.enabled" . }}
+{{- $d := .Values.platformConnector.deployment }}
+{{- $tlsMode := include "nvsentinel.pcDeployment.tlsMode" . }}
+{{- if not (include "nvsentinel.pcAuth.enabled" .) }}
+{{- fail "platformConnector.deployment.enabled is true but global.platformConnectorAuth.enabled is false. Every caller of the deployment platform connector presents a token, so node-binding auth must be enabled." }}
+{{- end }}
+# The deployment platform connector: the platform connector binary in its
+# central role (--mode=deployment). It runs the pipeline, the node condition
+# update and the datastore write inside each request and acknowledges a batch
+# only once it is stored, so a replica holds nothing between requests and
+# needs no drain: a plain rolling update is enough.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nvsentinel.pcDeployment.name" . }}
+  labels:
+    {{- include "nvsentinel.pcDeployment.labels" . | nindent 4 }}
+spec:
+  # Zero is refused: with no replica every monitor on publishTo
+  # "deployment" retries until its window ends and then drops its batches.
+  replicas: {{ include "nvsentinel.positiveInt" (list "platformConnector.deployment.replicas" $d.replicas) }}
+  selector:
+    matchLabels:
+      {{- include "nvsentinel.pcDeployment.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/platform-connector-deployment-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "nvsentinel.pcDeployment.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nvsentinel.pcDeployment.name" . }}
+      # Shutdown waits up to 20s for open requests, then up to 5s each for the
+      # datastore disconnect and the trace exporter. The grace period leaves
+      # margin over that 30s budget so cleanup is not cut short by SIGKILL.
+      terminationGracePeriodSeconds: 40
+      {{- if .Values.global.auditLogging.enabled }}
+      # Node condition and Event writes are audited like the DaemonSet's, into
+      # the same node directory, as the same user.
+      securityContext:
+        fsGroup: 65532
+      {{- end }}
+      {{- $pgCert := eq (include "nvsentinel.platformConnector.pgClientCert" .) "true" }}
+      {{- if or .Values.global.auditLogging.enabled $pgCert }}
+      initContainers:
+        {{- if .Values.global.auditLogging.enabled }}
+        {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
+        {{- end }}
+        # As the server's user (the image's non-root uid), so the key
+        # the copy makes private stays readable by the container.
+        {{- include "nvsentinel.platformConnector.pgCertInitContainer" (dict "context" . "runAsUser" 65532 "runAsGroup" 65532) | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: platform-connector-deployment
+          image: "{{ .Values.platformConnector.image.repository }}:{{ .Values.platformConnector.image.tag | default .Values.global.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.platformConnector.image.pullPolicy }}
+          securityContext:
+            runAsUser: 65532
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+          ports:
+            - name: grpc
+              containerPort: {{ include "nvsentinel.pcDeployment.grpcPort" . }}
+            - name: metrics
+              containerPort: {{ .Values.global.metricsPort }}
+          # Startup covers the datastore connect (a MongoDB ping loop, or a
+          # wait for the client certificate Secret), which runs before the
+          # probe endpoints are served; without it the liveness probe would
+          # kill a replica that is still connecting.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          # Ready only after the idempotency-index verification has succeeded
+          # and while the server is not shutting down.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml $d.resources | nindent 12 }}
+          args:
+            - "--mode=deployment"
+            - "--config=/etc/config/config.json"
+            - "--metrics-port={{ .Values.global.metricsPort }}"
+            - "--listen-addr=:{{ include "nvsentinel.pcDeployment.grpcPort" . }}"
+            {{- if eq $tlsMode "required" }}
+            - "--tls-cert-dir=/etc/nvsentinel/platform-connector-deployment/tls"
+            {{- else }}
+            - "--tls-insecure-development-mode"
+            {{- end }}
+            {{- include "nvsentinel.platformConnector.datastoreCertArgs" . | nindent 12 }}
+          volumeMounts:
+            - name: platform-connector-configmap
+              mountPath: /etc/config/
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
+            {{- end }}
+            {{- if eq $tlsMode "required" }}
+            - name: grpc-tls
+              mountPath: /etc/nvsentinel/platform-connector-deployment/tls
+              readOnly: true
+            {{- end }}
+            {{- include "nvsentinel.platformConnector.datastoreVolumeMounts" . | nindent 12 }}
+          env:
+            # App name for connection identification in logs and currentOp
+            - name: APP_NAME
+              value: "platform-connector-deployment"
+            # Names the audit log file, so two replicas on one node do not
+            # write and rotate the same file.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LOG_LEVEL
+              value: "{{ .Values.platformConnector.logLevel }}"
+            - name: DATASTORE_MAX_CONNECTIONS
+              value: {{ include "nvsentinel.positiveInt" (list "platformConnector.deployment.datastore.maxPoolSize" $d.datastore.maxPoolSize) | quote }}
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
+            {{- end }}
+            {{- include "nvsentinel.platformConnector.datastoreEnv" . | nindent 12 }}
+            {{- if .Values.global.tracing.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.tracing.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.global.tracing.insecure | quote }}
+            {{- end }}
+          envFrom:
+            {{- include "nvsentinel.platformConnector.datastoreEnvFrom" . | nindent 12 }}
+      volumes:
+        - name: platform-connector-configmap
+          configMap:
+            name: {{ include "nvsentinel.pcDeployment.name" . }}
+        {{- if .Values.global.auditLogging.enabled }}
+        {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
+        {{- end }}
+        {{- if eq $tlsMode "required" }}
+        - name: grpc-tls
+          secret:
+            secretName: {{ include "nvsentinel.pcDeployment.certSecretName" . }}
+        {{- end }}
+        {{- include "nvsentinel.platformConnector.datastoreVolumes" . | nindent 8 }}
+      # Spread replicas across nodes so one node loss does not take the
+      # whole write path down; preferred, not required, so small clusters
+      # still schedule every replica.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "nvsentinel.pcDeployment.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      # The system pool when the global system placement is set, else the
+      # Deployment's own values; never the DaemonSet's tolerate-everything
+      # list, so a central pod stays off tainted nodes.
+      {{- with (((.Values.global).systemNodeSelector) | default $d.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (((.Values.global).systemNodeTolerations) | default $d.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ((.Values.global).systemPriorityClassName) }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+{{- end }}

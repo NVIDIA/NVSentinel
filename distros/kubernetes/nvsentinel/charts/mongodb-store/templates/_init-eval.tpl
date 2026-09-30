@@ -99,6 +99,8 @@ db.$MONGODB_COLLECTION_NAME.createIndex({
   'healthevent.isfatal': 1,
   'healthevent.generatedtimestamp.seconds': 1
 });
+
+{{ include "nvsentinel.mongoIdempotencyIndexEval" . }}
 {{- if .Values.mongodb.tls.enabled }}
 // Create X.509 users (TLS only)
 var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');

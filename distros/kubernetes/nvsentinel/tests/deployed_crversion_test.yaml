@@ -100,3 +100,14 @@ tests:
           path: spec.template.spec.initContainers[3].command[2]
           pattern: 'jsonpath=.\{range \.items\[\*\]\}'
         documentIndex: 3
+
+  # The bundled setup Job creates the deployment platform connector's
+  # idempotency index from the same script as the external one.
+  - it: creates the idempotency index in the bundled setup Job
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: healthevent_idempotency_key_unique
