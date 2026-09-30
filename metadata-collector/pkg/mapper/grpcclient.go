@@ -34,6 +34,13 @@ import (
 
 const (
 	podResourcesKubeletSocket = "/var/lib/kubelet/pod-resources/kubelet.sock"
+
+	draGPUDriverName = "gpu.nvidia.com"
+	// draGPUDeviceNameFormat is how the NVIDIA DRA driver names a full GPU from its minor number, the N in
+	// /dev/nvidiaN. It mirrors GpuInfo.CanonicalName() in cmd/gpu-kubelet-plugin/deviceinfo.go
+	// (https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/495bf4c/cmd/gpu-kubelet-plugin/deviceinfo.go#L122),
+	// which the driver keeps on purpose because the minor is fixed for as long as the GPU stays on the bus.
+	draGPUDeviceNameFormat = "gpu-%d"
 )
 
 type KubeletGRPClient interface {
@@ -45,14 +52,13 @@ type kubeletGRPClient struct {
 
 	connection         *grpc.ClientConn
 	podResourcesClient v1.PodResourcesListerClient
-	// uuidsByMinor reads this node's GPUs from NVML, at most once per poll; nil leaves DRA allocations unmapped.
-	uuidsByMinor func() (map[int]string, error)
+	// draDeviceUUIDs maps this node's DRA device names to GPU UUIDs; an unknown name is skipped.
+	draDeviceUUIDs map[string]string
 }
 
-// NewKubeletGRPClient connects to the kubelet PodResources socket. uuidsByMinor maps GPU minor numbers to
-// UUIDs for DRA allocations; nil skips them.
-func NewKubeletGRPClient(ctx context.Context, uuidsByMinor func() (map[int]string, error)) (KubeletGRPClient,
-	error) {
+// NewKubeletGRPClient connects to the kubelet PodResources socket. draDeviceUUIDs maps this node's DRA device
+// names to GPU UUIDs.
+func NewKubeletGRPClient(ctx context.Context, uuidsByMinor map[int]string) (KubeletGRPClient, error) {
 	_, err := os.Stat(podResourcesKubeletSocket)
 	if err != nil {
 		return nil, err
@@ -78,7 +84,7 @@ func NewKubeletGRPClient(ctx context.Context, uuidsByMinor func() (map[int]strin
 		ctx:                ctx,
 		connection:         connection,
 		podResourcesClient: client,
-		uuidsByMinor:       uuidsByMinor,
+		draDeviceUUIDs:     draDeviceUUIDs(uuidsByMinor),
 	}, nil
 }
 
@@ -142,12 +148,6 @@ func (client *kubeletGRPClient) ListPodResources() (map[string]*model.DeviceAnno
 
 	devicesPerPod := make(map[string]*model.DeviceAnnotation)
 
-	// One resolver per poll: NVML is read on the first DRA allocation met and not at all when there is none.
-	var resolveDRADevice draDeviceResolver
-	if client.uuidsByMinor != nil {
-		resolveDRADevice = newMinorNumberResolver(client.uuidsByMinor)
-	}
-
 	for _, pod := range listPodResourcesResponse.GetPodResources() {
 		podKey := pod.GetNamespace() + "/" + pod.GetName()
 
@@ -160,7 +160,7 @@ func (client *kubeletGRPClient) ListPodResources() (map[string]*model.DeviceAnno
 
 			for _, claim := range container.GetDynamicResources() {
 				for _, resource := range claim.GetClaimResources() {
-					addDRADevice(devicesPerPod, podKey, resource, resolveDRADevice)
+					addDRADevice(devicesPerPod, podKey, resource, client.draDeviceUUIDs)
 				}
 			}
 		}
@@ -185,15 +185,25 @@ func addPodDevices(devicesPerPod map[string]*model.DeviceAnnotation, podKey, res
 	}
 }
 
+// draDeviceUUIDs maps each DRA device name to its GPU UUID from the node's GPU minor numbers.
+func draDeviceUUIDs(uuidsByMinor map[int]string) map[string]string {
+	uuidsByName := make(map[string]string, len(uuidsByMinor))
+	for minor, uuid := range uuidsByMinor {
+		uuidsByName[fmt.Sprintf(draGPUDeviceNameFormat, minor)] = uuid
+	}
+
+	return uuidsByName
+}
+
 // addDRADevice records a GPU allocated through a ResourceClaim under the DRA driver name. An allocation whose
-// device name does not resolve is skipped; the pod is annotated once it resolves on a later poll.
+// device name is unknown is skipped; the pod is annotated once it resolves on a later poll.
 func addDRADevice(devicesPerPod map[string]*model.DeviceAnnotation, podKey string, resource *v1.ClaimResource,
-	resolveDRADevice draDeviceResolver) {
-	if resolveDRADevice == nil || resource.GetDriverName() != draGPUDriverName {
+	draDeviceUUIDs map[string]string) {
+	if resource.GetDriverName() != draGPUDriverName {
 		return
 	}
 
-	uuid, ok := resolveDRADevice(resource.GetDeviceName())
+	uuid, ok := draDeviceUUIDs[resource.GetDeviceName()]
 	if !ok {
 		slog.Warn("No GPU matches DRA allocation, retrying on the next poll",
 			"podKey", podKey, "pool", resource.GetPoolName(), "device", resource.GetDeviceName())

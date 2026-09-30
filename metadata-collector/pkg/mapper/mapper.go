@@ -91,7 +91,12 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		return nil, fmt.Errorf("got an error creating Kubelet HTTPS client: %w", err)
 	}
 
-	grpcClient, err := NewKubeletGRPClient(ctx, (&nvml.NVMLWrapper{}).UUIDsByMinor)
+	uuidsByMinor, err := (&nvml.NVMLWrapper{}).UUIDsByMinor()
+	if err != nil {
+		return nil, fmt.Errorf("read GPU minor numbers for DRA device resolution: %w", err)
+	}
+
+	grpcClient, err := NewKubeletGRPClient(ctx, uuidsByMinor)
 	if err != nil {
 		return nil, fmt.Errorf("got an error creating Kubelet gRPC client: %w", err)
 	}
