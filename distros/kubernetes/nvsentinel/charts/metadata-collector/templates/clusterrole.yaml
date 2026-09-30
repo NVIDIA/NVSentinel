@@ -31,11 +31,3 @@ rules:
       - nodes/proxy
     verbs:
       - get
-  # Resolves DRA GPU allocations (GPU Operator GPUCluster mode) to GPU UUIDs through this node's ResourceSlices.
-  - apiGroups:
-      - resource.k8s.io
-    resources:
-      - resourceslices
-    verbs:
-      - list
-      - watch

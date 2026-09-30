@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"os"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +31,7 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 )
 
 const (
@@ -91,17 +91,14 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		return nil, fmt.Errorf("got an error creating Kubelet HTTPS client: %w", err)
 	}
 
-	node, err := nodeName()
-	if err != nil {
-		return nil, fmt.Errorf("determine node name: %w", err)
+	// The collector shut NVML down after writing the metadata file; the mapper keeps its own handle open
+	// for the life of the process to resolve DRA device names to GPU UUIDs.
+	nvmlWrapper := &nvml.NVMLWrapper{}
+	if err := nvmlWrapper.Init(); err != nil {
+		return nil, fmt.Errorf("initialize NVML for DRA device resolution: %w", err)
 	}
 
-	draResolver, err := newDRADeviceResolver(ctx, k8sClient, node)
-	if err != nil {
-		return nil, fmt.Errorf("create DRA device resolver: %w", err)
-	}
-
-	grpcClient, err := NewKubeletGRPClient(ctx, draResolver)
+	grpcClient, err := NewKubeletGRPClient(ctx, newMinorNumberResolver(nvmlWrapper.UUIDsByMinor))
 	if err != nil {
 		return nil, fmt.Errorf("got an error creating Kubelet gRPC client: %w", err)
 	}
@@ -112,16 +109,6 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		kubeletGRPCClient:  grpcClient,
 		kubernetesClient:   k8sClient,
 	}, nil
-}
-
-// nodeName prefers the downward-API NODE_NAME the chart sets and falls back to the hostname, which is the node's
-// on this host-network DaemonSet and in host-native runs.
-func nodeName() (string, error) {
-	if name := os.Getenv("NODE_NAME"); name != "" {
-		return name, nil
-	}
-
-	return os.Hostname()
 }
 
 // loadRESTConfig uses only the explicit file, or in-cluster credentials when path is empty.

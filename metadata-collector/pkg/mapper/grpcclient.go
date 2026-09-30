@@ -48,7 +48,7 @@ type kubeletGRPClient struct {
 	resolveDRADevice   draDeviceResolver
 }
 
-// NewKubeletGRPClient connects to the kubelet PodResources socket. resolveDRADevice maps DRA allocations to GPU
+// NewKubeletGRPClient connects to the kubelet PodResources socket. resolveDRADevice maps DRA device names to GPU
 // UUIDs; nil skips them.
 func NewKubeletGRPClient(ctx context.Context, resolveDRADevice draDeviceResolver) (KubeletGRPClient, error) {
 	_, err := os.Stat(podResourcesKubeletSocket)
@@ -86,7 +86,7 @@ daemonset requires a HostPath volume configured to mount the /var/lib/kubelet/po
 
 Devices allocated by device plugins arrive in each container's devices list keyed by resource name. Devices allocated
 through DRA ResourceClaims arrive in dynamic_resources as (driver, pool, device name) and are resolved to GPU UUIDs
-through the node's ResourceSlices, keyed by the driver name.
+through the node's NVML minor numbers, keyed by the driver name.
 
 This function returns a mapping from pods to all devices used by any container in that pod. Additionally, it will
 ensure that each pod has a unique list of devices (even if multiple containers are allocated the same device) and
@@ -178,19 +178,17 @@ func addPodDevices(devicesPerPod map[string]*model.DeviceAnnotation, podKey, res
 }
 
 // addDRADevice records a GPU allocated through a ResourceClaim under the DRA driver name. An allocation whose
-// ResourceSlice device is not cached yet still marks the pod as a GPU holder; the UUID lands on the next poll.
+// device name does not resolve is skipped; the pod is annotated once it resolves on a later poll.
 func (client *kubeletGRPClient) addDRADevice(devicesPerPod map[string]*model.DeviceAnnotation, podKey string,
 	resource *v1.ClaimResource) {
 	if client.resolveDRADevice == nil || resource.GetDriverName() != draGPUDriverName {
 		return
 	}
 
-	uuid, ok := client.resolveDRADevice(resource.GetPoolName(), resource.GetDeviceName())
+	uuid, ok := client.resolveDRADevice(resource.GetDeviceName())
 	if !ok {
-		slog.Warn("No ResourceSlice device matches DRA allocation, retrying on the next poll",
+		slog.Warn("No GPU matches DRA allocation, retrying on the next poll",
 			"podKey", podKey, "pool", resource.GetPoolName(), "device", resource.GetDeviceName())
-
-		addPodDevices(devicesPerPod, podKey, draGPUDriverName)
 
 		return
 	}

@@ -107,7 +107,7 @@ type MockPodResourcesServer struct {
 type deviceInfo struct {
 	resourceName string
 	id           string
-	// driverName set marks a DRA allocation: id is the ResourceSlice device name and resourceName the pool.
+	// driverName set marks a DRA allocation: id is the DRA device name and resourceName the pool.
 	driverName string
 }
 
@@ -207,9 +207,9 @@ func TestListPodResourcesErrorWithRetry(t *testing.T) {
 }
 
 func TestListPodResourcesWithDRA(t *testing.T) {
-	uuids := map[string]string{"node-a/gpu-0": "GPU-a0", "node-a/gpu-1": "GPU-a1"}
-	resolve := func(pool, device string) (string, bool) {
-		uuid, ok := uuids[pool+"/"+device]
+	uuids := map[string]string{"gpu-0": "GPU-a0", "gpu-1": "GPU-a1"}
+	resolve := func(device string) (string, bool) {
+		uuid, ok := uuids[device]
 		return uuid, ok
 	}
 	draDevices := map[string]map[string][]deviceInfo{
@@ -238,7 +238,7 @@ func TestListPodResourcesWithDRA(t *testing.T) {
 			draGPUDriverName: {"GPU-a0", "GPU-a1"},
 			"nvidia.com/gpu": {"GPU-plugin"},
 		}},
-		// unresolved-pod is absent until its ResourceSlice device is cached.
+		// unresolved-pod is absent until its device name resolves.
 	}, devicesPerPod)
 
 	// Without a resolver DRA allocations are ignored entirely.

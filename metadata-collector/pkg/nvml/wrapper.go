@@ -147,6 +147,38 @@ func (w *NVMLWrapper) GetGPUInfo(index int) (*model.GPUInfo, error) {
 	return gpuInfo, nil
 }
 
+// UUIDsByMinor maps each GPU's minor number, the N in /dev/nvidiaN, to its UUID. The NVIDIA DRA driver names
+// devices by minor, so this is what resolves a DRA allocation to a GPU without asking the API server.
+func (w *NVMLWrapper) UUIDsByMinor() (map[int]string, error) {
+	count, err := w.GetDeviceCount()
+	if err != nil {
+		return nil, err
+	}
+
+	uuids := make(map[int]string, count)
+
+	for index := 0; index < count; index++ {
+		device, ret := nvml.DeviceGetHandleByIndex(index)
+		if ret != nvml.SUCCESS {
+			return nil, fmt.Errorf("failed to get device handle for GPU %d: %v", index, nvml.ErrorString(ret))
+		}
+
+		minor, ret := device.GetMinorNumber()
+		if ret != nvml.SUCCESS {
+			return nil, fmt.Errorf("failed to get minor number for GPU %d: %v", index, nvml.ErrorString(ret))
+		}
+
+		uuid, ret := device.GetUUID()
+		if ret != nvml.SUCCESS {
+			return nil, fmt.Errorf("failed to get UUID for GPU %d: %v", index, nvml.ErrorString(ret))
+		}
+
+		uuids[minor] = uuid
+	}
+
+	return uuids, nil
+}
+
 func (w *NVMLWrapper) GetChassisSerial(index int) *string {
 	device, ret := nvml.DeviceGetHandleByIndex(index)
 	if ret != nvml.SUCCESS {
