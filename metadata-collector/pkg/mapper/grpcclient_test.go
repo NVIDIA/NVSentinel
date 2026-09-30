@@ -207,10 +207,10 @@ func TestListPodResourcesErrorWithRetry(t *testing.T) {
 }
 
 func TestListPodResourcesWithDRA(t *testing.T) {
-	uuids := map[string]string{"gpu-0": "GPU-a0", "gpu-1": "GPU-a1"}
-	resolve := func(device string) (string, bool) {
-		uuid, ok := uuids[device]
-		return uuid, ok
+	nvmlReads := 0
+	uuidsByMinor := func() (map[int]string, error) {
+		nvmlReads++
+		return map[int]string{0: "GPU-a0", 1: "GPU-a1"}, nil
 	}
 	draDevices := map[string]map[string][]deviceInfo{
 		"dra-pod": {
@@ -230,9 +230,10 @@ func TestListPodResourcesWithDRA(t *testing.T) {
 	}
 
 	client := newTestKubeletGRPCClient(nil, 0, draDevices)
-	client.resolveDRADevice = resolve
+	client.uuidsByMinor = uuidsByMinor
 	devicesPerPod, err := client.ListPodResources()
 	assert.NoError(t, err)
+	assert.Equal(t, 1, nvmlReads, "NVML is read once per poll, not per allocation")
 	assert.Equal(t, map[string]*model.DeviceAnnotation{
 		"default/dra-pod": {Devices: map[string][]string{
 			draGPUDriverName: {"GPU-a0", "GPU-a1"},
@@ -241,7 +242,7 @@ func TestListPodResourcesWithDRA(t *testing.T) {
 		// unresolved-pod is absent until its device name resolves.
 	}, devicesPerPod)
 
-	// Without a resolver DRA allocations are ignored entirely.
+	// Without NVML access DRA allocations are ignored entirely.
 	client = newTestKubeletGRPCClient(nil, 0, draDevices)
 	devicesPerPod, err = client.ListPodResources()
 	assert.NoError(t, err)

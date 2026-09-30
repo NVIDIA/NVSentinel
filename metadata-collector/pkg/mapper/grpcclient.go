@@ -45,12 +45,14 @@ type kubeletGRPClient struct {
 
 	connection         *grpc.ClientConn
 	podResourcesClient v1.PodResourcesListerClient
-	resolveDRADevice   draDeviceResolver
+	// uuidsByMinor reads this node's GPUs from NVML, at most once per poll; nil leaves DRA allocations unmapped.
+	uuidsByMinor func() (map[int]string, error)
 }
 
-// NewKubeletGRPClient connects to the kubelet PodResources socket. resolveDRADevice maps DRA device names to GPU
-// UUIDs; nil skips them.
-func NewKubeletGRPClient(ctx context.Context, resolveDRADevice draDeviceResolver) (KubeletGRPClient, error) {
+// NewKubeletGRPClient connects to the kubelet PodResources socket. uuidsByMinor maps GPU minor numbers to
+// UUIDs for DRA allocations; nil skips them.
+func NewKubeletGRPClient(ctx context.Context, uuidsByMinor func() (map[int]string, error)) (KubeletGRPClient,
+	error) {
 	_, err := os.Stat(podResourcesKubeletSocket)
 	if err != nil {
 		return nil, err
@@ -76,7 +78,7 @@ func NewKubeletGRPClient(ctx context.Context, resolveDRADevice draDeviceResolver
 		ctx:                ctx,
 		connection:         connection,
 		podResourcesClient: client,
-		resolveDRADevice:   resolveDRADevice,
+		uuidsByMinor:       uuidsByMinor,
 	}, nil
 }
 
@@ -140,6 +142,12 @@ func (client *kubeletGRPClient) ListPodResources() (map[string]*model.DeviceAnno
 
 	devicesPerPod := make(map[string]*model.DeviceAnnotation)
 
+	// One resolver per poll: NVML is read on the first DRA allocation met and not at all when there is none.
+	var resolveDRADevice draDeviceResolver
+	if client.uuidsByMinor != nil {
+		resolveDRADevice = newMinorNumberResolver(client.uuidsByMinor)
+	}
+
 	for _, pod := range listPodResourcesResponse.GetPodResources() {
 		podKey := pod.GetNamespace() + "/" + pod.GetName()
 
@@ -152,7 +160,7 @@ func (client *kubeletGRPClient) ListPodResources() (map[string]*model.DeviceAnno
 
 			for _, claim := range container.GetDynamicResources() {
 				for _, resource := range claim.GetClaimResources() {
-					client.addDRADevice(devicesPerPod, podKey, resource)
+					addDRADevice(devicesPerPod, podKey, resource, resolveDRADevice)
 				}
 			}
 		}
@@ -179,13 +187,13 @@ func addPodDevices(devicesPerPod map[string]*model.DeviceAnnotation, podKey, res
 
 // addDRADevice records a GPU allocated through a ResourceClaim under the DRA driver name. An allocation whose
 // device name does not resolve is skipped; the pod is annotated once it resolves on a later poll.
-func (client *kubeletGRPClient) addDRADevice(devicesPerPod map[string]*model.DeviceAnnotation, podKey string,
-	resource *v1.ClaimResource) {
-	if client.resolveDRADevice == nil || resource.GetDriverName() != draGPUDriverName {
+func addDRADevice(devicesPerPod map[string]*model.DeviceAnnotation, podKey string, resource *v1.ClaimResource,
+	resolveDRADevice draDeviceResolver) {
+	if resolveDRADevice == nil || resource.GetDriverName() != draGPUDriverName {
 		return
 	}
 
-	uuid, ok := client.resolveDRADevice(resource.GetDeviceName())
+	uuid, ok := resolveDRADevice(resource.GetDeviceName())
 	if !ok {
 		slog.Warn("No GPU matches DRA allocation, retrying on the next poll",
 			"podKey", podKey, "pool", resource.GetPoolName(), "device", resource.GetDeviceName())

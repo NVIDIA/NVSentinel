@@ -20,8 +20,6 @@ import (
 )
 
 const (
-	// draGPUDriverName is the DRA driver GPU Operator GPUCluster mode allocates GPUs through. It is also the
-	// key the resolved UUIDs are written under in the devices annotation.
 	draGPUDriverName = "gpu.nvidia.com"
 	// draGPUDeviceNameFormat is how the NVIDIA DRA driver names a full GPU from its minor number, the N in
 	// /dev/nvidiaN. It mirrors GpuInfo.CanonicalName() in cmd/gpu-kubelet-plugin/deviceinfo.go
@@ -30,28 +28,28 @@ const (
 	draGPUDeviceNameFormat = "gpu-%d"
 )
 
-// draDeviceResolver maps a DRA device name to a GPU UUID. A nil resolver leaves DRA allocations unmapped.
+// draDeviceResolver maps a DRA device name to a GPU UUID.
 type draDeviceResolver func(deviceName string) (string, bool)
 
-// newMinorNumberResolver resolves DRA device names through NVML, the source of truth on the node, with no API
-// server access: each GPU's minor number is formatted the way the driver formats it and compared to the
-// allocated name, so anything the driver would not have produced fails closed. uuidsByMinor runs on every
-// lookup, so a renumbered node is picked up on the next poll without a restart.
 func newMinorNumberResolver(uuidsByMinor func() (map[int]string, error)) draDeviceResolver {
+	var uuidsByName map[string]string
+
 	return func(deviceName string) (string, bool) {
-		uuids, err := uuidsByMinor()
-		if err != nil {
-			slog.Warn("Could not read GPU minor numbers from NVML", "error", err)
+		if uuidsByName == nil {
+			uuidsByName = make(map[string]string)
 
-			return "", false
-		}
+			uuids, err := uuidsByMinor()
+			if err != nil {
+				slog.Warn("Could not read GPU minor numbers from NVML", "error", err)
+			}
 
-		for minor, uuid := range uuids {
-			if fmt.Sprintf(draGPUDeviceNameFormat, minor) == deviceName {
-				return uuid, true
+			for minor, uuid := range uuids {
+				uuidsByName[fmt.Sprintf(draGPUDeviceNameFormat, minor)] = uuid
 			}
 		}
 
-		return "", false
+		uuid, ok := uuidsByName[deviceName]
+
+		return uuid, ok
 	}
 }

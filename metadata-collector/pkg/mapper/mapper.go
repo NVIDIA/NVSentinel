@@ -91,14 +91,7 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		return nil, fmt.Errorf("got an error creating Kubelet HTTPS client: %w", err)
 	}
 
-	// The collector shut NVML down after writing the metadata file; the mapper keeps its own handle open
-	// for the life of the process to resolve DRA device names to GPU UUIDs.
-	nvmlWrapper := &nvml.NVMLWrapper{}
-	if err := nvmlWrapper.Init(); err != nil {
-		return nil, fmt.Errorf("initialize NVML for DRA device resolution: %w", err)
-	}
-
-	grpcClient, err := NewKubeletGRPClient(ctx, newMinorNumberResolver(nvmlWrapper.UUIDsByMinor))
+	grpcClient, err := NewKubeletGRPClient(ctx, (&nvml.NVMLWrapper{}).UUIDsByMinor)
 	if err != nil {
 		return nil, fmt.Errorf("got an error creating Kubelet gRPC client: %w", err)
 	}

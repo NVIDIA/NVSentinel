@@ -22,8 +22,9 @@ import (
 )
 
 func TestMinorNumberResolver(t *testing.T) {
-	uuids := map[int]string{0: "GPU-a0", 7: "GPU-a7", 10: "GPU-a10"}
-	resolve := newMinorNumberResolver(func() (map[int]string, error) { return uuids, nil })
+	resolve := newMinorNumberResolver(func() (map[int]string, error) {
+		return map[int]string{0: "GPU-a0", 7: "GPU-a7", 10: "GPU-a10"}, nil
+	})
 
 	for name, want := range map[string]string{"gpu-0": "GPU-a0", "gpu-7": "GPU-a7", "gpu-10": "GPU-a10"} {
 		uuid, ok := resolve(name)

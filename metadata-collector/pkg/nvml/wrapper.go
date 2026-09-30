@@ -150,6 +150,16 @@ func (w *NVMLWrapper) GetGPUInfo(index int) (*model.GPUInfo, error) {
 // UUIDsByMinor maps each GPU's minor number, the N in /dev/nvidiaN, to its UUID. The NVIDIA DRA driver names
 // devices by minor, so this is what resolves a DRA allocation to a GPU without asking the API server.
 func (w *NVMLWrapper) UUIDsByMinor() (map[int]string, error) {
+	if err := w.Init(); err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if err := w.Shutdown(); err != nil {
+			slog.Warn("Failed to shutdown NVML after reading GPU minor numbers", "error", err)
+		}
+	}()
+
 	count, err := w.GetDeviceCount()
 	if err != nil {
 		return nil, err
