@@ -180,6 +180,20 @@ func (c *FaultQuarantineClient) GetTotalNodes(ctx context.Context) (int, error) 
 	return totalNodes, nil
 }
 
+// GetCordonedNodes returns how many nodes NVSentinel currently holds quarantined, read from
+// the same informer index GetTotalNodes already consults. Nodes cordoned by anything else are
+// not counted, so an unrelated drain or a GPU operator upgrade does not consume the budget.
+func (c *FaultQuarantineClient) GetCordonedNodes(ctx context.Context) (int, error) {
+	_, quarantinedNodes, err := c.NodeInformer.GetNodeCounts()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get node counts from informer: %w", err)
+	}
+
+	slog.DebugContext(ctx, "Got cordoned nodes from NodeInformer cache", "cordonedNodes", len(quarantinedNodes))
+
+	return len(quarantinedNodes), nil
+}
+
 func (c *FaultQuarantineClient) SetLabelKeys(cordonedReasonKey, uncordonedReasonKey string) {
 	c.cordonedReasonLabelKey = cordonedReasonKey
 	c.uncordonedReasonLabelKey = uncordonedReasonKey
