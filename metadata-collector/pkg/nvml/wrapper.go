@@ -144,56 +144,13 @@ func (w *NVMLWrapper) GetGPUInfo(index int) (*model.GPUInfo, error) {
 
 	gpuInfo.SlowdownTLimitC = slowdownTLimitC(device)
 
+	if minor, ret := device.GetMinorNumber(); ret == nvml.SUCCESS {
+		gpuInfo.MinorNumber = &minor
+	} else {
+		slog.Warn("Failed to get minor number for GPU", "gpu_id", index, "error", nvml.ErrorString(ret))
+	}
+
 	return gpuInfo, nil
-}
-
-// UUIDsByMinor maps each GPU's minor number, the N in /dev/nvidiaN, to its UUID. The NVIDIA DRA driver names
-// devices by minor, so this is what resolves a DRA allocation to a GPU without asking the API server.
-func (w *NVMLWrapper) UUIDsByMinor() (map[int]string, error) {
-	if err := w.Init(); err != nil {
-		return nil, err
-	}
-
-	defer func() {
-		if err := w.Shutdown(); err != nil {
-			slog.Warn("Failed to shutdown NVML after reading GPU minor numbers", "error", err)
-		}
-	}()
-
-	count, err := w.GetDeviceCount()
-	if err != nil {
-		return nil, err
-	}
-
-	uuids := make(map[int]string, count)
-
-	// A GPU that has fallen off the bus fails its own calls; skip it so the healthy GPUs still resolve.
-	for index := 0; index < count; index++ {
-		device, ret := nvml.DeviceGetHandleByIndex(index)
-		if ret != nvml.SUCCESS {
-			slog.Warn("Skipping GPU without a device handle", "index", index, "error", nvml.ErrorString(ret))
-
-			continue
-		}
-
-		minor, ret := device.GetMinorNumber()
-		if ret != nvml.SUCCESS {
-			slog.Warn("Skipping GPU without a minor number", "index", index, "error", nvml.ErrorString(ret))
-
-			continue
-		}
-
-		uuid, ret := device.GetUUID()
-		if ret != nvml.SUCCESS {
-			slog.Warn("Skipping GPU without a UUID", "index", index, "minor", minor, "error", nvml.ErrorString(ret))
-
-			continue
-		}
-
-		uuids[minor] = uuid
-	}
-
-	return uuids, nil
 }
 
 func (w *NVMLWrapper) GetChassisSerial(index int) *string {
