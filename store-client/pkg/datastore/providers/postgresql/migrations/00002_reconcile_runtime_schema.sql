@@ -87,16 +87,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS maintenance_events_changes ON maintenance_events;
-CREATE TRIGGER maintenance_events_changes
-    AFTER INSERT OR UPDATE OR DELETE ON maintenance_events
-    FOR EACH ROW EXECUTE FUNCTION log_table_changes();
-
-DROP TRIGGER IF EXISTS health_events_changes ON health_events;
-CREATE TRIGGER health_events_changes
-    AFTER INSERT OR UPDATE OR DELETE ON health_events
-    FOR EACH ROW EXECUTE FUNCTION log_table_changes();
-
 INSERT INTO nvsentinel_schema_migrations (version, description)
 VALUES (2, 'reconcile historical Go runtime DDL')
 ON CONFLICT (version) DO NOTHING;

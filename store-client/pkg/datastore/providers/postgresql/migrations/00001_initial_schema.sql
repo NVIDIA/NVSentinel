@@ -27,6 +27,65 @@ CREATE TABLE IF NOT EXISTS nvsentinel_schema_migrations (
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- Databases created by earlier releases (Go datastore startup or the Tilt
+-- initdb script) already have this layout, so the IF NOT EXISTS statements
+-- below adopt them in place. Any other pre-existing layout fails here with a
+-- clear error instead of failing later on an index or trigger.
+DO $$
+DECLARE
+    required RECORD;
+BEGIN
+    FOR required IN
+        SELECT *
+        FROM (VALUES
+            ('maintenance_events', 'id', 'uuid'),
+            ('maintenance_events', 'event_id', NULL),
+            ('maintenance_events', 'csp', NULL),
+            ('maintenance_events', 'cluster_name', NULL),
+            ('maintenance_events', 'node_name', NULL),
+            ('maintenance_events', 'status', NULL),
+            ('maintenance_events', 'csp_status', NULL),
+            ('maintenance_events', 'scheduled_start_time', NULL),
+            ('maintenance_events', 'actual_end_time', NULL),
+            ('maintenance_events', 'event_received_timestamp', NULL),
+            ('maintenance_events', 'last_updated_timestamp', NULL),
+            ('maintenance_events', 'document', 'jsonb'),
+            ('health_events', 'id', 'uuid'),
+            ('health_events', 'node_name', NULL),
+            ('health_events', 'event_type', NULL),
+            ('health_events', 'node_quarantined', NULL),
+            ('health_events', 'user_pods_eviction_status', NULL),
+            ('health_events', 'created_at', NULL),
+            ('health_events', 'updated_at', NULL),
+            ('health_events', 'document', 'jsonb'),
+            ('datastore_changelog', 'table_name', NULL),
+            ('datastore_changelog', 'record_id', 'uuid'),
+            ('datastore_changelog', 'operation', NULL),
+            ('datastore_changelog', 'old_values', 'jsonb'),
+            ('datastore_changelog', 'new_values', 'jsonb'),
+            ('datastore_changelog', 'changed_at', NULL),
+            ('datastore_changelog', 'processed', NULL),
+            ('resume_tokens', 'client_name', NULL),
+            ('resume_tokens', 'resume_token', 'jsonb'),
+            ('resume_tokens', 'last_updated', NULL)
+        ) AS r(table_name, column_name, type_name)
+    LOOP
+        IF to_regclass(required.table_name) IS NOT NULL AND NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute a
+            WHERE a.attrelid = to_regclass(required.table_name)
+              AND a.attname = required.column_name
+              AND NOT a.attisdropped
+              AND (required.type_name IS NULL OR a.atttypid = required.type_name::regtype)
+        ) THEN
+            RAISE EXCEPTION 'existing table % has an incompatible layout: column % is missing or is not of type %',
+                required.table_name, required.column_name, COALESCE(required.type_name, 'any')
+                USING HINT = 'This database was not created by NVSentinel. Migrate its data to the NVSentinel schema before applying migrations.';
+        END IF;
+    END LOOP;
+END
+$$;
+
 CREATE TABLE IF NOT EXISTS maintenance_events (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     event_id VARCHAR(255) UNIQUE NOT NULL,
@@ -173,15 +232,36 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS maintenance_events_changes ON maintenance_events;
-CREATE TRIGGER maintenance_events_changes
-    AFTER INSERT OR UPDATE OR DELETE ON maintenance_events
-    FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+-- Create the triggers only when they are missing. DROP TRIGGER takes an
+-- ACCESS EXCLUSIVE lock, which blocks writers on a live table and aborts a
+-- concurrent index build that an older release may run during an upgrade.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'maintenance_events_changes'
+          AND tgrelid = 'maintenance_events'::regclass
+          AND NOT tgisinternal
+    ) THEN
+        CREATE TRIGGER maintenance_events_changes
+            AFTER INSERT OR UPDATE OR DELETE ON maintenance_events
+            FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+    END IF;
 
-DROP TRIGGER IF EXISTS health_events_changes ON health_events;
-CREATE TRIGGER health_events_changes
-    AFTER INSERT OR UPDATE OR DELETE ON health_events
-    FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'health_events_changes'
+          AND tgrelid = 'health_events'::regclass
+          AND NOT tgisinternal
+    ) THEN
+        CREATE TRIGGER health_events_changes
+            AFTER INSERT OR UPDATE OR DELETE ON health_events
+            FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+    END IF;
+END
+$$;
 
 CREATE OR REPLACE FUNCTION cleanup_changelog(retention_days INTEGER DEFAULT 7)
 RETURNS INTEGER AS $$

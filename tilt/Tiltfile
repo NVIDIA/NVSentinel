@@ -255,7 +255,9 @@ else:
 
 # Determine datastore resource name
 if use_postgresql:
-    datastore_resource = 'nvsentinel-postgresql'
+    # Applications validate the schema version at startup, so they wait for
+    # the migrations rather than for the PostgreSQL workload alone.
+    datastore_resource = 'postgresql-migrations'
 else:
     datastore_resource = 'mongodb' if not use_percona else mongodb_init_job
 
@@ -372,6 +374,13 @@ if use_postgresql:
         workload='nvsentinel-postgresql',
         port_forwards=['5432:5432'],  # Port-forward PostgreSQL for debugging
         resource_deps=['cert-manager-resources'],
+    )
+
+    local_resource(
+        'postgresql-migrations',
+        cmd='./apply-postgres-migrations.sh',
+        deps=['../store-client/pkg/datastore/providers/postgresql/migrations'],
+        resource_deps=['nvsentinel-postgresql'],
     )
 
 # Group all KWOK nodes (regular GPU nodes + separate kata test nodes) for resource management

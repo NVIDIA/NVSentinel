@@ -506,55 +506,15 @@ events, err := healthStore.FindHealthEventsByQuery(ctx, q)
 
 ### Database Tables
 
-#### health_events
-```sql
-CREATE TABLE health_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    data JSONB NOT NULL,
-    createdAt TIMESTAMP NOT NULL DEFAULT NOW(),
-    updatedAt TIMESTAMP NOT NULL DEFAULT NOW()
-);
+The migrations define these tables. This list is a summary only; the migration files define the columns, indexes, and triggers.
 
-CREATE INDEX idx_health_events_data ON health_events USING GIN (data);
-CREATE INDEX idx_health_events_created ON health_events (createdAt DESC);
-```
-
-#### maintenance_events
-```sql
-CREATE TABLE maintenance_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    data JSONB NOT NULL,
-    createdAt TIMESTAMP NOT NULL DEFAULT NOW(),
-    updatedAt TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_maintenance_events_data ON maintenance_events USING GIN (data);
-CREATE INDEX idx_maintenance_events_created ON maintenance_events (createdAt DESC);
-```
-
-#### datastore_changelog
-```sql
-CREATE TABLE datastore_changelog (
-    id BIGSERIAL PRIMARY KEY,
-    operation_type TEXT NOT NULL,
-    collection_name TEXT NOT NULL,
-    document_id UUID,
-    full_document JSONB,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    processed BOOLEAN DEFAULT FALSE
-);
-
-CREATE INDEX idx_changelog_unprocessed ON datastore_changelog (created_at) WHERE NOT processed;
-```
-
-#### resume_tokens
-```sql
-CREATE TABLE resume_tokens (
-    client_name TEXT PRIMARY KEY,
-    token TEXT NOT NULL,
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-```
+| Table | Purpose |
+|---|---|
+| `health_events` | Health events as a `document` JSONB column plus indexed status columns |
+| `maintenance_events` | CSP maintenance events as a `document` JSONB column plus indexed lookup columns |
+| `datastore_changelog` | Row changes that triggers record for the change stream |
+| `resume_tokens` | Change stream resume position for each client |
+| `nvsentinel_schema_migrations` | Applied schema versions |
 
 ### Schema Location
 

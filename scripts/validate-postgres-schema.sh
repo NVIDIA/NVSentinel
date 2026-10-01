@@ -23,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MIGRATION_DIR="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql/migrations"
 SCHEMA_VERSION_SOURCE="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql/schema_version.go"
-DATASTORE_SOURCE="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql/datastore.go"
+PROVIDER_DIR="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql"
 HELM_VALUES=(
     "${REPO_ROOT}/distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml"
     "${REPO_ROOT}/distros/kubernetes/nvsentinel/values-postgresql.yaml"
@@ -41,6 +41,10 @@ shopt -s nullglob
 migration_files=("${MIGRATION_DIR}"/[0-9][0-9][0-9][0-9][0-9]_*.sql)
 (( ${#migration_files[@]} > 0 )) || fail "no PostgreSQL migrations found"
 
+all_sql_files=("${MIGRATION_DIR}"/*.sql)
+(( ${#all_sql_files[@]} == ${#migration_files[@]} )) ||
+    fail "every .sql file in ${MIGRATION_DIR} must use the NNNNN_name.sql pattern"
+
 expected_version=1
 for migration_file in "${migration_files[@]}"; do
     filename="$(basename "${migration_file}")"
@@ -50,10 +54,18 @@ for migration_file in "${migration_files[@]}"; do
     (( version == expected_version )) ||
         fail "expected migration version ${expected_version}, found ${filename}"
 
-    grep -Eq '^BEGIN;$' "${migration_file}" ||
-        fail "${filename} must start a transaction"
-    grep -Eq '^COMMIT;$' "${migration_file}" ||
-        fail "${filename} must commit its transaction"
+    # A migration that needs statements such as CREATE INDEX CONCURRENTLY,
+    # which cannot run in a transaction block, opts out with this marker.
+    if grep -q '^-- nvsentinel:no-transaction$' "${migration_file}"; then
+        if grep -Eq '^(BEGIN|COMMIT);$' "${migration_file}"; then
+            fail "${filename} is marked no-transaction but contains BEGIN or COMMIT"
+        fi
+    else
+        grep -Eq '^BEGIN;$' "${migration_file}" ||
+            fail "${filename} must start a transaction"
+        grep -Eq '^COMMIT;$' "${migration_file}" ||
+            fail "${filename} must commit its transaction"
+    fi
     grep -q 'INSERT INTO nvsentinel_schema_migrations' "${migration_file}" ||
         fail "${filename} must record its applied version"
     grep -Eq "VALUES[[:space:]]*\\(${version}," "${migration_file}" ||
@@ -72,15 +84,19 @@ required_version="$(
 
 if grep -Eq \
     'CREATE[[:space:]]+(TABLE|INDEX|TRIGGER|EXTENSION)|ALTER[[:space:]]+TABLE|DROP[[:space:]]+TRIGGER|CREATE[[:space:]]+OR[[:space:]]+REPLACE[[:space:]]+FUNCTION' \
-    "${DATASTORE_SOURCE}"; then
-    fail "application datastore code must not contain PostgreSQL DDL"
+    --include='*.go' -R "${PROVIDER_DIR}"; then
+    fail "PostgreSQL provider Go code must not contain PostgreSQL DDL"
 fi
+
+command -v yq >/dev/null || fail "yq is required to inspect Helm values"
 
 for values_file in "${HELM_VALUES[@]}"; do
     [[ -f "${values_file}" ]] || fail "Helm values file not found: ${values_file}"
-    if grep -q '00-init.sql' "${values_file}"; then
-        fail "$(basename "${values_file}") must not embed the PostgreSQL schema"
-    fi
+    for initdb_key in scripts scriptsConfigMap scriptsSecret; do
+        initdb_value="$(yq ".postgresql.primary.initdb.${initdb_key} // \"\"" "${values_file}")"
+        [[ -z "${initdb_value}" ]] ||
+            fail "$(basename "${values_file}") must not set postgresql.primary.initdb.${initdb_key}"
+    done
 done
 
 echo "PostgreSQL migrations are valid (latest version: ${latest_version})"

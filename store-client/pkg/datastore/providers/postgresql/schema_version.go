@@ -23,7 +23,7 @@ import (
 // RequiredSchemaVersion is the minimum PostgreSQL schema version required by
 // this store-client release. DDL is applied separately from the application by
 // running the SQL files in migrations/ in filename order.
-const RequiredSchemaVersion int64 = 2
+const RequiredSchemaVersion int64 = 3
 
 const currentSchemaVersionQuery = `
 	SELECT COALESCE(MAX(version), 0)

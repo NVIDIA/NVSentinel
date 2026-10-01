@@ -137,6 +137,7 @@ This will:
 - Load `values-tilt-postgresql.yaml` automatically
 - Deploy PostgreSQL instead of MongoDB
 - Generate PostgreSQL certificates via cert-manager
+- Apply the versioned SQL migrations with `tilt/apply-postgres-migrations.sh`
 - Configure all services to use PostgreSQL
 
 ### Switching Back to MongoDB
@@ -156,8 +157,9 @@ The `values-tilt-postgresql.yaml` file includes:
 - Certificate-based authentication
 - Control plane node selector for PostgreSQL pod
 
-Helm and Tilt do not apply the database schema. After PostgreSQL is ready, apply
-the versioned SQL migrations as described in [Schema Management](#schema-management).
+Tilt applies the migrations to its development database before the services
+start. Helm does not apply the database schema. For Helm deployments, apply the
+versioned SQL migrations as described in [Schema Management](#schema-management).
 
 ## Migration Guide
 
