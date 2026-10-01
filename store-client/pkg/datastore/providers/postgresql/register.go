@@ -36,7 +36,7 @@ func NewPostgreSQLDataStore(ctx context.Context, config datastore.DataStoreConfi
 	}
 
 	postgresStore := store.(*PostgreSQLDataStore)
-	if err := ValidateSchemaVersion(ctx, postgresStore.db); err != nil {
+	if err := WaitForSchemaVersion(ctx, postgresStore.db); err != nil {
 		if closeErr := store.Close(ctx); closeErr != nil {
 			slog.Warn("Failed to close PostgreSQL datastore after schema validation failure",
 				"error", closeErr)

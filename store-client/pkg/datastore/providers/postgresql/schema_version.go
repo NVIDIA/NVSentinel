@@ -18,12 +18,22 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"time"
 )
 
 // RequiredSchemaVersion is the minimum PostgreSQL schema version required by
 // this store-client release. DDL is applied separately from the application by
-// running the SQL files in migrations/ in filename order.
+// running the SQL files in distros/kubernetes/nvsentinel/files/postgresql-migrations
+// in filename order; the chart's PostgreSQL setup Job does this by default.
 const RequiredSchemaVersion int64 = 3
+
+// Components start alongside the chart's migration Job, so startup waits a
+// bounded time for the schema instead of crash-looping into long backoff.
+var (
+	schemaVersionWaitTimeout  = 5 * time.Minute
+	schemaVersionPollInterval = 5 * time.Second
+)
 
 const currentSchemaVersionQuery = `
 	SELECT COALESCE(MAX(version), 0)
@@ -39,7 +49,7 @@ func ValidateSchemaVersion(ctx context.Context, db *sql.DB) error {
 	if err := db.QueryRowContext(ctx, currentSchemaVersionQuery).Scan(&currentVersion); err != nil {
 		return fmt.Errorf(
 			"failed to read PostgreSQL schema version; apply the SQL files in "+
-				"store-client/pkg/datastore/providers/postgresql/migrations in filename order: %w",
+				"distros/kubernetes/nvsentinel/files/postgresql-migrations in filename order: %w",
 			err,
 		)
 	}
@@ -54,4 +64,30 @@ func ValidateSchemaVersion(ctx context.Context, db *sql.DB) error {
 	}
 
 	return nil
+}
+
+// WaitForSchemaVersion runs ValidateSchemaVersion until it succeeds, the wait
+// timeout elapses, or ctx is cancelled.
+func WaitForSchemaVersion(ctx context.Context, db *sql.DB) error {
+	deadline := time.Now().Add(schemaVersionWaitTimeout)
+
+	for {
+		err := ValidateSchemaVersion(ctx, db)
+		if err == nil {
+			return nil
+		}
+
+		if !time.Now().Add(schemaVersionPollInterval).Before(deadline) {
+			return fmt.Errorf("PostgreSQL schema not ready after waiting %s: %w", schemaVersionWaitTimeout, err)
+		}
+
+		slog.Warn("PostgreSQL schema not ready, waiting for migrations",
+			"error", err, "retryIn", schemaVersionPollInterval)
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for PostgreSQL schema: %w", ctx.Err())
+		case <-time.After(schemaVersionPollInterval):
+		}
+	}
 }

@@ -1,0 +1,129 @@
+{{/*
+Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+{{/*
+This Job applies files/postgresql-migrations/*.sql in filename order whenever
+the datastore provider is postgresql, for the bundled PostgreSQL subchart and
+for an external database alike. NVSentinel components never run DDL; they
+wait for the schema version this Job records. Set
+global.datastore.setupJob.enabled=false when a database team or pipeline
+applies the migrations instead.
+*/}}
+{{- $isPostgres := and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+{{- $setupJob := ((.Values.global.datastore).setupJob) | default dict }}
+{{- if and $isPostgres (ne ($setupJob.enabled | toString) "false") }}
+{{- $image := ($setupJob.image) | default dict }}
+{{- $imageRepo := $image.repository | default "docker.io/bitnamilegacy/postgresql" }}
+{{- $imageTag := $image.tag | default "16.4.0-debian-12-r14" }}
+{{- $imagePullPolicy := $image.pullPolicy | default "IfNotPresent" }}
+{{- $adminSecret := $setupJob.adminSecret | default "" }}
+{{- $clientCert := eq (include "nvsentinel.datastore.postgresClientCertEnabled" .) "true" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-postgresql-migrations
+  labels:
+    {{- include "nvsentinel.labelsWithName" (dict "context" . "name" "postgresql-migrations") | nindent 4 }}
+data:
+  postgresql-migrate.sh: |
+{{ .Files.Get "files/postgresql-migrate.sh" | indent 4 }}
+{{- range $path, $bytes := .Files.Glob "files/postgresql-migrations/*.sql" }}
+  {{ base $path }}: |
+{{ toString $bytes | indent 4 }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nvsentinel.postgresqlMigrationJobName" . }}
+  labels:
+    {{- include "nvsentinel.labelsWithName" (dict "context" . "name" "postgresql-migrations") | nindent 4 }}
+    app.kubernetes.io/component: postgresql-init
+  annotations:
+    # Argo: recreate this immutable Job on sync if the first run Failed and the
+    # name (migrations, script, settings hash) did not change. Not a Helm hook:
+    # a pre-install hook runs before the bundled PostgreSQL exists, and the
+    # components wait for the schema this Job creates, so a post-install hook
+    # that waits for ready pods would wait for them forever.
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
+spec:
+  ttlSecondsAfterFinished: 86400
+  # Generous: 00003 builds an index CONCURRENTLY, which takes as long as the
+  # health_events table is large. A build cut short leaves an INVALID index
+  # that needs a manual DROP (see the migration header).
+  activeDeadlineSeconds: {{ $setupJob.activeDeadlineSeconds | default 3600 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nvsentinel.labelsWithName" (dict "context" . "name" "postgresql-migrations") | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: postgresql-migrations
+        image: "{{ $imageRepo }}:{{ $imageTag }}"
+        imagePullPolicy: {{ $imagePullPolicy }}
+        command:
+          - sh
+          - /migrations/postgresql-migrate.sh
+        env:
+          - name: MIGRATION_DIR
+            value: /migrations
+          {{- if ne $adminSecret "" }}
+          - name: MIGRATION_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: {{ $adminSecret }}
+                key: username
+          - name: MIGRATION_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ $adminSecret }}
+                key: password
+          {{- end }}
+        envFrom:
+          - configMapRef:
+              name: {{ .Release.Name }}-datastore-config
+          {{- include "nvsentinel.datastore.secretEnvFrom" . | nindent 10 }}
+        volumeMounts:
+          - name: migrations
+            mountPath: /migrations
+            readOnly: true
+          {{- if $clientCert }}
+          - name: postgresql-client-cert
+            mountPath: /client-certs-original
+            readOnly: true
+          {{- end }}
+      volumes:
+        - name: migrations
+          configMap:
+            name: {{ .Release.Name }}-postgresql-migrations
+        {{- if $clientCert }}
+        - name: postgresql-client-cert
+          secret:
+            secretName: postgresql-client-cert
+        {{- end }}
+      {{- with .Values.global.systemNodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.systemNodeTolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      restartPolicy: OnFailure
+{{- end }}

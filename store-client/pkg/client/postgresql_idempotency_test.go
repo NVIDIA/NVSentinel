@@ -445,8 +445,8 @@ func TestVerifyPostgresIdempotencyIndexDefinition(t *testing.T) {
 // verification accepts, and CONCURRENTLY, so writers are not blocked while it
 // builds.
 func TestIdempotencyIndexMigration_BuildsVerifiedDefinition(t *testing.T) {
-	migration, err := os.ReadFile(filepath.Join("..", "datastore", "providers", "postgresql", "migrations",
-		"00003_health_event_idempotency_index.sql"))
+	migration, err := os.ReadFile(filepath.Join("..", "..", "..", "distros", "kubernetes", "nvsentinel", "files",
+		"postgresql-migrations", "00003_health_event_idempotency_index.sql"))
 	require.NoError(t, err)
 
 	expected := "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " + datastore.HealthEventIdempotencyIndexName +

@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-MIGRATION_DIR="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql/migrations"
+MIGRATION_DIR="${REPO_ROOT}/distros/kubernetes/nvsentinel/files/postgresql-migrations"
 SCHEMA_VERSION_SOURCE="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql/schema_version.go"
 PROVIDER_DIR="${REPO_ROOT}/store-client/pkg/datastore/providers/postgresql"
 HELM_VALUES=(

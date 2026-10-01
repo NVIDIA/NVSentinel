@@ -19,6 +19,7 @@ import (
 	"errors"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -76,4 +77,70 @@ func TestValidateSchemaVersion(t *testing.T) {
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+func setSchemaWaitForTest(t *testing.T, timeout, interval time.Duration) {
+	t.Helper()
+
+	origTimeout, origInterval := schemaVersionWaitTimeout, schemaVersionPollInterval
+	schemaVersionWaitTimeout, schemaVersionPollInterval = timeout, interval
+
+	t.Cleanup(func() {
+		schemaVersionWaitTimeout, schemaVersionPollInterval = origTimeout, origInterval
+	})
+}
+
+func TestWaitForSchemaVersion_MigrationsLand_ReturnsNil(t *testing.T) {
+	setSchemaWaitForTest(t, time.Minute, time.Millisecond)
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(currentSchemaVersionQuery)).
+		WillReturnError(errors.New("relation does not exist"))
+	mock.ExpectQuery(regexp.QuoteMeta(currentSchemaVersionQuery)).
+		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(RequiredSchemaVersion - 1))
+	mock.ExpectQuery(regexp.QuoteMeta(currentSchemaVersionQuery)).
+		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(RequiredSchemaVersion))
+
+	require.NoError(t, WaitForSchemaVersion(context.Background(), db))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestWaitForSchemaVersion_NeverMigrated_ReturnsErrorAfterTimeout(t *testing.T) {
+	setSchemaWaitForTest(t, 20*time.Millisecond, 5*time.Millisecond)
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.MatchExpectationsInOrder(false)
+
+	for range 10 {
+		mock.ExpectQuery(regexp.QuoteMeta(currentSchemaVersionQuery)).
+			WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(RequiredSchemaVersion - 1))
+	}
+
+	err = WaitForSchemaVersion(context.Background(), db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not ready after waiting")
+	assert.Contains(t, err.Error(), "apply the pending SQL migrations")
+}
+
+func TestWaitForSchemaVersion_ContextCancelled_ReturnsContextError(t *testing.T) {
+	setSchemaWaitForTest(t, time.Minute, time.Minute)
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(currentSchemaVersionQuery)).
+		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(RequiredSchemaVersion - 1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = WaitForSchemaVersion(ctx, db)
+	require.ErrorIs(t, err, context.Canceled)
 }

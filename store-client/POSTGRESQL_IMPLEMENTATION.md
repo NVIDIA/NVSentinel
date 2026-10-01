@@ -519,7 +519,7 @@ The migrations define these tables. This list is a summary only; the migration f
 ### Schema Location
 
 The canonical PostgreSQL schema is the ordered migration set at:
-**`pkg/datastore/providers/postgresql/migrations/`**
+**`../distros/kubernetes/nvsentinel/files/postgresql-migrations/`**
 
 ## JSONB Path Translation
 
@@ -606,7 +606,7 @@ docker run -d \
   postgres:15
 
 # Apply schema migrations
-for migration in pkg/datastore/providers/postgresql/migrations/*.sql; do
+for migration in ../distros/kubernetes/nvsentinel/files/postgresql-migrations/*.sql; do
   psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d nvsentinel -f "$migration"
 done
 
@@ -716,7 +716,7 @@ make build
 
 **Issue**: Change stream events not received (PostgreSQL)
 - **Cause**: Triggers may not be installed
-- **Solution**: Apply `pkg/datastore/providers/postgresql/migrations/*.sql` in filename order
+- **Solution**: Apply `../distros/kubernetes/nvsentinel/files/postgresql-migrations/*.sql` in filename order
 
 **Issue**: "data must be a map[string]interface{}"
 - **Cause**: Incorrect filter/update format

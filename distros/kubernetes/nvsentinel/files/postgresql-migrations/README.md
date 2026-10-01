@@ -4,12 +4,14 @@ This directory is the only source of PostgreSQL DDL for NVSentinel. Apply the
 SQL files in filename order before starting an application release that
 requires them.
 
-The migrations are intentionally not executed by NVSentinel applications or
-Helm. A database administrator, Terraform deployment, or database release
-pipeline must apply them with a DDL-capable role. The Tilt development
-environment applies them with `tilt/apply-postgres-migrations.sh`.
-Application roles should have DML permissions only, plus read access to
-`nvsentinel_schema_migrations`.
+NVSentinel applications never execute these files. By default, the chart's
+PostgreSQL setup Job (`templates/job-postgresql-migrations.yaml`, which runs
+`../postgresql-migrate.sh`) applies the pending files on install and upgrade.
+Tilt uses the same Job. When `global.datastore.setupJob.enabled` is `false`, a
+database administrator, Terraform deployment, or database release pipeline
+must apply them with a DDL-capable role. Application roles need DML
+permissions only, plus read access to `nvsentinel_schema_migrations`; see the
+grants in `docs/postgresql-provider.md`.
 
 Example:
 
@@ -42,8 +44,10 @@ the build. In that case `00003` fails on the INVALID index; drop the index as
 the file header describes and apply `00003` again.
 
 To change the schema, add the next migration file and update
-`RequiredSchemaVersion` in `../schema_version.go`. Do not add DDL to Go code or
-Helm values.
+`RequiredSchemaVersion` in
+`store-client/pkg/datastore/providers/postgresql/schema_version.go`. Do not add
+DDL to Go code or Helm values. `scripts/validate-postgres-schema.sh` checks
+these rules.
 
 Databases created by earlier releases, where the datastore created its tables
 at startup, already have the version 1 layout. Apply all migrations from

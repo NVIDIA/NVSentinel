@@ -220,18 +220,30 @@ global:
   #     x509DgxcopsUserDN: ""
   #
   #   # --- Database setup job ---
-  #   # The setup job creates required collections and indexes in the external MongoDB.
+  #   # MongoDB: the setup job creates required collections and indexes in the external MongoDB.
   #   # It runs once on install/upgrade when using an external DB.
+  #   # PostgreSQL: the setup job applies files/postgresql-migrations/*.sql in filename order,
+  #   # for the bundled PostgreSQL and for an external database. It runs on install and on every
+  #   # upgrade that changes the migrations. NVSentinel components wait for the schema version it
+  #   # records and never run DDL themselves. Set enabled: false when you apply the migrations
+  #   # yourself; see docs/postgresql-provider.md.
   #   setupJob:
   #     enabled: true  # Set to false to skip the setup job entirely
   #     image:
+  #       # MongoDB default: ghcr.io/rtsp/docker-mongosh:2.5.2
+  #       # PostgreSQL default: docker.io/bitnamilegacy/postgresql:16.4.0-debian-12-r14 (any image with psql)
   #       repository: ghcr.io/rtsp/docker-mongosh
   #       tag: "2.5.2"
   #       pullPolicy: IfNotPresent
   #     # Optional: name of an existing Kubernetes Secret with admin credentials
   #     # for the setup job to authenticate. Secret must have keys: username, password.
-  #     # Not needed if MONGODB_URI in credentialsFromSecret has sufficient privileges.
+  #     # MongoDB: not needed if MONGODB_URI in credentialsFromSecret has sufficient privileges.
+  #     # PostgreSQL: use this to run the migrations as a DDL role, so the application role keeps
+  #     # only the grants listed in docs/postgresql-provider.md.
   #     adminSecret: ""
+  #     # PostgreSQL only: deadline for the migration Job. Migration 00003 builds an index
+  #     # CONCURRENTLY, which takes longer on a large health_events table.
+  #     activeDeadlineSeconds: 3600
 
   # Certificate rotation (MongoDB only)
   # When enabled, client certificates can be rotated without restarting pods.

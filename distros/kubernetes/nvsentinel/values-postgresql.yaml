@@ -14,8 +14,8 @@
 
 # Values file for PostgreSQL deployment
 # Use this file to deploy NVSentinel with PostgreSQL as the datastore.
-# Apply store-client/pkg/datastore/providers/postgresql/migrations/*.sql in
-# filename order before starting NVSentinel applications.
+# The chart's PostgreSQL setup Job applies files/postgresql-migrations/*.sql.
+# Set global.datastore.setupJob.enabled=false to apply them yourself instead.
 # Example: helm install nvsentinel . -f values-postgresql.yaml
 
 global:

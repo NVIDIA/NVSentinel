@@ -21,10 +21,9 @@
 #
 # Certificates are automatically generated and managed by cert-manager.
 #
-# PostgreSQL schema migrations are intentionally not applied by Helm. The
-# Tiltfile applies store-client/pkg/datastore/providers/postgresql/migrations/*.sql
-# in filename order (tilt/apply-postgres-migrations.sh) before starting
-# NVSentinel applications.
+# The chart's PostgreSQL setup Job applies the schema migrations in
+# files/postgresql-migrations/. The bundled PostgreSQL does not run initdb
+# scripts; the schema comes only from those migrations.
 
 global:
   dryRun: false
