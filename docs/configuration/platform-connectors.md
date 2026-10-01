@@ -362,7 +362,7 @@ Enables Kubernetes connector for creating node conditions and events.
 
 Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `25`; positive integers override the default. Negative and non-integer values are rejected. An existing explicit value, such as `3`, still limits each write to that retry count.
 
-These settings apply to the node-local Kubernetes queue. On the deployment platform connector the Kubernetes connector runs inside the request as best effort within the `ConditionUpdateTimeout` of the `deployment` object in its config.json; a failure or timeout is counted in `platform_connector_best_effort_failures_total{connector="kubernetes"}` and the batch is acknowledged anyway.
+On the node-local DaemonSet these settings govern the Kubernetes queue. The deployment platform connector retries each write the same way inside the request, but no longer than the `ConditionUpdateTimeout` of the `deployment` object in its config.json; `maxRetryDuration` cannot extend it. A write that still fails is counted in `platform_connector_best_effort_failures_total{connector="kubernetes"}` and `k8s_platform_connector_dropped_writes_total`, and the batch is acknowledged anyway.
 
 Each node status update and Kubernetes Event write has its own retry state. Successful writes are not repeated when another write fails. Permanent errors are skipped without preventing other writes from retrying. A node status update applies all condition changes for that node together.
 

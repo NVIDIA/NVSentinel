@@ -999,24 +999,6 @@ type kubernetesWrite struct {
 	run       func(context.Context) error
 }
 
-// processHealthEvents executes one pass for synchronous callers. They receive
-// every failure and retain responsibility for retrying unacknowledged batches.
-func (r *K8sConnector) processHealthEvents(ctx context.Context, events *protos.HealthEvents) error {
-	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.process_health_events")
-	defer span.End()
-
-	var failures []error
-
-	for _, write := range r.prepareHealthEventWrites(ctx, events) {
-		if err := write.run(ctx); err != nil {
-			tracing.RecordError(span, err)
-			failures = append(failures, fmt.Errorf("%s write for node %s: %w", write.operation, write.nodeName, err))
-		}
-	}
-
-	return errors.Join(failures...)
-}
-
 // prepareHealthEventWrites fixes the work list once so retries cannot repeat successful writes.
 func (r *K8sConnector) prepareHealthEventWrites(
 	ctx context.Context, healthEvents *protos.HealthEvents,
@@ -1044,7 +1026,7 @@ func (r *K8sConnector) prepareHealthEventWrites(
 	for _, nodeName := range nodeNames {
 		nodeEvents := eventsByNode[nodeName]
 		writes = append(writes, kubernetesWrite{
-			operation: "node_condition", nodeName: nodeName,
+			operation: WriteNodeCondition, nodeName: nodeName,
 			isHealthy: slices.ContainsFunc(nodeEvents, func(e *protos.HealthEvent) bool { return e.IsHealthy }),
 			run:       func(ctx context.Context) error { return r.processNodeConditionUpdates(ctx, nodeEvents) },
 		})
@@ -1055,7 +1037,7 @@ func (r *K8sConnector) prepareHealthEventWrites(
 			// Keep recovery in the same ordered work list: preparing it must not
 			// erase the memory before an earlier fault has finished retrying.
 			writes = append(writes, kubernetesWrite{
-				operation: "node_event", nodeName: healthEvent.NodeName,
+				operation: WriteNodeEvent, nodeName: healthEvent.NodeName,
 				isHealthy: true,
 				run: func(context.Context) error {
 					r.forgetNodeCheck(healthEvent.NodeName, healthEvent.CheckName, entityKeys(healthEvent))
@@ -1073,7 +1055,7 @@ func (r *K8sConnector) prepareHealthEventWrites(
 
 		write := &nodeEventWrite{event: r.createK8sEvent(ctx, healthEvent), entities: entityKeys(healthEvent)}
 		writes = append(writes, kubernetesWrite{
-			operation: "node_event", nodeName: healthEvent.NodeName,
+			operation: WriteNodeEvent, nodeName: healthEvent.NodeName,
 			isHealthy: false,
 			run: func(ctx context.Context) error {
 				start := time.Now()

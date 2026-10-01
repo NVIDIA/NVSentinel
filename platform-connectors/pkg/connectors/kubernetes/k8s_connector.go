@@ -165,10 +165,20 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 
 // ProcessBatch applies one batch to the cluster: node conditions and
 // Kubernetes Events for every processable event. It is the entry point for
-// callers that hold no queue (the deployment platform connector) and returns
-// failures to the caller for retry. The queued path retries in place.
+// callers that hold no queue (the deployment platform connector): each write
+// is retried in place, as on the queued path, until ctx ends. Replicas that
+// update the same node at once conflict, and a single pass would drop the
+// losing writes although the batch is acknowledged.
 func (r *K8sConnector) ProcessBatch(ctx context.Context, healthEvents *protos.HealthEvents) error {
-	return r.processHealthEvents(ctx, healthEvents)
+	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.process_health_events")
+	defer span.End()
+
+	_, err := r.processHealthEventsWithRetry(ctx, healthEvents)
+	if err != nil {
+		tracing.RecordError(span, err)
+	}
+
+	return err
 }
 
 // FetchAndProcessHealthMetric processes batches sequentially, completing all
@@ -285,7 +295,7 @@ func (r *K8sConnector) processHealthEventsWithRetry(
 			write.operation, write.nodeName, reason, err))
 
 		level := slog.LevelWarn
-		if reason == "shutdown" {
+		if reason == DropReasonShutdown {
 			level = slog.LevelInfo
 		}
 
@@ -356,14 +366,17 @@ func (r *K8sConnector) retryDelays() (time.Duration, time.Duration) {
 // writeDropReason provides bounded labels for alertable terminal outcomes.
 func writeDropReason(parent context.Context, err error) string {
 	switch {
-	case parent.Err() != nil || errors.Is(err, context.Canceled):
-		return "shutdown"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "retry_timeout"
+	// Only a cancelled parent is a shutdown. The deployment platform connector
+	// bounds each batch with a deadline on the parent, and a write cut off by
+	// it is a retry timeout like one cut off by MaxRetryDuration.
+	case errors.Is(parent.Err(), context.Canceled) || errors.Is(err, context.Canceled):
+		return DropReasonShutdown
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(parent.Err(), context.DeadlineExceeded):
+		return DropReasonRetryTimeout
 	case isKubernetesConnectorRetryableError(err):
-		return "retry_exhausted"
+		return DropReasonRetryExhausted
 	default:
-		return "permanent_error"
+		return DropReasonPermanentError
 	}
 }
 
