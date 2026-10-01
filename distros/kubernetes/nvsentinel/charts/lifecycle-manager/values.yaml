@@ -59,6 +59,10 @@ config:
     cordon:
       remove: true
       labelPrefix: "k8saas.nvidia.com/"
+    # We do not need to explicitly add the node.kubernetes.io/unschedulable taint here
+    # since a toleration for this taint is always added in test provider templates which
+    # consume the Tolerations field. Setting cordon.remove to true will remove the node
+    # cordon (and this taint) if present.
   readinessCriteria:
     - name: gpu-allocatable
       expression: >-
@@ -147,7 +151,7 @@ config:
 
   newNodeValidation:
     condition: NewNodeValidationRequested
-    batchPeriodSeconds: 900
+    batchPeriodSeconds: 600
     criteria:
       - name: recently-joined
         expression: >-
@@ -157,6 +161,9 @@ config:
         expression: >-
           has(node.metadata.labels) && "nvidia.com/gpu.present" in node.metadata.labels &&
           node.metadata.labels["nvidia.com/gpu.present"] == "true"
+      - name: cordoned
+        expression: >-
+          has(node.spec.unschedulable) && node.spec.unschedulable
     newNodeTests:
       - dcgm-diag-test
 

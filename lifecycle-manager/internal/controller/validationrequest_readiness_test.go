@@ -67,6 +67,11 @@ var (
 				now() - timestamp(node.metadata.creationTimestamp) < duration("15m")`,
 		},
 	}
+	defaultNewNodeCriteria = []v1alpha1.CriteriaSpec{
+		recentlyJoinedCriteria[0],
+		gpuPresentLabelCriteria[0],
+		cordonedCriteria[0],
+	}
 )
 
 func TestEvaluateNodeReadinessCriteria(t *testing.T) {
@@ -234,6 +239,30 @@ func TestEvaluateNodeReadinessCriteria(t *testing.T) {
 			criteria: recentlyJoinedCriteria,
 			node: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.Now()},
+			},
+			wantFailedCriteria: "",
+		},
+		{
+			name:     "default new-node criteria: recently-joined and gpu-present, but not cordoned",
+			criteria: defaultNewNodeCriteria,
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					CreationTimestamp: metav1.Now(),
+					Labels:            map[string]string{"nvidia.com/gpu.present": "true"},
+				},
+				Spec: corev1.NodeSpec{Unschedulable: false},
+			},
+			wantFailedCriteria: "cordoned",
+		},
+		{
+			name:     "default new-node criteria: recently-joined, gpu-present, and cordoned",
+			criteria: defaultNewNodeCriteria,
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					CreationTimestamp: metav1.Now(),
+					Labels:            map[string]string{"nvidia.com/gpu.present": "true"},
+				},
+				Spec: corev1.NodeSpec{Unschedulable: true},
 			},
 			wantFailedCriteria: "",
 		},

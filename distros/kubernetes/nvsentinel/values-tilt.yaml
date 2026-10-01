@@ -4573,6 +4573,9 @@ lifecycle-manager:
             has(node.metadata.labels) &&
             "nvsentinel.dgxc.nvidia.com/new-node-validation-test" in node.metadata.labels &&
             node.metadata.labels["nvsentinel.dgxc.nvidia.com/new-node-validation-test"] == "true"
+        - name: cordoned
+          expression: >-
+            has(node.spec.unschedulable) && node.spec.unschedulable
       newNodeTests:
         - e2e-smoke-test
     tests:

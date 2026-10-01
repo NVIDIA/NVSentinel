@@ -1513,8 +1513,8 @@ func ScrubExtRRStateFromNode(ctx context.Context, c klient.Client, nodeName stri
 	return c.Resources().Update(ctx, node)
 }
 
-func WaitForValidationRequestForNode(ctx context.Context, t *testing.T, c klient.Client,
-	nodeName string) *unstructured.Unstructured {
+func WaitForValidationRequestForNodes(ctx context.Context, t *testing.T, c klient.Client,
+	nodeNames []string) *unstructured.Unstructured {
 	t.Helper()
 
 	var resultCR *unstructured.Unstructured
@@ -1528,32 +1528,91 @@ func WaitForValidationRequestForNode(ctx context.Context, t *testing.T, c klient
 
 		for i := range crList.Items {
 			item := &crList.Items[i]
-
-			nodes, found, err := unstructured.NestedSlice(item.Object, "spec", "nodes")
-			if err != nil || !found {
+			if !validationRequestTargetsAllNodes(item, nodeNames) {
 				continue
 			}
 
-			for _, n := range nodes {
-				nodeEntry, ok := n.(map[string]any)
-				if !ok || nodeEntry["name"] != nodeName {
-					continue
-				}
+			t.Logf("Found ValidationRequest %s targeting nodes %v", item.GetName(), nodeNames)
 
-				t.Logf("Found ValidationRequest %s targeting node %s", item.GetName(), nodeName)
+			resultCR = item
 
-				resultCR = item
+			return true
+		}
 
-				return true
+		t.Logf("No ValidationRequest found targeting nodes %v yet", nodeNames)
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval, "a ValidationRequest should be created targeting nodes %v", nodeNames)
+
+	return resultCR
+}
+
+func validationRequestTargetsAllNodes(item *unstructured.Unstructured, nodeNames []string) bool {
+	nodes, found, err := unstructured.NestedSlice(item.Object, "spec", "nodes")
+	if err != nil || !found {
+		return false
+	}
+
+	present := make(map[string]bool, len(nodes))
+
+	for _, n := range nodes {
+		nodeEntry, ok := n.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if name, ok := nodeEntry["name"].(string); ok {
+			present[name] = true
+		}
+	}
+
+	for _, nodeName := range nodeNames {
+		if !present[nodeName] {
+			return false
+		}
+	}
+
+	return true
+}
+
+func WaitForCertificationCount(ctx context.Context, t *testing.T, c klient.Client,
+	vrName string, expectedCount int) []*unstructured.Unstructured {
+	t.Helper()
+
+	prefix := vrName + "-"
+
+	var result []*unstructured.Unstructured
+
+	require.Eventually(t, func() bool {
+		crList := &unstructured.UnstructuredList{}
+		crList.SetGroupVersionKind(NVCRECertificationGVK)
+
+		if err := c.Resources().WithNamespace(NVSentinelNamespace).List(ctx, crList); err != nil {
+			t.Logf("failed to list Certifications: %v", err)
+			return false
+		}
+
+		var matched []*unstructured.Unstructured
+
+		for i := range crList.Items {
+			if strings.HasPrefix(crList.Items[i].GetName(), prefix) {
+				matched = append(matched, &crList.Items[i])
 			}
 		}
 
-		t.Logf("No ValidationRequest found targeting node %s yet", nodeName)
+		t.Logf("Found %d/%d expected Certifications for ValidationRequest %s", len(matched), expectedCount, vrName)
 
-		return false
-	}, EventuallyWaitTimeout, WaitInterval, "a ValidationRequest should be created targeting node %s", nodeName)
+		if len(matched) != expectedCount {
+			return false
+		}
 
-	return resultCR
+		result = matched
+
+		return true
+	}, EventuallyWaitTimeout, WaitInterval, "expected exactly %d Certification(s) for ValidationRequest %s",
+		expectedCount, vrName)
+
+	return result
 }
 
 // newExtRR builds an unstructured ExternalRemediationRequest with a minimal

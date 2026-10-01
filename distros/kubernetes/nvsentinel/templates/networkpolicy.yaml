@@ -26,6 +26,8 @@ spec:
         operator: NotIn
         values:
           - incluster-file-server
+      - key: jobset.sigs.k8s.io/jobset-name
+        operator: DoesNotExist
   policyTypes:
     - Ingress
   ingress:

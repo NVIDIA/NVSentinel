@@ -73,6 +73,16 @@ spec:
 {{- range .Nodes}}
   - name: "{{.NodeName}}"
 {{- end}}
+  tests:
+{{- range .Tests}}
+  - name: "{{.Name}}"
+{{- if .BandwidthGBps}}
+    bandwidthGBps: "{{.BandwidthGBps}}"
+{{- end}}
+{{- if .GoodputRatio}}
+    goodputRatio: "{{.GoodputRatio}}"
+{{- end}}
+{{- end}}
   command:
 {{- range .Command}}
   - "{{.}}"
@@ -102,6 +112,10 @@ spec:
   image: test-image:latest
   nodes:
   - name: %s
+  tests:
+  - name: basic
+    bandwidthGBps: "150"
+    goodputRatio: "0.9"
   command:
   - bash
   - -c
@@ -949,6 +963,65 @@ var _ = Describe("ValidationRequest Controller", func() {
 				Expect(g.Phase).To(Equal(v1alpha1.PhaseSucceeded))
 				Expect(g.Attempts).To(HaveLen(1))
 			}
+		})
+
+		It("does not start a new pending group if another pending group still has existing retries", func() {
+			vrName, nodeName := "vr-"+suffix, "node-"+suffix
+			testCfg := twoTestConfig(false, false)
+			testCfg.Validation.Spec.MaxConcurrentGroups = 10
+			p := testCfg.Validation.Spec.Providers["test-provider"]
+			p.Retries = 1
+			testCfg.Validation.Spec.Providers["test-provider"] = p
+
+			testClient, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+
+			r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+				config:    testCfg,
+				client:    testClient,
+				nodeNames: []string{nodeName},
+				spec:      v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+			})
+
+			vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 5)
+			Expect(vr.Status.TestGroups).To(HaveLen(2))
+
+			var runningGroupName, pendingGroupName string
+			var runningAttemptObjectName string
+			for _, g := range vr.Status.TestGroups {
+				switch g.Phase {
+				case v1alpha1.PhaseRunning:
+					runningGroupName = g.Name
+					runningAttemptObjectName = g.Attempts[0].ObjectName
+				case v1alpha1.PhasePending:
+					pendingGroupName = g.Name
+					Expect(g.Attempts).To(BeEmpty(), "the never-started group should have no attempts yet")
+				}
+			}
+			Expect(runningGroupName).NotTo(BeEmpty())
+			Expect(pendingGroupName).NotTo(BeEmpty())
+
+			// Fail the running group's only attempt. It has 1 retry configured, so it should
+			// go back to Pending rather than a terminal Failed.
+			Expect(updateObjectStatus(ctx, runningAttemptObjectName, testFailedCondType)).To(Succeed())
+			// The failed TestGroups's object will be stuck deleting during each reconcile
+			afterFailure := reconcileForIterations(ctx, r, req, 5)
+
+			var retryOwedGroup, neverStartedGroup v1alpha1.TestGroupStatus
+			for _, g := range afterFailure.Status.TestGroups {
+				switch g.Name {
+				case runningGroupName:
+					retryOwedGroup = g
+				case pendingGroupName:
+					neverStartedGroup = g
+				}
+			}
+
+			Expect(retryOwedGroup.Phase).To(Equal(v1alpha1.PhasePending), "the failed group should be pending")
+			Expect(retryOwedGroup.Attempts).To(HaveLen(1), "the failed group should not have retried yet")
+
+			Expect(neverStartedGroup.Phase).To(Equal(v1alpha1.PhasePending))
+			Expect(neverStartedGroup.Attempts).To(BeEmpty(), "should not start a new group if the failed group still has retries")
 		})
 
 		It("runs groups sequentially when MaxConcurrentGroups is 1", func() {
@@ -2165,6 +2238,11 @@ var _ = Describe("ValidationRequest Controller", func() {
 					{Key: "taint-equal", Value: "val", Effect: "NoSchedule"},
 				},
 			}
+			bandwidthGBps, goodputRatio := "150", "0.9"
+			basicTest := cfg.Validation.Spec.Tests["basic"]
+			basicTest.BandwidthGBps = &bandwidthGBps
+			basicTest.GoodputRatio = &goodputRatio
+			cfg.Validation.Spec.Tests["basic"] = basicTest
 			grp := groupName([]string{"basic"}, 1)
 
 			r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
