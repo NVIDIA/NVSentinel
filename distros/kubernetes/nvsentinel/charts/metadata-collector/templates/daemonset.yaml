@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{- $gpuCluster := include "metadata-collector.gpuDraEnabled" . }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -44,6 +45,11 @@ spec:
       {{- end }}
       hostNetwork: true
       hostPID: true
+      {{- if $gpuCluster }}
+      resourceClaims:
+        - name: gpus
+          resourceClaimTemplateName: {{ include "metadata-collector.fullname" . }}-admin-gpus
+      {{- end }}
       containers:
         - name: metadata-collector
           securityContext:
@@ -54,6 +60,20 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --output-path={{ .Values.global.metadataPath }}
+            - --pod-mapper-max-consecutive-failures={{ .Values.podMapper.maxConsecutiveFailures }}
+            {{- if include "metadata-collector.metricsEnabled" . }}
+            - --metrics-port={{ .Values.metrics.port }}
+            {{- else }}
+            # 0 disables the endpoint. Omitting the flag would leave the binary on its default.
+            - --metrics-port=0
+            {{- end }}
+          {{- if include "metadata-collector.metricsEnabled" . }}
+          ports:
+            # The chart's PodMonitor selects on the release instance label and scrapes a port
+            # named "metrics", so this name is what gets these pods scraped.
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+          {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
@@ -69,6 +89,10 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+            {{- if $gpuCluster }}
+            claims:
+              - name: gpus
+            {{- end }}
           volumeMounts:
             - name: output
               mountPath: /var/lib/nvsentinel
@@ -114,6 +138,6 @@ spec:
       {{- with (.Values.global.priorityClassName | default .Values.priorityClassName) }}
       priorityClassName: {{ . | quote }}
       {{- end }}
-      {{- if .Values.runtimeClassName }}
+      {{- if and .Values.runtimeClassName (not $gpuCluster) }}
       runtimeClassName: {{ .Values.runtimeClassName }}
       {{- end }}

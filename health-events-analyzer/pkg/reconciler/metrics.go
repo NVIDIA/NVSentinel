@@ -19,13 +19,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+const (
+	labelRuleName = "rule_name"
+	labelNodeName = "node_name"
+)
+
 var (
 	totalEventsReceived = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "health_event_analyzer_events_received_total",
 			Help: "Total number of events received from the watcher.",
 		},
-		[]string{"node_name"},
+		[]string{labelNodeName},
 	)
 	totalEventsSuccessfullyProcessed = promauto.NewCounter(
 		prometheus.CounterOpts{
@@ -54,7 +59,17 @@ var (
 			Name: "rule_matched_total",
 			Help: "Total number of times a rule matched for a node",
 		},
-		[]string{"rule_name", "node_name"},
+		[]string{labelRuleName, labelNodeName},
+	)
+
+	// ruleMatchedEntityTotal counts matches by impacted entity. Series are
+	// recorded only when ruleMatchedEntityMetricEnabled is set.
+	ruleMatchedEntityTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rule_matched_entity_total",
+			Help: "Total number of times a rule matched, labeled by the entity it selected on.",
+		},
+		[]string{labelRuleName, labelNodeName, "entity_type", "entity_value"},
 	)
 
 	mongoQueryExecutionDuration = promauto.NewHistogramVec(
@@ -63,7 +78,27 @@ var (
 			Help:    "Histogram of MongoDB pipeline execution durations.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"rule_name"},
+		[]string{labelRuleName},
+	)
+
+	// ruleSkippedTotal counts events for which a rule ran no query because its when
+	// expression was false.
+	ruleSkippedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_rule_skipped_total",
+			Help: "Total number of rule evaluations skipped because the rule's when expression was false.",
+		},
+		[]string{labelRuleName},
+	)
+
+	// ruleWhenErrorsTotal counts failed when evaluations. The rule's query runs anyway, so a
+	// non-zero rate means a when expression needs fixing, not that a match was missed.
+	ruleWhenErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_event_analyzer_rule_when_errors_total",
+			Help: "Total number of times a rule's when expression failed to evaluate. The rule was evaluated anyway.",
+		},
+		[]string{labelRuleName},
 	)
 
 	// performance metrics

@@ -36,7 +36,7 @@ The JSON file persists on the node and is read by health monitors via a shared v
 GPU-to-pod mapping annotation:
 
 1. To discover all pods running on the given node, this component will call the Kubelet /pods HTTPS endpoint.
-2. To discover the GPU devices allocated to each pod, this component will leverage the Kubelet PodResourcesLister gRPC service.
+2. To discover the GPU devices allocated to each pod, this component will leverage the Kubelet PodResourcesLister gRPC service. Device-plugin allocations (`nvidia.com/gpu`, `nvidia.com/pgpu`) are recorded with the device IDs the plugin reported, which are GPU UUIDs for the NVIDIA device plugin. DRA allocations (GPU Operator GPUCluster mode, driver `gpu.nvidia.com`) arrive as device names such as `gpu-1`, which the NVIDIA DRA driver derives from the GPU minor number (`/dev/nvidia1`); the collector maps them to UUIDs through NVML on the node and writes them under the `gpu.nvidia.com` key. The kubelet reports DRA allocations only with the `KubeletPodResourcesDynamicResources` feature gate, on by default since Kubernetes 1.34.
 3. If any pod has a change in its GPU device allocation, we will update the tracking annotation on the pod object.
 4. The Metadata Collector will run this logic in a loop on a fixed threshold to continually update the mapping for new and existing pods.
 
@@ -54,8 +54,9 @@ metadata-collector:
 
 ### Configuration Options
 
-- **Runtime Class**: Specify runtime class name for GPU access (typically `"nvidia"` for containerd). For CRI-O and NRI-mode clusters, set `runtimeClassName: ""` to omit the field. On NRI-mode GPU Operator clusters, also mount host driver libraries (see [Metadata Collector Configuration](./configuration/metadata-collector.md)).
+- **Runtime Class**: Specify runtime class name for GPU access (typically `"nvidia"` for containerd). For CRI-O and NRI-mode clusters, set `runtimeClassName: ""` to omit the field and mount the host driver libraries. On GPU Operator GPUCluster (DRA) clusters set `global.gpuDraEnabled: true` instead; the DaemonSet then holds a DRA admin-access GPU claim and needs no RuntimeClass (see [Metadata Collector Configuration](./configuration/metadata-collector.md)).
 - **Output Path**: Path where metadata JSON is written (default: `/var/lib/nvsentinel/gpu_metadata.json`)
+- **Host Authentication**: Use `--kubeconfig` for Kubernetes API access and `--kubelet-kubeconfig` for kubelet HTTPS access. See [host-native authentication](./configuration/metadata-collector.md#host-native-authentication) for credentials, TLS, and permissions. Hardware inventory and pod-to-GPU mapping remain enabled.
 
 ## What It Collects
 

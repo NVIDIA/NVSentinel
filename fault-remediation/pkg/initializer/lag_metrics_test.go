@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
@@ -69,4 +70,34 @@ func TestRegisterChangeStreamLag_ProductionChain_ExportsOnControllerRuntimeRegis
 	}
 
 	assert.ElementsMatch(t, []string{"change_stream_lag_seconds", "change_stream_lag_known"}, found)
+}
+
+func TestDatastoreReadinessChecker_ControllerRuntimeRegistry(t *testing.T) {
+	checker := server.NewDatastoreReadinessChecker(crmetrics.Registry)
+
+	// Initially not ready
+	require.Error(t, checker.Check(nil))
+
+	inner := &lagStateWatcher{observed: time.Now()}
+	wrapped := client.NewChangeStreamWatcherWithResumeControl(inner, client.ResumeControlDecision{})
+
+	checker.SetWatcher(wrapped)
+
+	// Now ready
+	require.NoError(t, checker.Check(nil))
+
+	families, err := crmetrics.Registry.Gather()
+	require.NoError(t, err)
+
+	var foundDatastoreConnected bool
+
+	for _, family := range families {
+		if family.GetName() == server.DatastoreConnectedMetricName {
+			foundDatastoreConnected = true
+
+			break
+		}
+	}
+
+	assert.True(t, foundDatastoreConnected, "datastore_connected metric must be exported on controller-runtime registry")
 }

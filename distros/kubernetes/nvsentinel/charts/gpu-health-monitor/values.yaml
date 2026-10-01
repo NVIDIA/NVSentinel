@@ -27,9 +27,10 @@ dcgm:
   mode: operator-service
   # Enable DCGM Kubernetes service for GPU metrics collection
   dcgmK8sServiceEnabled: true
-  # GPU Operator DCGM service used by operator-service mode.
+  # GPU Operator DCGM service used by operator-service mode. Comma-separated hosts
+  # are tried in order; only one exists per cluster (nvidia-dcgm-dra in GPUCluster mode).
   service:
-    endpoint: "nvidia-dcgm.gpu-operator.svc"
+    endpoint: "nvidia-dcgm-dra.gpu-operator.svc,nvidia-dcgm.gpu-operator.svc"
     port: 5555
   # Externally owned hostengine used by external-hostengine mode.
   externalHostengine:
@@ -72,6 +73,15 @@ dcgmConnectivity:
     # Maximum seconds allowed for one DCGM connection and discovery attempt.
     # A timed-out attempt is terminated before the next retry begins.
     connectTimeoutSeconds: 10
+  # Debounce runtime connectivity transitions after the monitor has started.
+  # Defaults preserve the existing fail-once, recover-once behavior.
+  runtimeDebounce:
+    # Example: failureThreshold: 4 and successThreshold: 2 publishes failure
+    # after four failed cycles and recovery after two successful cycles.
+    # Consecutive failed cycles required to publish an unhealthy event.
+    failureThreshold: 1
+    # Consecutive successful cycles required to clear a published failure.
+    successThreshold: 1
 
 # DCGM field-level monitoring feature flags
 dcgmFieldsMonitoring:
@@ -96,12 +106,15 @@ dcgmFieldsMonitoring:
 
 # DCGM health check incident suppression
 dcgmHealthCheck:
-  # DCGM error codes to drop before they become health events. The default is
-  # the throttling the POWER and THERMAL watches report: it maps to NONE in
-  # dcgmerrorsmapping.csv and tracks load rather than a fault. Each code is
+  # Enable DCGM IMEX health monitoring. Off by default because DRA can remove
+  # IMEX when idle; the monitor filters IMEX incidents from older hostengines.
+  imexMonitoringEnabled: false
+  # DCGM error codes to drop before they become health events. Throttling from
+  # the POWER and THERMAL watches maps to NONE in
+  # dcgmerrorsmapping.csv and tracks load rather than a fault. Each throttle code is
   # listed twice because DCGM_FR_CLOCK_THROTTLE_* is a deprecated alias of
   # DCGM_FR_CLOCKS_EVENT_* with the same number and either name can be
-  # reported. Set to [] to report throttling too.
+  # reported. Set to [] to report all codes.
   suppressedErrorCodes:
     - DCGM_FR_CLOCK_THROTTLE_POWER
     - DCGM_FR_CLOCKS_EVENT_POWER
@@ -202,3 +215,7 @@ updateStrategy:
   type: RollingUpdate
   rollingUpdate:
     maxUnavailable: 5%
+
+# Where health events go: socket (the node-local platform connector, default) or
+# deployment (the deployment platform connector; needs platformConnector.deployment.enabled).
+publishTo: socket

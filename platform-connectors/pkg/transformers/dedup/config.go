@@ -25,6 +25,9 @@ import (
 const (
 	DefaultSuppressionWindow = 3 * time.Minute
 	DefaultCleanupInterval   = 1 * time.Minute
+	// DefaultMaxEntries bounds the distinct event keys the tracker remembers
+	// at once; the deployment platform connector runs it for the whole fleet.
+	DefaultMaxEntries = 100000
 )
 
 // Config controls platform-connector health-event deduplication.
@@ -32,6 +35,9 @@ type Config struct {
 	SuppressionWindow time.Duration `toml:"suppressionWindow"`
 	CleanupInterval   time.Duration `toml:"cleanupInterval"`
 	IncludeChecks     []string      `toml:"includeChecks"`
+	// MaxEntries bounds the tracker. Over capacity, one entry is evicted
+	// early, which only lets one repeat through to remediation once more.
+	MaxEntries int `toml:"maxEntries"`
 }
 
 // LoadConfig loads dedup configuration from path, returning defaults when absent.
@@ -49,6 +55,11 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to load dedup config %s: %w", path, err)
 	}
 
+	// Config files written before the bound existed leave it unset.
+	if cfg.MaxEntries == 0 {
+		cfg.MaxEntries = DefaultMaxEntries
+	}
+
 	return &cfg, nil
 }
 
@@ -58,6 +69,7 @@ func DefaultConfig() *Config {
 		SuppressionWindow: DefaultSuppressionWindow,
 		CleanupInterval:   DefaultCleanupInterval,
 		IncludeChecks:     []string{},
+		MaxEntries:        DefaultMaxEntries,
 	}
 }
 
@@ -65,6 +77,10 @@ func DefaultConfig() *Config {
 func (c *Config) Validate() error {
 	if c.SuppressionWindow <= 0 {
 		return fmt.Errorf("suppressionWindow must be positive")
+	}
+
+	if c.MaxEntries <= 0 {
+		return fmt.Errorf("maxEntries must be positive")
 	}
 
 	if c.CleanupInterval <= 0 {

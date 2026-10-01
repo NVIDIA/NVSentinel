@@ -28,7 +28,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -42,6 +45,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 )
 
 var customBackoff = wait.Backoff{
@@ -53,6 +57,7 @@ var customBackoff = wait.Backoff{
 
 type FaultQuarantineClient struct {
 	Clientset                kubernetes.Interface
+	DynamicClient            dynamic.Interface
 	DryRunMode               bool
 	NodeInformer             *NodeInformer
 	cordonedReasonLabelKey   string
@@ -65,18 +70,20 @@ type FaultQuarantineClient struct {
 // configured client-go rate limits.
 func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
-	rateLimits kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
+	rateLimits kubeclient.RateLimitConfig, retained nodecache.Keys) (*FaultQuarantineClient, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Kubernetes config: %w", err)
 	}
 
-	return newFaultQuarantineClient(config, dryRun, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, rateLimits)
+	return newFaultQuarantineClient(
+		config, dryRun, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, rateLimits, retained,
+	)
 }
 
 func newFaultQuarantineClient(config *rest.Config, dryRun bool,
 	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
-	rateLimits kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
+	rateLimits kubeclient.RateLimitConfig, retained nodecache.Keys) (*FaultQuarantineClient, error) {
 	if err := rateLimits.Apply(config); err != nil {
 		return nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
@@ -90,18 +97,39 @@ func newFaultQuarantineClient(config *rest.Config, dryRun bool,
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
-	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue)
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("error creating dynamic client: %w", err)
+	}
+
+	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, retained)
 	if err != nil {
 		return nil, fmt.Errorf("error creating node informer: %w", err)
 	}
 
 	client := &FaultQuarantineClient{
-		Clientset:    clientset,
-		DryRunMode:   dryRun,
-		NodeInformer: nodeInformer,
+		Clientset:     clientset,
+		DynamicClient: dynamicClient,
+		DryRunMode:    dryRun,
+		NodeInformer:  nodeInformer,
 	}
 
 	return client, nil
+}
+
+func (c *FaultQuarantineClient) CreateValidationRequestResource(ctx context.Context, gvr schema.GroupVersionResource,
+	obj *unstructured.Unstructured) error {
+	if c.DryRunMode {
+		slog.InfoContext(ctx, "DryRun mode enabled, skipping ValidationRequest creation", "name", obj.GetName())
+		return nil
+	}
+
+	_, err := c.DynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create ValidationRequest %s: %w", obj.GetName(), err)
+	}
+
+	return nil
 }
 
 func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Context,
@@ -150,6 +178,20 @@ func (c *FaultQuarantineClient) GetTotalNodes(ctx context.Context) (int, error) 
 	slog.DebugContext(ctx, "Got total nodes from NodeInformer cache", "totalNodes", totalNodes)
 
 	return totalNodes, nil
+}
+
+// GetCordonedNodes returns how many nodes NVSentinel currently holds quarantined, read from
+// the same informer index GetTotalNodes already consults. Nodes cordoned by anything else are
+// not counted, so an unrelated drain or a GPU operator upgrade does not consume the budget.
+func (c *FaultQuarantineClient) GetCordonedNodes(ctx context.Context) (int, error) {
+	_, quarantinedNodes, err := c.NodeInformer.GetNodeCounts()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get node counts from informer: %w", err)
+	}
+
+	slog.DebugContext(ctx, "Got cordoned nodes from NodeInformer cache", "cordonedNodes", len(quarantinedNodes))
+
+	return len(quarantinedNodes), nil
 }
 
 func (c *FaultQuarantineClient) SetLabelKeys(cordonedReasonKey, uncordonedReasonKey string) {
@@ -424,6 +466,13 @@ func (c *FaultQuarantineClient) handleCordon(ctx context.Context, node *v1.Node,
 	}
 }
 
+var annotationMergers = map[string]func(existingValue, incomingValue string) (string, error){
+	common.QuarantineHealthEventAnnotationKey:              mergeQuarantineHealthEventAnnotation,
+	common.QuarantineHealthEventAppliedTaintsAnnotationKey: mergeAppliedTaintsAnnotation,
+	common.QuarantineHealthEventAppliedLabelsAnnotationKey: mergeAppliedLabelsAnnotation,
+	common.QuarantineValidationHealthEventAnnotationKey:    mergeQuarantineValidationHealthEventAnnotation,
+}
+
 func (c *FaultQuarantineClient) applyAnnotations(
 	ctx context.Context, node *v1.Node, annotations map[string]string, nodename string,
 ) error {
@@ -434,26 +483,8 @@ func (c *FaultQuarantineClient) applyAnnotations(
 	slog.InfoContext(ctx, "Setting annotations on node", "node", nodename, "annotations", annotations)
 
 	for annotationKey, annotationValue := range annotations {
-		if annotationKey == common.QuarantineHealthEventAnnotationKey {
-			mergedValue, err := mergeQuarantineHealthEventAnnotation(node.Annotations[annotationKey], annotationValue)
-			if err != nil {
-				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
-			}
-
-			annotationValue = mergedValue
-		}
-
-		if annotationKey == common.QuarantineHealthEventAppliedTaintsAnnotationKey {
-			mergedValue, err := mergeAppliedTaintsAnnotation(node.Annotations[annotationKey], annotationValue)
-			if err != nil {
-				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
-			}
-
-			annotationValue = mergedValue
-		}
-
-		if annotationKey == common.QuarantineHealthEventAppliedLabelsAnnotationKey {
-			mergedValue, err := mergeAppliedLabelsAnnotation(node.Annotations[annotationKey], annotationValue)
+		if merge, ok := annotationMergers[annotationKey]; ok {
+			mergedValue, err := merge(node.Annotations[annotationKey], annotationValue)
 			if err != nil {
 				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
 			}
@@ -503,6 +534,30 @@ func mergeAppliedLabelsAnnotation(existingValue, incomingValue string) (string, 
 		parseAppliedLabelsAnnotation,
 		mergeAppliedLabels,
 	)
+}
+
+func mergeQuarantineValidationHealthEventAnnotation(existingValue, incomingValue string) (string, error) {
+	return mergeAnnotation(
+		existingValue,
+		incomingValue,
+		"quarantine validation health event",
+		parseQuarantineValidationHealthEventAnnotation,
+		mergeQuarantineValidationHealthEvents,
+	)
+}
+
+func parseQuarantineValidationHealthEventAnnotation(value string) ([]common.HealthEventWithTests, error) {
+	var events []common.HealthEventWithTests
+	if err := json.Unmarshal([]byte(value), &events); err != nil {
+		return nil, err
+	}
+
+	return events, nil
+}
+
+func mergeQuarantineValidationHealthEvents(existing,
+	incoming []common.HealthEventWithTests) []common.HealthEventWithTests {
+	return append(existing, incoming...)
 }
 
 func mergeAnnotation[T any](
@@ -768,6 +823,18 @@ func (c *FaultQuarantineClient) handleUncordon(
 	}
 }
 
+// ConditionalLabelRemoval removes Keys from a Node only while that Node still
+// has GuardKey set to GuardValue. It is evaluated inside the update callback so
+// the ownership check is re-run against the freshly fetched Node on every
+// conflict retry, rather than being decided once from a possibly stale cache.
+// This prevents a concurrent owner change from causing a retry to strip another
+// controller's labels.
+type ConditionalLabelRemoval struct {
+	Keys       []string
+	GuardKey   string
+	GuardValue string
+}
+
 // HandleManualUncordonCleanup atomically removes FQ annotations/taints/labels and adds manual uncordon annotation
 // This is used when a node is manually uncordoned while having FQ quarantine state
 func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
@@ -776,6 +843,7 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 	annotationsToRemove []string,
 	annotationsToAdd map[string]string,
 	labelsToRemove []string,
+	conditionalLabels *ConditionalLabelRemoval,
 ) error {
 	updateFn := func(node *v1.Node) error {
 		if len(annotationsToRemove) > 0 || len(annotationsToAdd) > 0 {
@@ -783,6 +851,14 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 		}
 
 		c.removeLabels(ctx, node, labelsToRemove, nodename)
+
+		// Re-check ownership against the live Node before removing the cordon
+		// bookkeeping labels. Evaluated here (not by the caller) so it holds on
+		// every conflict-retried invocation with a fresh Node.
+		if conditionalLabels != nil && len(conditionalLabels.Keys) > 0 &&
+			node.Labels[conditionalLabels.GuardKey] == conditionalLabels.GuardValue {
+			c.removeLabels(ctx, node, conditionalLabels.Keys, nodename)
+		}
 
 		return nil
 	}

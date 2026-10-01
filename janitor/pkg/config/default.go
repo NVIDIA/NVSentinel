@@ -16,6 +16,8 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -25,18 +27,22 @@ import (
 )
 
 const (
-	GPUResetContainerName  = "gpu-reset"
-	HostDevVolumeName      = "host-dev"
-	HostDevPath            = "/dev"
-	HostDevLogVolumeName   = "dev-log"
-	HostDevLogPath         = "/run/systemd/journal/dev-log"
-	DriverRootVolumeName   = "driver-root"
-	DriverRootPath         = "/run/nvidia/driver"
-	HostSysVolumeName      = "host-sys"
-	HostSysPath            = "/sys"
-	WriteSyslogEventEnvVar = "WRITE_SYSLOG_EVENT"
-	NodeNameEnvVar         = "NODE_NAME"
-	UploadURLBaseEnvVar    = "UPLOAD_URL_BASE"
+	GPUResetContainerName     = "gpu-reset"
+	HostDevVolumeName         = "host-dev"
+	HostDevPath               = "/dev"
+	HostDevLogVolumeName      = "dev-log"
+	HostDevLogPath            = "/run/systemd/journal/dev-log"
+	DriverRootVolumeName      = "driver-root"
+	DefaultHostDriverRootPath = "/run/nvidia/driver"
+	DriverRootMountPath       = "/run/nvidia/driver"
+	HostSysVolumeName         = "host-sys"
+	HostSysPath               = "/sys"
+	WriteSyslogEventEnvVar    = "WRITE_SYSLOG_EVENT"
+	NodeNameEnvVar            = "NODE_NAME"
+	UploadURLBaseEnvVar       = "UPLOAD_URL_BASE"
+	// ContainerDriverRoot is the driverRoot that makes the reset command chroot into the reset
+	// container itself instead of into the mounted driver filesystem.
+	ContainerDriverRoot = "/"
 )
 
 func applyConfigDefaults(config *Config) {
@@ -139,6 +145,20 @@ func applyCSPProviderHostDefaults(config *Config) {
 	}
 }
 
+func applyResetJobDefaults(config *ResetJobConfig) {
+	if config.WriteSysLogEvent == nil {
+		config.WriteSysLogEvent = new(true)
+	}
+
+	if config.HostDriverRootPath == "" {
+		config.HostDriverRootPath = DefaultHostDriverRootPath
+	}
+
+	if config.DriverRoot == "" {
+		config.DriverRoot = DriverRootMountPath
+	}
+}
+
 func getResources(resources ResourceRequirements) (*corev1.ResourceRequirements, error) {
 	limits, err := parseResourceList(resources.Limits)
 	if err != nil {
@@ -184,9 +204,24 @@ func getImagePullSecrets(imagePullSecrets []ImagePullSecret) []corev1.LocalObjec
 
 // getDefaultGPUResetJobTemplate returns the default JobTemplateSpec for GPU reset jobs.
 func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []ImagePullSecret,
-	resources ResourceRequirements, runtimeClassName string, writeSyslogEvent bool,
-	uploadURL string) (*batchv1.JobTemplateSpec, error) {
+	resources ResourceRequirements, hostDriverRootPath string, driverRoot string, runtimeClassName string,
+	writeSyslogEvent bool, uploadURL string) (*batchv1.JobTemplateSpec, error) {
 	imagePullSecrets := getImagePullSecrets(secrets)
+
+	if hostDriverRootPath == "" {
+		hostDriverRootPath = DefaultHostDriverRootPath
+	}
+
+	if driverRoot == "" {
+		driverRoot = DriverRootMountPath
+	}
+
+	// Reject here, at janitor startup, rather than when a Job is created for a node that is
+	// already cordoned and drained. A path such as "//" is absolute but is not ContainerDriverRoot,
+	// so it would mount the host driver root over the container root.
+	if !filepath.IsAbs(driverRoot) || filepath.Clean(driverRoot) != driverRoot {
+		return nil, fmt.Errorf("resetJob.driverRoot %q must be an absolute, clean path", driverRoot)
+	}
 
 	containerResources, err := getResources(resources)
 	if err != nil {
@@ -217,7 +252,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 						{
 							Name: DriverRootVolumeName,
 							HostPath: &corev1.HostPathVolumeSource{
-								Path: DriverRootPath,
+								Path: hostDriverRootPath,
 							},
 						},
 						{
@@ -240,7 +275,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 								{
 									Name:  "DRIVER_ROOT",
-									Value: DriverRootPath,
+									Value: driverRoot,
 								},
 								{
 									Name:  WriteSyslogEventEnvVar,
@@ -270,11 +305,11 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 								{
 									Name:      DriverRootVolumeName,
-									MountPath: DriverRootPath,
+									MountPath: driverRoot,
 								},
 								{
 									Name:      HostSysVolumeName,
-									MountPath: DriverRootPath + HostSysPath,
+									MountPath: filepath.Join(driverRoot, HostSysPath),
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{
@@ -293,6 +328,17 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	}
 	if len(runtimeClassName) > 0 {
 		job.Spec.Template.Spec.RuntimeClassName = &runtimeClassName
+	}
+
+	// Kubernetes cannot mount the host driver root over "/", and a chroot into "/" is a no-op,
+	// so the reset command uses the nvidia-smi of the reset container image instead.
+	if driverRoot == ContainerDriverRoot {
+		podSpec := &job.Spec.Template.Spec
+		podSpec.Volumes = slices.DeleteFunc(podSpec.Volumes, func(volume corev1.Volume) bool {
+			return volume.Name == DriverRootVolumeName
+		})
+		podSpec.Containers[0].VolumeMounts = slices.DeleteFunc(podSpec.Containers[0].VolumeMounts,
+			func(mount corev1.VolumeMount) bool { return mount.Name == DriverRootVolumeName })
 	}
 
 	return job, nil

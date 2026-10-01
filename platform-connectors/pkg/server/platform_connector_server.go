@@ -17,84 +17,160 @@ package server
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 )
 
-/*
-In the code coverage report, this file is contributing 0%. Reason is since the healthEvents message send
-by the gpu health monitor is received by function HealthEventOccurredV1 and in order to test the functionality
-completely, we need simulate the queue enqueue and dequeue operations along with initializing the
-PlatformConnectorServer. it will get really complex.Hence, ignoring this file as part of unit testing for now.
-*/
-
-var ringBufferQueue []*ringbuffer.RingBuffer
+// Outcomes of one request, the label of requestDuration.
+const (
+	outcomeOK       = "ok"
+	outcomeRejected = "rejected"
+	outcomeFailed   = "failed"
+)
 
 var (
 	healthEventsReceived = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "platform_connector_health_events_received_total",
 		Help: "The total number of health events that the platform connector has received",
 	})
+
+	requestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "platform_connector_request_duration_seconds",
+		Help: "Duration of health event batch requests, by outcome: ok, rejected (the batch is invalid) or " +
+			"failed (a connector did not accept the batch; the caller retries)",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"outcome"})
 )
 
+// PlatformConnectorServer serves the PlatformConnector gRPC service for both
+// roles of the binary. A batch is validated, run through the pipeline and
+// handed to Connector, whose result is the reply. The node-local DaemonSet
+// wires a set of ring buffers, so the reply is immediate and the connectors
+// process the batch later with their own retries; the deployment platform
+// connector wires the connectors themselves, so the reply waits for the
+// datastore write.
 type PlatformConnectorServer struct {
 	pb.UnimplementedPlatformConnectorServer
-	Pipeline *pipeline.Pipeline
+	Pipeline  *pipeline.Pipeline
+	Connector connectors.Connector
 }
 
-func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
-	he *pb.HealthEvents) (*empty.Empty, error) {
-	ctx, span := tracing.StartSpan(ctx, "platform_connector.grpc.health_events_received")
-	defer span.End()
-
-	eventCount := len(he.Events)
-	span.SetAttributes(
-		attribute.Int("platform_connector.grpc.event_count", eventCount),
-	)
-
-	slog.InfoContext(ctx, "Health events received", "events", he)
-	healthEventsReceived.Add(float64(eventCount))
-
-	for _, event := range he.Events {
+// ApplyEventDefaultsAndValidate fills per-event defaults in place and rejects
+// batches that violate the request contract, so both roles accept exactly the
+// same batches.
+//
+// An event without a GeneratedTimestamp is stamped with the arrival time:
+// every consumer of the stored event reads the timestamp, and the health
+// events analyzer cannot process an event that has none, so storing one would
+// leave the analyzer stuck at that event on every restart.
+func ApplyEventDefaultsAndValidate(events []*pb.HealthEvent) error {
+	for _, event := range events {
 		// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
 		if event.ProcessingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
 			event.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
 		}
 
+		if event.GeneratedTimestamp == nil {
+			slog.Warn("HealthEvent has nil GeneratedTimestamp, stamping the arrival time",
+				"node", event.NodeName, "agent", event.Agent, "check", event.CheckName)
+
+			event.GeneratedTimestamp = timestamppb.Now()
+		}
+
 		if event.RecommendedAction == pb.RecommendedAction_CUSTOM && event.CustomRecommendedAction == "" {
-			return nil, status.Errorf(codes.InvalidArgument,
+			return status.Errorf(codes.InvalidArgument,
 				"recommendedAction is CUSTOM but customRecommendedAction is empty (node=%s, agent=%s)",
 				event.NodeName, event.Agent)
 		}
 	}
 
+	return nil
+}
+
+// HealthEventOccurredV1 receives one batch of health events and answers once
+// the connector has accepted it.
+func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
+	he *pb.HealthEvents) (*empty.Empty, error) {
+	start := time.Now()
+
+	outcome, err := p.handle(ctx, he)
+	requestDuration.WithLabelValues(outcome).Observe(time.Since(start).Seconds())
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &empty.Empty{}, nil
+}
+
+// handle runs one batch to its reply and reports the outcome label.
+func (p *PlatformConnectorServer) handle(ctx context.Context, he *pb.HealthEvents) (string, error) {
+	// A caller that sent its span context in the request metadata (the
+	// deployment platform connector's clients do) has every span below join
+	// its trace; otherwise the trace starts here.
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		ctx = propagation.TraceContext{}.Extract(ctx, healthpub.MetadataCarrier(md))
+	}
+
+	ctx, span := tracing.StartSpan(ctx, "platform_connector.grpc.health_events_received")
+	defer span.End()
+
+	eventCount := len(he.GetEvents())
+	span.SetAttributes(
+		attribute.Int("platform_connector.grpc.event_count", eventCount),
+	)
+
+	slog.DebugContext(ctx, "Health events received", "events", he)
+	healthEventsReceived.Add(float64(eventCount))
+
+	if err := ApplyEventDefaultsAndValidate(he.GetEvents()); err != nil {
+		return outcomeRejected, err
+	}
+
 	if p.Pipeline != nil {
-		for i := range he.Events {
-			p.Pipeline.Process(ctx, he.Events[i])
+		p.Pipeline.ProcessBatch(ctx, he.GetEvents())
+	}
+
+	if p.Connector != nil {
+		if err := p.Connector.ProcessBatch(ctx, he); err != nil {
+			tracing.RecordError(span, err)
+
+			return outcomeFailed, batchFailure(ctx, err, eventCount)
 		}
 	}
 
-	// Enqueue with trace context so store and K8s connectors continue this trace
-	parentSC := span.SpanContext()
-	item := &ringbuffer.QueuedHealthEvents{Events: he, ParentSpanContext: parentSC}
-
-	for _, buffer := range ringBufferQueue {
-		buffer.Enqueue(item)
-	}
-
-	return nil, nil
+	return outcomeOK, nil
 }
 
-func InitializeAndAttachRingBufferForConnectors(buffer *ringbuffer.RingBuffer) {
-	ringBufferQueue = append(ringBufferQueue, buffer)
+// batchFailure turns a connector's failure into the reply: the caller's own
+// cancellation when it gave up (it resends with the same key); a status the
+// connector chose itself (a batch the datastore refuses as sent, which a
+// resend would not change); Unavailable otherwise, so that the caller retries.
+func batchFailure(ctx context.Context, err error, eventCount int) error {
+	if ctx.Err() != nil {
+		return status.FromContextError(ctx.Err()).Err()
+	}
+
+	slog.ErrorContext(ctx, "Batch not acknowledged", "error", err, "eventCount", eventCount)
+
+	if _, chosen := status.FromError(err); chosen {
+		return err
+	}
+
+	return status.Errorf(codes.Unavailable, "batch not processed: %v", err)
 }

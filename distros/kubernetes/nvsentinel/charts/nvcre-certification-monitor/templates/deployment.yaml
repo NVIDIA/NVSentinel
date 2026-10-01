@@ -88,6 +88,9 @@ spec:
           env:
             - name: LOG_LEVEL
               value: "{{ .Values.logLevel }}"
+            {{- with include "nvcre-certification-monitor.publish.envVars" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
           volumeMounts:
             - name: config
               mountPath: /etc/config/
@@ -96,6 +99,9 @@ spec:
               mountPath: /var/run
             {{- if include "nvcre-certification-monitor.pcAuth.enabled" . }}
             {{- include "nvcre-certification-monitor.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
+            {{- with include "nvcre-certification-monitor.publish.volumeMounts" . }}
+            {{- . | nindent 12 }}
             {{- end }}
       volumes:
         {{- range .Values.volumes }}
@@ -106,6 +112,9 @@ spec:
             name: {{ include "nvcre-certification-monitor.fullname" . }}-config
         {{- if include "nvcre-certification-monitor.pcAuth.enabled" . }}
         {{- include "nvcre-certification-monitor.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
+        {{- with include "nvcre-certification-monitor.publish.volumes" . }}
+        {{- . | nindent 8 }}
         {{- end }}
       {{- with ((.Values.global).systemNodeSelector | default .Values.nodeSelector) }}
       nodeSelector:

@@ -61,8 +61,9 @@ type Check interface {
 // TransactionalCheck separates observation/event generation from advancement
 // of the check's committed state. The monitor uses this contract so a failed
 // publication cannot consume a health boundary: Prepare stages the candidate
-// poll state, Commit makes it durable after successful delivery (or immediately
-// for a zero-event poll), and Discard abandons it after an error.
+// poll state, Commit makes it durable once the publisher has delivered the
+// batch (or the server has refused it for good, or immediately for a
+// zero-event poll), and Discard abandons it after an error.
 //
 // Run remains part of Check for direct callers and performs Prepare+Commit in
 // concrete implementations. Production orchestration should prefer this

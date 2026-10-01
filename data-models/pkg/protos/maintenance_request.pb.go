@@ -42,10 +42,11 @@ const (
 // perform, and a startTime recording when the maintenance window opens.
 type MaintenanceRequestSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// healthEvent describes the preparation NVSentinel must perform. The
-	// reconciler re-emits this event into the pipeline as authored (the
-	// requester's recommendedAction stands), so the normal quarantine, drain,
-	// and remediation flow fires for whichever action the event names.
+	// healthEvent describes the preparation NVSentinel must perform.
+	// lifecycle-manager identifies itself as the publishing agent and preserves
+	// the requester-supplied agent in metadata. The requester's
+	// recommendedAction stands, so the normal quarantine, drain, and remediation
+	// flow fires for whichever action the event names.
 	HealthEvent *HealthEvent `protobuf:"bytes,1,opt,name=healthEvent,proto3" json:"healthEvent,omitempty"`
 	// startTime is when the maintenance window opens. It is recorded for
 	// observability and future scheduling; the node is prepared on creation

@@ -45,18 +45,33 @@ type GangRegistration struct {
 // GangRegistrationFunc is called after a pod is admitted to register it with a gang.
 type GangRegistrationFunc func(ctx context.Context, reg GangRegistration)
 
+// EnsureCAFunc is called with the pod's namespace after checks were injected,
+// so the platform connector CA ConfigMap copy exists there before the pod's
+// volumes are mounted. It must not fail admission: the callback logs its own
+// errors and the CA bundle sync retries the namespace on its next tick.
+type EnsureCAFunc func(ctx context.Context, namespace string)
+
 type Handler struct {
 	injector       *Injector
 	onGangRegister GangRegistrationFunc
+	ensureCA       EnsureCAFunc
 }
 
 // NewHandler builds a Handler from the preflight config, the namespace-aware
-// gang discoverer resolver, and the callback invoked to register a pod with its
-// gang after admission.
-func NewHandler(cfg *config.Config, resolver *gang.DiscovererResolver, onGangRegister GangRegistrationFunc) *Handler {
+// gang discoverer resolver, the callback invoked to register a pod with its
+// gang after admission, and the callback that copies the platform connector CA
+// bundle into the pod's namespace (nil when the checks publish to the socket
+// or do not verify the server).
+func NewHandler(
+	cfg *config.Config,
+	resolver *gang.DiscovererResolver,
+	onGangRegister GangRegistrationFunc,
+	ensureCA EnsureCAFunc,
+) *Handler {
 	return &Handler{
 		injector:       NewInjector(cfg, resolver),
 		onGangRegister: onGangRegister,
+		ensureCA:       ensureCA,
 	}
 }
 
@@ -150,27 +165,13 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 
 	// Register pod with gang controller if it's part of a gang
 	if gangCtx != nil && h.onGangRegister != nil {
-		podName := pod.Name
-		if podName == "" {
-			podName = pod.GenerateName
+		h.registerGang(ctx, &pod, gangCtx)
+	}
 
-			slog.Info("Pod name is empty, using generated name", "pod", podName)
-		}
-
-		slog.Info("Registering pod with gang",
-			"namespace", pod.Namespace,
-			"pod", podName,
-			"gangID", gangCtx.GangID,
-			"configMap", gangCtx.ConfigMapName)
-
-		h.onGangRegister(ctx, GangRegistration{
-			Namespace:      pod.Namespace,
-			PodName:        podName,
-			GangID:         gangCtx.GangID,
-			ConfigMapName:  gangCtx.ConfigMapName,
-			OwnerReference: gangCtx.OwnerReference,
-			CheckNames:     gangCtx.CheckNames,
-		})
+	// The injected checks mount the CA ConfigMap copy from their own
+	// namespace, so make sure it is there before the pod starts.
+	if h.ensureCA != nil {
+		h.ensureCA(ctx, pod.Namespace)
 	}
 
 	patchBytes, err := json.Marshal(patch)
@@ -197,4 +198,30 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 		Patch:     patchBytes,
 		PatchType: &patchType,
 	}
+}
+
+// registerGang hands the admitted pod to the gang controller so the gang
+// ConfigMap exists before the scheduler looks for it.
+func (h *Handler) registerGang(ctx context.Context, pod *corev1.Pod, gangCtx *GangContext) {
+	podName := pod.Name
+	if podName == "" {
+		podName = pod.GenerateName
+
+		slog.Info("Pod name is empty, using generated name", "pod", podName)
+	}
+
+	slog.Info("Registering pod with gang",
+		"namespace", pod.Namespace,
+		"pod", podName,
+		"gangID", gangCtx.GangID,
+		"configMap", gangCtx.ConfigMapName)
+
+	h.onGangRegister(ctx, GangRegistration{
+		Namespace:      pod.Namespace,
+		PodName:        podName,
+		GangID:         gangCtx.GangID,
+		ConfigMapName:  gangCtx.ConfigMapName,
+		OwnerReference: gangCtx.OwnerReference,
+		CheckNames:     gangCtx.CheckNames,
+	})
 }

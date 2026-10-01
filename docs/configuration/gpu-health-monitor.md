@@ -25,6 +25,7 @@ An externally managed hostengine runs on each GPU node. GPU Health Monitor pods 
 - The hostengine lifecycle is managed outside NVSentinel
 - No Kubernetes service needed
 - GPU Health Monitor enables host networking automatically
+- You label each GPU node with its [DCGM version](#dcgm-version-node-label) before you install
 
 ### Embedded Mode
 
@@ -35,6 +36,13 @@ GPU Health Monitor starts an in-process DCGM hostengine and exposes it to pod-lo
 - `gpu-health-monitor.runtimeClassName` must name the cluster's NVIDIA RuntimeClass
 - The chart automatically sets `privileged: true` on the GPU Health Monitor container
 - The endpoint must be `localhost`, `127.0.0.1`, or `::1`
+- You label each GPU node with its [DCGM version](#dcgm-version-node-label) before you install
+
+## DCGM Version Selection
+
+Use a GPU Health Monitor image from the same DCGM major version as its hostengine. The node `nvsentinel.dgxc.nvidia.com/dcgm.version` label selects the 3.x or 4.x monitor image.
+
+In `operator-service` mode, labeler derives this label from the DCGM pod image. In `external-hostengine` and `embedded-mode`, the cluster operator supplies the label.
 
 ## Configuration Reference
 
@@ -84,9 +92,11 @@ global:
     mode: operator-service
     enabled: true
     service:
-      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      endpoint: "nvidia-dcgm-dra.gpu-operator.svc,nvidia-dcgm.gpu-operator.svc"
       port: 5555
 ```
+
+The endpoint may be a comma-separated list of hosts. The monitor tries them in order on every connect. Only one DCGM Service exists per cluster: `nvidia-dcgm-dra` in GPU Operator GPUCluster (DRA) mode and `nvidia-dcgm` otherwise, so the default works in both modes without per mode configuration.
 
 To use a service in another namespace, override its endpoint:
 
@@ -114,6 +124,8 @@ global:
 
 GPU Health Monitor enables host networking automatically in this mode.
 
+This mode does not set the [DCGM version node label](#dcgm-version-node-label) for you. Label every GPU node before you install, or no monitor pod schedules.
+
 ### Embedded Mode
 
 ```yaml
@@ -129,6 +141,50 @@ gpu-health-monitor:
 ```
 
 `runtimeClassName` is required and must match an NVIDIA RuntimeClass installed in the cluster. The chart automatically sets the GPU Health Monitor container to privileged in embedded mode so the NVIDIA Container Toolkit can provide GPU and driver access; no separate security-context value is required.
+
+This mode does not set the [DCGM version node label](#dcgm-version-node-label) for you. Label every GPU node before you install, or no monitor pod schedules.
+
+### DCGM Version Node Label
+
+GPU Health Monitor ships one DaemonSet per DCGM major version. Each DaemonSet selects nodes with the `nvsentinel.dgxc.nvidia.com/dcgm.version` label, so every node gets the monitor image that matches its DCGM. All three modes render this `nodeSelector`, but only `operator-service` supplies the label for you.
+
+| Mode | Who sets the label |
+|---|---|
+| `operator-service` | Labeler, from the GPU Operator DCGM pod image |
+| `external-hostengine` | You, before you install NVSentinel |
+| `embedded-mode` | You, before you install NVSentinel |
+
+In `external-hostengine` and `embedded-mode` there is no DCGM pod for labeler to read, so labeler cannot derive the version. Selecting either mode automatically configures labeler to keep a valid label that already exists. Labeler never creates it.
+
+One case still removes the label: a node labelled `nvsentinel.dgxc.nvidia.com/managed=false` is opted out of NVSentinel management, and labeler strips all of its detection labels from that node, `dcgm.version` included. This applies in every source mode. Clear the opt-out before you label the node.
+
+An unlabeled node runs no GPU Health Monitor pod, and nothing reports an error. The DaemonSet stays healthy because Kubernetes never schedules a pod it can reject. GPU health monitoring is silently absent on that node.
+
+Label every GPU node with its DCGM major version. The only accepted values are `3.x` and `4.x`; labeler treats any other value as absent.
+
+```bash
+# One node
+kubectl label node <node-name> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x
+
+# Many nodes at once. Label each DCGM version separately, using a selector that
+# matches only the nodes running that version.
+kubectl label node -l <your-4.x-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x
+kubectl label node -l <your-3.x-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=3.x
+```
+
+Do not label every GPU node with one version. A node labelled `4.x` while running DCGM 3.x gets the 4.x monitor image, which then fails against the hostengine it finds. If your fleet is genuinely uniform, `nvidia.com/gpu.present=true` is a usable selector — it comes from Node Feature Discovery, which the GPU Operator installs. Substitute your own selector if you run neither, which is common in `embedded-mode`.
+
+Confirm a monitor pod now runs on each labeled node:
+
+```bash
+kubectl get pods -n nvsentinel -l app.kubernetes.io/name=gpu-health-monitor -o wide
+```
+
+Compare that count against the nodes that carry the label:
+
+```bash
+kubectl get nodes -L nvsentinel.dgxc.nvidia.com/dcgm.version
+```
 
 ### Host Networking Override
 
@@ -146,6 +202,7 @@ Drops DCGM health check incidents matching specific error codes before they gene
 ```yaml
 gpu-health-monitor:
   dcgmHealthCheck:
+    imexMonitoringEnabled: false
     suppressedErrorCodes:
       - DCGM_FR_CLOCK_THROTTLE_POWER
       - DCGM_FR_CLOCKS_EVENT_POWER
@@ -153,10 +210,18 @@ gpu-health-monitor:
       - DCGM_FR_CLOCKS_EVENT_THERMAL
 ```
 
+### imexMonitoringEnabled
+
+Enables DCGM IMEX health monitoring. It defaults to `false`. In DRA deployments, IMEX can be created only while a workload requests IMEX channels, so an idle node can legitimately have no IMEX daemon. Reporting that state as a DCGM health failure is not actionable.
+
+With DCGM 4.7 or newer hostengine, `false` removes IMEX from the requested health-watch mask while retaining NVLink monitoring. With an older hostengine, the monitor filters the legacy `DCGM_FR_IMEX_UNHEALTHY` incident before it is combined with GPU incidents. The hostengine version controls which behavior is available.
+
+Set this to `true` only where the IMEX daemon is expected to be continuously available. This restores the previous monitoring behavior. IMEX incidents are global DCGM entities, but GPU-health-monitor's existing routing can attribute them to GPU 0. Dedicated node-level IMEX event handling is deferred to a separate change.
+
 ### suppressedErrorCodes
 List of DCGM error code names (as reported by DCGM, e.g. `DCGM_FR_CLOCK_THROTTLE_POWER`) to suppress. Suppression is scoped to the listed error codes only — other incidents on the same health watch (e.g. other `GpuPowerWatch` error codes) are still reported.
 
-The default is throttling: of the errors these two watches raise, it is the only one that tracks load rather than a fault, and it maps to `NONE`, so it only ever produced node events.
+The defaults include throttling: of the errors these two watches raise, it is the only one that tracks load rather than a fault, and it maps to `NONE`, so it only ever produced node events.
 
 | Watch | Suppressed | Still reported |
 | --- | --- | --- |
@@ -165,17 +230,53 @@ The default is throttling: of the errors these two watches raise, it is the only
 
 Four names, two codes: `DCGM_FR_CLOCK_THROTTLE_*` is a deprecated alias of `DCGM_FR_CLOCKS_EVENT_*` with the same number, and either name can be reported, so both are listed.
 
+`DCGM_FR_NVLINK_ERROR_CRITICAL` (71) temporarily maps to `NONE` as clarity is not there around supported recovery and counter-clearing procedure. Both WARN and FAIL incidents produce non-fatal unhealthy events. The default quarantine policy does not cordon nodes for these events. This applies to every incident with code 71, including other NVLink errors that share this code. Other error codes retain their configured actions.
+
 Genuine power and cooling faults are unaffected, arriving as `GPU_HW_POWER_BRAKE_VIOLATION` via [`GpuPowerBrakeWatch`](#hardware-power-brake-detection) and `GPU_TEMP_HW_SLOWDOWN_VIOLATION` via `GpuThermalMarginWatch`, both `CONTACT_SUPPORT`. `DCGM_FR_THROTTLING_VIOLATION` is not suppressed either: it comes only from `dcgmi diag`, not these watches.
 
-### Example: Report throttling again
+### Example: Disable suppression
 
-Use this to investigate throttling on a specific cluster; it restores the `GpuPowerWatch` and `GpuThermalWatch` events.
+Use this to report all error codes again, including throttling.
 
 ```yaml
 gpu-health-monitor:
   dcgmHealthCheck:
     suppressedErrorCodes: []
 ```
+
+## GPU Thermal Margin Detection
+
+`GpuThermalMarginWatch` reads DCGM field 153, the margin in degrees to the GPU's slowdown temperature limit, and fails a GPU whose margin reaches the hardware slowdown threshold. It reads the field directly because DCGM's own thermal health watch does not report the margin.
+
+```yaml
+gpu-health-monitor:
+  dcgmFieldsMonitoring:
+    gpuTempLimitMonitoringEnabled: true
+    gpuTempLimitStoreOnly: true
+```
+
+### gpuTempLimitMonitoringEnabled
+
+Enables the watch. On by default.
+
+### gpuTempLimitStoreOnly
+
+Dry run. When true, this check's events are emitted with `processingStrategy=STORE_ONLY`, so they are persisted and exported as metrics but excluded from the remediation pipeline: no node condition and no cordon. Defaults to true, so the watch is observable before it can act. Set it to `false` once you have confirmed the thresholds suit your hardware and cooling.
+
+To interpret a firing check, see the [GPU Thermal Margin runbook](../runbooks/gpu-thermal-margin.md).
+
+## NVLink Suppression on Unbridged PCIe Cards
+
+Suppresses the NVLink-down fault on PCIe cards that have NVLink silicon but no bridge fitted. DCGM otherwise reports those permanently inactive links as a fatal fault with `RESTART_VM`.
+
+```yaml
+gpu-health-monitor:
+  suppressNvlinkDownOnUnbridgedPcie: "False"
+```
+
+The value is a quoted string, not a boolean.
+
+Leave it `"False"` if any GPU pool uses NVLink bridges. An unbridged card and a card whose bridge was already dead when metadata was collected look identical, so enabling suppression on a bridged pool could hide a real bridge failure that was present at boot. GPUs with no NVLink silicon at all, such as L40 and A40, are suppressed regardless of this value.
 
 ## Hardware Power Brake Detection
 
@@ -257,6 +358,52 @@ Alert separately when the init program itself is repeatedly failing:
   annotations:
     summary: "gpu-health-monitor DCGM startup gate is failing"
     description: "The wait-for-dcgm init container in {{ $labels.namespace }}/{{ $labels.pod }} is repeatedly failing."
+```
+
+## Runtime DCGM Connectivity Debounce
+
+After the main container has started, transient DCGM timeouts or connection errors can be debounced before they become `GpuDcgmConnectivityFailure` transitions. For example, the following configuration requires three consecutive failures:
+
+```yaml
+gpu-health-monitor:
+  dcgmConnectivity:
+    runtimeDebounce:
+      failureThreshold: 3
+      successThreshold: 1
+```
+
+`failureThreshold` is the number of consecutive failed DCGM connectivity cycles required before the unhealthy event is published. A successful cycle before the threshold resets the failure streak, so intermittent failures do not accumulate across healthy polls.
+
+`successThreshold` is the number of consecutive successful cycles required to clear an already-published connectivity failure. A failed cycle during recovery resets the success streak and keeps the existing unhealthy event active. The threshold does not delay the initial healthy baseline event emitted for a node with no prior connectivity state.
+
+Both values must be integers greater than or equal to `1`. They default to `1`, preserving the existing fail-once and recover-once behavior. Raising `failureThreshold` filters shorter connectivity interruptions at the cost of up to `failureThreshold - 1` additional poll intervals of detection latency.
+
+The debounce state belongs to the running monitor process and is not persisted. Restarting the process resets both observation streaks. The replacement process emits its normal initial healthy baseline as soon as a complete health check succeeds, allowing platform state left by the previous process to converge without waiting for `successThreshold`.
+
+The following metric exposes the current streaks:
+
+```text
+dcgm_connectivity_consecutive_observations{result="failure"}
+dcgm_connectivity_consecutive_observations{result="success"}
+```
+
+Runtime debounce and the startup gate address different phases:
+
+- `startupGate` prevents the monitor from starting and publishing connectivity failures before DCGM has been functional once.
+- `runtimeDebounce` filters short connectivity transitions after the monitor is running.
+- The probe watchdog is not delayed by `failureThreshold`: a DCGM call that has stopped returning may have no later poll from which to build a failure streak.
+
+`dcgmHealthCheck.connectivityFailureEscalationThreshold` continues to count consecutive failed observations. If its threshold is lower than the debounce failure threshold, the first published unhealthy event may already recommend `RESTART_BM`; configure escalation at or above `failureThreshold` when a preliminary `CONTACT_SUPPORT` event is desired.
+
+Example behavior for `failureThreshold: 4` and `successThreshold: 2`:
+
+```text
+failure 1-3  -> no unhealthy event
+failure 4    -> publish GpuDcgmConnectivityFailure
+success 1    -> keep the unhealthy event active
+failure      -> reset the recovery streak
+success 1    -> keep the unhealthy event active
+success 2    -> publish the healthy recovery event
 ```
 
 ## Unresponsive DCGM Detection

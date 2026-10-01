@@ -309,20 +309,29 @@ func validateHeader(row xlsxreader.Row) error {
 	return nil
 }
 
-func processDataRow(row xlsxreader.Row, rowIndex int, errorResolutionMap map[int]types.ErrorResolution) error {
-	if len(row.Cells) < 9 {
-		slog.Warn("Row has insufficient columns, skipping",
-			"row", rowIndex+1,
-			"columns", len(row.Cells),
-			"expected", 9)
-
-		return nil
+// cellByColumn returns the trimmed value of a cell by its spreadsheet column letter,
+// or "" when the row has no cell in that column.
+//
+// Selecting by coordinate is required for correctness rather than being a matter of
+// style: xlsxreader omits empty cells and does not pad Row.Cells, so the Nth element is
+// the Nth populated cell and not column N. Rows whose column I is empty but which carry
+// a note in column L would otherwise return that note as the resolution bucket.
+func cellByColumn(row xlsxreader.Row, column string) string {
+	for _, cell := range row.Cells {
+		if cell.Column == column {
+			return strings.TrimSpace(cell.Value)
+		}
 	}
 
-	// 0: Type (XID), 1: Code, 2: Mnemonic, 3: Description, 4-7: Applies to GPUs, 8: Resolution Bucket (Immediate Action)
-	codeStr := strings.TrimSpace(row.Cells[1].Value)
+	return ""
+}
 
-	actionStr := strings.TrimSpace(row.Cells[8].Value)
+func processDataRow(row xlsxreader.Row, rowIndex int, errorResolutionMap map[int]types.ErrorResolution) error {
+	// A: Type (XID), B: Code, C: Mnemonic, D: Description, E-H: Applies to GPUs,
+	// I: Resolution Bucket (Immediate Action).
+	codeStr := cellByColumn(row, "B")
+
+	actionStr := cellByColumn(row, "I")
 
 	if codeStr == "" {
 		return fmt.Errorf("row %d: empty XID code - Excel sheet format is invalid", rowIndex+1)

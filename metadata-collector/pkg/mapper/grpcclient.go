@@ -17,6 +17,7 @@ package mapper
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"slices"
@@ -33,6 +34,13 @@ import (
 
 const (
 	podResourcesKubeletSocket = "/var/lib/kubelet/pod-resources/kubelet.sock"
+
+	draGPUDriverName = "gpu.nvidia.com"
+	// draGPUDeviceNameFormat is how the NVIDIA DRA driver names a full GPU from its minor number, the N in
+	// /dev/nvidiaN. It mirrors GpuInfo.CanonicalName() in cmd/gpu-kubelet-plugin/deviceinfo.go
+	// (https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/495bf4c/cmd/gpu-kubelet-plugin/deviceinfo.go#L122),
+	// which the driver keeps on purpose because the minor is fixed for as long as the GPU stays on the bus.
+	draGPUDeviceNameFormat = "gpu-%d"
 )
 
 type KubeletGRPClient interface {
@@ -44,9 +52,13 @@ type kubeletGRPClient struct {
 
 	connection         *grpc.ClientConn
 	podResourcesClient v1.PodResourcesListerClient
+	// draDeviceUUIDs maps this node's DRA device names to GPU UUIDs; an unknown name is skipped.
+	draDeviceUUIDs map[string]string
 }
 
-func NewKubeletGRPClient(ctx context.Context) (KubeletGRPClient, error) {
+// NewKubeletGRPClient connects to the kubelet PodResources socket. draDeviceUUIDs maps this node's DRA device
+// names to GPU UUIDs.
+func NewKubeletGRPClient(ctx context.Context, uuidsByMinor map[int]string) (KubeletGRPClient, error) {
 	_, err := os.Stat(podResourcesKubeletSocket)
 	if err != nil {
 		return nil, err
@@ -72,12 +84,17 @@ func NewKubeletGRPClient(ctx context.Context) (KubeletGRPClient, error) {
 		ctx:                ctx,
 		connection:         connection,
 		podResourcesClient: client,
+		draDeviceUUIDs:     draDeviceUUIDs(uuidsByMinor),
 	}, nil
 }
 
 /*
 ListPodResources calls the PodResourcesLister gRPC service listening on a local Unix socket. The metadata-collector
 daemonset requires a HostPath volume configured to mount the /var/lib/kubelet/pod-resources/kubelet.sock Unix socket.
+
+Devices allocated by device plugins arrive in each container's devices list keyed by resource name. Devices allocated
+through DRA ResourceClaims arrive in dynamic_resources as (driver, pool, device name) and are resolved to GPU UUIDs
+through the node's NVML minor numbers, keyed by the driver name.
 
 This function returns a mapping from pods to all devices used by any container in that pod. Additionally, it will
 ensure that each pod has a unique list of devices (even if multiple containers are allocated the same device) and
@@ -132,21 +149,18 @@ func (client *kubeletGRPClient) ListPodResources() (map[string]*model.DeviceAnno
 	devicesPerPod := make(map[string]*model.DeviceAnnotation)
 
 	for _, pod := range listPodResourcesResponse.GetPodResources() {
+		podKey := pod.GetNamespace() + "/" + pod.GetName()
+
 		for _, container := range pod.GetContainers() {
 			for _, device := range container.GetDevices() {
-				resourceName := device.GetResourceName()
-				if isSupportedResourceName(resourceName) {
-					podKey := pod.GetNamespace() + "/" + pod.GetName()
-					if _, ok := devicesPerPod[podKey]; !ok {
-						devicesPerPod[podKey] = &model.DeviceAnnotation{
-							Devices: make(map[string][]string),
-						}
-					}
+				if isSupportedResourceName(device.GetResourceName()) {
+					addPodDevices(devicesPerPod, podKey, device.GetResourceName(), device.GetDeviceIds()...)
+				}
+			}
 
-					if len(device.GetDeviceIds()) > 0 {
-						devicesPerPod[podKey].Devices[resourceName] = append(devicesPerPod[podKey].Devices[resourceName],
-							device.GetDeviceIds()...)
-					}
+			for _, claim := range container.GetDynamicResources() {
+				for _, resource := range claim.GetClaimResources() {
+					addDRADevice(devicesPerPod, podKey, resource, client.draDeviceUUIDs)
 				}
 			}
 		}
@@ -155,6 +169,49 @@ func (client *kubeletGRPClient) ListPodResources() (map[string]*model.DeviceAnno
 	sortAndRemoveDuplicateDevices(devicesPerPod)
 
 	return devicesPerPod, nil
+}
+
+// addPodDevices records the pod as a device holder even with no IDs, then appends any IDs under resourceName.
+func addPodDevices(devicesPerPod map[string]*model.DeviceAnnotation, podKey, resourceName string,
+	deviceIDs ...string) {
+	annotation, ok := devicesPerPod[podKey]
+	if !ok {
+		annotation = &model.DeviceAnnotation{Devices: make(map[string][]string)}
+		devicesPerPod[podKey] = annotation
+	}
+
+	if len(deviceIDs) > 0 {
+		annotation.Devices[resourceName] = append(annotation.Devices[resourceName], deviceIDs...)
+	}
+}
+
+// draDeviceUUIDs maps each DRA device name to its GPU UUID from the node's GPU minor numbers.
+func draDeviceUUIDs(uuidsByMinor map[int]string) map[string]string {
+	uuidsByName := make(map[string]string, len(uuidsByMinor))
+	for minor, uuid := range uuidsByMinor {
+		uuidsByName[fmt.Sprintf(draGPUDeviceNameFormat, minor)] = uuid
+	}
+
+	return uuidsByName
+}
+
+// addDRADevice records a GPU allocated through a ResourceClaim under the DRA driver name. An allocation whose
+// device name is unknown is skipped; the pod is annotated once it resolves on a later poll.
+func addDRADevice(devicesPerPod map[string]*model.DeviceAnnotation, podKey string, resource *v1.ClaimResource,
+	draDeviceUUIDs map[string]string) {
+	if resource.GetDriverName() != draGPUDriverName {
+		return
+	}
+
+	uuid, ok := draDeviceUUIDs[resource.GetDeviceName()]
+	if !ok {
+		slog.Warn("No GPU matches DRA allocation, retrying on the next poll",
+			"podKey", podKey, "pool", resource.GetPoolName(), "device", resource.GetDeviceName())
+
+		return
+	}
+
+	addPodDevices(devicesPerPod, podKey, draGPUDriverName, uuid)
 }
 
 func sortAndRemoveDuplicateDevices(devicesPerPod map[string]*model.DeviceAnnotation) {

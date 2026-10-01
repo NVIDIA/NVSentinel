@@ -16,23 +16,25 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 const (
+	agentName = "health-events-analyzer"
+
 	maxRetries int           = 5
 	delay      time.Duration = 5 * time.Second
 
@@ -42,56 +44,30 @@ const (
 )
 
 type PublisherConfig struct {
-	platformConnectorClient protos.PlatformConnectorClient
-	processingStrategy      protos.ProcessingStrategy
+	pub                *healthpub.Publisher
+	processingStrategy protos.ProcessingStrategy
 }
 
-func isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	if s, ok := status.FromError(err); ok {
-		if s.Code() == codes.Unavailable {
-			return true
-		}
-	}
-
-	return false
-}
-
+// sendHealthEventWithRetry forwards health events through the shared
+// healthpub publisher, which retries with the policy set in NewPublisher (see
+// healthpub.Publish for what is retried in each mode). A batch the server
+// refuses for good comes back as healthpub.ErrPublishRejected and is returned
+// as is, so the caller marks the event processed instead of replaying it
+// forever.
 func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEvents *protos.HealthEvents) error {
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.grpc.publish")
 	defer span.End()
 
-	backoff := wait.Backoff{
-		Steps:    maxRetries,
-		Duration: delay,
-		Factor:   2,
-		Jitter:   0.1,
-	}
+	if err := p.pub.Publish(ctx, healthEvents); err != nil {
+		if errors.Is(err, healthpub.ErrPublishRejected) {
+			slog.ErrorContext(ctx, "Platform connector rejected the health event for good; it will not be retried",
+				"error", err)
+			fatalEventPublishingError.WithLabelValues("event_rejected").Inc()
+			tracing.RecordError(span, err)
 
-	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
-		_, err := p.platformConnectorClient.HealthEventOccurredV1(ctx, healthEvents)
-		if err == nil {
-			slog.DebugContext(ctx, "Successfully sent health events", "events", healthEvents)
-
-			return true, nil
+			return err
 		}
 
-		if isRetryableError(err) {
-			slog.ErrorContext(ctx, "Retryable error occurred", "error", err)
-			fatalEventPublishingError.WithLabelValues("retryable_error").Inc()
-
-			return false, nil
-		}
-
-		slog.ErrorContext(ctx, "Non-retryable error occurred", "error", err)
-		fatalEventPublishingError.WithLabelValues("non_retryable_error").Inc()
-
-		return false, fmt.Errorf("non retryable error occurred while sending health event: %w", err)
-	})
-	if err != nil {
 		slog.ErrorContext(ctx, "All retry attempts to send health event failed", "error", err)
 		fatalEventPublishingError.WithLabelValues("event_publishing_to_UDS_error").Inc()
 
@@ -104,17 +80,31 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 		return fmt.Errorf("all retry attempts to send health event failed: %w", err)
 	}
 
+	slog.DebugContext(ctx, "Successfully sent health events", "events", healthEvents)
+
 	return nil
 }
 
 // NewPublisher creates a PublisherConfig that sends health events to the
-// platform-connector via gRPC.
+// platform-connector via gRPC. opts are forwarded to healthpub.New, main
+// passing the option healthpub.DialFromEnvOr returns. The publisher target is
+// empty because the analyzer never gated sends on the node-local socket file:
+// the retry policy alone reproduces its previous socket-mode behavior.
 func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
-	processingStrategy protos.ProcessingStrategy) *PublisherConfig {
+	processingStrategy protos.ProcessingStrategy, opts ...healthpub.Option) *PublisherConfig {
+	pubOpts := append([]healthpub.Option{
+		healthpub.WithRetryPolicy(maxRetries, delay, 2, 0.1),
+	}, opts...)
+
 	return &PublisherConfig{
-		platformConnectorClient: platformConnectorClient,
-		processingStrategy:      processingStrategy,
+		pub:                healthpub.New(platformConnectorClient, "", agentName, pubOpts...),
+		processingStrategy: processingStrategy,
 	}
+}
+
+// Close shuts down the publisher and the connection it owns.
+func (p *PublisherConfig) Close() {
+	p.pub.CloseOrWarn()
 }
 
 // Publish clones the incoming health event, updates the fields defined by the
@@ -134,7 +124,14 @@ func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent
 
 	newEvent := proto.Clone(event).(*protos.HealthEvent)
 
-	newEvent.Agent = "health-events-analyzer"
+	// The source's idempotency key belongs to ingestion. Current platform
+	// connectors stamp their own key on the derived event, but during a chart
+	// upgrade a node-local connector of the previous version can still be
+	// serving this node: it stores metadata as received, and the inherited key
+	// would make the unique index refuse the derived event.
+	delete(newEvent.Metadata, datastore.HealthEventIdempotencyKeyMetadataField)
+
+	newEvent.Agent = agentName
 	newEvent.CheckName = ruleName
 	newEvent.RecommendedAction = recommendedAction
 	newEvent.IsHealthy = false

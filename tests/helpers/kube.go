@@ -639,6 +639,23 @@ func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.N
 	return &node, nil
 }
 
+func SetNodeCordon(ctx context.Context, c klient.Client, nodeName string, cordoned bool) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			return err
+		}
+
+		if node.Spec.Unschedulable == cordoned {
+			return nil
+		}
+
+		node.Spec.Unschedulable = cordoned
+
+		return c.Resources().Update(ctx, node)
+	})
+}
+
 func DeletePod(ctx context.Context, t *testing.T, c klient.Client, namespace, podName string,
 	waitForRemoval bool) error {
 	pod := &v1.Pod{
@@ -981,9 +998,9 @@ func CountSchedulableNodes(nodeList v1.NodeList) int {
 	return count
 }
 
-// GetRealNodeNames returns up to count distinct real (non-KWOK) worker node names.
-// Prefers schedulable workers, falls back to unschedulable workers if needed.
-func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string, error) {
+// AllRealNodeNames returns every real (non-KWOK) worker node name, schedulable
+// ones first.
+func AllRealNodeNames(ctx context.Context, c klient.Client) ([]string, error) {
 	var nodeList v1.NodeList
 
 	err := c.Resources().List(ctx, &nodeList,
@@ -1004,6 +1021,17 @@ func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string
 		if node.Spec.Unschedulable {
 			names = append(names, node.Name)
 		}
+	}
+
+	return names, nil
+}
+
+// GetRealNodeNames returns up to count distinct real (non-KWOK) worker node names.
+// Prefers schedulable workers, falls back to unschedulable workers if needed.
+func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string, error) {
+	names, err := AllRealNodeNames(ctx, c)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(names) < count {
@@ -1483,6 +1511,108 @@ func ScrubExtRRStateFromNode(ctx context.Context, c klient.Client, nodeName stri
 	}
 
 	return c.Resources().Update(ctx, node)
+}
+
+func WaitForValidationRequestForNodes(ctx context.Context, t *testing.T, c klient.Client,
+	nodeNames []string) *unstructured.Unstructured {
+	t.Helper()
+
+	var resultCR *unstructured.Unstructured
+
+	require.Eventually(t, func() bool {
+		crList, err := ListAllCRs(ctx, c, ValidationRequestGVK)
+		if err != nil {
+			t.Logf("failed to list ValidationRequests: %v", err)
+			return false
+		}
+
+		for i := range crList.Items {
+			item := &crList.Items[i]
+			if !validationRequestTargetsAllNodes(item, nodeNames) {
+				continue
+			}
+
+			t.Logf("Found ValidationRequest %s targeting nodes %v", item.GetName(), nodeNames)
+
+			resultCR = item
+
+			return true
+		}
+
+		t.Logf("No ValidationRequest found targeting nodes %v yet", nodeNames)
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval, "a ValidationRequest should be created targeting nodes %v", nodeNames)
+
+	return resultCR
+}
+
+func validationRequestTargetsAllNodes(item *unstructured.Unstructured, nodeNames []string) bool {
+	nodes, found, err := unstructured.NestedSlice(item.Object, "spec", "nodes")
+	if err != nil || !found {
+		return false
+	}
+
+	present := make(map[string]bool, len(nodes))
+
+	for _, n := range nodes {
+		nodeEntry, ok := n.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if name, ok := nodeEntry["name"].(string); ok {
+			present[name] = true
+		}
+	}
+
+	for _, nodeName := range nodeNames {
+		if !present[nodeName] {
+			return false
+		}
+	}
+
+	return true
+}
+
+func WaitForCertificationCount(ctx context.Context, t *testing.T, c klient.Client,
+	vrName string, expectedCount int) []*unstructured.Unstructured {
+	t.Helper()
+
+	prefix := vrName + "-"
+
+	var result []*unstructured.Unstructured
+
+	require.Eventually(t, func() bool {
+		crList := &unstructured.UnstructuredList{}
+		crList.SetGroupVersionKind(NVCRECertificationGVK)
+
+		if err := c.Resources().WithNamespace(NVSentinelNamespace).List(ctx, crList); err != nil {
+			t.Logf("failed to list Certifications: %v", err)
+			return false
+		}
+
+		var matched []*unstructured.Unstructured
+
+		for i := range crList.Items {
+			if strings.HasPrefix(crList.Items[i].GetName(), prefix) {
+				matched = append(matched, &crList.Items[i])
+			}
+		}
+
+		t.Logf("Found %d/%d expected Certifications for ValidationRequest %s", len(matched), expectedCount, vrName)
+
+		if len(matched) != expectedCount {
+			return false
+		}
+
+		result = matched
+
+		return true
+	}, EventuallyWaitTimeout, WaitInterval, "expected exactly %d Certification(s) for ValidationRequest %s",
+		expectedCount, vrName)
+
+	return result
 }
 
 // newExtRR builds an unstructured ExternalRemediationRequest with a minimal
@@ -2504,7 +2634,8 @@ func containsAllExpectedParts(actual, expected string) bool {
 	return matchCount > 0
 }
 
-// SetNodeConditionStatus sets a node condition to a specific status for testing purposes.
+// SetNodeConditionStatus sets a node condition to a specific status for testing purposes. If remove is true,
+// conditionType is instead removed from the node's status entirely and status is ignored.
 func SetNodeConditionStatus(
 	ctx context.Context,
 	t *testing.T,
@@ -2512,6 +2643,7 @@ func SetNodeConditionStatus(
 	nodeName string,
 	conditionType v1.NodeConditionType,
 	status v1.ConditionStatus,
+	remove bool,
 ) {
 	t.Helper()
 
@@ -2524,10 +2656,16 @@ func SetNodeConditionStatus(
 
 			found := false
 			modified := false
+			conditions := make([]v1.NodeCondition, 0, len(node.Status.Conditions))
 
 			for i := range node.Status.Conditions {
 				if node.Status.Conditions[i].Type == conditionType {
 					found = true
+
+					if remove {
+						modified = true
+						continue
+					}
 
 					if node.Status.Conditions[i].Status != status {
 						node.Status.Conditions[i].Status = status
@@ -2535,14 +2673,14 @@ func SetNodeConditionStatus(
 						node.Status.Conditions[i].LastHeartbeatTime = metav1.Now()
 						modified = true
 					}
-
-					break
 				}
+
+				conditions = append(conditions, node.Status.Conditions[i])
 			}
 
-			if !found {
+			if !found && !remove {
 				now := metav1.Now()
-				node.Status.Conditions = append(node.Status.Conditions, v1.NodeCondition{
+				conditions = append(conditions, v1.NodeCondition{
 					Type:               conditionType,
 					Status:             status,
 					LastTransitionTime: now,
@@ -2556,6 +2694,8 @@ func SetNodeConditionStatus(
 			if !modified {
 				return nil
 			}
+
+			node.Status.Conditions = conditions
 
 			return client.Resources().UpdateStatus(ctx, node)
 		})

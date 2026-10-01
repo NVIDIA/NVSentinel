@@ -65,9 +65,11 @@ janitor:
   config:
     manualMode: false     # Set to true to skip Provider calls; requires human approval
     nodes:
-      exclusions:         # Nodes the Janitor will never act on
-        - control-plane-node-1
-        - critical-infra-node-1
+      exclusions:         # Label selectors; matching nodes are refused new Janitor CRs
+        - matchLabels:
+            node-role.kubernetes.io/control-plane: ""
+        - matchLabels:
+            kubernetes.io/hostname: critical-infra-node-1
   ttl:
     enabled: true
     defaultTTL: "336h"   # Auto-delete completed CRs after this duration (default: 14 days)

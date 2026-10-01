@@ -69,6 +69,73 @@ Events are persisted and ingested by the Health Events Analyzer for rule evaluat
 #### STORE_ONLY
 Observability-only mode. Derived events are persisted and exported but do not modify any cluster resources. Use this mode to shadow-test new or customised rules in production before enabling full remediation.
 
+### Concurrent Event Processing
+
+The Health Events Analyzer partitions incoming events across a concurrent worker pool by node name. Events for distinct nodes are evaluated concurrently, while events for the same node are processed in strict chronological order. Checkpoints advance using a low-water mark tracker to guarantee at-least-once delivery without head-of-line blocking.
+
+```yaml
+health-events-analyzer:
+  workers: 1       # Number of concurrent workers (default: 1)
+  maxInFlight: 1000 # Maximum uncheckpointed in-flight events before backpressure (default: 1000)
+  ruleConcurrency: 1 # Maximum rule queries that run at the same time for one event (default: 1)
+```
+
+#### Scaling Workers by Datastore Event Rate
+
+Each event evaluation executes rule aggregation queries against the datastore, averaging approximately 17.5 ms of I/O round-trip latency. A single worker achieves a processing ceiling of approximately 57 events/second. Throughput scales linearly with the number of workers ($\approx \text{Workers} \times 57\text{ events/s}$).
+
+Use the following reference table to configure `workers` and `maxInFlight` based on cluster size and expected event rate:
+
+| Offered Event Rate in DB | Recommended `workers` | Recommended `maxInFlight` | Estimated Throughput Capacity | Recommended Cluster Scale |
+|---|---|---|---|---|
+| $< 50$ events/s | `1` (default) | `1000` | ~57 events/s | Up to ~500 nodes |
+| $50 - 200$ events/s | `4` | `1000` | ~220 events/s | 500 – 2,000 nodes |
+| $200 - 400$ events/s | `8` | `2000` | ~440 events/s | 2,000 – 4,000 nodes |
+| $400 - 800$ events/s | `16` | `2000` | ~860 events/s | 4,000 – 8,000 nodes |
+| $800 - 1,500$ events/s | `32` | `4000` | ~1,680 events/s | 8,000 – 15,000 nodes |
+| $> 1,500$ events/s | `64` | `8000` | ~3,500 events/s | 15,000+ nodes |
+
+`maxInFlight` bounds uncheckpointed in-flight events in memory. When in-flight events reach this limit, stream ingestion pauses until workers resolve earlier events. Increase `maxInFlight` proportionally for larger worker counts to absorb bursty event traffic without stalling ingestion.
+
+#### Concurrent Rule Evaluation
+
+The analyzer runs one datastore query for each enabled rule when it evaluates an event. By default, it runs these queries one at a time. `ruleConcurrency` sets the maximum number of rule queries that run at the same time for one event.
+
+`workers` and `ruleConcurrency` work at different levels:
+
+- `workers` evaluates events from different nodes at the same time.
+- `ruleConcurrency` evaluates the rules for one event at the same time.
+
+The analyzer keeps the events from one node in order. Thus, more workers cannot process a burst of events from one node faster. A higher `ruleConcurrency` can.
+
+The rule results do not change. The analyzer publishes the matched events in rule order, as it does when it runs the queries one at a time.
+
+The analyzer runs the same queries, and each query examines the same documents. But in measurements on MongoDB, the datastore used more CPU for each event when the queries ran at the same time. 
+
+Use these guidelines:
+
+- Keep the default of `1` if the datastore CPU is near its limit. More CPU for each event can decrease throughput.
+- If the datastore has spare CPU, set `ruleConcurrency` to `4` or `8`.
+
+The analyzer can run up to `workers` × `ruleConcurrency` rule queries at the same time.
+
+### Matched-entity metric
+
+`rule_matched_total` is labeled `{rule_name, node_name}` only. Rules that select on a GPU, GPC, TPC, or NIC therefore fire without saying which unit they selected. The optional counter below adds that identity; it is off by default because the extra labels raise cardinality.
+
+```yaml
+health-events-analyzer:
+  ruleMatchedEntityMetricEnabled: false
+```
+
+When enabled, a match on an entity-keyed rule increments:
+
+```text
+rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}
+```
+
+`entity_type` / `entity_value` come from the triggering event's impacted entities. Only PCI, GPU, GPC, TPC, SM, NVLINK, NIC, NICPort, and NVSwitch are exported, using the producer spelling. GPU UUID is never exported; PCI or GPU index is used instead. Node-scoped rules (for example `MultipleRemediations`) do not emit this series. `RepeatedXidError` does.
+
 ### Client Certificate Mount Path
 
 Path inside the container where TLS client certificates are mounted for authenticated MongoDB connections. Certificates are typically provisioned by cert-manager and mounted via a Kubernetes secret volume.
@@ -147,6 +214,7 @@ name        = "RuleName"
 description = "Human-readable description"
 recommended_action = "CONTACT_SUPPORT"   # or RUN_DCGMEUD, NONE, etc.
 evaluate_rule = true                     # Helm template expression; maps to the enable flag
+when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"   # Optional CEL; see below
 stage = [
   '{ "$match": { ... } }',              # MongoDB aggregation pipeline stages as JSON strings
   '{ "$count": "count" }',
@@ -155,6 +223,31 @@ stage = [
 ```
 
 The full default ruleset — including all aggregation pipeline stage definitions — is in the chart's `values.yaml` at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. Refer to that file when writing or reviewing custom rules.
+
+### Skip Rules That Cannot Match
+
+Each enabled rule sends one query to the datastore for each event. Most rules apply to only one XID or one check. For all other events the query cannot match, but the datastore still reads the events of the node to answer it.
+
+The optional `when` field prevents this. It is a CEL expression over the incoming event. The analyzer runs the stages of the rule only when `when` is true. When it is false, the analyzer sends no query and the rule does not match.
+
+```toml
+[[rules]]
+name = "XID74Reg0ECCParityError"
+evaluate_rule = true
+when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
+stage = [ ... ]
+```
+
+The expression can read these fields of the incoming event: `agent`, `checkName`, `componentClass`, `errorCode`, `isFatal`, `isHealthy`, `recommendedAction`, `nodeName`, `metadata`, and `message`. `errorCode` is a list and `metadata` is a map. The platform connector overrides and the event exporter filter use the same fields.
+
+**The expression must be true for every event that the stages can match.** If it is false for such an event, the analyzer misses that match. To write it safely, copy the stage of the rule that compares `this.` fields to constants. For example, the stage `{"$match": {"$expr": {"$eq": ["this.healthevent.errorcode.0", "74"]}}}` becomes the `when` in the example above. The analyzer resolves `this.healthevent.errorcode.0` to null when the event has no error code, so check `size(event.errorCode) > 0` before you read `event.errorCode[0]`.
+
+The analyzer handles `when` as follows:
+
+- If `when` is empty or not set, the analyzer runs the rule for every event.
+- If `when` does not compile or does not return a boolean, the analyzer does not start. The error names the rule.
+- If `when` fails for an event, the analyzer runs the query of the rule and logs a warning. A failure costs a query, but it does not hide a match.
+
 
 ### MultipleRemediations Rule
 

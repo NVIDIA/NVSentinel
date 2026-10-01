@@ -1,0 +1,45 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# These settings override the defaults provided by values-nvcre.yaml
+fault-quarantine:
+  validation:
+    ruleSets:
+      - enabled: true
+        version: "1"
+        name: "Post-reboot validation"
+        match:
+          all:
+            - kind: "HealthEvent"
+              expression: >-
+                event.componentClass == 'GPU' && event.isFatal == true &&
+                event.recommendedAction in [15, 24]
+        tests:
+          - dcgm-diag-test
+
+lifecycle-manager:
+  config:
+    tests:
+      nccl-loopback:
+        provider: nvcre-provider
+        supportsBatchingNodes: true
+        minimumNodesPerBatch: 1
+        batchFailurePolicy: fail
+        bandwidthGBps: "150"
+    newNodeValidation:
+      newNodeTests:
+        - e2e-smoke-test
+        - nccl-loopback
+        - nccl-loopback-nvswitch
+        - nccl-all-reduce

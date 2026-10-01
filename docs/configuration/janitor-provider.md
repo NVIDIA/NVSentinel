@@ -78,7 +78,7 @@ List of accepted token audiences. Must include the value set in `janitor.config.
 ```yaml
 janitor-provider:
   csp:
-    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic
+    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic, label
 ```
 
 Only one provider is active at a time. `kind` and `kwok` are for development only; they simulate reboots without contacting any cloud API.
@@ -160,6 +160,8 @@ Client ID of the Managed Identity used for Workload Identity authentication. The
 
 Uses OCI Workload Identity or a credentials file for authentication.
 
+OCI maps all `RebootNode` resources to the `RESET` action. `RESET` powers off the instance immediately without waiting for the operating system. Drain workloads before you create the resource because an immediate power-off can cause data corruption.
+
 ```yaml
 janitor-provider:
   csp:
@@ -186,6 +188,41 @@ Profile name within the credentials file. Defaults to `DEFAULT`. Ignored when `c
 
 ### principalId
 OCI principal OCID used for Workload Identity. Required when `credentialsFile` is empty.
+
+## Nebius
+
+For Nebius Managed Kubernetes (MK8s) clusters. The provider uses the official [Nebius Go SDK](https://github.com/nebius/gosdk) and authenticates with a service account key or an IAM token. The identity needs the `compute.instances.stop` and `compute.instances.start` permissions.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "nebius"
+    nebius:
+      serviceAccountKeySecret: "nebius-sa-credentials"
+```
+
+Configure exactly one credential. Prefer a service account key: IAM tokens expire and need a manual refresh, so they suit testing rather than production.
+
+### serviceAccountKeySecret
+Secret holding the service account key file under the key `sa-credentials.json`. The chart mounts it at `/etc/nebius` and sets `NEBIUS_SA_KEY_FILE` for you. This is the recommended production option.
+
+### serviceAccountKeyFile
+Path to a service account key file already present inside the container, in the JSON format the Nebius SDK documents. Passed as `NEBIUS_SA_KEY_FILE`. Use this when you mount the credential yourself.
+
+### iamToken
+A Nebius IAM token supplied directly, passed as `NEBIUS_IAM_TOKEN`. Obtain one with `nebius iam get-access-token`. For testing only — the token expires and remediation stops working when it does.
+
+### iamTokenSecretRef
+Secret holding an IAM token, as an alternative to writing the token into Helm values. Keeps the token out of your values file, but it still expires.
+
+```yaml
+janitor-provider:
+  csp:
+    nebius:
+      iamTokenSecretRef:
+        name: nebius-janitor-token
+        key: token
+```
 
 ## Lambda
 
@@ -367,3 +404,22 @@ Name of an image pull secret to attach to the reboot Job, if `rebootImage` is pu
 
 ### writeSyslog
 When `true`, the Job writes an attribution entry to the node's syslog via `logger` before executing the reboot command. Defaults to `false`.
+
+## Label provider
+
+Requests reboot and terminate by labeling the Node. An external controller running on the Kubernetes control plane can watch those labels and perform the required action. After reboot completion, that controller **MUST** remove the reboot label. The node is considered ready once the reboot label is removed and the node's boot ID has changed.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "label"
+    label:
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"
+```
+
+### rebootKey
+Node label spec used to request a reboot, in `key=value` form so reboot and terminate can use different values. Defaults to `nke.nvidia.com/reboot=requested-by-nvsentinel`.
+
+### terminateKey
+Node label spec used to request termination, in `key=value` form. Defaults to `nke.nvidia.com/terminate=requested-by-nvsentinel`.

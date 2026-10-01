@@ -102,7 +102,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: metrics
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -114,6 +114,7 @@ spec:
           - "--dry-run={{ .Values.global.dryRun }}"
           - "--kube-api-qps={{ if hasKey .Values "qps" }}{{ .Values.qps }}{{ else if hasKey (.Values.global | default dict) "qps" }}{{ .Values.global.qps }}{{ else }}5{{ end }}"
           - "--kube-api-burst={{ if hasKey .Values "burst" }}{{ .Values.burst }}{{ else if hasKey (.Values.global | default dict) "burst" }}{{ .Values.global.burst }}{{ else }}10{{ end }}"
+          - "--requeue-backoff-base={{ .Values.requeueBackoffBase | default "10s" }}"
           {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
           {{- if $certMountPath }}
           - "--database-client-cert-mount-path={{ $certMountPath }}"

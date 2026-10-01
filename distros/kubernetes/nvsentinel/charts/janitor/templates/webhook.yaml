@@ -29,7 +29,7 @@ spec:
     - {{ include "janitor.fullname" . }}
     - {{ include "janitor.fullname" . }}.{{ .Release.Namespace }}
     - {{ include "janitor.fullname" . }}.{{ .Release.Namespace }}.svc
-    - {{ include "janitor.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "janitor.fullname" . }}.{{ .Release.Namespace }}.svc.{{ (.Values.global).clusterDomain | default "cluster.local" }}
   issuerRef:
     name: {{ .Values.webhook.certIssuer | default "selfsigned-issuer" }}
     kind: Issuer

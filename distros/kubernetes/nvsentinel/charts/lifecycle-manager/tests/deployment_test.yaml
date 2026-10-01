@@ -1,0 +1,121 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: lifecycle-manager deployment
+templates:
+  - templates/deployment.yaml
+  # Rendered too because the template above checksum-annotates them.
+  - templates/configmap.yaml
+  - templates/configmap-templates.yaml
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+set:
+  global.tracing.enabled: false
+tests:
+  # A MaintenanceRequest names any node in the cluster, so this Deployment is a
+  # cross-node publisher: without the token it is pinned to whichever node its
+  # pod happens to run on and every MR for another node is rejected as
+  # node_mismatch. The umbrella derives the matching allowlist entry from the
+  # same feature gate.
+  - it: presents the platform-connector token when the MR controller and auth are both on
+    template: templates/deployment.yaml
+    set:
+      controllers.maintenanceRequest.enabled: true
+      global.platformConnectorAuth.enabled: true
+      # Set explicitly: the chart has no built-in fallback for these, so the
+      # token can only ever be minted with what the operator configured.
+      global.platformConnectorAuth.audience: platform-connector.nvsentinel.nvidia.com
+      global.platformConnectorAuth.tokenMountPath: /var/run/secrets/nvsentinel/platform-connector
+      global.platformConnectorAuth.tokenExpirationSeconds: 3600
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--platform-connector-socket=unix:///var/run/nvsentinel/nvsentinel.sock"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--platform-connector-token-path=/var/run/secrets/nvsentinel/platform-connector/token"
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: platform-connector-socket
+            mountPath: /var/run/nvsentinel
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: platform-connector-token
+            mountPath: /var/run/secrets/nvsentinel/platform-connector
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-token
+            projected:
+              sources:
+                - serviceAccountToken:
+                    audience: platform-connector.nvsentinel.nvidia.com
+                    expirationSeconds: 3600
+                    path: token
+
+  - it: preserves a configured platform-connector socket filename
+    template: templates/deployment.yaml
+    set:
+      controllers.maintenanceRequest.enabled: true
+      global.platformConnectorAuth.enabled: false
+      global.socketPath: /var/run/custom.sock
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--platform-connector-socket=unix:///var/run/nvsentinel/custom.sock"
+
+  - it: must not present the platform-connector token when auth is disabled
+    template: templates/deployment.yaml
+    set:
+      controllers.maintenanceRequest.enabled: true
+      global.platformConnectorAuth.enabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: "--platform-connector-token-path=/var/run/secrets/nvsentinel/platform-connector/token"
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: platform-connector-token
+          any: true
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-token
+          any: true
+
+  # Nothing publishes health events until the MR controller is on, so the token
+  # would be an unused credential mounted into every install of this chart.
+  - it: must not present the platform-connector token when the MR controller is off
+    template: templates/deployment.yaml
+    set:
+      controllers.maintenanceRequest.enabled: false
+      global.platformConnectorAuth.enabled: true
+      global.platformConnectorAuth.audience: platform-connector.nvsentinel.nvidia.com
+      global.platformConnectorAuth.tokenMountPath: /var/run/secrets/nvsentinel/platform-connector
+      global.platformConnectorAuth.tokenExpirationSeconds: 3600
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: "--platform-connector-token-path=/var/run/secrets/nvsentinel/platform-connector/token"
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-token
+          any: true

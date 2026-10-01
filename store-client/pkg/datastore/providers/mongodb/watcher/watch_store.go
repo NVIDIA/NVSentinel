@@ -91,6 +91,9 @@ type MongoDBConfig struct {
 	CertWatcher *certwatcher.CertWatcher
 	// AppName is used to identify the client in MongoDB connection tracking
 	AppName string
+	// MaxPoolSize caps the driver connection pool when greater than zero;
+	// zero keeps the driver default (100).
+	MaxPoolSize uint64
 }
 
 // TokenConfig holds the token-specific configuration.
@@ -852,6 +855,11 @@ func constructMongoClientOptions(
 	// Set AppName for MongoDB connection tracking if provided
 	if mongoConfig.AppName != "" {
 		clientOpts.SetAppName(mongoConfig.AppName)
+	}
+
+	// Cap the connection pool when configured; zero keeps the driver default (100)
+	if mongoConfig.MaxPoolSize > 0 {
+		clientOpts.SetMaxPoolSize(mongoConfig.MaxPoolSize)
 	}
 
 	// Only set TLS when TLS config was successfully built.

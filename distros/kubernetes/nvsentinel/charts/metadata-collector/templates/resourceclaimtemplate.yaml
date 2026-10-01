@@ -1,0 +1,37 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{- if include "metadata-collector.gpuDraEnabled" . }}
+# Admin-access claim on every GPU of the node, the same pattern GPU Operator uses
+# for its own DCGM DaemonSet in GPUCluster mode. The DRA driver injects the driver
+# libraries and device nodes through CDI, so no RuntimeClass or host mounts are
+# needed. Admin access does not consume the devices. The API server accepts
+# this template only in a namespace labelled resource.kubernetes.io/admin-access:
+# "true"; that label is an installation prerequisite (see docs).
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: {{ include "metadata-collector.fullname" . }}-admin-gpus
+  labels:
+    {{- include "metadata-collector.labels" . | nindent 4 }}
+spec:
+  spec:
+    devices:
+      requests:
+        - name: gpus
+          exactly:
+            deviceClassName: gpu.nvidia.com
+            allocationMode: All
+            adminAccess: true
+{{- end }}

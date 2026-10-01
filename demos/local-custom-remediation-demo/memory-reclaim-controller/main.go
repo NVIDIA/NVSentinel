@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 )
 
 const (
@@ -37,6 +38,9 @@ const (
 	// conditionMemoryReclaimed is the MemoryReclaim status condition this
 	// controller sets once the offending pod has been evicted.
 	conditionMemoryReclaimed = "MemoryReclaimed"
+
+	reasonHogPodsDeleted = "HogPodsDeleted"
+	reasonNoHogPodsFound = "NoHogPodsFound"
 )
 
 var memoryreclaimGVR = schema.GroupVersionResource{
@@ -125,7 +129,7 @@ func reconcileLoop(
 
 		log.Printf("Deleted %d memory-hog pod(s) on node %q", deleted, nodeName)
 
-		if err := updateCRStatus(ctx, dynClient, cr); err != nil {
+		if err := updateCRStatusWithRetry(ctx, dynClient, name, deleted); err != nil {
 			log.Printf("ERROR: updating status for MemoryReclaim %q: %v", name, err)
 			continue
 		}
@@ -186,14 +190,42 @@ func deleteMemoryHogPods(
 	return deleted, nil
 }
 
-func updateCRStatus(ctx context.Context, dynClient dynamic.Interface, cr *unstructured.Unstructured) error {
+func updateCRStatusWithRetry(
+	ctx context.Context,
+	dynClient dynamic.Interface,
+	name string,
+	deleted int,
+) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cr, err := dynClient.Resource(memoryreclaimGVR).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		return updateCRStatus(ctx, dynClient, cr, deleted)
+	})
+}
+
+func updateCRStatus(
+	ctx context.Context,
+	dynClient dynamic.Interface,
+	cr *unstructured.Unstructured,
+	deleted int,
+) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+
+	reason, message := reasonHogPodsDeleted,
+		fmt.Sprintf("Deleted %d memory-hog pod(s), memory pressure resolved", deleted)
+	if deleted == 0 {
+		reason, message = reasonNoHogPodsFound,
+			"No memory-hog pods found on the node; they were already gone when this controller ran"
+	}
 
 	newCondition := map[string]any{
 		"type":               conditionMemoryReclaimed,
 		"status":             string(corev1.ConditionTrue),
-		"reason":             "HogPodsDeleted",
-		"message":            "Memory hog pods deleted, memory pressure resolved",
+		"reason":             reason,
+		"message":            message,
 		"lastTransitionTime": now,
 	}
 
@@ -223,14 +255,15 @@ func updateCRStatus(ctx context.Context, dynClient dynamic.Interface, cr *unstru
 		return fmt.Errorf("setting conditions: %w", err)
 	}
 
+	if err := unstructured.SetNestedField(cr.Object, int64(deleted), "status", "reclaimedPods"); err != nil {
+		return fmt.Errorf("setting reclaimedPods: %w", err)
+	}
+
 	if err := unstructured.SetNestedField(cr.Object, now, "status", "completionTime"); err != nil {
 		return fmt.Errorf("setting completionTime: %w", err)
 	}
 
 	_, err := dynClient.Resource(memoryreclaimGVR).UpdateStatus(ctx, cr, metav1.UpdateOptions{})
-	if err != nil {
-		return fmt.Errorf("updating CR status: %w", err)
-	}
 
-	return nil
+	return err
 }

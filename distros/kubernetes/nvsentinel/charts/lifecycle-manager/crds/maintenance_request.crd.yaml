@@ -128,7 +128,7 @@ spec:
                       type: string
                     customRecommendedAction:
                       type: string
-                  description: healthEvent describes the preparation NVSentinel must perform. The reconciler re-emits this event into the pipeline as authored (the requester's recommendedAction stands), so the normal quarantine, drain, and remediation flow fires for whichever action the event names.
+                  description: healthEvent describes the preparation NVSentinel must perform. lifecycle-manager identifies itself as the publishing agent and preserves the requester-supplied agent in metadata. The requester's recommendedAction stands, so the normal quarantine, drain, and remediation flow fires for whichever action the event names.
                 startTime:
                   type: string
                   description: startTime is when the maintenance window opens. It is recorded for observability and future scheduling; the node is prepared on creation today.

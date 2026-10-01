@@ -28,6 +28,11 @@ import (
 const (
 	DefaultCacheSize = 50
 	DefaultCacheTTL  = 1 * time.Hour
+	// DefaultLookupTimeout bounds one Kubernetes node read on a cache miss.
+	// The read sits on the acknowledgement path of the deployment platform
+	// connector, so a stalled API server may delay a reply by at most this
+	// long before the event proceeds without metadata (fail-open).
+	DefaultLookupTimeout = 3 * time.Second
 )
 
 // Config holds MetadataAugmentor settings including the optional managed-label
@@ -35,6 +40,7 @@ const (
 type Config struct {
 	CacheSize     int           `toml:"cacheSize"`
 	CacheTTL      time.Duration `toml:"cacheTTL"`
+	LookupTimeout time.Duration `toml:"lookupTimeout"`
 	AllowedLabels []string      `toml:"allowedLabels"`
 	// SkipNodeLabel is a "key=value" string. When the target node carries this
 	// label, the event is downgraded to STORE_ONLY. Leave empty to disable.
@@ -61,6 +67,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		CacheSize:     DefaultCacheSize,
 		CacheTTL:      DefaultCacheTTL,
+		LookupTimeout: DefaultLookupTimeout,
 		AllowedLabels: []string{},
 	}
 }
@@ -74,25 +81,36 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("cacheTTL must be positive")
 	}
 
-	if c.SkipNodeLabel != "" {
-		parts := strings.SplitN(c.SkipNodeLabel, "=", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("skipNodeLabel must be in key=value format, got %q", c.SkipNodeLabel)
-		}
-
-		if errs := validation.IsQualifiedName(parts[0]); len(errs) > 0 {
-			return fmt.Errorf("skipNodeLabel key %q is not a valid Kubernetes label name: %s",
-				parts[0], strings.Join(errs, "; "))
-		}
-
-		if errs := validation.IsValidLabelValue(parts[1]); len(errs) > 0 {
-			return fmt.Errorf("skipNodeLabel value %q is not a valid Kubernetes label value: %s",
-				parts[1], strings.Join(errs, "; "))
-		}
-
-		c.skipLabelKey = parts[0]
-		c.skipLabelValue = parts[1]
+	if c.LookupTimeout < 0 {
+		return fmt.Errorf("lookupTimeout must not be negative")
 	}
+
+	return c.validateSkipNodeLabel()
+}
+
+// validateSkipNodeLabel parses the optional key=value gate label.
+func (c *Config) validateSkipNodeLabel() error {
+	if c.SkipNodeLabel == "" {
+		return nil
+	}
+
+	parts := strings.SplitN(c.SkipNodeLabel, "=", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("skipNodeLabel must be in key=value format, got %q", c.SkipNodeLabel)
+	}
+
+	if errs := validation.IsQualifiedName(parts[0]); len(errs) > 0 {
+		return fmt.Errorf("skipNodeLabel key %q is not a valid Kubernetes label name: %s",
+			parts[0], strings.Join(errs, "; "))
+	}
+
+	if errs := validation.IsValidLabelValue(parts[1]); len(errs) > 0 {
+		return fmt.Errorf("skipNodeLabel value %q is not a valid Kubernetes label value: %s",
+			parts[1], strings.Join(errs, "; "))
+	}
+
+	c.skipLabelKey = parts[0]
+	c.skipLabelValue = parts[1]
 
 	return nil
 }

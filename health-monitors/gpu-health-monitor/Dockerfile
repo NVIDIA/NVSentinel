@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG DCGM_VERSION="4.5.2-1-ubuntu22.04"
+ARG DCGM_VERSION="4.7.0-ubuntu24.04"
 ARG VERSION="0.1.0"
 # GIT_COMMIT and BUILD_DATE are passed by CI (make/docker.mk) for OCI annotations
 ARG GIT_COMMIT="none"
 ARG BUILD_DATE=$(date -u +%FT%TZ)
 
-FROM public.ecr.aws/docker/library/python:3.13-trixie AS build
+FROM public.ecr.aws/docker/library/python:3.13-trixie@sha256:4a0820d8b1b1a1e012a23ff9a1296a3e28b48896a4d27a328a91ee197ce619d9 AS build
 
 ARG VERSION
 
@@ -40,6 +40,7 @@ RUN --mount=type=cache,target=/tmp/poetry_cache \
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
 
 
+# Not digest-pinned: the tag is a build-matrix parameter (see Makefile) used to produce multiple image variants.
 FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -49,12 +50,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get install -y --no-install-recommends \
         apt-transport-https \
         ca-certificates \
-        python3-pip && \
+        python3-venv && \
+    python3 -m venv /opt/venv && \
     rm -rf /var/lib/apt/lists/*
 
 ARG PYTHONPATH="/usr/share/datacenter-gpu-manager-4/bindings/python3"
 
 ENV PYTHONPATH=${PYTHONPATH} \
+    PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 
 COPY --from=build /app/dist/*.whl ./

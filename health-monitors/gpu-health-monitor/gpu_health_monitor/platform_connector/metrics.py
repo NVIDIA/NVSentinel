@@ -35,8 +35,41 @@ health_events_insertion_skipped_pc_unavailable = Counter(
     "Total number of health-event sends skipped because the platform-connector Unix socket was missing",
 )
 
+# Direct-mode publisher metrics: the monitor publishes straight to the
+# central deployment platform connector, one batch at a time.
+health_events_direct_publish_succeed = Counter(
+    "health_events_direct_publish_succeed",
+    "Total number of health-event batches delivered to the deployment platform connector",
+)
+
+health_events_direct_publish_dropped = Counter(
+    "health_events_direct_publish_dropped",
+    "Total number of health-event batches dropped by the direct publisher, by reason",
+    labelnames=["reason"],
+)
+
+health_events_direct_publish_retries = Counter(
+    "health_events_direct_publish_retries",
+    "Total number of direct-publish send retries",
+)
+
 dcgm_health_active_events = Gauge(
     "dcgm_health_active_events",
-    "Active health events by watch type and GPU",
-    labelnames=["event_type", "gpu_id"],
+    "Active health events by watch type, GPU, and error code",
+    labelnames=["event_type", "gpu_id", "error_code"],
+)
+
+# Switches get their own gauge rather than sharing gpu_id: switch and GPU ids are
+# separate sequences both starting at 0, so one label would make gpu_id="3" match
+# GPU 3 and switch 3 at once.
+dcgm_health_active_switch_events = Gauge(
+    "dcgm_health_active_switch_events",
+    "Active health events by watch type, NVSwitch, and error code",
+    labelnames=["event_type", "switch_id", "error_code"],
+)
+
+dcgm_connectivity_consecutive_observations = Gauge(
+    "dcgm_connectivity_consecutive_observations",
+    "Consecutive DCGM connectivity observations by result",
+    labelnames=["result"],
 )

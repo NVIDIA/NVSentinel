@@ -31,7 +31,7 @@ import (
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 )
 
 var _ = Describe("TerminateNodeReconciler", func() {
@@ -92,7 +92,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			dialProviderFunc: func(_ context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
 				return mockCSP.Client, func() {}, nil
 			},
-			NodeLock: distributedlock.NewNodeLock(k8sClient, "default"),
+			NodeLock: distributedlock.NewNodeLock(k8sClient, scheme.Scheme, "default", nil),
 		}
 
 		// Default to success behavior - tests can override as needed

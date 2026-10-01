@@ -48,18 +48,29 @@ helm upgrade --install cert-manager jetstack/cert-manager \
 
 ## Quick Start
 
-One command works for both a first install and every later upgrade. By default it only turns on health monitoring: it won't cordon a node, evict a pod, or reboot a machine, so it's safe to run anywhere. The flags below the command are everything you can layer on later; see [Adoption](#adoption) for what each one does.
+This block works for both a first install and every later upgrade; rerun it as is. By default it only turns on health monitoring: it won't cordon a node, evict a pod, or reboot a machine, so it's safe to run anywhere. The flags below the command are everything you can layer on later; see [Adoption](#adoption) for what each one does.
 
 ```bash
-NVSENTINEL_VERSION=v1.22.0
+NVSENTINEL_VERSION=v1.25.0
+
+kubectl create namespace nvsentinel --dry-run=client -o yaml | kubectl apply -f -
+
+# Label the namespcae if the GPU Operator is running in GPUCluster (DRA) mode:
+# kubectl label namespace nvsentinel resource.kubernetes.io/admin-access=true
+
+# Fresh datastore only. If a MongoDB volume already exists without this Secret,
+# recover the original password instead — a new one locks NVSentinel out of that data.
+kubectl get secret mongodb -n nvsentinel >/dev/null 2>&1 || kubectl create secret generic mongodb -n nvsentinel \
+  --from-literal=mongodb-root-password="$(openssl rand -hex 24)"
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
-  --namespace nvsentinel --create-namespace \
+  --namespace nvsentinel \
   --set podMonitor.enabled=false \
   --wait
 
 # --set labeler.assumeDriverInstalled=true       # GPU nodes use host-installed drivers
+# --set global.gpuDraEnabled=true                # GPU Operator in GPUCluster (DRA) mode
 # --set global.mongodbStore.enabled=true         # Protect: cordon
 # --set global.faultQuarantine.enabled=true      # Protect: cordon
 # --set global.nodeDrainer.enabled=true          # Protect: + drain
@@ -95,6 +106,13 @@ Uncomment these flags:
 ```
 
 NVSentinel will now cordon a faulty node, so your scheduler stops placing new work on it, and drain its existing workloads. Only want to cordon, without draining yet? Drop the `nodeDrainer` line above. This is as far as NVSentinel goes unless you also enable remediation below; a cordoned (and optionally drained) node stays isolated until you (or your own tooling) repair it.
+
+> [!NOTE]
+> **Small/Demo cluster? Disable the circuit breaker.** Fault quarantine ships a breaker that trips once the nodes cordoned in a 5 minute window reach 50% of the nodes count. A tripped breaker pauses all event processing, including uncordoning a recovered node.
+>
+> ```bash
+> --set fault-quarantine.circuitBreaker.enabled=false   # test and demo clusters only
+> ```
 
 ### 2b. Protect: Remediate
 
@@ -242,13 +260,13 @@ See the [demos directory](demos/) for full descriptions.
 
 Want to try NVSentinel without GPU hardware? Run our **[Local Fault Injection Demo](demos/local-fault-injection-demo/README.md)**:
 
-- 🚀 **5-minute setup** - runs entirely in a local KIND cluster
-- 🔍 **Real pipeline** - see fault detection → quarantine → node cordon
+- 🚀 **Runs on a laptop** - entirely in a local KIND cluster
+- 🔍 **The whole pipeline** - a running workload is drained off a faulty node, the node is repaired, and the workload is rescheduled once it returns
 - 🎯 **No GPU required** - uses simulated DCGM for testing
 
 ```bash
 cd demos/local-fault-injection-demo
-make demo  # Automated: creates cluster, installs NVSentinel, injects fault, verifies cordon
+./demo.sh  # Creates the cluster, installs NVSentinel, breaks a GPU, and watches it recover
 ```
 
 ## Supported GPUs
@@ -258,6 +276,20 @@ Validated on NVIDIA Volta, Ampere, Hopper, Ada Lovelace and Blackwell architectu
 ## Learn more
 
 For more, including configuration options, external database setup, writing custom health checks, and operational runbooks, visit [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel/).
+
+## Distribution
+
+NVSentinel is published exclusively through the channels below. There is no other official distribution — if you obtained NVSentinel elsewhere, treat it as untrusted.
+
+| Channel | Location |
+|---|---|
+| Helm chart (OCI) | `oci://ghcr.io/nvidia/nvsentinel` |
+| Container images | `ghcr.io/nvidia/nvsentinel/<component>` — e.g. `ghcr.io/nvidia/nvsentinel/labeler` |
+| Releases | [GitHub Releases](https://github.com/NVIDIA/NVSentinel/releases), each with a `versions.txt` pinning every component image for that version |
+| Source | [github.com/NVIDIA/NVSentinel](https://github.com/NVIDIA/NVSentinel) |
+| Documentation | [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel/) |
+
+Container images carry a Sigstore-signed CycloneDX SBOM attestation and a SLSA build provenance attestation. See [SECURITY.md](SECURITY.md) for how to verify them.
 
 
 ## Contributing
@@ -276,6 +308,7 @@ Getting Started:
 1. Read the [Contributing Guide](CONTRIBUTING.md) for guidelines
 2. Check the [Development Guide](DEVELOPMENT.md) for setup instructions
 3. Browse [open issues](https://github.com/NVIDIA/NVSentinel/issues) for opportunities
+4. Review our [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## Support
 

@@ -39,7 +39,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	nvsentinelv1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
-	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	janitormetrics "github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
 
@@ -54,7 +54,7 @@ func newExtRRReconciler() *ExternalRemediationRequestReconciler {
 		Client:   c,
 		Scheme:   scheme.Scheme,
 		Recorder: record.NewFakeRecorder(64),
-		NodeLock: distributedlock.NewNodeLock(c, testExtRRNamespace),
+		NodeLock: distributedlock.NewNodeLock(c, scheme.Scheme, testExtRRNamespace, nil),
 	}
 }
 

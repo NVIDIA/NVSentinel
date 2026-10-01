@@ -23,6 +23,7 @@ import (
 	multierror "github.com/hashicorp/go-multierror"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -55,6 +56,11 @@ type HealthEventsAnalyzerReconcilerConfig struct {
 	Pipeline                  any
 	HealthEventsAnalyzerRules *config.TomlConfig
 	Publisher                 *publisher.PublisherConfig
+	Workers                   int
+	MaxInFlight               int
+	// RuleConcurrency caps how many rule queries run at once for a single event. Values of 1
+	// or less evaluate the rules one at a time, which is the default.
+	RuleConcurrency int
 }
 
 type Reconciler struct {
@@ -69,6 +75,31 @@ type Reconciler struct {
 func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
 	return &Reconciler{
 		config: cfg,
+	}
+}
+
+func newEventProcessorConfig(cfg HealthEventsAnalyzerReconcilerConfig) client.EventProcessorConfig {
+	workers := cfg.Workers
+	if workers <= 0 {
+		workers = 1
+	}
+
+	maxInFlight := cfg.MaxInFlight
+	if maxInFlight <= 0 {
+		maxInFlight = 1000
+	}
+
+	// Keep the stream live after handler failures. The processor records the
+	// failure before checkpointing; checkpoint failures still stop processing.
+	return client.EventProcessorConfig{
+		EnableMetrics:        true,
+		MetricsLabels:        map[string]string{"module": agentName},
+		MarkProcessedOnError: true,
+		Workers:              workers,
+		MaxInFlight:          maxInFlight,
+		SkipEvent: func(event client.Event) bool {
+			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
+		},
 	}
 }
 
@@ -129,17 +160,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	oldWatcher := unwrapable.Unwrap()
 
-	// Create and configure the unified EventProcessor
-	// Note: EventProcessor no longer retries internally to prevent blocking the event stream
-	// Failed events will be retried on next pod restart (via resume token)
-	processorConfig := client.EventProcessorConfig{
-		EnableMetrics:        true,
-		MetricsLabels:        map[string]string{"module": agentName},
-		MarkProcessedOnError: false, // IMPORTANT: Don't mark failed events as processed
-		SkipEvent: func(event client.Event) bool {
-			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
-		},
-	}
+	processorConfig := newEventProcessorConfig(r.config)
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)
 
@@ -180,8 +201,8 @@ func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.H
 	// Process the event using existing business logic
 	publishedNewEvent, err := r.handleEvent(ctx, event)
 	if err != nil {
-		// Return error - EventProcessor will NOT mark as processed
-		// Event will be retried on next pod restart
+		// The event processor checkpoints failed events too
+		// (MarkProcessedOnError), so this is counted and logged, not replayed.
 		totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
 		slog.ErrorContext(ctx, "Failed to process health event", "error", err, "nodeName", labelValue)
 
@@ -221,6 +242,9 @@ func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.H
 	return nil
 }
 
+// handleEvent runs the XID detector and every enabled rule against one event, and publishes a
+// derived event for each match. It reports whether it published anything, and returns all
+// failures together so that one failing rule does not hide the others.
 func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEventWithStatus) (bool, error) {
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.handle_event")
 	defer span.End()
@@ -240,26 +264,13 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 	}
 
 	// Process regular rules
-	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
-		if !rule.EvaluateRule {
-			slog.InfoContext(ctx, "Skipping rule evaluation", "rule_name", rule.Name)
-			continue
-		}
+	rulePublished, ruleErrs := r.processRules(ctx, span, event)
+	for _, ruleErr := range ruleErrs {
+		multiErr = multierror.Append(multiErr, ruleErr)
+	}
 
-		published, err := r.processRule(ctx, rule, event)
-		if err != nil {
-			multiErr = multierror.Append(multiErr, err)
-			span.AddEvent("rule_evaluation_error", trace.WithAttributes(
-				attribute.String("health_events_analyzer.error.type", "rule_evaluation_error"),
-				attribute.String("health_events_analyzer.error.message", err.Error()),
-			))
-
-			continue
-		}
-
-		if published {
-			publishedNewEvent = true
-		}
+	if rulePublished {
+		publishedNewEvent = true
 	}
 
 	if multiErr.ErrorOrNil() != nil {
@@ -274,6 +285,28 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 	}
 
 	return publishedNewEvent, nil
+}
+
+// ruleApplies reports whether rule's query must run for event. A false when expression skips
+// the query, which cannot match. A when expression that fails falls back to running the query,
+// so a broken expression costs a query but cannot hide a match.
+func ruleApplies(ctx context.Context, rule config.HealthEventsAnalyzerRule,
+	event *datamodels.HealthEventWithStatus) bool {
+	applies, err := rule.Applies(event.HealthEvent)
+	if err != nil {
+		ruleWhenErrorsTotal.WithLabelValues(rule.Name).Inc()
+		slog.WarnContext(ctx, "Rule when expression failed, evaluating the rule anyway",
+			"rule_name", rule.Name, "error", err)
+
+		return true
+	}
+
+	if !applies {
+		ruleSkippedTotal.WithLabelValues(rule.Name).Inc()
+		slog.DebugContext(ctx, "Skipping rule, its when expression is false", "rule_name", rule.Name)
+	}
+
+	return applies
 }
 
 // handleXidDetector handles XID burst detection and history clearing
@@ -315,13 +348,103 @@ func (r *Reconciler) handleXidDetector(ctx context.Context, event *datamodels.He
 	return false, nil
 }
 
-// processRule handles the processing of a single rule against an event
-func (r *Reconciler) processRule(ctx context.Context,
+// processRules evaluates every enabled rule against the event and publishes each match. It runs
+// up to RuleConcurrency rule queries at once (one at a time by default), then publishes the
+// matches in rule order.
+//
+// The queries only read, and they are independent: the mandatory first stage excludes the
+// analyzer's own events, so no rule can observe another rule's output. Publishing starts only
+// after every query has finished and follows rule order, so the events published, and their
+// order, do not depend on the concurrency limit.
+//
+// errgroup bounds the running queries through SetLimit. It is used without WithContext on
+// purpose: one rule's failure must not cancel the others, so each rule stores its own outcome
+// and the group callback always returns nil. Cancelling ctx still stops the queries, because
+// ctx reaches each one through evaluateRule.
+func (r *Reconciler) processRules(ctx context.Context, span trace.Span,
+	event *datamodels.HealthEventWithStatus) (bool, []error) {
+	rules := r.config.HealthEventsAnalyzerRules.Rules
+	matched := make([]bool, len(rules))
+	evalErrs := make([]error, len(rules))
+
+	limit := max(r.config.RuleConcurrency, 1)
+
+	var group errgroup.Group
+
+	group.SetLimit(limit)
+
+	for i, rule := range rules {
+		if !rule.EvaluateRule {
+			slog.InfoContext(ctx, "Skipping rule evaluation", "rule_name", rule.Name)
+			continue
+		}
+
+		if !ruleApplies(ctx, rule, event) {
+			continue
+		}
+
+		group.Go(func() error {
+			ruleCtx, ruleSpan := tracing.StartSpan(ctx, "health_events_analyzer.evaluate_rule")
+			defer ruleSpan.End()
+
+			matched[i], evalErrs[i] = r.evaluateRule(ruleCtx, ruleSpan, rule, event)
+
+			return nil
+		})
+	}
+
+	_ = group.Wait()
+
+	return r.publishMatchedRules(ctx, span, event, matched, evalErrs)
+}
+
+// publishMatchedRules publishes the events of the matched rules in rule order, and returns the
+// evaluation and publish errors together so one failing rule does not hide the others.
+func (r *Reconciler) publishMatchedRules(ctx context.Context, span trace.Span,
+	event *datamodels.HealthEventWithStatus, matched []bool, evalErrs []error) (bool, []error) {
+	var (
+		published bool
+		errs      []error
+	)
+
+	for i, rule := range r.config.HealthEventsAnalyzerRules.Rules {
+		if evalErrs[i] != nil {
+			errs = append(errs, evalErrs[i])
+			recordRuleError(span, evalErrs[i])
+
+			continue
+		}
+
+		if !matched[i] {
+			continue
+		}
+
+		if _, err := r.publishRuleMatch(ctx, span, rule, event); err != nil {
+			errs = append(errs, err)
+			recordRuleError(span, err)
+
+			continue
+		}
+
+		published = true
+	}
+
+	return published, errs
+}
+
+// recordRuleError adds a rule_evaluation_error event that carries err to the event span.
+func recordRuleError(span trace.Span, err error) {
+	span.AddEvent("rule_evaluation_error", trace.WithAttributes(
+		attribute.String("health_events_analyzer.error.type", "rule_evaluation_error"),
+		attribute.String("health_events_analyzer.error.message", err.Error()),
+	))
+}
+
+// evaluateRule runs one rule's query and reports whether it matched. It only reads, which is
+// what makes running several rules at once safe.
+func (r *Reconciler) evaluateRule(ctx context.Context, span trace.Span,
 	rule config.HealthEventsAnalyzerRule,
 	event *datamodels.HealthEventWithStatus) (bool, error) {
-	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.evaluate_rule")
-	defer span.End()
-
 	span.SetAttributes(
 		attribute.String("health_events_analyzer.rule.name", rule.Name),
 		attribute.String("health_events_analyzer.rule.recommended_action", rule.RecommendedAction),
@@ -349,12 +472,14 @@ func (r *Reconciler) processRule(ctx context.Context,
 		attribute.Float64("rule_evaluation_duration_seconds", duration),
 	))
 
-	if !matchedSequences {
-		return false, nil
-	}
+	return matchedSequences, nil
+}
 
-	err = r.publishMatchedEvent(ctx, rule, event)
-	if err != nil {
+// publishRuleMatch publishes the event for a matched rule, recording a failure on span.
+func (r *Reconciler) publishRuleMatch(ctx context.Context, span trace.Span,
+	rule config.HealthEventsAnalyzerRule,
+	event *datamodels.HealthEventWithStatus) (bool, error) {
+	if err := r.publishMatchedEvent(ctx, rule, event); err != nil {
 		slog.ErrorContext(ctx, "Error in publishing the matched event", "error", err)
 		span.SetAttributes(
 			attribute.String("health_events_analyzer.error.type", "publish_matched_event_error"),
@@ -376,6 +501,7 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 	defer span.End()
 
 	ruleMatchedTotal.WithLabelValues(rule.Name, event.HealthEvent.NodeName).Inc()
+	r.recordMatchedEntityMetric(rule.Name, event.HealthEvent.NodeName, event.HealthEvent, ruleSelectsOnEntity(rule))
 
 	actionVal := r.getRecommendedActionValue(rule.RecommendedAction, rule.Name)
 
@@ -640,6 +766,7 @@ func (r *Reconciler) processXidBurstDetection(ctx context.Context, event *protos
 
 	// Track metrics
 	ruleMatchedTotal.WithLabelValues("RepeatedXidError", event.NodeName).Inc()
+	r.recordMatchedEntityMetric("RepeatedXidError", event.NodeName, event, true)
 
 	if len(event.EntitiesImpacted) > 0 {
 		fatalEventsPublishedTotal.WithLabelValues(event.EntitiesImpacted[0].EntityValue).Inc()

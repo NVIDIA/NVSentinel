@@ -14,10 +14,8 @@
 
 # syntax=docker/dockerfile:1.6
 
-ARG TAG=v3.1.13
-ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM public.ecr.aws/docker/library/golang:1.27.0-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.1-trixie@sha256:433790e515d27dc6003e847e644cc0af956985cf315c1c58a3b73ee2dd305183 AS builder
 
 # TODO: remove when pushing to GitHub
 ENV CGO_ENABLED=0
@@ -46,7 +44,7 @@ COPY commons/ ../../commons/
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o simple-health-client main.go
 
-FROM ${IMG}:${TAG}
+FROM nvcr.io/nvidia/distroless/go:v4.1.4@sha256:965c2a14a594d7d467bbe9a6517d958cee22ed035333097bdc216da68fd55ba5
 
 WORKDIR /app
 

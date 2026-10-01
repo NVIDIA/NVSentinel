@@ -1,0 +1,140 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: percona version consistency
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: renders when the operator and crVersion agree
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: renders when psmdbVersion agrees with the subchart defaults
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdbVersion: "1.23.0"
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  # Percona's documented upgrade path: the operator goes up one minor first,
+  # while crVersion trails. Demanding equality would block this.
+  - it: allows the operator to be one minor ahead of crVersion
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdb-operator.image.tag: "1.22.0"
+      psmdb-db.initImage.tag: "1.22.0"
+      psmdb-db.crVersion: "1.21.1"
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: skips the skew check for a non-semver operator tag
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdb-operator.image.tag: "my-local-build"
+      psmdb-db.initImage.tag: "my-local-build"
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: does nothing when Percona is not in use
+    set:
+      useBitnami: true
+      usePerconaOperator: false
+      psmdb-db.crVersion: "1.21.1"
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  # This is the state reported in NVIDIA/NVSentinel#1737: the chart shipped an
+  # operator two minors ahead of the crVersion it was paired with.
+  - it: refuses an operator more than one minor ahead of crVersion
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdb-db.crVersion: "1.21.1"
+    asserts:
+      - failedTemplate:
+          errorPattern: "skips 2 minor versions"
+
+  - it: refuses a crVersion ahead of the operator
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdb-operator.image.tag: "1.22.0"
+      psmdb-db.initImage.tag: "1.22.0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "cannot be ahead of the operator"
+
+  - it: refuses a major version difference
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdb-operator.image.tag: "2.23.0"
+      psmdb-db.initImage.tag: "2.23.0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "differ by a major version"
+
+  - it: refuses psmdbVersion disagreeing with the operator tag
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdbVersion: "1.22.0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "psmdbVersion is 1.22.0 but psmdb-operator.image.tag is 1.23.0"
+
+  - it: refuses psmdbVersion disagreeing with crVersion
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdbVersion: "1.22.0"
+      psmdb-operator.image.tag: "1.22.0"
+      psmdb-db.initImage.tag: "1.22.0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "psmdbVersion is 1.22.0 but psmdb-db.crVersion is 1.23.0"
+
+  # The init container runs the operator image, so a different tag silently
+  # runs a different operator build than the operator Deployment.
+  - it: refuses an initImage tag that differs from the operator tag
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdb-db.initImage.tag: "1.22.0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "init container runs the operator image"
+
+  # psmdbVersion asserts, it does not set: Helm resolves subchart values before
+  # templates run, so setting it alone cannot change what the child charts
+  # render and must therefore be refused rather than silently ignored.
+  - it: refuses psmdbVersion set on its own, because it cannot propagate
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      psmdbVersion: "1.21.0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "psmdbVersion is 1.21.0 but psmdb-operator.image.tag is 1.23.0"

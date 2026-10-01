@@ -37,3 +37,11 @@ rules:
   - get
   - update
   - create
+{{- if .Values.validation.enabled }}
+- apiGroups:
+  - {{ .Values.validation.apiGroup }}
+  resources:
+  - {{ printf "%ss" (.Values.validation.kind | lower) }}
+  verbs:
+  - create
+{{- end }}

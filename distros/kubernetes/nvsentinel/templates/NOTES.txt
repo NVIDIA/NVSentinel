@@ -1,1 +1,10 @@
 NVSentinel has been successfully deployed
+{{- if .Values.networkPolicy.enabled }}
+{{- with include "nvsentinel.pcDeployment.hostNetworkPublisherReason" . }}
+
+NOTE: a publisher reaches the deployment platform connector from the host network:
+{{ . }}. A CNI that enforces NetworkPolicy cannot
+match such a pod by its labels, so the connector's gRPC ingress rule admits every source; the
+caller token remains the authorization boundary. The policy carries the same note as an annotation.
+{{- end }}
+{{- end }}

@@ -149,6 +149,18 @@ nic-health-monitor:
 
 **When to use**: Emergency override when automatic discovery misclassifies a NIC on an unusual platform. In normal deployments, leave empty.
 
+## Sysfs Paths
+
+Where the monitor reads network and InfiniBand device state. The DaemonSet mounts the host's `/sys` under these paths, so the values must match the host mounts in the pod spec.
+
+```yaml
+nic-health-monitor:
+  sysClassNetPath: "/nvsentinel/sys/class/net"
+  sysClassInfinibandPath: "/nvsentinel/sys/class/infiniband"
+```
+
+Change these only when you alter where the chart mounts host `/sys`. A path that does not exist leaves the monitor with no devices to discover.
+
 ## Counter Detection
 
 ### Enable/Disable

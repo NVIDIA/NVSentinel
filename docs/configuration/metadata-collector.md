@@ -52,6 +52,31 @@ Runtime class name that provides GPU device access. Required for NVML to query G
 - `nvidia-legacy` - Legacy NVIDIA runtime
 - Empty string - Uses the default cluster runtime. Used for CRI-O environments and for NRI-mode clusters (see below)
 
+## GPUCluster (DRA) mode
+
+If the GPU Operator is installed in `GPUCluster` (DRA) mode, there is no Container Toolkit and no `nvidia` RuntimeClass, so the default `runtimeClassName: nvidia` fails admission. Enable GPUCluster mode:
+
+```yaml
+global:
+  gpuDraEnabled: true   # default false
+```
+
+With it enabled the DaemonSet drops `runtimeClassName` and holds a DRA admin-access claim on the node's GPUs instead, the same way GPU Operator runs its own DCGM DaemonSet; the DRA driver injects the driver libraries via CDI, and admin access does not consume the GPUs.
+
+Label the NVSentinel namespace once, before the install or upgrade that switches to GPUCluster mode. Kubernetes accepts admin-access claims only from a labelled namespace and rejects the chart's `ResourceClaimTemplate` otherwise, which fails the Helm release:
+
+```bash
+kubectl label namespace nvsentinel resource.kubernetes.io/admin-access=true
+```
+
+Switching modes in order:
+
+1. Label the namespace (once).
+2. Switch the GPU Operator to `GPUCluster` mode.
+3. `helm upgrade` with `global.gpuDraEnabled: true`.
+
+Switching back needs only steps 2 and 3 with `false`; the label stays. With the default `false` the chart renders exactly as before.
+
 ## Host-path driver access (NRI-mode clusters)
 
 On clusters where GPU Operator is configured for CDI + NRI device injection, a `RuntimeClass` matching `operator.runtimeClass` is often never created. Setting `runtimeClassName` then fails admission, and leaving it unset crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND`. Requesting `nvidia.com/gpu` works but reserves a GPU for the DaemonSet.
@@ -76,3 +101,81 @@ metadata-collector:
 ```
 
 `additionalHostVolumes`, `additionalVolumeMounts`, and `extraEnv` default to empty lists. Existing RuntimeClass-based installs are unchanged.
+
+## Kubelet Host
+
+Sets the `KUBELET_HOST` environment variable, which tells the collector where to reach the kubelet `/pods` endpoint.
+
+```yaml
+metadata-collector:
+  kubeletHost:
+    valueFrom:
+      fieldRef:
+        fieldPath: status.hostIP
+```
+
+The default resolves the node's own primary IP through the downward API, which works whether the kubelet binds to `0.0.0.0` or to the node IP. A static address also works:
+
+```yaml
+metadata-collector:
+  kubeletHost:
+    value: "10.0.0.1"
+```
+
+Set `kubeletHost: {}` to leave the variable unset, which falls back to `localhost`. An explicit `--kubelet-kubeconfig` overrides this value entirely.
+
+## Pod Mapper Failure Tolerance
+
+Consecutive failed poll cycles the pod mapper tolerates before the container exits non-zero.
+
+```yaml
+metadata-collector:
+  podMapper:
+    maxConsecutiveFailures: 10
+```
+
+The poll period is 30 seconds, so the default rides out five minutes of failures — long enough to outlast a credential rotation or a kubelet restart, short enough to fail loudly when the collector is genuinely broken. The minimum is `1`, which exits on the first failed poll. This value sets the `--pod-mapper-max-consecutive-failures` flag described in [Startup and failure handling](#startup-and-failure-handling).
+
+## Host-native authentication
+
+Use two explicit kubeconfigs when the collector runs outside a pod:
+
+```bash
+metadata-collector \
+  --kubeconfig=/etc/nvsentinel/metadata-collector/apiserver.kubeconfig \
+  --kubelet-kubeconfig=/etc/nvsentinel/metadata-collector/kubelet.kubeconfig \
+  --output-path=/var/lib/nvsentinel/gpu_metadata.json
+```
+
+| Flag | Purpose | Default |
+|---|---|---|
+| `--kubeconfig` | Kubernetes API endpoint, trust, and credentials for pod annotation updates | In-cluster configuration |
+| `--kubelet-kubeconfig` | Kubelet HTTPS endpoint, trust, and credentials for `/pods` | `KUBELET_HOST:10250` and the projected ServiceAccount token |
+
+An absent `KUBELET_HOST` defaults to `localhost`. An explicit kubelet kubeconfig overrides that variable. The collector does not reuse API server credentials for the kubelet. It does not load `KUBECONFIG` or a home-directory kubeconfig implicitly.
+
+Explicit configurations must use HTTPS, verify server certificates, and provide credentials. Set the kubelet server to an address in its serving certificate, such as `https://gpu-node.example:10250`. Provide the correct CA and, if needed, `tls-server-name`. The existing in-cluster kubelet TLS behavior is unchanged.
+
+### Credentials and permissions
+
+Provision credentials at node runtime. Keep kubeconfig and credential files accessible only to the service account or root. Kubeconfigs are trusted input: client-go can execute a configured credential plugin.
+
+- The Kubernetes API identity needs `patch` on pods in each workload namespace.
+- The kubelet identity needs permission to read `/pods`. With fine-grained kubelet authorization, use `get` on `nodes/pods`. Other configurations require `get` on `nodes/proxy`, which grants broader access.
+- The process needs access to `/var/lib/kubelet/pod-resources/kubelet.sock`, NVIDIA devices and libraries, and its output directory.
+
+Authentication does not grant permissions. Do not assume the kubelet's own client identity can patch workload pods. This feature creates no credentials or RBAC bindings.
+
+Client-go supports kubeconfig bearer tokens, token files, client certificates, and configured credential providers. Prefer rotating file credentials over embedded long-lived credentials. Token-file reload is periodic, so provision a new token before the old token expires. Restart the collector after changes to kubeconfig settings or CA trust. Client certificate files reload through client-go; embedded certificate data does not reload.
+
+Certificate authentication requires both a certificate and its private key. Each can be provided as a file or embedded data. A username and password alone do not satisfy the credential requirement.
+
+Without an explicit kubelet kubeconfig, the transport rereads the projected ServiceAccount token on every request, including retries. This preserves recovery when that token rotates between attempts. The client does not retain tokens or set authentication headers itself.
+
+### Startup and failure handling
+
+Hardware inventory and pod-to-GPU mapping remain enabled. PodResources socket handling is unchanged. The kubelet socket must exist and be accessible when the mapper starts.
+
+The existing 30-second poll period and `--pod-mapper-max-consecutive-failures` limit remain unchanged. The default limit is 10 failed polls. Persistent authentication, authorization, or socket failures remain errors; the collector does not report them as successful mapping.
+
+A missing kubeconfig or credential file is a configuration error. HTTP 401 indicates rejected credentials. HTTP 403 indicates denied permission. TLS errors require correct CA trust and server identity; do not disable verification to work around them.

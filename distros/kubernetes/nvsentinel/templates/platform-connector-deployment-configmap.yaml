@@ -1,0 +1,41 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{- if include "nvsentinel.pcDeployment.enabled" . }}
+{{- $d := .Values.platformConnector.deployment }}
+{{- $int := "nvsentinel.positiveInt" }}
+# Fleet-sized; every tunable the server reads is in this file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nvsentinel.pcDeployment.name" . }}
+  labels:
+    {{- include "nvsentinel.pcDeployment.labels" . | nindent 4 }}
+data:
+  {{- $files := dict "context" .
+        "k8sQps" (include $int (list "platformConnector.deployment.kubernetes.qps" $d.kubernetes.qps))
+        "k8sBurst" (include $int (list "platformConnector.deployment.kubernetes.burst" $d.kubernetes.burst))
+        "cacheSize" (include $int (list "platformConnector.deployment.kubernetes.nodeMetadataCacheSize" $d.kubernetes.nodeMetadataCacheSize))
+        "cacheTTL" $d.kubernetes.nodeMetadataCacheTtl
+        "deployment" (dict
+          "TokenReviewQps" (include $int (list "platformConnector.deployment.auth.tokenReviewQps" $d.auth.tokenReviewQps))
+          "TokenReviewBurst" (include $int (list "platformConnector.deployment.auth.tokenReviewBurst" $d.auth.tokenReviewBurst))
+          "TokenCacheSize" (include $int (list "platformConnector.deployment.auth.tokenCacheSize" $d.auth.tokenCacheSize))
+          "ConditionUpdateTimeout" $d.conditionUpdateTimeout
+          "MaxConnectionAge" $d.connections.maxAge
+          "MaxConnectionIdle" $d.connections.maxIdle
+          "GrpcReadBufferBytes" (include $int (list "platformConnector.deployment.connections.readBufferBytes" $d.connections.readBufferBytes))
+          "GrpcWriteBufferBytes" (include $int (list "platformConnector.deployment.connections.writeBufferBytes" $d.connections.writeBufferBytes))) }}
+  {{- include "nvsentinel.platformConnector.configFiles" $files | nindent 2 }}
+{{- end }}

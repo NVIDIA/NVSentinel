@@ -15,6 +15,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -78,11 +79,12 @@ type NewNodeValidationConfig struct {
 	// Condition is the node condition type the controller uses to track whether a node has
 	// already been validated. The controller requires this condition to be absent or false before
 	// targeting a node, and sets it to True once a ValidationRequest is created.
-	// +optional
-	Condition string `json:"condition,omitempty"`
+	// +required
+	Condition corev1.NodeConditionType `json:"condition,omitempty"`
 
 	// Criteria are CEL expressions evaluated against each node to determine whether it requires
-	// new node validation. All expressions must evaluate to true.
+	// new node validation. All expressions must evaluate to true. If empty, every node missing
+	// the condition is considered eligible.
 	// +optional
 	Criteria []CriteriaSpec `json:"criteria,omitempty"`
 
@@ -90,10 +92,10 @@ type NewNodeValidationConfig struct {
 	// +optional
 	NewNodeTests []string `json:"newNodeTests,omitempty"`
 
-	// BatchPeriod is the window during which the controller collects eligible new nodes before
-	// creating a ValidationRequest for them as a batch.
-	// +optional
-	BatchPeriod metav1.Duration `json:"batchPeriod,omitempty"`
+	// BatchPeriodSeconds is the number of seconds during which the controller collects eligible new
+	// nodes before creating a ValidationRequest for them as a batch.
+	// +required
+	BatchPeriodSeconds int64 `json:"batchPeriodSeconds,omitempty"`
 }
 
 // CriteriaSpec is a named CEL expression evaluated against a node and its pods.
@@ -124,6 +126,11 @@ type CordonConfig struct {
 	// Remove indicates whether nodes should be uncordoned after completing validation.
 	// +optional
 	Remove bool `json:"remove,omitempty"`
+
+	// LabelPrefix is prepended to the cordon-by/cordon-reason/cordon-timestamp and uncordon-by/uncordon-reason/
+	// uncordon-timestamp label keys when Remove is true. If empty, these labels are not modified.
+	// +optional
+	LabelPrefix string `json:"labelPrefix,omitempty"`
 }
 
 // TaintConfig describes a taint the controller removes from a node when validation completes.
@@ -136,20 +143,10 @@ type TaintConfig struct {
 	Value string `json:"value,omitempty"`
 	// Effect is the taint effect: NoSchedule, PreferNoSchedule, or NoExecute.
 	// +optional
-	Effect string `json:"effect,omitempty"`
+	Effect corev1.TaintEffect `json:"effect,omitempty"`
 	// Remove indicates whether this taint should be lifted after validation completes.
 	// +optional
 	Remove bool `json:"remove,omitempty"`
-}
-
-// EnvVarConfig defines a single environment variable for a k8s-job-provider test's container.
-type EnvVarConfig struct {
-	// Name is the environment variable name.
-	// +required
-	Name string `json:"name"`
-	// Value is the environment variable value.
-	// +optional
-	Value string `json:"value,omitempty"`
 }
 
 // ProviderConfig defines a test provider configuration.
@@ -206,7 +203,7 @@ type ConditionMatch struct {
 	Type string `json:"type"`
 	// Status is the condition status to match.
 	// +required
-	Status string `json:"status"`
+	Status metav1.ConditionStatus `json:"status"`
 }
 
 // BatchFailurePolicy controls how a test group is handled when batch minimums are not met.
@@ -236,7 +233,7 @@ type TestConfig struct {
 
 	// Env sets environment variables on test provider resource templates.
 	// +optional
-	Env []EnvVarConfig `json:"env,omitempty"`
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// SupportsBatchingNodes indicates whether multiple nodes can be tested together in a
 	// single provider resource.
@@ -251,6 +248,16 @@ type TestConfig struct {
 	// BatchFailurePolicy defines what to do when batch minimums are not met.
 	// +optional
 	BatchFailurePolicy BatchFailurePolicy `json:"batchFailurePolicy,omitempty"`
+
+	// BandwidthGBps is an optional pass threshold for bandwidth-oriented tests such as NCCL tests.
+	// It is passed to the test provider via its resource template. The provider enforces it.
+	// +optional
+	BandwidthGBps *string `json:"bandwidthGBps,omitempty"`
+
+	// GoodputRatio is an optional pass threshold for training-oriented tests such as Nemotron, passed
+	// to the test provider the same way as BandwidthGBps.
+	// +optional
+	GoodputRatio *string `json:"goodputRatio,omitempty"`
 }
 
 func init() {

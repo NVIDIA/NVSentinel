@@ -1,0 +1,89 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-dcgm
+  namespace: gpu-operator
+  labels:
+    app: nvidia-dcgm
+spec:
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: nvidia-dcgm
+  template:
+    metadata:
+      labels:
+        app: nvidia-dcgm
+    spec:
+      containers:
+        - name: nvidia-dcgm-ctr
+          image: ghcr.io/nvidia/nvsentinel-fake-dcgm:4.2.0
+          env:
+            - name: NVML_YAML_FILE
+              value: /etc/dcgm-fake/gpu-spec.yaml
+          volumeMounts:
+            - name: gpu-spec
+              mountPath: /etc/dcgm-fake
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "timeout 1 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/5555'"
+            initialDelaySeconds: 3
+            periodSeconds: 2
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: gpu-spec
+          configMap:
+            name: nvidia-dcgm-gpu-spec
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nvidia-dcgm
+  namespace: gpu-operator
+  labels:
+    app: nvidia-dcgm
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Local
+  selector:
+    app: nvidia-dcgm
+  ports:
+    - name: dcgm
+      port: 5555
+      protocol: TCP
+      targetPort: 5555

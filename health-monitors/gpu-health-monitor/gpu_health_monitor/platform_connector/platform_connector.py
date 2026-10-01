@@ -28,41 +28,37 @@ from gpu_health_monitor.protos import (
 )
 from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
+from . import direct_publisher as direct_publisher_mod
 from . import metrics
 from time import monotonic, sleep
-import re
+
+import dcgm_fields
 
 MAX_RETRIES = 10
 INITIAL_DELAY = 5
 GRPC_CALL_TIMEOUT_SECONDS = 5.0
+GPU_ONLY_FIELD_HEALTH_WATCHES = frozenset(
+    {
+        "DCGM_HEALTH_WATCH_POWER_BRAKE",
+        "DCGM_HEALTH_WATCH_THERMAL_MARGIN",
+    }
+)
 # Critical events are emitted while the DCGM loop is about to enter cleanup or
 # is already hung. Keep delivery bounded well inside the liveness restart budget.
 CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
-# Only transport-level failures are worth another attempt. Every other status
-# is a deterministic verdict from platform-connector (PERMISSION_DENIED,
-# UNAUTHENTICATED, INVALID_ARGUMENT, ...) that will come back identical on the
-# next attempt, so retrying it just spends the whole backoff budget - roughly
-# six minutes at MAX_RETRIES=10 - before reporting the same failure.
+# Socket path only: transport-level failures are worth another attempt. Every
+# other status is a deterministic verdict from platform-connector
+# (PERMISSION_DENIED, UNAUTHENTICATED, INVALID_ARGUMENT, ...) that will come
+# back identical on the next attempt, so retrying it just spends the whole
+# backoff budget - roughly six minutes at MAX_RETRIES=10 - before reporting
+# the same failure. The direct publisher has its own set and retries
+# UNAUTHENTICATED, since the projected token rotates.
 RETRYABLE_STATUS_CODES = frozenset(
     {
         grpc.StatusCode.UNAVAILABLE,
         grpc.StatusCode.DEADLINE_EXCEEDED,
     }
 )
-
-
-def _rpc_status_code(error: grpc.RpcError) -> grpc.StatusCode | None:
-    """The status code carried by a gRPC failure, or None when it carries none.
-
-    Failures raised by a live channel are ``grpc.Call`` instances and always
-    carry a code. A bare ``grpc.RpcError`` does not; it expresses no verdict
-    either way, so callers keep treating it as retryable.
-    """
-    code_getter = getattr(error, "code", None)
-    if not callable(code_getter):
-        return None
-    code = code_getter()
-    return code if isinstance(code, grpc.StatusCode) else None
 
 
 def _serialized_event_state(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -76,6 +72,37 @@ def _serialized_event_state(method: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+def _serialized_critical_event(method: Callable[..., bool]) -> Callable[..., bool]:
+    """Serialize a critical event like _serialized_event_state, but wait for the
+    lock no longer than the event's own delivery budget.
+
+    A periodic poll holds the lock while its publish is blocked, up to the
+    direct publisher's retry window. A critical event is published from the
+    DCGM watcher thread right before a cleanup that may hang, with a 15 s
+    budget; waiting longer than that would stall the watcher (and its
+    liveness), so a lock not obtained in time counts as not delivered, and
+    the watcher retries on its next cycle, as it does when the publish itself
+    runs out of time.
+    """
+
+    @wraps(method)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> bool:
+        if not self._event_lock.acquire(timeout=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS):
+            log.warning(
+                "%s: a health event publish is still in progress after %.0f s; the critical event is not "
+                "delivered now and is retried on the next cycle",
+                method.__name__,
+                CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
+            )
+            return False
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._event_lock.release()
+
+    return wrapper
+
+
 @dataclasses.dataclass
 class EntityCacheEntry:
     active_errors: set[str] = dataclasses.field(default_factory=set)
@@ -85,49 +112,71 @@ class EntityCacheEntry:
         return not self.active_errors
 
 
+@dataclasses.dataclass
+class PlatformConnectorConfig:
+    socket_path: str
+    node_name: str
+    dcgm_errors_info_dict: dict[str, str]
+    state_file_path: str
+    metadata_path: str
+    processing_strategy: platformconnector_pb2.ProcessingStrategy
+    store_only_checks: frozenset[str] = frozenset()
+    connectivity_failure_escalation_threshold: int = 0
+    token_path: str | None = None
+    connectivity_failure_threshold: int = 1
+    connectivity_success_threshold: int = 1
+
+
 class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def __init__(
         self,
-        socket_path: str,
-        node_name: str,
+        config: PlatformConnectorConfig,
         exit: Event,
-        dcgm_errors_info_dict: dict[str, str],
-        state_file_path: str,
-        metadata_path: str,
-        processing_strategy: platformconnector_pb2.ProcessingStrategy,
-        store_only_checks: frozenset[str] = frozenset(),
-        connectivity_failure_escalation_threshold: int = 0,
-        token_path: str | None = None,
     ) -> None:
         self._exit = exit
-        self._socket_path = socket_path
+        self._socket_path = config.socket_path
         # Projected ServiceAccount token presented as a bearer credential on
         # every publish, used exactly as given. The CLI layer already resolves
         # PLATFORM_CONNECTOR_TOKEN_PATH; resolving it again here would let
         # ambient process state override an explicitly empty argument.
-        self._token_path = token_path
-        self._node_name = node_name
+        self._token_path = config.token_path
+        self._node_name = config.node_name
         self._version = 1
         self._agent = "gpu-health-monitor"
         self._component_class = "GPU"
-        self.dcgm_errors_info_dict = dcgm_errors_info_dict
-        self.state_file_path = state_file_path
-        self._dcgm_unresponsive_state_path = f"{state_file_path}.dcgm-unresponsive"
+        self.dcgm_errors_info_dict = config.dcgm_errors_info_dict
+        self.state_file_path = config.state_file_path
+        self._dcgm_unresponsive_state_path = f"{config.state_file_path}.dcgm-unresponsive"
         self.node_bootid_path = "/proc/sys/kernel/random/boot_id"
         self.old_bootid = self.read_old_system_bootid_from_state_file()
         self.entity_cache: dict[str, EntityCacheEntry] = {}
         self._event_lock = RLock()
-        self._metadata_reader = MetadataReader(metadata_path)
-        self._processing_strategy = processing_strategy
-        self._store_only_checks = store_only_checks
-        self._connectivity_failure_escalation_threshold = connectivity_failure_escalation_threshold
+        self._metadata_reader = MetadataReader(config.metadata_path)
+        self._processing_strategy = config.processing_strategy
+        self._store_only_checks = config.store_only_checks
+        self._connectivity_failure_escalation_threshold = config.connectivity_failure_escalation_threshold
+        self._connectivity_failure_threshold = config.connectivity_failure_threshold
+        self._connectivity_success_threshold = config.connectivity_success_threshold
         self._consecutive_connectivity_failures = 0
+        self._consecutive_connectivity_successes = 0
         self._connectivity_escalated = False
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
         # Strategy used for the active local-managed probe-hang event. Restored
         # from the marker so a clear after a liveness restart still matches the
         # unhealthy event even if Helm config changed in between.
         self._dcgm_unresponsive_strategy: platformconnector_pb2.ProcessingStrategy | None = None
         self._restore_dcgm_unresponsive_state()
+        # Direct mode: when HEALTH_PUBLISH_TARGET is set, publishes go over
+        # the network to the deployment platform connector, one batch at a
+        # time, instead of the node-local socket. When the variable is unset
+        # this is None and socket behavior is unchanged.
+        self._direct_publisher = direct_publisher_mod.maybe_create_from_env()
+
+    def close(self) -> None:
+        """Stops the direct-mode publisher, if one is running; a publish in progress ends at once."""
+        if self._direct_publisher is not None:
+            self._direct_publisher.close()
 
     def read_old_system_bootid_from_state_file(self) -> str:
         bootid = ""
@@ -151,6 +200,17 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
     def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
         return f"{check_name}|{entity_type}|{entity_value}"
+
+    def _clear_active_event_metric(self, check_name: str, key: str) -> None:
+        """Zero every error_code series the cache says this check latched.
+
+        A check can be latched by more than one code, so zeroing a single
+        assumed code would leave the others reading 1 for the process lifetime.
+        Call this before the cache entry is reset.
+        """
+        entry = self.entity_cache.get(key)
+        for code in sorted(entry.active_errors) if entry else []:
+            metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", error_code=code).set(0)
 
     def _persist_dcgm_unresponsive_state(self, processing_strategy: platformconnector_pb2.ProcessingStrategy) -> None:
         """Remember a delivered local-managed probe hang across liveness restarts.
@@ -195,7 +255,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         key = self._build_cache_key("GpuDcgmUnresponsive", "DCGM", "ALL")
         self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
         self._dcgm_unresponsive_strategy = strategy
-        metrics.dcgm_health_active_events.labels(event_type="GpuDcgmUnresponsive", gpu_id="").set(1)
+        metrics.dcgm_health_active_events.labels(
+            event_type="GpuDcgmUnresponsive", gpu_id="", error_code="DCGM_PROBE_HANG"
+        ).set(1)
 
     def _clear_dcgm_unresponsive_state(self) -> None:
         try:
@@ -213,10 +275,31 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         check_name = "GpuDcgmConnectivityFailure"
 
         self._consecutive_connectivity_failures = 0
-        self._connectivity_escalated = False
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
 
         key = self._build_cache_key(check_name, "DCGM", "ALL")
         entry = self.entity_cache.get(key)
+        if entry is not None and entry.is_healthy:
+            self._consecutive_connectivity_successes = 0
+            metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
+            return
+
+        # Preserve the existing first-poll healthy baseline. The success
+        # threshold only confirms recovery after an unhealthy event has been
+        # published; it must not delay initial Condition creation.
+        if entry is not None:
+            self._consecutive_connectivity_successes += 1
+            metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(
+                self._consecutive_connectivity_successes
+            )
+            if self._consecutive_connectivity_successes < self._connectivity_success_threshold:
+                log.info(
+                    "DCGM connectivity recovery observed %d/%d consecutive successful cycles",
+                    self._consecutive_connectivity_successes,
+                    self._connectivity_success_threshold,
+                )
+                return
+
         if entry is None or not entry.is_healthy:
             event_metadata = {}
             chassis_serial = self._metadata_reader.get_chassis_serial()
@@ -247,9 +330,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
+                    self._clear_active_event_metric(check_name, key)
                     self.entity_cache[key] = EntityCacheEntry()
+                    self._consecutive_connectivity_successes = 0
+                    self._connectivity_escalated = False
+                    metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
-                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(0)
             except Exception as e:
                 log.error(f"Exception while sending DCGM connectivity restored events: {e}")
                 raise
@@ -311,15 +397,40 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
+                    self._clear_active_event_metric(check_name, key)
                     self.entity_cache[key] = EntityCacheEntry()
                     self._clear_dcgm_unresponsive_state()
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
-                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(0)
             except Exception as e:
                 log.error(f"Exception while sending DCGM responsive events: {e}")
                 raise
 
-    def health_event_occurred(self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list) -> None:
+    def health_event_occurred(
+        self,
+        health_details: dict[str, dcgmtypes.HealthDetails],
+        gpu_ids: list[int],
+        switch_ids: list[int] | None = None,
+    ) -> None:
+        """Publish the transitions one DCGM poll shows against the last published state.
+
+        The watcher delivers health snapshots one at a time, in poll order, and
+        a publish can block for up to the retry window during a platform
+        connector outage in direct mode. Deciding, publishing and committing the
+        cache happen under the processor's event lock, shared with the critical
+        events, so a critical event waits for a publish in progress instead of
+        racing its cache update, and a fault seen by several polls during an
+        outage is published once while a recovery seen afterwards is not lost
+        to a stale cache.
+        """
+        with self._event_lock:
+            self._publish_health_snapshot(health_details, gpu_ids, switch_ids)
+
+    def _publish_health_snapshot(
+        self,
+        health_details: dict[str, dcgmtypes.HealthDetails],
+        gpu_ids: list[int],
+        switch_ids: list[int] | None = None,
+    ) -> None:
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_health_events_to_grpc_channel"
         ).time():
@@ -336,7 +447,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             health_events = []
             # Collect pending cache and metric updates to apply only after successful send
             pending_cache_updates: dict[str, EntityCacheEntry] = {}
-            pending_metric_updates: list[tuple[str, int, int]] = []  # (event_type, gpu_id, value)
+            pending_metric_updates: list[tuple[str, int, str, int]] = []  # (event_type, gpu_id, code, value)
+            # (event_type, switch_id, code, value)
+            pending_switch_metric_updates: list[tuple[str, int, str, int]] = []
 
             for watch_name, details in health_details.items():
                 check_name = self._convert_dcgm_watch_name_to_check_name(watch_name)
@@ -353,85 +466,125 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 error_code = ""
                 log.debug(f"length of entity_failures are {len(details.entity_failures)}")
                 for gpu_id in gpu_ids:
+                    if details.evaluated_gpu_ids is not None and gpu_id not in details.evaluated_gpu_ids:
+                        continue
                     if details.entity_failures.get(gpu_id):
-                        failure_details = details.entity_failures.get(gpu_id)
-                        message = failure_details.message
-                        error_code = [f"{failure_details.code}"]
-                        entities_impacted = []
-                        entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
-                        entities_impacted.append(entity)
-
-                        pci_address = self._metadata_reader.get_pci_address(gpu_id)
-                        if pci_address:
-                            entities_impacted.append(
-                                platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
+                        for failure_details in details.entity_failures[gpu_id]:
+                            message = failure_details.message
+                            error_code = [f"{failure_details.code}"]
+                            entities_impacted = []
+                            entity = platformconnector_pb2.Entity(
+                                entityType=self._component_class, entityValue=str(gpu_id)
                             )
+                            entities_impacted.append(entity)
 
-                        gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
-                        if gpu_uuid:
-                            entities_impacted.append(
-                                platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
-                            )
+                            pci_address = self._metadata_reader.get_pci_address(gpu_id)
+                            if pci_address:
+                                entities_impacted.append(
+                                    platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
+                                )
 
-                        entities_impacted_supports_component_reset = pci_address and gpu_uuid
+                            gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
+                            if gpu_uuid:
+                                entities_impacted.append(
+                                    platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
+                                )
 
-                        recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
-                        isHealthy = False
-                        isFatal = recommended_action != platformconnector_pb2.NONE
-                        key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
+                            entities_impacted_supports_component_reset = pci_address and gpu_uuid
+
+                            recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
+                            isHealthy = False
+                            isFatal = recommended_action != platformconnector_pb2.NONE
+                            key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
+
+                            entry = pending_cache_updates.get(key, self.entity_cache.get(key))
+                            if entry is None or failure_details.code not in entry.active_errors:
+                                existing_errors = set(entry.active_errors) if entry else set()
+                                existing_errors.add(failure_details.code)
+                                pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
+
+                                # The COMPONENT_RESET recommended action requires that the GPU_UUID is present on the
+                                # unhealthy HealthEvent. Sending an event with COMPONENT_RESET that is missing the GPU_UUID
+                                # impacted entity will result in a failed partial drain in node-drainer (as well as a
+                                # failed remediation in fault-remediation). As a result, we are checking that the GPU_UUID
+                                # can be read from the MetadataReader and are falling back to the RESTART_VM action if it
+                                # is not present on the event.
+
+                                # Note that entity-specific HealthEvents require an exact match for the set of impacted
+                                # entities between the initial unhealthy event and the eventual healthy event which clears
+                                # it in fault-quarantine. To ensure that there's a consistent view of impacted
+                                # entities between healthy and unhealthy events, we will only send unhealthy HealthEvents
+                                # for COMPONENT_RESET which include the GPU index, PCI, and GPU_UUID (and the corresponding
+                                # HealthyEvent will include all of these as long as there's no failure extracting the PCI
+                                # or GPU_UUID from the MetadataReader).
+                                if (
+                                    recommended_action == platformconnector_pb2.COMPONENT_RESET
+                                    and not entities_impacted_supports_component_reset
+                                ):
+                                    log.info(
+                                        f"Overriding action from COMPONENT_RESET to RESTART_VM for {self._node_name}"
+                                    )
+                                    recommended_action = platformconnector_pb2.RESTART_VM
+
+                                event_metadata = {}
+                                chassis_serial = self._metadata_reader.get_chassis_serial()
+                                if chassis_serial:
+                                    event_metadata["chassis_serial"] = chassis_serial
+
+                                health_events.append(
+                                    platformconnector_pb2.HealthEvent(
+                                        version=self._version,
+                                        agent=self._agent,
+                                        componentClass=self._component_class,
+                                        checkName=check_name,
+                                        generatedTimestamp=timestamp,
+                                        isFatal=isFatal,
+                                        isHealthy=isHealthy,
+                                        errorCode=error_code,
+                                        entitiesImpacted=entities_impacted,
+                                        message=message,
+                                        recommendedAction=recommended_action,
+                                        nodeName=self._node_name,
+                                        metadata=event_metadata,
+                                        processingStrategy=effective_strategy,
+                                    )
+                                )
+                                pending_metric_updates.append((check_name, gpu_id, failure_details.code, 1))
 
                         entry = self.entity_cache.get(key)
-                        if entry is None or failure_details.code not in entry.active_errors:
-                            existing_errors = set(entry.active_errors) if entry else set()
-                            existing_errors.add(failure_details.code)
-                            pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
+                        if details.is_complete and entry is not None:
+                            current_errors = {failure.code for failure in details.entity_failures[gpu_id]}
+                            recovered_errors = entry.active_errors - current_errors
+                            if recovered_errors:
+                                pending_cache_updates[key] = EntityCacheEntry(active_errors=current_errors)
+                                event_metadata = {}
+                                chassis_serial = self._metadata_reader.get_chassis_serial()
+                                if chassis_serial:
+                                    event_metadata["chassis_serial"] = chassis_serial
 
-                            # The COMPONENT_RESET recommended action requires that the GPU_UUID is present on the
-                            # unhealthy HealthEvent. Sending an event with COMPONENT_RESET that is missing the GPU_UUID
-                            # impacted entity will result in a failed partial drain in node-drainer (as well as a
-                            # failed remediation in fault-remediation). As a result, we are checking that the GPU_UUID
-                            # can be read from the MetadataReader and are falling back to the RESTART_VM action if it
-                            # is not present on the event.
-
-                            # Note that entity-specific HealthEvents require an exact match for the set of impacted
-                            # entities between the initial unhealthy event and the eventual healthy event which clears
-                            # it in fault-quarantine. To ensure that there's a consistent view of impacted
-                            # entities between healthy and unhealthy events, we will only send unhealthy HealthEvents
-                            # for COMPONENT_RESET which include the GPU index, PCI, and GPU_UUID (and the corresponding
-                            # HealthyEvent will include all of these as long as there's no failure extracting the PCI
-                            # or GPU_UUID from the MetadataReader).
-                            if (
-                                recommended_action == platformconnector_pb2.COMPONENT_RESET
-                                and not entities_impacted_supports_component_reset
-                            ):
-                                log.info(f"Overriding action from COMPONENT_RESET to RESTART_VM for {self._node_name}")
-                                recommended_action = platformconnector_pb2.RESTART_VM
-
-                            event_metadata = {}
-                            chassis_serial = self._metadata_reader.get_chassis_serial()
-                            if chassis_serial:
-                                event_metadata["chassis_serial"] = chassis_serial
-
-                            health_events.append(
-                                platformconnector_pb2.HealthEvent(
-                                    version=self._version,
-                                    agent=self._agent,
-                                    componentClass=self._component_class,
-                                    checkName=check_name,
-                                    generatedTimestamp=timestamp,
-                                    isFatal=isFatal,
-                                    isHealthy=isHealthy,
-                                    errorCode=error_code,
-                                    entitiesImpacted=entities_impacted,
-                                    message=message,
-                                    recommendedAction=recommended_action,
-                                    nodeName=self._node_name,
-                                    metadata=event_metadata,
-                                    processingStrategy=effective_strategy,
-                                )
-                            )
-                            pending_metric_updates.append((check_name, gpu_id, 1))
-                    else:
+                                for recovered_code in sorted(recovered_errors):
+                                    health_events.append(
+                                        platformconnector_pb2.HealthEvent(
+                                            version=self._version,
+                                            agent=self._agent,
+                                            componentClass=self._component_class,
+                                            checkName=check_name,
+                                            generatedTimestamp=timestamp,
+                                            isHealthy=True,
+                                            errorCode=[recovered_code],
+                                            entitiesImpacted=entities_impacted,
+                                            message=(
+                                                f"GPU {self._get_dcgm_watch(watch_name)} watch no longer reports "
+                                                f"{recovered_code}"
+                                            ),
+                                            recommendedAction=platformconnector_pb2.NONE,
+                                            nodeName=self._node_name,
+                                            metadata=event_metadata,
+                                            processingStrategy=effective_strategy,
+                                        )
+                                    )
+                                    pending_metric_updates.append((check_name, gpu_id, recovered_code, 0))
+                    elif details.is_complete:
 
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted = []
@@ -480,7 +633,119 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                 )
                             )
                             if had_errors:
-                                pending_metric_updates.append((check_name, gpu_id, 0))
+                                # entry is the pre-reset state, so active_errors still
+                                # names every code that needs clearing.
+                                for code in sorted(entry.active_errors):
+                                    pending_metric_updates.append((check_name, gpu_id, code, 0))
+
+                if watch_name in GPU_ONLY_FIELD_HEALTH_WATCHES:
+                    continue
+
+                switch_failures = {
+                    entity_key[1]: failure
+                    for entity_key, failure in details.entity_failures.items()
+                    if isinstance(entity_key, tuple) and entity_key[0] == dcgm_fields.DCGM_FE_SWITCH
+                }
+                switch_cache_prefix = f"{check_name}|NVSWITCH|"
+                active_switches = {
+                    int(key.removeprefix(switch_cache_prefix))
+                    for key, entry in self.entity_cache.items()
+                    if key.startswith(switch_cache_prefix) and not entry.is_healthy
+                }
+                for switch_id in sorted(set(switch_ids or []) | set(switch_failures) | active_switches):
+                    entity = platformconnector_pb2.Entity(entityType="NVSWITCH", entityValue=str(switch_id))
+                    key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
+
+                    if switch_id in switch_failures:
+                        for failure_details in switch_failures[switch_id]:
+                            entry = pending_cache_updates.get(key, self.entity_cache.get(key))
+                            if entry is not None and failure_details.code in entry.active_errors:
+                                continue
+
+                            existing_errors = set(entry.active_errors) if entry else set()
+                            existing_errors.add(failure_details.code)
+                            pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
+                            recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
+                            health_events.append(
+                                platformconnector_pb2.HealthEvent(
+                                    version=self._version,
+                                    agent=self._agent,
+                                    componentClass="NVSWITCH",
+                                    checkName=check_name,
+                                    generatedTimestamp=timestamp,
+                                    isFatal=recommended_action != platformconnector_pb2.NONE,
+                                    errorCode=[failure_details.code],
+                                    entitiesImpacted=[entity],
+                                    message=failure_details.message,
+                                    recommendedAction=recommended_action,
+                                    nodeName=self._node_name,
+                                    # NVSwitch remediation is deferred until downstream handling is safe.
+                                    processingStrategy=platformconnector_pb2.STORE_ONLY,
+                                )
+                            )
+                            pending_switch_metric_updates.append((check_name, switch_id, failure_details.code, 1))
+
+                        entry = self.entity_cache.get(key)
+                        if details.is_complete and entry is not None:
+                            current_errors = {failure.code for failure in switch_failures[switch_id]}
+                            recovered_errors = entry.active_errors - current_errors
+                            if recovered_errors:
+                                pending_cache_updates[key] = EntityCacheEntry(active_errors=current_errors)
+                                for recovered_code in sorted(recovered_errors):
+                                    health_events.append(
+                                        platformconnector_pb2.HealthEvent(
+                                            version=self._version,
+                                            agent=self._agent,
+                                            componentClass="NVSWITCH",
+                                            checkName=check_name,
+                                            generatedTimestamp=timestamp,
+                                            isHealthy=True,
+                                            errorCode=[recovered_code],
+                                            entitiesImpacted=[entity],
+                                            message=(
+                                                f"NVSWITCH {self._get_dcgm_watch(watch_name)} watch no longer reports "
+                                                f"{recovered_code}"
+                                            ),
+                                            nodeName=self._node_name,
+                                            processingStrategy=platformconnector_pb2.STORE_ONLY,
+                                        )
+                                    )
+                                    pending_switch_metric_updates.append((check_name, switch_id, recovered_code, 0))
+
+                        continue
+
+                    if not details.is_complete:
+                        continue
+
+                    entry = self.entity_cache.get(key)
+                    if entry is not None and entry.is_healthy:
+                        continue
+
+                    if entry is not None:
+                        # entry is the pre-reset state, so active_errors still names every
+                        # code that needs clearing. Zeroing one assumed code would leave
+                        # the others reading 1 for the process lifetime.
+                        for code in sorted(entry.active_errors):
+                            pending_switch_metric_updates.append((check_name, switch_id, code, 0))
+
+                    pending_cache_updates[key] = EntityCacheEntry()
+                    health_events.append(
+                        platformconnector_pb2.HealthEvent(
+                            version=self._version,
+                            agent=self._agent,
+                            componentClass="NVSWITCH",
+                            checkName=check_name,
+                            generatedTimestamp=timestamp,
+                            isHealthy=True,
+                            entitiesImpacted=[entity],
+                            message=f"NVSWITCH {self._get_dcgm_watch(watch_name)} watch reported no errors",
+                            nodeName=self._node_name,
+                            processingStrategy=platformconnector_pb2.STORE_ONLY,
+                        )
+                    )
+            # Consumers process events individually. Publish replacement faults before
+            # recoveries, including when they belong to different entities or watches.
+            health_events.sort(key=lambda event: event.isHealthy)
             log.debug(f"dcgm health event is {health_events}")
             if len(health_events):
                 try:
@@ -491,8 +756,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             log.info(
                                 f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send"
                             )
-                        for event_type, gpu_id, value in pending_metric_updates:
-                            metrics.dcgm_health_active_events.labels(event_type=event_type, gpu_id=gpu_id).set(value)
+                        for event_type, gpu_id, error_code, value in pending_metric_updates:
+                            metrics.dcgm_health_active_events.labels(
+                                event_type=event_type, gpu_id=gpu_id, error_code=error_code
+                            ).set(value)
+                        for event_type, switch_id, error_code, value in pending_switch_metric_updates:
+                            metrics.dcgm_health_active_switch_events.labels(
+                                event_type=event_type, switch_id=switch_id, error_code=error_code
+                            ).set(value)
                 except Exception as e:
                     log.error(f"Exception while sending health events: {e}")
 
@@ -521,18 +792,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         if not self._token_path:
             return None
         try:
-            with open(self._token_path) as token_file:
-                token = token_file.read()
+            token = direct_publisher_mod.read_bearer_token(self._token_path, "platform-connector token file")
         except OSError as e:
             log.error("Failed to read platform-connector token from %s: %s", self._token_path, e)
             raise
-        # An empty file is a broken mount, not a credential. Publishing
-        # "Bearer " gets a generic authentication error back from the server and
-        # sends whoever debugs it looking at RBAC and audiences; failing here
-        # names the actual problem.
-        if not token:
+        except ValueError:
             log.error("Platform-connector token file %s is empty", self._token_path)
-            raise ValueError(f"platform-connector token file {self._token_path} is empty")
+            raise
         return [("authorization", "Bearer " + token)]
 
     def send_health_event_with_retries(
@@ -547,8 +813,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         and `False` is returned. The caller's cache must be left untouched so
         the next poll re-emits with a fresh `generatedTimestamp`.
 
-        Every gRPC call is bounded by ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled
-        connector cannot block a worker indefinitely. When
+        On the socket path every gRPC call is bounded by
+        ``GRPC_CALL_TIMEOUT_SECONDS`` so a stalled connector cannot block a
+        worker indefinitely. When
         ``delivery_timeout_seconds`` is set (critical pre-cleanup paths), the
         overall retry budget is also capped; ordinary health events keep the
         existing MAX_RETRIES backoff without an overall deadline.
@@ -561,11 +828,23 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         deterministic rejection, so the loop stops on the first one and reports
         the failure immediately.
 
+        In direct mode (HEALTH_PUBLISH_TARGET set) the direct publisher sends
+        the batch, one batch at a time across all threads, and this method
+        waits for its outcome: True once the server has stored it, False when
+        it was rejected, dropped, or (with ``delivery_timeout_seconds``) not
+        delivered in time, in which case the batch is withdrawn (an attempt
+        the server had already stored is a duplicate it tolerates). Retries,
+        the retry window and the stable idempotency key are the publisher's
+        job. The socket-presence gate only governs the socket path.
+
         Returns:
             True on success. False if the socket was missing, a non-retryable
             status came back, or all retries were exhausted. Callers must update
             their cache only on True.
         """
+        if self._direct_publisher is not None:
+            return self._direct_publisher.publish(health_events, timeout=delivery_timeout_seconds)
+
         if not self._is_platform_connector_socket_present():
             metrics.health_events_insertion_skipped_pc_unavailable.inc()
             log.warning(
@@ -609,7 +888,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     return True
                 except grpc.RpcError as e:
                     log.error(f"Failed to send health event {health_events} to UDS: {e}")
-                    code = _rpc_status_code(e)
+                    code = direct_publisher_mod.rpc_status_code(e)
                     if code is not None and code not in RETRYABLE_STATUS_CODES:
                         # The same request will earn the same status next time,
                         # so stop here instead of spending the backoff budget.
@@ -648,7 +927,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         )
         return False
 
-    @_serialized_event_state
+    @_serialized_critical_event
     def dcgm_connectivity_failed(self) -> bool:
         """Handle a DCGM connectivity failure.
 
@@ -656,10 +935,25 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         bounded critical-event budget. DCGMWatcher uses this synchronously before
         cleanup because cleanup itself can hang on an unresponsive DCGM probe.
         """
+        self._consecutive_connectivity_failures += 1
+        self._consecutive_connectivity_successes = 0
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(
+            self._consecutive_connectivity_failures
+        )
+        metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
+
+        if self._consecutive_connectivity_failures < self._connectivity_failure_threshold:
+            log.warning(
+                "DCGM connectivity failure observed %d/%d consecutive cycles; suppressing health event",
+                self._consecutive_connectivity_failures,
+                self._connectivity_failure_threshold,
+            )
+            return True
+
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_connectivity_failure_to_grpc_channel"
         ).time():
-            log.error("DCGM connectivity failure detected, sending GpuDcgmConnectivityFailure health event")
+            log.error("DCGM connectivity failure threshold reached")
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             health_events = []
@@ -667,10 +961,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             key = self._build_cache_key(check_name, "DCGM", "ALL")
             entry = self.entity_cache.get(key)
 
-            self._consecutive_connectivity_failures += 1
-            # One failed connection is worth a page. DCGM that stays unreachable
-            # cycle after cycle is a stuck driver, and the only fix for that is a
-            # reboot, so escalate the action once the operator's threshold is hit.
+            # Once the debounce threshold is met, persistent node-local
+            # unreachability may indicate a stuck driver. Escalate the action
+            # separately once the operator's escalation threshold is hit.
             escalate = (
                 self._connectivity_failure_escalation_threshold > 0
                 and self._consecutive_connectivity_failures >= self._connectivity_failure_escalation_threshold
@@ -713,6 +1006,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             if not health_events:
                 return True
 
+            log.error("Sending GpuDcgmConnectivityFailure health event")
             try:
                 if self.send_health_event_with_retries(
                     health_events,
@@ -722,14 +1016,16 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     if escalate:
                         self._connectivity_escalated = True
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
-                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(1)
+                    metrics.dcgm_health_active_events.labels(
+                        event_type=check_name, gpu_id="", error_code="DCGM_CONNECTIVITY_ERROR"
+                    ).set(1)
                     return True
                 return False
             except Exception as e:
                 log.error(f"Exception while sending DCGM connectivity failure events: {e}")
                 raise
 
-    @_serialized_event_state
+    @_serialized_critical_event
     def dcgm_probe_unresponsive(
         self,
         operation: str,
@@ -821,7 +1117,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     if local_managed:
                         self._persist_dcgm_unresponsive_state(processing_strategy)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
-                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(1)
+                    metrics.dcgm_health_active_events.labels(
+                        event_type=check_name, gpu_id="", error_code=error_code
+                    ).set(1)
                     return True
                 return False
             except Exception as e:

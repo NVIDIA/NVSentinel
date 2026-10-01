@@ -39,6 +39,10 @@ tests:
       - lengthEqual:
           path: spec.template.spec.containers[0].volumeMounts
           count: 3
+      - notExists:
+          path: spec.template.spec.resourceClaims
+      - notExists:
+          path: spec.template.spec.containers[0].resources.claims
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
@@ -81,3 +85,29 @@ tests:
           content:
             name: LD_LIBRARY_PATH
             value: /usr/local/nvidia/lib
+
+  - it: must hold a DRA admin-access claim and omit runtimeClassName in GPUCluster mode
+    set:
+      global.gpuDraEnabled: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.runtimeClassName
+      - equal:
+          path: spec.template.spec.resourceClaims
+          value:
+            - name: gpus
+              resourceClaimTemplateName: metadata-collector-admin-gpus
+      - equal:
+          path: spec.template.spec.containers[0].resources.claims
+          value:
+            - name: gpus
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 3
+
+  - it: must fail on a quoted global.gpuDraEnabled
+    set:
+      global.gpuDraEnabled: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: global.gpuDraEnabled must be a boolean

@@ -81,6 +81,17 @@ node-drainer:
   partialDrainEnabled: true
 ```
 
+### Partial Drain Entity Metric
+
+Registers `node_drainer_partial_drains_total{node, entity_type, entity_value}`.
+
+```yaml
+node-drainer:
+  partialDrainEntityMetricEnabled: false
+```
+
+Off by default because `entity_value` holds a GPU UUID, which adds one time series per GPU in the fleet. The `drain_scope` label on `node_drainer_events_processed_total` already separates partial drains from full ones without that cardinality. Enable this only when you need per-GPU attribution and your Prometheus can carry the extra series.
+
 ### Eviction Timeout
 
 Grace period in seconds applied to pod eviction requests in Immediate mode only.
@@ -91,6 +102,21 @@ node-drainer:
 ```
 
 This timeout is passed as the `GracePeriodSeconds` in the Kubernetes eviction API call. Only used for `Immediate` eviction mode. Other modes respect the pod's configured `terminationGracePeriodSeconds`.
+
+### Requeue Backoff Base
+
+Base duration for exponential backoff on drain requeues in `Immediate` mode.
+
+```yaml
+node-drainer:
+  requeueBackoffBase: 10s
+```
+
+When pods cannot be evicted immediately, the node drainer requeues the drain event. Retries use exponential backoff starting at `requeueBackoffBase` and double up to a two-minute maximum.
+
+Configure this setting based on the workload pod termination time:
+- For zero-grace pods (`terminationGracePeriodSeconds: 0`), set a lower base such as `2s` to decrease drain latency.
+- For workloads with standard grace periods (`terminationGracePeriodSeconds: 30`), pod termination dominates drain latency. A short retry interval increases redundant eviction calls.
 
 ### System Namespaces
 
@@ -148,9 +174,73 @@ annotations:
 - **When disabled (`false`)**: All eligible pods in configured namespaces are evicted (default behavior)
 - Pods without GPU requests are preserved, maintaining critical infrastructure services
 
+## Pod Drain Policies
+
+Use `podDrainPolicies` when workloads in the same namespace need different drain modes. Policies match pod labels using standard [Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors). The first matching policy wins. `podDrainPolicies` and `userNamespaces` are mutually exclusive; configuration with both non-empty is rejected. Set `userNamespaces: []` to clear the Helm chart's default namespace rule when enabling policies. Pods that match no policy are outside the drain scope and do not block completion.
+
+```yaml
+node-drainer:
+  userNamespaces: []
+  podDrainPolicies:
+    - name: finish-training
+      namespace: training-*
+      podSelector: "example.com/drain-mode=finish"
+      mode: AllowCompletion
+    - name: replaceable-workers
+      podSelector: "example.com/drain-mode in (immediate,replaceable)"
+      mode: Immediate
+    - name: bounded-shutdown
+      podSelector: "example.com/drain-mode=timeout"
+      mode: DeleteAfterTimeout
+```
+
+Each policy has a unique, non-empty `name`, a non-empty `podSelector`, and a `mode` (`Immediate`, `AllowCompletion`, or `DeleteAfterTimeout`). `namespace` is an optional namespace-name glob; omitting it matches all user namespaces. Selectors support equality, set membership, and key existence. As in Kubernetes, `key!=value` and `key notin (value)` also match pods without that key; add a key-existence requirement if absent labels should not match.
+
+Policy order takes precedence over mode: an early `AllowCompletion` match cannot be overridden by a later `Immediate` match. There is no namespace fallback in policy mode. Ensure the selectors cover every workload that should participate in draining. To retain namespace-based draining instead, leave `podDrainPolicies` empty and configure `userNamespaces` as before.
+
+Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. `DrainOverrides.Skip` retains its existing behavior. Custom drain configuration cannot be combined with pod drain policies unless `customDrain.nodeSelector` scopes it to part of the cluster; see [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
+
+Pod labels are read from the informer cache on each reconciliation and before eviction or timeout deletion. Changing a relevant label changes the policy on a subsequent observation. API deletion preconditions prevent a stale observation from deleting a relabelled or replaced pod. Configuration changes require restarting node-drainer. Only label keys referenced by policies are retained in its pod cache.
+
+`DeleteAfterTimeout` continues to use `deleteAfterTimeoutMinutes` measured from the health event's creation, including after a restart. Policies do not introduce a new timeout or automatically choose a mode based on workload kind; workload owners opt in through labels.
+
+## Scoping custom drain to part of the cluster
+
+`customDrain.enabled: true` replaces node-drainer's own eviction with a
+[drain plugin](../tutorials/writing-a-drain-plugin.md), for the whole cluster. Set
+`customDrain.nodeSelector` when only some nodes are drained that way — a Slurm or LSF partition
+alongside nodes running ordinary Kubernetes workloads, for example. Nodes matching the selector go
+through the plugin; every other node keeps the built-in eviction path, so `userNamespaces` or
+`podDrainPolicies` must stay configured for them. The selector uses standard
+[Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors).
+
+```yaml
+node-drainer:
+  customDrain:
+    enabled: true
+    nodeSelector: "nvsentinel.example.com/scheduler=slurm"
+    # ... CR template and status condition settings
+  userNamespaces:
+    - name: "*"
+      mode: "AllowCompletion"
+```
+
+An empty or omitted `nodeSelector` keeps the original behavior: every node goes through custom
+drain, and configuring `userNamespaces` or `podDrainPolicies` alongside it is rejected at startup.
+
+A `nodeSelector` with neither `userNamespaces` nor `podDrainPolicies` is rejected at startup as
+well: the unmatched nodes would reach the built-in eviction path with no namespace and no policy to
+act on, and be marked drained while their pods keep running. An invalid selector is also rejected at
+startup.
+
+The drain path is chosen per health event from the node's labels as the informer cache holds them,
+so relabelling a node changes the path taken by subsequent events. A node the cache cannot resolve
+is retried rather than assigned a path. Only the label keys the selector references are retained in
+the node cache.
+
 ## User Namespaces
 
-Defines eviction behavior for user workloads based on namespace patterns.
+Defines eviction behavior for user workloads based on namespace patterns. Cannot be combined with a non-empty `podDrainPolicies` list.
 
 ### Configuration Structure
 

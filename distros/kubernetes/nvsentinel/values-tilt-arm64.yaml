@@ -19,3 +19,13 @@ mongodb-store:
       repository: "dlavrenuek/bitnami-mongodb-arm"
       tag: "8.0.4"
 
+lifecycle-manager:
+  config:
+    tests:
+      dcgm-diag-test:
+        image: public.ecr.aws/docker/library/alpine:3.21
+        command:
+          - sh
+          - -c
+          - "exit 0"
+

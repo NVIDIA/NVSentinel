@@ -89,11 +89,17 @@ class DCGMDiagnostic:
         return self._gpu_discovery.get_all_uuids()
 
     def _connect(self) -> None:
-        log.info(f"Connecting to DCGM hostengine at {self._hostengine_addr}")
-        self._handle = pydcgm.DcgmHandle(
-            ipAddress=self._hostengine_addr,
-            opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO,
-        )
+        # Only one DCGM Service exists per cluster (nvidia-dcgm-dra in GPU Operator
+        # GPUCluster mode, nvidia-dcgm otherwise); try each listed address in order.
+        errors: list[str] = []
+        for addr in [a.strip() for a in self._hostengine_addr.split(",") if a.strip()]:
+            try:
+                self._handle = pydcgm.DcgmHandle(ipAddress=addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+                log.info(f"Connected to DCGM hostengine at {addr}")
+                return
+            except Exception as e:
+                errors.append(f"{addr}: {e}")
+        raise RuntimeError(f"Unable to connect to any DCGM hostengine: {'; '.join(errors)}")
 
     def _disconnect(self) -> None:
         if self._handle:

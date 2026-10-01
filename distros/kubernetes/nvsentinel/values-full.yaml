@@ -69,6 +69,24 @@ global:
     # publishers this chart does not ship. Absent means none; null is refused.
     crossNodeServiceAccounts: []
 
+  # Connection facts of the deployment platform connector, shared with the
+  # publishers. See docs/configuration/platform-connectors.md.
+  platformConnectorDeployment:
+    grpcPort: 50051
+    tls:
+      # "required" or "insecureDevelopmentMode" (development only).
+      mode: required
+
+  # DNS domain of the cluster (kubeadm networking.dnsDomain), used wherever the
+  # chart builds a service hostname or a certificate DNS name. Change it only on
+  # a cluster whose domain is not cluster.local, and then set the same domain
+  # where a subchart or value carries its own: mongodb-store.mongodb.clusterDomain,
+  # postgresql.clusterDomain, mongodb-store.psmdb-db.clusterServiceDNSSuffix
+  # (Percona, as svc.<domain>), and the full hostnames in
+  # janitor.config.cspProviderHost and fault-remediation.logCollector.uploadURL.
+  # See docs/configuration/README.md#cluster-domain.
+  clusterDomain: cluster.local
+
   # Docker image configuration
   image:
     # Image tag to use for all NVSentinel containers
@@ -174,6 +192,11 @@ global:
   # For production, typically enable all modules except healthEventsAnalyzer.
   ################################################################################
   
+  # Set true when GPUs are managed through DRA (GPU Operator GPUCluster mode).
+  # metadata-collector then holds a DRA admin-access GPU claim instead of using
+  # the nvidia RuntimeClass.
+  gpuDraEnabled: false
+
   # GPU Health Monitor - monitors GPU hardware health via DCGM
   # Detects: XID errors, thermal issues, ECC errors, memory errors, NVLink failures
   # Requires: NVIDIA GPU Operator with DCGM installed
@@ -212,6 +235,11 @@ global:
   # Supports: AWS, GCP, Azure, OCI, kind (for testing)
   # Requires: Cloud provider credentials configured
   janitor:
+    enabled: false
+
+  # Lifecycle Manager - manages node validation and maintenance requests
+  # Requires: cert-manager or OpenShift service CA
+  lifecycleManager:
     enabled: false
 
   # CSP Health Monitor - monitors cloud provider maintenance events
@@ -321,6 +349,14 @@ platformConnector:
   # Kubernetes connector configuration
   # Handles updating Kubernetes node status and conditions
   k8sConnector:
+    # Retry each failed Kubernetes write in place; completed writes are not repeated.
+    # Zero or omission selects 25 retries per write. Negative values are invalid.
+    # The batch deadline below can stop retries before the count is reached.
+    maxRetries: 25
+    # Whole-batch deadline, including API calls and backoff. Maximum: 5m.
+    # Zero or omission selects 1m. Later batches wait; permanent errors are skipped.
+    # For a 5m window, also increase maxRetries to 200.
+    maxRetryDuration: 1m
     # Maximum length of the node condition message
     # This is the maximum length of the node condition message that will be stored in the Kubernetes node status
     # If the node condition message is longer than this value, it will be truncated
@@ -430,10 +466,66 @@ platformConnector:
       #     isFatal: false
       #     recommendedAction: "CONTACT_SUPPORT"
 
+  # The deployment platform connector (central Deployment, experimental). See
+  # docs/configuration/platform-connectors.md#deployment-platform-connector.
+  deployment:
+    enabled: false
+    replicas: 3
+    nodeSelector: {}
+    tolerations: []
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    auth:
+      tokenCacheSize: 500000
+      tokenReviewQps: 1000
+      tokenReviewBurst: 2000
+    datastore:
+      maxPoolSize: 10
+    conditionUpdateTimeout: "10s"
+    connections:
+      maxAge: "10m"
+      maxIdle: "5m"
+      readBufferBytes: 8192
+      writeBufferBytes: 8192
+    kubernetes:
+      qps: 1000
+      burst: 2000
+      nodeMetadataCacheSize: 200000
+      nodeMetadataCacheTtl: "10m"
+
+  # The node-local DaemonSet; turn off only once every publisher publishes to
+  # the deployment. See docs/configuration/platform-connectors.md.
+  daemonset:
+    enabled: true
+
 # Unix socket path for inter-process communication
 # Health monitors connect to platform-connectors via this socket
 # Must be accessible by both monitors and platform-connectors
 socketPath: "/var/run/nvsentinel.sock"
+
+################################################################################
+# LIFECYCLE-MANAGER MODULE CONFIGURATION
+#
+# Controls the independent validation and maintenance request controllers.
+################################################################################
+lifecycle-manager:
+  controllers:
+    # Runs configured validation tests before returning nodes to service.
+    validationRequest:
+      enabled: true
+    # Publishes opening and clearing health events for MaintenanceRequests.
+    # Disabled by default because this is an opt-in API.
+    maintenanceRequest:
+      enabled: false
+
+  # Where the MaintenanceRequest controller's health events go: socket or
+  # deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
 
 ################################################################################
 # FAULT-QUARANTINE MODULE CONFIGURATION
@@ -509,9 +601,16 @@ fault-quarantine:
     # 0 disables this bound. When both are set the lower one binds, so percentage: 5 with
     # maxNodes: 10 means 5% but never more than 10 nodes. Prefer it when the blast radius
     # you care about is a number of machines rather than a share of the fleet, since a
-    # percentage silently changes meaning as the fleet grows. At least one of percentage
-    # and maxNodes must be positive.
+    # percentage silently changes meaning as the fleet grows. At least one of percentage,
+    # maxNodes and maxCordonedNodes must be positive.
     maxNodes: 0
+    # Standing cap on how many nodes NVSentinel holds quarantined at once, counting only
+    # its own cordons. 0 disables it, and it is off by default.
+    #
+    # The two bounds above limit the rate of cordoning inside the window, not the total,
+    # so a rate that stays under the threshold still cordons a whole fleet given enough
+    # windows. This is the only bound that caps that.
+    maxCordonedNodes: 0
     # Cooldown period after circuit breaker trips
     # Circuit breaker waits this long before attempting to close again
     # Even if node count drops below threshold during cooldown, it stays open
@@ -523,6 +622,11 @@ fault-quarantine:
   # - Match conditions: When the rule should trigger
   # - Actions: What to do when conditions match (cordon, taint, label)
   # Rules are evaluated in order for each health event
+  #
+  # The node cache keeps only the label and annotation keys these expressions
+  # read, so how a Node rule is written decides how much memory it costs. Two
+  # rules that select the same nodes can prune differently.
+  # See docs/fault-quarantine.md#cached-node-fields before editing a Node rule.
   ruleSets:
     # Example rule 1: Quarantine nodes with fatal GPU errors
     # Enable or disable this ruleset; disabled rulesets are skipped entirely
@@ -696,6 +800,13 @@ node-drainer:
   # Must be a positive integer
   evictionTimeoutInSeconds: "60"
 
+  # Base duration for exponential backoff on drain requeues (e.g., 10s, 2s).
+  # Controls the delay before the first retry when a node cannot be drained immediately.
+  # Subsequent retries double up to a 2-minute ceiling.
+  # Set according to workload termination times (~1s for zero-grace pods, >= 30s for 30s grace).
+  # Default: 10s
+  requeueBackoffBase: 10s
+
   # System namespaces regex pattern
   # Pods in these namespaces are skipped during drain
   # This protects critical infrastructure pods from eviction
@@ -722,7 +833,13 @@ node-drainer:
   # Default: false if not specified
   drainGPUPods: false
 
-  # Namespace-specific eviction strategies
+  # Pod-label eviction strategies, evaluated in order; the first matching policy wins.
+  # Set userNamespaces: [] before adding policies; both lists cannot be non-empty.
+  # Unmatched pods are outside the drain scope. Cannot be combined with customDrain.
+  # See docs/configuration/node-drainer.md#pod-drain-policies for examples.
+  podDrainPolicies: []
+
+  # Namespace-specific eviction strategies (alternative to podDrainPolicies)
   # Define how pods in different namespaces should be evicted
   # Multiple rules can be defined with namespace patterns
   userNamespaces:
@@ -944,6 +1061,49 @@ fault-remediation:
     enableAwsSosCollection: false
 
 ################################################################################
+# HEALTH-EVENTS-ANALYZER CONFIGURATION
+#
+# Evaluates rule-based aggregation pipelines against health events from the
+# datastore and publishes derived fatal health events for automated remediation.
+# Events are partitioned across concurrent workers by node name.
+################################################################################
+health-events-analyzer:
+  # Number of concurrent workers for event processing partitioned by node (default: 1)
+  # Scale this parameter based on the event ingestion rate in the datastore.
+  # Because each rule evaluation performs datastore aggregation queries (~17.5ms),
+  # each worker handles ~57 events/s. Increasing workers scales throughput linearly:
+  #   - 1 worker:   ~57 events/s  (default, clusters up to ~500 nodes)
+  #   - 4 workers:  ~220 events/s (clusters up to ~2,000 nodes)
+  #   - 8 workers:  ~440 events/s (clusters up to ~4,000 nodes)
+  #   - 16 workers: ~860 events/s (clusters up to ~8,000 nodes)
+  #   - 32 workers: ~1,680 events/s (clusters up to ~15,000 nodes)
+  workers: 1
+
+  # Maximum number of uncheckpointed in-flight events before backpressure is applied (default: 1000)
+  # When uncheckpointed events in memory reach this limit, ingestion from the watcher pauses.
+  # Increase proportionally when running with 16+ workers (e.g. 2000-4000) to avoid false stalls.
+  maxInFlight: 1000
+
+  # Maximum number of rule queries that run at the same time for one event (default: 1)
+  # The analyzer runs one query for each enabled rule. At 1 they run one at a time.
+  # A higher value shortens event handling, and it also speeds up a burst of events
+  # from one node, which more workers cannot do because events for one node stay in order.
+  ruleConcurrency: 1
+
+  # Registers rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}.
+  # Off by default: entity labels add a series per GPU/GPC/TPC/SM on each node.
+  # rule_matched_total already reports that a rule fired without this.
+  # GPU UUID is never used as entity_value; PCI or GPU index is exported instead.
+  ruleMatchedEntityMetricEnabled: false
+
+  # Processing strategy for health events (default: EXECUTE_REMEDIATION)
+  # Valid values: EXECUTE_REMEDIATION, STORE_ONLY
+  processingStrategy: EXECUTE_REMEDIATION
+
+  # Where health events go: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
+
+################################################################################
 # KUBERNETES-OBJECT-MONITOR CONFIGURATION
 #
 # Watches configured Kubernetes resources and generates health events when
@@ -953,6 +1113,9 @@ kubernetes-object-monitor:
   # Maximum time to wait for informer caches to synchronize on startup.
   # Large clusters may require a longer timeout while caches are populated.
   cacheSyncTimeout: 10m
+
+  # Where health events go: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
 
 ################################################################################
 # NVCRE-CERTIFICATION-MONITOR CONFIGURATION
@@ -970,6 +1133,9 @@ nvcre-certification-monitor:
   policies:
     - name: certification-failures
       match: "(failedNode.reason == 'ThresholdViolation') || (failedNode.reason == 'WorkloadFailed')"
+
+  # Where health events go: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
 
 ################################################################################
 # GPU-HEALTH-MONITOR CONFIGURATION
@@ -997,9 +1163,10 @@ gpu-health-monitor:
     
     # DCGM service endpoint
     service:
-      # Service endpoint in format: servicename.namespace.svc
-      # Default GPU Operator deployment uses: nvidia-dcgm.gpu-operator.svc
-      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      # Service endpoint in format: servicename.namespace.svc. Comma-separated hosts are
+      # tried in order; only one exists per cluster (nvidia-dcgm-dra in GPU Operator
+      # GPUCluster/DRA mode, nvidia-dcgm otherwise).
+      endpoint: "nvidia-dcgm-dra.gpu-operator.svc,nvidia-dcgm.gpu-operator.svc"
       
       # DCGM service port
       # Default DCGM port is 5555
@@ -1035,6 +1202,17 @@ gpu-health-monitor:
       # Maximum seconds allowed for one DCGM connection and discovery attempt.
       # A timed-out attempt is terminated before the next retry begins.
       connectTimeoutSeconds: 10
+    # Debounce runtime connectivity transitions after the monitor has started.
+    # Defaults preserve the existing fail-once, recover-once behavior.
+    runtimeDebounce:
+      # Example: failureThreshold: 4 and successThreshold: 2 publishes failure
+      # after four failed cycles and recovery after two successful cycles.
+      # Consecutive failed cycles required to publish an unhealthy event.
+      failureThreshold: 1
+      # Consecutive successful cycles required to clear a published failure.
+      successThreshold: 1
+
+
 
   # Use host networking for GPU health monitor pods
   # Required when:
@@ -1049,11 +1227,15 @@ gpu-health-monitor:
   # event, so they are never persisted or acted on. Useful for high-frequency,
   # non-actionable flaps (e.g. normal power-cap boost-clock behavior).
   dcgmHealthCheck:
+    # Enable DCGM IMEX health monitoring. Off by default because DRA can remove
+    # IMEX when idle; older hostengines filter its legacy incident instead.
+    imexMonitoringEnabled: false
+
     # List of error code names to suppress (native DCGM codes like
     # DCGM_FR_CLOCK_THROTTLE_POWER, or custom field-monitor codes like
-    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Defaults to POWER/THERMAL watch
+    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Defaults include POWER/THERMAL watch
     # throttling, under both its canonical and deprecated alias names.
-    # Set to [] to report throttling too.
+    # Set to [] to report all codes.
     suppressedErrorCodes:
       - DCGM_FR_CLOCK_THROTTLE_POWER
       - DCGM_FR_CLOCKS_EVENT_POWER
@@ -1123,6 +1305,9 @@ gpu-health-monitor:
   tolerations: []
   podAnnotations: {}
 
+  # Where health events go: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
+
 ################################################################################
 # LABELER CONFIGURATION
 #
@@ -1173,6 +1358,20 @@ labeler:
   # on all nodes with nvidia.com/gpu.present=true, skipping driver pod detection.
   assumeDriverInstalled: false
 
+  # DCGM pod discovery
+  # Comma-separated values of the `app` pod label used to find the DCGM pod on each node.
+  # The default matches both the classic GPU Operator DCGM DaemonSet (nvidia-dcgm) and the
+  # GPUCluster/DRA-mode one (nvidia-dcgm-dra).
+  dcgmAppLabel: "nvidia-dcgm,nvidia-dcgm-dra"
+
+  # Driver pod discovery
+  # Value of the `app` pod label used to find the GPU Operator driver pod on each node.
+  driverAppLabel: "nvidia-driver-daemonset"
+
+  # GKE driver installer discovery
+  # Value of the `k8s-app` pod label used to find the GKE driver installer pod on each node.
+  gkeInstallerAppLabel: "nvidia-driver-installer"
+
   # Expected device count labels
   # Writes current/expected device-count labels from node labels or DRA ResourceSlice data.
   expectedDeviceCounts:
@@ -1189,6 +1388,28 @@ labeler:
         expectedCountOverrides: []
         currentExpression: |
           int(node.metadata.labels['nvidia.com/gpu.count'])
+      # Detect GPUs in GPUCluster (DRA) mode of GPU Operator.
+      # Uncomment and adapt per environment.
+      # - name: gpu-dra
+      #   enabled: true
+      #   labels:
+      #     current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+      #     expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+      #   groupingLabels:
+      #     - node.kubernetes.io/instance-type
+      #   expectedCountOverrides: []
+      #   currentExpression: |
+      #     sum(resourceSlices
+      #       .filter(rs, rs.spec.driver == 'gpu.nvidia.com' && has(rs.spec.devices))
+      #       .map(rs, rs.spec.devices
+      #         .filter(d,
+      #           has(d.attributes) &&
+      #           'type' in d.attributes &&
+      #           has(d.attributes['type'].string) &&
+      #           d.attributes['type'].string == 'gpu'
+      #         )
+      #         .size()
+      #       ))
       - name: nic
         enabled: true
         labels:
@@ -1241,7 +1462,7 @@ labeler:
 # Watches maintenance CRDs created by fault-remediation and performs the
 # actual infrastructure operations.
 #
-# Supports: AWS, GCP, Azure, OCI, kind (for testing), kwok (for testing)
+# Supports: AWS, GCP, Azure, OCI, generic, label, kind (for testing), kwok (for testing)
 ################################################################################
 janitor:
   # Number of pod replicas (recommend 1 for consistency)
@@ -1677,6 +1898,24 @@ mongodb-store:
         repository: bitnamilegacy/mongodb-exporter
         tag: 0.41.2-debian-12-r1
 
+  # NetworkPolicy configuration
+  networkPolicy:
+    # Additional namespaces permitted to scrape the mongodb_exporter metrics endpoint (port 9216).
+    # Applied only when usePerconaOperator=true. The release namespace is always permitted.
+    additionalScrapeNamespaces: []
+    # Additional ingress rules for the metrics endpoint (port 9216).
+    # Applied only when usePerconaOperator=true.
+    # Each entry is rendered directly under 'from:' in the port 9216 ingress rule.
+    # Example:
+    # additionalScrapeRules:
+    #   - namespaceSelector:
+    #       matchLabels:
+    #         kubernetes.io/metadata.name: monitoring
+    #     podSelector:
+    #       matchLabels:
+    #         app.kubernetes.io/name: prometheus
+    additionalScrapeRules: []
+
 ################################################################################
 # EVENT-EXPORTER CONFIGURATION
 #
@@ -1978,7 +2217,8 @@ preflight:
     # DCGM diagnostic - runs DCGM diag against allocated GPUs
     # Env vars:
     #   DCGM_DIAG_LEVEL       - diagnostic depth 1-4 (default 2)
-    #   DCGM_HOSTENGINE_ADDR  - hostengine gRPC endpoint (default nvidia-dcgm.gpu-operator.svc:5555)
+    #   DCGM_HOSTENGINE_ADDR  - comma-separated hostengine gRPC endpoints tried in order
+    #                           (default nvidia-dcgm-dra.gpu-operator.svc:5555,nvidia-dcgm.gpu-operator.svc:5555)
     - name: preflight-dcgm-diag
       inheritUserEnv: false
       inheritUserVolumeMounts: false
@@ -2195,6 +2435,13 @@ preflight:
   networkPolicy:
     enabled: true
 
+  # Where the injected checks publish: socket or deployment. See docs/configuration/platform-connectors.md.
+  publishTo: socket
+
+  # True when the workload pods run on the host network; the deployment
+  # platform connector's gRPC rule then admits every source. See docs/configuration/platform-connectors.md.
+  hostNetworkWorkloads: false
+
 ################################################################################
 # END OF CONFIGURATION
 ################################################################################
@@ -2204,3 +2451,10 @@ janitor-provider:
     audience: "nvsentinel-csp-provider"
     allowedUsernames: []
   janitorServiceAccountName: "janitor"
+  csp:
+    # Set provider to "label" on Forge/NKE (or any platform that remediates from node labels).
+    # After reboot completion, the external controller MUST remove the reboot label.
+    # provider: "label"
+    label:
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"

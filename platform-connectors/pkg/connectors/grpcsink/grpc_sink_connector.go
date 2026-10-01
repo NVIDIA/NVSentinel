@@ -131,6 +131,17 @@ func (g *GRPCSinkConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 	}
 }
 
+// ProcessBatch forwards one batch to the sink with the connector's RPC
+// timeout and no retry. The deployment platform connector calls it from inside
+// the request, best effort, instead of through the ring buffer.
+func (g *GRPCSinkConnector) ProcessBatch(ctx context.Context, healthEvents *pb.HealthEvents) error {
+	if len(healthEvents.GetEvents()) == 0 {
+		return nil
+	}
+
+	return g.sendHealthEvents(ctx, healthEvents)
+}
+
 func (g *GRPCSinkConnector) sendHealthEvents(ctx context.Context, healthEvents *pb.HealthEvents) error {
 	start := time.Now()
 
@@ -154,15 +165,6 @@ func (g *GRPCSinkConnector) sendHealthEvents(ctx context.Context, healthEvents *
 		"durationMs", duration.Milliseconds())
 
 	return nil
-}
-
-// ShutdownRingBuffer drains the ring buffer and stops the processing loop.
-func (g *GRPCSinkConnector) ShutdownRingBuffer() {
-	if g.ringBuffer != nil {
-		slog.Info("Shutting down gRPC sink connector ring buffer with drain")
-		g.ringBuffer.ShutDownHealthMetricQueue()
-		slog.Info("gRPC sink connector ring buffer drained successfully")
-	}
 }
 
 // Close closes the underlying gRPC client connection.

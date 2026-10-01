@@ -120,6 +120,20 @@ List of node label keys to include in health event enrichment. Only labels in th
 
 > Note: The complete default list is defined in `distros/kubernetes/nvsentinel/values.yaml`
 
+#### skipNodeLabel
+Node label, as `key=value`, that marks a node NVSentinel must not act on. Events from a node carrying this label are downgraded to `STORE_ONLY`: NVSentinel records them for audit but performs no remediation and no Kubernetes side effects.
+
+```yaml
+platformConnector:
+  transformers:
+    MetadataAugmentor:
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
+```
+
+Leave it empty to disable the behavior. The value must match the key and value that `commons/pkg/managed` defines, so change it only together with that constant. Only the exact value opts a node out; any other value, including an absent label or a typo, leaves the node managed normally. Label a node to hand it to another owner — a hardware team working on it, or an external remediation system — without disabling NVSentinel for the rest of the fleet.
+
+> **Important:** `MetadataAugmentor` enforces this gate, so removing the transformer from `transformers` while `skipNodeLabel` is still set stops the gate from applying. The connector logs a warning at startup and keeps remediating opted-out nodes.
+
 ### Example
 
 ```yaml
@@ -236,7 +250,7 @@ Healthy events are not downgraded by deduplication. Before they continue downstr
 ### Operational Notes
 
 - Dedup state is in-memory only and is cleared on platform-connectors pod restart.
-- The dedup counter is exposed as `nvsentinel_platform_connector_dedup_store_and_analyse_total{check,node,err_code}`.
+- The dedup counter is exposed as `nvsentinel_platform_connector_dedup_store_and_analyse_total{check,err_code}`. It carries no node label, because the deployment platform connector runs the transformer for the whole fleet; the node is in the log line.
 - `entitiesImpacted` and `errorCode` are canonicalized as sets for keying; ordering differences do not create distinct events.
 
 ## Prometheus Connector
@@ -269,6 +283,61 @@ attention right now" without querying the datastore. See
 [Prometheus Connector Metrics](../METRICS.md#prometheus-connector-metrics) for the label
 rationale and example queries.
 
+## gRPC Sink Connector
+
+Forwards each health event to an external gRPC server, which receives the full `HealthEvent` proto with no truncation. The server implements the existing `PlatformConnector.HealthEventOccurredV1` RPC, so no new proto definitions are needed. Use it to feed an organization-specific remediation or analytics pipeline alongside the store and Kubernetes connectors.
+
+```yaml
+platformConnector:
+  grpcSinkConnector:
+    enabled: false
+    target: ""        # gRPC server address, e.g. "my-service.example.com:50051"
+    maxRetries: 3
+    tokenPath: ""
+```
+
+### Parameters
+
+#### enabled
+Turns the connector on. Disabled by default, like the other optional connectors.
+
+#### target
+Address of the receiving gRPC server, as `host:port`. Required when the connector is enabled.
+
+#### maxRetries
+Retry attempts with exponential backoff before the connector drops the event. Total send attempts are `1 + maxRetries`. The per-RPC timeout is fixed at 10 seconds; a target that does not answer inside that window counts as a failure and is retried.
+
+#### tokenPath
+Path to a projected Kubernetes ServiceAccount token. When set, the connector attaches the token as a Bearer header on every RPC, and the receiving server validates it with the TokenReview API. Empty disables authentication, which matches the other internal NVSentinel gRPC connections.
+
+```yaml
+platformConnector:
+  grpcSinkConnector:
+    tokenPath: "/var/run/secrets/nvsentinel/grpcsink/token"
+```
+
+The target must be an external sink, not another NVSentinel platform connector. A connector's own token is bound to the node its pod runs on, and a receiving connector rejects a token whose node claim names a different node, so chaining connectors cannot authenticate. Fan-in belongs to the datastore, which every connector already writes to.
+
+Restrict which pods can reach the target with a network policy. See [ADR-033](../designs/033-grpc-sink-connector.md) for the design rationale.
+
+## Datastore Client Certificates
+
+Where each store client looks for its TLS client certificate. The paths must match what the datastore chart issues certificates for.
+
+```yaml
+platformConnector:
+  mongodbStore:
+    enabled: false
+    clientCertMountPath: "/etc/ssl/mongo-client"
+    maxRetries: 3
+  postgresqlStore:
+    clientCertMountPath: "/etc/ssl/client-certs"
+```
+
+When a PostgreSQL client certificate is mounted, the platform connector runs a `fix-cert-permissions` init container first, because the PostgreSQL client rejects a key file that is group-readable or world-readable. `mongodbStore.maxRetries` bounds the retries on a failed store write before the event is dropped.
+
+To rotate certificates without restarting pods, see [Client Certificate Rotation](./README.md#client-certificate-rotation).
+
 ## Kubernetes Connector
 
 Configures the Kubernetes API client for creating node conditions and events.
@@ -277,6 +346,8 @@ Configures the Kubernetes API client for creating node conditions and events.
 platformConnector:
   k8sConnector:
     enabled: true
+    maxRetries: 25
+    maxRetryDuration: 1m
     maxNodeConditionMessageLength: 1024
     qps: 5.0
     burst: 10
@@ -287,8 +358,59 @@ platformConnector:
 #### enabled
 Enables Kubernetes connector for creating node conditions and events.
 
+#### maxRetries
+
+Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `25`; positive integers override the default. Negative and non-integer values are rejected. An existing explicit value, such as `3`, still limits each write to that retry count.
+
+On the node-local DaemonSet these settings govern the Kubernetes queue. The deployment platform connector retries each write the same way inside the request, but no longer than the `ConditionUpdateTimeout` of the `deployment` object in its config.json; `maxRetryDuration` cannot extend it. A write that still fails is counted in `platform_connector_best_effort_failures_total{connector="kubernetes"}` and `k8s_platform_connector_dropped_writes_total`, and the batch is acknowledged anyway.
+
+Each node status update and Kubernetes Event write has its own retry state. Successful writes are not repeated when another write fails. Permanent errors are skipped without preventing other writes from retrying. A node status update applies all condition changes for that node together.
+
+Event retries retain the stable fault name and check the persisted timestamp after an uncertain response. An already persisted occurrence is accepted without increasing its count. Later reports refresh the existing Event after suppression expires or recovery clears it. Event timestamps have one-second precision; this counter does not count every monitor report.
+
+Retry delays start at 500 milliseconds, double after each failure, and are capped at 3 seconds. Both the count limit and `maxRetryDuration` apply: whichever is reached first stops that write.
+
+#### maxRetryDuration
+
+Maximum processing time for the whole batch, including Kubernetes API calls and inner retry delays. The default is `1m`. Omission or a zero duration selects the default. Positive duration strings up to `5m` are accepted; negative, invalid, and larger durations are rejected.
+
+The connector holds the current batch while retrying. Newer batches cannot overtake a pending fault or recovery. This pauses consumption of the Kubernetes queue while other connector queues continue independently. Cancellation and connector shutdown interrupt API calls and backoff.
+
+For a five-minute outage window, configure both limits:
+
+```yaml
+platformConnector:
+  k8sConnector:
+    maxRetries: 200
+    maxRetryDuration: 5m
+```
+
+The default count of 25 allows 69.5 seconds of outer backoff, but the default one-minute deadline stops retries sooner. The five-minute example raises both limits so its deadline controls the window. API calls and client-go retries also consume the time budget. A large batch shares one deadline across its writes.
+
+A write that exhausts its retry count is discarded; other writes can still run within the batch deadline. When the deadline expires, remaining writes are discarded and the connector advances to the next batch. A lost healthy recovery can therefore still leave a condition set. These bounded retries do not guarantee delivery through longer outages or pod restarts. Newer batches accumulate in memory during backpressure; this change does not add a persistent queue or an ingress memory limit.
+
+#### Drop metrics
+
+- `k8s_platform_connector_dropped_writes_total{operation,reason}` counts individual discarded writes, including writes not attempted before deadline or shutdown.
+- `k8s_platform_connector_dropped_batches_total{reason}` counts each affected batch once per reason. A batch with multiple failure reasons increments multiple series.
+
+The `operation` label is `node_condition` or `node_event`. The `reason` label is `permanent_error`, `retry_exhausted`, `retry_timeout`, or `shutdown`.
+
+For example, alert when writes are discarded outside shutdown:
+
+```promql
+sum(increase(k8s_platform_connector_dropped_writes_total{reason!="shutdown"}[5m])) > 0
+```
+
+A failed queue item is explicitly discarded; this operation does not requeue it. Monitor drop counters together with Kubernetes queue depth to detect exhausted retry windows and growing backlogs.
+
 #### maxNodeConditionMessageLength
 Maximum length of node condition messages in characters.
+
+#### compactedHealthEventMsgLen
+Budget, in bytes, for the part of each event's message that precedes its recommended action. The default is `72` and it must be greater than zero.
+
+One node condition message can carry several health events. The connector compacts only when their combined length exceeds `maxNodeConditionMessageLength`: it first drops messages with a duplicate identity (same error code, entity and recommended action), then shortens each remaining message's free-text diagnostic to this budget while keeping the entity identifiers that recovery needs. If the result still does not fit, the last entry is truncated. Lower this value to fit more events into one condition; raise it to keep more of each event's original text.
 
 #### qps
 Queries per second allowed to the Kubernetes API server.
@@ -306,6 +428,59 @@ platformConnector:
     qps: 10.0
     burst: 20
 ```
+
+## Deployment Platform Connector
+
+The platform connector binary can also run as a central Deployment (`--mode=deployment`). This page calls it the deployment platform connector. A publisher on `publishTo: deployment` sends its events directly to the deployment platform connector over TLS, with a bearer token. It does not use the socket of the node-local DaemonSet. The design is [ADR 052](../designs/052-deployment-platform-connector.md).
+
+The deployment platform connector is off by default. To move to it, do these steps in this order:
+
+1. Set `platformConnector.deployment.enabled: true` on the umbrella chart. Keep every publisher on `publishTo: socket`. The chart then renders the Deployment, its Service, its certificate and its network policy. The replicas need the idempotency index. The datastore setup creates it, like every other index. On MongoDB, the setup Job creates it. The upgrade to a chart version that adds the index runs the Job again, because the Job script changed. On PostgreSQL, the components that set up the tables create it when they start: fault-quarantine, fault-remediation, health-events-analyzer and node-drainer. The platform connector does not create it. A replica exits when it has waited five minutes for the index. Thus a missing index shows as CrashLoopBackOff, not as a pod that is quietly not ready. The replica tries again after each restart until the index exists. Wait until the replicas are ready.
+2. Move the publishers to the deployment platform connector, then turn off the DaemonSet:
+   1. Set `publishTo: deployment` on each enabled monitor subchart: `gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `kubernetes-object-monitor`, `slurm-drain-monitor`, `csp-health-monitor`, `nvcre-certification-monitor` and `health-events-analyzer`.
+   2. If the MaintenanceRequest controller of the lifecycle manager is on, set `lifecycle-manager.publishTo: deployment`. See [Lifecycle Manager](lifecycle-manager.md#maintenancerequest-controller).
+   3. If preflight is on, set `preflight.publishTo: deployment`. The webhook then gives each injected check the target, the token path and the CA bundle, and puts the publisher label on the tenant pod. The preflight controller keeps a copy of the CA bundle in a ConfigMap named `nvsentinel-platform-connector-ca`, in each namespace that it injects into. It updates the copies when cert-manager rotates the CA. See [Preflight](preflight.md#publishing-to-the-deployment-platform-connector).
+   4. Set `platformConnector.daemonset.enabled: false` last. This removes the DaemonSet and its RBAC. The chart refuses this value while an enabled publisher still uses `publishTo: socket`. The gpu monitor still mounts the socket directory `/var/run/nvsentinel` of the node, and this directory must exist. The DaemonSet creates it, and it is gone after a node restart because `/var/run` is not persistent. Thus keep the DaemonSet while the gpu monitor runs, or create the directory on each node in another way.
+
+A publisher on `publishTo: deployment` gets its connection settings from the chart as `HEALTH_PUBLISH_*` environment variables: the target, the token path and the CA bundle. With `global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode`, the publisher gets `HEALTH_PUBLISH_INSECURE=true` instead of the CA bundle. The token is the same projected token that the publisher uses on the socket path. See [Authentication](authentication.md#deployment-platform-connector). The client in the publisher works as follows:
+
+- The retry window is 5 minutes. This is a client default. To change it, set `HEALTH_PUBLISH_RETRY_WINDOW` on the pod.
+- The request timeout is fixed at 30 seconds.
+- The client sends one batch at a time. Its publish call returns only after the deployment platform connector stores the batch. Thus a monitor marks an event as reported only when it is stored. The node-local socket connector, by contrast, acknowledges a batch when it queues it.
+- If the deployment platform connector is unreachable, the client retries until the retry window ends. Then it drops the batch and reports the failure. The monitor sends the event again on its next cycle.
+- The pause between two attempts is at most 30 seconds. The client retries the connection at most 10 seconds apart. Thus the client delivers a batch within about 30 seconds after the deployment platform connector comes back.
+- A monitor can stop waiting earlier, because its context ended or its own timeout expired. The client then withdraws the batch at once, also when the batch is already on the wire.
+- An attempt can be cut or time out after the batch is stored. This can leave a duplicate next to the event that the monitor sends again. The deployment platform connector tolerates this duplicate.
+- The deployment platform connector can refuse a batch for good. It does this when the batch is invalid or names a node that the monitor may not report on. The client then reports the batch as rejected at once and does not retry. The syslog monitor skips such a journal entry. The NIC monitor and the health events analyzer drop the event and count it.
+- `nvsentinel_health_events_publisher_dropped_total` counts the drops by reason. See [METRICS.md](../METRICS.md#health-event-publisher).
+
+The deployment platform connector has its own network policy for the gRPC port. The metrics port is open through the chart's `metrics-access` policy, like for the other components. The gRPC port admits these pods:
+
+- Every pod in the release namespace.
+- Pods with the label `nvsentinel.nvidia.com/health-publisher: "true"` in the namespace of each entry in `global.platformConnectorAuth.crossNodeServiceAccounts`. A publisher that this chart does not ship must put the label on its pods itself.
+- Pods with the same label in the namespaces that the preflight webhook injects into, while `preflight.publishTo` is `deployment`. The policy uses `preflight.namespaceSelector`, so the webhook and the policy select the same namespaces. The webhook puts the label on the tenant pods.
+
+Two publishers can run on the host network:
+
+- The gpu monitor, when `useHostNetworking` is set or the DCGM mode (`global.dcgm.mode`) is `external-hostengine`.
+- The preflight checks, when their workload pods use the host network (`preflight.hostNetworkWorkloads: true`).
+
+A CNI that enforces network policies identifies such a pod by its node, not by its labels. Thus, while such a publisher uses the deployment platform connector, the chart opens the gRPC rule to every source. The chart annotates the policy to say so, and prints the same note at install and upgrade time. In all cases, the caller token decides who may publish. On a CNI that does not enforce network policies, the policy has no effect.
+
+The server settings are under `platformConnector.deployment` in `values.yaml`. The chart puts them in three places:
+
+- The Deployment spec gets the replicas, the placement and the resources.
+- The `DATASTORE_MAX_CONNECTIONS` environment variable gets the datastore pool size, `datastore.maxPoolSize`.
+- The config file of the deployment platform connector, in the ConfigMap `platform-connector-deployment`, gets the other settings. These are the TokenReview cache and rate limit, the condition update timeout, the connection ages and buffers, the Kubernetes client rate limit and the node metadata cache.
+
+The chart renders this config file from the same template as the config file of the DaemonSet, so both roles read the same keys. The file of the deployment platform connector has fleet sizing and a `deployment` object with its own settings. The gRPC port and the TLS mode are under `global.platformConnectorDeployment` (`grpcPort`, `tls.mode`), because the publisher subcharts read them too. The container args carry only `--mode=deployment`, the config path, the metrics port, the listener settings (`--listen-addr`, and `--tls-cert-dir` or `--tls-insecure-development-mode`) and the datastore client certificate flag.
+
+The replicas verify the idempotency index once, before they become ready. To restore the datastore from a backup:
+
+1. Scale the Deployment to zero.
+2. Restore the datastore.
+3. Run the datastore setup again, so that the index exists. On MongoDB, delete the completed setup Job, then upgrade or sync. On PostgreSQL, restart a component that sets up the tables.
+4. Scale the Deployment back up. The replicas verify the index again when they start.
 
 ## Kubernetes Authentication
 

@@ -38,11 +38,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	grpcclient "github.com/nvidia/nvsentinel/janitor/pkg/client"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
 
@@ -614,7 +614,9 @@ func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	// Initialize NodeLock for distributed locking across maintenance operations
-	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
+	r.NodeLock = distributedlock.NewNodeLock(
+		mgr.GetClient(), mgr.GetScheme(), r.LockNamespace, metrics.JanitorLockMetrics{},
+	)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&janitordgxcnvidiacomv1alpha1.RebootNode{}).

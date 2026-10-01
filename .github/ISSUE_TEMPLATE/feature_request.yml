@@ -68,11 +68,14 @@ body:
         - Health Monitor
         - Core Service
         - Fault Management
+        - Janitor
         - Deployment/Config
         - API/Interface
         - Preflight
         - Plugins
+        - Documentation/CI
         - New Component
         - Multiple Components
+        - Other
     validations:
       required: true

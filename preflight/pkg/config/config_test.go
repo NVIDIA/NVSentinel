@@ -136,6 +136,17 @@ gangCoordination:
       readOnly: false
 `
 
+	yamlHealthPublishDirect = `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+connectorTokenAudience: platform-connector.nvsentinel.nvidia.com
+connectorTokenMountPath: /var/run/secrets/nvsentinel/platform-connector
+connectorTokenExpirationSeconds: 3600
+healthPublishTarget: platform-connector-deployment.nvsentinel.svc.cluster.local:50051
+healthPublishCAFile: /etc/nvsentinel/platform-connector-deployment-ca/ca.crt
+`
+
 	yamlGangDiscoveryDefault = `
 initContainers:
   - name: preflight-dcgm-diag
@@ -301,6 +312,16 @@ func TestLoad(t *testing.T) {
 		assert.False(t, *cfg.GangCoordination.ExtraHostPathMounts[0].ReadOnly)
 	})
 
+	t.Run("healthPublish keys parsed from YAML", func(t *testing.T) {
+		path := writeYAML(t, yamlHealthPublishDirect)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+
+		assert.Equal(t, "platform-connector-deployment.nvsentinel.svc.cluster.local:50051", cfg.HealthPublishTarget)
+		assert.Equal(t, "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt", cfg.HealthPublishCAFile)
+		assert.False(t, cfg.HealthPublishInsecure)
+	})
+
 	t.Run("cluster-wide gangDiscovery parsed from YAML", func(t *testing.T) {
 		path := writeYAML(t, yamlGangDiscoveryDefault)
 		cfg, err := Load(path)
@@ -416,6 +437,112 @@ func TestValidateConnectorTokenIsAllOrNothing(t *testing.T) {
 			tc.mutate(&c)
 
 			err := c.validate()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantInErr)
+		})
+	}
+}
+
+// The direct publishing settings are all-or-nothing around the target, need
+// the projected token, and take exactly one way to trust the server.
+func TestValidateHealthPublish(t *testing.T) {
+	const (
+		target = "platform-connector-deployment.nvsentinel.svc.cluster.local:50051"
+		caFile = "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"
+	)
+
+	withToken := func(c *FileConfig) {
+		c.ConnectorTokenAudience = "platform-connector.nvsentinel.nvidia.com"
+		c.ConnectorTokenMountPath = "/var/run/secrets/nvsentinel/platform-connector"
+		c.ConnectorTokenExpirationSeconds = 3600
+	}
+
+	for _, tc := range []struct {
+		name      string
+		mutate    func(*FileConfig)
+		wantInErr string
+	}{
+		{
+			name:   "socket mode with nothing set is fine",
+			mutate: func(_ *FileConfig) {},
+		},
+		{
+			name: "target with token and CA file is fine",
+			mutate: func(c *FileConfig) {
+				withToken(c)
+				c.HealthPublishTarget = target
+				c.HealthPublishCAFile = caFile
+			},
+		},
+		{
+			name: "target with token and insecure is fine",
+			mutate: func(c *FileConfig) {
+				withToken(c)
+				c.HealthPublishTarget = target
+				c.HealthPublishInsecure = true
+			},
+		},
+		{
+			name: "CA file without a target",
+			mutate: func(c *FileConfig) {
+				c.HealthPublishCAFile = caFile
+			},
+			wantInErr: "need healthPublishTarget",
+		},
+		{
+			name: "insecure without a target",
+			mutate: func(c *FileConfig) {
+				c.HealthPublishInsecure = true
+			},
+			wantInErr: "need healthPublishTarget",
+		},
+		{
+			name: "target without the connector token",
+			mutate: func(c *FileConfig) {
+				c.HealthPublishTarget = target
+				c.HealthPublishInsecure = true
+			},
+			wantInErr: "direct publishing needs the projected token",
+		},
+		{
+			name: "target with neither CA nor insecure",
+			mutate: func(c *FileConfig) {
+				withToken(c)
+				c.HealthPublishTarget = target
+			},
+			wantInErr: "exactly one of",
+		},
+		{
+			name: "target with both CA and insecure",
+			mutate: func(c *FileConfig) {
+				withToken(c)
+				c.HealthPublishTarget = target
+				c.HealthPublishCAFile = caFile
+				c.HealthPublishInsecure = true
+			},
+			wantInErr: "exactly one of",
+		},
+		{
+			name: "relative CA file path",
+			mutate: func(c *FileConfig) {
+				withToken(c)
+				c.HealthPublishTarget = target
+				c.HealthPublishCAFile = "relative/ca.crt"
+			},
+			wantInErr: "absolute path",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := FileConfig{InitContainerPlacement: PlacementAppend}
+			tc.mutate(&c)
+
+			err := c.validate()
+			if tc.wantInErr == "" {
+				require.NoError(t, err)
+
+				return
+			}
+
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.wantInErr)
 		})

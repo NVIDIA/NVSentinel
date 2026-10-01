@@ -1,0 +1,122 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# csp-health-monitor renders only with the umbrella's helpers (it is one of
+# the Makefile's UMBRELLA_ONLY_CHARTS), so its publish wiring is tested from
+# the umbrella rather than from a suite inside the subchart.
+suite: csp-health-monitor direct publishing wiring
+release:
+  namespace: nvsentinel
+templates:
+  - charts/csp-health-monitor/templates/deployment.yaml
+  # Rendered too because the template above checksum-annotates it.
+  - charts/csp-health-monitor/templates/configmap.yaml
+set:
+  # The chart ships disabled; its templates render only once enabled.
+  global.cspHealthMonitor.enabled: true
+tests:
+  # publishTo defaults to socket: no HEALTH_PUBLISH_* env, no CA volume and
+  # no publisher pod label. The publishing side is the
+  # maintenance-notifier sidecar, containers[1].
+  - it: renders no direct-publishing wiring on the default socket path
+    template: charts/csp-health-monitor/templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-token
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: HEALTH_PUBLISH_TARGET
+          any: true
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+          any: true
+
+  - it: wires target, token and CA in deployment mode
+    template: charts/csp-health-monitor/templates/deployment.yaml
+    set:
+      csp-health-monitor.publishTo: deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: HEALTH_PUBLISH_TARGET
+            value: "platform-connector-deployment.nvsentinel.svc.cluster.local:50051"
+      - contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: HEALTH_PUBLISH_TOKEN_PATH
+            value: "/var/run/secrets/nvsentinel/platform-connector/token"
+      - contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: HEALTH_PUBLISH_TLS_CA_FILE
+            value: "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"
+      - contains:
+          path: spec.template.spec.containers[1].volumeMounts
+          content:
+            name: platform-connector-deployment-ca
+            mountPath: /etc/nvsentinel/platform-connector-deployment-ca
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+            secret:
+              secretName: platform-connector-deployment-grpc-cert
+              items:
+                - key: ca.crt
+                  path: ca.crt
+
+  # The explicitly named insecure development mode swaps the CA file for
+  # HEALTH_PUBLISH_INSECURE and mounts no CA.
+  - it: swaps to HEALTH_PUBLISH_INSECURE in insecure development mode
+    template: charts/csp-health-monitor/templates/deployment.yaml
+    set:
+      csp-health-monitor.publishTo: deployment
+      global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: HEALTH_PUBLISH_INSECURE
+            value: "true"
+      - notContains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: HEALTH_PUBLISH_TLS_CA_FILE
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[1].volumeMounts
+          content:
+            name: platform-connector-deployment-ca
+          any: true
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+          any: true
+
+  - it: refuses an unknown publishTo value
+    template: charts/csp-health-monitor/templates/deployment.yaml
+    set:
+      csp-health-monitor.publishTo: Deployment
+    asserts:
+      - failedTemplate:
+          errorPattern: 'publishTo must be "socket" or "deployment"'

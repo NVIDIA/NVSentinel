@@ -40,6 +40,55 @@ syslog-health-monitor:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+## Journal Host Path
+
+Host directory holding the systemd journal the monitor reads.
+
+```yaml
+syslog-health-monitor:
+  journalHostPath: /var/log
+```
+
+Change it only when your distribution stores the journal elsewhere. The DaemonSet mounts this path into the pod, so a wrong value leaves the monitor with no journal to read.
+
+## Boot Lookback Window
+
+How far back the monitor scans the journal after a node reboot.
+
+```yaml
+syslog-health-monitor:
+  bootLookbackWindow: "2h"
+```
+
+Entries older than this window are skipped, so a reboot does not re-report XIDs that an operator already remediated by hand. Set it to `"0"` for unlimited lookback, which scans from the head of the journal with no clipping.
+
+Widen the window on nodes that stay down for long service windows and whose faults you still want reported on return. Narrow it where a node accumulates historical errors you have already dealt with.
+
+## Cancellation Rules
+
+Emits synthetic healthy events when one error code implies recovery from another. Without a cancellation, a fault stays latched until something explicitly clears it.
+
+```yaml
+syslog-health-monitor:
+  cancellations:
+    - name: SysLogsXIDError
+      enabled: true
+      rules:
+        - onErrorCode: "162"
+          cancelErrorCodes: ["163"]
+```
+
+| Field | Purpose |
+|---|---|
+| `name` | The check these rules apply to, matching an entry in `enabledChecks` |
+| `enabled` | Turns the rule set on or off without deleting it |
+| `rules[].onErrorCode` | Error code that, when observed, triggers the cancellation |
+| `rules[].cancelErrorCodes` | Error codes cleared on the same entities, as healthy events |
+
+The shipped rule reads XID 162 (PSHC re-engaged) as recovery from XID 163 (PSHC disengaged). Cancellation applies to the same entities that carried the original fault, so clearing one GPU does not clear another.
+
+Add a rule only where one code genuinely proves recovery from the other. A wrong pairing clears a fault that is still present and returns a broken GPU to service.
+
 ## Enabled Checks
 
 Configures which health checks are active. The module monitors journald logs for specific error patterns. Supported checks are `SysLogsXIDError`, `SysLogsSXIDError`, `SysLogsGPUFallenOff`, and `SysLogsNICDriverError`.

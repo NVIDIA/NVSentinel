@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,41 +13,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -euo pipefail
+# Deletes the demo cluster. Everything the demo creates lives inside it, so this
+# is the whole cleanup.
 
-CLUSTER_NAME="${CLUSTER_NAME:-nvsentinel-demo}"
-
-log() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
-}
-
-section() {
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  $*"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-}
+# shellcheck source-path=SCRIPTDIR source=common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 main() {
-    section "Cleaning Up Slinky Drain Demo"
-    
-    log "Deleting KIND cluster: $CLUSTER_NAME..."
-    if kind get clusters | grep -q "^${CLUSTER_NAME}$"; then
-        kind delete cluster --name "$CLUSTER_NAME"
-        log "✓ Cluster deleted"
-    else
-        log "Cluster '$CLUSTER_NAME' not found, skipping"
+    require_tools kind
+
+    section "Cleaning up"
+
+    if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+        log "Cluster '$CLUSTER_NAME' does not exist. Nothing to clean up."
+        exit 0
     fi
-    
-    log "Cleaning up local Docker images..."
-    docker rmi -f node-drainer:demo 2>/dev/null || true
-    docker rmi -f slinky-drainer:demo 2>/dev/null || true
-    docker rmi -f mock-slurm-operator:demo 2>/dev/null || true
-    docker rmi -f platform-connectors:demo 2>/dev/null || true
-    docker rmi -f ko.local:demo 2>/dev/null || true
-    
-    log "✅ Cleanup complete!"
+
+    log "Deleting the KIND cluster '$CLUSTER_NAME'..."
+    kind delete cluster --name "$CLUSTER_NAME"
+
+    success "Cluster deleted"
+    echo
+    # Deliberately not `docker system prune -a --volumes`: that reaches across
+    # every project on this Docker daemon and can delete images and volumes that
+    # have nothing to do with the demo. Name the one image instead.
+    log "The KIND node image stays cached for the next run. To reclaim that disk too:"
+    log "  docker image rm kindest/node:v1.34.0"
+    log "To run the demo again: ./demo.sh"
 }
 
 main "$@"

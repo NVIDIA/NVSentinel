@@ -57,11 +57,16 @@ declare -a dynamic_images=(
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/kubernetes-object-monitor:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/nvcre-certification-monitor:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/labeler:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/lifecycle-manager:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/log-collector:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/maintenance-notifier:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/metadata-collector:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/nic-health-monitor:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/node-drainer:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/platform-connectors:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/plugins-slinky-drainer:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/preflight:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/slinky-drainer:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/slurm-drain-monitor:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/syslog-health-monitor:${SAFE_REF_NAME}"
 )
 

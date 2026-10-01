@@ -141,6 +141,8 @@ jobs:
             path: .
           - module: health-monitors/nic-health-monitor
             path: .
+          - module: health-monitors/slurm-drain-monitor
+            path: .
           - module: event-exporter
             path: .
           - module: plugins/slinky-drainer

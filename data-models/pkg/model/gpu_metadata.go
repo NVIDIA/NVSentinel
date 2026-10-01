@@ -67,6 +67,12 @@ type GPUInfo struct {
 	// SlowdownTLimitC is the signed HW slowdown T.Limit offset (°C) from
 	// NVML_FI_DEV_TEMPERATURE_SLOWDOWN_TLIMIT. Omitted when unsupported.
 	SlowdownTLimitC *int `json:"slowdown_tlimit_c,omitempty"`
+
+	// MinorNumber is the GPU's device minor number, the N in /dev/nvidiaN,
+	// from nvmlDeviceGetMinorNumber. The NVIDIA DRA driver names devices
+	// gpu-<minor>, so this is what maps a DRA allocation back to a UUID.
+	// nil means NVML could not report it.
+	MinorNumber *int `json:"minor_number,omitempty"`
 }
 
 type NVLink struct {

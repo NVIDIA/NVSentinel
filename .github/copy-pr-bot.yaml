@@ -21,9 +21,18 @@ additional_trustees:
   - XRFXLP
   - mchmarny
   - tanishagoyal2
-  - ksaur
   - deesharma24
   - natherz97
   - suket22
   - cbumb
   - pdmack
+additional_vetters:
+  - Jay-Madden
+  - nitz2407
+  - tanishagoyal2
+  - deesharma24
+  - suket22
+  - cbumb
+  - jtschelling
+
+

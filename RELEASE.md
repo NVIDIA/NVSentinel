@@ -63,19 +63,10 @@ graph LR
 
 ## Released Components
 
-**Container Images** (13 components):
-- `gpu-health-monitor-dcgm3` / `gpu-health-monitor-dcgm4`
-- `syslog-health-monitor`
-- `csp-health-monitor`
-- `health-event-client`
-- `platform-connectors`
-- `health-events-analyzer`
-- `fault-quarantine`
-- `labeler`
-- `node-drainer`
-- `fault-remediation`
-- `log-collector`
-- `file-server-cleanup`
+**Container Images** are published under `ghcr.io/nvidia/nvsentinel/`. This document deliberately does not list them — a static inventory drifts. There are two sources of truth:
+
+- **For a released version**: the `versions.txt` asset on that [GitHub release](https://github.com/NVIDIA/NVSentinel/releases), which pins every image and tag actually published.
+- **For what a release will contain**: [`scripts/build-image-list.sh`](scripts/build-image-list.sh), which generates `versions.txt`. Adding a component means adding it there.
 
 **Artifacts**:
 - GitHub release with `versions.txt`
@@ -86,8 +77,116 @@ graph LR
 All releases must pass:
 - **Lint checks**: Code style, license headers, protobuf validation
 - **Unit tests**: All Go modules and Python packages
-- **Container builds**: All 13 components must build successfully
+- **Container builds**: All component images must build successfully
 - **E2E tests**: Integration testing (on PR/push)
+- **Bundled datastore versions**: if they changed, the release notes carry the callout described in [Release Notes](#release-notes)
+
+## Release Notes
+
+### Bundled datastore version changes
+
+The chart bundles the Percona Server for MongoDB operator and its `PerconaServerMongoDB`
+custom resource as subcharts. Their versions are independent of the NVSentinel release number,
+so a release can move them without that being visible from the version alone.
+
+**If a release changes any of these four values, the release notes must say so explicitly:**
+
+| Value | Subchart |
+| --- | --- |
+| operator image tag | `charts/mongodb-store/charts/psmdb-operator` |
+| `crVersion` | `charts/mongodb-store/charts/psmdb-db` |
+| mongod image tag | `charts/mongodb-store/charts/psmdb-db` |
+| init image tag | `charts/mongodb-store/charts/psmdb-db` |
+
+The callout must cover three things:
+
+1. **Whether the replica set will roll, and say which of the four changed.** `crVersion`,
+   `initImage` and the mongod image are fields of the `PerconaServerMongoDB` resource, so changing
+   any of them changes the desired state of every replica-set member. The **operator image tag is
+   different**: it changes only the operator Deployment, so on its own it restarts the operator pod
+   and leaves the replica set alone. Distinguishing the two is the most useful thing the note can
+   do, because it tells a reader whether they are taking a datastore outage or not.
+
+   When the members do change, whether and when they actually restart depends on
+   `spec.updateStrategy` on the resource, which the chart sets to `SmartUpdate` by default but
+   which an operator can override:
+
+   - **`SmartUpdate`** (chart default): the operator drives the rollout, secondaries first, then a
+     primary step-down, so the exposure is one brief election.
+   - **`RollingUpdate`**: Kubernetes drives the StatefulSet rollout, with no primary step-down
+     coordination.
+   - **`OnDelete`**: existing pods are left alone. The new values apply only as each pod is deleted
+     by hand, so adopting the release changes nothing until an operator acts.
+
+   Write the sentence to match the case, rather than reaching for a stock phrase:
+
+   - **A resource field changed and `updateStrategy` is `SmartUpdate` or `RollingUpdate`:** say
+     plainly that **this will roll your replica set**. That is the sentence that matters, because
+     an operator adopting a release to pick up a monitoring fix has no reason to expect their
+     health-event datastore to fail over, and that datastore holds every health event.
+   - **A resource field changed and `updateStrategy` is `OnDelete`:** say the new values apply only
+     as pods are deleted by hand, so adopting the release changes nothing on its own.
+   - **Only the operator image tag changed:** say the operator pod restarts and the replica set is
+     untouched.
+
+   Getting this wrong in either direction misleads: a reader promised a roll that does not happen
+   stops trusting the notes, and a reader not warned about one takes an unplanned failover.
+2. **That the operator upgrade cannot skip a minor version.** Percona's
+   [upgrade documentation](https://docs.percona.com/percona-operator-for-mongodb/update-operator.html)
+   permits moving only to the nearest `major.minor`. A deployment more than one minor behind the
+   new bundled operator cannot adopt the release directly: it needs intermediate hops, one minor
+   at a time, moving `crVersion` with the operator. Name the versions involved so a reader can
+   tell whether this applies to them.
+3. **Which mongod version the new operator certifies.** Operator and mongod compatibility is a
+   matrix, published at `https://check.percona.com/versions/v1/psmdb-operator/<version>`. Moving
+   one without the other can produce an uncertified pairing that renders and runs without
+   complaint.
+
+### Finding the bundled versions
+
+The NVSentinel release number says nothing about them. Unpack the published chart and read the two
+subcharts directly:
+
+```bash
+helm pull oci://ghcr.io/nvidia/nvsentinel --version <release> --untar
+C=nvsentinel/charts/mongodb-store/charts
+```
+
+| Value | File | Key |
+| --- | --- | --- |
+| operator image tag | `$C/psmdb-operator/values.yaml` | top-level `image.tag` |
+| `crVersion` | `$C/psmdb-db/values.yaml` | top-level `crVersion` |
+| mongod image tag | `$C/psmdb-db/values.yaml` | top-level `image.tag` |
+| init image tag | `$C/psmdb-db/values.yaml` | top-level `initImage.tag` |
+| subchart versions | `$C/psmdb-{operator,db}/Chart.yaml` | `version`, `appVersion` |
+
+**Read the top-level keys, not a grep for `tag:`.** `psmdb-db/values.yaml` contains several other
+`image:` blocks further down for the backup, PMM and fluentbit sidecars, so a bare `grep 'tag:'`
+returns those too and it is easy to report the wrong one. The mongod tag is the one inside the
+top-level `image:` block.
+
+Note also that `initImage` is commented out by default, and what the operator derives when it is
+unset depends on whether `crVersion` matches the operator's own version
+(`pkg/psmdb/init/init.go`):
+
+- **Versions match:** the init container uses the **operator pod's own image**, verbatim. A
+  deployment that mirrors the operator image therefore needs nothing extra.
+- **Versions differ:** the operator keeps its own image *repository* but substitutes the tag,
+  giving `<operator-repository>:<crVersion>`.
+
+The second case is the one worth a release note, because it is exactly the state an existing
+deployment lands in when a release bumps the bundled operator ahead of a pinned `crVersion`. The
+repository is whatever the operator runs from, so it stays inside a private mirror, but the **tag
+is one a mirror-only deployment has no reason to have mirrored**, since operators mirror the
+versions they run rather than older `crVersion` values. Say so when a release changes either
+version, and note that pinning `initImage` explicitly avoids the question entirely.
+
+`charts/mongodb-store/Chart.yaml` also carries the rule that `psmdb-operator` and `psmdb-db` must
+be bumped together and kept matched.
+
+The v1.22.0 note for #1741 is the precedent to follow: that release moved `psmdb-db` and did carry
+an upgrade warning, which is how at least one deployment caught the skipped minor before syncing
+it.
 
 ## Troubleshooting
 
@@ -112,9 +211,10 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 
 ### Generated Artifacts (Example: v1.2.3)
 
-**Container Images** published to `ghcr.io/nvidia/`:
-- All 13 components tagged with `v1.2.3`
-- Example: `fault-quarantine:v1.2.3`
+**Container Images** published to `ghcr.io/nvidia/nvsentinel/`:
+- Most component images are tagged with the release tag, e.g. `ghcr.io/nvidia/nvsentinel/fault-quarantine:v1.2.3`
+- `gpu-health-monitor` is the exception: it ships one image per DCGM major version, tagged `v1.2.3-dcgm-3.x` and `v1.2.3-dcgm-4.x`
+- See the release's `versions.txt` for the exact set
 
 **Helm Chart**: `oci://ghcr.io/nvidia/nvsentinel:v1.2.3`
 
@@ -130,7 +230,7 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 **Commands**:
 ```bash
 # Pull container image
-docker pull ghcr.io/nvidia/syslog-health-monitor:v1.2.3
+docker pull ghcr.io/nvidia/nvsentinel/syslog-health-monitor:v1.2.3
 
 # Install Helm chart
 helm install test oci://ghcr.io/nvidia/nvsentinel --version v1.2.3

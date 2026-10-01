@@ -16,21 +16,29 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
+	k8stesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 var (
@@ -84,18 +92,10 @@ func createTestAugmentor(t *testing.T, config *Config) *Augmentor {
 		}
 	}
 
-	require.NoError(t, config.Validate(), "test config must be valid")
+	augmentor, err := New(context.Background(), config, testClient)
+	require.NoError(t, err, "test config must be valid")
 
-	cache := expirable.NewLRU[string, *NodeMetadata](
-		config.CacheSize,
-		nil,
-		config.CacheTTL,
-	)
-	return &Augmentor{
-		config:    config,
-		clientset: testClient,
-		cache:     cache,
-	}
+	return augmentor
 }
 
 // TestAugmentorTransform tests various augmentation scenarios
@@ -709,4 +709,378 @@ func TestNewProcessorValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// TestGetOrFetchMetadata_SlowNodeDoesNotBlockOthers: a cache miss whose
+// Kubernetes read hangs must not hold up a miss for a different node. The
+// deployment platform connector runs this for the whole fleet, where one
+// slow lookup used to stall every other node's events behind one lock. The
+// hang is injected in the HTTP transport in front of the envtest API server,
+// because the fake clientset serializes every call behind one lock itself.
+func TestGetOrFetchMetadata_SlowNodeDoesNotBlockOthers(t *testing.T) {
+	ctx := context.Background()
+	slowNode, fastNode := "singleflight-slow", "singleflight-fast"
+
+	for _, name := range []string{slowNode, fastNode} {
+		_, err := testClient.CoreV1().Nodes().Create(ctx,
+			&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		t.Cleanup(func() {
+			_ = testClient.CoreV1().Nodes().Delete(context.Background(), name, metav1.DeleteOptions{})
+		})
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	var startedOnce sync.Once
+
+	restCfg := rest.CopyConfig(testEnv.Config)
+	restCfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.HasSuffix(req.URL.Path, "/nodes/"+slowNode) {
+				startedOnce.Do(func() { close(started) })
+				<-release
+			}
+
+			return rt.RoundTrip(req)
+		})
+	})
+
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	require.NoError(t, err)
+
+	augmentor, err := New(ctx, &Config{CacheSize: 10, CacheTTL: time.Hour}, clientset)
+	require.NoError(t, err)
+
+	slowDone := make(chan error, 1)
+
+	go func() {
+		_, err := augmentor.getOrFetchMetadata(ctx, slowNode)
+		slowDone <- err
+	}()
+
+	<-started
+
+	fastDone := make(chan error, 1)
+
+	go func() {
+		_, err := augmentor.getOrFetchMetadata(ctx, fastNode)
+		fastDone <- err
+	}()
+
+	select {
+	case err := <-fastDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("a lookup for another node waited behind the slow one")
+	}
+
+	close(release)
+	require.NoError(t, <-slowDone)
+}
+
+// TestGetOrFetchMetadata_SameNodeSharesOneRead: concurrent misses for one
+// node cost a single Kubernetes read, and every caller gets its result.
+func TestGetOrFetchMetadata_SameNodeSharesOneRead(t *testing.T) {
+	ctx := context.Background()
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	var gets atomic.Int32
+
+	clientset := fake.NewSimpleClientset(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared"},
+		Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-shared"},
+	})
+	clientset.PrependReactor("get", "nodes", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		if gets.Add(1) == 1 {
+			close(started)
+		}
+
+		<-release
+
+		return false, nil, nil
+	})
+
+	augmentor, err := New(ctx, &Config{CacheSize: 10, CacheTTL: time.Hour}, clientset)
+	require.NoError(t, err)
+
+	const callers = 5
+
+	var wg sync.WaitGroup
+
+	results := make(chan *NodeMetadata, callers)
+
+	for range callers {
+		wg.Go(func() {
+			metadata, err := augmentor.getOrFetchMetadata(ctx, "shared")
+			if !assert.NoError(t, err) {
+				return
+			}
+			results <- metadata
+		})
+	}
+
+	<-started
+	close(release)
+	wg.Wait()
+	close(results)
+
+	for metadata := range results {
+		require.Equal(t, "aws:///us-west-2a/i-shared", metadata.ProviderID)
+	}
+
+	require.EqualValues(t, 1, gets.Load(), "concurrent misses for one node share a single read")
+}
+
+// TestTransform_StalledLookupFailsOpenWithinTimeout: a node read that hangs
+// ends with the lookup timeout, and the event proceeds without metadata
+// (fail-open), so a stalled API server delays storage by at most that long.
+func TestTransform_StalledLookupFailsOpenWithinTimeout(t *testing.T) {
+	ctx := context.Background()
+	node := "stalled-lookup"
+
+	_, err := testClient.CoreV1().Nodes().Create(ctx,
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: node}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().Nodes().Delete(context.Background(), node, metav1.DeleteOptions{})
+	})
+
+	restCfg := rest.CopyConfig(testEnv.Config)
+	restCfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.HasSuffix(req.URL.Path, "/nodes/"+node) {
+				// Hang until the request gives up.
+				<-req.Context().Done()
+
+				return nil, req.Context().Err()
+			}
+
+			return rt.RoundTrip(req)
+		})
+	})
+
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	require.NoError(t, err)
+
+	augmentor, err := New(ctx, &Config{CacheSize: 10, CacheTTL: time.Hour, LookupTimeout: 100 * time.Millisecond}, clientset)
+	require.NoError(t, err)
+
+	event := &pb.HealthEvent{NodeName: node, ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION}
+
+	start := time.Now()
+	require.NoError(t, augmentor.Transform(ctx, event), "a failed lookup never fails the event")
+	require.Less(t, time.Since(start), 2*time.Second, "the lookup ends with its timeout")
+	require.Empty(t, event.Metadata, "no metadata was added")
+	require.Equal(t, pb.ProcessingStrategy_EXECUTE_REMEDIATION, event.ProcessingStrategy, "the strategy is untouched")
+}
+
+// blockingNodeTransport wraps the envtest transport so reads of one node wait
+// for release, honouring the request context.
+func blockingNodeTransport(t *testing.T, node string, started chan<- struct{}, release <-chan struct{}) kubernetes.Interface {
+	t.Helper()
+
+	var startedOnce sync.Once
+
+	restCfg := rest.CopyConfig(testEnv.Config)
+	restCfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.HasSuffix(req.URL.Path, "/nodes/"+node) {
+				startedOnce.Do(func() { close(started) })
+
+				select {
+				case <-release:
+				case <-req.Context().Done():
+					return nil, req.Context().Err()
+				}
+			}
+
+			return rt.RoundTrip(req)
+		})
+	})
+
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	require.NoError(t, err)
+
+	return clientset
+}
+
+func ensureNode(t *testing.T, name string) {
+	t.Helper()
+
+	_, err := testClient.CoreV1().Nodes().Create(context.Background(),
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().Nodes().Delete(context.Background(), name, metav1.DeleteOptions{})
+	})
+}
+
+// TestGetOrFetchMetadata_LeaderCancellationDoesNotFailFollowers: the caller
+// that started the shared read giving up must not fail the others waiting on
+// the same node; the read continues, bounded by the lookup timeout, and they
+// get their metadata.
+func TestGetOrFetchMetadata_LeaderCancellationDoesNotFailFollowers(t *testing.T) {
+	node := "shared-read-leader-cancel"
+	ensureNode(t, node)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	clientset := blockingNodeTransport(t, node, started, release)
+
+	augmentor, err := New(context.Background(), &Config{CacheSize: 10, CacheTTL: time.Hour, LookupTimeout: 10 * time.Second}, clientset)
+	require.NoError(t, err)
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+
+	go func() {
+		_, err := augmentor.getOrFetchMetadata(leaderCtx, node)
+		leaderDone <- err
+	}()
+
+	<-started
+
+	followerDone := make(chan error, 1)
+
+	go func() {
+		_, err := augmentor.getOrFetchMetadata(context.Background(), node)
+		followerDone <- err
+	}()
+
+	cancelLeader()
+
+	select {
+	case err := <-leaderDone:
+		require.ErrorIs(t, err, context.Canceled, "the leader leaves on its own context")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled leader did not return")
+	}
+
+	select {
+	case err := <-followerDone:
+		t.Fatalf("the follower must keep waiting for the shared read, got %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-followerDone:
+		require.NoError(t, err, "the follower gets the metadata from the shared read")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the follower did not get its metadata")
+	}
+
+	_, found := augmentor.cache.Get(node)
+	require.True(t, found, "the shared read still fills the cache")
+}
+
+// TestGetOrFetchMetadata_CancelledFollowerReturnsPromptly: a waiter whose own
+// context ends leaves at once without stopping the shared read.
+func TestGetOrFetchMetadata_CancelledFollowerReturnsPromptly(t *testing.T) {
+	node := "shared-read-follower-cancel"
+	ensureNode(t, node)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	clientset := blockingNodeTransport(t, node, started, release)
+
+	augmentor, err := New(context.Background(), &Config{CacheSize: 10, CacheTTL: time.Hour, LookupTimeout: 10 * time.Second}, clientset)
+	require.NoError(t, err)
+
+	leaderDone := make(chan error, 1)
+
+	go func() {
+		_, err := augmentor.getOrFetchMetadata(context.Background(), node)
+		leaderDone <- err
+	}()
+
+	<-started
+
+	followerCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err = augmentor.getOrFetchMetadata(followerCtx, node)
+	require.ErrorIs(t, err, context.DeadlineExceeded, "the follower leaves on its own deadline")
+
+	close(release)
+	require.NoError(t, <-leaderDone, "the shared read was not stopped by the follower leaving")
+}
+
+// TestTransform_CancelledCallerFailsOpenAtOnce: once the caller's context has
+// ended, a cache miss fails open immediately instead of waiting a whole
+// lookup timeout per event.
+func TestTransform_CancelledCallerFailsOpenAtOnce(t *testing.T) {
+	node := "cancelled-caller"
+	ensureNode(t, node)
+
+	augmentor, err := New(context.Background(), &Config{CacheSize: 10, CacheTTL: time.Hour}, testClient)
+	require.NoError(t, err)
+
+	gone, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	event := &pb.HealthEvent{NodeName: node, ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION}
+
+	start := time.Now()
+	require.NoError(t, augmentor.Transform(gone, event))
+	require.Less(t, time.Since(start), time.Second)
+	require.Empty(t, event.Metadata)
+}
+
+// TestGetOrFetchMetadata_CancelledCallerStartsNoReads: once the caller's
+// context has ended, the remaining uncached nodes fail open without starting
+// any read, detached or not.
+func TestGetOrFetchMetadata_CancelledCallerStartsNoReads(t *testing.T) {
+	var reads atomic.Int32
+
+	clientset := fake.NewSimpleClientset()
+	clientset.PrependReactor("get", "nodes", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		reads.Add(1)
+
+		return false, nil, nil
+	})
+
+	augmentor, err := New(context.Background(), &Config{CacheSize: 10, CacheTTL: time.Hour}, clientset)
+	require.NoError(t, err)
+
+	gone, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	for i := range 20 {
+		event := &pb.HealthEvent{NodeName: fmt.Sprintf("uncached-%d", i)}
+		require.NoError(t, augmentor.Transform(gone, event), "every event fails open")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	require.Zero(t, reads.Load(), "no read is started for a caller that will not wait for it")
+}
+
+// TestNew_IgnoresTheLabelNamedLikeTheIdempotencyKey: the platform connector
+// owns the idempotency key metadata field, so a node label of the same name
+// is never copied over it, whatever the allowed labels say.
+func TestNew_IgnoresTheLabelNamedLikeTheIdempotencyKey(t *testing.T) {
+	cfg := &Config{
+		CacheSize:     10,
+		CacheTTL:      time.Hour,
+		AllowedLabels: []string{"topology.kubernetes.io/zone", datastore.HealthEventIdempotencyKeyMetadataField, "nvidia.com/gpu.product"},
+	}
+
+	augmentor, err := New(context.Background(), cfg, fake.NewSimpleClientset())
+	require.NoError(t, err)
+	require.Equal(t, []string{"topology.kubernetes.io/zone", "nvidia.com/gpu.product"}, augmentor.config.AllowedLabels)
+	require.Len(t, cfg.AllowedLabels, 3, "the caller's config is left alone")
 }

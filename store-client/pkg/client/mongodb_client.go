@@ -388,6 +388,17 @@ type MongoDBCollectionClient struct {
 	*MongoDBClient
 }
 
+// mongoMaxPoolSize is the shared connection pool bound as the driver option
+// takes it; zero keeps the driver default of 100.
+func mongoMaxPoolSize() uint64 {
+	size := datastore.MaxConnections(nil)
+	if size <= 0 {
+		return 0
+	}
+
+	return uint64(size)
+}
+
 // NewMongoDBClient creates a new MongoDB client from database configuration
 func NewMongoDBClient(ctx context.Context, dbConfig config.DatabaseConfig) (*MongoDBClient, error) {
 	// Convert to the existing MongoDBConfig format for backward compatibility
@@ -407,6 +418,7 @@ func NewMongoDBClient(ctx context.Context, dbConfig config.DatabaseConfig) (*Mon
 		ChangeStreamRetryDeadlineSeconds: dbConfig.GetTimeoutConfig().GetChangeStreamRetryDeadlineSeconds(),
 		ChangeStreamRetryIntervalSeconds: dbConfig.GetTimeoutConfig().GetChangeStreamRetryIntervalSeconds(),
 		AppName:                          dbConfig.GetAppName(),
+		MaxPoolSize:                      mongoMaxPoolSize(),
 	}
 
 	// Initialize certificate watcher if rotation is enabled

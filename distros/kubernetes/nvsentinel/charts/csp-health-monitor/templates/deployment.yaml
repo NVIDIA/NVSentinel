@@ -100,6 +100,9 @@ spec:
       {{- if include "nvsentinel.pcAuth.enabled" . }}
       {{- include "nvsentinel.pcAuth.volume" . | nindent 6 }}
       {{- end }}
+      {{- with include "nvsentinel.publish.volumes" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
@@ -247,12 +250,18 @@ spec:
           {{- if include "nvsentinel.pcAuth.enabled" . }}
           {{- include "nvsentinel.pcAuth.volumeMount" . | nindent 10 }}
           {{- end }}
+          {{- with include "nvsentinel.publish.volumeMounts" . }}
+          {{- . | nindent 10 }}
+          {{- end }}
           env:
             - name: LOG_LEVEL
               value: "{{ .Values.quarantineTriggerEngine.logLevel | default .Values.logLevel }}"
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: "maintenance-notifier"
+            {{- with include "nvsentinel.publish.envVars" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
