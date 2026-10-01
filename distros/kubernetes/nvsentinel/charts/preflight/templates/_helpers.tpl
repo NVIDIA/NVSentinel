@@ -133,7 +133,7 @@ Certificate DNS names
 - {{ include "preflight.fullname" . }}
 - {{ include "preflight.fullname" . }}.{{ .Release.Namespace }}
 - {{ include "preflight.fullname" . }}.{{ .Release.Namespace }}.svc
-- {{ include "preflight.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+- {{ include "preflight.fullname" . }}.{{ .Release.Namespace }}.svc.{{ (.Values.global).clusterDomain | default "cluster.local" }}
 {{- end }}
 
 {{/*

@@ -28,15 +28,15 @@ data:
   # via values override or a separate Secret-backed env var.
 {{- if .Values.usePerconaOperator }}
   {{- if .Values.mongodb.tls.enabled }}
-  MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Namespace }}
+  MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.%s:27017/?replicaSet=rs0&tls=true" .Release.Namespace ((.Values.global).clusterDomain | default "cluster.local") }}
   {{- else }}
-  MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.cluster.local:27017/?replicaSet=rs0" .Release.Namespace }}
+  MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.%s:27017/?replicaSet=rs0" .Release.Namespace ((.Values.global).clusterDomain | default "cluster.local") }}
   {{- end }}
 {{- else }}
   {{- if .Values.mongodb.tls.enabled }}
-  MONGODB_URI: {{ printf "mongodb://mongodb-headless.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Namespace }}
+  MONGODB_URI: {{ printf "mongodb://mongodb-headless.%s.svc.%s:27017/?replicaSet=rs0&tls=true" .Release.Namespace ((.Values.global).clusterDomain | default "cluster.local") }}
   {{- else }}
-  MONGODB_URI: {{ printf "mongodb://mongodb-headless.%s.svc.cluster.local:27017/?replicaSet=rs0" .Release.Namespace }}
+  MONGODB_URI: {{ printf "mongodb://mongodb-headless.%s.svc.%s:27017/?replicaSet=rs0" .Release.Namespace ((.Values.global).clusterDomain | default "cluster.local") }}
   {{- end }}
 {{- end }}
   MONGODB_DATABASE_NAME: "HealthEventsDatabase"

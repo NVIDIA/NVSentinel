@@ -116,7 +116,7 @@ mongodb-store:
 
 When Percona is enabled, the replica set is configured under `psmdb-db` instead of `mongodb.*` (see defaults in `distros/kubernetes/nvsentinel/charts/mongodb-store/values.yaml`).
 
-- **Service endpoint:** `mongodb-rs0.{namespace}.svc.cluster.local:27017`
+- **Service endpoint:** `mongodb-rs0.{namespace}.svc.{clusterDomain}:27017`, where `{clusterDomain}` is `global.clusterDomain` (default `cluster.local`; see [Cluster Domain](README.md#cluster-domain))
 - **Metrics:** `percona/mongodb_exporter` sidecar on port `9216` (configured in default `psmdb-db` values)
 - **Operator reference:** [Percona Operator for MongoDB](https://docs.percona.com/percona-operator-for-mongodb/)
 
