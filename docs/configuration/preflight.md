@@ -570,7 +570,54 @@ gangCoordination:
   # mirrorResourceClaims: true  # Mirror DRA claims to init containers (default true)
 ```
 
-For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integration](../designs/026-preflight-checks.md) and `mirrorResourceClaims` above.
+For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integration](../designs/026-preflight-checks.md) and `mirrorResourceClaims` above. A DRA GPU pod always gets its claims mirrored, whatever `mirrorResourceClaims` says. See [DRA GPU pods](#dra-gpu-pods).
+
+## DRA GPU pods
+
+By default, the webhook injects the checks only into pods that request a GPU resource from `gpuResourceNames` (for example `nvidia.com/gpu`). A pod that gets its GPUs through Dynamic Resource Allocation (DRA) has no such request, so the webhook skips it. Set `global.gpuDraEnabled` to inject the checks into these pods too:
+
+```yaml
+global:
+  gpuDraEnabled: true
+```
+
+Use this when GPUs are allocated through DRA, for example with the GPU Operator in GPUCluster mode or with the standalone NVIDIA DRA driver for GPUs. The value is `false` by default, which turns DRA GPU detection off. The value must be a boolean. The chart does not render with a string such as `"true"`.
+
+This is a cluster-wide value. Other NVSentinel components can also use it to select their DRA behaviour.
+
+### How the webhook detects a DRA GPU pod
+
+For a pod with no GPU resource request, the webhook reads each entry in `spec.resourceClaims`. It reads the ResourceClaimTemplate or the ResourceClaim that the entry names. The pod is a DRA GPU pod when one device request matches these rules:
+
+| Device request | Counts as a GPU request |
+|----------------|-------------------------|
+| `exactly` with `deviceClassName: gpu.nvidia.com` | Yes |
+| `exactly` with `adminAccess: true` | No. Admin access is for monitoring, and other pods can use the same devices |
+| `firstAvailable` where every subrequest uses `gpu.nvidia.com` | Yes |
+| `firstAvailable` where one or more subrequests use another class | No. The scheduler can pick the non-GPU device |
+| Any request for another class | No |
+
+One GPU request is enough. The webhook then injects the checks and copies all of the pod's resource claims into each check, including NIC and IMEX claims. The NCCL checks need the NIC and IMEX devices to test the network. The webhook adds each claim one time only.
+
+A pod that requests a GPU resource from `gpuResourceNames` does not go through this detection. The webhook makes no API calls for it, and its behaviour does not change.
+
+### Failures
+
+The webhook does not reject a pod because of DRA detection. If it cannot read a claim or a template, it counts that entry as non-GPU and continues. If no entry is a GPU request, the webhook admits the pod without the checks. It never injects the checks without the pod's claims, because a check without GPU access reports the node as unhealthy.
+
+| Condition | Result | Log level |
+|-----------|--------|-----------|
+| Claim or template does not exist | Entry counts as non-GPU | Warn |
+| RBAC error, API error, or `resource.k8s.io/v1` not served | Entry counts as non-GPU | Error |
+| All reads for the pod take more than 3 seconds | Remaining entries count as non-GPU | Error |
+
+An Error log means the webhook counts that entry as non-GPU. The pod still gets the checks if another entry is a GPU request. An RBAC or API error usually affects every claim, so DRA GPU pods then do not get the checks. Look for `Failed to read DRA claim, treating it as non-GPU` in the preflight logs.
+
+### RBAC and API load
+
+When `global.gpuDraEnabled` is `true`, the chart creates the ClusterRole `preflight-dra` and binds it to the preflight ServiceAccount. It gives `get` access to `resourceclaims` and `resourceclaimtemplates` in the `resource.k8s.io` API group, in all namespaces. It gives no `list` or `watch` access. The chart does not create it when the value is `false`, and it does not depend on gang coordination.
+
+The webhook reads claims directly from the API server, with no cache. This keeps preflight memory usage the same on large clusters. Each DRA pod admission costs one `get` for each entry in `spec.resourceClaims`, until the webhook finds a GPU request.
 
 ## Publishing to the deployment platform connector
 
@@ -603,6 +650,7 @@ The events, and what Fault Quarantine does with them, are the same on both paths
 | Init container placement (append/prepend) | `preflight.initContainerPlacement` |
 | Injected init container images and env | `preflight.initContainers` |
 | GPU / network resource names | `preflight.gpuResourceNames`, `preflight.networkResourceNames` |
+| DRA GPU pod detection (off by default) | `global.gpuDraEnabled` |
 | Copy NCCL / fabric env and mounts from user containers | `preflight.ncclEnvPatterns`, `preflight.volumeMountPatterns` |
 | Gang discovery | `preflight.gangDiscovery` |
 | Gang coordination (timeouts, topology, mounts) | `preflight.gangCoordination` |

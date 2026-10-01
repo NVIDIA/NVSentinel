@@ -25,6 +25,9 @@ data:
       {{- toYaml .Values.gpuResourceNames | nindent 6 }}
     networkResourceNames:
       {{- toYaml .Values.networkResourceNames | nindent 6 }}
+    {{- if include "preflight.gpuDraEnabled" . }}
+    gpuDraEnabled: true
+    {{- end }}
     {{- if .Values.ncclEnvPatterns }}
     ncclEnvPatterns:
       {{- toYaml .Values.ncclEnvPatterns | nindent 6 }}
