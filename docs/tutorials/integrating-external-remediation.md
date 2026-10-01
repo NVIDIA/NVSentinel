@@ -405,7 +405,7 @@ kubectl logs deployment/fault-remediation --namespace nvsentinel \
 
 | Log message | Cause | Fix |
 | --- | --- | --- |
-| `Action not found in remediation configuration` | The health event names an action that `maintenance.actions` does not contain. | Make sure that the health event sets `customRecommendedAction: external-remediation`, and that fault-remediation loaded the action. See [section 4](#4-add-the-externalremediationrequest-template). |
+| `Action not found in remediation configuration` | The health event names an action that `maintenance.actions` does not contain. The `action` field in the log line shows the name. fault-remediation also logs this line for actions that it does not handle, such as `NONE`. Ignore those lines. | If `action` is `external-remediation`, fault-remediation did not load the action. See [section 4](#4-add-the-externalremediationrequest-template). If `action` has a different value, make sure that the health event sets `recommendedAction: CUSTOM` and `customRecommendedAction: external-remediation`. |
 | `Skipping event for node due to existing CR` | An ExternalRemediationRequest for the node is still open. fault-remediation creates only one for each node at a time. | Wait until the open ExternalRemediationRequest closes, or delete it. |
 | `Maximum remediation attempts reached for equivalence group, giving up` | The node reached the `maxRemediationAttempts` limit. | See [Fault Remediation Configuration](../configuration/fault-remediation.md). |
 
