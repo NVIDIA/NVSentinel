@@ -44,7 +44,7 @@ data:
     {{- if not (include "preflight.pcAuth.enabled" .) }}
     {{- fail "preflight.publishTo is \"deployment\" but global.platformConnectorAuth.enabled is false. Every direct send carries the projected token, so platform-connector auth must be enabled." }}
     {{- end }}
-    healthPublishTarget: {{ printf "platform-connector-deployment.%s.svc.cluster.local:%v" .Release.Namespace ((((.Values.global).platformConnectorDeployment).grpcPort) | default 50051) | quote }}
+    healthPublishTarget: {{ printf "platform-connector-deployment.%s.svc.%s:%v" .Release.Namespace ((.Values.global).clusterDomain | default "cluster.local") ((((.Values.global).platformConnectorDeployment).grpcPort) | default 50051) | quote }}
     {{- if eq (include "preflight.publish.tlsMode" .) "required" }}
     healthPublishCAFile: "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"
     {{- else }}
