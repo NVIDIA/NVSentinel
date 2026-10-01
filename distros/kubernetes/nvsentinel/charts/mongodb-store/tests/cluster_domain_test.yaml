@@ -1,0 +1,48 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: mongodb cluster domain
+templates:
+  - templates/configmap.yaml
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+tests:
+  - it: keeps cluster.local in the datastore URI by default
+    template: templates/configmap.yaml
+    asserts:
+      - equal:
+          path: data.MONGODB_URI
+          value: "mongodb://mongodb-headless.nvsentinel.svc.cluster.local:27017/?replicaSet=rs0&tls=true"
+
+  - it: builds the datastore URI with global.clusterDomain
+    template: templates/configmap.yaml
+    set:
+      global.clusterDomain: example.local
+    asserts:
+      - equal:
+          path: data.MONGODB_URI
+          value: "mongodb://mongodb-headless.nvsentinel.svc.example.local:27017/?replicaSet=rs0&tls=true"
+
+  - it: builds the Percona datastore URI with global.clusterDomain
+    template: templates/configmap.yaml
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      global.clusterDomain: example.local
+    asserts:
+      - equal:
+          path: data.MONGODB_URI
+          value: "mongodb://mongodb-rs0.nvsentinel.svc.example.local:27017/?replicaSet=rs0&tls=true"
+

@@ -77,6 +77,16 @@ global:
       # "required" or "insecureDevelopmentMode" (development only).
       mode: required
 
+  # DNS domain of the cluster (kubeadm networking.dnsDomain), used wherever the
+  # chart builds a service hostname or a certificate DNS name. Change it only on
+  # a cluster whose domain is not cluster.local, and then set the same domain
+  # where a subchart or value carries its own: mongodb-store.mongodb.clusterDomain,
+  # postgresql.clusterDomain, mongodb-store.psmdb-db.clusterServiceDNSSuffix
+  # (Percona, as svc.<domain>), and the full hostnames in
+  # janitor.config.cspProviderHost and fault-remediation.logCollector.uploadURL.
+  # See docs/configuration/README.md#cluster-domain.
+  clusterDomain: cluster.local
+
   # Docker image configuration
   image:
     # Image tag to use for all NVSentinel containers

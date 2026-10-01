@@ -55,8 +55,8 @@ spec:
   renewBefore: 360h # 15 days before expiration
   commonName: {{ printf "%s-mongo-%d" $.Release.Namespace $i }}
   dnsNames:
-    - {{ printf "mongodb-%d.mongodb-headless.%s.svc.cluster.local" $i $.Release.Namespace }}
-    - {{ printf "mongodb-headless.%s.svc.cluster.local" $.Release.Namespace }}
+    - {{ printf "mongodb-%d.mongodb-headless.%s.svc.%s" $i $.Release.Namespace (($.Values.global).clusterDomain | default "cluster.local") }}
+    - {{ printf "mongodb-headless.%s.svc.%s" $.Release.Namespace (($.Values.global).clusterDomain | default "cluster.local") }}
   issuerRef:
     name: mongo-ca-issuer
     kind: Issuer

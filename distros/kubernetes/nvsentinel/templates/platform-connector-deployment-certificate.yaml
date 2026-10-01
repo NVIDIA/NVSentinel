@@ -78,7 +78,7 @@ spec:
   dnsNames:
     - {{ include "nvsentinel.pcDeployment.name" . }}
     - {{ include "nvsentinel.pcDeployment.name" . }}.{{ .Release.Namespace }}.svc
-    - {{ include "nvsentinel.pcDeployment.name" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "nvsentinel.pcDeployment.name" . }}.{{ .Release.Namespace }}.svc.{{ (.Values.global).clusterDomain | default "cluster.local" }}
   issuerRef:
     name: {{ include "nvsentinel.pcDeployment.name" . }}-ca-issuer
     kind: Issuer

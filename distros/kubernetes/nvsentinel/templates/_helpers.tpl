@@ -958,7 +958,7 @@ token (nvsentinel.pcAuth.volume). Empty on the socket path; indent with
 {{- define "nvsentinel.publish.envVars" -}}
 {{- if include "nvsentinel.publish.enabled" . -}}
 - name: HEALTH_PUBLISH_TARGET
-  value: "{{ include "nvsentinel.pcDeployment.name" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ include "nvsentinel.pcDeployment.grpcPort" . }}"
+  value: "{{ include "nvsentinel.pcDeployment.name" . }}.{{ .Release.Namespace }}.svc.{{ (.Values.global).clusterDomain | default "cluster.local" }}:{{ include "nvsentinel.pcDeployment.grpcPort" . }}"
 - name: HEALTH_PUBLISH_TOKEN_PATH
   value: {{ include "nvsentinel.pcAuth.tokenPath" . | quote }}
 {{- if eq (include "nvsentinel.pcDeployment.tlsMode" .) "required" }}

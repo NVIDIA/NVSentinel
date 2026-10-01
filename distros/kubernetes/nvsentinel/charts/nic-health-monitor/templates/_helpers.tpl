@@ -145,7 +145,7 @@ template names are global; this chart also renders standalone. Keep them in step
 {{- define "nic-health-monitor.publish.envVars" -}}
 {{- if include "nic-health-monitor.publish.enabled" . -}}
 - name: HEALTH_PUBLISH_TARGET
-  value: "platform-connector-deployment.{{ .Release.Namespace }}.svc.cluster.local:{{ ((((.Values.global).platformConnectorDeployment)).grpcPort) | default 50051 }}"
+  value: "platform-connector-deployment.{{ .Release.Namespace }}.svc.{{ (.Values.global).clusterDomain | default "cluster.local" }}:{{ ((((.Values.global).platformConnectorDeployment)).grpcPort) | default 50051 }}"
 - name: HEALTH_PUBLISH_TOKEN_PATH
   value: {{ include "nic-health-monitor.pcAuth.tokenPath" . | quote }}
 {{- if eq (include "nic-health-monitor.publish.tlsMode" .) "required" }}

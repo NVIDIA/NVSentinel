@@ -28,7 +28,7 @@ spec:
   commonName: {{ include "provider.fullname" . }}.{{ .Release.Namespace }}.svc
   dnsNames:
     - {{ include "provider.fullname" . }}.{{ .Release.Namespace }}.svc
-    - {{ include "provider.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "provider.fullname" . }}.{{ .Release.Namespace }}.svc.{{ (.Values.global).clusterDomain | default "cluster.local" }}
   issuerRef:
     name: {{ .Values.tls.issuerName }}
     kind: Issuer

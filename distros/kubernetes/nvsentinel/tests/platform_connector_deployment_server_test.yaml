@@ -357,3 +357,21 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+
+  # Publishers dial the server by its full service name, so the certificate
+  # has to carry that name in the cluster's own DNS domain.
+  - it: names the server certificate in global.clusterDomain
+    template: templates/platform-connector-deployment-certificate.yaml
+    documentSelector:
+      path: metadata.name
+      value: platform-connector-deployment-grpc-cert
+    set:
+      platformConnector.deployment.enabled: true
+      global.clusterDomain: example.local
+    asserts:
+      - contains:
+          path: spec.dnsNames
+          content: platform-connector-deployment.nvsentinel.svc.example.local
+      - notContains:
+          path: spec.dnsNames
+          content: platform-connector-deployment.nvsentinel.svc.cluster.local
