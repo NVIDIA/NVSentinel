@@ -16,11 +16,13 @@ package informers
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -30,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -133,6 +136,7 @@ func TestExcludedPodTransformRetainsDrainFieldsOnly(t *testing.T) {
 					Limits: v1.ResourceList{v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1")},
 				},
 			}},
+			ResourceClaims: []v1.PodResourceClaim{{Name: "gpu", ResourceClaimTemplateName: new("gpu-template")}},
 		},
 		Status: v1.PodStatus{
 			Phase: v1.PodRunning,
@@ -292,6 +296,153 @@ func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 }
 
+func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *testing.T) {
+	ctx := t.Context()
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnv.Stop()) })
+
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	const namespace = "workload"
+
+	_, err = client.CoreV1().Namespaces().Create(ctx, &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	for claimName, deviceClassName := range map[string]string{
+		"gpu-claim": "gpu.nvidia.com",
+		"nic-claim": "nic.example.com",
+	} {
+		_, err = client.ResourceV1().ResourceClaims(namespace).Create(ctx, &resourcev1.ResourceClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName},
+			Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
+				Name:    "device",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: deviceClassName},
+			}}}},
+		}, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}
+
+	_, err = client.ResourceV1().ResourceClaimTemplates(namespace).Create(ctx, &resourcev1.ResourceClaimTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "gpu-template"},
+		Spec: resourcev1.ResourceClaimTemplateSpec{Spec: resourcev1.ResourceClaimSpec{
+			Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
+				Name:           "device",
+				FirstAvailable: []resourcev1.DeviceSubRequest{{Name: "gpu", DeviceClassName: "gpu.nvidia.com"}},
+			}}},
+		}},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	const missingAnnotation = "is requesting devices but is missing device annotation"
+
+	tests := []struct {
+		name            string
+		annotated       bool
+		gpuLimit        bool
+		claim           v1.PodResourceClaim
+		wantPartialErr  string
+		wantPartialPods int
+		wantGPUOnlyErr  string
+		wantGPUOnlyPods int
+	}{
+		{
+			name:            "unannotated pod with GPU claim fails partial drain",
+			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimName: new("gpu-claim")},
+			wantPartialErr:  missingAnnotation,
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "unannotated pod with GPU claim template fails partial drain",
+			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimTemplateName: new("gpu-template")},
+			wantPartialErr:  missingAnnotation,
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:  "unannotated pod with non-GPU claim is not a GPU pod",
+			claim: v1.PodResourceClaim{Name: "nic", ResourceClaimName: new("nic-claim")},
+		},
+		{
+			name:           "unannotated pod with missing claim fails closed",
+			claim:          v1.PodResourceClaim{Name: "gpu", ResourceClaimName: new("missing-claim")},
+			wantPartialErr: "not found",
+			wantGPUOnlyErr: "not found",
+		},
+		{
+			name:            "annotated pod is drained without reading its claim",
+			annotated:       true,
+			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimName: new("missing-claim")},
+			wantPartialPods: 1,
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:           "unannotated pod with GPU limit fails partial drain but is not GPU-only drained",
+			gpuLimit:       true,
+			wantPartialErr: missingAnnotation,
+		},
+		{
+			name: "CPU-only pod is neither drained nor blocks the drain",
+		},
+	}
+
+	for idx, tt := range tests {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", idx), Namespace: namespace},
+			Spec: v1.PodSpec{
+				NodeName:   fmt.Sprintf("node-%d", idx),
+				Containers: []v1.Container{{Name: "workload", Image: "workload:latest"}},
+			},
+		}
+		if tt.annotated {
+			pod.Annotations = map[string]string{model.PodDeviceAnnotationName: `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`}
+		}
+
+		if tt.gpuLimit {
+			pod.Spec.Containers[0].Resources.Limits = v1.ResourceList{"nvidia.com/gpu": resource.MustParse("1")}
+		}
+
+		if tt.claim.Name != "" {
+			pod.Spec.ResourceClaims = []v1.PodResourceClaim{tt.claim}
+		}
+
+		_, err := client.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}
+
+	informers, err := NewInformers(client, 0, new(5), true, false, "", nil)
+	require.NoError(t, err)
+	require.NoError(t, informers.Run(ctx))
+
+	partialDrainEntity := &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-1"}
+
+	for idx, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeName := fmt.Sprintf("node-%d", idx)
+
+			pods, err := informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, partialDrainEntity)
+			if tt.wantPartialErr != "" {
+				require.ErrorContains(t, err, tt.wantPartialErr)
+			} else {
+				require.NoError(t, err)
+				assert.Len(t, pods, tt.wantPartialPods)
+			}
+
+			pods, err = informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, nil)
+			if tt.wantGPUOnlyErr != "" {
+				require.ErrorContains(t, err, tt.wantGPUOnlyErr)
+			} else {
+				require.NoError(t, err)
+				assert.Len(t, pods, tt.wantGPUOnlyPods)
+			}
+		})
+	}
+}
+
 func richDrainEligiblePod(namespace, name, nodeName string) *v1.Pod {
 	deletionTimestamp := metav1.NewTime(time.Now().Add(-time.Minute))
 
@@ -331,9 +482,11 @@ func richDrainEligiblePod(namespace, name, nodeName string) *v1.Pod {
 					},
 				},
 			},
+			ResourceClaims: []v1.PodResourceClaim{{Name: "gpu", ResourceClaimTemplateName: new("gpu-template")}},
 		},
 		Status: v1.PodStatus{
-			Phase: v1.PodRunning,
+			Phase:                 v1.PodRunning,
+			ResourceClaimStatuses: []v1.PodResourceClaimStatus{{Name: "gpu", ResourceClaimName: new("eligible-gpu")}},
 			Conditions: []v1.PodCondition{
 				{
 					Type:               v1.PodReady,

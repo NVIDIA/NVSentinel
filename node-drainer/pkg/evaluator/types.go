@@ -48,7 +48,8 @@ type InformersInterface interface {
 		*protos.Entity, ...informers.PodFilter) bool
 	CheckIfObservedPodsAreEvictedInImmediateMode(context.Context, []string, string, time.Duration,
 		*protos.Entity, []*v1.Pod, ...informers.PodFilter) bool
-	FindEvictablePodsInNamespaceAndNode(string, string, *protos.Entity, ...informers.PodFilter) ([]*v1.Pod, error)
+	FindEvictablePodsInNamespaceAndNode(context.Context, string, string, *protos.Entity,
+		...informers.PodFilter) ([]*v1.Pod, error)
 	GetNode(string) (*v1.Node, error)
 }
 
