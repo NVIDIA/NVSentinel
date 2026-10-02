@@ -66,3 +66,21 @@ DaemonSet is hostNetwork. Fail the render instead, matching nvsentinel.pcAuth.en
 {{- end -}}
 {{- if $enabled -}}true{{- end -}}
 {{- end -}}
+
+{{/*
+Kubelet's --root-dir on the host. Nil/empty → /var/lib/kubelet.
+*/}}
+{{- define "metadata-collector.kubeletRootDir" -}}
+{{- $dir := (.Values.global | default dict).kubeletRootDir -}}
+{{- if or (kindIs "invalid" $dir) (eq ($dir | toString) "") -}}
+{{- $dir = "/var/lib/kubelet" -}}
+{{- end -}}
+{{- $trimmed := "" -}}
+{{- if kindIs "string" $dir -}}
+{{- $trimmed = regexReplaceAll "/+$" (trim $dir) "" -}}
+{{- end -}}
+{{- if or (not (hasPrefix "/" $trimmed)) (hasSuffix "/pod-resources" $trimmed) -}}
+{{- fail (printf "global.kubeletRootDir must be kubelet's --root-dir as an absolute path, such as /var/lib/kubelet, not its pod-resources subdirectory; got %s %#v" (kindOf $dir) $dir) -}}
+{{- end -}}
+{{- $trimmed -}}
+{{- end -}}
