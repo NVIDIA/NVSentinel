@@ -52,9 +52,9 @@ Introduce **behaviour profiles**: named sets of quarantine, drain and remediatio
 of **profile matchers**.
 
 1. A profile contains mostly switches, plus references by name to configuration that stays in each component.
-2. A matcher selects a profile with a Kubernetes label selector over the node, a CEL expression over the health event,
-   or both. Matchers are evaluated in order and the first match wins. With no match, the event gets the built-in
-   `default` profile, which is today's behaviour.
+2. A matcher selects a profile with a CEL expression over the health event and the node's labels. Matchers are
+   evaluated in order and the first match wins. With no match, the event gets the built-in `default` profile, which is
+   today's behaviour.
 3. platform-connectors resolves the profile once, when it receives the event, and records a reference to it on the
    health event. Every later stage acts on that reference instead of reading node labels for policy.
 4. Profiles are configured through Helm values, as one typed, CRD-shaped document that a shared package parses and
@@ -93,10 +93,10 @@ global:
           remediation: { mode: Disabled }
       matchers:                            # ordered; the first match wins
         - name: slurm-pools
-          nodeSelector: "example.com/scheduler=slurm"
+          expression: 'node.labels["example.com/scheduler"] == "slurm"'
           profile: slurm
         - name: vm-pools
-          nodeSelector: "example.com/platform=vm"
+          expression: 'node.labels["example.com/platform"] in ["vm", "vm-spot"]'
           profile: replace-vm
         - name: lpu-faults
           expression: 'event.componentClass == "LPU"'
@@ -115,15 +115,25 @@ existing configuration. node-drainer's single `customDrain` block becomes a map 
 among them. Existing configuration keeps working: an existing `customDrain` block becomes the target named `default`,
 and each existing action entry becomes a resource named after its action.
 
-**Matchers** use the selection styles NVSentinel already has. `nodeSelector` is standard Kubernetes label-selector
-syntax ([ADR-055](055-pod-drain-policies.md), [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)). `expression`
-is CEL over the same event map as the health-event override rules ([ADR-021](021-health-event-property-overrides.md)),
-extended with `entitiesImpacted`. If both are set, both must match. Device-specific matching, such as by GPU product or
-by an accelerator that is not a GPU, is an `expression` over the impacted entities. It needs no new matcher type.
+**Matchers are CEL expressions**, the language fault-quarantine rules ([ADR-003](003-rule-based-node-quarantine.md))
+and health-event overrides ([ADR-021](021-health-event-property-overrides.md)) already use. Each `expression` must
+return a boolean and sees two variables:
+
+- `event`: the same event map as the override rules, extended with `entitiesImpacted`.
+- `node`: `node.labels`, the labels of the node the event names.
+
+Node groups, devices and fault types are therefore all one kind of matcher, and they combine with `&&`, for example
+`node.labels["example.com/platform"] == "vm" && event.componentClass == "GPU"`. Matching by GPU product, or by an
+accelerator that is not a GPU, is an expression over the impacted entities. It needs no new matcher type.
+
+An expression that fails to evaluate does not match. The most common case is reading a label the node does not
+have, which then behaves like a label selector that finds no match. Each failure increments a per-matcher error
+metric, so a typo in a key shows up instead of silently never matching.
 
 **Validation** runs in the shared parser at startup and as a Helm `fail` at render time:
 
 - Profile and matcher names are DNS-1123 labels. `unresolved` is reserved.
+- Each matcher's `expression` compiles and returns a boolean.
 - Each matcher references a defined profile, or `default`.
 - Each `customDrainTarget`, `ruleSets` entry and `actions` value names something the owning component defines.
 - `quarantine.enabled: false` requires `drain: Disabled` and `remediation: Disabled`. A drain without a cordon
@@ -161,8 +171,10 @@ stage detect that its loaded definition differs from the one that was resolved, 
   canonical hashing and matcher evaluation. All consumers use it, so they agree on the hash.
 - **platform-connectors**: a `BehaviourProfileResolver` transformer, registered after `OverrideTransformer` because
   overrides can change fields an `expression` tests. It runs in both roles. It reuses MetadataAugmentor's cached Node
-  lookup, so it adds no API reads. It always overwrites the reference, because events re-published by
-  health-events-analyzer and lifecycle-manager arrive as copies of earlier events. It is the only consumer of
+  lookup, so it adds no API reads. That cache keeps only allow-listed label keys, so the resolver derives the keys its
+  expressions read and adds them to the cache. If a key cannot be derived, it keeps every label, as fault-quarantine's
+  node cache does (`fault-quarantine/pkg/nodecache`). It always overwrites the reference, because events re-published
+  by health-events-analyzer and lifecycle-manager arrive as copies of earlier events. It is the only consumer of
   `matchers`.
 - **fault-quarantine**: after the existing branch for nodes that are already quarantined, and before rule evaluation,
   an unhealthy event whose profile has `quarantine.enabled: false` is recorded as `nodeQuarantined: SkippedByProfile`.
@@ -210,8 +222,8 @@ Each phase is backwards compatible: with no profiles configured, every event res
 - **Small profiles.** Profiles hold switches and names, while component configuration keeps its existing shape and
   validation. Several matchers can share one profile, and moving a node group to another profile touches only its
   matcher.
-- **Familiar selection.** Label selectors and CEL are already used for drain scoping, quarantine rules and event
-  overrides.
+- **One selection language.** CEL already drives quarantine rules and event overrides, and it is the only option that
+  can express node, device and fault conditions in one matcher.
 
 ## Consequences
 
@@ -226,6 +238,8 @@ Each phase is backwards compatible: with no profiles configured, every event res
 ### Negative
 
 - Matcher order is behaviour: a misplaced matcher silently shadows the ones after it.
+- A simple node group is wordier in CEL than in label-selector syntax, and a CEL typo can compile and then fail at
+  evaluation.
 - A relabel takes effect for new faults only after the node metadata cache expires (60 seconds node-local, 10 minutes
   in the deployment role). A fault already in progress keeps the profile it was resolved with.
 - Changing matchers rolls the node-local platform-connector DaemonSet on every node.
@@ -248,6 +262,14 @@ Each phase is backwards compatible: with no profiles configured, every event res
 Extend the [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871) pattern to every stage.
 **Rejected** because: each stage would carry its own copy of the group definitions, read labels at a different time,
 and keep no shared record of what applied.
+
+### Kubernetes label selectors for node matching
+
+Use label-selector syntax for node groups and keep CEL for device and fault conditions, as
+[#1871](https://github.com/NVIDIA/NVSentinel/pull/1871) and [ADR-055](055-pod-drain-policies.md) do for drain scoping.
+**Rejected** because: matchers would need two syntaxes, with a rule for combining them, and anything that mixes node and
+fault conditions needs CEL anyway. Everything a label selector expresses (`=`, `!=`, `in`, `notin`, exists) has a
+direct CEL form.
 
 ### Re-resolve from current labels at each stage
 
@@ -306,6 +328,7 @@ node conditions, while every profile keeps monitoring and conditions.
 - [#1857](https://github.com/NVIDIA/NVSentinel/issues/1857), [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871): custom drain for a subset of nodes
 - [#1670](https://github.com/NVIDIA/NVSentinel/pull/1670): the `managed=false` skip label
 - [#1758](https://github.com/NVIDIA/NVSentinel/pull/1758): removal of the cluster-wide node cache from fault-remediation
+- [ADR-003](003-rule-based-node-quarantine.md): rule-based node quarantine (CEL rules)
 - [ADR-015](015-custom-drain-extensibility.md): custom drain extensibility
 - [ADR-021](021-health-event-property-overrides.md): health event property overrides
 - [ADR-023](023-health-event-transformer-pipeline.md): health event transformer pipeline
