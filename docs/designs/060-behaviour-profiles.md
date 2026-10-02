@@ -48,17 +48,24 @@ behaviour applied to a fault.
 
 ## Decision
 
-Introduce **behaviour profiles**: named sets of quarantine, drain and remediation settings, selected by an ordered list
-of **profile routes**.
+Introduce **behaviour profiles**: named sets of switches that turn quarantine, drain and remediation on or off,
+selected by an ordered list of **profile routes**.
 
-1. A profile contains mostly switches, plus references by name to configuration that stays in each component.
+1. A profile has three sections, `quarantine`, `drain` and `remediation`. In this ADR each section has one field,
+   `enabled`. How an enabled stage acts (for example, the drain method or the remediation action) stays in that
+   component's existing configuration. Later work can add fields to these sections (see
+   [Future extensions](#future-extensions)), and `enabled` stays each section's top-level switch.
 2. A route selects a profile with a CEL expression over the health event and the node's labels. Routes are
-   evaluated in order and the first match wins. With no match, the event gets the built-in `default` profile, which is
-   today's behaviour.
+   evaluated in order and the first match wins. With no match, the event gets the built-in `default` profile.
 3. platform-connectors resolves the profile once, when it receives the event, and records a reference to it on the
    health event. Every later stage acts on that reference instead of reading node labels for policy.
 4. Profiles are configured through Helm values, as one typed, CRD-shaped document that a shared package parses and
    validates. It is rendered into each consumer's ConfigMap. It is not a served CRD.
+
+Of the cases above, this covers a staged rollout of remediation, turning remediation off for a device type, and
+observe-only or quarantine-only node groups. Choosing a drain method, an external hand-off or a remediation action per
+profile is future work. Until then those stay cluster-wide, and
+[#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)'s `customDrain.nodeSelector` keeps choosing the drain method.
 
 ## Implementation
 
@@ -71,56 +78,45 @@ global:
     kind: BehaviourProfiles
     spec:
       profiles:
-        # "default" always exists. Every profile inherits the sections it
-        # does not set from "default", and "default" inherits each
-        # component's existing configuration.
-        default: {}
-        slurm:
-          drain:
-            mode: Custom
-            customDrainTarget: slinky      # defined in node-drainer config
-        vendor-repair:
-          remediation:
-            mode: External                 # ADR-040 hand-off
-        replace-vm:
-          remediation:
-            actions:                       # recommended action -> resource
-              COMPONENT_RESET: terminate-node
-              RESTART_BM: terminate-node
+        # "default" always exists. Its sections are enabled unless set
+        # here, and other profiles inherit the sections they omit from it.
+        default:
+          remediation: { enabled: false }  # remediation is opt-in here
+        remediate:
+          remediation: { enabled: true }
+        no-remediation:
+          remediation: { enabled: false }
         observe-only:
           quarantine: { enabled: false }
-          drain: { mode: Disabled }
-          remediation: { mode: Disabled }
+          drain: { enabled: false }
+          remediation: { enabled: false }
       routes:                              # ordered; the first match wins
-        - name: slurm-pools
-          expression: 'node.labels["example.com/scheduler"] == "slurm"'
-          profile: slurm
-        - name: vm-pools
-          expression: 'node.labels["example.com/platform"] in ["vm", "vm-spot"]'
-          profile: replace-vm
-        - name: lpu-faults
+        - name: lpu-faults                 # first, so it also wins on wave-1 nodes
           expression: 'event.componentClass == "LPU"'
+          profile: no-remediation
+        - name: legacy-pools
+          expression: 'node.labels["example.com/pool"] in ["legacy-a", "legacy-b"]'
           profile: observe-only
+        - name: wave-1
+          expression: 'node.labels["example.com/remediation-wave"] == "1"'
+          profile: remediate
 ```
 
-| Profile section | Fields | Refers to |
+| Section | `enabled: false` means | Recorded as |
 |---|---|---|
-| `quarantine` | `enabled`, optional `ruleSets` allow-list | fault-quarantine rule-set names |
-| `drain` | `mode: Evict \| Custom \| Disabled`, `customDrainTarget` | named custom-drain targets in node-drainer. `Evict` uses node-drainer's existing eviction configuration ([ADR-055](055-pod-drain-policies.md)) |
-| `remediation` | `mode: Auto \| External \| Disabled`, `actions`, `maxAttempts`, `allowUndrained` | named maintenance resources in fault-remediation |
+| `quarantine` | No cordon, taint or label for this fault. Nothing downstream runs | `nodeQuarantined: SkippedByProfile` |
+| `drain` | The node stays quarantined. Nothing is evicted | `userPodsEvictionStatus: Skipped` and node state `drain-skipped` |
+| `remediation` | The node stays quarantined and drained. No maintenance CR is created | Node state `remediation-skipped` |
 
-**Profiles link to component configuration by name.** Rules, templates and eviction settings stay in each component's
-existing configuration. node-drainer's single `customDrain` block becomes a map of named targets, and fault-remediation's
-`remediationActions` becomes a map of named maintenance resources plus a default action map. A profile only selects
-among them. Existing configuration keeps working: an existing `customDrain` block becomes the target named `default`,
-and each existing action entry becomes a resource named after its action.
+A section a profile omits comes from `default`, and a section `default` omits is enabled, which is today's
+behaviour. With no profiles configured, every event behaves exactly as before.
 
 **Routes are CEL expressions**, the language fault-quarantine rules ([ADR-003](003-rule-based-node-quarantine.md))
 and health-event overrides ([ADR-021](021-health-event-property-overrides.md)) already use. Each `expression` must
 return a boolean and sees two variables:
 
 - `event`: the same event map as the override rules, extended with `entitiesImpacted`.
-- `node`: `node.labels`, the labels of the node the event names.
+- `node`: `node.labels`, the labels of the node the event names, from platform-connectors' cached Node lookup.
 
 Node groups, devices and fault types are therefore all one kind of route, and they combine with `&&`, for example
 `node.labels["example.com/platform"] == "vm" && event.componentClass == "GPU"`. Matching by GPU product, or by an
@@ -135,10 +131,10 @@ metric, so a typo in a key shows up instead of silently never matching.
 - Profile and route names are DNS-1123 labels. `unresolved` is reserved.
 - Each route's `expression` compiles and returns a boolean.
 - Each route references a defined profile, or `default`.
-- Each `customDrainTarget`, `ruleSets` entry and `actions` value names something the owning component defines.
-- `quarantine.enabled: false` requires `drain: Disabled` and `remediation: Disabled`. A drain without a cordon
-  reschedules pods onto the node.
-- `drain: Disabled` with `remediation.mode: Auto` is rejected unless `allowUndrained: true`.
+- Each stage needs the stage before it: `drain` requires `quarantine`, and `remediation` requires `drain`. A drain
+  without a cordon reschedules pods back onto the node, and remediating a node that still runs workloads interrupts
+  them without notice. A profile therefore has one of four shapes: every stage, quarantine and drain, quarantine
+  only, or none.
 
 ### The reference on the event
 
@@ -154,16 +150,11 @@ message HealthEvent {
   // ... fields 1-18 unchanged ...
   BehaviourProfileRef behaviourProfile = 19;
 }
-
-message HealthEventStatus {
-  // ... fields 1-7 unchanged ...
-  string drainMethod = 8;          // set once by node-drainer
-  string remediationResource = 9;  // set once by fault-remediation
-}
 ```
 
 The hash covers the profile's settings, not the routes. Editing or reordering routes never changes it. It lets a
-stage detect that its loaded definition differs from the one that was resolved, which happens during a rollout.
+stage detect that its loaded definition differs from the one that was resolved, which happens during a rollout. In
+that case the stage acts on its own definition and counts the mismatch.
 
 ### Per component
 
@@ -177,24 +168,22 @@ stage detect that its loaded definition differs from the one that was resolved, 
   by health-events-analyzer and lifecycle-manager arrive as copies of earlier events. It is the only consumer of
   `routes`.
 - **fault-quarantine**: after the existing branch for nodes that are already quarantined, and before rule evaluation,
-  an unhealthy event whose profile has `quarantine.enabled: false` is recorded as `nodeQuarantined: SkippedByProfile`.
-  It is marked terminal, the same way intentional skips already are, so a cold start cannot re-decide it. `ruleSets`
-  narrows the rule sets that are evaluated. The circuit breaker, the recovery path and rule-set taints and labels are
-  unchanged.
-- **node-drainer**: on the first attempt, reads the `drain` section, picks the method and writes `drainMethod`. Retries
-  re-fetch the event and reuse `drainMethod` instead of re-reading node labels. `drain: Disabled` records
-  `userPodsEvictionStatus: Skipped`, which is distinct from `AlreadyDrained`, plus a `drain-skipped` node state label.
-- **fault-remediation**: looks up `(profile, action)` to find a resource and records `remediationResource`. CR status is
-  then looked up by resource rather than by action name, because one action can map to different CR kinds under
-  different profiles. `remediation: Disabled` records a `remediation-skipped` node state label instead of
-  `remediation-failed`. CR templates add the label `nvsentinel.nvidia.com/behaviour-profile`, so janitor and external
-  systems can see the profile without a schema change.
+  an unhealthy event whose profile disables quarantine is recorded as `nodeQuarantined: SkippedByProfile`. It is marked
+  terminal, the same way intentional skips already are, so a cold start cannot re-decide it. node-drainer does not
+  trigger on that status, so the chain ends there. The circuit breaker, rule evaluation, the recovery path and rule-set
+  taints and labels are unchanged.
+- **node-drainer**: on its first attempt for an event, if the profile disables drain, it records
+  `userPodsEvictionStatus: Skipped`, which is distinct from `AlreadyDrained`, plus the `drain-skipped` node state label,
+  and stops. Otherwise it drains exactly as today, with the method its own configuration chooses.
+- **fault-remediation**: if the profile disables remediation, it records the `remediation-skipped` node state label
+  instead of creating a maintenance CR, so an intentional "off" is not reported as `remediation-failed`. Because
+  remediation requires drain, a skipped drain never reaches fault-remediation, and its trigger filter does not change.
 - **event-exporter**: adds the reference to the CloudEvent payload.
 
 Events stored before the upgrade have no reference and are treated as `default`, which is what they would have
-received. When platform-connectors cannot read the node, it records `unresolved`: quarantine follows the rule sets as
-today, while drain and remediation are held and reported. A brief API outage must not remediate a node that the
-operator excluded from remediation.
+received. When platform-connectors cannot read the node, it records `unresolved`, which behaves as quarantine only:
+quarantine follows the rule sets as today, while drain and remediation are skipped and reported. A brief API outage
+must not remediate a node that the operator excluded from remediation.
 
 ### Delivery
 
@@ -207,21 +196,20 @@ change is gated by a normal rollout.
 
 1. Shared package, proto field and resolver. Events carry the reference, and event-exporter exports it. No stage acts
    on it yet.
-2. node-drainer and fault-remediation act on the reference.
-3. fault-quarantine acts on the reference.
-4. Device matching on entity attributes, once health events carry per-device identity.
+2. fault-quarantine, node-drainer and fault-remediation honour `enabled`.
 
 Each phase is backwards compatible: with no profiles configured, every event resolves to `default`.
 
 ## Rationale
 
-- **One decision per fault.** Every stage acts on the same profile, and the event records which one and why. This
-  closes the gap where node-drainer can change drain method mid-drain.
-- **Scale.** Resolution reuses an existing per-node cache in platform-connectors. node-drainer no longer needs selector
-  labels in its node informer. No new cluster-wide cache is added, which matters for the 100,000-node target.
-- **Small profiles.** Profiles hold switches and names, while component configuration keeps its existing shape and
-  validation. Several routes can share one profile, and moving a node group to another profile touches only its
-  route.
+- **One decision per fault.** Every stage acts on the same profile, and the event records which one and why.
+- **A small first step.** Switches cover the most common need, turning a stage off for a group of nodes or a device
+  type, with a small review and implementation surface. Later fields go inside the same sections, so profiles
+  written now stay valid.
+- **Scale.** Resolution reuses an existing per-node cache in platform-connectors. No new cluster-wide cache is added,
+  which matters for the 100,000-node target.
+- **Reusable profiles.** Several routes can share one profile, and moving a node group to another profile touches only
+  its route.
 - **One selection language.** CEL already drives quarantine rules and event overrides, and it is the only option that
   can express node, device and fault conditions in one route.
 
@@ -232,11 +220,12 @@ Each phase is backwards compatible: with no profiles configured, every event res
 - One place to configure, and one record per fault of the behaviour that applied.
 - "Off" becomes a distinct, visible outcome instead of looking like success (`AlreadyDrained`) or failure
   (`remediation-failed`).
-- The ADR-040 hand-off becomes `remediation: { mode: External }` instead of a templated configuration block.
 - Node and device behaviour use one mechanism, so accelerators that are not GPUs need no separate path.
 
 ### Negative
 
+- The drain method and remediation action are still chosen cluster-wide, so an external hand-off per group and
+  "reset bare metal, replace virtual machines" are not covered yet.
 - Route order is behaviour: a misplaced route silently shadows the ones after it.
 - A simple node group is wordier in CEL than in label-selector syntax, and a CEL typo can compile and then fail at
   evaluation.
@@ -262,6 +251,13 @@ Each phase is backwards compatible: with no profiles configured, every event res
 Extend the [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871) pattern to every stage.
 **Rejected** because: each stage would carry its own copy of the group definitions, read labels at a different time,
 and keep no shared record of what applied.
+
+### The full profile schema in one step
+
+Define drain methods, external hand-off and per-profile action maps in this ADR as well.
+**Deferred** because: each needs changes inside its component (named custom-drain targets, CR status lookup by
+resource), which would make one large change to review and ship. The switches are useful on their own, and the
+sections leave room for those fields.
 
 ### Kubernetes label selectors for node matching
 
@@ -303,6 +299,19 @@ later changes delivery, not content.
 node conditions, while every profile keeps monitoring and conditions.
 
 ## Notes
+
+### Future extensions
+
+Each of these adds fields next to `enabled` in an existing section, so profiles written for this ADR stay valid:
+
+- **Drain method per profile** (`drain.customDrainTarget`). node-drainer's single `customDrain` block becomes a map of
+  named targets, replacing `customDrain.nodeSelector`. The chosen method is recorded on the event status, so retries
+  cannot switch method mid-drain the way a relabel can today.
+- **External hand-off per profile** (`remediation.mode: External`), using [ADR-040](040-external-remediation-request.md).
+- **Remediation action per profile** (`remediation.actions`), over named maintenance resources. This needs
+  fault-remediation to look up CR status by resource rather than by action name.
+- **Rule-set allow-list** (`quarantine.ruleSets`) and **attempt limit** (`remediation.maxAttempts`) per profile.
+- **Device attributes** such as GPU product in route expressions, once health events carry per-device identity.
 
 ### Non-goals
 
