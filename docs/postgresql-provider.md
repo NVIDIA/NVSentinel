@@ -235,11 +235,15 @@ Then apply the files in filename order with a DDL-capable role, before you deplo
 `ON_ERROR_STOP` stops only the failed `psql` call, so the loop must stop too. Otherwise a later migration records a higher version over an incomplete schema.
 
 ```bash
-for migration in distros/kubernetes/nvsentinel/files/postgresql-migrations/*.sql; do
-  psql -X -v ON_ERROR_STOP=1 "host=<host> dbname=<database> user=<ddl-role>" -f "$migration" ||
-    { echo "Migration failed: $migration" >&2; break; }
-done
+(
+  for migration in distros/kubernetes/nvsentinel/files/postgresql-migrations/*.sql; do
+    psql -X -v ON_ERROR_STOP=1 "host=<host> dbname=<database> user=<ddl-role>" -f "$migration" ||
+      { echo "Migration failed: $migration" >&2; exit 1; }
+  done
+)
 ```
+
+The subshell returns a non-zero status when a migration fails, so a release pipeline stops there.
 
 Every migration is idempotent, so you can apply the full set again. Query the applied version with:
 

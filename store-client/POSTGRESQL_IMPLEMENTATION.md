@@ -606,10 +606,12 @@ docker run -d \
   postgres:15
 
 # Apply schema migrations
-for migration in ../distros/kubernetes/nvsentinel/files/postgresql-migrations/*.sql; do
-  psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d nvsentinel -f "$migration" ||
-    { echo "Migration failed: $migration" >&2; break; }
-done
+(
+  for migration in ../distros/kubernetes/nvsentinel/files/postgresql-migrations/*.sql; do
+    psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d nvsentinel -f "$migration" ||
+      { echo "Migration failed: $migration" >&2; exit 1; }
+  done
+)
 
 # Set environment variables
 export DATASTORE_PROVIDER=postgresql
