@@ -607,7 +607,8 @@ docker run -d \
 
 # Apply schema migrations
 for migration in ../distros/kubernetes/nvsentinel/files/postgresql-migrations/*.sql; do
-  psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d nvsentinel -f "$migration"
+  psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d nvsentinel -f "$migration" ||
+    { echo "Migration failed: $migration" >&2; break; }
 done
 
 # Set environment variables

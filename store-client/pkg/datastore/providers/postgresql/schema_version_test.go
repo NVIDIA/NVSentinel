@@ -128,6 +128,25 @@ func TestWaitForSchemaVersion_NeverMigrated_ReturnsErrorAfterTimeout(t *testing.
 	assert.Contains(t, err.Error(), "apply the pending SQL migrations")
 }
 
+func TestWaitForSchemaVersion_QueryBlocks_ReturnsErrorAfterTimeout(t *testing.T) {
+	setSchemaWaitForTest(t, 50*time.Millisecond, time.Minute)
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(currentSchemaVersionQuery)).
+		WillDelayFor(time.Minute).
+		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(RequiredSchemaVersion))
+
+	start := time.Now()
+	err = WaitForSchemaVersion(context.Background(), db)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not ready after waiting")
+	assert.Less(t, time.Since(start), 10*time.Second)
+}
+
 func TestWaitForSchemaVersion_ContextCancelled_ReturnsContextError(t *testing.T) {
 	setSchemaWaitForTest(t, time.Minute, time.Minute)
 

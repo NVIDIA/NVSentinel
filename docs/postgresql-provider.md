@@ -232,9 +232,12 @@ global:
 
 Then apply the files in filename order with a DDL-capable role, before you deploy an NVSentinel version that requires them. Use `psql` with `ON_ERROR_STOP`. Do not wrap the files in one transaction: `00003_health_event_idempotency_index.sql` builds an index `CONCURRENTLY`, which cannot run inside a transaction block.
 
+`ON_ERROR_STOP` stops only the failed `psql` call, so the loop must stop too. Otherwise a later migration records a higher version over an incomplete schema.
+
 ```bash
 for migration in distros/kubernetes/nvsentinel/files/postgresql-migrations/*.sql; do
-  psql -X -v ON_ERROR_STOP=1 "host=<host> dbname=<database> user=<ddl-role>" -f "$migration"
+  psql -X -v ON_ERROR_STOP=1 "host=<host> dbname=<database> user=<ddl-role>" -f "$migration" ||
+    { echo "Migration failed: $migration" >&2; break; }
 done
 ```
 
@@ -392,13 +395,10 @@ kubectl logs -n nvsentinel deployment/fault-quarantine | grep -i error
 
 ### Authorization
 
-Configure PostgreSQL user permissions:
+Create a limited application role, then give it only the grants in [Application Role Grants](#application-role-grants):
 
 ```sql
--- Create limited user for applications
 CREATE USER nvsentinel_app WITH PASSWORD 'secure-password';
-GRANT CONNECT ON DATABASE nvsentinel TO nvsentinel_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO nvsentinel_app;
 ```
 
 ### Network Security

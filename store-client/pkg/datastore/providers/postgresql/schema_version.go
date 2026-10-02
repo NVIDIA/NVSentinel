@@ -67,27 +67,39 @@ func ValidateSchemaVersion(ctx context.Context, db *sql.DB) error {
 }
 
 // WaitForSchemaVersion runs ValidateSchemaVersion until it succeeds, the wait
-// timeout elapses, or ctx is cancelled.
+// timeout elapses, or ctx is cancelled. The wait timeout also bounds each
+// query, so a blocked database cannot extend startup past it.
 func WaitForSchemaVersion(ctx context.Context, db *sql.DB) error {
-	deadline := time.Now().Add(schemaVersionWaitTimeout)
+	waitCtx, cancel := context.WithTimeout(ctx, schemaVersionWaitTimeout)
+	defer cancel()
 
 	for {
-		err := ValidateSchemaVersion(ctx, db)
+		err := ValidateSchemaVersion(waitCtx, db)
 		if err == nil {
 			return nil
 		}
 
-		if !time.Now().Add(schemaVersionPollInterval).Before(deadline) {
-			return fmt.Errorf("PostgreSQL schema not ready after waiting %s: %w", schemaVersionWaitTimeout, err)
+		if waitCtx.Err() != nil {
+			return schemaWaitError(ctx, err)
 		}
 
 		slog.Warn("PostgreSQL schema not ready, waiting for migrations",
 			"error", err, "retryIn", schemaVersionPollInterval)
 
 		select {
-		case <-ctx.Done():
-			return fmt.Errorf("waiting for PostgreSQL schema: %w", ctx.Err())
+		case <-waitCtx.Done():
+			return schemaWaitError(ctx, err)
 		case <-time.After(schemaVersionPollInterval):
 		}
 	}
+}
+
+// schemaWaitError distinguishes cancellation by the caller from the wait
+// timeout elapsing.
+func schemaWaitError(ctx context.Context, lastErr error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("waiting for PostgreSQL schema: %w", ctx.Err())
+	}
+
+	return fmt.Errorf("PostgreSQL schema not ready after waiting %s: %w", schemaVersionWaitTimeout, lastErr)
 }
