@@ -13,6 +13,12 @@
 # limitations under the License.
 
 {{- $gpuCluster := include "metadata-collector.gpuDraEnabled" . }}
+{{- $nriPlugin := include "metadata-collector.nriPluginEnabled" . }}
+{{- $podAnnotations := deepCopy (.Values.podAnnotations | default dict) }}
+{{- if $nriPlugin }}
+{{- /* The NRI plugin matches the suffix against the container name below. */}}
+{{- $_ := set $podAnnotations "nvidia.cdi.k8s.io/container.metadata-collector" .Values.nriPlugin.cdiDevice }}
+{{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -31,7 +37,7 @@ spec:
       {{- include "metadata-collector.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -138,6 +144,6 @@ spec:
       {{- with (.Values.global.priorityClassName | default .Values.priorityClassName) }}
       priorityClassName: {{ . | quote }}
       {{- end }}
-      {{- if and .Values.runtimeClassName (not $gpuCluster) }}
+      {{- if and .Values.runtimeClassName (not $gpuCluster) (not $nriPlugin) }}
       runtimeClassName: {{ .Values.runtimeClassName }}
       {{- end }}

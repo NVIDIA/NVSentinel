@@ -111,3 +111,65 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: global.gpuDraEnabled must be a boolean
+
+  - it: must not add the NRI CDI annotation by default
+    asserts:
+      - notExists:
+          path: spec.template.metadata.annotations
+      - equal:
+          path: spec.template.spec.runtimeClassName
+          value: nvidia
+
+  - it: must request the management CDI device and omit runtimeClassName in NRI plugin mode
+    set:
+      nriPlugin.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["nvidia.cdi.k8s.io/container.metadata-collector"]
+          value: management.nvidia.com/gpu=all
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: metadata-collector
+      - notExists:
+          path: spec.template.spec.runtimeClassName
+      - notExists:
+          path: spec.template.spec.resourceClaims
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 3
+
+  - it: must keep user pod annotations alongside the NRI CDI annotation
+    set:
+      nriPlugin.enabled: true
+      nriPlugin.cdiDevice: management.nvidia.com/gpu=all,k8s.device-plugin.nvidia.com/gpu=GPU-0
+      podAnnotations:
+        example.com/team: gpu
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations
+          value:
+            example.com/team: gpu
+            nvidia.cdi.k8s.io/container.metadata-collector: management.nvidia.com/gpu=all,k8s.device-plugin.nvidia.com/gpu=GPU-0
+
+  - it: must fail on a quoted nriPlugin.enabled
+    set:
+      nriPlugin.enabled: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: metadata-collector.nriPlugin.enabled must be a boolean
+
+  - it: must fail when NRI plugin mode is combined with GPUCluster mode
+    set:
+      nriPlugin.enabled: true
+      global.gpuDraEnabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: mutually exclusive
+
+  - it: must fail when NRI plugin mode has no CDI device
+    set:
+      nriPlugin.enabled: true
+      nriPlugin.cdiDevice: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: metadata-collector.nriPlugin.cdiDevice must be set

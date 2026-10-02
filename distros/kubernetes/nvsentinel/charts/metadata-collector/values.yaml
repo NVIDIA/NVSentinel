@@ -29,13 +29,33 @@ resources:
 
 # Runtime class name for the pod. The default "nvidia" is rendered on the
 # DaemonSet. Set runtimeClassName: "" to omit the field (CRI-O, and NRI-mode
-# clusters with no matching RuntimeClass). In NRI mode, also mount host driver
-# libraries via additionalHostVolumes / additionalVolumeMounts (and extraEnv
-# if LD_LIBRARY_PATH is needed).
+# clusters with no matching RuntimeClass). On GPU Operator NRI-mode clusters,
+# prefer nriPlugin below; with a host-installed driver you can instead mount
+# the host driver libraries via additionalHostVolumes / additionalVolumeMounts
+# (and extraEnv if LD_LIBRARY_PATH is needed).
 # Ignored when global.gpuDraEnabled is true: GPUCluster (DRA)
 # mode has no RuntimeClass, and the DaemonSet instead holds a DRA admin-access
 # claim on the node's GPUs so the DRA driver injects the driver libraries via CDI.
+# Also ignored when nriPlugin.enabled is true.
 runtimeClassName: "nvidia"
+
+# GPU Operator NRI plugin mode (GPU Operator cdi.nriPluginEnabled: true). That
+# mode has no "nvidia" RuntimeClass. When enabled, the DaemonSet omits
+# runtimeClassName and requests a management CDI device from the Container
+# Toolkit's NRI plugin with the pod annotation
+# nvidia.cdi.k8s.io/container.metadata-collector. This works with both the
+# driver container and a host-installed driver, and does not consume a GPU.
+#
+# Prerequisite: the toolkit honours management devices only in the GPU
+# Operator namespace unless the release namespace is listed in the toolkit
+# env NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES (comma-separated). Otherwise it
+# skips injection silently and the pod crash-loops with
+# NVML ERROR_LIBRARY_NOT_FOUND.
+# Cannot be combined with global.gpuDraEnabled.
+nriPlugin:
+  # Unquoted boolean only; a quoted "false" is refused by the render.
+  enabled: false
+  cdiDevice: management.nvidia.com/gpu=all
 
 # Extra environment variables for the metadata-collector container (optional).
 # extraEnv:
