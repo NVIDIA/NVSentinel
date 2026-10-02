@@ -62,7 +62,8 @@ and remediation. An ordered list of **profile routes** selects the profile for e
    matches, the event gets the built-in `default` profile.
 3. platform-connectors selects the profile one time, when it receives the event. It records a reference to the
    profile on the health event. All later stages use this reference. They do not read the node labels to find the
-   profile.
+   profile. [Profile changes for a fault in progress](#profile-changes-for-a-fault-in-progress) compares this
+   decision with other options.
 4. The operator configures profiles with Helm values. The configuration is one typed document with the structure of a
    CRD. A shared package parses and validates it. Helm writes it into the ConfigMap of each component that uses it. It
    is not a served CRD.
@@ -229,6 +230,114 @@ change to a profile goes through a usual rollout.
 
 Each phase is compatible with earlier versions. When there are no profiles, all events get `default`.
 
+## Profile changes for a fault in progress
+
+A fault is in progress from the time platform-connectors receives the event until fault-remediation completes, or
+until the operator cancels the quarantine session. This time can be long. For example, a drain that waits for pods to
+complete can take hours. During this time, three items can change:
+
+- The node labels. For example, an operator moves a node to a different group during an incident.
+- The routes.
+- The settings of a profile, through a Helm rollout.
+
+The decision in this ADR pins the profile name, not the profile settings. Each stage reads the settings of the pinned
+profile when the stage starts. Thus, a change to the settings of a profile applies to the next stage of a fault in
+progress. A change to the labels or to the routes applies only to new faults.
+
+A pinned profile is predictable, but it can be too strict. During an incident, operators can change labels to stop an
+action. With a pinned profile, this change does not stop the action for faults in progress. This section compares the
+options.
+
+### Option A: pin the profile when platform-connectors receives the event
+
+This is the decision in this ADR.
+
+Advantages:
+
+- All stages use the same profile for a fault.
+- Stages after platform-connectors do not read node labels to find the profile.
+- The record shows one profile for each fault.
+- A retry cannot change the behaviour of a stage.
+
+Disadvantages:
+
+- A label change does not apply to a fault in progress, also when the drain takes hours.
+- To change the behaviour for a fault in progress, the operator must cancel the fault with a manual uncordon. This
+  also stops the drain.
+
+### Option B: select the profile again when each stage starts
+
+Each stage evaluates the routes with the node labels at the time that the stage starts.
+
+Advantages:
+
+- A label change applies at the next stage of a fault in progress.
+- This is similar to the usual Kubernetes model, in which a controller acts on the current state.
+
+Disadvantages:
+
+- Stages can use different profiles for one fault. For example, a node gets a quarantine under one profile and a drain
+  under a different profile.
+- A label change can start an action that the profile at the start of the fault disabled.
+- node-drainer and fault-remediation must read the label keys that the routes use. node-drainer must add these keys
+  to its node informer cache.
+- The record must show a profile for each stage.
+
+### Option C: select the profile again at each retry
+
+Each stage evaluates the routes again at each retry. This is the current behaviour of `customDrain.nodeSelector`.
+
+Advantages:
+
+- A label change applies at the next retry. This is the fastest reaction.
+
+Disadvantages:
+
+- A stage can change its behaviour while it operates. For example, the drain method can change during a drain.
+- The behaviour is difficult to predict and to audit.
+
+This option is rejected.
+
+### Option D: pin the profile, but let a stage apply a more restrictive profile
+
+platform-connectors pins the profile, as in option A. When a stage starts, it also evaluates the routes with the
+current node labels.
+
+- If the current profile disables the stage, the stage does not operate, and it records the profile that stopped it.
+- If the current profile enables a stage that the pinned profile disables, the stage uses the pinned profile.
+
+Advantages:
+
+- An operator can stop an action for a fault in progress with a label change. During an incident, operators usually
+  change labels to stop actions, not to start them.
+- A label change cannot start an action that the pinned profile disabled.
+- The stages can be different only in the safe direction. A later stage can do less than the pinned profile, but not
+  more.
+
+Disadvantages:
+
+- The stages read node labels when they start, as in option B.
+- For some faults, two profiles apply. The record must show the pinned profile, and the profile that stopped a stage.
+- The behaviour is more complex to explain than option A or option B.
+
+### Comparison
+
+| Option | All stages use the same profile | A label change applies to a fault in progress | Stages read labels after platform-connectors |
+|---|---|---|---|
+| A: pin | Yes | No | No |
+| B: each stage | No | Yes, at the next stage | Yes |
+| C: each retry | No | Yes, at the next retry | Yes |
+| D: pin, restrict only | Yes, or a more restrictive one | Only to stop a stage | Yes |
+
+### Proposal
+
+Phase 1 is the same for all options. platform-connectors records the profile on each event, and no stage uses it.
+Thus, the team can make this decision before phase 2.
+
+This ADR proposes option A, because it is the simplest option. If reviewers require that label changes apply to faults
+in progress, option D is the recommended option. Option D keeps the consistency of option A when an action starts,
+and it gives operators a method to stop an action. Option C is rejected.
+
 ## Rationale
 
 - **One decision for each fault.** All stages use the same profile. The event records the profile and the route that
@@ -299,18 +408,10 @@ for drain scope.
 **Rejected** because: routes then need two syntaxes and a rule to combine them. A route that combines node and fault
 conditions needs CEL in all cases. CEL can express all label selector operators: `=`, `!=`, `in`, `notin`, and exists.
 
-### Select the profile again from the current labels at each stage
+### Select the profile again at each stage or at each retry
 
-Each stage evaluates the routes, with the node labels at the time that the stage starts. With this alternative,
-NVSentinel follows the live state of the cluster more closely.
-**Rejected for now** because:
-
-- The stages can use different profiles for one fault. For example, fault-quarantine uses one profile and
-  node-drainer uses a different profile.
-- Each stage must read node labels, at a scale of 100,000 nodes.
-- The record must show a profile for each stage.
-
-See the open questions.
+**Under discussion.** See [Profile changes for a fault in progress](#profile-changes-for-a-fault-in-progress),
+options B, C, and D.
 
 ### Priority numbers instead of the list sequence
 
@@ -366,9 +467,8 @@ Each extension adds fields next to `enabled` in an existing section. Thus, profi
 - **The priority of a profile and the overrides on an event** (`quarantineOverrides`, `drainOverrides`). Proposed
   answer: the overrides on the event have priority. Overrides are explicit and not frequent.
   `quarantineOverrides.force` already bypasses the rule evaluation.
-- **One selection for each fault, or a selection from the current labels.** This ADR selects the profile one time for
-  each fault. Operators can need the current state of the cluster during an incident. If so, each stage can select
-  the profile again when it starts, and record its selection. Then the retries in a stage keep the same profile.
+- **Profile changes for a fault in progress.** The team must select an option before phase 2. See
+  [Profile changes for a fault in progress](#profile-changes-for-a-fault-in-progress).
 - **The behaviour when platform-connectors cannot read the node.** The `unresolved` profile is a safe choice. An
   alternative is to try the lookup again for a limited time, and then use `unresolved`.
 
