@@ -49,10 +49,10 @@ behaviour applied to a fault.
 ## Decision
 
 Introduce **behaviour profiles**: named sets of quarantine, drain and remediation settings, selected by an ordered list
-of **profile matchers**.
+of **profile routes**.
 
 1. A profile contains mostly switches, plus references by name to configuration that stays in each component.
-2. A matcher selects a profile with a CEL expression over the health event and the node's labels. Matchers are
+2. A route selects a profile with a CEL expression over the health event and the node's labels. Routes are
    evaluated in order and the first match wins. With no match, the event gets the built-in `default` profile, which is
    today's behaviour.
 3. platform-connectors resolves the profile once, when it receives the event, and records a reference to it on the
@@ -91,7 +91,7 @@ global:
           quarantine: { enabled: false }
           drain: { mode: Disabled }
           remediation: { mode: Disabled }
-      matchers:                            # ordered; the first match wins
+      routes:                              # ordered; the first match wins
         - name: slurm-pools
           expression: 'node.labels["example.com/scheduler"] == "slurm"'
           profile: slurm
@@ -115,26 +115,26 @@ existing configuration. node-drainer's single `customDrain` block becomes a map 
 among them. Existing configuration keeps working: an existing `customDrain` block becomes the target named `default`,
 and each existing action entry becomes a resource named after its action.
 
-**Matchers are CEL expressions**, the language fault-quarantine rules ([ADR-003](003-rule-based-node-quarantine.md))
+**Routes are CEL expressions**, the language fault-quarantine rules ([ADR-003](003-rule-based-node-quarantine.md))
 and health-event overrides ([ADR-021](021-health-event-property-overrides.md)) already use. Each `expression` must
 return a boolean and sees two variables:
 
 - `event`: the same event map as the override rules, extended with `entitiesImpacted`.
 - `node`: `node.labels`, the labels of the node the event names.
 
-Node groups, devices and fault types are therefore all one kind of matcher, and they combine with `&&`, for example
+Node groups, devices and fault types are therefore all one kind of route, and they combine with `&&`, for example
 `node.labels["example.com/platform"] == "vm" && event.componentClass == "GPU"`. Matching by GPU product, or by an
-accelerator that is not a GPU, is an expression over the impacted entities. It needs no new matcher type.
+accelerator that is not a GPU, is an expression over the impacted entities. It needs no new route type.
 
 An expression that fails to evaluate does not match. The most common case is reading a label the node does not
-have, which then behaves like a label selector that finds no match. Each failure increments a per-matcher error
+have, which then behaves like a label selector that finds no match. Each failure increments a per-route error
 metric, so a typo in a key shows up instead of silently never matching.
 
 **Validation** runs in the shared parser at startup and as a Helm `fail` at render time:
 
-- Profile and matcher names are DNS-1123 labels. `unresolved` is reserved.
-- Each matcher's `expression` compiles and returns a boolean.
-- Each matcher references a defined profile, or `default`.
+- Profile and route names are DNS-1123 labels. `unresolved` is reserved.
+- Each route's `expression` compiles and returns a boolean.
+- Each route references a defined profile, or `default`.
 - Each `customDrainTarget`, `ruleSets` entry and `actions` value names something the owning component defines.
 - `quarantine.enabled: false` requires `drain: Disabled` and `remediation: Disabled`. A drain without a cordon
   reschedules pods onto the node.
@@ -147,7 +147,7 @@ metric, so a typo in a key shows up instead of silently never matching.
 message BehaviourProfileRef {
   string name = 1;     // matched profile, "default" or "unresolved"
   string hash = 2;     // hash of the profile's resolved settings
-  string matcher = 3;  // matcher that selected it; empty for default
+  string route = 3;    // route that selected it; empty for default
 }
 
 message HealthEvent {
@@ -162,20 +162,20 @@ message HealthEventStatus {
 }
 ```
 
-The hash covers the profile's settings, not the matchers. Editing or reordering matchers never changes it. It lets a
+The hash covers the profile's settings, not the routes. Editing or reordering routes never changes it. It lets a
 stage detect that its loaded definition differs from the one that was resolved, which happens during a rollout.
 
 ### Per component
 
 - **Shared package** (`commons/pkg/behaviourprofile`): schema types, parsing, inheritance from `default`, validation,
-  canonical hashing and matcher evaluation. All consumers use it, so they agree on the hash.
+  canonical hashing and route evaluation. All consumers use it, so they agree on the hash.
 - **platform-connectors**: a `BehaviourProfileResolver` transformer, registered after `OverrideTransformer` because
   overrides can change fields an `expression` tests. It runs in both roles. It reuses MetadataAugmentor's cached Node
   lookup, so it adds no API reads. That cache keeps only allow-listed label keys, so the resolver derives the keys its
   expressions read and adds them to the cache. If a key cannot be derived, it keeps every label, as fault-quarantine's
   node cache does (`fault-quarantine/pkg/nodecache`). It always overwrites the reference, because events re-published
   by health-events-analyzer and lifecycle-manager arrive as copies of earlier events. It is the only consumer of
-  `matchers`.
+  `routes`.
 - **fault-quarantine**: after the existing branch for nodes that are already quarantined, and before rule evaluation,
   an unhealthy event whose profile has `quarantine.enabled: false` is recorded as `nodeQuarantined: SkippedByProfile`.
   It is marked terminal, the same way intentional skips already are, so a cold start cannot re-decide it. `ruleSets`
@@ -200,7 +200,7 @@ operator excluded from remediation.
 
 `global.behaviourProfiles` is rendered into the platform-connectors, fault-quarantine, node-drainer and
 fault-remediation ConfigMaps, following the `ValidationConfiguration` pattern ([ADR-049](049-node-validation.md)). Only
-platform-connectors receives `matchers`. All four already roll their pods when their ConfigMap changes, so a profile
+platform-connectors receives `routes`. All four already roll their pods when their ConfigMap changes, so a profile
 change is gated by a normal rollout.
 
 ### Phases
@@ -220,10 +220,10 @@ Each phase is backwards compatible: with no profiles configured, every event res
 - **Scale.** Resolution reuses an existing per-node cache in platform-connectors. node-drainer no longer needs selector
   labels in its node informer. No new cluster-wide cache is added, which matters for the 100,000-node target.
 - **Small profiles.** Profiles hold switches and names, while component configuration keeps its existing shape and
-  validation. Several matchers can share one profile, and moving a node group to another profile touches only its
-  matcher.
+  validation. Several routes can share one profile, and moving a node group to another profile touches only its
+  route.
 - **One selection language.** CEL already drives quarantine rules and event overrides, and it is the only option that
-  can express node, device and fault conditions in one matcher.
+  can express node, device and fault conditions in one route.
 
 ## Consequences
 
@@ -237,22 +237,22 @@ Each phase is backwards compatible: with no profiles configured, every event res
 
 ### Negative
 
-- Matcher order is behaviour: a misplaced matcher silently shadows the ones after it.
+- Route order is behaviour: a misplaced route silently shadows the ones after it.
 - A simple node group is wordier in CEL than in label-selector syntax, and a CEL typo can compile and then fail at
   evaluation.
 - A relabel takes effect for new faults only after the node metadata cache expires (60 seconds node-local, 10 minutes
   in the deployment role). A fault already in progress keeps the profile it was resolved with.
-- Changing matchers rolls the node-local platform-connector DaemonSet on every node.
-- A node that matches different matchers for different faults gets different profiles. That is intended, but it can
+- Changing routes rolls the node-local platform-connector DaemonSet on every node.
+- A node that matches different routes for different faults gets different profiles. That is intended, but it can
   surprise operators reading a node's history.
 
 ### Mitigations
 
-- Log the resolved profile and matcher on every event, export them, and add a metric for each matcher's match count, so
-  a shadowed matcher shows up as zero.
+- Log the resolved profile and route on every event, export them, and add a metric for each route's match count, so
+  a shadowed route shows up as zero.
 - Document how to change the handling of a fault already in progress: cancel it (a manual uncordon cancels the
   quarantine session); the next fault resolves against current labels.
-- Keep matchers in their own rendered file, so editing them does not restart fault-quarantine, node-drainer or
+- Keep routes in their own rendered file, so editing them does not restart fault-quarantine, node-drainer or
   fault-remediation.
 
 ## Alternatives Considered
@@ -267,13 +267,13 @@ and keep no shared record of what applied.
 
 Use label-selector syntax for node groups and keep CEL for device and fault conditions, as
 [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871) and [ADR-055](055-pod-drain-policies.md) do for drain scoping.
-**Rejected** because: matchers would need two syntaxes, with a rule for combining them, and anything that mixes node and
+**Rejected** because: routes would need two syntaxes, with a rule for combining them, and anything that mixes node and
 fault conditions needs CEL anyway. Everything a label selector expresses (`=`, `!=`, `in`, `notin`, exists) has a
 direct CEL form.
 
 ### Re-resolve from current labels at each stage
 
-Each stage evaluates the matchers itself, from the node's labels at the moment it starts. This follows the live state of
+Each stage evaluates the routes itself, from the node's labels at the moment it starts. This follows the live state of
 the cluster more closely.
 **Rejected for now** because: the stages could disagree about one fault (for example, quarantined under one profile and
 drained under another), every stage would need node label reads at 100,000 nodes, and the audit record would need a
@@ -310,7 +310,7 @@ node conditions, while every profile keeps monitoring and conditions.
 - Per-profile dry run. The global `dryRun` setting applies to all profiles.
 - Per-profile post-remediation validation.
 - Changing which monitors run on which nodes. Monitor scheduling already uses label selectors.
-- MIG instances as matcher targets.
+- MIG instances in route expressions.
 
 ### Open questions
 
