@@ -18,6 +18,30 @@ limitations under the License.
 
 Status: Proposed.
 
+## Table of Contents
+
+1. [Context](#context)
+2. [Decision](#decision)
+3. [Implementation](#implementation)
+   - [Configuration](#configuration)
+   - [The reference on the event](#the-reference-on-the-event)
+   - [Changes to each component](#changes-to-each-component)
+   - [Delivery](#delivery)
+   - [Phases](#phases)
+4. [Profile changes for a fault in progress](#profile-changes-for-a-fault-in-progress)
+   - [Option A: pin the profile when platform-connectors receives the event](#option-a-pin-the-profile-when-platform-connectors-receives-the-event)
+   - [Option B: allow profile changes for a fault in progress](#option-b-allow-profile-changes-for-a-fault-in-progress)
+   - [Comparison](#comparison)
+   - [Proposal](#proposal)
+5. [Rationale](#rationale)
+6. [Consequences](#consequences)
+7. [Alternatives Considered](#alternatives-considered)
+8. [Notes](#notes)
+   - [Future extensions](#future-extensions)
+   - [Non-goals](#non-goals)
+   - [Open questions](#open-questions)
+9. [References](#references)
+
 ## Context
 
 NVSentinel applies the same quarantine, drain, and remediation behaviour to all nodes and all devices in a cluster.
@@ -375,18 +399,6 @@ conditions needs CEL in all cases. CEL can express all label selector operators:
 
 **Under discussion.** See [Profile changes for a fault in progress](#profile-changes-for-a-fault-in-progress),
 option B.
-
-### Priority numbers instead of the list sequence
-
-**Rejected** because: a priority number gives the same result as the sequence, but the operator cannot see the full
-sequence in one location. Also, two routes with the same priority need a rule to select one of them.
-
-### Layered profiles
-
-Select one profile for each layer (node, device, and event), and merge the profiles field by field. With this
-alternative, node settings and device settings combine without a combined profile.
-**Deferred** because: it adds a merge step and a list of references on the event. At this time, combined profiles
-are sufficient for this case. Examine this alternative again if the number of combined profiles becomes large.
 
 ### A served CRD
 
