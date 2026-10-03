@@ -1,0 +1,91 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: DRA GPU detection
+templates:
+  - templates/clusterrole-dra.yaml
+  - templates/clusterrolebinding-dra.yaml
+  - templates/configmap.yaml
+# The umbrella chart sets this; the subchart has no default and the configmap
+# refuses to render without a boolean.
+set:
+  global.platformConnectorAuth.enabled: false
+tests:
+  # Off by default: no extra RBAC and nothing in the webhook config.
+  - it: renders no DRA RBAC and no DRA config by default
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/clusterrole-dra.yaml
+      - hasDocuments:
+          count: 0
+        template: templates/clusterrolebinding-dra.yaml
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: gpuDraEnabled
+        template: templates/configmap.yaml
+
+  - it: grants get-only access to DRA claims when global.gpuDraEnabled is true
+    template: templates/clusterrole-dra.yaml
+    set:
+      global.gpuDraEnabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ClusterRole
+      - equal:
+          path: metadata.name
+          value: preflight-dra
+      - equal:
+          path: rules
+          value:
+            - apiGroups: ["resource.k8s.io"]
+              resources: ["resourceclaims", "resourceclaimtemplates"]
+              verbs: ["get"]
+
+  - it: binds the DRA ClusterRole to the preflight ServiceAccount without gang coordination
+    template: templates/clusterrolebinding-dra.yaml
+    set:
+      gangCoordination.enabled: false
+      global.gpuDraEnabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ClusterRoleBinding
+      - equal:
+          path: roleRef.name
+          value: preflight-dra
+      - equal:
+          path: subjects[0].namespace
+          value: NAMESPACE
+
+  - it: turns on DRA detection in the webhook config when global.gpuDraEnabled is true
+    template: templates/configmap.yaml
+    set:
+      global.gpuDraEnabled: true
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "\ngpuDraEnabled: true\n"
+
+  # A quoted "false" must not turn on detection and cluster-wide claim access.
+  - it: fails when global.gpuDraEnabled is not a boolean
+    template: templates/configmap.yaml
+    set:
+      global.gpuDraEnabled: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "global.gpuDraEnabled must be a boolean"

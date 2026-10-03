@@ -34,11 +34,13 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/controller"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -95,6 +97,7 @@ func run() error {
 	slog.Info("Configuration loaded",
 		"initContainers", len(cfg.InitContainers),
 		"gpuResourceNames", cfg.GPUResourceNames,
+		"gpuDraEnabled", cfg.GPUDraEnabled,
 		"gangCoordinationEnabled", cfg.GangCoordination.Enabled,
 		"healthPublishTarget", cfg.HealthPublishTarget)
 
@@ -111,7 +114,12 @@ func run() error {
 		}
 	}
 
-	handler := webhook.NewHandler(cfg, resolver, onGangRegister, ensureCA)
+	draReader, err := newDRAReader(cfg)
+	if err != nil {
+		return err
+	}
+
+	handler := webhook.NewHandler(cfg, resolver, draReader, onGangRegister, ensureCA)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", handler.HandleMutate)
@@ -247,6 +255,36 @@ func setupGangCoordination(cfg *config.Config, mgr ctrl.Manager) error {
 		"masterPort", cfg.GangCoordination.MasterPort)
 
 	return nil
+}
+
+// newDRAReader builds the client the webhook uses to read ResourceClaims and
+// ResourceClaimTemplates for DRA GPU detection. It returns nil when
+// gpuDraEnabled is false, which turns the detection off. The client is
+// uncached: it keeps no informer and no copy of these objects in memory, and
+// it needs only get access. It uses ctrl.GetConfig() for the same reason as
+// setupManager: client-side throttling on the admission path becomes
+// admission latency.
+func newDRAReader(cfg *config.Config) (client.Reader, error) {
+	if !cfg.GPUDraEnabled {
+		return nil, nil
+	}
+
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Kubernetes client config for DRA detection: %w", err)
+	}
+
+	scheme := runtime.NewScheme()
+	utilruntime.Must(resourcev1.AddToScheme(scheme))
+
+	draClient, err := client.New(restConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create DRA client: %w", err)
+	}
+
+	slog.Info("DRA GPU detection enabled")
+
+	return draClient, nil
 }
 
 func runHTTPServer(ctx context.Context, handler http.Handler, certDir string, port int) error {
