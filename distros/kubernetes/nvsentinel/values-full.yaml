@@ -833,7 +833,9 @@ node-drainer:
 
   # Flag to restrict draining to GPU workloads
   # If enabled, only pods with the metadata-collector device annotation
-  # (indicating assigned GPU devices) are eligible for draining
+  # (indicating assigned GPU devices) are eligible for draining. Pods without
+  # the annotation are also eligible if a DRA ResourceClaim requests the
+  # gpu.nvidia.com DeviceClass for them
   # Default: false if not specified
   drainGPUPods: false
 

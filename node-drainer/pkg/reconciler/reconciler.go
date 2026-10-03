@@ -727,7 +727,7 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 
 	for _, namespace := range action.Namespaces {
 		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(
-			namespace, nodeName, partialDrainEntity, action.PodFilter)
+			ctx, namespace, nodeName, partialDrainEntity, action.PodFilter)
 		if err != nil {
 			tracing.RecordError(span, err)
 			span.SetAttributes(
@@ -1274,7 +1274,7 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 	podsToDrain := make(map[string][]string)
 
 	for _, ns := range action.Namespaces {
-		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(ns, nodeName, partialDrainEntity)
+		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(ctx, ns, nodeName, partialDrainEntity)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to find evictable pods",
 				"namespace", ns,

@@ -144,4 +144,4 @@ Automatically resumes drain operations after restarts - queries datastore for in
 For GPU faults that can be remediated with a GPU reset, the Node Drainer only drains selected pods using the unhealthy GPU. For faults that require a node reboot, it drains all eligible pods on the node selected by the configured namespace rules or pod policies.
 
 ### GPU-Only Draining
-When `drainGPUPods: true` is set, the Node Drainer filters pod eviction to only target workloads that request GPU resources. The feature detects GPU resources using device annotations provided by the Metadata Collector, which tracks GPU allocation across the cluster. Default is `false`.
+When `drainGPUPods: true` is set, the Node Drainer filters pod eviction to only target workloads that request GPU resources. The feature detects GPU resources using device annotations provided by the Metadata Collector, which tracks GPU allocation across the cluster. Pods without the annotation are also drained if a DRA ResourceClaim requests the `gpu.nvidia.com` DeviceClass for them. Default is `false`.
