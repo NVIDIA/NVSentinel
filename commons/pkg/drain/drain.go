@@ -46,9 +46,9 @@ drains targeting the same partialDrainEntity. If the current event has no partia
 - The list of HealthEvents are sourced from the quarantineValidationHealthEvent annotation which persists unhealthy
 events from the quarantine session that require post-remediation validation even if they recover and are removed from
 the related quarantineHealthEvent annotation.
-- We will always pass no currentPartialEntity, and getPartialDrainEntity is PartialDrainEntity (below), so an event
-only counts as proof of a full drain if it did not itself qualify for a partial drain — an event that would have
-qualified for a partial drain never proves the rest of the node was evicted.
+- We will always pass no currentPartialEntity, and getPartialDrainEntity returns PartialDrainEntity (below) unless
+partial drain is disabled in fault-quarantine's validation config, so an event only counts as proof of a full drain
+if it was not itself partially drained — a partially drained event never proves the rest of the node was evicted.
 */
 func IsNodeDrained(ctx context.Context, healthEventStore datastore.HealthEventStore, nodeName string,
 	events []*protos.HealthEvent, excludeEventID string, currentPartialEntity *protos.Entity,

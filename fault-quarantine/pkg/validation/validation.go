@@ -51,6 +51,8 @@ type ValidationClient struct {
 
 	resourceTemplate *template.Template
 	resourceGVR      schema.GroupVersionResource
+
+	partialDrainEnabled bool
 }
 
 type templateData struct {
@@ -101,6 +103,7 @@ func NewValidationClient(cfg config.TomlConfig, k8sClient *informer.FaultQuarant
 		healthEventStore:          healthEventStore,
 		resourceTemplate:          validationTemplate,
 		resourceGVR:               gvr,
+		partialDrainEnabled:       cfg.Validation.IsPartialDrainEnabled(),
 	}, nil
 }
 
@@ -254,7 +257,7 @@ func (c *ValidationClient) FetchValidationTestsFromQuarantineSession(ctx context
 		}
 	}
 
-	isDrained, err := drain.IsNodeDrained(ctx, c.healthEventStore, nodeName, events, "", nil, drain.PartialDrainEntity)
+	isDrained, err := drain.IsNodeDrained(ctx, c.healthEventStore, nodeName, events, "", nil, c.partialDrainEntity)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to look up drain status for node %s: %w", nodeName, err)
 	}
@@ -269,6 +272,16 @@ func (c *ValidationClient) FetchValidationTestsFromQuarantineSession(ctx context
 	sort.Strings(eventIDs)
 
 	return tests, sessionID(eventIDs), nil
+}
+
+// partialDrainEntity mirrors node-drainer's drain scope decision: an event was only partially drained if partial
+// drain is enabled and the event qualifies for it. Otherwise node-drainer evicted every eligible pod on the node.
+func (c *ValidationClient) partialDrainEntity(healthEvent *protos.HealthEvent) (*protos.Entity, error) {
+	if !c.partialDrainEnabled {
+		return nil, nil
+	}
+
+	return drain.PartialDrainEntity(healthEvent)
 }
 
 func (c *ValidationClient) CreateValidationRequest(ctx context.Context, node *corev1.Node, tests []string, sessionID,
