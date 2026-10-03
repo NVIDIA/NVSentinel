@@ -94,10 +94,14 @@ var (
 	}
 )
 
-// Node annotations the validation-controller manages while a ValidationRequest runs against a node.
+// Node annotations and label the validation-controller manages while a ValidationRequest runs against a node.
 const (
 	AnnotationActiveValidationRequest = "nvsentinel.nvidia.com/active-validation-request"
 	AnnotationValidationSession       = "nvsentinel.nvidia.com/validation-session"
+	ValidationStateLabelKey           = "nvsentinel.nvidia.com/validation-state"
+	ValidationStateValidating         = "validating"
+	ValidationStatePending            = "validation-pending"
+	ValidationStateFailed             = "validation-failed"
 )
 
 func WaitForNodesCordonState(
@@ -2293,23 +2297,7 @@ func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName s
 
 // RemoveNodeManagedByNVSentinelLabel removes the ManagedByNVSentinel label from a node.
 func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, nodeName string) error {
-	return RemoveNodeLabel(ctx, c, nodeName, "k8saas.nvidia.com/ManagedByNVSentinel")
-}
-
-func RemoveNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		node, err := GetNodeByName(ctx, c, nodeName)
-		if err != nil {
-			return err
-		}
-
-		if node.Labels != nil {
-			delete(node.Labels, labelKey)
-			return c.Resources().Update(ctx, node)
-		}
-
-		return nil
-	})
+	return SetNodeLabel(ctx, c, nodeName, "k8saas.nvidia.com/ManagedByNVSentinel", "")
 }
 
 func SetNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey, labelValue string) error {
@@ -2319,11 +2307,48 @@ func SetNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey, labe
 			return err
 		}
 
+		if len(labelValue) == 0 {
+			if node.Labels == nil {
+				return nil
+			}
+
+			delete(node.Labels, labelKey)
+
+			return c.Resources().Update(ctx, node)
+		}
+
 		if node.Labels == nil {
 			node.Labels = make(map[string]string)
 		}
 
 		node.Labels[labelKey] = labelValue
+
+		return c.Resources().Update(ctx, node)
+	})
+}
+
+func SetNodeAnnotation(ctx context.Context, c klient.Client, nodeName, annotationKey, annotationValue string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			return err
+		}
+
+		if len(annotationValue) == 0 {
+			if node.Annotations == nil {
+				return nil
+			}
+
+			delete(node.Annotations, annotationKey)
+
+			return c.Resources().Update(ctx, node)
+		}
+
+		if node.Annotations == nil {
+			node.Annotations = make(map[string]string)
+		}
+
+		node.Annotations[annotationKey] = annotationValue
 
 		return c.Resources().Update(ctx, node)
 	})

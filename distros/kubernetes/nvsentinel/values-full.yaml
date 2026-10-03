@@ -185,6 +185,10 @@ global:
   # Leave empty to use same as global tolerations
   systemNodeTolerations: []
 
+  # Kubelet's --root-dir. metadata-collector mounts <kubeletRootDir>/pod-resources
+  # from the host. Set this when kubelet runs with a non-default --root-dir.
+  kubeletRootDir: /var/lib/kubelet
+
   ################################################################################
   # MODULE ENABLE/DISABLE FLAGS
   #

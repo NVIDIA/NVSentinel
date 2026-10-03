@@ -49,6 +49,123 @@ tests:
             name: LD_LIBRARY_PATH
           any: true
 
+  - it: must mount pod-resources from the default kubelet root dir
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /var/lib/kubelet/pod-resources
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: pod-gpu-resources
+            mountPath: /var/lib/kubelet/pod-resources
+            readOnly: true
+
+  - it: must mount pod-resources from a relocated kubelet root dir
+    set:
+      global.kubeletRootDir: /custom/kubelet
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /custom/kubelet/pod-resources
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: pod-gpu-resources
+            mountPath: /var/lib/kubelet/pod-resources
+            readOnly: true
+
+  - it: must strip a trailing slash from global.kubeletRootDir
+    set:
+      global.kubeletRootDir: /custom/kubelet/
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /custom/kubelet/pod-resources
+              type: Directory
+
+  - it: must strip surrounding whitespace from global.kubeletRootDir
+    set:
+      global.kubeletRootDir: " /custom/kubelet\n"
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /custom/kubelet/pod-resources
+              type: Directory
+
+  - it: must use the default kubelet root dir when global.kubeletRootDir is null
+    set:
+      global.kubeletRootDir: null
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /var/lib/kubelet/pod-resources
+              type: Directory
+
+  - it: must fail on an invalid global.kubeletRootDir
+    set:
+      global.kubeletRootDir: custom/kubelet
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must fail on a global.kubeletRootDir that is only a slash
+    set:
+      global.kubeletRootDir: /
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must use the default kubelet root dir when global.kubeletRootDir is empty
+    set:
+      global.kubeletRootDir: ""
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /var/lib/kubelet/pod-resources
+              type: Directory
+
+  - it: must fail on a boolean global.kubeletRootDir
+    set:
+      global.kubeletRootDir: false
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must fail on a numeric global.kubeletRootDir
+    set:
+      global.kubeletRootDir: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must fail on a global.kubeletRootDir that is the pod-resources directory
+    set:
+      global.kubeletRootDir: /custom/kubelet/pod-resources/
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
   - it: must render additional host volumes, mounts, and extra env
     set:
       runtimeClassName: ""

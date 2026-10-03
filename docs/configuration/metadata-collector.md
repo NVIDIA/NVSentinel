@@ -151,6 +151,20 @@ metadata-collector:
 
 Set `kubeletHost: {}` to leave the variable unset, which falls back to `localhost`. An explicit `--kubelet-kubeconfig` overrides this value entirely.
 
+## Kubelet Root Directory
+
+The collector maps pods to GPUs through the kubelet PodResources socket. Kubelet creates that socket under its `--root-dir`, so the chart mounts `<kubeletRootDir>/pod-resources` from the host at the fixed path the collector reads. Set this value to the kubelet `--root-dir` when a distribution runs kubelet from a non-default directory, for example `/var/lib/k0s/kubelet` on k0s:
+
+```yaml
+global:
+  kubeletRootDir: /var/lib/kubelet   # default
+```
+
+If the value does not match kubelet, one of these occurs:
+
+- The pod stays in `ContainerCreating` with a `FailedMount` event, because the host directory does not exist.
+- The container logs `Pod device mapper failed` with the error `got an error creating Kubelet gRPC client: stat /var/lib/kubelet/pod-resources/kubelet.sock: no such file or directory` and exits, because the host directory exists but kubelet does not use it.
+
 ## Pod Mapper Failure Tolerance
 
 Consecutive failed poll cycles the pod mapper tolerates before the container exits non-zero.
@@ -189,7 +203,7 @@ Provision credentials at node runtime. Keep kubeconfig and credential files acce
 
 - The Kubernetes API identity needs `patch` on pods in each workload namespace.
 - The kubelet identity needs permission to read `/pods`. With fine-grained kubelet authorization, use `get` on `nodes/pods`. Other configurations require `get` on `nodes/proxy`, which grants broader access.
-- The process needs access to `/var/lib/kubelet/pod-resources/kubelet.sock`, NVIDIA devices and libraries, and its output directory.
+- The process needs access to `/var/lib/kubelet/pod-resources/kubelet.sock`, NVIDIA devices and libraries, and its output directory. The binary always uses that path. If kubelet uses a different `--root-dir`, make the socket available at that path.
 
 Authentication does not grant permissions. Do not assume the kubelet's own client identity can patch workload pods. This feature creates no credentials or RBAC bindings.
 

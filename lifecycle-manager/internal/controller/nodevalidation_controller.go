@@ -141,7 +141,7 @@ func (r *NodeValidationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	var node corev1.Node
 	if err := r.Get(ctx, req.NamespacedName, &node); err != nil {
 		if apierrors.IsNotFound(err) {
-			delete(r.nodesInBatch, req.Name)
+			r.removeNodeFromPendingBatch(ctx, req.Name, true)
 			return ctrl.Result{}, nil
 		}
 
@@ -154,11 +154,11 @@ func (r *NodeValidationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	if !eligible {
-		delete(r.nodesInBatch, node.Name)
+		r.removeNodeFromPendingBatch(ctx, node.Name, false)
 		return ctrl.Result{}, nil
 	}
 
-	requeueDurationForBatch := r.addNodeToPendingBatch(node.Name)
+	requeueDurationForBatch := r.addNodeToPendingBatch(ctx, node.Name)
 
 	return ctrl.Result{RequeueAfter: requeueDurationForBatch}, nil
 }
@@ -191,6 +191,9 @@ func (r *NodeValidationReconciler) createValidationRequestForNewNodes(ctx contex
 
 		metrics.NewNodeValidationBatchesTotal.WithLabelValues(metrics.StatusSuccess).Inc()
 		metrics.NewNodeValidationBatchSize.Observe(float64(len(targetedNodes)))
+	} else {
+		slog.InfoContext(ctx, "New-node-validation batch flushed with no eligible nodes, skipping ValidationRequest",
+			"candidates", candidateNames)
 	}
 
 	r.nodesInBatch = nil
@@ -198,22 +201,39 @@ func (r *NodeValidationReconciler) createValidationRequestForNewNodes(ctx contex
 	return nil
 }
 
-func (r *NodeValidationReconciler) addNodeToPendingBatch(nodeName string) time.Duration {
+func (r *NodeValidationReconciler) addNodeToPendingBatch(ctx context.Context, nodeName string) time.Duration {
 	if r.nodesInBatch == nil {
 		r.nodesInBatch = make(map[string]bool)
+	}
+
+	if _, alreadyInBatch := r.nodesInBatch[nodeName]; alreadyInBatch {
+		return 0
 	}
 
 	isFirstNodeInBatch := len(r.nodesInBatch) == 0
 	r.nodesInBatch[nodeName] = true
 
 	if !isFirstNodeInBatch {
+		slog.InfoContext(ctx, "Node added to new-node-validation batch", "node", nodeName,
+			"batchSize", len(r.nodesInBatch))
+
 		return 0
 	}
 
 	batchPeriod := time.Duration(r.Config.Validation.Spec.NewNodeValidation.BatchPeriodSeconds) * time.Second
 	r.batchEndTime = time.Now().Add(batchPeriod)
 
+	slog.InfoContext(ctx, "Started new-node-validation batch", "node", nodeName, "batchEndTime", r.batchEndTime)
+
 	return time.Until(r.batchEndTime)
+}
+
+func (r *NodeValidationReconciler) removeNodeFromPendingBatch(ctx context.Context, nodeName string, isDeleted bool) {
+	if _, ok := r.nodesInBatch[nodeName]; ok {
+		delete(r.nodesInBatch, nodeName)
+
+		slog.InfoContext(ctx, "Node removed from new-node-validation batch", "node", nodeName, "deleted", isDeleted)
+	}
 }
 
 func (r *NodeValidationReconciler) isNodeEligibleForBatch(node *corev1.Node) (bool, error) {

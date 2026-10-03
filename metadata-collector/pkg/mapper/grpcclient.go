@@ -90,7 +90,7 @@ func NewKubeletGRPClient(ctx context.Context, uuidsByMinor map[int]string) (Kube
 
 /*
 ListPodResources calls the PodResourcesLister gRPC service listening on a local Unix socket. The metadata-collector
-daemonset requires a HostPath volume configured to mount the /var/lib/kubelet/pod-resources/kubelet.sock Unix socket.
+daemonset mounts the host's <kubelet root dir>/pod-resources at /var/lib/kubelet/pod-resources to expose the socket.
 
 Devices allocated by device plugins arrive in each container's devices list keyed by resource name. Devices allocated
 through DRA ResourceClaims arrive in dynamic_resources as (driver, pool, device name) and are resolved to GPU UUIDs

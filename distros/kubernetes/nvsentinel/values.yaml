@@ -242,6 +242,10 @@ global:
   # Shared metadata path used by metadata-collector and syslog-health-monitor
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 
+  # Kubelet's --root-dir. metadata-collector mounts <kubeletRootDir>/pod-resources
+  # from the host. Set this when kubelet runs with a non-default --root-dir.
+  kubeletRootDir: /var/lib/kubelet
+
   # Set true when GPUs are managed through DRA (GPU Operator GPUCluster mode).
   # metadata-collector then holds a DRA admin-access GPU claim instead of using
   # the nvidia RuntimeClass.

@@ -27,6 +27,12 @@ tests:
     asserts:
       - notFailedTemplate: {}
 
+  - it: renders with a relocated kubelet root dir
+    set:
+      global.kubeletRootDir: /custom/kubelet
+    asserts:
+      - notFailedTemplate: {}
+
   - it: renders with an external MongoDB datastore
     set:
       global.datastore:
