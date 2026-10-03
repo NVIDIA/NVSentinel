@@ -118,6 +118,8 @@ fault-quarantine:
 
 The default ruleset creates a ValidationRequest which runs dcgm-diag-test against any unquarantined node that had an unhealthy event requiring a VM or BM restart remediation during its quarantine session.
 
+A ValidationRequest is only created if at least one event from the quarantine session completed a full drain, so validation tests do not run while workloads that node-drainer would evict are still on the node. By default, fault-quarantine assumes node-drainer drains COMPONENT_RESET events partially (only the pods using the impacted GPU), so their drains never count as full drains. If partial drain is disabled in node-drainer (for example, because COMPONENT_RESET is remediated with a reboot), set `global.partialDrainEnabled: false` (or `fault-quarantine.validation.partialDrainEnabled: false`) so a completed drain of a COMPONENT_RESET event triggers validation. Change this together with node-drainer's setting: fault-quarantine judges each event by its current value, so an event drained partially before the change may count as a full drain after it. See [Partial Drain](node-drainer.md#partial-drain).
+
 ## Enabling NVCRE Validation
 
 [NVCRE](https://github.com/NVIDIA/cluster-readiness-engine) support adds new node or post-remediation validation tests from an NVCRE test provider. The default configuration only supports a k8s-job-provider test provider that can run a dcgm-diag-test. The nvcre-provider is an additional test provider which currently supports nccl-loopback-nvswitch and nccl-all-reduce tests. An operator must opt-in to running NVCRE after enabling lifecycle-manager with its existing defaults.

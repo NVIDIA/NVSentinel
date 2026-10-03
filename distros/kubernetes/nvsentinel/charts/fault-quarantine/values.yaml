@@ -276,6 +276,11 @@ ruleSets:
 # section below.
 validation:
   enabled: false
+  # Whether node-drainer drains COMPONENT_RESET events partially. While true, a COMPONENT_RESET
+  # event's drain never counts as a full drain, so it never triggers validation on its own. If
+  # node-drainer.partialDrainEnabled is false, set this to false too, or set global.partialDrainEnabled,
+  # which overrides both.
+  partialDrainEnabled: true
   apiGroup: "nvsentinel.nvidia.com"
   version: "v1alpha1"
   kind: "ValidationRequest"

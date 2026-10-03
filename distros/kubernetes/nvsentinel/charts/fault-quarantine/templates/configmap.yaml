@@ -82,6 +82,8 @@ data:
       resource = {{ printf "%ss" (.Values.validation.kind | lower) | quote }}
       templateFileName = {{ .Values.validation.templateFileName | quote }}
       templateMountPath = "/etc/config"
+      {{- $global := .Values.global | default dict }}
+      partialDrainEnabled = {{ if and (hasKey $global "partialDrainEnabled") (not (kindIs "invalid" (index $global "partialDrainEnabled"))) }}{{ $global.partialDrainEnabled }}{{ else if and (hasKey .Values.validation "partialDrainEnabled") (not (kindIs "invalid" (index .Values.validation "partialDrainEnabled"))) }}{{ .Values.validation.partialDrainEnabled }}{{ else }}true{{ end }}
 
     {{- range .Values.validation.ruleSets }}
     [[validation.ruleSets]]
