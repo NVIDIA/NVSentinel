@@ -41,6 +41,22 @@ change is a new Job, not a patch on a completed one.
 {{- end }}
 
 {{/*
+<release>-postgresql-migrations-<hash>. The hash covers the migration files,
+the script that applies them and every value that shapes the Job's pod, so an
+upgrade that adds a migration renders a new Job instead of patching a
+completed, immutable one.
+*/}}
+{{- define "nvsentinel.postgresqlMigrationJobName" -}}
+{{- $content := .Files.Get "files/postgresql-migrate.sh" -}}
+{{- range $path, $bytes := .Files.Glob "files/postgresql-migrations/*.sql" -}}
+{{- $content = print $content $path (toString $bytes) -}}
+{{- end -}}
+{{- $hash := print $content (toJson .Values.global.datastore) (toJson .Values.global.imagePullSecrets) (toJson .Values.global.systemNodeSelector) (toJson .Values.global.systemNodeTolerations) | sha256sum | trunc 8 -}}
+{{- $suffix := printf "-postgresql-migrations-%s" $hash -}}
+{{- printf "%s%s" (.Release.Name | trunc (int (sub 63 (len $suffix))) | trimSuffix "-") $suffix -}}
+{{- end }}
+
+{{/*
 Expand the name of the chart.
 */}}
 {{- define "nvsentinel.name" -}}

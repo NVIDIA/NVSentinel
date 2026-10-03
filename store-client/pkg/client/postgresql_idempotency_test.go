@@ -18,6 +18,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -437,14 +440,19 @@ func TestVerifyPostgresIdempotencyIndexDefinition(t *testing.T) {
 	}
 }
 
-// TestCreateIdempotencyIndexStatement pins the statement the datastore setup
-// runs: it must build exactly the definition the verification accepts, and
-// CONCURRENTLY, so writers are not blocked while it builds.
-func TestCreateIdempotencyIndexStatement(t *testing.T) {
-	require.Equal(t,
-		"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS healthevent_idempotency_key_unique ON health_events "+
-			"((document #>> '{healthevent,metadata,idempotencyKey}')) "+
-			"WHERE (document #>> '{healthevent,metadata,idempotencyKey}') IS NOT NULL",
-		CreateIdempotencyIndexStatement)
-	require.Equal(t, "DROP INDEX CONCURRENTLY IF EXISTS healthevent_idempotency_key_unique", DropIdempotencyIndexStatement)
+// TestIdempotencyIndexMigration_BuildsVerifiedDefinition pins the statement
+// schema migration 00003 runs: it must build exactly the definition the
+// verification accepts, and CONCURRENTLY, so writers are not blocked while it
+// builds.
+func TestIdempotencyIndexMigration_BuildsVerifiedDefinition(t *testing.T) {
+	migration, err := os.ReadFile(filepath.Join("..", "..", "..", "distros", "kubernetes", "nvsentinel", "files",
+		"postgresql-migrations", "00003_health_event_idempotency_index.sql"))
+	require.NoError(t, err)
+
+	expected := "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " + datastore.HealthEventIdempotencyIndexName +
+		" ON " + healthEventsTableName +
+		" ((document #>> '" + healthEventIdempotencyKeyJSONPath + "'))" +
+		" WHERE (document #>> '" + healthEventIdempotencyKeyJSONPath + "') IS NOT NULL;"
+
+	require.Contains(t, strings.Join(strings.Fields(string(migration)), " "), expected)
 }

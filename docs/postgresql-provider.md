@@ -10,7 +10,7 @@ NVSentinel supports PostgreSQL as an alternative datastore to MongoDB. The Postg
 - **TLS/SSL support** with client certificate authentication
 - **Change stream emulation** using triggers and polling
 - **JSONB storage** for flexible document-like data structures
-- **Automatic schema management** with tables, indexes, and triggers
+- **Versioned SQL migrations** managed separately from application runtime
 - **Production-ready** with connection pooling and error handling
 
 ## When to Use PostgreSQL
@@ -137,6 +137,7 @@ This will:
 - Load `values-tilt-postgresql.yaml` automatically
 - Deploy PostgreSQL instead of MongoDB
 - Generate PostgreSQL certificates via cert-manager
+- Run the chart's PostgreSQL setup Job, which applies the versioned SQL migrations
 - Configure all services to use PostgreSQL
 
 ### Switching Back to MongoDB
@@ -153,9 +154,10 @@ tilt up
 
 The `values-tilt-postgresql.yaml` file includes:
 - Single-replica PostgreSQL for faster startup
-- Development password (`nvsentinel-dev`)
-- Auto-initialized schema with tables and triggers
+- Certificate-based authentication
 - Control plane node selector for PostgreSQL pod
+
+Tilt starts the services after the setup Job applies the migrations. Helm deployments use the same Job; see [Schema Management](#schema-management).
 
 ## Migration Guide
 
@@ -198,32 +200,87 @@ kubectl logs -n nvsentinel deployment/fault-quarantine | grep -i postgres
 
 ## Schema Management
 
-### Automatic Initialization
+### Versioned Migrations
 
-The PostgreSQL subchart automatically runs initialization scripts that:
-- Create tables if they don't exist
-- Create indexes for query performance
-- Set up triggers for change tracking
-- Create helper functions
+The canonical schema is the ordered SQL migration set in [`distros/kubernetes/nvsentinel/files/postgresql-migrations`](../distros/kubernetes/nvsentinel/files/postgresql-migrations/). Each migration records its version in `nvsentinel_schema_migrations`.
 
-### Manual Schema Updates
+NVSentinel applications never apply DDL. At startup, each application reads `nvsentinel_schema_migrations`. If the schema is older than the version it requires, the application waits up to five minutes and then exits.
 
-If you need to modify the schema:
+### Setup Job (Default)
 
-1. Connect to PostgreSQL:
-   ```bash
-   kubectl exec -it nvsentinel-postgresql-0 -n nvsentinel -- psql -U postgres -d nvsentinel
-   ```
+When `global.datastore.provider` is `postgresql`, the chart runs a setup Job named `<release>-postgresql-migrations-<hash>`. The Job applies the pending migrations in filename order and skips the versions that `nvsentinel_schema_migrations` already records. It runs on a fresh install and again on each upgrade that changes the migrations. The applications start at the same time and wait for the schema version that the Job records.
 
-2. Run your schema updates:
-   ```sql
-   -- Example: Add a new index
-   CREATE INDEX idx_custom ON health_events ((document->>'customField'));
-   ```
+The Job uses the same connection settings as the applications. To run the migrations as a separate DDL role, put that role's credentials in a Secret with the keys `username` and `password`, and set `global.datastore.setupJob.adminSecret` to its name. Other settings are `global.datastore.setupJob.image` (any image with `psql`) and `global.datastore.setupJob.activeDeadlineSeconds` (default `3600`).
 
-### Schema Reference
+Check the Job:
 
-See [postgresql-schema.sql](./postgresql-schema.sql) for the complete schema definition.
+```bash
+kubectl get jobs -n nvsentinel -l app.kubernetes.io/name=postgresql-migrations
+kubectl logs -n nvsentinel -l app.kubernetes.io/name=postgresql-migrations
+```
+
+### Applying Migrations Yourself
+
+When a database team or a release pipeline owns the schema, disable the Job:
+
+```yaml
+global:
+  datastore:
+    setupJob:
+      enabled: false
+```
+
+Then apply the files in filename order with a DDL-capable role, before you deploy an NVSentinel version that requires them. Use `psql` with `ON_ERROR_STOP`. Do not wrap the files in one transaction: `00003_health_event_idempotency_index.sql` builds an index `CONCURRENTLY`, which cannot run inside a transaction block.
+
+`ON_ERROR_STOP` stops only the failed `psql` call, so the loop must stop too. Otherwise a later migration records a higher version over an incomplete schema.
+
+```bash
+(
+  for migration in distros/kubernetes/nvsentinel/files/postgresql-migrations/*.sql; do
+    psql -X -v ON_ERROR_STOP=1 "host=<host> dbname=<database> user=<ddl-role>" -f "$migration" ||
+      { echo "Migration failed: $migration" >&2; exit 1; }
+  done
+)
+```
+
+The subshell returns a non-zero status when a migration fails, so a release pipeline stops there.
+
+Every migration is idempotent, so you can apply the full set again. Query the applied version with:
+
+```sql
+SELECT version, description, applied_at
+FROM nvsentinel_schema_migrations
+ORDER BY version;
+```
+
+Migrations are forward-only. Use expand/contract changes for compatibility;
+recover destructive changes from backup or with a forward-fix migration.
+
+### Application Role Grants
+
+The application role needs only these grants. Run them as the owner of the tables after the migrations:
+
+```sql
+GRANT CONNECT ON DATABASE nvsentinel TO nvsentinel_app;
+GRANT USAGE ON SCHEMA public TO nvsentinel_app;
+GRANT SELECT, INSERT, UPDATE ON health_events, maintenance_events TO nvsentinel_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON resume_tokens TO nvsentinel_app;
+GRANT SELECT, INSERT, UPDATE ON datastore_changelog TO nvsentinel_app;
+GRANT USAGE ON SEQUENCE datastore_changelog_id_seq TO nvsentinel_app;
+GRANT SELECT ON nvsentinel_schema_migrations TO nvsentinel_app;
+```
+
+Replace `nvsentinel` and `nvsentinel_app` with your database and application role. The change-capture triggers run as the role that writes the event. Thus the application role needs `INSERT` on `datastore_changelog` and `USAGE` on its sequence. Without them, every health event and maintenance event write fails. In the bundled PostgreSQL, the application role owns the tables, so these grants are not necessary.
+
+### Upgrading from a Release That Created the Schema at Startup
+
+> **Breaking change.** Earlier releases created and changed the PostgreSQL schema when a component started. This release does not. Components exit if the schema version is older than the version they require.
+
+- **Bundled PostgreSQL, or external PostgreSQL with the setup Job enabled (the default):** no action is necessary. The Job applies migrations `00001` to `00003` to the existing tables during the upgrade. The migrations keep existing data.
+- **Setup Job disabled:** apply all migrations, starting with `00001`, before you upgrade. `00001` keeps the tables and data that earlier releases created, creates only the objects that are missing, and records version 1. It stops with an error if an existing table has an incompatible layout.
+- **Restricted application role:** give the role the [grants above](#application-role-grants). Earlier releases needed DDL rights; this release does not.
+
+Migration `00003` builds a unique index on the health event idempotency key. If duplicate keys exist, the build fails and leaves an `INVALID` index. The header of the migration file describes how to find the duplicates and apply the migration again.
 
 ## Performance Tuning
 
@@ -342,13 +399,10 @@ kubectl logs -n nvsentinel deployment/fault-quarantine | grep -i error
 
 ### Authorization
 
-Configure PostgreSQL user permissions:
+Create a limited application role, then give it only the grants in [Application Role Grants](#application-role-grants):
 
 ```sql
--- Create limited user for applications
 CREATE USER nvsentinel_app WITH PASSWORD 'secure-password';
-GRANT CONNECT ON DATABASE nvsentinel TO nvsentinel_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO nvsentinel_app;
 ```
 
 ### Network Security
@@ -413,7 +467,7 @@ kubectl exec -i nvsentinel-postgresql-0 -n nvsentinel -- \
 - [PostgreSQL Official Documentation](https://www.postgresql.org/docs/)
 - [PostgreSQL JSONB Documentation](https://www.postgresql.org/docs/current/datatype-json.html)
 - [Bitnami PostgreSQL Helm Chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql)
-- [NVSentinel PostgreSQL Schema](./postgresql-schema.sql)
+- [NVSentinel PostgreSQL Migrations](../distros/kubernetes/nvsentinel/files/postgresql-migrations/)
 
 ## Support
 

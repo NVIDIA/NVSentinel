@@ -27,8 +27,23 @@ func init() {
 	datastore.RegisterProvider(datastore.ProviderPostgreSQL, NewPostgreSQLDataStore)
 }
 
-// NewPostgreSQLDataStore creates a new PostgreSQL datastore instance from configuration
+// NewPostgreSQLDataStore creates a PostgreSQL datastore and validates schema
+// compatibility at the provider startup boundary.
 func NewPostgreSQLDataStore(ctx context.Context, config datastore.DataStoreConfig) (datastore.DataStore, error) {
-	// Create the PostgreSQL store that implements the DataStore interface
-	return NewPostgreSQLStore(ctx, config)
+	store, err := NewPostgreSQLStore(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+
+	postgresStore := store.(*PostgreSQLDataStore)
+	if err := WaitForSchemaVersion(ctx, postgresStore.db); err != nil {
+		if closeErr := store.Close(ctx); closeErr != nil {
+			slog.Warn("Failed to close PostgreSQL datastore after schema validation failure",
+				"error", closeErr)
+		}
+
+		return nil, err
+	}
+
+	return store, nil
 }

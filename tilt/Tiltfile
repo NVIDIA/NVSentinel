@@ -237,17 +237,22 @@ k8s_yaml(yaml)
 
 # Check if using Percona operator (only relevant when using MongoDB)
 use_percona = effective_values.get('mongodb-store', {}).get('usePerconaOperator', False) if not use_postgresql else False
-# Job name is create-mongodb-database-<ttl>-<scriptHash>; read it from the render.
+# Job names are create-mongodb-database-<ttl>-<scriptHash> and
+# <release>-postgresql-migrations-<hash>; read them from the render.
 mongodb_init_job = None
+postgresql_migration_job = None
 for obj in decode_yaml_stream(yaml):
-    if not obj:
+    if not obj or obj.get('kind') != 'Job':
         continue
     labels = (obj.get('metadata') or {}).get('labels') or {}
-    if obj.get('kind') == 'Job' and labels.get('app.kubernetes.io/name') == 'create-mongodb-database':
+    if labels.get('app.kubernetes.io/name') == 'create-mongodb-database':
         mongodb_init_job = obj['metadata']['name']
-        break
+    elif labels.get('app.kubernetes.io/name') == 'postgresql-migrations':
+        postgresql_migration_job = obj['metadata']['name']
 if not mongodb_init_job and not use_postgresql:
     fail('could not find create-mongodb-database Job in the rendered chart')
+if not postgresql_migration_job and use_postgresql:
+    fail('could not find the postgresql-migrations Job in the rendered chart')
 if use_percona:
     print("Using Percona MongoDB Operator for MongoDB installation.")
 else:
@@ -255,7 +260,9 @@ else:
 
 # Determine datastore resource name
 if use_postgresql:
-    datastore_resource = 'nvsentinel-postgresql'
+    # Applications validate the schema version at startup, so they wait for
+    # the migration Job rather than for the PostgreSQL workload alone.
+    datastore_resource = postgresql_migration_job
 else:
     datastore_resource = 'mongodb' if not use_percona else mongodb_init_job
 
@@ -372,6 +379,11 @@ if use_postgresql:
         workload='nvsentinel-postgresql',
         port_forwards=['5432:5432'],  # Port-forward PostgreSQL for debugging
         resource_deps=['cert-manager-resources'],
+    )
+
+    k8s_resource(
+        postgresql_migration_job,
+        resource_deps=['nvsentinel-postgresql'],
     )
 
 # Group all KWOK nodes (regular GPU nodes + separate kata test nodes) for resource management
