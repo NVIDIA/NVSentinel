@@ -59,13 +59,19 @@ deploy, so the two modes cannot be combined.
 */}}
 {{- define "metadata-collector.nriPluginEnabled" -}}
 {{- $nri := .Values.nriPlugin | default dict -}}
-{{- $enabled := $nri.enabled | default false -}}
+{{- $enabled := false -}}
+{{- if hasKey $nri "enabled" -}}
+{{- $enabled = $nri.enabled -}}
+{{- end -}}
 {{- if not (kindIs "bool" $enabled) -}}
 {{- fail (printf "metadata-collector.nriPlugin.enabled must be a boolean (true or false), got %s %#v" (kindOf $enabled) $enabled) -}}
 {{- end -}}
 {{- if $enabled -}}
 {{- if include "metadata-collector.gpuDraEnabled" . -}}
 {{- fail "metadata-collector.nriPlugin.enabled and global.gpuDraEnabled are mutually exclusive: GPUCluster (DRA) mode has no Container Toolkit, so there is no NRI plugin to inject the CDI device" -}}
+{{- end -}}
+{{- if and $nri.cdiDevice (not (kindIs "string" $nri.cdiDevice)) -}}
+{{- fail (printf "metadata-collector.nriPlugin.cdiDevice must be a string, got %s %#v" (kindOf $nri.cdiDevice) $nri.cdiDevice) -}}
 {{- end -}}
 {{- if not $nri.cdiDevice -}}
 {{- fail "metadata-collector.nriPlugin.cdiDevice must be set when nriPlugin.enabled is true" -}}
