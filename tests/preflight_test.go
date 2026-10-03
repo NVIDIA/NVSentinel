@@ -142,6 +142,61 @@ func TestPreflightEndToEnd(t *testing.T) {
 			return ctx
 		})
 
+	feature.Assess("webhook wires the checks to the deployment platform connector when preflight publishes to it",
+		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			client, err := c.NewClient()
+			require.NoError(t, err)
+
+			target, withCA := helpers.PreflightHealthPublish(ctx, t, client)
+			if target == "" {
+				// tilt's deployment mode points preflight at the Deployment, so
+				// an empty target there is broken wiring, not the socket path.
+				require.False(t, helpers.PlatformConnectorDeploymentDeployed(t, client),
+					"the deployment platform connector is deployed but preflight has no healthPublishTarget")
+				t.Log("preflight publishes through the node-local socket; nothing to check here")
+
+				return ctx
+			}
+
+			for _, podName := range testCtx.PodNames {
+				var pod v1.Pod
+
+				require.NoError(t, client.Resources().Get(ctx, podName, testCtx.TestNamespace, &pod))
+				require.Equal(t, "true", pod.Labels[helpers.HealthPublisherLabel],
+					"pod %s should carry the publisher label", podName)
+
+				for _, ic := range pod.Spec.InitContainers {
+					if !strings.HasPrefix(ic.Name, "preflight-") {
+						continue
+					}
+
+					require.Equal(t, target, helpers.FindEnvValue(ic.Env, "HEALTH_PUBLISH_TARGET"),
+						"pod %s init %s should dial the deployment platform connector", podName, ic.Name)
+					require.NotEmpty(t, helpers.FindEnvValue(ic.Env, "HEALTH_PUBLISH_TOKEN_PATH"),
+						"pod %s init %s should know its token path", podName, ic.Name)
+
+					if withCA {
+						require.NotEmpty(t, helpers.FindEnvValue(ic.Env, "HEALTH_PUBLISH_TLS_CA_FILE"),
+							"pod %s init %s should know its CA bundle", podName, ic.Name)
+						require.True(t, helpers.HasVolumeMount(ic.VolumeMounts, helpers.PreflightCAVolumeName),
+							"pod %s init %s should mount the CA bundle copy", podName, ic.Name)
+					}
+				}
+			}
+
+			if withCA {
+				// The pods above started, so the copy existed when they mounted it.
+				var ca v1.ConfigMap
+
+				require.NoError(t, client.Resources().Get(
+					ctx, helpers.PreflightCAConfigMapName, testCtx.TestNamespace, &ca,
+				), "the CA bundle copy should exist in the test namespace")
+				require.NotEmpty(t, ca.Data["ca.crt"], "the CA bundle copy should carry the certificate")
+			}
+
+			return ctx
+		})
+
 	feature.Assess("gang ConfigMap has expected_count=2 and 2 peers",
 		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			client, err := c.NewClient()

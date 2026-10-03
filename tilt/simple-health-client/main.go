@@ -26,30 +26,40 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-// tokenInterceptor attaches a projected ServiceAccount token as a Bearer
-// credential on every call. This client posts events naming arbitrary nodes,
-// so platform-connector's node-binding interceptor requires it to authenticate
-// as an allowlisted cross-node identity. Kept inline rather than importing
-// commons/pkg/grpcclient to keep this dev-only image's dependency set small.
 func main() {
 	socketPath := "/var/run/nvsentinel.sock"
 	port := "8080"
+	// This client posts events naming arbitrary nodes, so platform-connector's
+	// node-binding interceptor requires it to authenticate as an allowlisted
+	// cross-node identity.
 	tokenPath := os.Getenv("PLATFORM_CONNECTOR_TOKEN_PATH")
 
-	// The shared client helper, not a local copy: it also refuses an empty
-	// token file rather than sending a bare "Bearer ".
-	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-	dialOpts = append(dialOpts, grpcclient.DialOptions(tokenPath)...)
+	// The HEALTH_PUBLISH_* environment selects a direct TLS connection to the
+	// deployment platform connector; otherwise the fallback dials the
+	// daemonset's node-local socket. The connection is lazy and safe for
+	// concurrent use, so one client serves every request.
+	conn, client, _, err := healthpub.DialFromEnvOr(func() (*grpc.ClientConn, error) {
+		// The shared client helper, not a local copy: it also refuses an empty
+		// token file rather than sending a bare "Bearer ".
+		dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+		dialOpts = append(dialOpts, grpcclient.DialOptions(tokenPath)...)
+
+		return grpc.NewClient(fmt.Sprintf("unix://%s", socketPath), dialOpts...)
+	})
+	if err != nil {
+		log.Fatalf("Failed to dial platform connector: %v", err)
+	}
 
 	log.Printf("Starting health event API server on port %s", port)
-	// G706: socketPath is this process's own flag/env configuration, not request data.
-	log.Printf("Using socket path: %s (token auth: %v)", socketPath, tokenPath != "") //nolint:gosec
+	log.Printf("Using publish target: %s", conn.Target())
 
 	http.HandleFunc("/health-event", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -68,28 +78,33 @@ func main() {
 
 		healthEvent.GeneratedTimestamp = timestamppb.Now()
 
-		conn, err := grpc.NewClient(fmt.Sprintf("unix://%s", socketPath), dialOpts...)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to connect to socket: %v", err), http.StatusInternalServerError)
-			return
-		}
-		defer conn.Close()
-
-		client := pb.NewPlatformConnectorClient(conn)
-
 		healthEvents := &pb.HealthEvents{
 			Version: 1,
 			Events:  []*pb.HealthEvent{&healthEvent},
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// The same request deadline as the real monitors' clients. The server
+		// answers only once the batch is stored and waits up to its bounded
+		// condition-update time (10 s by default) before replying, so a
+		// shorter deadline here turns a slow API server into a test failure
+		// even though the event was stored.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+
+		// The deployment platform connector requires an idempotency key on
+		// every batch: unique per request since this test client never
+		// retries, unless the caller supplies one (to exercise a resend).
+		idempotencyKey := r.Header.Get("Idempotency-Key")
+		if idempotencyKey == "" {
+			idempotencyKey = fmt.Sprintf("shc-%d", time.Now().UnixNano())
+		}
+
+		ctx = metadata.AppendToOutgoingContext(ctx, healthpub.IdempotencyKeyHeader, idempotencyKey)
 
 		log.Printf("[DEBUG] Sending health event to platform-connector - Node: %s, CheckName: %s, RecommendedAction: %v",
 			healthEvent.NodeName, healthEvent.CheckName, healthEvent.RecommendedAction)
 
-		_, err = client.HealthEventOccurredV1(ctx, healthEvents)
-		if err != nil {
+		if _, err := client.HealthEventOccurredV1(ctx, healthEvents); err != nil {
 			log.Printf("[ERROR] Failed to send health event: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to send health event: %v", err), http.StatusInternalServerError)
 
