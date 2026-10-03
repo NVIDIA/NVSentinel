@@ -44,9 +44,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}
-      {{- if .Values.global.auditLogging.enabled }}
+      {{- $seLinuxOptions := (.Values.global).seLinuxOptions }}
+      {{- if or .Values.global.auditLogging.enabled $seLinuxOptions }}
       securityContext:
+        {{- if .Values.global.auditLogging.enabled }}
         fsGroup: 65532
+        {{- end }}
+        {{- with $seLinuxOptions }}
+        seLinuxOptions:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       {{- end }}
       {{- $pgCert := eq (include "nvsentinel.platformConnector.pgClientCert" .) "true" }}
       {{- if or .Values.global.auditLogging.enabled $pgCert }}
