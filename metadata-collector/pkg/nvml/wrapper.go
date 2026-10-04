@@ -144,6 +144,12 @@ func (w *NVMLWrapper) GetGPUInfo(index int) (*model.GPUInfo, error) {
 
 	gpuInfo.SlowdownTLimitC = slowdownTLimitC(device)
 
+	if minor, ret := device.GetMinorNumber(); ret == nvml.SUCCESS {
+		gpuInfo.MinorNumber = &minor
+	} else {
+		slog.Warn("Failed to get minor number for GPU", "gpu_id", index, "error", nvml.ErrorString(ret))
+	}
+
 	return gpuInfo, nil
 }
 

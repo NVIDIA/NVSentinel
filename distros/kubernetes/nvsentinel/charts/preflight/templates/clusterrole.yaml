@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if .Values.gangCoordination.enabled }}
+{{- if or .Values.gangCoordination.enabled (include "preflight.publish.caCopy" .) }}
+# The controller needs the API for gang coordination and for copying the
+# deployment platform connector's CA bundle into the tenant namespaces. The
+# copy needs only namespaces and ConfigMaps; the gang pieces come with gang
+# coordination.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -20,15 +24,18 @@ metadata:
   labels:
     {{- include "preflight.labels" . | nindent 4 }}
 rules:
+  {{- if .Values.gangCoordination.enabled }}
   # Core resources for gang discovery
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  {{- end }}
 
   # Namespaces for tracking which are preflight-enabled (ActiveNamespaces)
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
+  {{- if .Values.gangCoordination.enabled }}
 
   # ConfigMaps for gang coordination
   - apiGroups: [""]
@@ -42,6 +49,14 @@ rules:
   - apiGroups: ["preflight.nvsentinel.nvidia.com"]
     resources: ["preflightconfigs/status"]
     verbs: ["get", "update", "patch"]
+  {{- else }}
+
+  # ConfigMaps for the CA bundle copies
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update"]
+  {{- end }}
+{{- if .Values.gangCoordination.enabled }}
 ---
 # Aggregate ClusterRole for scheduler PodGroup read access. The controller binds
 # to this role; built-in scheduler permissions (below) plus any per-scheduler
@@ -78,5 +93,6 @@ rules:
     resources: [{{ .Values.gangDiscovery.podGroupGVR.resource | quote }}]
     verbs: ["get", "list", "watch"]
   {{- end }}
+{{- end }}
 
 {{- end }}

@@ -33,11 +33,36 @@ spec:
     - ports:
         - port: 27017
           protocol: TCP
-{{- if .Values.usePerconaOperator }}
-        - port: 9216
-          protocol: TCP
-{{- end }}
       from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
+{{- if .Values.usePerconaOperator }}
+{{- $additionalScrapeNamespaces := list }}
+{{- if and .Values.networkPolicy .Values.networkPolicy.additionalScrapeNamespaces }}
+  {{- $additionalScrapeNamespaces = .Values.networkPolicy.additionalScrapeNamespaces }}
+{{- else if and .Values.mongodb (and .Values.mongodb.networkPolicy .Values.mongodb.networkPolicy.additionalScrapeNamespaces) }}
+  {{- $additionalScrapeNamespaces = .Values.mongodb.networkPolicy.additionalScrapeNamespaces }}
+{{- end }}
+{{- $additionalScrapeRules := list }}
+{{- if and .Values.networkPolicy .Values.networkPolicy.additionalScrapeRules }}
+  {{- $additionalScrapeRules = .Values.networkPolicy.additionalScrapeRules }}
+{{- else if and .Values.mongodb (and .Values.mongodb.networkPolicy .Values.mongodb.networkPolicy.additionalScrapeRules) }}
+  {{- $additionalScrapeRules = .Values.mongodb.networkPolicy.additionalScrapeRules }}
+{{- end }}
+    - ports:
+        - port: 9216
+          protocol: TCP
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+{{- range $additionalScrapeNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+{{- end }}
+{{- with $additionalScrapeRules }}
+{{- toYaml . | nindent 8 }}
+{{- end }}
+{{- end }}

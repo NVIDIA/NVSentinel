@@ -1,327 +1,163 @@
-# Local Slinky Drain Demo
+# NVSentinel Local Demo: Custom Drain with Slinky
 
-**Demonstration of NVSentinel's custom drain extensibility using the Slinky Drainer example plugin.**
+**Hand the drain to an external scheduler, end to end, on a KIND cluster with no GPU hardware.**
 
-This demo showcases the end-to-end custom drain workflow where node-drainer delegates pod eviction to an external controller (slinky-drainer) which coordinates with a cluster scheduler (mock-slurm-operator).
+This demo breaks a GPU and then gets out of the way. NVSentinel detects the fault and cordons the node — and then, instead of evicting the pods itself, node-drainer writes a `DrainRequest` and waits. An external controller picks it up, negotiates with the cluster scheduler, and only deletes a pod once the scheduler says that pod's work is finished.
 
-## 🎯 What This Demo Shows
+> **No GPU required.** The GPU is simulated by a fake DCGM hostengine backed by NVML injection. Everything above it — the health monitor, the event pipeline, the quarantine rules, the custom drain handshake — is the code that runs in production clusters, unmodified.
 
-**Custom Drain Flow:**
-1. Health event injected → Platform Connectors → MongoDB
-2. Node-drainer detects issue → Creates DrainRequest CR (custom drain)
-3. Slinky-drainer watches DrainRequest → Annotates node (if not already set)
-4. Mock-slurm-operator watches node annotation → Updates pod conditions
-5. Slinky-drainer waits for conditions → Deletes pods → Removes annotation → Marks CR complete
-6. Node-drainer sees completion → Marks drain successful
+## What You'll Learn
 
-**Key Concepts:**
-- **Extensible drain architecture** - Node-drainer delegates to external controllers
-- **Custom Resource-based coordination** - DrainRequest CR for workflow orchestration
-- **Scheduler integration simulation** - Mock Slurm operator mimics real HPC scheduler behavior
-- **Condition-based synchronization** - Wait for scheduler signals before pod deletion
+1. **Detect** — gpu-health-monitor polls DCGM, and a fault becomes a health event and a node condition
+2. **Delegate** — fault-quarantine cordons the node; node-drainer writes a `DrainRequest` CR instead of draining, and blocks on its status
+3. **Coordinate** — slinky-drainer annotates the node, the scheduler marks each pod drainable, and only then are the pods deleted
+4. **Return to service** — the fault clears, fault-quarantine uncordons, and the workload is rescheduled
 
-## 📋 Prerequisites
+The point of the exercise is step 2. Draining an HPC node is not a Kubernetes eviction: the scheduler owns the jobs, and killing a pod out from under it loses work. Custom drain lets NVSentinel say *this node needs to be emptied* and leave *how* to whoever owns the workload.
 
-- **Docker** - For building and running containers
-- **kubectl** - Kubernetes CLI
-- **kind** - Kubernetes in Docker (local clusters)
-- **helm** - Kubernetes package manager
-- **ko** - Go container image builder
-- **go** - Go 1.25+ (for building components)
+## The Pipeline
 
-## 🚀 Quick Start
+```text
+┌───────────────────────────────────────────────────────────────────────────┐
+│  KIND cluster                                                             │
+│                                                                           │
+│  GPU node                                                                 │
+│  ┌───────────────────────────────────────────────────────┐                │
+│  │  fake DCGM hostengine  ◄── you inject XID 95 here     │                │
+│  │          │  :5555                                     │                │
+│  │          ▼                                            │                │
+│  │  gpu-health-monitor                                   │                │
+│  │          │  health event, over a Unix socket          │                │
+│  │          ▼                                            │                │
+│  │  platform-connectors ─────────────┐                   │                │
+│  └───────────────────────────────────┼───────────────────┘                │
+│                                      │ write                              │
+│                                      ▼                                    │
+│                              ┌───────────────┐                            │
+│                              │   MongoDB     │                            │
+│                              └───────┬───────┘                            │
+│                                change stream                              │
+│            ┌─────────────────────────┴─────────────────────────┐          │
+│            ▼                                                   ▼          │
+│    fault-quarantine                                     node-drainer      │
+│      cordon the node                                          │           │
+│                                            custom drain: write a          │
+│                                            DrainRequest, then wait        │
+│                                                               │           │
+│                                                               ▼           │
+│                                                      ┌────────────────┐   │
+│                                                      │  DrainRequest  │   │
+│                                                      └────────┬───────┘   │
+│                                                               │ watch     │
+│                                                               ▼           │
+│                                                        slinky-drainer     │
+│                                    ┌──────────────────────────┤           │
+│                                    │ 1. annotate the node     │           │
+│                                    ▼                          │           │
+│                          mock-slurm-operator                  │           │
+│                            2. mark each pod                   │           │
+│                            SlurmNodeStateDrain=True           │           │
+│                                    │                          ▼           │
+│                                    └────────────►  3. delete the pods     │
+│                                                    4. clear the annotation│
+│                                                    5. DrainComplete=True  │
+└───────────────────────────────────────────────────────────────────────────┘
+```
 
-### 1. Setup Environment
+The core modules coordinate only through the datastore — none of them calls another — which is why each can be enabled, disabled or replaced on its own. The one direct hop is at the edge: a health monitor hands its events to the platform-connectors instance on its own node over a Unix socket, which is what puts them in the datastore in the first place.
+
+The custom drain adds one more seam of the same kind: node-drainer and slinky-drainer never talk either, they just take turns writing to a `DrainRequest`.
+
+## Prerequisites
+
+Runs on Linux and on macOS, Intel or Apple Silicon.
+
+- **Docker** — runs the KIND cluster ([install](https://docs.docker.com/get-docker/))
+- **kind** — Kubernetes in Docker ([install](https://kind.sigs.k8s.io/docs/user/quick-start/#installation))
+- **kubectl** — Kubernetes CLI ([install](https://kubernetes.io/docs/tasks/tools/))
+- **helm** — Kubernetes package manager ([install](https://helm.sh/docs/intro/install/))
+- **ko** — builds the mock Slurm operator ([install](https://ko.build/install/))
+- **go** — Go 1.25+, used by `ko` ([install](https://go.dev/dl/))
+- **jq** — JSON processor ([install](https://jqlang.github.io/jq/download/))
+- **curl** — used to look up the current NVSentinel release
+
+Resources: roughly 4 CPU cores, 8 GB RAM and 20 GB of free disk.
+
+## Quick Start
 
 ```bash
-make setup
+cd demos/local-slinky-drain-demo
+
+./demo.sh            # every step, start to finish
+./demo.sh cleanup    # delete the cluster
 ```
 
-This creates a KIND cluster with:
-- ✅ cert-manager
-- ✅ MongoDB
-- ✅ Platform Connectors
-- ✅ Fault Quarantine
-- ✅ Node Drainer (with custom drain enabled)
-- ✅ Slinky Drainer Plugin
-- ✅ Mock Slurm Operator  
-- ✅ Test Workloads (2 nginx pods in slinky namespace)
-
-### 2. View Cluster Status
+To read what happens at each stage, run the steps yourself instead:
 
 ```bash
-make show-cluster
+./scripts/00-setup.sh          # build the cluster, install NVSentinel and both plugins
+./scripts/01-show-cluster.sh   # look at the cluster before anything is broken
+./scripts/02-inject-fault.sh   # inject XID 95 into the GPU
+./scripts/03-watch-drain.sh    # detect, delegate, coordinate, drain
+./scripts/04-recover.sh        # clear the fault, watch the node return to service
+./scripts/99-cleanup.sh        # delete the cluster
 ```
 
-Shows the deployed components, nodes, and workload pods.
+These are ordered stages, not independent scripts: step 2 needs the cluster and DCGM pod that step 0 builds, and step 3 needs the fault step 2 injects. Run them in order.
 
-### 3. Trigger Custom Drain
+## What Happens at Each Step
+
+### Step 0: Setup (`00-setup.sh`)
+
+Creates a two node KIND cluster, installs cert-manager, installs the `DrainRequest` CRD, then installs NVSentinel from `oci://ghcr.io/nvidia/nvsentinel` with [config/nvsentinel-values.yaml](config/nvsentinel-values.yaml).
+
+It resolves the version rather than pinning one: the highest semver tag published to the chart's OCI repository wins, so a clone of this repo installs the current release however old the clone is. Set `NVSENTINEL_CHART_VERSION=v1.23.0` to pin. The chart pins its own matching image tag, so nothing here overrides it — setting one and not the other is how a chart ends up rendering flags the image does not have.
+
+It then deploys the fake DCGM hostengine, labels the worker as a GPU node, deploys both drain plugins, and starts a two-replica Deployment in the `slinky` namespace to stand in for Slurm-managed jobs.
+
+Only one of the plugins is built from this checkout. slinky-drainer is a released NVSentinel component, so it is pulled as `ghcr.io/nvidia/nvsentinel/slinky-drainer:<chart version>` — the same version as everything else the demo installs. mock-slurm-operator exists only to stand in for a Slurm control plane and is published nowhere, so `ko` builds it locally. Point `SLINKY_DRAINER_IMAGE` at your own build to test a change to the drainer.
+
+Two gates before it reports success:
+
+- the `GpuDcgmConnectivityFailure` condition on the node must read `False`. A running gpu-health-monitor pod proves nothing about whether it can reach the hostengine; that condition is only written once a poll has actually succeeded. Without the gate, a fault injected in step 2 could be silently dropped.
+- every pod must still be `Ready` after a settle window, with no container restarts during it. A pod that reports `Ready` once can still be crash-looping, and the point of setup is to catch that here rather than three steps later.
+
+### Step 1: Before the fault (`01-show-cluster.sh`)
+
+The baseline: both nodes `Ready` and schedulable, the workload running on the GPU node, both drain controllers up, and no `DrainRequest` in existence yet.
+
+### Step 2: Break the GPU (`02-inject-fault.sh`)
 
 ```bash
-make inject-health-event
+dcgmi test --inject --gpuid 0 -f 230 -v 95
 ```
 
-Injects a health event that triggers the automatic custom drain workflow:
-- Health event → MongoDB
-- Node-drainer creates DrainRequest CR
-- Slinky-drainer processes the drain
-- Mock-slurm-operator updates pod conditions
-- Pods deleted, drain marked complete
+Field 230 is `DCGM_FI_DEV_XID_ERRORS`. XID 95 is an uncontained ECC error, which DCGM reports as `DCGM_FR_UNCONTAINED_ERROR` and NVSentinel classes as fatal.
 
-### 4. Verify Drain Workflow
+### Step 3: Detect, delegate, coordinate, drain (`03-watch-drain.sh`)
 
-```bash
-make verify-drain
-```
+| Stage | Who acts | Waited on by |
+|---|---|---|
+| Detect | gpu-health-monitor → platform-connectors | a `Gpu*` node condition turning `True` |
+| Delegate | fault-quarantine, then node-drainer | the node cordoned, then a `DrainRequest` existing |
+| Coordinate | slinky-drainer, then mock-slurm-operator | the node annotation, then `SlurmNodeStateDrain=True` on the pods |
+| Drain | slinky-drainer | no workload pods left, and `DrainComplete` reaching a terminal reason |
 
-Checks:
-- DrainRequest CR created and completed
-- Node annotation set by slinky-drainer (and cleaned up after drain)
-- Pod conditions updated by mock-slurm-operator
-- Pods successfully deleted
-- Drain marked successful in health event status
+Every check reads an object — a node condition, an annotation, a pod condition, a CR status — never a controller's log. Logs are for debugging; a demo that asserts on them asserts on wording.
 
-### 5. Cleanup
+The coordinate stage is the only one allowed to miss its evidence. The annotation is removed and the pods are deleted as soon as the handshake completes, so a slow poll can legitimately arrive after the fact. The durable record is the `DrainComplete` reason, checked in the next stage.
 
-```bash
-make cleanup
-```
+**Completion is not remediation.** slinky-drainer closes the `DrainRequest` whether it drained pods or found none, recording:
 
-Deletes the KIND cluster and cleans up local Docker images.
+| `reason` | Means |
+|---|---|
+| `DrainComplete` | pods were marked drainable by the scheduler, then deleted |
+| `NoPods` | there was nothing on the node; the request completed without remediating anything |
 
-## 🗂️ Architecture
+The script fails on `NoPods`. An empty `slinky` namespace is not evidence that a drain happened — the pods may never have been there.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Demo Cluster                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Health Event Injection                                         │
-│         │                                                       │
-│         v                                                       │
-│  Platform Connectors ──► MongoDB ◄── Node Drainer             │
-│                                        │                        │
-│                                        │ (creates)              │
-│                                        v                        │
-│                                DrainRequest CR                  │
-│                                        │                        │
-│                                        │ (watches)              │
-│                                        v                        │
-│                              Slinky Drainer Plugin              │
-│                                        │                        │
-│                         ┌──────────────┼──────────────┐        │
-│                         │              │              │         │
-│                         v              v              v         │
-│                   Annotates Node   Waits for     Deletes Pods  │
-│                   (if not set)    Conditions          │         │
-│                         │              ^              v         │
-│              Mock Slurm Operator       │      Removes Annotation│
-│              (watches annotation)      │     (if set by us)     │
-│                         │              │              │         │
-│                         └─────► Updates Pod Conditions │         │
-│                                                       v         │
-│                                              Marks DR Complete  │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+### Step 4: Back in service (`04-recover.sh`)
 
-## 📁 Components
+A drained node is still a node nobody can schedule on, so the demo is not finished until it comes back.
 
-### Core NVSentinel Components
-
-1. **Platform Connectors** - Receives health events, stores in MongoDB
-2. **Node Drainer** - Monitors health events, creates DrainRequest CRs
-3. **MongoDB** - Stores health events and change stream tokens
-
-### Custom Drain Plugins
-
-1. **Slinky Drainer** (`plugins/slinky-drainer/`)
-   - Watches DrainRequest CRs
-   - Annotates nodes with cordon reason (skips if already set by another controller)
-   - Waits for scheduler signals (pod conditions)
-   - Deletes pods after confirmation
-   - Removes annotation if it was set by slinky-drainer (identified by `[T] [NVSentinel]` prefix)
-   - Updates CR status
-
-2. **Mock Slurm Operator** (`plugins/mock-slurm-operator/`)
-   - Watches node annotations
-   - Simulates Slurm scheduler behavior
-   - Sets `SlurmNodeStateDrain=True` condition on pods
-   - Signals readiness for pod deletion
-
-## 🔧 Configuration
-
-### Custom Drain Template
-
-The node-drainer uses a Go template to generate DrainRequest CRs:
-
-```yaml
-apiVersion: nvsentinel.nvidia.com/v1alpha1
-kind: DrainRequest
-spec:
-  nodeName: {{ .HealthEvent.NodeName }}
-  checkName: {{ .HealthEvent.CheckName }}
-  recommendedAction: {{ .HealthEvent.RecommendedAction.String }}
-  errorCode:
-  {{- range .HealthEvent.ErrorCode }}
-  - {{ . }}
-  {{- end }}
-  healthEventID: {{ .EventID }}
-  entitiesImpacted:
-  {{- range .HealthEvent.EntitiesImpacted }}
-  - type: {{ .EntityType }}
-    value: {{ .EntityValue }}
-  {{- end }}
-  reason: "{{ .HealthEvent.Message }}"
-```
-
-### Node Drainer Config
-
-```toml
-[customDrain]
-  enabled = true
-  templateMountPath = "/etc/drain-template"
-  templateFileName = "drain-template.yaml"
-  namespace = "nvsentinel"
-  apiGroup = "nvsentinel.nvidia.com"
-  version = "v1alpha1"
-  kind = "DrainRequest"
-  statusConditionType = "Complete"
-  statusConditionStatus = "True"
-  timeout = "1800"  # 30 minutes
-```
-
-## 📊 Observability
-
-### Watch DrainRequest CRs
-
-```bash
-kubectl get drainrequests -n nvsentinel -w
-```
-
-### Monitor Slinky Drainer Logs
-
-```bash
-kubectl logs -f deployment/slinky-drainer -n nvsentinel
-```
-
-### Monitor Mock Slurm Operator Logs
-
-```bash
-kubectl logs -f deployment/mock-slurm-operator -n nvsentinel
-```
-
-### Monitor Node Drainer Logs
-
-```bash
-kubectl logs -f deployment/node-drainer -n nvsentinel
-```
-
-### Check Node Annotations
-
-```bash
-kubectl get node nvsentinel-demo-worker -o jsonpath='{.metadata.annotations}'
-```
-
-### Check Pod Conditions
-
-```bash
-kubectl get pods -n slinky -o json | jq '.items[].status.conditions[] | select(.type=="SlurmNodeStateDrain")'
-```
-
-## 🧪 Manual Testing
-
-### Create DrainRequest Manually
-
-```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: nvsentinel.nvidia.com/v1alpha1
-kind: DrainRequest
-metadata:
-  name: manual-drain-test
-  namespace: nvsentinel
-spec:
-  nodeName: nvsentinel-demo-worker
-  checkName: ManualTest
-  recommendedAction: drain
-  errorCode: ["TEST-001"]
-  healthEventID: "manual-test-event"
-  reason: "Manual drain test"
-EOF
-```
-
-### Watch the Workflow
-
-```bash
-# Terminal 1: Watch DR
-kubectl get drainrequest manual-drain-test -n nvsentinel -w
-
-# Terminal 2: Watch pods
-kubectl get pods -n slinky -w
-
-# Terminal 3: Watch node
-kubectl get node nvsentinel-demo-worker -w
-```
-
-## 🐛 Troubleshooting
-
-### DrainRequest Not Being Created
-
-```bash
-# Check node-drainer logs
-kubectl logs deployment/node-drainer -n nvsentinel --tail=50
-
-# Check MongoDB connection
-kubectl exec -it mongodb-0 -n nvsentinel -- mongosh nvsentinel --eval "db.healthevents.find().pretty()"
-```
-
-### Slinky Drainer Not Processing
-
-```bash
-# Check slinky-drainer logs
-kubectl logs deployment/slinky-drainer -n nvsentinel --tail=50
-
-# Check RBAC permissions
-kubectl auth can-i get drainrequests --as=system:serviceaccount:nvsentinel:slinky-drainer -n nvsentinel
-```
-
-### Mock Slurm Operator Not Updating Conditions
-
-```bash
-# Check mock-slurm-operator logs
-kubectl logs deployment/mock-slurm-operator -n nvsentinel --tail=50
-
-# Verify node annotation exists
-kubectl get node nvsentinel-demo-worker -o yaml | grep -A5 annotations
-```
-
-### Pods Not Being Deleted
-
-```bash
-# Check pod conditions
-kubectl get pods -n slinky -o json | jq '.items[].status.conditions'
-
-# Check slinky-drainer reconciliation
-kubectl logs deployment/slinky-drainer -n nvsentinel | grep "checkPodsReadyForDrain"
-```
-
-## 📚 Learn More
-
-- [ADR-015: Custom Drain Extensibility](../../docs/designs/adr-015-custom-drain-extensibility.md)
-- [Node Drainer Documentation](../../node-drainer/README.md)
-- [Slinky Drainer Plugin](../../plugins/slinky-drainer/README.md)
-- [Mock Slurm Operator](../../plugins/mock-slurm-operator/README.md)
-
-## 🤝 Contributing
-
-This demo is an example implementation. For production use:
-- Replace mock-slurm-operator with your actual scheduler integration
-- Adjust timeouts and intervals for your environment
-- Implement proper monitoring and alerting
-- Add authentication/authorization as needed
-- Use persistent MongoDB with backup/restore
-
-## 📝 License
-
-Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
-Licensed under the Apache License, Version 2.0.
+Restarting the DCGM pod drops the injected fault, which is what a real repair would have done. The monitor then reports the check healthy, fault-quarantine uncordons the node on its own, and the Deployment's pods are rescheduled onto it.

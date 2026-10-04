@@ -1,0 +1,32 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{- if and (include "nvsentinel.pcDeployment.enabled" .) (ge (.Values.platformConnector.deployment.replicas | int) 2) }}
+# Covers Eviction-API disruptions (node drains): at most one replica of the
+# write path is taken down at a time, so monitors always have replicas to
+# reconnect to. Rendered only from two replicas up: a budget that kept a sole
+# replica from ever being evicted would block node drains instead, so a single
+# replica runs without disruption protection, as its values comment says.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "nvsentinel.pcDeployment.name" . }}
+  labels:
+    {{- include "nvsentinel.pcDeployment.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "nvsentinel.pcDeployment.selectorLabels" . | nindent 6 }}
+{{- end }}

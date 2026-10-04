@@ -205,6 +205,21 @@ templates:
 2. **Owner Reference**: The module automatically adds the Node as owner for automatic cleanup
 3. **Action Codes**: Use conditional logic based on `.RecommendedAction` for different repair types
 
+## Maximum Remediation Attempts
+
+Caps how many times fault-remediation attempts one equivalence group — `restart`, for example — within a single quarantine session.
+
+```yaml
+fault-remediation:
+  maxRemediationAttempts: 0
+```
+
+Attempts are counted, not retries: `1` allows one attempt and no retry, and `3` allows two retries after the first attempt. `0` is the default and removes the cap.
+
+When a node reaches the cap, fault-remediation sets its state label to `remediation-failed` and stops, leaving the node for an operator. This ends the remediation loop that a node repeats when remediation never fixes the underlying fault. The counter resets when the node leaves quarantine.
+
+Set a cap on any cluster where an unattended loop is worse than an unremediated node. Leave it at `0` only if an operator watches the `remediation-failed` state by other means.
+
 ## Update Retry Configuration
 
 Controls retry behavior when updating node annotations after creating maintenance CRs.

@@ -15,7 +15,7 @@
 {{- $inclusterFileServer := get $global "inclusterFileServer" | default dict }}
 {{- $defaultGPUResetUploadURL := "" }}
 {{- if get $inclusterFileServer "enabled" }}
-{{- $defaultGPUResetUploadURL = printf "http://%s-incluster-file-server.%s.svc.cluster.local/upload" .Release.Name .Release.Namespace }}
+{{- $defaultGPUResetUploadURL = printf "http://%s-incluster-file-server.%s.svc.%s/upload" .Release.Name .Release.Namespace (get $global "clusterDomain" | default "cluster.local") }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
@@ -95,6 +95,9 @@ data:
         writeSysLogEvent: "{{ .Values.config.controllers.gpuReset.resetJob.writeSysLogEvent }}"
         runtimeClassName: "{{ .Values.config.controllers.gpuReset.resetJob.runtimeClassName }}"
         hostDriverRootPath: "{{ .Values.config.controllers.gpuReset.resetJob.hostDriverRootPath }}"
+        {{- with .Values.config.controllers.gpuReset.resetJob.driverRoot }}
+        driverRoot: {{ . | quote }}
+        {{- end }}
         {{- if $gpuResetUploadURL }}
         uploadURL: {{ $gpuResetUploadURL | quote }}
         {{- end }}

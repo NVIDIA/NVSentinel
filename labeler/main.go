@@ -145,7 +145,8 @@ func (o cliOptions) initializationParams(expectedDeviceCounts devicecounts.Confi
 func parseFlags() cliOptions {
 	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
-	dcgmAppLabel := flag.String("dcgm-app-label", "nvidia-dcgm", "App label value for DCGM pods")
+	dcgmAppLabel := flag.String("dcgm-app-label", "nvidia-dcgm,nvidia-dcgm-dra",
+		"Comma-separated app label values for DCGM pods")
 	driverAppLabel := flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
 	gkeInstallerAppLabel := flag.String("gke-installer-app-label",
 		"nvidia-driver-installer", "App label value for GKE driver installer pods")

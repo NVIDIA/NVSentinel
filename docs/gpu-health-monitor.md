@@ -40,7 +40,7 @@ gpu-health-monitor:
   dcgm:
     dcgmK8sServiceEnabled: true
     service:
-      endpoint: "nvidia-dcgm.gpu-operator.svc"  # DCGM service endpoint
+      endpoint: "nvidia-dcgm-dra.gpu-operator.svc,nvidia-dcgm.gpu-operator.svc"  # DCGM service hosts
       port: 5555
   
   useHostNetworking: false  # Enable if DCGM requires host network access

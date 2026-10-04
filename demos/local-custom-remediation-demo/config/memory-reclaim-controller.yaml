@@ -1,0 +1,107 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: memory-reclaim-controller
+  namespace: nvsentinel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: memory-reclaim-controller
+rules:
+  - apiGroups: ["demo.nvsentinel.nvidia.com"]
+    resources: ["memoryreclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["demo.nvsentinel.nvidia.com"]
+    resources: ["memoryreclaims/status"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: memory-reclaim-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: memory-reclaim-controller
+subjects:
+  - kind: ServiceAccount
+    name: memory-reclaim-controller
+    namespace: nvsentinel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: memory-reclaim-controller
+  namespace: __WORKLOAD_NAMESPACE__
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: memory-reclaim-controller
+  namespace: __WORKLOAD_NAMESPACE__
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: memory-reclaim-controller
+subjects:
+  - kind: ServiceAccount
+    name: memory-reclaim-controller
+    namespace: nvsentinel
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-reclaim-controller
+  namespace: nvsentinel
+  labels:
+    app: memory-reclaim-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: memory-reclaim-controller
+  template:
+    metadata:
+      labels:
+        app: memory-reclaim-controller
+    spec:
+      serviceAccountName: memory-reclaim-controller
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: controller
+          image: memory-reclaim-controller:demo
+          imagePullPolicy: Never
+          env:
+            - name: NAMESPACE
+              value: __WORKLOAD_NAMESPACE__
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

@@ -53,36 +53,45 @@ Interactive demonstrations of NVSentinel's core capabilities.
 
 Run these locally on your laptop — no GPU hardware needed.
 
+Each one installs the current NVSentinel release, resolved from the chart's OCI repository at
+run time, so a clone of this repo stays current however old the clone is. Pin with
+`NVSENTINEL_CHART_VERSION=v1.23.0` if you need a specific one.
+
+> These are two node KIND clusters, which is smaller than anything NVSentinel is tuned for.
+> Each demo therefore disables fault quarantine's circuit breaker: it measures itself against
+> GPU-labelled nodes, and cordoning 1 node out of 2 is already its default trip threshold.
+> Those overrides exist for the demo cluster only; keep the defaults on real clusters.
+
 ### [Local Fault Injection Demo](local-fault-injection-demo/)
 
-**What it shows:** GPU failure detection and automated node quarantine
+**What it shows:** The full pipeline — GPU fault detection, node quarantine, workload drain, repair request, and automatic recovery
 
-**Requirements:** Docker, kubectl, kind, helm - **no GPU hardware needed**
+**Requirements:** Docker, kubectl, kind, helm, jq, curl - **no GPU hardware needed**
 
-**Time:** 5-10 minutes
+**Time:** 10-15 minutes
 
-**Best for:** Understanding how NVSentinel detects hardware failures and automatically protects your cluster by cordoning faulty nodes.
+**Best for:** Seeing what NVSentinel actually does end to end. A workload is running when the GPU breaks, and you watch it get moved off, the node repaired, and the node returned to service with nothing typed in between.
 
 ### [Local Slinky Drain Demo](local-slinky-drain-demo/)
 
-**What it shows:** Custom drain extensibility using the Slinky Drainer plugin with scheduler integration
+**What it shows:** Custom drain extensibility — node-drainer hands the eviction to an external scheduler instead of doing it itself
 
-**Requirements:** Docker, kubectl, kind, helm, ko, go 1.25+ - **no GPU hardware needed**
+**Requirements:** Docker, kubectl, kind, helm, ko, go 1.25+, jq, curl - **no GPU hardware needed**
 
-**Time:** 5-10 minutes
+**Time:** 10-15 minutes
 
-**Best for:** Understanding how NVSentinel's node-drainer can delegate pod eviction to external controllers for custom drain workflows coordinated with HPC schedulers.
+**Best for:** Understanding how NVSentinel delegates pod eviction to external controllers, so an HPC scheduler decides when a job can be interrupted. Injects a real XID into a fake DCGM hostengine, so detection runs on the production code path.
 
 
 ### [Local Custom Remediation Demo](local-custom-remediation-demo/)
 
-**What it shows:** Custom remediation action extensibility with a real memory pressure health monitor and third-party remediation controller
+**What it shows:** Custom remediation actions — a custom health monitor reports a fault NVSentinel has no check for, and a third-party controller repairs it
 
-**Requirements:** Docker, kubectl, kind, helm, ko, go 1.25+ - **no GPU hardware needed**
+**Requirements:** Docker, kubectl, kind, helm, go 1.25+, jq, curl - **no GPU hardware needed**
 
-**Time:** 5-10 minutes
+**Time:** 10-15 minutes
 
-**Best for:** Understanding how to extend NVSentinel beyond GPU faults to handle any hardware or system fault — custom health monitors, custom remediation actions, and third-party controllers.
+**Best for:** Understanding how to extend NVSentinel beyond GPU faults to any hardware or system fault — writing a health monitor, routing `CUSTOM` actions to your own CRD, and what a controller has to write back.
 
 ## Coming Soon
 

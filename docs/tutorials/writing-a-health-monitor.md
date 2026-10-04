@@ -170,23 +170,38 @@ go mod init github.com/{your-org}/demo-health-monitor
 ```
 
 Add the two dependencies. They live in subdirectories of the NVSentinel repo and aren't
-published as tagged releases, so fetch them by commit (`@main`, or pin a specific commit for
-reproducibility). Because `commons` refers to `data-models` by an internal placeholder version,
-add one `replace` so your build resolves the real commit:
+published as tagged releases, so they resolve to commit pseudo-versions. Inside the repo those
+subdirectories refer to each other through **local `replace` directives at the placeholder
+version `v0.0.0`**, which no proxy can resolve — so from outside the repo you have to redirect
+every placeholder to a real version yourself. `commons` has two of them: `data-models` (which
+you import) and `store-client` (which you don't). Redirect both, and pin them to the **same
+commit** so the build is reproducible:
 
 ```bash
 export GOTOOLCHAIN=auto   # the modules need Go 1.27+; this fetches it automatically
 
-# 1. Fetch the contract module, then capture the exact version go resolved.
-go get github.com/nvidia/nvsentinel/data-models@main
-DM=$(go list -m github.com/nvidia/nvsentinel/data-models | awk '{print $2}')
+# 1. Pick the commit to build against. `main` is the tip at the time you run this;
+#    pass an explicit SHA (e.g. NVS_REF=4f3d7f93dae1) to reproduce an earlier build.
+NVS_REF="${NVS_REF:-main}"
 
-# 2. Point commons' internal data-models placeholder at that same version.
-go mod edit -replace github.com/nvidia/nvsentinel/data-models=github.com/nvidia/nvsentinel/data-models@"$DM"
+# 2. Fetch the contract module, then capture the exact version go resolved. All three
+#    NVSentinel modules are tagged from one commit, so this version pins all of them.
+go get github.com/nvidia/nvsentinel/data-models@"$NVS_REF"
+PIN=$(go list -m github.com/nvidia/nvsentinel/data-models | awk '{print $2}')
 
-# 3. Fetch the publisher module.
-go get github.com/nvidia/nvsentinel/commons@main
+# 3. Point both of commons' v0.0.0 placeholders at that version. store-client is never
+#    imported by the publisher, but it stays in the module graph — leave it unreplaced
+#    and `go build` still works while `go list -m all` fails on "unknown revision".
+go mod edit \
+  -replace github.com/nvidia/nvsentinel/data-models=github.com/nvidia/nvsentinel/data-models@"$PIN" \
+  -replace github.com/nvidia/nvsentinel/store-client=github.com/nvidia/nvsentinel/store-client@"$PIN"
+
+# 4. Fetch the publisher module at the same commit.
+go get github.com/nvidia/nvsentinel/commons@"$PIN"
 ```
+
+Record `$PIN` (a pseudo-version like `v0.0.0-20260916061712-4f3d7f93dae1`) alongside your
+`go.mod`: re-running with `NVS_REF=<that SHA>` reproduces exactly this dependency set.
 
 ---
 
@@ -214,6 +229,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
@@ -242,6 +258,15 @@ func run() error {
 	// Kubernetes API, which is reachable from any pod; override it for your dependency.
 	checkTarget := envOrDefault("CHECK_TARGET", "kubernetes.default.svc:443")
 	socketPath := envOrDefault("SOCKET_PATH", "/var/run/nvsentinel.sock")
+	// Projected ServiceAccount token platform-connector authenticates us with.
+	// LookupEnv rather than envOrDefault: an explicitly empty PC_TOKEN_PATH has to
+	// mean "send no credential", for a cluster with platformConnectorAuth disabled
+	// and no token mounted. envOrDefault would turn that back into the default path
+	// and every publish would fail reading a file that is not there.
+	tokenPath, ok := os.LookupEnv("PC_TOKEN_PATH")
+	if !ok {
+		tokenPath = "/var/run/secrets/nvsentinel/platform-connector/token"
+	}
 
 	pollSeconds, err := strconv.Atoi(envOrDefault("POLL_INTERVAL_SECONDS", "10"))
 	if err != nil {
@@ -265,8 +290,13 @@ func run() error {
 	defer stop()
 
 	// --- Connect to platform-connector over the Unix socket ---
+	// The socket is local, so the transport is insecure; the credential that
+	// matters is the SA token attached to every call by grpcclient.DialOptions.
 	target := "unix://" + socketPath
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	opts = append(opts, grpcclient.DialOptions(tokenPath)...)
+
+	conn, err := grpc.NewClient(target, opts...)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", target, err)
 	}
@@ -278,7 +308,7 @@ func run() error {
 	pub := healthpub.New(client, target, agentName)
 
 	slog.Info("starting", "agent", agentName, "node", nodeName,
-		"checkTarget", checkTarget, "socket", socketPath)
+		"checkTarget", checkTarget, "socket", socketPath, "tokenPath", tokenPath)
 
 	// --- Poll loop (edge-triggered: only send on health changes) ---
 	ticker := time.NewTicker(time.Duration(pollSeconds) * time.Second)
@@ -365,12 +395,25 @@ func envOrDefault(key, fallback string) string {
 }
 ```
 
-Tidy and build:
+Tidy, build, and check that the dependency set is actually sound:
 
 ```bash
 go mod tidy
 go build ./...
+go vet ./...
+go mod verify    # every downloaded module matches its recorded checksum
+go list -m all   # the FULL module graph resolves, not just what you import
 ```
+
+`go list -m all` is the one that catches the placeholder problem: with the `store-client`
+replace missing it fails with `github.com/nvidia/nvsentinel/store-client@v0.0.0: invalid
+version: unknown revision store-client/v0.0.0` even though `go build` succeeded. With both
+replaces in place it prints the whole graph (~150 modules) and exits 0.
+
+> **On tests:** this monitor ships no test files, so `go test ./...` prints
+> `[no test files]` and exits 0 — a green exit code here proves nothing. `checkReachable`
+> and `buildEvent` are both pure enough to unit-test directly; write those tests before you
+> treat the monitor as production code.
 
 That's a complete, contract-correct health monitor. Everything else is packaging,
 deployment, and hardening.
@@ -388,7 +431,7 @@ FROM public.ecr.aws/docker/library/golang:1.27.0-trixie AS builder
 WORKDIR /src
 
 # Manifests first for better layer caching. go.mod/go.sum already pin the
-# data-models/commons versions and the replace directive.
+# data-models/commons versions and both replace directives.
 COPY go.mod go.sum ./
 RUN go mod download
 
@@ -463,16 +506,36 @@ spec:
               value: "10"
             - name: SOCKET_PATH
               value: "/var/run/nvsentinel.sock"
+            - name: PC_TOKEN_PATH
+              value: "/var/run/secrets/nvsentinel/platform-connector/token"
           volumeMounts:
             - name: socket
               mountPath: /var/run
+            - name: platform-connector-token
+              mountPath: /var/run/secrets/nvsentinel/platform-connector
+              readOnly: true
       volumes:
         - name: socket
           hostPath:
             path: /var/run/nvsentinel
             type: DirectoryOrCreate
+        - name: platform-connector-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: platform-connector.nvsentinel.nvidia.com
+                  expirationSeconds: 3600
+                  path: token
 YAML
 ```
+
+> **The token is not optional.** platform-connector runs a `TokenReview` on every publisher
+> and pins it to the node its pod runs on, so a monitor that presents nothing has its events
+> rejected and nothing downstream ever happens. The `audience` must match
+> `global.platformConnectorAuth.audience` in the chart (the default is shown above). A
+> monitor that reports on nodes *other* than its own — a Deployment watching a cloud API,
+> say — additionally needs its ServiceAccount listed in
+> `global.platformConnectorAuth.crossNodeServiceAccounts`.
 
 Confirm the pods are up:
 
@@ -555,25 +618,35 @@ follow this spec exactly.
 
 - Create a new Go module in its own directory with any module path (e.g.
   github.com/{your-org}/{my-monitor}). It depends on two NVSentinel modules that are NOT
-  published as tagged releases, so fetch them by commit and add one replace so commons can
-  resolve data-models:
+  published as tagged releases, so pin them to one commit. commons refers to BOTH data-models
+  and store-client at the internal placeholder version v0.0.0, so replace both — without the
+  store-client replace `go build` passes but `go list -m all` fails on an unknown revision:
     export GOTOOLCHAIN=auto
-    go get github.com/nvidia/nvsentinel/data-models@main
-    DM=$(go list -m github.com/nvidia/nvsentinel/data-models | awk '{print $2}')
-    go mod edit -replace github.com/nvidia/nvsentinel/data-models=github.com/nvidia/nvsentinel/data-models@"$DM"
-    go get github.com/nvidia/nvsentinel/commons@main
+    NVS_REF="${NVS_REF:-main}"   # or an explicit commit SHA for a reproducible build
+    go get github.com/nvidia/nvsentinel/data-models@"$NVS_REF"
+    PIN=$(go list -m github.com/nvidia/nvsentinel/data-models | awk '{print $2}')
+    go mod edit \
+      -replace github.com/nvidia/nvsentinel/data-models=github.com/nvidia/nvsentinel/data-models@"$PIN" \
+      -replace github.com/nvidia/nvsentinel/store-client=github.com/nvidia/nvsentinel/store-client@"$PIN"
+    go get github.com/nvidia/nvsentinel/commons@"$PIN"
 - Emit contract-correct HealthEvents (agent="[my-monitor]", a stable componentClass and
   checkName), edge-triggered (only on health-state changes), with
   ProcessingStrategy_EXECUTE_REMEDIATION; healthy events use RecommendedAction_NONE.
 - Publish via commons/pkg/healthpub (github.com/nvidia/nvsentinel/commons/pkg/healthpub) to
   the platform-connector Unix socket (unix:///var/run/nvsentinel.sock) and treat
   ErrPlatformConnectorUnavailable as "retry next cycle" without advancing dedup state.
+- Authenticate: platform-connector rejects unauthenticated publishers. Append
+  grpcclient.DialOptions(tokenPath) (github.com/nvidia/nvsentinel/commons/pkg/grpcclient) to
+  the dial options, reading tokenPath from env with a default of
+  /var/run/secrets/nvsentinel/platform-connector/token.
 - Validate env config: NODE_NAME (required) plus the poll interval and any check timeout;
   reject non-positive durations before constructing a time.Ticker.
 - Add a multi-stage Dockerfile whose build context is the monitor directory itself (COPY
   go.mod/go.sum, go mod download, COPY ., build a static binary). No local module copying.
 - Provide a DaemonSet manifest (namespace nvsentinel) that mounts the platform-connector
-  socket (hostPath /var/run/nvsentinel -> /var/run) and sets NODE_NAME via the downward API.
+  socket (hostPath /var/run/nvsentinel -> /var/run), sets NODE_NAME via the downward API,
+  and projects a ServiceAccount token with audience
+  platform-connector.nvsentinel.nvidia.com at /var/run/secrets/nvsentinel/platform-connector.
 - Show the deploy commands against a running NVSentinel cluster: docker build, docker push
   to a registry the cluster can pull from (e.g. Docker Hub), then kubectl apply the DaemonSet
   (image referencing the pushed tag).
@@ -581,5 +654,10 @@ follow this spec exactly.
   the checkName (kubectl get node {node} -o jsonpath over .status.conditions; Status=True
   means a fault is present). Stop at the node condition.
 
-Ensure `go mod tidy` and `go build ./...` pass.
+- Add unit tests for the pure helpers (event construction and the check function). Do not
+  report a passing test suite when `go test` only prints "no test files".
+
+Ensure `go mod tidy`, `go build ./...`, `go vet ./...`, `go test ./...`, `go mod verify`
+and `go list -m all` all pass. `go test ./...` must actually run the tests you were asked
+to write above; `go list -m all` is what proves the full module graph resolves.
 ```

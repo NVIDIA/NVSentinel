@@ -214,7 +214,7 @@ func TestFatalHealthEvent(t *testing.T) {
 		assert.NoError(t, err, "failed to create kubernetes client")
 
 		t.Logf("Waiting for a ValidationRequest to be created for node %s", nodeName)
-		vr := helpers.WaitForValidationRequestForNode(ctx, t, client, nodeName)
+		vr := helpers.WaitForValidationRequestForNodes(ctx, t, client, []string{nodeName})
 
 		validationRequestName = vr.GetName()
 

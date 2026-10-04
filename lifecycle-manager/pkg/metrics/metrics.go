@@ -47,6 +47,20 @@ var (
 		Help:    "The end-to-end duration of ValidationRequests, labeled by their final status.",
 		Buckets: prometheus.ExponentialBuckets(10, 2, 10),
 	}, []string{labelStatus})
+
+	// NewNodeValidationBatchesTotal tracks the total number of new node validation batch flush attempts, labeled
+	// by status.
+	NewNodeValidationBatchesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "new_node_validation_batches_total",
+		Help: "Total number of new node validation batch flush attempts, labeled by status.",
+	}, []string{labelStatus})
+
+	// NewNodeValidationBatchSize tracks the number of nodes included in each new node validation batch that succeeded
+	NewNodeValidationBatchSize = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "new_node_validation_batch_size",
+		Help:    "Number of nodes included in each new node validation batch that succeeded.",
+		Buckets: prometheus.ExponentialBuckets(1, 2, 8),
+	})
 )
 
 func init() {
@@ -54,5 +68,7 @@ func init() {
 		ValidationRequestsTotal,
 		ValidationRequestsCompletedTotal,
 		ValidationRequestsDurationSeconds,
+		NewNodeValidationBatchesTotal,
+		NewNodeValidationBatchSize,
 	)
 }

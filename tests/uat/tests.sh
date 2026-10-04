@@ -17,6 +17,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
+# Reports each test on its own, as JUnit XML in $ARTIFACTS. See junit.sh.
+source "${SCRIPT_DIR}/junit.sh"
 
 # date -d is not a valid option on macOS
 get_epoch_time() {
@@ -49,7 +51,7 @@ discover_dry_run() {
 
 # Dry-run does not reboot. After Test 1 we restart the node-local DCGM
 # hostengine (clears the injected XID) and strip FQ/FR node metadata (FQ will
-# not remove the state label in dry-run). Same strip on EXIT.
+# not remove the state label in dry-run). Same strip when each test exits.
 UAT_CLEANUP_NODE=""
 
 reset_dry_run_node_state() {
@@ -207,6 +209,21 @@ discover_dcgm_target() {
     local dcgm_addr
     dcgm_addr=$(kubectl get pod -n "$GPU_HM_NS" "$GPU_HM_POD" -o json 2>/dev/null \
         | jq -r '.spec.containers[0].args // [] | index("--dcgm-addr") as $i | if $i then .[$i + 1] else empty end')
+    
+    # --dcgm-addr may be a comma-separated candidate list (GPU Operator GPUCluster
+    # and ClusterPolicy DCGM Service names); only one exists per cluster, so use
+    # the first candidate whose host resolves from the monitor pod.
+    if [[ "$dcgm_addr" == *,* ]]; then
+        local candidate first=""
+        for candidate in ${dcgm_addr//,/ }; do
+            first=${first:-$candidate}
+            if kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- getent hosts "${candidate%:*}" >/dev/null 2>&1; then
+                dcgm_addr=$candidate
+                break
+            fi
+        done
+        [[ "$dcgm_addr" == *,* ]] && dcgm_addr=$first
+    fi
     DCGM_HOST=${UAT_DCGM_HOST:-${dcgm_addr:-localhost:5555}}
     log "Using monitor pod for DCGM injection: $GPU_HM_NS/$GPU_HM_POD (dcgmi host: $DCGM_HOST)"
 }
@@ -639,39 +656,6 @@ test_gpu_monitoring_dcgm() {
 
     discover_dcgm_target "$gpu_node"
 
-    # Any non-zero pending page retirement count fails the MEM watch with
-    # DCGM_FR_PENDING_PAGE_RETIREMENTS, which maps to NONE. The power watch is
-    # not used for this: its throttling codes are suppressed by default.
-    kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 392 -v 1
-
-    log "Waiting for node events to appear..."
-    local max_wait=${UAT_EVENT_TIMEOUT:-30}
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
-        nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuMemWatchIsNotHealthy") | .reason')
-        if [[ -n "$nonfatal_event" ]]; then
-            log "Found non-fatal memory event"
-            break
-        fi
-        sleep 2
-        waited=$((waited + 2))
-    done
-
-    log "Verifying node events are populated (non-fatal errors appear here)"
-    kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason | contains("IsNotHealthy")) | "\(.reason) Message=\(.message)"' | head -5
-
-    nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuMemWatchIsNotHealthy") | .reason')
-    if [[ -z "$nonfatal_event" ]]; then
-        error "GpuMemWatch event not found (non-fatal errors should create events)"
-    fi
-    log "Node event verified: pending page retirements are non-fatal, appear in events ✓"
-
-    # Clear it before injecting the fatal error. The monitor keeps one error
-    # code per watch and GPU, set by the first incident it sees, so leaving a
-    # non-fatal MEM incident live could mask the fatal one below on the DCGM
-    # versions that also report XID 95 under GpuMemWatch.
-    kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 392 -v 0
-
     # XID 95 results in DCGM_FR_UNCONTAINED_ERROR which requires a RESTART_VM action.
     # DCGM 4.2.x maps this to DCGM_HEALTH_WATCH_MEM (GpuMemWatch).
     # DCGM 4.4.x+ reclassified it as a "devastating" XID under DCGM_HEALTH_WATCH_ALL (GpuAllWatch).
@@ -692,21 +676,20 @@ test_gpu_monitoring_dcgm() {
 }
 
 # Syslog faults only go healthy on a node boot-ID change. Dry-run never
-# reboots the node (DCGM XIDs are cleared by restarting nv-hostengine instead).
+# reboots the node (DCGM XIDs are cleared by restarting nv-hostengine instead),
+# so in dry-run the test stops and reports itself as skipped.
 skip_syslog_tests_in_dry_run() {
     if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
-        log "Skipping syslog tests in dry-run (recovery needs a node reboot, not a pod restart)"
-        return 0
+        junit_skip_test "dry-run: recovering from a syslog fault needs a node reboot, not a pod restart"
     fi
-    return 1
 }
 
 test_xid_monitoring_syslog() {
     log "======================================================"
-    log "Test 2: XID monitoring via syslog triggers RESTART_VM"
+    log "Test 2: XID monitoring via syslog"
     log "======================================================"
 
-    skip_syslog_tests_in_dry_run && return 0
+    skip_syslog_tests_in_dry_run
 
     local current_ts=$(date +%s)
 
@@ -724,6 +707,34 @@ test_xid_monitoring_syslog() {
     log "Original boot ID: $original_boot_id"
 
     create_node_debug_pod "$gpu_node"
+
+    # A fault whose recommended action is NONE creates a node event and no node
+    # condition, so it quarantines nothing. The XID catalog resolves XID 13
+    # (Graphics Exception) to NONE: it is an application fault, not a broken GPU.
+    log "  - XID 13 (non-fatal): Graphics Exception"
+    kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c 'echo "<3>[6085126.134786] NVRM: Xid (PCI:000b:00:00): 13, Graphics Exception: ESR 0x57a730=0x1b000b 0x57a734=0x20 0x57a728=0x1f81fb60 0x57a72c=0x1174" > /dev/kmsg'
+
+    local max_wait=${UAT_EVENT_TIMEOUT:-30}
+    local waited=0
+    local nonfatal_event
+    while [[ $waited -lt $max_wait ]]; do
+        nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsXIDErrorIsNotHealthy") | .reason')
+        if [[ -n "$nonfatal_event" ]]; then
+            log "Found non-fatal XID event"
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    log "Verifying node events are populated (non-fatal errors appear here)"
+    kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason | contains("IsNotHealthy")) | "\(.reason) Message=\(.message)"' | head -5
+
+    nonfatal_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsXIDErrorIsNotHealthy") | .reason')
+    if [[ -z "$nonfatal_event" ]]; then
+        error "SysLogsXIDError event not found (non-fatal errors should create events)"
+    fi
+    log "Node event verified: XID 13 is non-fatal, appears in events ✓"
 
     log "Injecting XID 79 via /dev/kmsg on pod: $NODE_NS/$NODE_POD"
     kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c 'echo "<3>[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the bus." > /dev/kmsg'
@@ -747,14 +758,13 @@ test_xid_monitoring_syslog_gpu_reset() {
     log "Test 3: XID monitoring via syslog triggers COMPONENT_RESET"
     log "=========================================================="
 
-    skip_syslog_tests_in_dry_run && return 0
+    skip_syslog_tests_in_dry_run
 
     local drainer_configmap
     drainer_configmap=$(kubectl get configmaps -n nvsentinel node-drainer -o jsonpath="{.data.config\.toml}")
 
     if ! echo "$drainer_configmap" | grep -q "partialDrainEnabled = true"; then
-        log "GPU reset is not enabled, skipping Test 3"
-        return 0
+        junit_skip_test "GPU reset is not enabled: node-drainer's partialDrainEnabled is not true"
     fi
 
     local current_ts=$(date +%s)
@@ -819,7 +829,7 @@ test_sxid_monitoring_syslog() {
     log "Test 4: SXID monitoring (NVSwitch errors)"
     log "========================================="
 
-    skip_syslog_tests_in_dry_run && return 0
+    skip_syslog_tests_in_dry_run
 
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
@@ -914,24 +924,28 @@ main() {
     fi
 
     discover_dry_run
-    trap cleanup_uat EXIT
 
-    test_gpu_monitoring_dcgm
+    # Each test runs on its own: a test that fails doesn't stop the ones after
+    # it, and cleanup_uat cleans up after each test. junit_finish fails the
+    # script if any test failed.
+    JUNIT_SUITE=nvsentinel-uat
+    JUNIT_CLEANUP=cleanup_uat
+
+    junit_test test_gpu_monitoring_dcgm
 
     if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" ]]; then
         log "Waiting for syslog-health-monitor to initialize (60s)..."
         sleep 60
     fi
 
-    test_xid_monitoring_syslog
+    junit_test test_xid_monitoring_syslog
 
-    test_xid_monitoring_syslog_gpu_reset
+    junit_test test_xid_monitoring_syslog_gpu_reset
 
-    # test_sxid_monitoring_syslog
+    # junit_test test_sxid_monitoring_syslog
 
     log "========================================="
-    log "All tests PASSED ✓"
-    log "========================================="
+    junit_finish
 }
 
 main "$@"

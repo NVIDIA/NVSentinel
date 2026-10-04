@@ -16,7 +16,8 @@ limitations under the License.
 {{/*
 This job runs only when using an external MongoDB (mongodbStore.enabled=false +
 global.datastore set with provider=mongodb). It creates the required database,
-collections, and indexes in the external MongoDB.
+collections, and indexes in the external MongoDB, including the deployment
+platform connector's idempotency index.
 
 When using internal MongoDB (mongodbStore.enabled=true), the equivalent job runs
 inside the mongodb-store subchart instead.
@@ -65,15 +66,16 @@ kind: Job
 metadata:
   name: {{ include "nvsentinel.externalMongoInitJobName" . }}
   labels:
-    {{- include "nvsentinel.labels" . | nindent 4 }}
-    app.kubernetes.io/name: external-mongodb-setup
+    {{- include "nvsentinel.labelsWithName" (dict "context" . "name" "external-mongodb-setup") | nindent 4 }}
     app.kubernetes.io/component: mongodb-init
   annotations:
-    # Argo: recreate this immutable Job on sync if the first run Failed and TTL
-    # did not change. helm.sh/hook was already on this Job on main.
+    # Argo: recreate this immutable Job on sync if the first run Failed and the
+    # name (TTL, script hash) did not change. Not a Helm hook: the deployment
+    # platform connector's replicas are ready only once the idempotency index
+    # this script creates exists, and a post-install hook (Argo PostSync) runs
+    # only once the pods are ready, so the two would wait for each other. The
+    # bundled mongodb-store Job is a plain Job for the same reason.
     argocd.argoproj.io/sync-options: Force=true,Replace=true
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   ttlSecondsAfterFinished: 86400
   activeDeadlineSeconds: 600

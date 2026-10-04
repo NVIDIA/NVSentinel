@@ -37,7 +37,9 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
 
@@ -147,6 +149,144 @@ func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
 	if result != common.RuleEvaluationSuccess {
 		t.Fatalf("Evaluate() = %v, want success", result)
 	}
+}
+
+// A healthy node that has never been quarantined carries none of the keys the
+// cache retains, so it prunes to empty label and annotation maps. Converting it
+// for CEL drops an empty map, and an absent map raises "no such key" rather than
+// evaluating the guard as false, which would fail every rule and stop
+// fault-quarantine cordoning the node at all.
+func TestNodeRuleEvaluator_PrunedNodeKeepsNoRetainedKeys_EvaluatesOptOutGuards(t *testing.T) {
+	const optOutGuards = `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels &&
+		 node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+	!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels &&
+	  node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false") &&
+	!('quarantinedNodeUncordonedManually' in node.metadata.annotations)`
+
+	retained := nodecache.Derive(config.TomlConfig{
+		LabelPrefix: "k8saas.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{{
+			RuleSetMeta: config.RuleSetMeta{
+				Enabled: true,
+				Name:    "shipped",
+				Match: config.Match{
+					All: []config.Rule{{Kind: "Node", Expression: optOutGuards}},
+				},
+			},
+		}},
+	}, nodecache.Operational{})
+
+	transformed, err := retained.Transform()(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "healthy-node",
+			Labels:      map[string]string{"kubernetes.io/hostname": "healthy-node"},
+			Annotations: map[string]string{"unrelated/annotation": "value"},
+		},
+	})
+	require.NoError(t, err)
+
+	pruned, ok := transformed.(*corev1.Node)
+	require.True(t, ok, "Transform() returned %T", transformed)
+	require.Empty(t, pruned.Labels, "node under test must retain no labels")
+	require.Empty(t, pruned.Annotations, "node under test must retain no annotations")
+
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	require.NoError(t, indexer.Add(pruned))
+
+	evaluator, err := NewNodeRuleEvaluator(optOutGuards, corelisters.NewNodeLister(indexer))
+	require.NoError(t, err)
+
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "healthy-node"})
+	require.NoError(t, err)
+	require.Equal(t, common.RuleEvaluationSuccess, result,
+		"a node that opted out of nothing must match the opt-out guards")
+}
+
+// Recovery reads the node from the API server rather than the cache, so it has
+// to see an opt-out the cache does not hold. Pruning narrows the cache as well
+// as ageing it, so this drives both paths of the same evaluator against a cache
+// pruned by the shipped rules.
+func TestNodeRuleEvaluator_RecoveryRead_PrunedCacheDoesNotHideOptOut(t *testing.T) {
+	const optOutGuard = `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && ` +
+		`node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")`
+
+	retained := nodecache.Derive(config.TomlConfig{
+		LabelPrefix: "k8saas.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{{
+			RuleSetMeta: config.RuleSetMeta{
+				Enabled: true,
+				Name:    "shipped",
+				Match: config.Match{
+					All: []config.Rule{{Kind: "Node", Expression: optOutGuard}},
+				},
+			},
+		}},
+	}, nodecache.Operational{GPUNodeLabelKey: "nvidia.com/gpu.present"})
+
+	// The cached entry predates the opt-out, and pruning has stripped the rest.
+	cached, err := retained.Transform()(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "recovering-node",
+			Labels: map[string]string{"kubernetes.io/hostname": "recovering-node"},
+		},
+	})
+	require.NoError(t, err)
+
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	require.NoError(t, indexer.Add(cached))
+
+	// The live node carries the opt-out its owner has since set.
+	reader := &directNodeReaderStub{node: &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "recovering-node",
+			Labels: map[string]string{
+				"kubernetes.io/hostname":                "recovering-node",
+				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
+			},
+		},
+	}}
+
+	evaluator, err := newNodeRuleEvaluator(optOutGuard, corelisters.NewNodeLister(indexer), reader)
+	require.NoError(t, err)
+
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "recovering-node"})
+	require.NoError(t, err, "the pruned cache must still evaluate, not error")
+	require.Equal(t, common.RuleEvaluationSuccess, result,
+		"the cache does not hold the opt-out, so the steady-state path matches")
+	require.Zero(t, reader.calls, "the steady-state path must not read the API server")
+
+	result, err = evaluator.Evaluate(
+		coldstart.WithRecoveryContext(context.Background()),
+		&protos.HealthEvent{NodeName: "recovering-node"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, common.RuleEvaluationFailed, result,
+		"recovery must honour the opt-out on the live node, whatever the pruned cache holds")
+	require.Equal(t, 1, reader.calls, "recovery must read the API server")
+}
+
+// Restoring the pruned maps must not invent one the node never carried, or a
+// rule asking whether a node has any annotations at all would read the cache
+// instead of the node.
+func TestNodeRuleEvaluator_NodeWithNoAnnotations_ReportsThemAbsent(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	require.NoError(t, indexer.Add(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "bare-node",
+			Labels: map[string]string{"kubernetes.io/hostname": "bare-node"},
+		},
+	}))
+
+	evaluator, err := NewNodeRuleEvaluator(
+		`!has(node.metadata.annotations) && has(node.metadata.labels)`,
+		corelisters.NewNodeLister(indexer),
+	)
+	require.NoError(t, err)
+
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "bare-node"})
+	require.NoError(t, err)
+	require.Equal(t, common.RuleEvaluationSuccess, result,
+		"a nil annotations map must stay absent while a populated labels map stays present")
 }
 
 func TestNodeRuleEvaluator_RecoveryRead_UsesCurrentNode(t *testing.T) {
@@ -385,7 +525,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 			}()
 
-			nodeInformer, err := informer.NewNodeInformer(testClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
+			nodeInformer, err := informer.NewNodeInformer(testClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue, nodecache.Keys{})
 			if err != nil {
 				t.Fatalf("Failed to create NodeInformer: %v", err)
 			}

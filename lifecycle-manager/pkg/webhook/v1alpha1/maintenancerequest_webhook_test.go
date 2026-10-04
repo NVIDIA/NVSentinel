@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
@@ -230,9 +231,10 @@ func TestDefault_PopulatesMissingEventFields(t *testing.T) {
 
 	mr := validMR()
 	mr.Spec.HealthEvent.Metadata = map[string]string{
-		"existing":               "value",
-		"maintenanceRequestName": "spoofed-name",
-		"maintenanceRequestUID":  "spoofed-uid",
+		"existing":                         "value",
+		"maintenanceRequestName":           "spoofed-name",
+		"maintenanceRequestUID":            "spoofed-uid",
+		"maintenanceRequestRequesterAgent": "spoofed-agent",
 	}
 
 	before := time.Now()
@@ -245,9 +247,12 @@ func TestDefault_PopulatesMissingEventFields(t *testing.T) {
 	require.NotNil(t, mr.Spec.HealthEvent.GeneratedTimestamp)
 	assert.False(t, mr.Spec.HealthEvent.GeneratedTimestamp.AsTime().Before(before))
 	assert.False(t, mr.Spec.HealthEvent.GeneratedTimestamp.AsTime().After(after))
+	assert.Equal(t, managed.MRAgentName, mr.Spec.HealthEvent.Agent)
 	assert.Equal(t, "value", mr.Spec.HealthEvent.Metadata["existing"])
 	assert.Equal(t, "test-mr",
 		mr.Spec.HealthEvent.Metadata["maintenanceRequestName"])
+	assert.Equal(t, "maintenance-controller",
+		mr.Spec.HealthEvent.Metadata[managed.MRRequesterAgentMetadataKey])
 	assert.NotContains(t, mr.Spec.HealthEvent.Metadata,
 		"maintenanceRequestUID")
 }
@@ -267,6 +272,22 @@ func TestDefault_PreservesExistingEventFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "existing-id", mr.Spec.HealthEvent.Id)
 	assert.Equal(t, timestamp, mr.Spec.HealthEvent.GeneratedTimestamp)
+}
+
+func TestDefault_StaticAgent_RemovesSpoofedRequesterAgent(t *testing.T) {
+	t.Parallel()
+
+	mr := validMR()
+	mr.Spec.HealthEvent.Agent = managed.MRAgentName
+	mr.Spec.HealthEvent.Metadata = map[string]string{
+		managed.MRRequesterAgentMetadataKey: "spoofed-agent",
+	}
+
+	err := (&MaintenanceRequestDefaulter{}).Default(context.Background(), mr)
+
+	require.NoError(t, err)
+	assert.Equal(t, managed.MRAgentName, mr.Spec.HealthEvent.Agent)
+	assert.NotContains(t, mr.Spec.HealthEvent.Metadata, managed.MRRequesterAgentMetadataKey)
 }
 
 func TestDefault_DefaultsFieldsIndependently(t *testing.T) {

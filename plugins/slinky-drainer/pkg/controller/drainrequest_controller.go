@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,14 +37,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/plugins/slinky-drainer/pkg/nodemeta"
 )
 
 const (
 	drainCompleteConditionType       = "DrainComplete"
 	slurmNodeStateDrainConditionType = "SlurmNodeStateDrain"
-	annotationKey                    = "nodeset.slinky.slurm.net/node-cordon-reason"
+	annotationKey                    = nodemeta.CordonReasonAnnotationKey
 	annotationPrefix                 = "[T] [NVSentinel]"
-	nvsentinelStateLabelKey          = "dgxc.nvidia.com/nvsentinel-state"
+	nvsentinelStateLabelKey          = nodemeta.StateLabelKey
 	drainRequestFinalizer            = "nvsentinel.nvidia.com/slinky-drainer"
 
 	// Slurm base-state conditions that indicate the node still has running work.
@@ -197,13 +200,36 @@ func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, node 
 
 	slog.Info("Node healthy, removing cordon annotation", "node", node.Name)
 
-	delete(node.Annotations, annotationKey)
+	patch, err := annotationMergePatch(annotationKey, nil)
+	if err != nil {
+		return err
+	}
 
-	if err := r.Update(ctx, node); err != nil {
-		return fmt.Errorf("failed to update node %s: %w", node.Name, err)
+	if err := r.Patch(ctx, node, patch); err != nil {
+		return fmt.Errorf("failed to patch node %s: %w", node.Name, err)
 	}
 
 	return nil
+}
+
+// annotationMergePatch builds a merge patch that touches one annotation key and
+// nothing else. A nil value removes the key.
+//
+// The patch names the key instead of being diffed from the cached Node, because
+// the cache keeps only the keys this controller reads. Diffing would describe
+// removing the last cached annotation as "metadata.annotations: null", and the
+// API server would delete every annotation on the real node, not just ours.
+func annotationMergePatch(key string, value any) (client.Patch, error) {
+	body, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{
+			"annotations": map[string]any{key: value},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal patch for annotation %s: %w", key, err)
+	}
+
+	return client.RawPatch(types.MergePatchType, body), nil
 }
 
 func (r *DrainRequestReconciler) setNodeAnnotation(
@@ -226,14 +252,13 @@ func (r *DrainRequestReconciler) setNodeAnnotation(
 
 	slog.Info("Setting node annotation", "node", drainReq.Spec.NodeName, "reason", reason)
 
-	if node.Annotations == nil {
-		node.Annotations = make(map[string]string)
+	patch, err := annotationMergePatch(annotationKey, reason)
+	if err != nil {
+		return err
 	}
 
-	node.Annotations[annotationKey] = reason
-
-	if err := r.Update(ctx, node); err != nil {
-		return fmt.Errorf("failed to update node %s annotations: %w", node.Name, err)
+	if err := r.Patch(ctx, node, patch); err != nil {
+		return fmt.Errorf("failed to patch node %s annotations: %w", node.Name, err)
 	}
 
 	return nil

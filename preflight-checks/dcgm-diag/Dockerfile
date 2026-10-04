@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG DCGM_VERSION="4.5.2-1-ubuntu22.04"
+ARG DCGM_VERSION="4.7.0-ubuntu24.04"
 ARG VERSION="0.1.0"
 ARG GIT_COMMIT="none"
 ARG BUILD_DATE=$(date -u +%FT%TZ)
@@ -48,12 +48,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get install -y --no-install-recommends \
         apt-transport-https \
         ca-certificates \
-        python3-pip && \
+        python3-venv && \
+    python3 -m venv /opt/venv && \
     rm -rf /var/lib/apt/lists/*
 
 ARG PYTHONPATH="/usr/share/datacenter-gpu-manager-4/bindings/python3"
 
 ENV PYTHONPATH=${PYTHONPATH} \
+    PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 
 COPY --from=build /app/dist/*.whl ./

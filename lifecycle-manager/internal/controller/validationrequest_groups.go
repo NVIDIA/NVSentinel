@@ -15,7 +15,9 @@
 package controller
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -91,6 +93,15 @@ func resolveValidationRequestTests(validationRequest *v1alpha1.ValidationRequest
 	}
 
 	return cfg.Validation.Spec.DefaultTests
+}
+
+func nodeSpecNames(nodes []v1alpha1.NodeSpec) []string {
+	names := make([]string, len(nodes))
+	for i, n := range nodes {
+		names[i] = n.Name
+	}
+
+	return names
 }
 
 func batchMinimumNotMetForInitialTestGroup(testName string, testCfg v1alpha1.TestConfig, nodes []string,
@@ -169,12 +180,12 @@ func newTestGroupPhaseAfterAttempt(numAttempts, maxRetries int) v1alpha1.Phase {
 	return v1alpha1.PhaseFailed
 }
 
-func removeDeletedNodesFromTestGroup(validationRequest *v1alpha1.ValidationRequest, g *v1alpha1.TestGroupStatus,
-	deletedNodes []string, cfg *config.Config) v1alpha1.Phase {
+func removeDeletedNodesFromTestGroup(ctx context.Context, validationRequest *v1alpha1.ValidationRequest,
+	g *v1alpha1.TestGroupStatus, deletedNodes []string, cfg *config.Config) v1alpha1.Phase {
 	remainingNodes := removeFromSlice(g.Nodes, deletedNodes)
 	skipped := appendSkipped(validationRequest.Status.Skipped, deletedNodes, false)
 
-	var remainingTests []string
+	var remainingTests, newSkippedTests []string
 
 	batchFailed := false
 
@@ -187,10 +198,16 @@ func removeDeletedNodesFromTestGroup(validationRequest *v1alpha1.ValidationReque
 				batchFailed = true
 			} else {
 				skipped = appendSkipped(skipped, []string{testName}, true)
+				newSkippedTests = append(newSkippedTests, testName)
 			}
 		} else {
 			remainingTests = append(remainingTests, testName)
 		}
+	}
+
+	if len(newSkippedTests) > 0 {
+		slog.InfoContext(ctx, "Skipping tests: node deletion dropped the group below its batch minimum",
+			"validationRequest", validationRequest.Name, "testGroup", g.Name, "tests", newSkippedTests)
 	}
 
 	var nextPhase v1alpha1.Phase

@@ -93,7 +93,7 @@ func NewReconciler(
 	dynamicClient dynamic.Interface,
 	restMapper *restmapper.DeferredDiscoveryRESTMapper,
 ) (*Reconciler, error) {
-	queueManager := queue.NewEventQueueManager()
+	queueManager := queue.NewEventQueueManager(cfg.RequeueBackoffBase)
 
 	var customDrainClient *customdrain.Client
 

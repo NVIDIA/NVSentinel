@@ -26,6 +26,8 @@ import dcgm_fields
 import dcgm_structs
 import pydcgm
 
+from gpu_health_monitor.dcgm_watcher.types import split_dcgm_addrs
+
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
 
 
@@ -81,7 +83,16 @@ def _stop_process(process: multiprocessing.Process) -> None:
 
 
 def dcgm_is_ready_with_timeout(dcgm_addr: str, connect_timeout_seconds: float) -> bool:
-    """Run a functional DCGM readiness check with a hard process timeout."""
+    """Probe each comma-separated address in its own process with a hard timeout.
+
+    Returns true on the first ready address; a hung or failed address never
+    delays the ones after it.
+    """
+    return any(_dcgm_is_ready_at_with_timeout(addr, connect_timeout_seconds) for addr in split_dcgm_addrs(dcgm_addr))
+
+
+def _dcgm_is_ready_at_with_timeout(dcgm_addr: str, connect_timeout_seconds: float) -> bool:
+    """Run one functional DCGM readiness check with a hard process timeout."""
     process = multiprocessing.get_context("spawn").Process(
         target=_probe_process_entrypoint,
         args=(dcgm_addr,),
@@ -122,7 +133,7 @@ def _exit_on_sigterm(_signum: int, _frame: FrameType | None) -> NoReturn:
 
 
 @click.command()
-@click.option("--dcgm-addr", required=True, help="Host:Port where DCGM is running")
+@click.option("--dcgm-addr", required=True, help="Comma-separated host:port list where DCGM may be running")
 @click.option(
     "--retry-interval-seconds",
     type=click.FloatRange(min=0.0, min_open=True),

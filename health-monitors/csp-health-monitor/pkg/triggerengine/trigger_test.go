@@ -214,7 +214,6 @@ func TestNewEngine(t *testing.T) {
 	assert.NotNil(t, engine)
 	assert.Equal(t, cfg, engine.config)
 	assert.Equal(t, mStore, engine.store)
-	assert.Equal(t, mUDSClient, engine.udsClient)
 	assert.Equal(t, mockClient, engine.k8sClient)
 	assert.Equal(t, time.Duration(cfg.MaintenanceEventPollIntervalSeconds)*time.Second, engine.pollInterval)
 }
@@ -503,7 +502,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 				// UpdateEventStatus should not be called
 			},
 			expectError:           true,
-			expectedErrorContains: "failed to send quarantine health event via UDS",
+			expectedErrorContains: "failed to send quarantine health event to the platform connector",
 			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
 				mUDSClient.AssertExpectations(t)
 				mStore.AssertNotCalled(t, "UpdateEventStatus", mock.Anything, mock.Anything, mock.Anything)

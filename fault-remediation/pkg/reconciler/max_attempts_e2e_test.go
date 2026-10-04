@@ -105,7 +105,7 @@ func reconcileQuarantineEvent(ctx context.Context, t *testing.T, r *FaultRemedia
 		ResumeToken: []byte(eventID),
 	}
 
-	_, err := r.Reconcile(ctx, &eventToken)
+	_, err := r.reconcileEvent(ctx, &eventToken)
 
 	return err
 }
@@ -337,7 +337,7 @@ func TestMaxAttempts_CancellationResetsBudget(t *testing.T) {
 		Event:       map[string]any(cancelled),
 		ResumeToken: []byte("cancel-event-3"),
 	}
-	_, err := r.Reconcile(ctx, &cancelledToken)
+	_, err := r.reconcileEvent(ctx, &cancelledToken)
 	require.NoError(t, err)
 
 	// A new session starts on the same node, so it must be remediable again.
@@ -388,7 +388,7 @@ func TestMaxAttempts_SucceededCRThenOutOfSessionEventIsNotCapped(t *testing.T) {
 		Event:       map[string]any(event),
 		ResumeToken: []byte("succeeded-event-2"),
 	}
-	_, err := r.Reconcile(ctx, &eventToken)
+	_, err := r.reconcileEvent(ctx, &eventToken)
 	require.NoError(t, err)
 
 	crName2 := currentCR(ctx, t, r, nodeName)

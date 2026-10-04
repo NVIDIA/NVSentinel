@@ -180,6 +180,7 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
             "threshold_gbps": cfg.bw_threshold_gbps,
             "skip_bandwidth_check": cfg.skip_bandwidth_check,
             "message_sizes": cfg.message_sizes,
+            "publish_target": cfg.publish.target if cfg.publish else None,
         },
     )
 
@@ -248,6 +249,7 @@ def _handle_success(cfg: Config, result: BenchmarkResult) -> int:
             node_name=cfg.node_name,
             processing_strategy=cfg.processing_strategy,
             token_path=cfg.token_path,
+            publish=cfg.publish,
         )
         reporter.send_success(message)
     except RuntimeError as err:
@@ -279,6 +281,7 @@ def _handle_failure(cfg: Config, error: NCCLError, message: str) -> int:
             node_name=cfg.node_name,
             processing_strategy=cfg.processing_strategy,
             token_path=cfg.token_path,
+            publish=cfg.publish,
         )
         reporter.send_failure(error, message)
     except RuntimeError as err:

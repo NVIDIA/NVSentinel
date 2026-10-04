@@ -134,3 +134,7 @@ lambdaWorkloadIdentity:
   # It needs permission to read maintenance events in the workspace named by
   # configToml.lambda.workspaceId, and must trust this cluster's ServiceAccount.
   identityLRN: ""
+
+# Where health events go: socket (the node-local platform connector, default) or
+# deployment (the deployment platform connector; needs platformConnector.deployment.enabled).
+publishTo: socket

@@ -12,6 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{- $gpuCluster := include "metadata-collector.gpuDraEnabled" . }}
+{{- $nriPlugin := include "metadata-collector.nriPluginEnabled" . }}
+{{- $podAnnotations := deepCopy (.Values.podAnnotations | default dict) }}
+{{- if $nriPlugin }}
+{{- /* The NRI plugin matches the suffix against the container name below. */}}
+{{- $_ := set $podAnnotations "nvidia.cdi.k8s.io/container.metadata-collector" .Values.nriPlugin.cdiDevice }}
+{{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -30,7 +37,7 @@ spec:
       {{- include "metadata-collector.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -44,6 +51,11 @@ spec:
       {{- end }}
       hostNetwork: true
       hostPID: true
+      {{- if $gpuCluster }}
+      resourceClaims:
+        - name: gpus
+          resourceClaimTemplateName: {{ include "metadata-collector.fullname" . }}-admin-gpus
+      {{- end }}
       containers:
         - name: metadata-collector
           securityContext:
@@ -83,6 +95,10 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+            {{- if $gpuCluster }}
+            claims:
+              - name: gpus
+            {{- end }}
           volumeMounts:
             - name: output
               mountPath: /var/lib/nvsentinel
@@ -106,7 +122,7 @@ spec:
             type: Directory
         - name: pod-gpu-resources
           hostPath:
-            path: /var/lib/kubelet/pod-resources
+            path: {{ printf "%s/pod-resources" (include "metadata-collector.kubeletRootDir" .) | quote }}
             type: Directory
         {{- with .Values.additionalHostVolumes }}
         {{- toYaml . | nindent 8 }}
@@ -128,6 +144,6 @@ spec:
       {{- with (.Values.global.priorityClassName | default .Values.priorityClassName) }}
       priorityClassName: {{ . | quote }}
       {{- end }}
-      {{- if .Values.runtimeClassName }}
+      {{- if and .Values.runtimeClassName (not $gpuCluster) (not $nriPlugin) }}
       runtimeClassName: {{ .Values.runtimeClassName }}
       {{- end }}

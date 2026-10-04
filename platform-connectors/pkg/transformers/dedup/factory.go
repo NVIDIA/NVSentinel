@@ -35,7 +35,7 @@ func newFromConfig(cfg *pipeline.Config, opts pipeline.Options) (pipeline.Transf
 		return nil, fmt.Errorf("invalid dedup configuration: %w", err)
 	}
 
-	tracker := newTracker(dedupCfg.SuppressionWindow)
+	tracker := newTracker(dedupCfg.SuppressionWindow, withMaxEntries(dedupCfg.MaxEntries))
 	//nolint:gosec // cancel is owned by the returned transformer and invoked by Pipeline.Close.
 	ctx, cancel := context.WithCancel(context.Background())
 	startEvictExpired(ctx, tracker, dedupCfg.CleanupInterval)

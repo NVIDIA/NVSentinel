@@ -21,6 +21,19 @@ global:
     tag: "12-debian-12-r30"
     pullPolicy: IfNotPresent
   metricsPort: 2112
+  # IPv4 bind address for the GPU health monitor metrics server. Set to "::"
+  # to enable IPv6 / dual-stack binding. This requires an IPv6-capable kernel;
+  # nodes booted with ipv6.disable=1 fail with EAFNOSUPPORT and CrashLoop.
+  metricsAddress: "0.0.0.0"
+  # DNS domain of the cluster (kubeadm networking.dnsDomain), used wherever the
+  # chart builds a service hostname or a certificate DNS name. Change it only on
+  # a cluster whose domain is not cluster.local, and then set the same domain
+  # where a subchart or value carries its own: mongodb-store.mongodb.clusterDomain,
+  # postgresql.clusterDomain, mongodb-store.psmdb-db.clusterServiceDNSSuffix
+  # (Percona, as svc.<domain>), and the full hostnames in
+  # janitor.config.cspProviderHost and fault-remediation.logCollector.uploadURL.
+  # See docs/configuration/README.md#cluster-domain.
+  clusterDomain: cluster.local
   # Default Kubernetes API client limits for core controllers. Components can
   # override these with their own qps and burst values.
   # qps: positive values throttle requests, 0 uses the client-go default,
@@ -103,7 +116,9 @@ global:
     #
     # The bundled cluster-scoped monitors — csp-health-monitor,
     # kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor
-    # and health-events-analyzer — do NOT belong here. They are derived from the release namespace at
+    # and health-events-analyzer — do NOT belong here, and neither does
+    # lifecycle-manager once its MaintenanceRequest controller is enabled (an MR
+    # names any node, so it publishes cross-node). They are derived from the release namespace at
     # render time for whichever of them are enabled, so installing into a
     # namespace other than nvsentinel needs no edit. Listing them by hand is
     # what used to break such an install: a hardcoded namespace rendered
@@ -113,7 +128,28 @@ global:
     # verbatim against the username TokenReview reports, so the namespace must
     # be a DNS-1123 label and the name a DNS-1123 subdomain — nothing is
     # trimmed or normalised for you.
+    # Entries apply to both the socket and the deployment platform connector;
+    # the deployment's network policy admits their namespace.
     crossNodeServiceAccounts: []
+
+  # Connection facts of the deployment platform connector: the single place
+  # the gRPC port and TLS mode are set. The server templates (listener,
+  # Service, Certificate, NetworkPolicy) and the publisher subcharts (which
+  # can only read global values) all read from here, so the two sides of the
+  # connection cannot disagree. Every field is optional; the defaults below
+  # apply when unset.
+  #
+  # tls.mode "required" is a cert-manager issued server certificate, verified
+  # by the publishers against the mounted CA. The only alternative is the
+  # explicitly named "insecureDevelopmentMode" (plaintext listener); the
+  # caller token crosses the pod network in gRPC metadata, so never use it
+  # outside development.
+  #
+  # platformConnectorDeployment:
+  #   grpcPort: 50051
+  #   tls:
+  #     mode: required
+  platformConnectorDeployment: {}
 
   # Datastore configuration
   # By default, datastore is not configured (internal mongodb-config ConfigMap is used).
@@ -206,6 +242,15 @@ global:
   # Shared metadata path used by metadata-collector and syslog-health-monitor
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 
+  # Kubelet's --root-dir. metadata-collector mounts <kubeletRootDir>/pod-resources
+  # from the host. Set this when kubelet runs with a non-default --root-dir.
+  kubeletRootDir: /var/lib/kubelet
+
+  # Set true when GPUs are managed through DRA (GPU Operator GPUCluster mode).
+  # metadata-collector then holds a DRA admin-access GPU claim instead of using
+  # the nvidia RuntimeClass.
+  gpuDraEnabled: false
+
   # DCGM (Data Center GPU Manager) configuration
   # Used by gpu-health-monitor
   dcgm:
@@ -213,9 +258,10 @@ global:
     mode: operator-service
     # Enable DCGM Kubernetes service integration
     enabled: true
-    # GPU Operator DCGM service used by operator-service mode.
+    # GPU Operator DCGM service used by operator-service mode. Comma-separated hosts
+    # are tried in order; only one exists per cluster (nvidia-dcgm-dra in GPUCluster mode).
     service:
-      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      endpoint: "nvidia-dcgm-dra.gpu-operator.svc,nvidia-dcgm.gpu-operator.svc"
       port: 5555
     # Externally owned hostengine used by external-hostengine mode.
     externalHostengine:
@@ -271,6 +317,7 @@ global:
     enabled: false
   janitor:
     enabled: false
+  # Enables lifecycle-manager reconciliation of maintenance requests.
   lifecycleManager:
     enabled: false
   janitorProvider:
@@ -314,6 +361,109 @@ networkPolicy:
 platformConnector:
   # Local fallback, overridden by global.priorityClassName when that is set.
   priorityClassName: ""
+
+  # The deployment platform connector: the platform connector binary in its
+  # central role (--mode=deployment). Experimental; the switchover flag
+  # deploys the central Deployment, and monitors follow their own publishTo
+  # setting. Server-only knobs live here; the connection facts the publishers
+  # share (gRPC port and TLS mode) live under global.platformConnectorDeployment,
+  # the only place subcharts can read them from. Publishers present the same
+  # global.platformConnectorAuth token as on the socket.
+  deployment:
+    # Must be a real YAML boolean (true or false); a quoted "false" is a
+    # string, not this setting, and is refused rather than read as false.
+    #
+    # Switch over in order: enable this with every publisher on "socket", wait
+    # for ready replicas, set publishTo "deployment" on the publishers, then
+    # turn daemonset off. Steps, index and restore notes:
+    # docs/configuration/platform-connectors.md#deployment-platform-connector
+    enabled: false
+    # Two or more keep the write path up through node drains (a disruption
+    # budget allows one replica down at a time). A single replica gets no
+    # disruption budget, so a drain interrupts ingestion until it is
+    # rescheduled; the monitors retry inside their window meanwhile.
+    replicas: 3
+    # Placement of the central Deployment; never inherits the DaemonSet's
+    # tolerate-everything list. global.systemNodeSelector and
+    # global.systemNodeTolerations take precedence when set, as for the other
+    # central components; the priority class comes only from
+    # global.systemPriorityClassName.
+    nodeSelector: {}
+    tolerations: []
+    # Per replica. Memory grows with the monitor pods connected to it (about
+    # one connection per node per replica, each holding the connections.*
+    # buffers plus connection state); size from a load test before a large
+    # fleet.
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    auth:
+      # TokenReview verdict cache entries per replica: every caller token in
+      # the fleet plus the extra ones that exist while tokens rotate.
+      tokenCacheSize: 500000
+      # TokenReview client rate limit per replica. Sized for the worst case
+      # of every monitor pod of a 100,000-node fleet writing in every cache
+      # window, about 830 TokenReviews per second per replica; the limiter
+      # only queues requests, so a limit below the real rate delays every
+      # acknowledgement rather than rejecting any.
+      tokenReviewQps: 1000
+      tokenReviewBurst: 2000
+    datastore:
+      # Database connections per replica; must cover the writes in flight at
+      # once.
+      maxPoolSize: 10
+    # Bounded wait for the node condition update inside one request. The
+    # datastore write alone decides the reply; a slower update is counted and
+    # the node shows the old state until the monitor next reports.
+    conditionUpdateTimeout: "10s"
+    connections:
+      # A monitor stays on one replica while its connection lives. Closing
+      # connections after this age spreads monitors back across replicas
+      # after a rollout; closing idle ones frees their memory.
+      maxAge: "10m"
+      maxIdle: "5m"
+      # Bytes gRPC buffers per connection for reading and for writing. The
+      # grpc-go default is 32768 each; health event batches are small, so
+      # smaller buffers cost nothing but cut the memory each connected
+      # monitor pod holds.
+      readBufferBytes: 8192
+      writeBufferBytes: 8192
+    kubernetes:
+      # Kubernetes API client rate limit per replica, applied to each of its
+      # two clients: the one reading nodes and updating conditions and
+      # Events, and the one reading node metadata. Every batch that carries
+      # a healthy or fatal event reads the node once to decide whether the
+      # condition changes, so this client needs about one read per such
+      # batch: a few thousand batches per second across the fleet is about a
+      # thousand per replica. Node metadata reads per second per replica are
+      # at most the number of nodes divided by the cache TTL in seconds
+      # (every replica caches every node it sees). The values under
+      # platformConnector.k8sConnector and
+      # platformConnector.transformers.MetadataAugmentor size these for one
+      # node; the replicas serve the whole fleet, so they are set here and
+      # rendered into the Deployment's own config file.
+      qps: 1000
+      burst: 2000
+      # Nodes whose metadata is cached per replica.
+      nodeMetadataCacheSize: 200000
+      # How long a node's cached metadata is reused. A node opted out with
+      # the skip label takes up to this long to be honored by the replicas.
+      nodeMetadataCacheTtl: "10m"
+
+  # The node-local platform connector DaemonSet (the Unix-socket ingestion
+  # path, writing directly to the database). Turn it off only once every
+  # publisher's publishTo is "deployment", the preflight checks and the
+  # lifecycle manager's MaintenanceRequest controller included (the last step
+  # of the switchover, see deployment.enabled); the render refuses the
+  # combination otherwise. Must be a real YAML boolean (true or false); a
+  # quoted "false" is a string, not this setting, and is refused rather than
+  # read as false.
+  daemonset:
+    enabled: true
 
   image:
     repository: ghcr.io/nvidia/nvsentinel/platform-connectors
@@ -378,6 +528,14 @@ platformConnector:
 
   k8sConnector:
     enabled: true
+    # Retry each failed Kubernetes write in place; completed writes are not repeated.
+    # Zero or omission selects 25 retries per write. Negative values are invalid.
+    # The batch deadline below can stop retries before the count is reached.
+    maxRetries: 25
+    # Whole-batch deadline, including API calls and backoff. Maximum: 5m.
+    # Zero or omission selects 1m. Later batches wait; permanent errors are skipped.
+    # For a 5m window, also increase maxRetries to 200.
+    maxRetryDuration: 1m
     maxNodeConditionMessageLength: 1024
     # Max length of the compacted message prefix (before Recommended Action) per health event
     compactedHealthEventMsgLen: 72
@@ -498,6 +656,13 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
+  # Target relabeling applied to every endpoint, e.g. to attach the node name to
+  # metrics that do not carry it:
+  #   relabelings:
+  #     - sourceLabels: [__meta_kubernetes_pod_node_name]
+  #       targetLabel: node
+  # relabelings: []
+  # metricRelabelings: []  # Sample relabeling applied after the scrape
 
 # DaemonSet rolling update strategy for the platform-connectors DaemonSet.
 # type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.

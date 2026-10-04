@@ -63,9 +63,9 @@ spec:
   commonName: postgresql
   dnsNames:
     - postgresql
-    - {{ printf "%s-postgresql.%s.svc.cluster.local" .Release.Name .Release.Namespace }}
+    - {{ printf "%s-postgresql.%s.svc.%s" .Release.Name .Release.Namespace ((.Values.global).clusterDomain | default "cluster.local") }}
     - {{ printf "%s-postgresql.%s.svc" .Release.Name .Release.Namespace }}
-    - {{ printf "postgresql.%s.svc.cluster.local" .Release.Namespace }}
+    - {{ printf "postgresql.%s.svc.%s" .Release.Namespace ((.Values.global).clusterDomain | default "cluster.local") }}
     - {{ printf "postgresql.%s.svc" .Release.Namespace }}
   issuerRef:
     name: postgresql-ca-issuer

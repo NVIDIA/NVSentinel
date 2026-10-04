@@ -36,7 +36,7 @@ import (
 
 const (
 	eventObjKey = "event"
-	nodeObjKey  = "node"
+	nodeObjKey  = common.NodeCELVar
 )
 
 type RuleEvaluator interface {
@@ -231,9 +231,44 @@ func (nm *NodeRuleEvaluator) getNode(ctx context.Context, nodeName string) (map[
 		return nil, fmt.Errorf("failed to convert node %s to unstructured: %w", nodeName, err)
 	}
 
+	restorePrunedMetadataMaps(unstructuredObj, node)
+
 	return map[string]any{
-		"node": unstructuredObj,
+		nodeObjKey: unstructuredObj,
 	}, nil
+}
+
+// restorePrunedMetadataMaps puts metadata.labels and metadata.annotations back
+// as empty maps when pruning is what emptied them.
+//
+// The rules read these maps by key, and CEL raises "no such key: labels" for an
+// absent map rather than evaluating the guard as false. Both fields carry
+// omitempty, so the conversion drops whichever one is empty, and the informer
+// cache prunes them to the keys the rules read: a node holding none of those
+// keys converts with no maps at all, which fails every rule that guards on one.
+//
+// node is the source the conversion ran over, and it still tells the two cases
+// apart because pruning keeps a nil map nil. A map the node never had stays
+// absent, so a rule asking whether the node carries any labels at all reads the
+// node rather than the cache.
+func restorePrunedMetadataMaps(unstructuredNode map[string]any, node *corev1.Node) {
+	metadata, ok := unstructuredNode["metadata"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	restore := func(field string, source map[string]string) {
+		if source == nil {
+			return
+		}
+
+		if _, present := metadata[field]; !present {
+			metadata[field] = map[string]any{}
+		}
+	}
+
+	restore("labels", node.Labels)
+	restore("annotations", node.Annotations)
 }
 
 var primitiveKinds = map[reflect.Kind]bool{

@@ -34,6 +34,7 @@ import (
 
 	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -111,6 +112,7 @@ type Reconciler struct {
 	uncordonedByLabelKey        string
 	uncordonedReasonLabelKey    string
 	uncordonedTimestampLabelKey string
+	readinessChecker            *server.DatastoreReadinessChecker
 }
 
 var (
@@ -174,6 +176,11 @@ func (r *Reconciler) SetEventWatcher(eventWatcher eventwatcher.EventWatcherInter
 	r.eventWatcher = eventWatcher
 }
 
+// SetReadinessChecker configures the datastore readiness checker.
+func (r *Reconciler) SetReadinessChecker(checker *server.DatastoreReadinessChecker) {
+	r.readinessChecker = checker
+}
+
 func (r *Reconciler) Start(ctx context.Context) error {
 	ds, err := datastore.NewDataStore(ctx, *r.config.DataStoreConfig)
 	if err != nil {
@@ -205,6 +212,10 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	oldWatcher, resumeControlDecision, err := r.setupChangeStreamWatcher(ctx, datastoreAdapter)
 	if err != nil {
 		return err
+	}
+
+	if r.readinessChecker != nil {
+		r.readinessChecker.SetWatcher(oldWatcher)
 	}
 
 	// Create event watcher with the new signature
@@ -2154,19 +2165,9 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 
 	// Extract only quarantine annotations
 	quarantineAnnotations := make(map[string]string)
-	quarantineKeys := []string{
-		common.QuarantineHealthEventAnnotationKey,
-		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
-		common.QuarantineHealthEventAppliedLabelsAnnotationKey,
-		common.QuarantineHealthEventIsCordonedAnnotationKey,
-		common.QuarantineHealthEventCordonPreExistingAnnotationKey,
-		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
-		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey,
-		common.QuarantineValidationHealthEventAnnotationKey,
-	}
 
 	if node.Annotations != nil {
-		for _, key := range quarantineKeys {
+		for _, key := range common.QuarantineAnnotationKeys {
 			if value, exists := node.Annotations[key]; exists {
 				quarantineAnnotations[key] = value
 			}
@@ -2252,6 +2253,27 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	annotationsToRemove := appendIfPresent(annotations, nil, manualUnquarantineAnnotationKeys...)
 	labelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
 
+	// The rule labels are deliberately left on the node, as the taints are: a
+	// manual uncordon means an operator took the node over, so fault-quarantine
+	// leaves the fault markings in place. TestE2ECordonAndTaint_ManualUncordon
+	// asserts this.
+	//
+	// The cordon bookkeeping labels (cordon-by/cordon-reason/cordon-timestamp)
+	// are removed here, as the automatic uncordon path already does. The manual
+	// path historically left them behind, so a node returned to service kept
+	// cordon-by=NVSentinel and any consumer attributing a cordon would
+	// mis-attribute the node's next cordon. They are removed only when NVSentinel
+	// still owns the cordon-by label: some users reuse the same key for their own
+	// purposes and a blind removal would drop their label. The ownership guard is
+	// carried into the update callback (see ConditionalLabelRemoval) so it is
+	// re-checked against the freshly fetched Node on every conflict retry, not
+	// decided once from a possibly stale cache.
+	cordonLabels := &informer.ConditionalLabelRemoval{
+		Keys:       []string{r.cordonedByLabelKey, r.cordonedReasonLabelKey, r.cordonedTimestampLabelKey},
+		GuardKey:   r.cordonedByLabelKey,
+		GuardValue: cordonlabels.ServiceName,
+	}
+
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
 		return fmt.Errorf("failed to read applied labels for manually uncordoned node %s: %w", nodeName, err)
@@ -2271,6 +2293,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		annotationsToRemove,
 		newAnnotations,
 		labelsToRemove,
+		cordonLabels,
 	); err != nil {
 		slog.ErrorContext(ctx, "Failed to clean up manually uncordoned node", "node", nodeName, "error", err)
 		metrics.ProcessingErrors.WithLabelValues("manual_uncordon_cleanup_error").Inc()
@@ -2351,6 +2374,7 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 
 	annotationsToRemove := appendIfPresent(annotations, nil, manualUnquarantineAnnotationKeys...)
 
+	// As on manual uncordon, the rule labels stay on the node by design.
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
 		return fmt.Errorf("failed to read applied labels for manually untainted node %s: %w", nodeName, err)

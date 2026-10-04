@@ -1,0 +1,50 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Renders nothing; only validates the pairing of each publisher's publishTo with
+# the two ingestion paths. Subcharts cannot read the umbrella's values, so it is
+# checked here, keyed on the same global toggles that enable the subcharts: a
+# disabled chart renders no pods and is exempt.
+#
+# - publishTo "deployment" while the deployment platform connector is off: the
+# pods mount its CA secret and dial its Service, so they never start.
+# - publishTo "socket" while the DaemonSet is off: the pods publish to a
+# node-local socket nothing serves, so their events are dropped. For the
+# preflight checks, injected into tenant pods, this means a check that
+# cannot send its report either fails its init container, so the workload
+# pod never starts, or drops the report.
+{{- $deploymentEnabled := include "nvsentinel.pcDeployment.enabled" . }}
+{{- $daemonsetEnabled := include "nvsentinel.pcDaemonset.enabled" . }}
+{{- range $chart, $toggle := dict "gpu-health-monitor" "gpuHealthMonitor" "syslog-health-monitor" "syslogHealthMonitor" "nic-health-monitor" "nicHealthMonitor" "kubernetes-object-monitor" "kubernetesObjectMonitor" "slurm-drain-monitor" "slurmDrainMonitor" "csp-health-monitor" "cspHealthMonitor" "nvcre-certification-monitor" "nvcreCertificationMonitor" "health-events-analyzer" "healthEventsAnalyzer" "preflight" "preflight" }}
+{{- $enabled := (index (($.Values.global) | default dict) $toggle | default dict).enabled }}
+{{- $publishTo := (index $.Values $chart | default dict).publishTo | default "socket" }}
+{{- if and $enabled (eq $publishTo "deployment") (not $deploymentEnabled) }}
+{{- fail (printf "%s.publishTo is \"deployment\" but platformConnector.deployment.enabled is false, so its pods would mount a CA secret and dial a Service that do not exist and would never start. Enable platformConnector.deployment or set %s.publishTo to \"socket\"." $chart $chart) }}
+{{- end }}
+{{- if and $enabled (eq $publishTo "socket") (not $daemonsetEnabled) }}
+{{- fail (printf "%s.publishTo is \"socket\" but platformConnector.daemonset.enabled is false, so its pods would publish to a node-local socket that nothing serves and their events would be dropped. Enable platformConnector.daemonset or set %s.publishTo to \"deployment\"." $chart $chart) }}
+{{- end }}
+{{- end }}
+# The lifecycle manager publishes only through its MaintenanceRequest controller,
+# which is off by default, so its publishTo counts only while that controller is
+# enabled as well.
+{{- $lm := (index .Values "lifecycle-manager") | default dict }}
+{{- $lmEnabled := and (((.Values.global | default dict).lifecycleManager | default dict).enabled) ((($lm.controllers | default dict).maintenanceRequest | default dict).enabled) }}
+{{- $lmPublishTo := $lm.publishTo | default "socket" }}
+{{- if and $lmEnabled (eq $lmPublishTo "deployment") (not $deploymentEnabled) }}
+{{- fail "lifecycle-manager.publishTo is \"deployment\" but platformConnector.deployment.enabled is false, so its pod would mount a CA secret and dial a Service that do not exist and would never start. Enable platformConnector.deployment or set lifecycle-manager.publishTo to \"socket\"." }}
+{{- end }}
+{{- if and $lmEnabled (eq $lmPublishTo "socket") (not $daemonsetEnabled) }}
+{{- fail "lifecycle-manager.publishTo is \"socket\" but platformConnector.daemonset.enabled is false, so its MaintenanceRequest controller would publish to a node-local socket that nothing serves and its events would be dropped. Enable platformConnector.daemonset or set lifecycle-manager.publishTo to \"deployment\"." }}
+{{- end }}

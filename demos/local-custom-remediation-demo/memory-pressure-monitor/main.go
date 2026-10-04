@@ -28,10 +28,35 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
+
+func tokenInterceptor(tokenPath string) grpc.UnaryClientInterceptor {
+	return func(
+		ctx context.Context,
+		method string,
+		req, reply any,
+		cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption,
+	) error {
+		token, err := os.ReadFile(tokenPath)
+		if err != nil {
+			return fmt.Errorf("reading SA token from %q: %w", tokenPath, err)
+		}
+
+		if len(token) == 0 {
+			return fmt.Errorf("SA token file %q is empty", tokenPath)
+		}
+
+		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+string(token))
+
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
 
 func main() {
 	slog.Info("Starting memory-pressure-monitor")
@@ -62,12 +87,22 @@ func run() error {
 	socketPath := envOrDefault("SOCKET_PATH", "/var/run/nvsentinel.sock")
 	procfsPath := envOrDefault("PROCFS_PATH", "/host/proc/meminfo")
 
+	tokenPath, ok := os.LookupEnv("PC_TOKEN_PATH")
+	if !ok {
+		tokenPath = "/var/run/secrets/nvsentinel/platform-connector/token"
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	target := "unix://" + socketPath
 
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	if tokenPath != "" {
+		dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(tokenInterceptor(tokenPath)))
+	}
+
+	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC client: %w", err)
 	}
@@ -81,6 +116,7 @@ func run() error {
 		"pollSeconds", pollSeconds,
 		"socket", socketPath,
 		"procfs", procfsPath,
+		"tokenPath", tokenPath,
 	)
 
 	ticker := time.NewTicker(time.Duration(pollSeconds) * time.Second)

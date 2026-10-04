@@ -71,6 +71,15 @@ spec:
             {{- if .Values.assumeDriverInstalled }}
             - "--assume-driver-installed"
             {{- end }}
+            {{- if .Values.dcgmAppLabel }}
+            - "--dcgm-app-label={{ .Values.dcgmAppLabel }}"
+            {{- end }}
+            {{- if .Values.driverAppLabel }}
+            - "--driver-app-label={{ .Values.driverAppLabel }}"
+            {{- end }}
+            {{- if .Values.gkeInstallerAppLabel }}
+            - "--gke-installer-app-label={{ .Values.gkeInstallerAppLabel }}"
+            {{- end }}
             - "--require-dcgm-ready-for-bootstrap={{ .Values.requireDCGMReadyForBootstrap }}"
             {{- if .Values.expectedDeviceCounts.enabled }}
             - "--expected-device-counts-config-file"

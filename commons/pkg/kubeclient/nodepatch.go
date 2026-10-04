@@ -210,12 +210,19 @@ func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
 		modifiedProjection.ResourceVersion = original.ResourceVersion
 	}
 
-	originalJSON, err := json.Marshal(originalProjection)
+	// A map either side carries is kept on both, so that emptying it diffs entry
+	// by entry. A map neither side carries stays absent from both.
+	keepMaps := map[string]bool{
+		"labels":      original.Labels != nil || modified.Labels != nil,
+		"annotations": original.Annotations != nil || modified.Annotations != nil,
+	}
+
+	originalJSON, err := patchProjectionJSON(originalProjection, keepMaps)
 	if err != nil {
 		return nil, fmt.Errorf("marshal original patch projection for node %q: %w", original.Name, err)
 	}
 
-	modifiedJSON, err := json.Marshal(modifiedProjection)
+	modifiedJSON, err := patchProjectionJSON(modifiedProjection, keepMaps)
 	if err != nil {
 		return nil, fmt.Errorf("marshal modified patch projection for node %q: %w", original.Name, err)
 	}
@@ -230,6 +237,54 @@ func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
 	}
 
 	return patch, nil
+}
+
+// patchProjectionJSON marshals a projection, keeping the named metadata maps in
+// the document even when they are empty.
+//
+// ObjectMeta tags both maps omitempty, so a map emptied of its last entry
+// marshals away exactly as an unset field does. CreateTwoWayMergePatch cannot
+// tell the two apart, and reads the empty map as a field the caller removed: it
+// emits "labels": null, which deletes every label on the live node rather than
+// the entries the caller deleted. The live node holds labels the projection
+// never had — hostname, zone, instance type — so that is unrecoverable.
+//
+// Keeping the key present on both sides of the diff makes the removal per
+// entry. The caller decides which maps to keep, because a map neither side
+// carries has to stay absent from both: materialising it on one side alone
+// would patch an empty map onto a node that has none, which writes nothing but
+// costs a request.
+func patchProjectionJSON(projection *v1.Node, keepMaps map[string]bool) ([]byte, error) {
+	raw, err := json.Marshal(projection)
+	if err != nil {
+		return nil, err
+	}
+
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return nil, err
+	}
+
+	metadata, _ := document["metadata"].(map[string]any)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+
+	for field, keep := range keepMaps {
+		if !keep {
+			continue
+		}
+
+		if _, present := metadata[field]; !present {
+			metadata[field] = map[string]any{}
+		}
+	}
+
+	if len(metadata) > 0 {
+		document["metadata"] = metadata
+	}
+
+	return json.Marshal(document)
 }
 
 // projectNodePatchableFields restricts patch generation to the Node fields this

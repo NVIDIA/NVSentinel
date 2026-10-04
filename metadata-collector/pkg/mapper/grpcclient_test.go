@@ -103,9 +103,12 @@ type MockPodResourcesServer struct {
 	// embed the interface we need to implement so we don't need to implement all methods
 	v1.PodResourcesListerClient
 }
+
 type deviceInfo struct {
 	resourceName string
 	id           string
+	// driverName set marks a DRA allocation: id is the DRA device name and resourceName the pool.
+	driverName string
 }
 
 func NewMockPodResourcesServer(err error, errReturnCount int, podDevices map[string]map[string][]deviceInfo) *MockPodResourcesServer {
@@ -133,6 +136,17 @@ func (mock *MockPodResourcesServer) List(ctx context.Context,
 				Name: containerName,
 			}
 			for _, device := range devices {
+				if device.driverName != "" {
+					containerResources.DynamicResources = append(containerResources.DynamicResources, &v1.DynamicResource{
+						ClaimName: "claim",
+						ClaimResources: []*v1.ClaimResource{{
+							DriverName: device.driverName,
+							PoolName:   device.resourceName,
+							DeviceName: device.id,
+						}},
+					})
+					continue
+				}
 				containerResources.Devices = append(containerResources.Devices, &v1.ContainerDevices{
 					ResourceName: device.resourceName,
 					DeviceIds:    []string{device.id},
@@ -190,4 +204,44 @@ func TestListPodResourcesErrorWithRetry(t *testing.T) {
 	devicesPerPod, err := kubeletGRPCClient.ListPodResources()
 	assert.NoError(t, err)
 	assert.NotNil(t, devicesPerPod)
+}
+
+func TestListPodResourcesWithDRA(t *testing.T) {
+	uuids := draDeviceUUIDs(map[int]string{0: "GPU-a0", 1: "GPU-a1"})
+	draDevices := map[string]map[string][]deviceInfo{
+		"dra-pod": {
+			"container-1": {
+				{driverName: draGPUDriverName, resourceName: "node-a", id: "gpu-1"},
+				{driverName: draGPUDriverName, resourceName: "node-a", id: "gpu-0"},
+				{driverName: draGPUDriverName, resourceName: "node-a", id: "gpu-1"},
+				{driverName: "other.example.com", resourceName: "node-a", id: "gpu-0"},
+				{resourceName: "nvidia.com/gpu", id: "GPU-plugin"},
+			},
+		},
+		"unresolved-pod": {
+			"container-2": {
+				{driverName: draGPUDriverName, resourceName: "node-a", id: "gpu-9"},
+			},
+		},
+	}
+
+	client := newTestKubeletGRPCClient(nil, 0, draDevices)
+	client.draDeviceUUIDs = uuids
+	devicesPerPod, err := client.ListPodResources()
+	assert.NoError(t, err)
+	assert.Equal(t, map[string]*model.DeviceAnnotation{
+		"default/dra-pod": {Devices: map[string][]string{
+			draGPUDriverName: {"GPU-a0", "GPU-a1"},
+			"nvidia.com/gpu": {"GPU-plugin"},
+		}},
+		// unresolved-pod is absent until its device name resolves.
+	}, devicesPerPod)
+
+	// With no known GPUs DRA allocations are skipped entirely.
+	client = newTestKubeletGRPCClient(nil, 0, draDevices)
+	devicesPerPod, err = client.ListPodResources()
+	assert.NoError(t, err)
+	assert.Equal(t, map[string]*model.DeviceAnnotation{
+		"default/dra-pod": {Devices: map[string][]string{"nvidia.com/gpu": {"GPU-plugin"}}},
+	}, devicesPerPod)
 }

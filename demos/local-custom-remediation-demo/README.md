@@ -1,230 +1,151 @@
 # NVSentinel Local Demo: Custom Remediation Actions
 
-**Demonstration of NVSentinel's custom remediation action extensibility with a real memory pressure health monitor.**
+**Route a repair to a controller NVSentinel has never heard of, end to end, on a KIND cluster with no GPU hardware.**
 
-This demo showcases the end-to-end custom remediation workflow where a custom health monitor detects memory pressure on a node, and a third-party remediation controller automatically reclaims memory by killing offending pods.
+This demo exhausts a node's memory and then gets out of the way. A health monitor nobody shipped reports the fault, NVSentinel cordons the node and asks for a repair it has no code to perform, and a third-party controller carries it out — after which the node comes back on its own.
 
-> **No GPU Required!** This demo runs on **any laptop** — it demonstrates how to extend NVSentinel beyond GPU fault management to handle any hardware or system fault.
+> **No GPU required.** The fault is real memory pressure on a real node, and nothing about the pipeline is stubbed. What is custom is both ends of it: the monitor that detects the fault and the controller that repairs it. Everything between them is the code that runs in production clusters, unmodified.
 
 ## What You'll Learn
 
-1. **Custom Health Monitors** — How to build a health monitor that sends custom remediation actions via NVSentinel's gRPC interface
-2. **Custom Remediation Actions** — How the `CUSTOM` enum + `customRecommendedAction` field routes events to arbitrary CRD templates
-3. **Third-Party Controllers** — How to build a remediation controller that implements NVSentinel's status contract
-4. **Full Pipeline** — Health event → quarantine → drain → custom CR → remediation → recovery
+1. **Custom health monitors** — a standalone process that reports a fault NVSentinel has no built-in check for
+2. **Custom remediation actions** — `recommendedAction: CUSTOM` plus a name routes the event to an arbitrary CRD
+3. **Third-party controllers** — what a controller has to write back for NVSentinel to consider the repair finished
+4. **Return to service** — the fault clears, fault-quarantine uncordons, and the node is usable again
 
-## Architecture
+The point of the exercise is step 2. NVSentinel ships actions for the faults it knows about; the extension point exists so a fault it has never heard of can still be routed somewhere useful, without a fork.
+
+## The Pipeline
 
 ```text
-┌─────────────────────────────────────────────────────────────────┐
-│                         Demo Cluster                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Memory Pressure Monitor (DaemonSet)                            │
-│  - Reads /proc/meminfo from host                                │
-│  - Detects when MemAvailable < threshold                        │
-│         │                                                       │
-│         │ gRPC (CUSTOM / "RECLAIM_MEMORY")                      │
-│         v                                                       │
-│  Platform Connectors ──► MongoDB ◄── Fault Quarantine           │
-│                                        │ (cordon node)          │
-│                                        v                        │
-│                                  Node Drainer                   │
-│                                        │ (drain pods)           │
-│                                        v                        │
-│                                Fault Remediation                │
-│                                        │ (create CR)            │
-│                                        v                        │
-│                              MemoryReclaim CR                   │
-│                              (custom CRD)                       │
-│                                        │                        │
-│                              Memory Reclaim Controller           │
-│                              (third-party controller)           │
-│                                        │                        │
-│                              Deletes memory-hog pods            │
-│                              Updates CR → NodeReady=True        │
-│                                                                 │
-│  Trigger: Deploy stress pod (memory-hog) ──► memory pressure    │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│  KIND cluster                                                             │
+│                                                                           │
+│  Worker node                                                              │
+│  ┌───────────────────────────────────────────────────────┐                │
+│  │  /proc/meminfo  ◄── you fill it here                  │                │
+│  │          │                                            │                │
+│  │          ▼                                            │                │
+│  │  memory-pressure-monitor        (custom, this demo)   │                │
+│  │          │  health event, over a Unix socket          │                │
+│  │          │  recommendedAction: CUSTOM/RECLAIM_MEMORY  │                │
+│  │          ▼                                            │                │
+│  │  platform-connectors ─────────────┐                   │                │
+│  └───────────────────────────────────┼───────────────────┘                │
+│                                      │ write                              │
+│                                      ▼                                    │
+│                              ┌───────────────┐                            │
+│                              │   MongoDB     │                            │
+│                              └───────┬───────┘                            │
+│                                change stream                              │
+│            ┌─────────────────────────┼─────────────────────────┐          │
+│            ▼                         ▼                         ▼          │
+│    fault-quarantine  ──────►   node-drainer  ──────►  fault-remediation   │
+│      cordon the node           no-op: no user          render the         │
+│                                namespaces              RECLAIM_MEMORY     │
+│                                                        template           │
+│                                                                │          │
+│                                                                ▼          │
+│                                                     ┌────────────────┐    │
+│                                                     │ MemoryReclaim  │    │
+│                                                     └────────┬───────┘    │
+│                                                              │ watch      │
+│                                                              ▼            │
+│                                              memory-reclaim-controller    │
+│                                                    (custom, this demo)    │
+│                                              delete the pods, then write  │
+│                                              reclaimedPods + the condition│
+└───────────────────────────────────────────────────────────────────────────┘
 ```
+
+The core modules coordinate only through the datastore — none of them calls another. The custom action adds one more seam of the same kind: fault-remediation and the demo controller never talk, they just take turns writing to a `MemoryReclaim`.
 
 ## Prerequisites
 
-- **Docker** — For running KIND ([install](https://docs.docker.com/get-docker/))
-- **kubectl** — Kubernetes CLI ([install](https://kubernetes.io/docs/tasks/tools/))
+Runs on Linux and on macOS, Intel or Apple Silicon.
+
+- **Docker** — runs the KIND cluster and builds the two demo images ([install](https://docs.docker.com/get-docker/))
 - **kind** — Kubernetes in Docker ([install](https://kind.sigs.k8s.io/docs/user/quick-start/#installation))
+- **kubectl** — Kubernetes CLI ([install](https://kubernetes.io/docs/tasks/tools/))
 - **helm** — Kubernetes package manager ([install](https://helm.sh/docs/intro/install/))
-- **ko** — Go container image builder ([install](https://ko.build/install/))
 - **go** — Go 1.25+ ([install](https://go.dev/dl/))
 - **jq** — JSON processor ([install](https://jqlang.github.io/jq/download/))
+- **curl** — used to look up the current NVSentinel release
 
-**System Requirements:**
-- Disk Space: ~10GB free
-- Memory: 4GB RAM minimum, 8GB recommended
-- CPU: 2 cores minimum
+Resources: roughly 4 CPU cores, 8 GB RAM and 20 GB of free disk.
 
 ## Quick Start
 
-### Option 1: Automated Demo
+```bash
+cd demos/local-custom-remediation-demo
+
+./demo.sh            # every step, start to finish
+./demo.sh cleanup    # delete the cluster
+```
+
+To read what happens at each stage, run the steps yourself instead:
 
 ```bash
-make demo
-make cleanup
+./scripts/00-setup.sh              # build the cluster, install NVSentinel, monitor and controller
+./scripts/01-show-cluster.sh       # look at the cluster before anything is broken
+./scripts/02-trigger-pressure.sh   # fill the node's memory
+./scripts/03-watch-remediation.sh  # protect, remediate, back in service
+./scripts/99-cleanup.sh            # delete the cluster
 ```
 
-### Option 2: Step-by-Step (Recommended)
+These are ordered stages, not independent scripts: step 2 needs the cluster step 0 builds, and step 3 needs the fault step 2 creates. Run them in order.
+
+## What Happens at Each Step
+
+### Step 0: Setup (`00-setup.sh`)
+
+Creates a two node KIND cluster, installs cert-manager, then installs NVSentinel from `oci://ghcr.io/nvidia/nvsentinel` with [config/nvsentinel-values.yaml](config/nvsentinel-values.yaml).
+
+It resolves the version rather than pinning one: the highest semver tag published to the chart's OCI repository wins, so a clone of this repo installs the current release however old the clone is. Set `NVSENTINEL_CHART_VERSION=v1.23.0` to pin. The chart pins its own matching image tag, so nothing here overrides it — setting one and not the other is how a chart ends up rendering flags the image does not have.
+
+It then installs the `MemoryReclaim` CRD, grants fault-remediation access to it, builds both demo images, and deploys the monitor as a DaemonSet and the controller as a Deployment.
+
+Before it reports success, every pod must still be `Ready` after a settle window with no container restarts during it. A pod that reports `Ready` once can still be crash-looping, and the point of setup is to catch that here rather than two steps later.
+
+### Step 1: Before the fault (`01-show-cluster.sh`)
+
+The baseline: both nodes `Ready` and schedulable, the monitor and controller up, current `MemAvailable` against the monitor's threshold, and no `MemoryReclaim` in existence yet.
+
+### Step 2: Fill the memory (`02-trigger-pressure.sh`)
+
+Deploys a `stress` pod that reserves 300 MB and holds it, which pushes `MemAvailable` below the monitor's threshold.
+
+**It recalibrates the threshold first, and this matters.** KIND nodes share the host's kernel, so `/proc/meminfo` inside the worker reports *your machine's* free memory, not a fixed slice of it. A threshold computed during setup is routinely stale minutes later — the host frees or consumes hundreds of MB on its own, and a 300 MB allocation then fails to cross it. Recomputing `MemAvailable - MEM_MARGIN_MB` immediately before the hog starts makes the gap exactly the margin.
+
+The step then waits for the node condition `MemoryAvailableCheck` to turn `True`. platform-connectors writes one condition per check, named after the monitor's `checkName`, and `True` means a fault is present (NVSentinel inverts the usual sense). Gating here means a stale calibration is reported now, rather than looking like a broken pipeline in the next step.
+
+On a busy machine, retry once with more headroom:
 
 ```bash
-# Step 0: Create cluster, install NVSentinel, build and deploy custom components
-make setup
-
-# Step 1: View the healthy cluster
-make show-cluster
-
-# Step 2: Deploy a memory-hungry pod to trigger pressure
-make trigger
-
-# Step 3: Verify the full remediation pipeline
-make verify
-
-# Clean up
-make cleanup
+HOG_MEM_MB=1024 MEM_MARGIN_MB=700 ./scripts/02-trigger-pressure.sh
 ```
 
-## What Happens During the Demo
+If that fails too, reset rather than retrying further — a half-processed event leaves the node cordoned and the pipeline mid-flight:
 
-### Phase 0: Setup (00-setup.sh)
-
-1. Creates a KIND cluster with 1 worker node
-2. Installs cert-manager and NVSentinel (with custom remediation action configured)
-3. Builds the **memory pressure health monitor** and loads it into KIND
-4. Builds the **memory reclaim controller** and loads it into KIND
-5. Deploys both as Kubernetes workloads
-
-### Phase 1: Show Cluster (01-show-cluster.sh)
-
-Shows the healthy state:
-- All nodes Ready and schedulable
-- Memory pressure monitor running on the worker node
-- Memory reclaim controller watching for maintenance CRs
-- Available memory on the worker node
-
-### Phase 2: Trigger Memory Pressure (02-trigger-memory-pressure.sh)
-
-Deploys a `stress` pod that consumes ~300MB of memory on the worker node. The memory pressure health monitor detects `MemAvailable` dropping below the threshold and sends a health event:
-
-```json
-{
-  "agent": "memory-pressure-monitor",
-  "componentClass": "Memory",
-  "checkName": "MemoryAvailableCheck",
-  "isFatal": true,
-  "recommendedAction": 27,
-  "customRecommendedAction": "RECLAIM_MEMORY"
-}
-```
-
-### Phase 3: Verify Remediation (03-verify-remediation.sh)
-
-Verifies the complete pipeline:
-
-1. **Node cordoned** — Fault quarantine detected the fatal event and cordoned the worker
-2. **Maintenance CR created** — Fault remediation created a `MemoryReclaim` CR (a custom CRD defined by the demo)
-3. **Memory hog deleted** — The memory reclaim controller watched for `MemoryReclaim` CRs and killed the stress pod
-4. **CR completed** — Controller updated the CR status with `MemoryReclaimed=True`
-
-## Components
-
-### Memory Pressure Health Monitor
-
-A Go DaemonSet (`memory-pressure-monitor/`) that:
-- Reads `/proc/meminfo` from the host (mounted read-only)
-- Polls every 10 seconds for `MemAvailable`
-- Sends `CUSTOM` / `"RECLAIM_MEMORY"` health events via gRPC when below threshold
-- Sends healthy events when memory recovers
-- Only sends events on state transitions (avoids duplicates)
-
-### Memory Reclaim Controller
-
-A Go Deployment (`memory-reclaim-controller/`) that:
-- Watches `MemoryReclaim` CRs (`demo.nvsentinel.nvidia.com/v1alpha1`) — a custom CRD defined by the demo
-- Finds and deletes pods labeled `nvsentinel.nvidia.com/memory-hog: "true"` on the affected node
-- Updates CR status condition to `MemoryReclaimed=True`
-
-This is a **reference implementation** of a third-party remediation controller for NVSentinel.
-
-### NVSentinel Configuration
-
-Fault remediation is configured with a custom action:
-
-```yaml
-fault-remediation:
-  maintenance:
-    actions:
-      "RECLAIM_MEMORY":
-        apiGroup: "demo.nvsentinel.nvidia.com"
-        version: "v1alpha1"
-        kind: "MemoryReclaim"
-        scope: "Cluster"
-        completeConditionType: "MemoryReclaimed"
-        templateFileName: "reclaim-memory-template.yaml"
-        equivalenceGroup: "memory-reclaim"
-```
-
-## Extending This Demo
-
-This demo is designed as a starting point. To adapt it for your own use case:
-
-1. **Custom Health Monitor** — Replace the memory check in `memory-pressure-monitor/main.go` with your own detection logic (disk, network, temperature, etc.)
-2. **Custom Action Name** — Change `"RECLAIM_MEMORY"` to your action name in the monitor, Helm values, and template
-3. **Custom Remediation** — Replace the pod deletion in `memory-reclaim-controller/main.go` with your remediation logic
-4. **Custom CRD** — The demo already uses a custom `MemoryReclaim` CRD. Adapt `config/memoryreclaim-crd.yaml` for your use case
-
-## Troubleshooting
-
-### Memory hog not triggering pressure
 ```bash
-# Check available memory on the worker
-kubectl top node
-# Check monitor logs
-kubectl logs -l app=memory-pressure-monitor -n nvsentinel
+./demo.sh cleanup && ./scripts/00-setup.sh
 ```
 
-### Node not being cordoned
-```bash
-# Check fault-quarantine logs
-kubectl logs deployment/fault-quarantine -n nvsentinel --tail=20
-# Verify event was stored
-kubectl exec -n nvsentinel deployment/simple-health-client -- curl -s localhost:8080/health
-```
+### Step 3: Protect, remediate, back in service (`03-watch-remediation.sh`)
 
-### CR not being created
-```bash
-# Check fault-remediation logs
-kubectl logs deployment/fault-remediation -n nvsentinel --tail=20
-# Check for RECLAIM_MEMORY in config
-kubectl get configmap fault-remediation -n nvsentinel -o jsonpath='{.data.config\.toml}' | grep RECLAIM
-# Check if MemoryReclaim CRD is installed
-kubectl get crd memoryreclaims.demo.nvsentinel.nvidia.com
-```
+| Stage | Who acts | Waited on by |
+|---|---|---|
+| Protect | fault-quarantine, then node-drainer | the node cordoned |
+| Remediate | fault-remediation, then memory-reclaim-controller | a `MemoryReclaim` existing, then `status.reclaimedPods` being written, then the pod gone |
+| Back in service | the monitor, then fault-quarantine | `MemoryAvailableCheck` turning `False`, then the node uncordoned |
 
-### Memory hog not being deleted
-```bash
-# Check controller logs
-kubectl logs deployment/memory-reclaim-controller -n nvsentinel --tail=20
-# Check MemoryReclaim CRs
-kubectl get memoryreclaims -A
-```
+Every check reads an object — a node condition, a CR status, a `deletionTimestamp` — never a controller's log. Logs are for debugging; a demo that asserts on them asserts on wording.
 
-## Next Steps
+**Completion is not remediation.** The controller closes the request whether or not it found anything to delete, so `MemoryReclaimed=True` on its own proves nothing. It records what it actually did:
 
-- **[Fault Injection Demo](../local-fault-injection-demo/)** — See GPU fault detection and quarantine
-- **[Slinky Drain Demo](../local-slinky-drain-demo/)** — See custom drain extensibility
-- **[Configuration Guide](../../docs/configuration/fault-remediation.md)** — Full custom action configuration reference
-- **[ADR-036](../../docs/designs/036-custom-remediation-actions.md)** — Design document for custom remediation actions
+| `reclaimedPods` | `reason` | Means |
+|---|---|---|
+| ≥ 1 | `HogPodsDeleted` | this controller deleted the pods |
+| 0 | `NoHogPodsFound` | it ran, but something else had already removed them |
 
-## License
-
-Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
-Licensed under the Apache License, Version 2.0.
+The script fails on a zero count. This is also why `node-drainer.userNamespaces` is empty in the values file: the drain runs *before* remediation, so listing `default` there would let node-drainer evict the hog first and leave the custom controller with nothing to do — while the pod still looked "cleaned up".

@@ -26,6 +26,8 @@ const (
 	containerNameMain = "main"
 	// fieldNameKey is the "name" field key used when building unstructured object fixtures.
 	fieldNameKey = "name"
+	// fieldMessageKey is the "message" field key used when building unstructured object fixtures.
+	fieldMessageKey = "message"
 
 	// labelApp and labelTest are the pod labels fixture workloads are selected by.
 	labelApp  = "app"

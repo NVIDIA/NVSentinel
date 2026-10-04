@@ -32,7 +32,7 @@ spec:
     - {{ include "lifecycle-manager.fullname" . }}
     - {{ include "lifecycle-manager.fullname" . }}.{{ .Release.Namespace }}
     - {{ include "lifecycle-manager.fullname" . }}.{{ .Release.Namespace }}.svc
-    - {{ include "lifecycle-manager.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "lifecycle-manager.fullname" . }}.{{ .Release.Namespace }}.svc.{{ (.Values.global).clusterDomain | default "cluster.local" }}
   issuerRef:
     name: {{ .Values.webhook.certIssuer }}
     kind: Issuer
@@ -71,7 +71,6 @@ webhooks:
         operations:
           - CREATE
           - UPDATE
-          - DELETE
         resources:
           - validationrequests
         scope: "Cluster"

@@ -39,6 +39,7 @@ type NodeDrainEvaluator struct {
 	informers         InformersInterface
 	customDrainClient CustomDrainClientInterface
 	podPolicies       *config.PodPolicyMatcher
+	customDrainNodes  *config.CustomDrainNodeMatcher
 }
 
 type InformersInterface interface {

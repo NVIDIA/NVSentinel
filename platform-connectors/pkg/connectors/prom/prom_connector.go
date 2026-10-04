@@ -66,6 +66,18 @@ func (p *PromConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 	}
 }
 
+// ProcessBatch counts every event of one batch. The deployment platform
+// connector calls it per accepted batch instead of running the ring-buffer
+// loop, so health_events_total carries the same labels in both roles. It
+// never fails; the error return only satisfies the batch processor shape.
+func (p *PromConnector) ProcessBatch(_ context.Context, healthEvents *protos.HealthEvents) error {
+	for _, event := range healthEvents.GetEvents() {
+		recordEvent(event)
+	}
+
+	return nil
+}
+
 // recordEvent increments the counter for one health event.
 func recordEvent(event *protos.HealthEvent) {
 	if event == nil {
@@ -80,13 +92,4 @@ func recordEvent(event *protos.HealthEvent) {
 		strconv.FormatBool(event.GetIsFatal()),
 		strconv.FormatBool(event.GetIsHealthy()),
 	).Inc()
-}
-
-// ShutdownRingBuffer drains the connector's ring buffer.
-func (p *PromConnector) ShutdownRingBuffer(ctx context.Context) {
-	if p.ringBuffer != nil {
-		slog.InfoContext(ctx, "Shutting down prom connector ring buffer with drain")
-		p.ringBuffer.ShutDownHealthMetricQueue()
-		slog.InfoContext(ctx, "Prom connector ring buffer drained successfully")
-	}
 }

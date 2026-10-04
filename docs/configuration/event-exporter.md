@@ -204,6 +204,22 @@ backfill:
   enabled: false
 ```
 
+## Resume Token Storage
+
+Where the exporter persists its change stream resume token, so it continues from the last exported event after a restart instead of replaying the stream.
+
+```yaml
+event-exporter:
+  exporter:
+    resumeToken:
+      database: "nvsentinel"
+      collection: "resumetokens"
+```
+
+Both fields are required: the exporter rejects its configuration at startup when either is empty. Change them only when your datastore uses different names.
+
+The token advances in strict event order regardless of which worker publishes first, so raising [Workers](#workers) does not risk skipping events after a restart.
+
 ## Workers
 
 Number of concurrent goroutines that process and publish events to the sink in parallel.

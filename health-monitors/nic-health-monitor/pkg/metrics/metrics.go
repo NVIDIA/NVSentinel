@@ -69,3 +69,29 @@ var (
 		Help: "Polls deferred before the first evaluation because devices were unreadable",
 	}, []string{labelNode, labelCheck})
 )
+
+// isFatalValues are the two values the is_fatal label can take, matching the
+// strings the call site formats.
+var isFatalValues = []string{"false", "true"}
+
+// InitForChecks creates the zero-valued children of the counters whose labels
+// are fully known once the enabled checks are, so each exports 0 from startup.
+//
+// Without this a CounterVec with no children exports nothing at all: no series,
+// no HELP and no TYPE. An empty query then cannot distinguish "nothing has
+// happened" from "the monitor is not running, not scraped, or renamed", and an
+// alert on the counter can never fire, because there is no series for rate() to
+// evaluate until the event being alerted on has already occurred.
+//
+// StateCheckErrors and CounterThresholdBreaches are deliberately excluded: their
+// labels include the device and port discovered at runtime, so there is no
+// correct set to pre-create here.
+func InitForChecks(node string, checkNames []string) {
+	for _, check := range checkNames {
+		FirstPollDeferred.WithLabelValues(node, check)
+
+		for _, isFatal := range isFatalValues {
+			HealthEventsSent.WithLabelValues(node, check, isFatal)
+		}
+	}
+}

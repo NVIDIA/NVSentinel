@@ -74,6 +74,24 @@ job:
   nodeSelector: {}
   tolerations: []
 
+# NetworkPolicy configuration
+networkPolicy:
+  # Additional namespaces permitted to scrape the mongodb_exporter metrics endpoint (port 9216).
+  # Applied only when usePerconaOperator=true. The release namespace is always permitted.
+  additionalScrapeNamespaces: []
+  # Additional ingress rules for the metrics endpoint (port 9216).
+  # Applied only when usePerconaOperator=true.
+  # Each entry is rendered directly under 'from:' in the port 9216 ingress rule.
+  # Example:
+  # additionalScrapeRules:
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: monitoring
+  #     podSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: prometheus
+  additionalScrapeRules: []
+
 # =============================================================================
 # Bitnami MongoDB Configuration (used when usePerconaOperator=false)
 # =============================================================================
@@ -292,14 +310,27 @@ mongodb:
       - |
         export HOSTNAME=$(hostname)
         {{- if .Values.tls.enabled }}
-        /bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address ":9216" --mongodb.uri "mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r "s/@/%40/g;s/:/%3A/g")@${HOSTNAME}.mongodb-headless.nvsentinel.svc.cluster.local:27017/admin?tls=true&tlsCertificateKeyFile=/certs/mongodb.pem&tlsCAFile=/certs/mongodb-ca-cert&authMechanism=SCRAM-SHA-256&connectTimeoutMS=30000&serverSelectionTimeoutMS=30000"
+        /bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address ":9216" --mongodb.uri "mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r "s/@/%40/g;s/:/%3A/g")@${HOSTNAME}.mongodb-headless.nvsentinel.svc.{{ .Values.clusterDomain }}:27017/admin?tls=true&tlsCertificateKeyFile=/certs/mongodb.pem&tlsCAFile=/certs/mongodb-ca-cert&authMechanism=SCRAM-SHA-256&connectTimeoutMS=30000&serverSelectionTimeoutMS=30000"
         {{- else }}
-        /bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address ":9216" --mongodb.uri "mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r "s/@/%40/g;s/:/%3A/g")@${HOSTNAME}.mongodb-headless.nvsentinel.svc.cluster.local:27017/admin?authMechanism=SCRAM-SHA-256&connectTimeoutMS=30000&serverSelectionTimeoutMS=30000"
+        /bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address ":9216" --mongodb.uri "mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r "s/@/%40/g;s/:/%3A/g")@${HOSTNAME}.mongodb-headless.nvsentinel.svc.{{ .Values.clusterDomain }}:27017/admin?authMechanism=SCRAM-SHA-256&connectTimeoutMS=30000&serverSelectionTimeoutMS=30000"
         {{- end }}
 
 # =============================================================================
 # Percona MongoDB Operator Configuration (used when usePerconaOperator=true)
 # =============================================================================
+
+# The operator version you intend to run, which is also crVersion and the init
+# image tag. This ASSERTS, it does not set: Helm resolves subchart values before
+# templates run, so set the three below as usual and set this to match. A render
+# that disagrees fails, which is what catches a partial edit. Empty disables the
+# assertion. Does not cover mongod: different version line, and the certified
+# pairing is only published at check.percona.com.
+psmdbVersion: ""
+
+# Also check the DEPLOYED crVersion from the bootstrap Job, which the render
+# cannot see. Off by default: grants the Job `get` on perconaservermongodbs.
+validateDeployedCrVersion: false
+
 psmdb-operator:
   nodeSelector: {}
   tolerations: []

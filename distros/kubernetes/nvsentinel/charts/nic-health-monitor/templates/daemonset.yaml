@@ -137,6 +137,9 @@ spec:
                   fieldPath: spec.nodeName
             - name: LOG_LEVEL
               value: "{{ .Values.logLevel }}"
+            {{- with include "nic-health-monitor.publish.envVars" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
           volumeMounts:
             - name: var-run-vol
               mountPath: /var/run/
@@ -156,6 +159,9 @@ spec:
               readOnly: true
             {{- if include "nic-health-monitor.pcAuth.enabled" . }}
             {{- include "nic-health-monitor.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
+            {{- with include "nic-health-monitor.publish.volumeMounts" . }}
+            {{- . | nindent 12 }}
             {{- end }}
       volumes:
         - name: var-run-vol
@@ -183,6 +189,9 @@ spec:
             type: Directory
         {{- if include "nic-health-monitor.pcAuth.enabled" . }}
         {{- include "nic-health-monitor.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
+        {{- with include "nic-health-monitor.publish.volumes" . }}
+        {{- . | nindent 8 }}
         {{- end }}
       nodeSelector:
         nvsentinel.dgxc.nvidia.com/driver.installed: "true"

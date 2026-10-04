@@ -1,0 +1,141 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# --------------------------------------------------------------------------
+# This values-nvcre.yaml file adds support for running NVCRE tests as part of new node
+# and post-remediation validation. The default lifecycle-manager/values.yaml and
+# fault-quarantine/values.yaml already define new node and post-remediation validation
+# using dcgm-diag-test from the k8s-job-provider, but lifecycle-manager itself
+# (global.lifecycleManager.enabled) and fault-quarantine's validation feature
+# (validation.enabled) are both off by default, so this file also turns both on.
+# Applying it will start running the following tests for new node validation from the
+# node-validation-controller:
+# - dcgm-diag-test
+# - nccl-loopback-nvswitch
+# - nccl-all-reduce (sets minimumNodesPerBatch to 2 with batchFailurePolicy ignore)
+#
+# Additionally, fault-quarantine will start running the following tests for
+# post-remediation validation:
+# - dcgm-diag-test
+# - nccl-loopback-nvswitch
+#
+# The following pre-requisites are required:
+# 1. The cluster-readiness-engine must be installed prior to enabling NVCRE support
+# in NVSentinel: https://github.com/NVIDIA/cluster-readiness-engine. Specifically,
+# we need the ability for NVCRE to be able to reconcile Certification CRDs.
+# --------------------------------------------------------------------------
+
+global:
+  lifecycleManager:
+    enabled: true
+
+lifecycle-manager:
+  config:
+    schedulingGate:
+      taints:
+        - key: kubernetes.io/arch
+          value: arm64
+          effect: NoSchedule
+          remove: false
+        - key: nvidia.com/gpu
+          value: present
+          effect: NoSchedule
+          remove: false
+    defaultTests:
+      - dcgm-diag-test
+      - nccl-loopback-nvswitch
+    providers:
+      nvcre-provider:
+        apiGroup: "nvcre.nvidia.com"
+        version: "v1alpha1"
+        kind: "Certification"
+        resource: "certifications"
+        templateFile: nvcre-certification-template.yaml
+        supportsTestBatching: true
+        retries: 2
+        timeoutSeconds: 5400
+        successfulCondition:
+          type: Succeeded
+          status: "True"
+        failedCondition:
+          type: Failed
+          status: "True"
+    tests:
+      nccl-loopback-nvswitch:
+        provider: nvcre-provider
+        supportsBatchingNodes: true
+        minimumNodesPerBatch: 1
+        batchFailurePolicy: fail
+        bandwidthGBps: "580"
+      nccl-all-reduce:
+        provider: nvcre-provider
+        supportsBatchingNodes: true
+        minimumNodesPerBatch: 2
+        batchFailurePolicy: ignore
+        bandwidthGBps: "700"
+
+    newNodeValidation:
+      newNodeTests:
+        - dcgm-diag-test
+        - nccl-loopback-nvswitch
+        - nccl-all-reduce
+
+    templates:
+      "nvcre-certification-template.yaml": |
+        apiVersion: nvcre.nvidia.com/v1alpha1
+        kind: Certification
+        metadata:
+          name: {{.ValidationRequestName}}-{{.TestGroupName}}
+          namespace: {{.Namespace}}
+        spec:
+          target:
+            nodeNames:
+              {{- range .Nodes}}
+              - {{.NodeName}}
+              {{- end}}
+            taintSelectors:
+              {{- range .Tolerations}}
+              - key: {{.Key}}
+                {{- if .Value}}
+                value: {{.Value}}
+                {{- end}}
+                effect: {{.Effect}}
+              {{- end}}
+          categories:
+            {{- range .Tests}}
+            - domain: communication
+              variant: {{.Name}}
+              {{- if .BandwidthGBps}}
+              options:
+                thresholds:
+                  busBandwidthGBps: "value >= {{.BandwidthGBps}}"
+              {{- end}}
+            {{- end}}
+
+fault-quarantine:
+  validation:
+    enabled: true
+    ruleSets:
+      - enabled: true
+        version: "1"
+        name: "Post-reboot validation"
+        match:
+          all:
+            - kind: "HealthEvent"
+              expression: >-
+                event.componentClass == 'GPU' && event.isFatal == true &&
+                event.recommendedAction in [15, 24]
+        tests:
+          - dcgm-diag-test
+          - nccl-loopback-nvswitch

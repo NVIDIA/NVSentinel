@@ -19,4 +19,7 @@ const (
 	MRVersion  = "v1"
 	MRKind     = "MaintenanceRequest"
 	MRResource = "maintenancerequests"
+
+	MRAgentName                 = "lifecycle-manager"
+	MRRequesterAgentMetadataKey = "maintenanceRequestRequesterAgent"
 )

@@ -102,6 +102,11 @@ func (f *ClientFactory) CreateDatabaseClient(ctx context.Context) (client.Databa
 			)
 		}
 
+		// Bound the connection pool so DATASTORE_MAX_CONNECTIONS takes effect
+		// on this path too, with the
+		// same idle and lifetime defaults NewPostgreSQLStore applies.
+		providers_postgresql.ConfigureConnectionPool(db, nil)
+
 		// Return the provider's PostgreSQL database client which has health event field extraction
 		tableName := f.dbConfig.GetCollectionName() // In PostgreSQL context, collection = table
 

@@ -1,0 +1,197 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: publishing to the deployment platform connector
+templates:
+  - templates/configmap.yaml
+  - templates/deployment.yaml
+  - templates/clusterrole.yaml
+  - templates/clusterrolebinding.yaml
+release:
+  namespace: nvsentinel
+set:
+  global.platformConnectorAuth.enabled: true
+  global.platformConnectorAuth.audience: platform-connector.nvsentinel.nvidia.com
+  global.platformConnectorAuth.tokenMountPath: /var/run/secrets/nvsentinel/platform-connector
+  global.platformConnectorAuth.tokenExpirationSeconds: 3600
+tests:
+  - it: leaves the webhook on the socket by default
+    templates:
+      - templates/configmap.yaml
+      - templates/deployment.yaml
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: healthPublish
+        template: templates/configmap.yaml
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+          any: true
+        template: templates/deployment.yaml
+
+  - it: hands the webhook the target and the CA bundle when publishing to the deployment
+    templates:
+      - templates/configmap.yaml
+      - templates/deployment.yaml
+    set:
+      publishTo: deployment
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'healthPublishTarget: "platform-connector-deployment.nvsentinel.svc.cluster.local:50051"'
+        template: templates/configmap.yaml
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'healthPublishCAFile: "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"'
+        template: templates/configmap.yaml
+      # The webhook accepts exactly one of the CA file and the insecure flag.
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: healthPublishInsecure
+        template: templates/configmap.yaml
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+            secret:
+              secretName: platform-connector-deployment-grpc-cert
+              items:
+                - key: ca.crt
+                  path: ca.crt
+        template: templates/deployment.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: platform-connector-deployment-ca
+            mountPath: /etc/nvsentinel/platform-connector-deployment-ca
+            readOnly: true
+        template: templates/deployment.yaml
+
+  - it: follows a global grpcPort override in the target
+    template: templates/configmap.yaml
+    set:
+      publishTo: deployment
+      global.platformConnectorDeployment.grpcPort: 6000
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'healthPublishTarget: "platform-connector-deployment.nvsentinel.svc.cluster.local:6000"'
+
+  - it: swaps the CA bundle for the insecure flag in the insecure development mode
+    templates:
+      - templates/configmap.yaml
+      - templates/deployment.yaml
+    set:
+      publishTo: deployment
+      global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'healthPublishInsecure: true'
+        template: templates/configmap.yaml
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: healthPublishCA
+        template: templates/configmap.yaml
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+          any: true
+        template: templates/deployment.yaml
+
+  # The controller copies the CA bundle into tenant namespaces, so it needs
+  # a ClusterRole even when gang coordination is off: namespaces and
+  # ConfigMaps only, without the gang discovery roles.
+  - it: keeps a ClusterRole for the CA copy when gang coordination is off but the checks publish to the deployment
+    templates:
+      - templates/clusterrole.yaml
+      - templates/clusterrolebinding.yaml
+    set:
+      publishTo: deployment
+      gangCoordination.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["configmaps"]
+            verbs: ["get", "list", "create", "update"]
+        template: templates/clusterrole.yaml
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["get", "list", "watch"]
+        template: templates/clusterrole.yaml
+
+  # No CA is copied in the insecure development mode, so no API access is needed.
+  - it: renders no ClusterRole in the insecure development mode without gang coordination
+    templates:
+      - templates/clusterrole.yaml
+      - templates/clusterrolebinding.yaml
+    set:
+      publishTo: deployment
+      gangCoordination.enabled: false
+      global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: keeps the full gang roles when gang coordination is on
+    templates:
+      - templates/clusterrole.yaml
+      - templates/clusterrolebinding.yaml
+    set:
+      publishTo: deployment
+    asserts:
+      - hasDocuments:
+          count: 3
+        template: templates/clusterrole.yaml
+      - hasDocuments:
+          count: 2
+        template: templates/clusterrolebinding.yaml
+
+  # config.yaml raises the refusals; the Deployment renders it first through
+  # its checksum annotation, so the failure is reported against deployment.yaml.
+  - it: refuses an unknown publishTo
+    template: templates/deployment.yaml
+    set:
+      publishTo: elsewhere
+    asserts:
+      - failedTemplate:
+          errorPattern: preflight.publishTo must be "socket" or "deployment"
+
+  - it: refuses publishing to the deployment while platform-connector auth is off
+    template: templates/deployment.yaml
+    set:
+      publishTo: deployment
+      global.platformConnectorAuth.enabled: false
+    asserts:
+      - failedTemplate:
+          errorPattern: preflight.publishTo is "deployment" but global.platformConnectorAuth.enabled is false
+
+  - it: refuses an unknown TLS mode of the deployment platform connector
+    template: templates/deployment.yaml
+    set:
+      publishTo: deployment
+      global.platformConnectorDeployment.tls.mode: bogus
+    asserts:
+      - failedTemplate:
+          errorPattern: global.platformConnectorDeployment.tls.mode must be "required" or "insecureDevelopmentMode"

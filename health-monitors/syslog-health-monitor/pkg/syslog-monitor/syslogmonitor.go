@@ -40,10 +40,8 @@ import (
 // NewSyslogMonitor creates a new SyslogMonitor instance. cancellationsCfg may be nil.
 //
 // platformConnectorTarget is the gRPC target used to dial pcClient
-// (e.g. "unix:///var/run/nvsentinel.sock"). Pass it through here so the
-// shared healthpub publisher's socket-existence gate is active from the
-// first send (in particular, the post-reboot healthy events emitted by
-// handleBootIDChange during construction). An empty string disables
+// (e.g. "unix:///var/run/nvsentinel.sock"); the shared healthpub publisher
+// derives its socket-existence gate from it. An empty string disables
 // the gate.
 func NewSyslogMonitor(
 	nodeName string,
@@ -61,6 +59,7 @@ func NewSyslogMonitor(
 	cancellationsCfg *cancellation.Config,
 	platformConnectorTarget string,
 	bootLookbackWindow time.Duration,
+	pubOpts ...healthpub.Option,
 ) (*SyslogMonitor, error) {
 	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName,
 		defaultComponentClass, pollingInterval, stateFilePath, GetDefaultJournalFactory(),
@@ -70,6 +69,7 @@ func NewSyslogMonitor(
 		cancellationsCfg,
 		platformConnectorTarget,
 		bootLookbackWindow,
+		pubOpts...,
 	)
 }
 
@@ -93,6 +93,7 @@ func NewSyslogMonitorWithFactory(
 	cancellationsCfg *cancellation.Config,
 	platformConnectorTarget string,
 	bootLookbackWindow time.Duration,
+	pubOpts ...healthpub.Option,
 ) (*SyslogMonitor, error) {
 	// Load state from file
 	state, err := loadState(stateFilePath)
@@ -109,22 +110,25 @@ func NewSyslogMonitorWithFactory(
 	}
 
 	sm := &SyslogMonitor{
-		nodeName:                nodeName,
-		checks:                  checks,
-		pcClient:                pcClient,
-		defaultAgentName:        defaultAgentName,
-		defaultComponentClass:   defaultComponentClass,
-		processingStrategy:      processingStrategy,
-		pollingInterval:         pollingInterval,
-		checkLastCursors:        state.CheckLastCursors,
-		journalFactory:          journalFactory,
-		currentBootID:           currentBootID,
-		stateFilePath:           stateFilePath,
-		checkToHandlerMap:       make(map[string]types.Handler),
-		xidAnalyserEndpoint:     xidAnalyserEndpoint,
-		platformConnectorTarget: platformConnectorTarget,
-		bootLookbackWindow:      bootLookbackWindow,
+		nodeName:              nodeName,
+		checks:                checks,
+		defaultAgentName:      defaultAgentName,
+		defaultComponentClass: defaultComponentClass,
+		processingStrategy:    processingStrategy,
+		pollingInterval:       pollingInterval,
+		checkLastCursors:      state.CheckLastCursors,
+		journalFactory:        journalFactory,
+		currentBootID:         currentBootID,
+		stateFilePath:         stateFilePath,
+		checkToHandlerMap:     make(map[string]types.Handler),
+		xidAnalyserEndpoint:   xidAnalyserEndpoint,
+		bootLookbackWindow:    bootLookbackWindow,
 	}
+
+	// One long-lived publisher for both modes. The option DialFromEnvOr returns
+	// hands it the connection and, when HEALTH_PUBLISH_TARGET is set, puts it
+	// in direct mode.
+	sm.pub = healthpub.New(pcClient, platformConnectorTarget, defaultAgentName, pubOpts...)
 
 	if err := initHandlers(sm, checks, nodeName, defaultAgentName, defaultComponentClass,
 		xidAnalyserEndpoint, metadataPath, processingStrategy,
@@ -133,9 +137,7 @@ func NewSyslogMonitorWithFactory(
 	}
 
 	// Handle boot ID changes (system reboot detection)
-	if err := sm.handleBootIDChange(state.BootID, currentBootID); err != nil {
-		return nil, fmt.Errorf("failed to handle boot ID change: %w", err)
-	}
+	sm.handleBootIDChange(state.BootID, currentBootID)
 
 	// Recover postRebootInit from disk: if the previous run persisted the
 	// new BootID (healthy events flushed) but crashed before the boot-start
@@ -246,6 +248,16 @@ func initHandlerForCheck(
 	}
 }
 
+// FlushPostReboot delivers the healthy events a reboot left pending, if any.
+// main calls it once at start, after the health server is up, so they go out
+// as early as they did when the constructor sent them, without a publish that
+// may block holding the constructor.
+func (sm *SyslogMonitor) FlushPostReboot(ctx context.Context) error {
+	sm.runCtx = ctx
+
+	return sm.tryFlushPostRebootBootIDClear()
+}
+
 // Run executes all configured checks. If a previous bootID-change had
 // to defer its healthy events because platform-connector was missing,
 // retry that flush first so recovery is bounded by one polling cadence
@@ -256,7 +268,12 @@ func initHandlerForCheck(
 // would otherwise persist sm.currentBootID (the new BootID) and clobber
 // the on-disk old BootID, silently breaking the "retry until delivered"
 // guarantee. The next Run() retries the flush.
-func (sm *SyslogMonitor) Run() error {
+//
+// ctx bounds the run's publishes: when it ends, at shutdown, a publish waiting
+// on the deployment platform connector returns with its batch withdrawn.
+func (sm *SyslogMonitor) Run(ctx context.Context) error {
+	sm.runCtx = ctx
+
 	var jointError error = nil
 
 	if err := sm.tryFlushPostRebootBootIDClear(); err != nil {
@@ -444,13 +461,15 @@ func fetchCurrentBootID() (string, error) {
 // to clear any stuck quarantine state in fault-quarantine.
 //
 // The new BootID is persisted to disk only after every healthy event
-// has been delivered. If any send is skipped (platform-connector
-// socket missing), sm.pendingPostRebootBootID is left set so Run()
-// retries the flush at the top of each poll cycle, bounding recovery
-// to one polling cadence after PC returns.
-func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
+// has been delivered. The flush itself runs at the top of each Run(),
+// not here: in direct mode a publish can wait up to its retry window,
+// which must not happen inside the constructor, before the health
+// endpoint is served. Until the flush lands, sm.pendingPostRebootBootID
+// stays set and Run() retries it each poll cycle, bounding recovery to
+// one polling cadence after the connector returns.
+func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) {
 	if oldBootID == newBootID {
-		return nil
+		return
 	}
 
 	slog.Info("Detected bootID change",
@@ -474,17 +493,15 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 	}
 
 	sm.pendingPostRebootBootID = newBootID
-
-	return sm.tryFlushPostRebootBootIDClear()
 }
 
 // tryFlushPostRebootBootIDClear emits one healthy event per check for
 // the pending bootID change and persists the new BootID + cleared
-// cursors only when all events land. On a healthpub-skip
-// (ErrPlatformConnectorUnavailable) the pending flag is left set so
-// the next call retries; on any other send error the function returns
-// fatal — that surface bubbles up to Run() which the main ticker loop
-// already retries with backoff.
+// cursors only when all events land. When a batch was not delivered (socket
+// absent, retry window ended, publisher closed, any other send error) the
+// pending flag is left set so the next poll cycle retries; a batch the
+// server refuses for good counts as flushed, since offering it again would
+// get the same answer. Only a failed state save is returned.
 //
 // Idempotent and safe to call repeatedly. A no-op when there is no
 // pending bootID change.
@@ -502,17 +519,25 @@ func (sm *SyslogMonitor) tryFlushPostRebootBootIDClear() error {
 		}
 
 		healthEvents := sm.prepareHealthEventWithAction(check, message, true, errRes)
-		if err := sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second); err != nil {
-			if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
-				slog.Warn("Deferring post-reboot healthy event: platform-connector unavailable.",
-					"check", check.Name)
-
-				allDelivered = false
+		if err := sm.sendHealthEventWithRetry(healthEvents); err != nil {
+			if errors.Is(err, healthpub.ErrPublishRejected) {
+				// The connector refuses this batch for good; offering it
+				// again every cycle would get the same answer and keep the
+				// checks from running.
+				slog.Error("Post-reboot healthy event rejected by the platform connector; not retried",
+					"check", check.Name, "error", err)
 
 				continue
 			}
 
-			return fmt.Errorf("failed to send health event: %w", err)
+			// Not delivered: the connector is away or the publisher gave the
+			// batch up. Defer and retry on the next cycle.
+			slog.Warn("Deferring post-reboot healthy event: not delivered.",
+				"check", check.Name, "error", err)
+
+			allDelivered = false
+
+			continue
 		}
 
 		slog.Info("Published healthy event after system reboot", "check", check.Name)
@@ -576,8 +601,15 @@ func (sm *SyslogMonitor) executeCheck(check CheckDefinition) error {
 		return fmt.Errorf("failed to configure tag filters for check %s: %w", check.Name, err)
 	}
 
-	err = sm.processJournalEntries(journal, check)
-	if err != nil {
+	if err := sm.processJournalEntries(journal, check); err != nil {
+		if errors.Is(err, errSendFailed) {
+			// The cursor points at the last delivered entry, so keeping that
+			// progress is safe and a restart re-reads only the undelivered one.
+			if saveErr := sm.saveCurrentState(); saveErr != nil {
+				slog.Warn("Failed to save state after an undelivered event", "check", check.Name, "error", saveErr)
+			}
+		}
+
 		return fmt.Errorf("failed to process journal entries for check %s: %w", check.Name, err)
 	}
 
@@ -1030,7 +1062,8 @@ func (sm *SyslogMonitor) recoverFromMessageError(
 }
 
 // processOneEntryAndAdvance updates cursor for the entry, handles the message, and advances.
-// Returns (true, nil) if end of journal; (false, err) on advance error; (false, nil) to continue.
+// Returns (true, nil) if end of journal; (true, err) when the pass stops because a health
+// event was not delivered; (false, err) on advance error; (false, nil) to continue.
 func (sm *SyslogMonitor) processOneEntryAndAdvance(
 	journal Journal, check CheckDefinition, currentEntryCursor string, message string,
 ) (bool, error) {
@@ -1041,13 +1074,35 @@ func (sm *SyslogMonitor) processOneEntryAndAdvance(
 			"cursor", currentEntryCursor)
 	} else {
 		err := sm.handleSingleLine(check, message)
-		if err != nil {
-			// Skip this entry on handler error; continue processing remaining entries.
-			return false, nil //nolint:nilerr // intentional: do not stop the loop
+
+		switch {
+		case errors.Is(err, healthpub.ErrPublishRejected):
+			// The platform connector refuses this batch for good (it failed
+			// validation or names a node this monitor may not report on).
+			// Offering it again on every poll would get the same answer, so
+			// the entry is skipped like one the handler cannot process.
+			slog.Error("Skipping journal entry: the platform connector rejected its health event",
+				"check", check.Name,
+				"cursor", currentEntryCursor,
+				"error", err)
+		case errors.Is(err, errSendFailed):
+			// The batch was not delivered (connector unavailable, retries
+			// exhausted). Stop this pass without advancing the cursor and
+			// report it: the next poll resumes at this entry instead of
+			// re-running the handler on it in a tight loop, and a post-reboot
+			// scan cut short here is not recorded as complete.
+			return true, fmt.Errorf("check %s stopped at cursor %s: %w", check.Name, currentEntryCursor, err)
+		case err != nil:
+			// A line the handler cannot process is skipped, like any other
+			// entry; the cursor moves past it.
+			slog.Warn("Skipping journal entry the handler could not process",
+				"check", check.Name,
+				"cursor", currentEntryCursor,
+				"error", err)
 		}
 
 		sm.checkLastCursors[check.Name] = currentEntryCursor
-		slog.Debug("Check errored but considered processed", "name", check.Name,
+		slog.Debug("Check processed", "name", check.Name,
 			"message", message,
 			"cursor", currentEntryCursor)
 	}
@@ -1352,34 +1407,40 @@ func (sm *SyslogMonitor) prepareHealthEventWithAction(
 	}
 }
 
-// sendHealthEventWithRetry forwards health events via the shared
-// healthpub publisher. The publisher is built per call so tests that
-// swap sm.pcClient after construction take effect.
-func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
-	maxRetries int, retryDelay time.Duration) error {
-	slog.Info("Attempting to send health event", "events", healthEvents)
-
-	pub := healthpub.New(sm.pcClient, sm.platformConnectorTarget, sm.defaultAgentName,
-		healthpub.WithRetryPolicy(maxRetries, retryDelay, 1.5, 0.1))
-
-	if err := pub.Publish(context.Background(), healthEvents); err != nil {
-		if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
-			slog.Warn("Skipped health event send: platform-connector unavailable. "+
-				"Next poll will re-evaluate and re-stamp.",
-				"events", healthEvents)
-
-			return fmt.Errorf("failed all attempts to send health events: %w", err)
-		}
-
-		slog.Error("All retry attempts to send health event failed", "error", err)
-
-		return fmt.Errorf("failed all attempts to send health events: %w", err)
+// sendHealthEventWithRetry forwards health events through the shared
+// healthpub publisher, which retries in place (in socket mode with its default
+// policy, in direct mode within the batch's retry window) and logs each
+// outcome itself.
+func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents) error {
+	// Bounded by the context of the current run; Background when a check
+	// runs outside Run, as in tests.
+	ctx := sm.runCtx
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	slog.Info("Successfully sent health events", "events", healthEvents)
+	if err := sm.pub.Publish(ctx, healthEvents); err != nil {
+		return fmt.Errorf("failed to send health events: %w", err)
+	}
 
 	return nil
 }
+
+// Close shuts down the publisher and the connection it owns.
+func (sm *SyslogMonitor) Close() {
+	sm.pub.CloseOrWarn()
+}
+
+// WaitingOnServer reports whether a publish is waiting for the deployment
+// platform connector within its retry window, so the liveness check can tell
+// a loop that waits from one that hangs. False in socket mode.
+func (sm *SyslogMonitor) WaitingOnServer() bool {
+	return sm.pub.WaitingOnServer()
+}
+
+// errSendFailed marks a handleSingleLine error caused by the publish, not by
+// the line: the entry is retried on the next poll instead of skipped.
+var errSendFailed = errors.New("health event send failed")
 
 func (sm *SyslogMonitor) handleSingleLine(check CheckDefinition, lineToEvaluate string) error {
 	if handler, ok := sm.checkToHandlerMap[check.Name]; ok {
@@ -1389,8 +1450,8 @@ func (sm *SyslogMonitor) handleSingleLine(check CheckDefinition, lineToEvaluate 
 		}
 
 		if healthEvents != nil {
-			if err := sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second); err != nil {
-				return fmt.Errorf("failed to send health event: %w", err)
+			if err := sm.sendHealthEventWithRetry(healthEvents); err != nil {
+				return fmt.Errorf("%w: %w", errSendFailed, err)
 			}
 		}
 	}

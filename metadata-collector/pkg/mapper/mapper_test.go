@@ -469,3 +469,14 @@ func getDeviceAnnotation(deviceAnnotation map[string]*model.DeviceAnnotation, po
 	}
 	return deviceAnnotation, string(deviceAnnotationJSON), nil
 }
+
+func TestWithGPUsMapsMinorToUUIDAndSkipsUnknownMinor(t *testing.T) {
+	one, seven := 1, 7
+	config := clientConfig{}
+	WithGPUs([]model.GPUInfo{
+		{UUID: "GPU-a1", MinorNumber: &one},
+		{UUID: "GPU-a7", MinorNumber: &seven},
+		{UUID: "GPU-no-minor"},
+	})(&config)
+	assert.Equal(t, map[int]string{1: "GPU-a1", 7: "GPU-a7"}, config.uuidsByMinor)
+}

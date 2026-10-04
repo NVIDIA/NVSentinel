@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -56,6 +57,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/validation"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -253,6 +255,15 @@ type E2EReconcilerConfig struct {
 	CircuitBreakerConfig *breaker.CircuitBreakerConfig
 	DryRun               bool
 	HealthEventStore     datastore.HealthEventStore
+	// OnEventProcessed, when set, is called with the event ID once the worker
+	// has finished an event and recorded its status.
+	//
+	// A test asserting that an event produced no status needs this, because the
+	// status getter cannot tell an event that produced none from one the worker
+	// has not reached: both read as a missing map entry. It fires only on the
+	// path that records a status, so an event that failed to process times the
+	// waiting test out rather than reading as "no quarantine".
+	OnEventProcessed func(eventID string)
 }
 
 // setupE2EReconciler creates a test reconciler with mock watcher
@@ -273,7 +284,17 @@ func setupE2EReconciler(t *testing.T, ctx context.Context, tomlConfig config.Tom
 func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2EReconcilerConfig) (*Reconciler, *testutils.MockChangeStreamWatcher, StatusGetter, breaker.CircuitBreaker) {
 	t.Helper()
 
-	nodeInformer, err := informer.NewNodeInformer(e2eTestClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
+	// Derived from the test's own ruleset, exactly as InitializeAll does, so
+	// every case in this file runs against a pruned cache rather than a whole
+	// one. A read or a removal this suite covers that the retained set misses
+	// fails here.
+	retained := nodecache.Derive(cfg.TomlConfig, nodecache.Operational{
+		GPUNodeLabelKey: informer.GPUNodeLabel,
+	})
+
+	nodeInformer, err := informer.NewNodeInformer(
+		e2eTestClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue, retained,
+	)
 	require.NoError(t, err)
 
 	fqClient := &informer.FaultQuarantineClient{
@@ -429,6 +450,10 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 			statusMu.Lock()
 			eventStatuses[eventID] = status
 			statusMu.Unlock()
+
+			if cfg.OnEventProcessed != nil {
+				cfg.OnEventProcessed(eventID)
+			}
 		}
 	}()
 
@@ -538,7 +563,7 @@ func runReconcilerAndQuarantineNode(
 
 	// Create a sub-test context so we can control cleanup separately
 	func() {
-		nodeInformer, err := informer.NewNodeInformer(e2eTestClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
+		nodeInformer, err := informer.NewNodeInformer(e2eTestClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue, nodecache.Keys{})
 		require.NoError(t, err)
 
 		fqClient := &informer.FaultQuarantineClient{
@@ -4469,6 +4494,168 @@ func TestE2E_NodeRuleDoesNotMatch(t *testing.T) {
 	}, neverTimeout, neverPollInterval, "Node should not be quarantined when Node rule doesn't match")
 }
 
+const optOutTaintKey = "nvidia.com/gpu-xid-error"
+
+// optOutRuleSet is the shape the chart ships: a negative guard, so that losing
+// the label from the cache turns the rule from false to true.
+func optOutRuleSet() config.TomlConfig {
+	return config.TomlConfig{
+		LabelPrefix: "k8saas.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{{
+			RuleSetMeta: config.RuleSetMeta{
+				Enabled:  true,
+				Name:     "opt-out-respected",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					All: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+						{Kind: "Node", Expression: "!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels" +
+							" && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == 'false')"},
+					},
+				},
+			},
+			Taint:  config.Taint{Key: optOutTaintKey, Value: "true", Effect: "NoSchedule"},
+			Cordon: config.Cordon{ShouldCordon: true},
+		}},
+	}
+}
+
+// fleetShapedLabels returns the labels a real GPU node carries. The count is
+// the point: it is what makes pruning worth doing, and it is also what makes a
+// pruning bug easy to miss, because the one label that matters is lost among
+// them.
+func fleetShapedLabels(t *testing.T) map[string]string {
+	t.Helper()
+
+	labels := make(map[string]string, 100)
+	for i := range 100 {
+		labels[fmt.Sprintf("feature.node.kubernetes.io/test-%03d", i)] = "true"
+	}
+
+	return labels
+}
+
+// TestE2E_PrunedCacheRespectsOptOutOnNodeWithManyLabels is the regression test
+// for the hazard this pruning introduces.
+//
+// Every shipped Node rule is a negative opt-out, so a rule that cannot see its
+// label does not fail closed: it evaluates as though the operator never set the
+// label, matches, and cordons a node that was explicitly excluded. That is a
+// live-cluster eviction, and no unit test on the transform catches it, because
+// the transform is doing exactly what it was told.
+//
+// This drives the component from the outside: a ruleset and a node in, a cordon
+// decision out. It asserts nothing about which fields survived the transform,
+// so it keeps holding if the retained set is derived some other way later.
+func TestE2E_PrunedCacheRespectsOptOutOnNodeWithManyLabels(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-opt-out-pruned-" + generateShortTestID()
+
+	labels := fleetShapedLabels(t)
+	labels["k8saas.nvidia.com/ManagedByNVSentinel"] = "false"
+
+	createE2ETestNode(ctx, t, nodeName, nil, labels, nil, false)
+
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	// The status getter reads the same empty entry for an event that produced no
+	// status and one the worker has not reached yet, so wait to be told the
+	// event is done rather than reading its absence as a decision.
+	processed := make(chan string, 1)
+
+	_, mockWatcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig: optOutRuleSet(),
+		OnEventProcessed: func(eventID string) {
+			select {
+			case processed <- eventID:
+			default:
+			}
+		},
+	})
+
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	select {
+	case got := <-processed:
+		require.Equal(t, eventID, got, "the worker finished an event this test did not send")
+	case <-time.After(statusCheckTimeout):
+		require.FailNow(t, "the worker never finished the opt-out event")
+	}
+
+	require.Nil(t, getStatus(eventID), "Opted-out node should produce no quarantine status")
+
+	require.Never(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		return node.Spec.Unschedulable || hasTaintKey(node, optOutTaintKey)
+	}, neverTimeout, neverPollInterval, "Opted-out node must never be cordoned or tainted")
+}
+
+// hasTaintKey reports whether the node carries key. The taint has to be matched
+// by key: the apiserver taints a freshly created node node.kubernetes.io/not-ready,
+// so a bare length check would pass whatever fault-quarantine did.
+func hasTaintKey(node *corev1.Node, key string) bool {
+	return slices.ContainsFunc(node.Spec.Taints, func(taint corev1.Taint) bool {
+		return taint.Key == key
+	})
+}
+
+// TestE2E_PrunedCacheStillQuarantinesOptedInNode is the other half of the pair.
+// Without it, the test above would still pass if pruning broke evaluation
+// altogether and nothing was ever quarantined.
+func TestE2E_PrunedCacheStillQuarantinesOptedInNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-opt-in-pruned-" + generateShortTestID()
+
+	createE2ETestNode(ctx, t, nodeName, nil, fleetShapedLabels(t), nil, false)
+
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, optOutRuleSet(), nil)
+
+	eventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID)
+		return status != nil && *status == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Node that did not opt out should be quarantined")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Spec.Unschedulable && hasTaintKey(node, optOutTaintKey)
+	}, eventuallyTimeout, eventuallyPollInterval, "Node that did not opt out should be cordoned and tainted")
+}
+
 func TestE2E_TaintWithoutCordon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
@@ -5435,6 +5622,178 @@ func TestE2E_ManualUncordonWithCancellation(t *testing.T) {
 	assert.GreaterOrEqual(t, beforeCurrentQuarantined, float64(0), "Gauge should have been set before")
 }
 
+// TestE2E_ManualUncordonRemovesCordonLabels verifies that a manual uncordon strips the
+// cordon-by/cordon-reason/cordon-timestamp labels NVSentinel applied, matching the automatic path, so a
+// node returned to service is not left permanently labelled cordon-by=NVSentinel.
+func TestE2E_ManualUncordonRemovesCordonLabels(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := testutils.GenerateTestNodeName("e2e-manual-uncordon-labels")
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Sending unhealthy event to quarantine node")
+	eventID1 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID1,
+		nodeName,
+		"GpuXidError",
+		false,
+		true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		model.StatusInProgress,
+	)}
+
+	t.Log("Waiting for node to be quarantined with cordon-by label set")
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID1)
+		return status != nil && *status == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be Quarantined")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Spec.Unschedulable &&
+			node.Labels["k8s.nvidia.com/cordon-by"] == common.ServiceName
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined with cordon-by=NVSentinel")
+
+	t.Log("Manually uncordon the node")
+	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	quarantinedNode.Spec.Unschedulable = false
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Verify manual uncordon removes the cordon-by/reason/timestamp labels")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, byExists := node.Labels["k8s.nvidia.com/cordon-by"]
+		_, reasonExists := node.Labels["k8s.nvidia.com/cordon-reason"]
+		_, tsExists := node.Labels["k8s.nvidia.com/cordon-timestamp"]
+
+		return node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue &&
+			!byExists && !reasonExists && !tsExists
+	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon should remove the cordon-by/reason/timestamp labels")
+}
+
+// TestE2E_ManualUncordonPreservesForeignCordonByLabel verifies that a manual uncordon does not remove a
+// cordon-by label that was set by someone other than NVSentinel, so a user reusing the same key for their
+// own purposes keeps their label.
+func TestE2E_ManualUncordonPreservesForeignCordonByLabel(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := testutils.GenerateTestNodeName("e2e-manual-uncordon-foreign")
+
+	// Node already carries a foreign cordon-by label plus FQ quarantine annotations, so the manual
+	// uncordon handler fires but must not strip the foreign label.
+	existingEvent := &protos.HealthEvent{
+		NodeName:       nodeName,
+		Agent:          "gpu-health-monitor",
+		CheckName:      "GpuXidError",
+		ComponentClass: "GPU",
+		Version:        1,
+		IsHealthy:      false,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+
+	existingMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	existingMap.AddOrUpdateEvent(existingEvent)
+	existingBytes, err := json.Marshal(existingMap)
+	require.NoError(t, err)
+
+	annotations := map[string]string{
+		common.QuarantineHealthEventAnnotationKey:           string(existingBytes),
+		common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
+	}
+	labels := map[string]string{
+		"k8s.nvidia.com/cordon-by":        "some-other-controller",
+		"k8s.nvidia.com/cordon-reason":    "some-other-reason",
+		"k8s.nvidia.com/cordon-timestamp": "2024-01-01T00-00-00Z",
+	}
+
+	createE2ETestNode(ctx, t, nodeName, annotations, labels, nil, true)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, _, _, _ = setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Manually uncordon the node")
+	quarantinedNode, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	quarantinedNode.Spec.Unschedulable = false
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	t.Log("Verify manual uncordon cleanup ran but preserved the foreign cordon-by label")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		return node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] == common.QuarantinedNodeUncordonedManuallyAnnotationValue
+	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon cleanup should have run")
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "some-other-controller", node.Labels["k8s.nvidia.com/cordon-by"],
+		"foreign cordon-by label must be preserved")
+	assert.Equal(t, "some-other-reason", node.Labels["k8s.nvidia.com/cordon-reason"],
+		"foreign cordon-reason label must be preserved")
+	assert.Equal(t, "2024-01-01T00-00-00Z", node.Labels["k8s.nvidia.com/cordon-timestamp"],
+		"foreign cordon-timestamp label must be preserved")
+}
+
 // TestE2E_ManualUncordonMultipleEvents tests that manual uncordon works with multiple events on the same node
 func TestE2E_ManualUncordonMultipleEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
@@ -5608,7 +5967,7 @@ func TestE2E_ConcurrentUnhealthyEvents_WithDelayedInformer(t *testing.T) {
 		},
 	}
 
-	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
+	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue, nodecache.Keys{})
 	require.NoError(t, err)
 
 	fqClient := &informer.FaultQuarantineClient{
@@ -5878,7 +6237,7 @@ func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
 	// Resync period of 0 disables periodic re-listing. The informer only updates via watch
 	// events, not by periodically fetching all nodes. This ensures cache staleness is controlled
 	// solely by our delayed watch transport.
-	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
+	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue, nodecache.Keys{})
 	require.NoError(t, err)
 
 	fqClient := &informer.FaultQuarantineClient{
@@ -6871,8 +7230,9 @@ func TestE2ECordonAndTaint_ManualUncordon(t *testing.T) {
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
-	// We expect that a manual uncordon will orphan the cordon-by labels if present and will not add the uncordon-by labels
-	verifyQuarantineLabels(t, node, "gpu-xid-errors", "")
+	// A manual uncordon removes the cordon-by/cordon-reason/cordon-timestamp labels NVSentinel applied,
+	// matching the automatic path, and does not add the uncordon-by labels.
+	verifyQuarantineLabelsAbsent(t, node)
 	verifyUnquarantineLabelsAbsent(t, node)
 
 	t.Log("Verify metrics are correctly updated")

@@ -29,6 +29,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/mapper"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
@@ -55,7 +56,11 @@ var (
 	commit  = "none"
 	date    = "unknown"
 
-	outputPath = flag.String("output-path", defaultOutputPath, "Path to write the GPU metadata JSON file")
+	outputPath     = flag.String("output-path", defaultOutputPath, "Path to write the GPU metadata JSON file")
+	kubeconfigPath = flag.String("kubeconfig", "",
+		"Kubeconfig for Kubernetes API access; empty uses in-cluster auth")
+	kubeletKubeconfigPath = flag.String("kubelet-kubeconfig", "",
+		"Kubeconfig for the kubelet HTTPS endpoint; empty uses KUBELET_HOST and the pod ServiceAccount token")
 
 	maxConsecutivePodMapperFailures = flag.Int("pod-mapper-max-consecutive-failures",
 		defaultMaxConsecutivePodMapperFailures,
@@ -74,7 +79,8 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	if err := runCollector(ctx); err != nil {
+	metadata, err := runCollector(ctx)
+	if err != nil {
 		slog.Error("Metadata collector failed", "error", err)
 		cancel()
 		os.Exit(1)
@@ -106,7 +112,7 @@ func main() {
 	}
 
 	group.Go(func() error {
-		return runMapper(groupCtx, newPodMapperMetrics(prometheus.DefaultRegisterer))
+		return runMapper(groupCtx, newPodMapperMetrics(prometheus.DefaultRegisterer), metadata.GPUs)
 	})
 
 	if err := group.Wait(); err != nil {
@@ -118,8 +124,10 @@ func main() {
 	slog.Info("Pod device mapper completed successfully")
 }
 
-func runMapper(ctx context.Context, metrics *podMapperMetrics) error {
-	podDeviceMapper, err := mapper.NewPodDeviceMapper(ctx)
+func runMapper(ctx context.Context, metrics *podMapperMetrics, gpus []model.GPUInfo) error {
+	podDeviceMapper, err := mapper.NewPodDeviceMapper(ctx,
+		mapper.WithKubeconfigs(*kubeconfigPath, *kubeletKubeconfigPath),
+		mapper.WithGPUs(gpus))
 	if err != nil {
 		return fmt.Errorf("could not create mapper: %w", err)
 	}
@@ -178,12 +186,12 @@ func pollPodDevices(ctx context.Context, podDeviceMapper mapper.PodDeviceMapper,
 	}
 }
 
-func runCollector(ctx context.Context) error {
+func runCollector(ctx context.Context) (*model.GPUMetadata, error) {
 	slog.Info("Initializing NVML")
 
 	nvmlWrapper := &nvml.NVMLWrapper{}
 	if err := nvmlWrapper.Init(); err != nil {
-		return fmt.Errorf("failed to initialize NVML: %w", err)
+		return nil, fmt.Errorf("failed to initialize NVML: %w", err)
 	}
 
 	defer func() {
@@ -198,7 +206,7 @@ func runCollector(ctx context.Context) error {
 
 	metadata, err := metadataCollector.Collect(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to collect GPU metadata: %w", err)
+		return nil, fmt.Errorf("failed to collect GPU metadata: %w", err)
 	}
 
 	slog.Info("GPU metadata collected",
@@ -211,14 +219,14 @@ func runCollector(ctx context.Context) error {
 
 	metadataWriter, err := writer.NewWriter(*outputPath)
 	if err != nil {
-		return fmt.Errorf("failed to create metadata writer: %w", err)
+		return nil, fmt.Errorf("failed to create metadata writer: %w", err)
 	}
 
 	if err := metadataWriter.Write(metadata); err != nil {
-		return fmt.Errorf("failed to write metadata: %w", err)
+		return nil, fmt.Errorf("failed to write metadata: %w", err)
 	}
 
 	slog.Info("Successfully wrote GPU metadata", "output_path", *outputPath)
 
-	return nil
+	return metadata, nil
 }

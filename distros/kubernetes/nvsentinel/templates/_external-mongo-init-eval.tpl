@@ -73,6 +73,26 @@ db.$MONGODB_COLLECTION_NAME.createIndex({
   'healthevent.entitiesimpacted.entityvalue': 1,
   'healthevent.generatedtimestamp.seconds': 1
 });
+// Health-events-analyzer scopes every rule to one node and one time window.
+// The index above is multikey on entitiesimpacted, so it emits several keys per
+// document. These two are not multikey and emit one key per document, and they
+// put the equality fields the rules filter on ahead of the time range.
+// 16 of the 22 shipped rules filter on ishealthy.
+db.$MONGODB_COLLECTION_NAME.createIndex({
+  'healthevent.nodename': 1,
+  'healthevent.ishealthy': 1,
+  'healthevent.generatedtimestamp.seconds': 1
+});
+// MultipleRemediations is the only rule reading faultremediated, and the only
+// one with a 7-day window, so it examines the most documents of any rule.
+db.$MONGODB_COLLECTION_NAME.createIndex({
+  'healthevent.nodename': 1,
+  'healtheventstatus.faultremediated.value': 1,
+  'healthevent.isfatal': 1,
+  'healthevent.generatedtimestamp.seconds': 1
+});
+
+{{ include "nvsentinel.mongoIdempotencyIndexEval" . }}
 
 {{- if eq $authMechanism "x509" }}
 // X.509 user creation (only for x509 auth mechanism)
@@ -103,4 +123,39 @@ if (opsUserExists) {
 {{- end }}
 
 print('MongoDB setup complete.');
+{{- end }}
+
+{{/*
+The deployment platform connector's idempotency index, created by both setup
+Jobs. Both evals run inside sh -c "...", so every $ meant for mongosh is \$.
+*/}}
+{{- define "nvsentinel.mongoIdempotencyIndexEval" -}}
+// Unique idempotency key of the deployment platform connector. The index is
+// partial, so events stored without a key are left alone; createIndex does
+// nothing when the index already exists.
+var idempotencyIndexName = 'healthevent_idempotency_key_unique';
+var idempotencyKeyPath = 'healthevent.metadata.idempotencyKey';
+var idempotencyKey = {};
+idempotencyKey[idempotencyKeyPath] = 1;
+var idempotencyFilter = {};
+idempotencyFilter[idempotencyKeyPath] = { '\$exists': true };
+var idempotencyOptions = { name: idempotencyIndexName, unique: true, partialFilterExpression: idempotencyFilter };
+// The connector refuses an index with a collation, so the index must not
+// inherit a collection default one. The option is set only then, because
+// Amazon DocumentDB 5.0 rejects it.
+var idempotencyCollection = (db.getCollectionInfos({ name: '$MONGODB_COLLECTION_NAME' })[0] || {}).options || {};
+if (idempotencyCollection.collation && idempotencyCollection.collation.locale !== 'simple') {
+  idempotencyOptions.collation = { locale: 'simple' };
+}
+try {
+  db.$MONGODB_COLLECTION_NAME.createIndex(idempotencyKey, idempotencyOptions);
+  print('Idempotency index ' + idempotencyIndexName + ' is in place');
+} catch (e) {
+  // Stored events share a key. Report it and go on, so the rest of the setup
+  // still runs; the connector replicas stay not ready until the index exists.
+  if (e.code !== 11000) {
+    throw e;
+  }
+  print('ERROR: index ' + idempotencyIndexName + ' was not created because stored events share an idempotency key. Remove the extra events, then run the setup again. List the shared keys with: db.$MONGODB_COLLECTION_NAME.aggregate([{\$match: {\'' + idempotencyKeyPath + '\': {\$exists: true}}}, {\$group: {_id: \'\$' + idempotencyKeyPath + '\', n: {\$sum: 1}}}, {\$match: {n: {\$gt: 1}}}])');
+}
 {{- end }}

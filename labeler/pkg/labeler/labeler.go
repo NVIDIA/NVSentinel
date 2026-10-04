@@ -20,6 +20,7 @@ import (
 	"hash/maphash"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -353,14 +354,16 @@ func transformNodeForCache(deviceCountsEnabled bool) cache.TransformFunc {
 	}
 }
 
-func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
+func podNodeIndexerByLabel(labelKey, labelValues string) cache.IndexFunc {
+	values := strings.Fields(strings.ReplaceAll(labelValues, ",", " "))
+
 	return func(obj any) ([]string, error) {
 		pod, ok := obj.(*v1.Pod)
 		if !ok {
 			return nil, fmt.Errorf("object is not a pod")
 		}
 
-		if val, exists := pod.Labels[labelKey]; exists && val == labelValue {
+		if val, exists := pod.Labels[labelKey]; exists && slices.Contains(values, val) {
 			if pod.Spec.NodeName == "" {
 				return []string{}, nil
 			}
