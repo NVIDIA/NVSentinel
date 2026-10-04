@@ -96,6 +96,18 @@ nicDriverDetection:
       enabled: false
     - name: mlx5_napi_soft_lockup
       enabled: false
+    # AWS Elastic Fabric Adapter (efa driver) patterns. Enable on AWS
+    # nodes together with the NIC Health Monitor's EFA checks.
+    - name: efa_admin_cmd_timeout
+      enabled: false
+    - name: efa_admin_queue_closed
+      enabled: false
+    - name: efa_admin_cmd_failed
+      enabled: false
+    - name: efa_device_reset_failed
+      enabled: false
+    - name: efa_device_not_ready
+      enabled: false
 
 # Per-check cancellation rules: when the check observes `onErrorCode`, emit
 # synthetic healthy events for each `cancelErrorCodes` entry on the same
