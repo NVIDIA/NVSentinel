@@ -1276,12 +1276,7 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 	for _, ns := range action.Namespaces {
 		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(ctx, ns, nodeName, partialDrainEntity)
 		if err != nil {
-			slog.WarnContext(ctx, "Failed to find evictable pods",
-				"namespace", ns,
-				"node", nodeName,
-				"error", err)
-
-			continue
+			return fmt.Errorf("failed to find evictable pods in namespace %s on node %s: %w", ns, nodeName, err)
 		}
 
 		if len(pods) > 0 {

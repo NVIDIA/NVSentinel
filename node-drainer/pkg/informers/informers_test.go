@@ -139,7 +139,8 @@ func TestExcludedPodTransformRetainsDrainFieldsOnly(t *testing.T) {
 			ResourceClaims: []v1.PodResourceClaim{{Name: "gpu", ResourceClaimTemplateName: new("gpu-template")}},
 		},
 		Status: v1.PodStatus{
-			Phase: v1.PodRunning,
+			Phase:                 v1.PodRunning,
+			ResourceClaimStatuses: []v1.PodResourceClaimStatus{{Name: "gpu", ResourceClaimName: new("eligible-gpu")}},
 			Conditions: []v1.PodCondition{{
 				Type:               v1.PodReady,
 				Status:             v1.ConditionTrue,
@@ -315,8 +316,9 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 	require.NoError(t, err)
 
 	for claimName, deviceClassName := range map[string]string{
-		"gpu-claim": "gpu.nvidia.com",
-		"nic-claim": "nic.example.com",
+		"gpu-claim":          "gpu.nvidia.com",
+		"gpu-template-abc12": "gpu.nvidia.com",
+		"nic-claim":          "nic.example.com",
 	} {
 		_, err = client.ResourceV1().ResourceClaims(namespace).Create(ctx, &resourcev1.ResourceClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: claimName},
@@ -328,17 +330,6 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 		require.NoError(t, err)
 	}
 
-	_, err = client.ResourceV1().ResourceClaimTemplates(namespace).Create(ctx, &resourcev1.ResourceClaimTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "gpu-template"},
-		Spec: resourcev1.ResourceClaimTemplateSpec{Spec: resourcev1.ResourceClaimSpec{
-			Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
-				Name:           "device",
-				FirstAvailable: []resourcev1.DeviceSubRequest{{Name: "gpu", DeviceClassName: "gpu.nvidia.com"}},
-			}}},
-		}},
-	}, metav1.CreateOptions{})
-	require.NoError(t, err)
-
 	const missingAnnotation = "is requesting devices but is missing device annotation"
 
 	tests := []struct {
@@ -346,6 +337,7 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 		annotated       bool
 		gpuLimit        bool
 		claim           v1.PodResourceClaim
+		boundClaim      string
 		wantPartialErr  string
 		wantPartialPods int
 		wantGPUOnlyErr  string
@@ -358,10 +350,17 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			wantGPUOnlyPods: 1,
 		},
 		{
-			name:            "unannotated pod with GPU claim template fails partial drain",
-			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimTemplateName: new("gpu-template")},
+			name:            "unannotated pod with generated GPU claim fails partial drain without reading the template",
+			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimTemplateName: new("deleted-template")},
+			boundClaim:      "gpu-template-abc12",
 			wantPartialErr:  missingAnnotation,
 			wantGPUOnlyPods: 1,
+		},
+		{
+			name:           "unannotated pod with template claim but no bound claim fails closed",
+			claim:          v1.PodResourceClaim{Name: "gpu", ResourceClaimTemplateName: new("gpu-template")},
+			wantPartialErr: "no ResourceClaim is bound",
+			wantGPUOnlyErr: "no ResourceClaim is bound",
 		},
 		{
 			name:  "unannotated pod with non-GPU claim is not a GPU pod",
@@ -410,8 +409,16 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			pod.Spec.ResourceClaims = []v1.PodResourceClaim{tt.claim}
 		}
 
-		_, err := client.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+		created, err := client.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
 		require.NoError(t, err)
+
+		if tt.boundClaim != "" {
+			created.Status.ResourceClaimStatuses = []v1.PodResourceClaimStatus{
+				{Name: tt.claim.Name, ResourceClaimName: new(tt.boundClaim)},
+			}
+			_, err = client.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+			require.NoError(t, err)
+		}
 	}
 
 	informers, err := NewInformers(client, 0, new(5), true, false, "", nil)
@@ -435,6 +442,10 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			pods, err = informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, nil)
 			if tt.wantGPUOnlyErr != "" {
 				require.ErrorContains(t, err, tt.wantGPUOnlyErr)
+
+				event := &model.HealthEventWithStatus{CreatedAt: time.Now().Add(-time.Hour)}
+				err = informers.DeletePodsAfterTimeout(ctx, nodeName, []string{namespace}, 1, event, nil)
+				require.ErrorContains(t, err, tt.wantGPUOnlyErr, "timeout path must surface the lookup error")
 			} else {
 				require.NoError(t, err)
 				assert.Len(t, pods, tt.wantGPUOnlyPods)

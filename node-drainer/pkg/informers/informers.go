@@ -203,8 +203,9 @@ func drainEligiblePodCacheObject(pod *v1.Pod, podLabelKeys ...string) *v1.Pod {
 			ResourceClaims:                pod.Spec.ResourceClaims,
 		},
 		Status: v1.PodStatus{
-			Phase:      pod.Status.Phase,
-			Conditions: trimPodReadyConditions(pod.Status.Conditions),
+			Phase:                 pod.Status.Phase,
+			Conditions:            trimPodReadyConditions(pod.Status.Conditions),
+			ResourceClaimStatuses: pod.Status.ResourceClaimStatuses,
 		},
 	}
 }
@@ -526,7 +527,7 @@ func (i *Informers) isPodClaimingDeviceClass(ctx context.Context, pod *v1.Pod,
 				podClaim.Name, pod.Namespace, pod.Name, err)
 		}
 
-		if claimSpec != nil && isClaimRequestingDeviceClass(claimSpec, deviceClassNames) {
+		if isClaimRequestingDeviceClass(claimSpec, deviceClassNames) {
 			return true, nil
 		}
 	}
@@ -534,33 +535,31 @@ func (i *Informers) isPodClaimingDeviceClass(ctx context.Context, pod *v1.Pod,
 	return false, nil
 }
 
-// getPodResourceClaimSpec returns the spec of the ResourceClaim or ResourceClaimTemplate a pod claim references.
-// A deleted template fails the lookup even when the claim generated from it still exists.
+// getPodResourceClaimSpec returns the spec of the ResourceClaim a pod claim uses. A claim generated from a
+// ResourceClaimTemplate is bound to the pod in status.resourceClaimStatuses before the pod is scheduled, so the
+// template itself is never read and deleting it does not affect the lookup.
 func (i *Informers) getPodResourceClaimSpec(ctx context.Context, pod *v1.Pod,
 	podClaim v1.PodResourceClaim) (*resourcev1.ResourceClaimSpec, error) {
-	if podClaim.ResourceClaimName != nil {
-		claim, err := i.clientset.ResourceV1().ResourceClaims(pod.Namespace).Get(ctx,
-			*podClaim.ResourceClaimName, metav1.GetOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to get ResourceClaim %s/%s: %w",
-				pod.Namespace, *podClaim.ResourceClaimName, err)
+	claimName := podClaim.ResourceClaimName
+	if claimName == nil {
+		for _, claimStatus := range pod.Status.ResourceClaimStatuses {
+			if claimStatus.Name == podClaim.Name {
+				claimName = claimStatus.ResourceClaimName
+				break
+			}
 		}
-
-		return &claim.Spec, nil
 	}
 
-	if podClaim.ResourceClaimTemplateName != nil {
-		template, err := i.clientset.ResourceV1().ResourceClaimTemplates(pod.Namespace).Get(ctx,
-			*podClaim.ResourceClaimTemplateName, metav1.GetOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to get ResourceClaimTemplate %s/%s: %w",
-				pod.Namespace, *podClaim.ResourceClaimTemplateName, err)
-		}
-
-		return &template.Spec.Spec, nil
+	if claimName == nil {
+		return nil, fmt.Errorf("no ResourceClaim is bound to claim %s of pod %s/%s", podClaim.Name, pod.Namespace, pod.Name)
 	}
 
-	return nil, nil
+	claim, err := i.clientset.ResourceV1().ResourceClaims(pod.Namespace).Get(ctx, *claimName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ResourceClaim %s/%s: %w", pod.Namespace, *claimName, err)
+	}
+
+	return &claim.Spec, nil
 }
 
 func isClaimRequestingDeviceClass(claimSpec *resourcev1.ResourceClaimSpec, deviceClassNames []string) bool {
@@ -892,8 +891,12 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 	deleteDateTimeUTC := timeoutDeadline.UTC().Format(time.RFC3339)
 	timeoutReached := drainTimeout <= 0
 
-	evicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(
+	evicted, remainingPods, err := i.checkIfPodsPresentInNamespaceAndNode(
 		ctx, namespaces, nodeName, partialDrainEntity, podFilters...)
+	if err != nil {
+		return fmt.Errorf("failed to check remaining pods on node %s: %w", nodeName, err)
+	}
+
 	if evicted {
 		slog.InfoContext(ctx, "All pods on node have been deleted", "node", nodeName)
 		metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(0)
@@ -1127,9 +1130,10 @@ func (i *Informers) convertSetToSlice(namespaceSet map[string]struct{}) []string
 }
 
 // checkIfPodsPresentInNamespaceAndNode returns whether all selected pods are gone and
-// any remaining pods. A cache lookup error prevents reporting that all pods are gone.
+// any remaining pods. A lookup error is returned so the caller retries instead of treating
+// the namespace as empty.
 func (i *Informers) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, namespaces []string, nodeName string,
-	partialDrainEntity *protos.Entity, podFilters ...PodFilter) (bool, []*v1.Pod) {
+	partialDrainEntity *protos.Entity, podFilters ...PodFilter) (bool, []*v1.Pod, error) {
 	allEvicted := true
 
 	var remainingPods []*v1.Pod
@@ -1137,14 +1141,7 @@ func (i *Informers) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, na
 	for _, namespace := range namespaces {
 		pods, err := i.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, partialDrainEntity, podFilters...)
 		if err != nil {
-			slog.Error("Failed to check namespace on node",
-				"namespace", namespace,
-				"node", nodeName,
-				"error", err)
-
-			allEvicted = false
-
-			continue
+			return false, nil, fmt.Errorf("failed to check namespace %s on node %s: %w", namespace, nodeName, err)
 		}
 
 		if len(pods) > 0 {
@@ -1153,7 +1150,7 @@ func (i *Informers) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, na
 		}
 	}
 
-	return allEvicted, remainingPods
+	return allEvicted, remainingPods, nil
 }
 
 // CheckIfAllPodsAreEvictedInImmediateMode reports whether the selected drain scope is empty.
@@ -1161,8 +1158,13 @@ func (i *Informers) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, na
 func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 	namespaces []string, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity,
 	podFilters ...PodFilter) bool {
-	allEvicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(
+	allEvicted, remainingPods, err := i.checkIfPodsPresentInNamespaceAndNode(
 		ctx, namespaces, nodeName, partialDrainEntity, podFilters...)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to check pods on node", "node", nodeName, "error", err)
+
+		return false
+	}
 
 	if allEvicted {
 		slog.InfoContext(ctx, "All pods evicted in namespace from node",
@@ -1170,10 +1172,6 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 			"node", nodeName)
 
 		return true
-	}
-
-	if len(remainingPods) == 0 {
-		return false // A cache lookup failed; an empty result does not establish completion.
 	}
 
 	return i.CheckIfObservedPodsAreEvictedInImmediateMode(ctx, namespaces, nodeName, timeout,
@@ -1208,29 +1206,7 @@ func (i *Informers) CheckIfObservedPodsAreEvictedInImmediateMode(ctx context.Con
 	}
 
 	if shouldForceDelete {
-		slog.InfoContext(ctx, "Pods on node exceeded timeout, attempting force deletion",
-			"node", nodeName)
-
-		// Delete using the observed UID and resource version. A relabelled or replaced
-		// pod causes an API conflict, so this snapshot cannot delete its current state.
-		err := i.forceDeletePods(ctx, remainingPods)
-		if err != nil {
-			metrics.ProcessingErrors.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
-			slog.ErrorContext(ctx, "Failed to force delete pods on node",
-				"node", nodeName,
-				"error", err)
-
-			return false
-		}
-
-		allEvicted, _ := i.checkIfPodsPresentInNamespaceAndNode(ctx, namespaces, nodeName, partialDrainEntity,
-			podFilters...)
-		if allEvicted {
-			slog.InfoContext(ctx, "All pods evicted after force deletion on node",
-				"node", nodeName)
-		}
-
-		return allEvicted
+		return i.forceDeleteAndRecheck(ctx, namespaces, nodeName, partialDrainEntity, remainingPods, podFilters...)
 	}
 
 	remainingPodNames := make([]string, 0, len(remainingPods))
@@ -1243,4 +1219,37 @@ func (i *Informers) CheckIfObservedPodsAreEvictedInImmediateMode(ctx context.Con
 		"pods", remainingPodNames)
 
 	return false
+}
+
+// forceDeleteAndRecheck force deletes the observed pods and reports whether the scope is empty afterwards.
+func (i *Informers) forceDeleteAndRecheck(ctx context.Context, namespaces []string, nodeName string,
+	partialDrainEntity *protos.Entity, remainingPods []*v1.Pod, podFilters ...PodFilter) bool {
+	slog.InfoContext(ctx, "Pods on node exceeded timeout, attempting force deletion",
+		"node", nodeName)
+
+	// Delete using the observed UID and resource version. A relabelled or replaced
+	// pod causes an API conflict, so this snapshot cannot delete its current state.
+	if err := i.forceDeletePods(ctx, remainingPods); err != nil {
+		metrics.ProcessingErrors.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
+		slog.ErrorContext(ctx, "Failed to force delete pods on node",
+			"node", nodeName,
+			"error", err)
+
+		return false
+	}
+
+	allEvicted, _, err := i.checkIfPodsPresentInNamespaceAndNode(ctx, namespaces, nodeName, partialDrainEntity,
+		podFilters...)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to check pods on node", "node", nodeName, "error", err)
+
+		return false
+	}
+
+	if allEvicted {
+		slog.InfoContext(ctx, "All pods evicted after force deletion on node",
+			"node", nodeName)
+	}
+
+	return allEvicted
 }
