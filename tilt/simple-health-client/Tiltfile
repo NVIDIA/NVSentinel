@@ -19,7 +19,29 @@ docker_build(
 )
 
 # Deploy the service
-k8s_yaml("deployment.yaml")
+objects = decode_yaml_stream(read_file("deployment.yaml"))
+
+# With the deployment platform connector the client publishes to it directly,
+# over TLS and with the same projected token.
+if os.getenv('USE_DEPLOYMENT_PLATFORM_CONNECTOR', '0') == '1':
+    for obj in objects:
+        if obj.get('kind') != 'Deployment':
+            continue
+        pod = obj['spec']['template']['spec']
+        pod['volumes'].append({'name': 'deployment-ca', 'secret': {
+            'secretName': 'platform-connector-deployment-grpc-cert',
+            'items': [{'key': 'ca.crt', 'path': 'ca.crt'}],
+        }})
+        for container in pod['containers']:
+            container['env'] += [
+                {'name': 'HEALTH_PUBLISH_TARGET', 'value': 'platform-connector-deployment.nvsentinel.svc.cluster.local:50051'},
+                {'name': 'HEALTH_PUBLISH_TOKEN_PATH', 'value': '/var/run/secrets/nvsentinel/platform-connector/token'},
+                {'name': 'HEALTH_PUBLISH_TLS_CA_FILE', 'value': '/etc/nvsentinel/deployment-ca/ca.crt'},
+            ]
+            container['volumeMounts'].append(
+                {'name': 'deployment-ca', 'mountPath': '/etc/nvsentinel/deployment-ca', 'readOnly': True})
+
+k8s_yaml(encode_yaml_stream(objects))
 
 # Port forward for testing
 k8s_resource("simple-health-client", port_forwards="8080:8080")

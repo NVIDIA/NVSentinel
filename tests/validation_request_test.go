@@ -67,6 +67,9 @@ func TestValidationController(t *testing.T) {
 			err = helpers.SetNodeCordon(ctx, client, nodeName, true)
 			require.NoError(t, err, "failed to cordon node %s", nodeName)
 
+			err = helpers.SetNodeAnnotation(ctx, client, nodeName, helpers.QuarantineHealthEventAnnotationKey, "true")
+			require.NoError(t, err, "failed to set quarantine annotation on node %s", nodeName)
+
 			err = helpers.SetNodeLabel(ctx, client, nodeName, newNodeValidationTestLabel, "true")
 			require.NoError(t, err, "failed to label node %s as targeted for new-node-validation test", nodeName)
 		}
@@ -103,10 +106,25 @@ func TestValidationController(t *testing.T) {
 					corev1.ConditionTrue)
 			}
 
-			helpers.WaitForValidationRequestPhase(ctx, t, client, vr.GetName(), "Running")
-
 			return context.WithValue(ctx, keyVRName, vr.GetName())
 		})
+
+	feature.Assess("Nodes are blocked in validation-pending by the quarantine annotation", func(ctx context.Context,
+		t *testing.T, c *envconf.Config) context.Context {
+		nodeNames := ctx.Value(keyNodeNames).([]string)
+
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		helpers.WaitForNodesWithLabel(ctx, t, client, nodeNames, helpers.ValidationStateLabelKey, helpers.ValidationStatePending)
+
+		for _, nodeName := range nodeNames {
+			err = helpers.SetNodeAnnotation(ctx, client, nodeName, helpers.QuarantineHealthEventAnnotationKey, "")
+			require.NoError(t, err, "failed to clear quarantine annotation on node %s", nodeName)
+		}
+
+		return ctx
+	})
 
 	feature.Assess("Nodes have active-validation-request and validation-session annotations", func(ctx context.Context,
 		t *testing.T, c *envconf.Config) context.Context {
@@ -115,6 +133,9 @@ func TestValidationController(t *testing.T) {
 
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
+
+		helpers.WaitForValidationRequestPhase(ctx, t, client, vrName, "Running")
+		helpers.WaitForNodesWithLabel(ctx, t, client, nodeNames, helpers.ValidationStateLabelKey, helpers.ValidationStateValidating)
 
 		for _, nodeName := range nodeNames {
 			node, err := helpers.GetNodeByName(ctx, client, nodeName)
@@ -167,7 +188,7 @@ func TestValidationController(t *testing.T) {
 			return ctx
 		})
 
-	feature.Assess("Nodes are uncordoned and annotations are removed", func(ctx context.Context, t *testing.T,
+	feature.Assess("Nodes are uncordoned and annotations and labels are removed", func(ctx context.Context, t *testing.T,
 		c *envconf.Config) context.Context {
 		nodeNames := ctx.Value(keyNodeNames).([]string)
 
@@ -184,6 +205,8 @@ func TestValidationController(t *testing.T) {
 				"node %s should not have active-validation-request annotation once the request succeeds", nodeName)
 			require.Empty(t, node.Annotations[helpers.AnnotationValidationSession],
 				"node %s should not have validation-session annotation once the request succeeds", nodeName)
+			require.NotContains(t, node.Labels, helpers.ValidationStateLabelKey,
+				"node %s should not have validation-state label once the request succeeds", nodeName)
 		}
 
 		return ctx
@@ -199,8 +222,11 @@ func TestValidationController(t *testing.T) {
 			err = helpers.SetNodeCordon(ctx, client, nodeName, false)
 			require.NoError(t, err, "failed to uncordon node %s", nodeName)
 
-			err = helpers.RemoveNodeLabel(ctx, client, nodeName, newNodeValidationTestLabel)
+			err = helpers.SetNodeLabel(ctx, client, nodeName, newNodeValidationTestLabel, "")
 			require.NoError(t, err, "failed to remove new-node-validation-test label from node %s", nodeName)
+
+			err = helpers.SetNodeAnnotation(ctx, client, nodeName, helpers.QuarantineHealthEventAnnotationKey, "")
+			require.NoError(t, err, "failed to clear quarantine annotation from node %s", nodeName)
 
 			helpers.SetNodeConditionStatus(ctx, t, client, nodeName, "NewNodeValidationRequested", "", true)
 		}

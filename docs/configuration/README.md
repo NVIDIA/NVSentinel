@@ -231,6 +231,15 @@ global:
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 ```
 
+### Kubelet Root Directory
+
+The kubelet `--root-dir`. The chart mounts `<kubeletRootDir>/pod-resources` from the host at the fixed path the metadata collector reads. See [Kubelet Root Directory](./metadata-collector.md#kubelet-root-directory).
+
+```yaml
+global:
+  kubeletRootDir: /var/lib/kubelet
+```
+
 ### Client Certificate Rotation
 
 Lets modules pick up rotated datastore client certificates without a pod restart. A file watcher detects the change and supplies the new certificate to subsequent MongoDB connections. Existing connections keep the certificate they opened with.

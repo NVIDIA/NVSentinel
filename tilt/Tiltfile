@@ -31,6 +31,7 @@ num_kata_test_nodes = int(os.getenv('NUM_KATA_TEST_NODES', '5'))
 use_postgresql = os.getenv('USE_POSTGRESQL', '0') == '1'
 disable_tls = os.getenv('DISABLE_TLS', '0') == '1'
 use_percona_env = os.getenv('USE_PERCONA', '0') == '1'
+use_pc_deployment = os.getenv('USE_DEPLOYMENT_PLATFORM_CONNECTOR', '0') == '1'
 user_values_file = os.getenv('NVSENTINEL_VALUES_FILE', '')
 print_values = os.getenv('PRINT_HELM_VALUES', '0') == '1'
 
@@ -44,6 +45,8 @@ elif disable_tls:
     print("Using MongoDB without TLS (DISABLE_TLS=1)")
 else:
     print("Using MongoDB as datastore (default). Set USE_POSTGRESQL=1 to use PostgreSQL.")
+if use_pc_deployment:
+    print("Publishing to the deployment platform connector (USE_DEPLOYMENT_PLATFORM_CONNECTOR=1)")
 
 helm_repo('jetstack', 'https://charts.jetstack.io')
 helm_resource(
@@ -193,6 +196,9 @@ else:
 if k8s_arch == 'arm64':
     values_files.append('../distros/kubernetes/nvsentinel/values-tilt-arm64.yaml')
 
+if use_pc_deployment:
+    values_files.append('../distros/kubernetes/nvsentinel/values-tilt-deployment.yaml')
+
 # Add user-specified values file if provided. It should be the last in the chain to override other settings.
 if user_values_file:
     if os.path.exists(user_values_file):
@@ -276,6 +282,13 @@ if preflight_enabled:
         'preflight-ca:certificate',
         'preflight-selfsigned:issuer',
         'preflight-ca-issuer:issuer',
+    ])
+if use_pc_deployment:
+    cert_manager_objects.extend([
+        'platform-connector-deployment-selfsigned-issuer:issuer',
+        'platform-connector-deployment-ca:certificate',
+        'platform-connector-deployment-ca-issuer:issuer',
+        'platform-connector-deployment-grpc-cert:certificate',
     ])
 if use_postgresql:
     cert_manager_objects.extend([
@@ -448,6 +461,14 @@ k8s_resource(
     'platform-connectors',
     resource_deps=[datastore_resource]
 )
+
+if use_pc_deployment:
+    # The replicas mount the gRPC certificate and wait for the idempotency
+    # index the datastore setup creates.
+    k8s_resource(
+        'platform-connector-deployment',
+        resource_deps=[datastore_resource, 'cert-manager-resources']
+    )
 
 k8s_resource(
     'fault-quarantine',

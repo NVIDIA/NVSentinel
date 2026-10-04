@@ -302,7 +302,7 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 
 			// Remove managed=false from the KWOK node and verify monitors reschedule.
 			t.Logf("removing managed=false from KWOK node %s; monitors must reschedule", monitorNodeName)
-			require.NoError(t, helpers.RemoveNodeLabel(ctx, client, monitorNodeName, managedLabelKey),
+			require.NoError(t, helpers.SetNodeLabel(ctx, client, monitorNodeName, managedLabelKey, ""),
 				"failed to remove managed=false from KWOK node")
 
 			for _, dsName := range []string{extrrSyslogDaemonSetName, extrrGPUHealthMonitorDaemonSetName} {
@@ -342,7 +342,7 @@ func TestExtRRLifecycleHappyPath(t *testing.T) {
 		}
 		// Remove managed=false from the KWOK node in case the test failed mid-way.
 		if monitorNodeName != "" {
-			if err := helpers.RemoveNodeLabel(ctx, client, monitorNodeName, managedLabelKey); err != nil {
+			if err := helpers.SetNodeLabel(ctx, client, monitorNodeName, managedLabelKey, ""); err != nil {
 				t.Logf("removing managed label from %s: %v", monitorNodeName, err)
 			}
 		}

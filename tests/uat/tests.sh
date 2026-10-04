@@ -17,6 +17,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
+# Reports each test on its own, as JUnit XML in $ARTIFACTS. See junit.sh.
+source "${SCRIPT_DIR}/junit.sh"
 
 # date -d is not a valid option on macOS
 get_epoch_time() {
@@ -49,7 +51,7 @@ discover_dry_run() {
 
 # Dry-run does not reboot. After Test 1 we restart the node-local DCGM
 # hostengine (clears the injected XID) and strip FQ/FR node metadata (FQ will
-# not remove the state label in dry-run). Same strip on EXIT.
+# not remove the state label in dry-run). Same strip when each test exits.
 UAT_CLEANUP_NODE=""
 
 reset_dry_run_node_state() {
@@ -674,13 +676,12 @@ test_gpu_monitoring_dcgm() {
 }
 
 # Syslog faults only go healthy on a node boot-ID change. Dry-run never
-# reboots the node (DCGM XIDs are cleared by restarting nv-hostengine instead).
+# reboots the node (DCGM XIDs are cleared by restarting nv-hostengine instead),
+# so in dry-run the test stops and reports itself as skipped.
 skip_syslog_tests_in_dry_run() {
     if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
-        log "Skipping syslog tests in dry-run (recovery needs a node reboot, not a pod restart)"
-        return 0
+        junit_skip_test "dry-run: recovering from a syslog fault needs a node reboot, not a pod restart"
     fi
-    return 1
 }
 
 test_xid_monitoring_syslog() {
@@ -688,7 +689,7 @@ test_xid_monitoring_syslog() {
     log "Test 2: XID monitoring via syslog"
     log "======================================================"
 
-    skip_syslog_tests_in_dry_run && return 0
+    skip_syslog_tests_in_dry_run
 
     local current_ts=$(date +%s)
 
@@ -757,14 +758,13 @@ test_xid_monitoring_syslog_gpu_reset() {
     log "Test 3: XID monitoring via syslog triggers COMPONENT_RESET"
     log "=========================================================="
 
-    skip_syslog_tests_in_dry_run && return 0
+    skip_syslog_tests_in_dry_run
 
     local drainer_configmap
     drainer_configmap=$(kubectl get configmaps -n nvsentinel node-drainer -o jsonpath="{.data.config\.toml}")
 
     if ! echo "$drainer_configmap" | grep -q "partialDrainEnabled = true"; then
-        log "GPU reset is not enabled, skipping Test 3"
-        return 0
+        junit_skip_test "GPU reset is not enabled: node-drainer's partialDrainEnabled is not true"
     fi
 
     local current_ts=$(date +%s)
@@ -829,7 +829,7 @@ test_sxid_monitoring_syslog() {
     log "Test 4: SXID monitoring (NVSwitch errors)"
     log "========================================="
 
-    skip_syslog_tests_in_dry_run && return 0
+    skip_syslog_tests_in_dry_run
 
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
@@ -924,24 +924,28 @@ main() {
     fi
 
     discover_dry_run
-    trap cleanup_uat EXIT
 
-    test_gpu_monitoring_dcgm
+    # Each test runs on its own: a test that fails doesn't stop the ones after
+    # it, and cleanup_uat cleans up after each test. junit_finish fails the
+    # script if any test failed.
+    JUNIT_SUITE=nvsentinel-uat
+    JUNIT_CLEANUP=cleanup_uat
+
+    junit_test test_gpu_monitoring_dcgm
 
     if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" ]]; then
         log "Waiting for syslog-health-monitor to initialize (60s)..."
         sleep 60
     fi
 
-    test_xid_monitoring_syslog
+    junit_test test_xid_monitoring_syslog
 
-    test_xid_monitoring_syslog_gpu_reset
+    junit_test test_xid_monitoring_syslog_gpu_reset
 
-    # test_sxid_monitoring_syslog
+    # junit_test test_sxid_monitoring_syslog
 
     log "========================================="
-    log "All tests PASSED ✓"
-    log "========================================="
+    junit_finish
 }
 
 main "$@"

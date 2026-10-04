@@ -355,6 +355,8 @@ func run() error {
 
 			return err
 		}
+
+		slog.Info("Loaded validation configuration", "spec", cfg.Validation.Spec)
 	}
 
 	setup, err := setupTLSAndServers(enableHTTP2, webhookCertPath, webhookCertName, webhookCertKey, metricsAddr,

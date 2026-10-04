@@ -35,10 +35,73 @@ import (
 
 const uncordonReasonValidationSucceeded = "ValidationSucceeded"
 
+// validationStateLabelKey is a node label that mirrors the validation-session and
+// active-validation-request annotations
+const validationStateLabelKey = "nvsentinel.nvidia.com/validation-state"
+
+type validationStateLabelValue string
+
+const (
+	validatingLabelValue        validationStateLabelValue = "validating"
+	validationPendingLabelValue validationStateLabelValue = "validation-pending"
+	validationFailedLabelValue  validationStateLabelValue = "validation-failed"
+)
+
 type sessionEntry struct {
 	Name   string   `json:"name"`
 	Tests  []string `json:"tests,omitempty"`
 	Failed bool     `json:"failed,omitempty"`
+}
+
+func reconcileValidationStateLabel(node *corev1.Node) (bool, error) {
+	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+	if err != nil {
+		return false, err
+	}
+
+	newValue := deriveValidationStateLabel(node.Annotations[annotationActiveValidationRequest], entries)
+
+	current, exists := node.Labels[validationStateLabelKey]
+
+	if len(newValue) == 0 {
+		if !exists {
+			return false, nil
+		}
+
+		delete(node.Labels, validationStateLabelKey)
+
+		return true, nil
+	}
+
+	if exists && current == string(newValue) {
+		return false, nil
+	}
+
+	if node.Labels == nil {
+		node.Labels = make(map[string]string)
+	}
+
+	node.Labels[validationStateLabelKey] = string(newValue)
+
+	return true, nil
+}
+
+func deriveValidationStateLabel(activeValidationRequest string, entries []sessionEntry) validationStateLabelValue {
+	if len(entries) == 0 {
+		return ""
+	}
+
+	if len(activeValidationRequest) != 0 {
+		return validatingLabelValue
+	}
+
+	for _, e := range entries {
+		if !e.Failed {
+			return validationPendingLabelValue
+		}
+	}
+
+	return validationFailedLabelValue
 }
 
 func marshalSessionAnnotation(entries []sessionEntry) (string, error) {
@@ -292,6 +355,15 @@ func (r *ValidationRequestReconciler) patchNodeWithRetry(ctx context.Context, no
 		if err != nil {
 			return err
 		}
+
+		// Deriving the validation-state label here prevents us from needing to call reconcileValidationStateLabel
+		// each time we modify either the active-validation-request or validation-session annotations.
+		labelChanged, err := reconcileValidationStateLabel(&node)
+		if err != nil {
+			return err
+		}
+
+		changed = changed || labelChanged
 
 		if !changed {
 			return nil

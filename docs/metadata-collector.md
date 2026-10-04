@@ -48,13 +48,13 @@ Configure the Metadata Collector through Helm values:
 metadata-collector:
   enabled: true
   
-  # Runtime class for GPU access. Set to "" for CRI-O and NRI-mode clusters.
+  # Runtime class for GPU access. Set to "" for CRI-O; see nriPlugin for GPU Operator NRI mode.
   runtimeClassName: "nvidia"
 ```
 
 ### Configuration Options
 
-- **Runtime Class**: Specify runtime class name for GPU access (typically `"nvidia"` for containerd). For CRI-O and NRI-mode clusters, set `runtimeClassName: ""` to omit the field and mount the host driver libraries. On GPU Operator GPUCluster (DRA) clusters set `global.gpuDraEnabled: true` instead; the DaemonSet then holds a DRA admin-access GPU claim and needs no RuntimeClass (see [Metadata Collector Configuration](./configuration/metadata-collector.md)).
+- **Runtime Class**: Specify runtime class name for GPU access (typically `"nvidia"` for containerd). For CRI-O clusters, set `runtimeClassName: ""` to omit the field and mount the host driver libraries. On GPU Operator NRI-mode clusters (`cdi.nriPluginEnabled: true`) set `nriPlugin.enabled: true`; the DaemonSet then requests a management CDI device from the NRI plugin and needs no RuntimeClass. On GPU Operator GPUCluster (DRA) clusters set `global.gpuDraEnabled: true` instead; the DaemonSet then holds a DRA admin-access GPU claim and needs no RuntimeClass (see [Metadata Collector Configuration](./configuration/metadata-collector.md)).
 - **Output Path**: Path where metadata JSON is written (default: `/var/lib/nvsentinel/gpu_metadata.json`)
 - **Host Authentication**: Use `--kubeconfig` for Kubernetes API access and `--kubelet-kubeconfig` for kubelet HTTPS access. See [host-native authentication](./configuration/metadata-collector.md#host-native-authentication) for credentials, TLS, and permissions. Hardware inventory and pod-to-GPU mapping remain enabled.
 
