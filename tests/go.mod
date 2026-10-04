@@ -12,7 +12,7 @@ require (
 	github.com/nvidia/nvsentinel/fault-remediation v0.0.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
-	github.com/prometheus/common v0.71.0
+	github.com/prometheus/common v0.72.0
 	github.com/stretchr/testify v1.12.1
 	go.uber.org/zap v1.28.0
 	go.yaml.in/yaml/v2 v2.4.4
@@ -20,7 +20,7 @@ require (
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
-	sigs.k8s.io/controller-runtime v0.25.1
+	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/e2e-framework v0.7.0
 	sigs.k8s.io/kwok v0.8.0
 	sigs.k8s.io/yaml v1.6.0
