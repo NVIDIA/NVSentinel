@@ -574,16 +574,9 @@ For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integr
 
 ## DRA GPU pods
 
-By default, the webhook injects the checks only into pods that request a GPU resource from `gpuResourceNames` (for example `nvidia.com/gpu`). A pod that gets its GPUs through Dynamic Resource Allocation (DRA) has no such request, so the webhook skips it. Set `global.gpuDraEnabled` to inject the checks into these pods too:
+A pod that gets its GPUs through Dynamic Resource Allocation (DRA) has no GPU resource from `gpuResourceNames` (for example `nvidia.com/gpu`). The webhook finds these pods from their resource claims and injects the checks into them too. This applies when GPUs are allocated through DRA, for example with the GPU Operator in GPUCluster mode or with the standalone NVIDIA DRA driver for GPUs.
 
-```yaml
-global:
-  gpuDraEnabled: true
-```
-
-Use this when GPUs are allocated through DRA, for example with the GPU Operator in GPUCluster mode or with the standalone NVIDIA DRA driver for GPUs. The value is `false` by default, which turns DRA GPU detection off. The value must be a boolean. The chart does not render with a string such as `"true"`.
-
-This is a cluster-wide value. Other NVSentinel components can also use it to select their DRA behaviour.
+The detection is always on and has no configuration value. Preflight does not read `global.gpuDraEnabled`. On a cluster without DRA, no pod has `spec.resourceClaims`, so the webhook makes no extra API calls.
 
 ### How the webhook detects a DRA GPU pod
 
@@ -615,7 +608,7 @@ An Error log means the webhook counts that entry as non-GPU. The pod still gets 
 
 ### RBAC and API load
 
-When `global.gpuDraEnabled` is `true`, the chart creates the ClusterRole `preflight-dra` and binds it to the preflight ServiceAccount. It gives `get` access to `resourceclaims` and `resourceclaimtemplates` in the `resource.k8s.io` API group, in all namespaces. It gives no `list` or `watch` access. The chart does not create it when the value is `false`, and it does not depend on gang coordination.
+The chart always creates the ClusterRole `preflight-dra` and binds it to the preflight ServiceAccount. It gives `get` access to `resourceclaims` and `resourceclaimtemplates` in the `resource.k8s.io` API group, in all namespaces. It gives no `list` or `watch` access. It does not depend on gang coordination. On a cluster without DRA, the role exists but the webhook does not use it.
 
 The webhook reads claims directly from the API server, with no cache. This keeps preflight memory usage the same on large clusters. Each DRA pod admission costs one `get` for each entry in `spec.resourceClaims`, until the webhook finds a GPU request.
 
@@ -650,7 +643,6 @@ The events, and what Fault Quarantine does with them, are the same on both paths
 | Init container placement (append/prepend) | `preflight.initContainerPlacement` |
 | Injected init container images and env | `preflight.initContainers` |
 | GPU / network resource names | `preflight.gpuResourceNames`, `preflight.networkResourceNames` |
-| DRA GPU pod detection (off by default) | `global.gpuDraEnabled` |
 | Copy NCCL / fabric env and mounts from user containers | `preflight.ncclEnvPatterns`, `preflight.volumeMountPatterns` |
 | Gang discovery | `preflight.gangDiscovery` |
 | Gang coordination (timeouts, topology, mounts) | `preflight.gangCoordination` |

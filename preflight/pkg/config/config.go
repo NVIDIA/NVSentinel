@@ -82,14 +82,6 @@ type FileConfig struct {
 	ConnectorSocket      string              `yaml:"connectorSocket"`
 	ProcessingStrategy   string              `yaml:"processingStrategy"`
 
-	// GPUDraEnabled turns on detection of pods that request GPUs only through
-	// spec.resourceClaims. Such a pod is a GPU pod when one of its
-	// ResourceClaims or ResourceClaimTemplates requests a device from the
-	// gpu.nvidia.com DeviceClass. It gets the checks, and the checks get all
-	// of the pod's claims. False (the default) turns DRA GPU detection off.
-	// See ADR-026 §DRA Integration.
-	GPUDraEnabled bool `yaml:"gpuDraEnabled,omitempty"`
-
 	// ConnectorTokenAudience, when set, has the webhook add a projected
 	// ServiceAccount token volume (minted for this audience against the
 	// workload pod's own ServiceAccount) to injected check containers, with
@@ -239,8 +231,9 @@ type GangCoordinationConfig struct {
 	// same device access as the main containers (GPUs, RDMA, IMEX channels).
 	// Defaults to true when gang coordination is enabled.
 	// It applies to gang members that get their GPUs from the device plugin.
-	// A pod detected as a GPU pod through GPUDraEnabled always gets its
-	// claims mirrored, because the checks cannot see its GPUs without them.
+	// A pod whose claims request a gpu.nvidia.com device (a DRA GPU pod)
+	// always gets its claims mirrored, because the checks cannot see its GPUs
+	// without them.
 	// See ADR-026 §DRA Integration.
 	MirrorResourceClaims *bool `yaml:"mirrorResourceClaims,omitempty"`
 }

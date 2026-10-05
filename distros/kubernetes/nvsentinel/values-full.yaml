@@ -2423,7 +2423,7 @@ preflight:
     # Mirror pod-level DRA resource claims to init containers.
     # Ensures init containers get same device access (GPUs, RDMA NICs,
     # IMEX channels). Defaults to true when omitted.
-    # DRA GPU pods (global.gpuDraEnabled) always get their claims mirrored.
+    # DRA GPU pods (claims for gpu.nvidia.com) always get their claims mirrored.
     # mirrorResourceClaims: true
 
   ##############################################################################

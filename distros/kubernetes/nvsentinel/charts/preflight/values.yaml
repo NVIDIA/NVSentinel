@@ -402,7 +402,7 @@ gangCoordination:
   # containers get the same device access as main containers: GPUs, RDMA
   # NICs, IMEX channels (GB200 MNNVL), etc. See ADR-026 §DRA Integration.
   # Defaults to true when omitted.
-  # DRA GPU pods (global.gpuDraEnabled) always get their claims mirrored.
+  # DRA GPU pods (claims for gpu.nvidia.com) always get their claims mirrored.
   # mirrorResourceClaims: true
 
 # Label-based namespace selection

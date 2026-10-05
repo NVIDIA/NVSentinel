@@ -92,8 +92,7 @@ type Injector struct {
 
 // NewInjector constructs an Injector from the preflight config, the
 // namespace-aware gang discoverer resolver used to resolve a pod's gang
-// discoverer at injection time, and the reader used for DRA GPU detection
-// (nil when gpuDraEnabled is false).
+// discoverer at injection time, and the reader used for DRA GPU detection.
 func NewInjector(cfg *config.Config, resolver *gang.DiscovererResolver, draReader client.Reader) *Injector {
 	return &Injector{
 		cfg:       cfg,

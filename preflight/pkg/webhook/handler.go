@@ -59,11 +59,11 @@ type Handler struct {
 }
 
 // NewHandler builds a Handler from the preflight config, the namespace-aware
-// gang discoverer resolver, the reader used for DRA GPU detection (nil when
-// gpuDraEnabled is false), the callback invoked to register a pod with its
-// gang after admission, and the callback that copies the platform connector CA
-// bundle into the pod's namespace (nil when the checks publish to the socket
-// or do not verify the server).
+// gang discoverer resolver, the reader used for DRA GPU detection, the
+// callback invoked to register a pod with its gang after admission, and the
+// callback that copies the platform connector CA bundle into the pod's
+// namespace (nil when the checks publish to the socket or do not verify the
+// server).
 func NewHandler(
 	cfg *config.Config,
 	resolver *gang.DiscovererResolver,

@@ -97,7 +97,6 @@ func run() error {
 	slog.Info("Configuration loaded",
 		"initContainers", len(cfg.InitContainers),
 		"gpuResourceNames", cfg.GPUResourceNames,
-		"gpuDraEnabled", cfg.GPUDraEnabled,
 		"gangCoordinationEnabled", cfg.GangCoordination.Enabled,
 		"healthPublishTarget", cfg.HealthPublishTarget)
 
@@ -114,7 +113,7 @@ func run() error {
 		}
 	}
 
-	draReader, err := newDRAReader(cfg)
+	draReader, err := newDRAReader()
 	if err != nil {
 		return err
 	}
@@ -258,17 +257,13 @@ func setupGangCoordination(cfg *config.Config, mgr ctrl.Manager) error {
 }
 
 // newDRAReader builds the client the webhook uses to read ResourceClaims and
-// ResourceClaimTemplates for DRA GPU detection. It returns nil when
-// gpuDraEnabled is false, which turns the detection off. The client is
-// uncached: it keeps no informer and no copy of these objects in memory, and
-// it needs only get access. It uses ctrl.GetConfig() for the same reason as
-// setupManager: client-side throttling on the admission path becomes
-// admission latency.
-func newDRAReader(cfg *config.Config) (client.Reader, error) {
-	if !cfg.GPUDraEnabled {
-		return nil, nil
-	}
-
+// ResourceClaimTemplates for DRA GPU detection. Detection is always on: the
+// webhook reads claims only for pods that have spec.resourceClaims, so pods on
+// clusters without DRA cause no reads. The client is uncached: it keeps no
+// informer and no copy of these objects in memory, and it needs only get
+// access. It uses ctrl.GetConfig() for the same reason as setupManager:
+// client-side throttling on the admission path becomes admission latency.
+func newDRAReader() (client.Reader, error) {
 	restConfig, err := ctrl.GetConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Kubernetes client config for DRA detection: %w", err)

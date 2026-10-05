@@ -21,6 +21,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,19 +33,12 @@ import (
 // a slow API server skips the checks for the pod instead of rejecting it.
 const draLookupTimeout = 3 * time.Second
 
-// gpuDeviceClassName is the DeviceClass that the NVIDIA DRA driver for GPUs
-// publishes for full GPUs. MIG devices (mig.nvidia.com) are not detected.
-// The driver defines the DeviceClass in
-// deployments/helm/dra-driver-nvidia-gpu/templates/deviceclass-gpu.yaml of
-// https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/tree/495bf4c59b9423080aa1fe2163955f44a495012c
-const gpuDeviceClassName = "gpu.nvidia.com"
-
 // requestsDRAGPU reports whether one of the pod's resource claims requests a
 // device from the GPU DeviceClass. It fails open: a claim or template
 // that cannot be read counts as non-GPU, so the pod is admitted without checks
 // rather than rejected, or given checks that cannot see its GPUs.
 func (i *Injector) requestsDRAGPU(ctx context.Context, pod *corev1.Pod) bool {
-	if i.draReader == nil || !i.cfg.GPUDraEnabled || len(pod.Spec.ResourceClaims) == 0 {
+	if i.draReader == nil || len(pod.Spec.ResourceClaims) == 0 {
 		return false
 	}
 
@@ -124,16 +118,18 @@ func hasGPURequest(requests []resourcev1.DeviceRequest) bool {
 	return slices.ContainsFunc(requests, isGPURequest)
 }
 
-// isGPURequest reports whether the request always allocates a GPU. An
-// adminAccess request does not count: it gives monitoring access to devices
-// that can already be in use by other pods. A firstAvailable request counts
-// only when every alternative is the GPU class, because the scheduler can
-// pick any of them.
+// isGPURequest reports whether the request always allocates a GPU. The GPU
+// class is the DeviceClass for full GPUs, which the NVIDIA DRA driver names
+// after itself (model.GPUDRADriverName). MIG devices (mig.nvidia.com) are not
+// detected. An adminAccess request does not count: it gives monitoring access
+// to devices that can already be in use by other pods. A firstAvailable request
+// counts only when every alternative is the GPU class, because the scheduler
+// can pick any of them.
 func isGPURequest(req resourcev1.DeviceRequest) bool {
 	if req.Exactly != nil {
 		adminAccess := req.Exactly.AdminAccess != nil && *req.Exactly.AdminAccess
 
-		return !adminAccess && req.Exactly.DeviceClassName == gpuDeviceClassName
+		return !adminAccess && req.Exactly.DeviceClassName == model.GPUDRADriverName
 	}
 
 	if len(req.FirstAvailable) == 0 {
@@ -141,7 +137,7 @@ func isGPURequest(req resourcev1.DeviceRequest) bool {
 	}
 
 	for _, sub := range req.FirstAvailable {
-		if sub.DeviceClassName != gpuDeviceClassName {
+		if sub.DeviceClassName != model.GPUDRADriverName {
 			return false
 		}
 	}

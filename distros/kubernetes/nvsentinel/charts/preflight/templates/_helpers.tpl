@@ -210,19 +210,6 @@ render.
 {{- if $enabled -}}true{{- end -}}
 {{- end -}}
 
-{{/*
-Whether DRA GPU detection is on, from global.gpuDraEnabled. Defaults to false.
-Quoted strings, null and numbers are refused so that a quoted "false" cannot
-turn detection and its cluster-wide RBAC on.
-*/}}
-{{- define "preflight.gpuDraEnabled" -}}
-{{- $enabled := (.Values.global | default dict).gpuDraEnabled | default false -}}
-{{- if not (kindIs "bool" $enabled) -}}
-{{- fail (printf "global.gpuDraEnabled must be a boolean (true or false), got %s %#v" (kindOf $enabled) $enabled) -}}
-{{- end -}}
-{{- if $enabled -}}true{{- end -}}
-{{- end -}}
-
 {{- define "preflight.pcAuth.expirationSeconds" -}}
 {{- $v := (((.Values.global).platformConnectorAuth)).tokenExpirationSeconds -}}
 {{- if kindIs "invalid" $v -}}

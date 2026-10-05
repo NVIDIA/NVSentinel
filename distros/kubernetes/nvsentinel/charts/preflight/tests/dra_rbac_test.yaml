@@ -12,42 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-suite: DRA GPU detection
+suite: DRA GPU detection RBAC
 templates:
-  - templates/clusterrole-dra.yaml
-  - templates/clusterrolebinding-dra.yaml
-  - templates/configmap.yaml
+  - templates/clusterrole.yaml
+  - templates/clusterrolebinding.yaml
 # The umbrella chart sets this; the subchart has no default and the configmap
 # refuses to render without a boolean.
 set:
   global.platformConnectorAuth.enabled: false
 tests:
-  # Off by default: no extra RBAC and nothing in the webhook config.
-  - it: renders no DRA RBAC and no DRA config by default
+  # DRA GPU detection is always on, so its RBAC renders with the defaults.
+  - it: grants get-only access to DRA claims by default
+    template: templates/clusterrole.yaml
+    documentSelector:
+      path: metadata.name
+      value: preflight-dra
     asserts:
-      - hasDocuments:
-          count: 0
-        template: templates/clusterrole-dra.yaml
-      - hasDocuments:
-          count: 0
-        template: templates/clusterrolebinding-dra.yaml
-      - notMatchRegex:
-          path: data["config.yaml"]
-          pattern: gpuDraEnabled
-        template: templates/configmap.yaml
-
-  - it: grants get-only access to DRA claims when global.gpuDraEnabled is true
-    template: templates/clusterrole-dra.yaml
-    set:
-      global.gpuDraEnabled: true
-    asserts:
-      - hasDocuments:
-          count: 1
       - isKind:
           of: ClusterRole
-      - equal:
-          path: metadata.name
-          value: preflight-dra
       - equal:
           path: rules
           value:
@@ -55,14 +37,12 @@ tests:
               resources: ["resourceclaims", "resourceclaimtemplates"]
               verbs: ["get"]
 
-  - it: binds the DRA ClusterRole to the preflight ServiceAccount without gang coordination
-    template: templates/clusterrolebinding-dra.yaml
-    set:
-      gangCoordination.enabled: false
-      global.gpuDraEnabled: true
+  - it: binds the DRA ClusterRole to the preflight ServiceAccount by default
+    template: templates/clusterrolebinding.yaml
+    documentSelector:
+      path: metadata.name
+      value: preflight-dra
     asserts:
-      - hasDocuments:
-          count: 1
       - isKind:
           of: ClusterRoleBinding
       - equal:
@@ -72,20 +52,42 @@ tests:
           path: subjects[0].namespace
           value: NAMESPACE
 
-  - it: turns on DRA detection in the webhook config when global.gpuDraEnabled is true
-    template: templates/configmap.yaml
+  # Gang coordination off and no CA copy: the main preflight ClusterRole and
+  # binding do not render, so the DRA ones must render on their own.
+  - it: renders the DRA RBAC without gang coordination
     set:
-      global.gpuDraEnabled: true
+      gangCoordination.enabled: false
     asserts:
-      - matchRegex:
-          path: data["config.yaml"]
-          pattern: "\ngpuDraEnabled: true\n"
+      - hasDocuments:
+          count: 1
+        template: templates/clusterrole.yaml
+      - equal:
+          path: metadata.name
+          value: preflight-dra
+        template: templates/clusterrole.yaml
+      - hasDocuments:
+          count: 1
+        template: templates/clusterrolebinding.yaml
+      - equal:
+          path: roleRef.name
+          value: preflight-dra
+        template: templates/clusterrolebinding.yaml
 
-  # A quoted "false" must not turn on detection and cluster-wide claim access.
-  - it: fails when global.gpuDraEnabled is not a boolean
-    template: templates/configmap.yaml
+  # global.gpuDraEnabled belongs to the metadata-collector. Preflight detects
+  # DRA GPU pods from their claims and does not read it.
+  - it: renders the DRA RBAC when global.gpuDraEnabled is false
     set:
-      global.gpuDraEnabled: "false"
+      global.gpuDraEnabled: false
     asserts:
-      - failedTemplate:
-          errorPattern: "global.gpuDraEnabled must be a boolean"
+      - isKind:
+          of: ClusterRole
+        template: templates/clusterrole.yaml
+        documentSelector:
+          path: metadata.name
+          value: preflight-dra
+      - isKind:
+          of: ClusterRoleBinding
+        template: templates/clusterrolebinding.yaml
+        documentSelector:
+          path: metadata.name
+          value: preflight-dra

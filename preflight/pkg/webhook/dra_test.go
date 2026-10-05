@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/preflight/pkg/config"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,12 +79,12 @@ func startDRATestEnv(t *testing.T) *draTestEnv {
 	}}))
 
 	templates := map[string][]resourcev1.DeviceRequest{
-		"gpu-tmpl":         {exactRequest(gpuDeviceClassName, false)},
+		"gpu-tmpl":         {exactRequest(model.GPUDRADriverName, false)},
 		"nic-tmpl":         {exactRequest(nicDeviceClass, false)},
-		"admin-gpu-tmpl":   {exactRequest(gpuDeviceClassName, true)},
-		"gpu-first-tmpl":   {firstAvailableRequest(gpuDeviceClassName, gpuDeviceClassName)},
-		"mixed-first-tmpl": {firstAvailableRequest(gpuDeviceClassName, nicDeviceClass)},
-		"nic-and-gpu-tmpl": {exactRequest(nicDeviceClass, false), exactRequest(gpuDeviceClassName, false)},
+		"admin-gpu-tmpl":   {exactRequest(model.GPUDRADriverName, true)},
+		"gpu-first-tmpl":   {firstAvailableRequest(model.GPUDRADriverName, model.GPUDRADriverName)},
+		"mixed-first-tmpl": {firstAvailableRequest(model.GPUDRADriverName, nicDeviceClass)},
+		"nic-and-gpu-tmpl": {exactRequest(nicDeviceClass, false), exactRequest(model.GPUDRADriverName, false)},
 	}
 	for name, requests := range templates {
 		require.NoError(t, c.Create(ctx, &resourcev1.ResourceClaimTemplate{
@@ -98,7 +98,7 @@ func startDRATestEnv(t *testing.T) *draTestEnv {
 	require.NoError(t, c.Create(ctx, &resourcev1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "gpu-claim", Namespace: draTestNamespace},
 		Spec: resourcev1.ResourceClaimSpec{
-			Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{exactRequest(gpuDeviceClassName, false)}},
+			Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{exactRequest(model.GPUDRADriverName, false)}},
 		},
 	}))
 
@@ -141,20 +141,13 @@ func firstAvailableRequest(deviceClasses ...string) resourcev1.DeviceRequest {
 // deviceClassSuffix turns a class name into a valid request name.
 func deviceClassSuffix(deviceClass string) string {
 	switch deviceClass {
-	case gpuDeviceClassName:
+	case model.GPUDRADriverName:
 		return "gpu"
 	case migDeviceClass:
 		return "mig"
 	default:
 		return "nic"
 	}
-}
-
-func draConfig() *config.Config {
-	cfg := testConfig()
-	cfg.GPUDraEnabled = true
-
-	return cfg
 }
 
 // draPod returns a pod with no extended GPU resources whose claims come from
@@ -297,7 +290,7 @@ func TestInjectInitContainers_DRA(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			patches, _, err := NewInjector(draConfig(), nil, te.client).InjectInitContainers(context.Background(), tt.pod)
+			patches, _, err := NewInjector(testConfig(), nil, te.client).InjectInitContainers(context.Background(), tt.pod)
 			require.NoError(t, err, "DRA lookups must never reject a pod")
 
 			if !tt.wantInjected {
@@ -316,7 +309,7 @@ func TestInjectInitContainers_DRA(t *testing.T) {
 		pod := draPod("gpu-tmpl")
 		pod.Spec.Containers[0].Resources.Limits = corev1.ResourceList{"vpc.amazonaws.com/efa": resource.MustParse("4")}
 
-		patches, _, err := NewInjector(draConfig(), nil, te.client).InjectInitContainers(context.Background(), pod)
+		patches, _, err := NewInjector(testConfig(), nil, te.client).InjectInitContainers(context.Background(), pod)
 		require.NoError(t, err)
 
 		containers := injectedInitContainers(t, patches)
@@ -335,14 +328,13 @@ func TestInjectInitContainers_DRA(t *testing.T) {
 		forbidden, err := client.New(user.Config(), client.Options{Scheme: scheme})
 		require.NoError(t, err)
 
-		patches, _, err := NewInjector(draConfig(), nil, forbidden).InjectInitContainers(context.Background(), draPod("gpu-tmpl"))
+		patches, _, err := NewInjector(testConfig(), nil, forbidden).InjectInitContainers(context.Background(), draPod("gpu-tmpl"))
 		require.NoError(t, err)
 		assert.Empty(t, patches)
 	})
 
 	t.Run("gang member gets each claim once", func(t *testing.T) {
 		cfg := testGangConfig()
-		cfg.GPUDraEnabled = true
 		resolver := gang.NewResolver(&mockDiscoverer{name: "test", canHandle: true, gangID: "gang-1"}, nil)
 
 		patches, gangCtx, err := NewInjector(cfg, resolver, te.client).
@@ -357,7 +349,6 @@ func TestInjectInitContainers_DRA(t *testing.T) {
 
 	t.Run("gang member gets claims when gang mirroring is off", func(t *testing.T) {
 		cfg := testGangConfig()
-		cfg.GPUDraEnabled = true
 		cfg.GangCoordination.MirrorResourceClaims = new(false)
 		resolver := gang.NewResolver(&mockDiscoverer{name: "test", canHandle: true, gangID: "gang-1"}, nil)
 
@@ -375,7 +366,7 @@ func TestInjectInitContainers_DRA(t *testing.T) {
 		pod := draPod("gpu-tmpl")
 		pod.Spec.Containers[0].Resources.Limits = corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("8")}
 
-		patches, _, err := NewInjector(draConfig(), nil, reader).InjectInitContainers(context.Background(), pod)
+		patches, _, err := NewInjector(testConfig(), nil, reader).InjectInitContainers(context.Background(), pod)
 		require.NoError(t, err)
 
 		containers := injectedInitContainers(t, patches)
@@ -385,17 +376,17 @@ func TestInjectInitContainers_DRA(t *testing.T) {
 		assert.Zero(t, reader.gets.Load())
 	})
 
-	t.Run("detection off makes no API call", func(t *testing.T) {
+	t.Run("pod without claims is unchanged and makes no API call", func(t *testing.T) {
 		reader := &countingReader{Reader: te.client}
 
-		patches, _, err := NewInjector(testConfig(), nil, reader).InjectInitContainers(context.Background(), draPod("gpu-tmpl"))
+		patches, _, err := NewInjector(testConfig(), nil, reader).InjectInitContainers(context.Background(), draPod())
 		require.NoError(t, err)
 		assert.Empty(t, patches)
 		assert.Zero(t, reader.gets.Load())
 	})
 
 	t.Run("nil reader skips injection", func(t *testing.T) {
-		patches, _, err := NewInjector(draConfig(), nil, nil).InjectInitContainers(context.Background(), draPod("gpu-tmpl"))
+		patches, _, err := NewInjector(testConfig(), nil, nil).InjectInitContainers(context.Background(), draPod("gpu-tmpl"))
 		require.NoError(t, err)
 		assert.Empty(t, patches)
 	})
@@ -405,7 +396,7 @@ func TestInjectInitContainers_DRALookupTimesOut_SkipsInjection(t *testing.T) {
 	reader := &deadlineReader{}
 	start := time.Now()
 
-	patches, _, err := NewInjector(draConfig(), nil, reader).InjectInitContainers(context.Background(), draPod("gpu-tmpl"))
+	patches, _, err := NewInjector(testConfig(), nil, reader).InjectInitContainers(context.Background(), draPod("gpu-tmpl"))
 	require.NoError(t, err)
 	assert.Empty(t, patches)
 
@@ -419,21 +410,21 @@ func TestIsGPURequest(t *testing.T) {
 		req  resourcev1.DeviceRequest
 		want bool
 	}{
-		{name: "exact GPU class", req: exactRequest(gpuDeviceClassName, false), want: true},
+		{name: "exact GPU class", req: exactRequest(model.GPUDRADriverName, false), want: true},
 		{name: "exact MIG class is not detected", req: exactRequest(migDeviceClass, false), want: false},
 		{name: "exact non-GPU class", req: exactRequest(nicDeviceClass, false), want: false},
-		{name: "adminAccess GPU request", req: exactRequest(gpuDeviceClassName, true), want: false},
+		{name: "adminAccess GPU request", req: exactRequest(model.GPUDRADriverName, true), want: false},
 		{
 			name: "adminAccess explicitly false",
 			req: resourcev1.DeviceRequest{Exactly: &resourcev1.ExactDeviceRequest{
-				DeviceClassName: gpuDeviceClassName,
+				DeviceClassName: model.GPUDRADriverName,
 				AdminAccess:     new(false),
 			}},
 			want: true,
 		},
-		{name: "firstAvailable all GPU", req: firstAvailableRequest(gpuDeviceClassName, gpuDeviceClassName), want: true},
-		{name: "firstAvailable GPU or MIG", req: firstAvailableRequest(gpuDeviceClassName, migDeviceClass), want: false},
-		{name: "firstAvailable mixed", req: firstAvailableRequest(gpuDeviceClassName, nicDeviceClass), want: false},
+		{name: "firstAvailable all GPU", req: firstAvailableRequest(model.GPUDRADriverName, model.GPUDRADriverName), want: true},
+		{name: "firstAvailable GPU or MIG", req: firstAvailableRequest(model.GPUDRADriverName, migDeviceClass), want: false},
+		{name: "firstAvailable mixed", req: firstAvailableRequest(model.GPUDRADriverName, nicDeviceClass), want: false},
 		{name: "empty request", req: resourcev1.DeviceRequest{}, want: false},
 	}
 
@@ -469,7 +460,6 @@ func TestHandleMutate_DRALookupFails_AdmitsWithoutPatch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := handlerConfig()
-			cfg.GPUDraEnabled = true
 			handler := NewHandler(cfg, nil, te.client, nil, nil)
 
 			body := buildAdmissionReview(tt.pod, "uid-dra", draTestNamespace)
