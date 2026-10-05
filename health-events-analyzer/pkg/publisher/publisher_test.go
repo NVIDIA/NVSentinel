@@ -21,15 +21,20 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 type fakePlatformConnectorClient struct {
 	events *protos.HealthEvents
+	err    error
 }
 
 func (f *fakePlatformConnectorClient) HealthEventOccurredV1(
@@ -37,7 +42,16 @@ func (f *fakePlatformConnectorClient) HealthEventOccurredV1(
 ) (*emptypb.Empty, error) {
 	f.events = events
 
-	return &emptypb.Empty{}, nil
+	return &emptypb.Empty{}, f.err
+}
+
+func TestPublishRecovery_WrappedErrorPreservesRejection(t *testing.T) {
+	client := &fakePlatformConnectorClient{err: status.Error(codes.InvalidArgument, "rejected test event")}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	event, err := pub.PublishRecovery(t.Context(), sourceEvent(time.Now()), config.HealthEventsAnalyzerRule{Name: "RecoveryTest"})
+	require.Nil(t, event)
+	require.ErrorContains(t, err, `publish health event for rule "RecoveryTest"`)
+	require.ErrorIs(t, err, healthpub.ErrPublishRejected)
 }
 
 // sourceEvent is a detector event from the past, standing in for one replayed off a lagging

@@ -400,9 +400,12 @@ func TestPublishRecovery_DirectMode_DoesNotPollStorage(t *testing.T) {
 	fault := testRecoveryFault("node-direct", "GPU-a")
 	identity, ok := recoveryIdentityForEvent(annotationRule(), fault)
 	require.True(t, ok)
+	counter := recoveryEventsPublishedTotal.WithLabelValues(annotationRule().Name)
+	before := counterValue(t, counter)
 	require.NoError(t, r.publishRecoveryUntilStored(t.Context(), fault, annotationRule(), identity))
 	require.Zero(t, db.finds.Load())
 	require.EqualValues(t, 1, sink.calls.Load())
+	require.Equal(t, before+1, counterValue(t, counter))
 }
 
 func TestEventProcessor_AnnotationRecovery_KeepsCheckpointAndContinue(t *testing.T) {

@@ -234,6 +234,8 @@ func (r *Reconciler) publishRecoveryUntilStored(ctx context.Context, event *prot
 		return err
 	}
 
+	recoveryEventsPublishedTotal.WithLabelValues(rule.Name).Inc()
+
 	if r.config.Publisher.AcknowledgesStorage() {
 		return nil
 	}
@@ -277,6 +279,8 @@ func (r *Reconciler) waitForRecoveryStorage(ctx context.Context, event *protos.H
 			if _, err := r.config.Publisher.PublishRecovery(ctx, event, rule); err != nil {
 				return err
 			}
+
+			recoveryEventsPublishedTotal.WithLabelValues(rule.Name).Inc()
 
 			nextPublish = time.Now().Add(republish)
 		}

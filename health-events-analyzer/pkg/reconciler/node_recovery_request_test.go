@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -111,4 +112,48 @@ func TestNodeProcessingLocks_SerializesOneNodeAndReleasesCanceledWaiters(t *test
 	locks.mu.Lock()
 	defer locks.mu.Unlock()
 	require.Empty(t, locks.nodes)
+}
+
+func TestNodeProcessingLocks_CanceledContextDoesNotAcquireFreeNode(t *testing.T) {
+	var locks nodeProcessingLocks
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	unlock, err := locks.acquire(ctx, "node-a")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, unlock)
+	require.Empty(t, locks.nodes)
+}
+
+func TestNodeProcessingLocks_CancellationInterruptsQueuedWaiter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var locks nodeProcessingLocks
+		unlock, err := locks.acquire(t.Context(), "node-a")
+		require.NoError(t, err)
+		defer unlock()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		result := make(chan error, 1)
+		go func() {
+			release, err := locks.acquire(ctx, "node-a")
+			if release != nil {
+				release()
+			}
+			result <- err
+		}()
+		synctest.Wait()
+		require.Empty(t, result, "same node must stay blocked while its lock is held")
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-result:
+			require.ErrorIs(t, err, context.Canceled)
+		default:
+			t.Fatal("cancelled waiter did not return while the holder still owns the lock")
+		}
+
+		other, err := locks.acquire(t.Context(), "node-b")
+		require.NoError(t, err)
+		other()
+	})
 }

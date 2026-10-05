@@ -83,6 +83,14 @@ type Reconciler struct {
 }
 
 func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
+	if cfg.HealthEventsAnalyzerRules != nil {
+		for _, rule := range cfg.HealthEventsAnalyzerRules.Rules {
+			if rule.EvaluateRule && rule.Recovery != nil {
+				recoveryEventsPublishedTotal.WithLabelValues(rule.Name)
+			}
+		}
+	}
+
 	return &Reconciler{
 		config: cfg,
 	}

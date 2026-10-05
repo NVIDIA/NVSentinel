@@ -201,7 +201,7 @@ func (p *PublisherConfig) publish(ctx context.Context, event *protos.HealthEvent
 	}
 
 	if err := p.sendHealthEventWithRetry(ctx, req); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("publish health event for rule %q: %w", ruleName, err)
 	}
 
 	return newEvent, nil
