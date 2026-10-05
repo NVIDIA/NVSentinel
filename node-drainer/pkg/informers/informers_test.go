@@ -330,7 +330,10 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 		require.NoError(t, err)
 	}
 
-	const missingAnnotation = "is requesting devices but is missing device annotation"
+	const (
+		missingAnnotation = "is requesting devices but is missing device annotation"
+		noClaimNeeded     = "-" // bind the claim status entry with a nil ResourceClaimName
+	)
 
 	tests := []struct {
 		name            string
@@ -380,9 +383,15 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			wantGPUOnlyPods: 1,
 		},
 		{
-			name:           "unannotated pod with GPU limit fails partial drain but is not GPU-only drained",
-			gpuLimit:       true,
-			wantPartialErr: missingAnnotation,
+			name:            "unannotated pod with GPU limit fails partial drain and is GPU-only drained",
+			gpuLimit:        true,
+			wantPartialErr:  missingAnnotation,
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:       "unannotated pod whose claim status says no claim was needed is not a GPU pod",
+			claim:      v1.PodResourceClaim{Name: "gpu", ResourceClaimTemplateName: new("gpu-template")},
+			boundClaim: noClaimNeeded,
 		},
 		{
 			name: "CPU-only pod is neither drained nor blocks the drain",
@@ -413,9 +422,12 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 		require.NoError(t, err)
 
 		if tt.boundClaim != "" {
-			created.Status.ResourceClaimStatuses = []v1.PodResourceClaimStatus{
-				{Name: tt.claim.Name, ResourceClaimName: new(tt.boundClaim)},
+			claimStatus := v1.PodResourceClaimStatus{Name: tt.claim.Name}
+			if tt.boundClaim != noClaimNeeded {
+				claimStatus.ResourceClaimName = new(tt.boundClaim)
 			}
+
+			created.Status.ResourceClaimStatuses = []v1.PodResourceClaimStatus{claimStatus}
 			_, err = client.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
 			require.NoError(t, err)
 		}

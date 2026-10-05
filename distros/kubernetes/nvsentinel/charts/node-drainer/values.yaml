@@ -65,8 +65,8 @@ notReadyTimeoutMinutes: 5
 # Flag to restrict draining to GPU workloads
 # If enabled, only pods with the metadata-collector device annotation
 # (indicating assigned GPU devices) are eligible for draining. Pods without
-# the annotation are also eligible if a DRA ResourceClaim requests the
-# gpu.nvidia.com DeviceClass for them
+# the annotation are also eligible if they request GPUs through container
+# limits or a DRA ResourceClaim for the gpu.nvidia.com DeviceClass
 # Default: false if not specified
 drainGPUPods: false
 

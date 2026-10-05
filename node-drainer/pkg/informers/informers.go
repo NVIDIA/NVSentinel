@@ -527,7 +527,7 @@ func (i *Informers) isPodClaimingDeviceClass(ctx context.Context, pod *v1.Pod,
 				podClaim.Name, pod.Namespace, pod.Name, err)
 		}
 
-		if isClaimRequestingDeviceClass(claimSpec, deviceClassNames) {
+		if claimSpec != nil && isClaimRequestingDeviceClass(claimSpec, deviceClassNames) {
 			return true, nil
 		}
 	}
@@ -535,16 +535,22 @@ func (i *Informers) isPodClaimingDeviceClass(ctx context.Context, pod *v1.Pod,
 	return false, nil
 }
 
-// getPodResourceClaimSpec returns the spec of the ResourceClaim a pod claim uses. A claim generated from a
-// ResourceClaimTemplate is bound to the pod in status.resourceClaimStatuses before the pod is scheduled, so the
-// template itself is never read and deleting it does not affect the lookup.
+// getPodResourceClaimSpec returns the spec of the ResourceClaim a pod claim uses, or nil when the pod needs no
+// claim for it. A claim generated from a ResourceClaimTemplate is bound to the pod in status.resourceClaimStatuses
+// before the pod is scheduled, so the template itself is never read and deleting it does not affect the lookup.
 func (i *Informers) getPodResourceClaimSpec(ctx context.Context, pod *v1.Pod,
 	podClaim v1.PodResourceClaim) (*resourcev1.ResourceClaimSpec, error) {
 	claimName := podClaim.ResourceClaimName
 	if claimName == nil {
 		for _, claimStatus := range pod.Status.ResourceClaimStatuses {
 			if claimStatus.Name == podClaim.Name {
+				// An unset name means generating a claim was not necessary, so the entry holds no device.
+				if claimStatus.ResourceClaimName == nil {
+					return nil, nil
+				}
+
 				claimName = claimStatus.ResourceClaimName
+
 				break
 			}
 		}
@@ -638,8 +644,8 @@ func (i *Informers) filterEvictablePods(pods []*v1.Pod, partialDrainEntity *prot
 	return filteredPods
 }
 
-// filterPodsWithGPURequests keeps pods with a device annotation, and unannotated pods with a DRA GPU claim,
-// so a missed metadata-collector update does not leave a DRA GPU pod running.
+// filterPodsWithGPURequests keeps pods with a device annotation, and unannotated pods that request GPUs through
+// container limits or DRA claims, so a missed metadata-collector update does not leave a GPU pod running.
 func (i *Informers) filterPodsWithGPURequests(ctx context.Context, pods []*v1.Pod) ([]*v1.Pod, error) {
 	filteredPods := []*v1.Pod{}
 
@@ -648,7 +654,7 @@ func (i *Informers) filterPodsWithGPURequests(ctx context.Context, pods []*v1.Po
 		if !isPodRequestingGPU {
 			var err error
 
-			isPodRequestingGPU, err = i.isPodClaimingDeviceClass(ctx, pod, model.EntityTypeToResourceNames["GPU_UUID"])
+			isPodRequestingGPU, err = i.isPodRequestingDevices(ctx, pod, model.EntityTypeToResourceNames["GPU_UUID"])
 			if err != nil {
 				return nil, fmt.Errorf("failed to check GPU requests for pod %s: %w", pod.Name, err)
 			}

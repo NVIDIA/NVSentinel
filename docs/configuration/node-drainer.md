@@ -162,7 +162,7 @@ node-drainer:
   drainGPUPods: false
 ```
 
-The node-drainer detects GPU resource requests through device annotations added to pods by the metadata-collector. Pods with device annotations are identified as GPU workloads and eligible for eviction. A pod without the annotation is also a GPU workload if one of its DRA ResourceClaims requests the `gpu.nvidia.com` DeviceClass. If the node-drainer cannot read a ResourceClaim, the drain stops and retries.
+The node-drainer detects GPU resource requests through device annotations added to pods by the metadata-collector. Pods with device annotations are identified as GPU workloads and eligible for eviction. A pod without the annotation is also a GPU workload if it requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. If the node-drainer cannot read a ResourceClaim, the drain stops and retries.
 
 Device annotations are added to pods requesting GPU resources by metadata-collector with the format:
 ```yaml
@@ -172,7 +172,7 @@ annotations:
 
 #### Behavior
 
-- **When enabled (`true`)**: Only pods with GPU device annotations or DRA GPU claims are evicted during drain operations
+- **When enabled (`true`)**: Only pods with GPU device annotations, or that request GPUs through container limits or DRA claims, are evicted during drain operations
 - **When disabled (`false`)**: All eligible pods in configured namespaces are evicted (default behavior)
 - Pods without GPU requests are preserved, maintaining critical infrastructure services
 
