@@ -457,7 +457,8 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 
 				event := &model.HealthEventWithStatus{CreatedAt: time.Now().Add(-time.Hour)}
 				err = informers.DeletePodsAfterTimeout(ctx, nodeName, []string{namespace}, 1, event, nil)
-				require.ErrorContains(t, err, tt.wantGPUOnlyErr, "timeout path must surface the lookup error")
+				require.ErrorContains(t, err, "could not check every namespace",
+					"timeout path must requeue instead of force deleting nothing")
 			} else {
 				require.NoError(t, err)
 				assert.Len(t, pods, tt.wantGPUOnlyPods)

@@ -897,17 +897,18 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 	deleteDateTimeUTC := timeoutDeadline.UTC().Format(time.RFC3339)
 	timeoutReached := drainTimeout <= 0
 
-	evicted, remainingPods, err := i.checkIfPodsPresentInNamespaceAndNode(
+	evicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(
 		ctx, namespaces, nodeName, partialDrainEntity, podFilters...)
-	if err != nil {
-		return fmt.Errorf("failed to check remaining pods on node %s: %w", nodeName, err)
-	}
-
 	if evicted {
 		slog.InfoContext(ctx, "All pods on node have been deleted", "node", nodeName)
 		metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(0)
 
 		return nil
+	}
+
+	if len(remainingPods) == 0 {
+		// A namespace could not be checked (already logged); requeue instead of force deleting nothing.
+		return fmt.Errorf("could not check every namespace on node %s, requeuing", nodeName)
 	}
 
 	if timeoutReached {
@@ -1136,10 +1137,9 @@ func (i *Informers) convertSetToSlice(namespaceSet map[string]struct{}) []string
 }
 
 // checkIfPodsPresentInNamespaceAndNode returns whether all selected pods are gone and
-// any remaining pods. A lookup error is returned so the caller retries instead of treating
-// the namespace as empty.
+// any remaining pods. A cache lookup error prevents reporting that all pods are gone.
 func (i *Informers) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, namespaces []string, nodeName string,
-	partialDrainEntity *protos.Entity, podFilters ...PodFilter) (bool, []*v1.Pod, error) {
+	partialDrainEntity *protos.Entity, podFilters ...PodFilter) (bool, []*v1.Pod) {
 	allEvicted := true
 
 	var remainingPods []*v1.Pod
@@ -1147,7 +1147,14 @@ func (i *Informers) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, na
 	for _, namespace := range namespaces {
 		pods, err := i.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, partialDrainEntity, podFilters...)
 		if err != nil {
-			return false, nil, fmt.Errorf("failed to check namespace %s on node %s: %w", namespace, nodeName, err)
+			slog.Error("Failed to check namespace on node",
+				"namespace", namespace,
+				"node", nodeName,
+				"error", err)
+
+			allEvicted = false
+
+			continue
 		}
 
 		if len(pods) > 0 {
@@ -1156,7 +1163,7 @@ func (i *Informers) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, na
 		}
 	}
 
-	return allEvicted, remainingPods, nil
+	return allEvicted, remainingPods
 }
 
 // CheckIfAllPodsAreEvictedInImmediateMode reports whether the selected drain scope is empty.
@@ -1164,13 +1171,8 @@ func (i *Informers) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, na
 func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 	namespaces []string, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity,
 	podFilters ...PodFilter) bool {
-	allEvicted, remainingPods, err := i.checkIfPodsPresentInNamespaceAndNode(
+	allEvicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(
 		ctx, namespaces, nodeName, partialDrainEntity, podFilters...)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to check pods on node", "node", nodeName, "error", err)
-
-		return false
-	}
 
 	if allEvicted {
 		slog.InfoContext(ctx, "All pods evicted in namespace from node",
@@ -1178,6 +1180,10 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 			"node", nodeName)
 
 		return true
+	}
+
+	if len(remainingPods) == 0 {
+		return false // A cache lookup failed; an empty result does not establish completion.
 	}
 
 	return i.CheckIfObservedPodsAreEvictedInImmediateMode(ctx, namespaces, nodeName, timeout,
@@ -1212,7 +1218,29 @@ func (i *Informers) CheckIfObservedPodsAreEvictedInImmediateMode(ctx context.Con
 	}
 
 	if shouldForceDelete {
-		return i.forceDeleteAndRecheck(ctx, namespaces, nodeName, partialDrainEntity, remainingPods, podFilters...)
+		slog.InfoContext(ctx, "Pods on node exceeded timeout, attempting force deletion",
+			"node", nodeName)
+
+		// Delete using the observed UID and resource version. A relabelled or replaced
+		// pod causes an API conflict, so this snapshot cannot delete its current state.
+		err := i.forceDeletePods(ctx, remainingPods)
+		if err != nil {
+			metrics.ProcessingErrors.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
+			slog.ErrorContext(ctx, "Failed to force delete pods on node",
+				"node", nodeName,
+				"error", err)
+
+			return false
+		}
+
+		allEvicted, _ := i.checkIfPodsPresentInNamespaceAndNode(ctx, namespaces, nodeName, partialDrainEntity,
+			podFilters...)
+		if allEvicted {
+			slog.InfoContext(ctx, "All pods evicted after force deletion on node",
+				"node", nodeName)
+		}
+
+		return allEvicted
 	}
 
 	remainingPodNames := make([]string, 0, len(remainingPods))
@@ -1225,37 +1253,4 @@ func (i *Informers) CheckIfObservedPodsAreEvictedInImmediateMode(ctx context.Con
 		"pods", remainingPodNames)
 
 	return false
-}
-
-// forceDeleteAndRecheck force deletes the observed pods and reports whether the scope is empty afterwards.
-func (i *Informers) forceDeleteAndRecheck(ctx context.Context, namespaces []string, nodeName string,
-	partialDrainEntity *protos.Entity, remainingPods []*v1.Pod, podFilters ...PodFilter) bool {
-	slog.InfoContext(ctx, "Pods on node exceeded timeout, attempting force deletion",
-		"node", nodeName)
-
-	// Delete using the observed UID and resource version. A relabelled or replaced
-	// pod causes an API conflict, so this snapshot cannot delete its current state.
-	if err := i.forceDeletePods(ctx, remainingPods); err != nil {
-		metrics.ProcessingErrors.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
-		slog.ErrorContext(ctx, "Failed to force delete pods on node",
-			"node", nodeName,
-			"error", err)
-
-		return false
-	}
-
-	allEvicted, _, err := i.checkIfPodsPresentInNamespaceAndNode(ctx, namespaces, nodeName, partialDrainEntity,
-		podFilters...)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to check pods on node", "node", nodeName, "error", err)
-
-		return false
-	}
-
-	if allEvicted {
-		slog.InfoContext(ctx, "All pods evicted after force deletion on node",
-			"node", nodeName)
-	}
-
-	return allEvicted
 }
