@@ -227,17 +227,45 @@ func TestParseTopoMatrix_MissingHeader(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestParseTopoMatrix_SingleGPUIsNotMistakenForHeader(t *testing.T) {
-	// A single-GPU machine's header has only one GPU column. We require
-	// ≥2, so single-GPU systems will fail to parse — this is acceptable
-	// because the NIC-topology matrix is only meaningful when there are
-	// multiple GPUs to route between. The test codifies the behaviour.
+func TestParseTopoMatrix_SingleGPUWithNICs(t *testing.T) {
+	// A single-GPU node with RDMA NICs (here two RoCE ports) still has a
+	// GPU-to-NIC relationship and NUMA affinity to publish. Without it the
+	// NIC monitor refuses to start. Output captured from a 1x A2 node,
+	// including the ANSI underline nvidia-smi puts on the header.
+	input := "\t\x1b[4mGPU0\tNIC0\tNIC1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\x1b[0m\n" +
+		"GPU0\t X \tNODE\tNODE\t0-79\t0\t\tN/A\n" +
+		"NIC0\tNODE\t X \tPIX\t\t\t\t\n" +
+		"NIC1\tNODE\tPIX\t X \t\t\t\t\n" +
+		"\n" +
+		"Legend:\n" +
+		"\n" +
+		"  X    = Self\n" +
+		"\n" +
+		"NIC Legend:\n" +
+		"\n" +
+		"  NIC0: mlx5_0\n" +
+		"  NIC1: mlx5_1\n"
+
+	matrix, err := ParseTopoMatrix(input)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"GPU0"}, matrix.GPUs)
+	assert.Equal(t, []string{"mlx5_0", "mlx5_1"}, matrix.NICs)
+	assert.Equal(t, []string{"NODE"}, matrix.Relationships["mlx5_0"])
+	assert.Equal(t, []string{"NODE"}, matrix.Relationships["mlx5_1"])
+}
+
+func TestParseTopoMatrix_SingleGPUMlx5Columns(t *testing.T) {
 	input := `        GPU0    mlx5_0  CPU Affinity
 GPU0     X      PIX     0-55
 `
 
-	_, err := ParseTopoMatrix(input)
-	require.Error(t, err)
+	matrix, err := ParseTopoMatrix(input)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"GPU0"}, matrix.GPUs)
+	assert.Equal(t, []string{"mlx5_0"}, matrix.NICs)
+	assert.Equal(t, []string{"PIX"}, matrix.Relationships["mlx5_0"])
 }
 
 func TestParseTopoMatrix_NoNICsProducesEmptyMatrix(t *testing.T) {

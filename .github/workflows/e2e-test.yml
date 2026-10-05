@@ -86,10 +86,27 @@ jobs:
             arch_name: "ARM64"
             datastore: "postgresql"
             datastore_name: "PostgreSQL"
+          # The same two setups again, publishing through the deployment platform connector instead of the
+          # node-local socket, so the socket path keeps its full matrix.
+          - arch: amd64
+            runner: ${{ vars.RUNNER_ARCH_LARGE_AMD64 || 'linux-amd64-cpu32' }}
+            arch_name: "AMD64"
+            datastore: "mongodb"
+            datastore_name: "MongoDB"
+            platform_connector: "deployment"
+          - arch: arm64
+            runner: ${{ vars.RUNNER_ARCH_LARGE_ARM64 || 'linux-arm64-cpu32' }}
+            arch_name: "ARM64"
+            datastore: "postgresql"
+            datastore_name: "PostgreSQL"
+            platform_connector: "deployment"
 
-    name: "E2E Tests (${{ matrix.arch_name }} + ${{ matrix.datastore_name }})"
+    name: "E2E Tests (${{ matrix.arch_name }} + ${{ matrix.datastore_name }}${{ matrix.platform_connector == 'deployment' && ' + Deployment PC' || '' }})"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    env:
+      # Unique per job for artifact names; a deployment job shares its arch and datastore with a socket job.
+      E2E_JOB_ID: ${{ matrix.arch }}-${{ matrix.datastore }}${{ matrix.platform_connector == 'deployment' && '-deployment-pc' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -180,6 +197,9 @@ jobs:
           DISABLE_TLS: ${{ matrix.datastore == 'mongodb-no-tls' && '1' || '0' }}
           # Use Percona operator instead of Bitnami for Percona MongoDB tests
           USE_PERCONA: ${{ matrix.datastore == 'mongodb-percona' && '1' || '0' }}
+          # Publish to the deployment platform connector in the two deployment jobs; the others keep the
+          # node-local socket path, which is still the default.
+          USE_DEPLOYMENT_PLATFORM_CONNECTOR: ${{ matrix.platform_connector == 'deployment' && '1' || '0' }}
           # Set architecture-specific test tags (mongodb tag applies to all MongoDB variants)
           TEST_TAGS: ${{ matrix.arch }}_group${{ contains(matrix.datastore, 'mongodb') && ',mongodb' || '' }}
         run: |
@@ -188,7 +208,7 @@ jobs:
       - name: Upload test results
         uses: ./.github/actions/upload-test-artifacts
         with:
-          component-name: e2e-test-${{ matrix.arch }}-${{ matrix.datastore }}
+          component-name: e2e-test-${{ env.E2E_JOB_ID }}
           file-paths: |
             tests/results/
             tests/*.log
@@ -213,7 +233,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: e2e-kind-container-logs-${{ matrix.arch }}-${{ matrix.datastore }}-${{ github.run_id }}
+          name: e2e-kind-container-logs-${{ env.E2E_JOB_ID }}-${{ github.run_id }}
           path: /tmp/kind-container-logs/
           retention-days: 7
 
@@ -240,7 +260,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: e2e-kind-logs-${{ matrix.arch }}-${{ matrix.datastore }}-${{ github.run_id }}
+          name: e2e-kind-logs-${{ env.E2E_JOB_ID }}-${{ github.run_id }}
           path: /tmp/kind-logs/
           retention-days: 7
 
@@ -248,7 +268,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: e2e-debug-artifacts-${{ matrix.arch }}-${{ matrix.datastore }}-${{ github.run_id }}
+          name: e2e-debug-artifacts-${{ env.E2E_JOB_ID }}-${{ github.run_id }}
           path: /tmp/debug-artifacts/
           retention-days: 7
 
