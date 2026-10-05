@@ -26,19 +26,20 @@ Status: Proposed.
    - [Configuration](#configuration)
    - [The record on the event](#the-record-on-the-event)
    - [Changes to each component](#changes-to-each-component)
+   - [Existing component configuration](#existing-component-configuration)
    - [Delivery](#delivery)
    - [Phases](#phases)
 4. [Profile changes for a fault in progress](#profile-changes-for-a-fault-in-progress)
    - [Option A: use the current state at each action](#option-a-use-the-current-state-at-each-action)
    - [Option B: pin the profile when platform-connectors receives the event](#option-b-pin-the-profile-when-platform-connectors-receives-the-event)
-5. [Rationale](#rationale)
-6. [Consequences](#consequences)
-7. [Alternatives Considered](#alternatives-considered)
-8. [Notes](#notes)
-   - [Future extensions](#future-extensions)
+5. [Additional configuration for behaviour profiles](#additional-configuration-for-behaviour-profiles)
+6. [Rationale](#rationale)
+7. [Consequences](#consequences)
+8. [Alternatives Considered](#alternatives-considered)
+9. [Notes](#notes)
    - [Non-goals](#non-goals)
    - [Open questions](#open-questions)
-9. [References](#references)
+10. [References](#references)
 
 ## Context
 
@@ -77,7 +78,7 @@ and remediation. An ordered list of **profile routes** selects the profile.
 1. A profile has three sections: `quarantine`, `drain`, and `remediation`. In this ADR, each section has one field,
    `enabled`. The configuration of each component continues to set how an enabled stage operates, for example the
    drain method or the remediation action. Later work can add fields to these sections (see
-   [Future extensions](#future-extensions)). The `enabled` field stays the main switch of each section.
+   [Additional configuration for behaviour profiles](#additional-configuration-for-behaviour-profiles)). The `enabled` field stays the main switch of each section.
 2. A route selects a profile with a CEL expression. The expression can use the health event and the node labels.
    NVSentinel evaluates the routes in sequence, and the first route that matches selects the profile. When no route
    matches, the built-in `default` profile applies.
@@ -230,6 +231,27 @@ After fault-remediation creates a maintenance CR, a profile change does not stop
 
 When a component cannot read the node, it tries again, as it does at this time.
 
+### Existing component configuration
+
+Behaviour profiles do not replace the configuration of each component. A profile only enables or disables a stage.
+The configuration of each component continues to set how an enabled stage operates. This configuration does not need
+names, because a profile in this ADR does not refer to it.
+
+| Component | Configuration that stays | Relation to the profile |
+|---|---|---|
+| fault-quarantine | `rule-sets` (rules, taint, label, cordon) and `circuitBreaker` | When the profile enables quarantine, the rule sets operate as they do at this time |
+| node-drainer | `userNamespaces`, `podDrainPolicies`, `customDrain` (also `customDrain.nodeSelector`), timeouts, and `partialDrainEnabled` | When the profile enables drain, node-drainer drains with these settings |
+| fault-remediation | `remediationActions`, the CR templates, `maxRemediationAttempts`, and the log collector | When the profile enables remediation, fault-remediation operates with these settings |
+
+When there are no profiles, the `default` profile applies, and all stages are enabled. Thus, the existing
+configuration operates as it does in the current release. An operator can add profiles without a change to the
+existing configuration.
+
+The rule sets can already apply different quarantine actions to different nodes. Each rule set has its own taint,
+label, and cordon settings, and its `Node` rules can read the node labels. For example, one rule set taints the nodes
+that have one label, and a different rule set cordons the nodes that have a different label. A profile can also
+select the rule sets that apply. See [Additional configuration for behaviour profiles](#additional-configuration-for-behaviour-profiles).
+
 ### Delivery
 
 Helm writes `global.behaviourProfiles` into the ConfigMaps of fault-quarantine, node-drainer, and fault-remediation.
@@ -279,6 +301,62 @@ labels to find the profile.
 **Rejected** because: a label change or a route change does not apply to a fault in progress. During an incident, the
 operator must cancel the fault to change its behaviour. The design also needs rules for the hash during a rollout, and
 for copies of events that other components publish again.
+
+## Additional configuration for behaviour profiles
+
+This ADR adds only the `enabled` field. This section shows the fields that later work can add to each section. Each
+field is added next to `enabled`, so the profiles in this ADR continue to be valid. Each field refers by name to
+configuration that stays in the component. Thus, a profile stays small, and each component keeps the validation of
+its own configuration. Each field needs a change in its component. The team selects the fields and their sequence.
+
+```yaml
+profiles:
+  slurm-vm:
+    quarantine:
+      enabled: true
+      ruleSets: ["GPU fatal error ruleset"]   # names of fault-quarantine rule sets
+      cordon: true
+    drain:
+      enabled: true
+      method: Custom                          # Evict | Custom
+      customDrainTarget: slinky               # named target in node-drainer
+      podDrainPolicies: ["batch-jobs"]        # names of node-drainer pod policies
+      partialDrain: false
+    remediation:
+      enabled: true
+      mode: Auto                              # Auto | External
+      actions:                                # recommended action -> named resource
+        COMPONENT_RESET: terminate-node
+        RESTART_BM: terminate-node
+      maxAttempts: 2
+      logCollector: true
+```
+
+| Field | Result | Refers to | Change in the component |
+|---|---|---|---|
+| `quarantine.ruleSets` | Only these rule sets apply to the fault | Names of fault-quarantine rule sets | fault-quarantine filters the rule sets before it evaluates them |
+| `quarantine.cordon` | Replaces the cordon setting of the rule sets, for example a taint without a cordon | None | fault-quarantine applies the value when it quarantines the node |
+| `drain.method` and `drain.customDrainTarget` | Selects the eviction API or a named drain plugin | Named custom drain targets in node-drainer | The single `customDrain` block becomes a map of named targets, and replaces `customDrain.nodeSelector` |
+| `drain.podDrainPolicies` | Only these pod policies apply | Names of node-drainer pod policies ([pod label drain policies ADR](055-pod-drain-policies.md)) | node-drainer filters the pod policies |
+| `drain.partialDrain` | Replaces `partialDrainEnabled` for this profile | None | node-drainer reads the value for each event |
+| `remediation.mode` | `External` gives the repair to an external system | [ADR-040](040-external-remediation-request.md) | fault-remediation creates an external remediation request for all actions |
+| `remediation.actions` | Selects the maintenance resource for each recommended action | Named maintenance resources in fault-remediation | `remediationActions` becomes a map of named resources. fault-remediation finds the CR status by resource, not by action name |
+| `remediation.maxAttempts` | Replaces `maxRemediationAttempts` for this profile | None | fault-remediation reads the value for each event |
+| `remediation.logCollector` | Enables or disables the log collector for this profile | None | fault-remediation reads the value for each event |
+| Device attributes in routes | Routes can select a GPU product or a device type | None | Health events must identify each device |
+
+These fields also need validation rules:
+
+- If `quarantine.cordon` is `false` and drain is enabled, each allowed rule set must apply a `NoSchedule` or
+  `NoExecute` taint. Without a cordon or a taint, the pods start on the node again after the drain.
+- Each name in `ruleSets`, `customDrainTarget`, `podDrainPolicies`, and `actions` must exist in the configuration of
+  the component.
+- Because each stage uses the current state, a profile change can change the drain method during a drain. The design
+  of `drain.method` must define if node-drainer changes the method or keeps the method that it started with.
+
+The recommended first fields are `drain.method`, `remediation.mode`, and `remediation.actions`. With these fields,
+profiles cover the cases in the [Context](#context) that this ADR does not cover: an external repair for one group,
+a reset for bare metal and a replacement for virtual machines, and a drain plugin for Slurm nodes.
 
 ## Rationale
 
@@ -342,6 +420,7 @@ Also define drain methods, external repair, and action maps for each profile in 
 **Deferred** because: each of these needs changes in its component, for example named custom drain targets, or a CR
 status lookup by resource. Together, they make one large change to review and release. The switches are useful
 without these fields, and the sections have space for the fields.
+See [Additional configuration for behaviour profiles](#additional-configuration-for-behaviour-profiles).
 
 ### Kubernetes label selectors for node groups
 
@@ -363,22 +442,6 @@ CRD changes only the delivery, not the content.
 behaviour. It also stops node conditions, but all profiles keep the monitoring and the node conditions.
 
 ## Notes
-
-### Future extensions
-
-Each extension adds fields next to `enabled` in an existing section. Thus, profiles for this ADR continue to be valid.
-
-- **A drain method for each profile** (`drain.customDrainTarget`): The single `customDrain` block of node-drainer
-  becomes a map of named targets, and replaces `customDrain.nodeSelector`. That design must also define if a profile
-  change can change the drain method during a drain.
-- **An external repair for each profile** (`remediation.mode: External`): This uses
-  [ADR-040](040-external-remediation-request.md).
-- **A remediation action for each profile** (`remediation.actions`): This uses a map of named maintenance resources.
-  fault-remediation must then find the CR status by resource, not by action name.
-- **A list of allowed rule sets** (`quarantine.ruleSets`) and **a maximum number of attempts**
-  (`remediation.maxAttempts`) for each profile.
-- **Device attributes**, for example the GPU product, in route expressions. This needs health events that identify
-  each device.
 
 ### Non-goals
 
