@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -34,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -175,8 +177,13 @@ func setupControllers(
 		validation = cfg.Validation
 	}
 
+	nodeClaim := distributedlock.NewNodeLock(
+		mgr.GetClient(), mgr.GetScheme(), namespace, nil,
+		distributedlock.WithLeaseName(controller.ClaimLeaseName),
+	)
+
 	if err := webhookv1alpha1.SetupWebhookWithManager(
-		mgr, validation, enableValidationController, enableMaintenanceController,
+		mgr, validation, enableValidationController, enableMaintenanceController, nodeClaim,
 	); err != nil {
 		return fmt.Errorf("failed to set up webhook: %w", err)
 	}
@@ -195,6 +202,7 @@ func setupControllers(
 			NodeLock: distributedlock.NewNodeLock(
 				mgr.GetClient(), mgr.GetScheme(), namespace, nil,
 			),
+			NodeClaim: nodeClaim,
 		}).SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("failed to create MaintenanceRequest controller: %w", err)
 		}
@@ -381,6 +389,11 @@ func run() error {
 		RenewDeadline:          &renewDeadline,
 		RetryPeriod:            &retryPeriod,
 		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
+		// Node lock leases are created and deleted within one reconcile; a
+		// cached read can miss a lease just created and leave it held.
+		Client: client.Options{Cache: &client.CacheOptions{
+			DisableFor: []client.Object{&coordinationv1.Lease{}},
+		}},
 	})
 	if err != nil {
 		slog.Error("Failed to start manager", "error", err)

@@ -122,6 +122,7 @@ The validating webhook rejects a request that:
 - leaves `version` at zero
 - names a node that does not exist
 - sets `startTime` in the past
+- names a node that already has an open MR
 - changes any stored field of `healthEvent` after creation
 
 The mutating webhook fills in `id` and `generatedTimestamp` if absent. It sets the publishing agent to `lifecycle-manager`, preserves the supplied agent in `maintenanceRequestRequesterAgent`, and always sets the `maintenanceRequestName` metadata key.
@@ -130,9 +131,21 @@ The mutating webhook fills in `id` and `generatedTimestamp` if absent. It sets t
 
 The controller sets a `HealthEventEmitted` condition once the opening event has been accepted
 by platform-connector, and takes a finalizer on the resource. On deletion it publishes the
-clearing event, releases the node lock, and only then drops the finalizer — so a failed
+clearing event, releases its leases, and only then drops the finalizer — so a failed
 clearing publish leaves the object in `Terminating` and retries, rather than losing the clear
 and leaving the node cordoned indefinitely.
+
+The controller uses two Lease objects in the lifecycle-manager namespace:
+
+- **Claim** (`mr-claim.<node-name>`): the MR takes it before the opening event and holds it until
+  deletion, so a node has at most one open MR. If a second MR for the node passes the webhook, the controller
+  sets `HealthEventEmitted=False` with reason `Rejected` and does not retry it. If the node name
+  is too long for a Lease name, the end of the name is replaced with a short hash.
+- **Janitor node lock** (`<node-name>`): the lock that janitor operations such as RebootNode
+  share. The MR holds it only while it publishes the opening event, so the event does not start
+  maintenance while a janitor operation runs. If the lock is held, the controller sets reason
+  `Blocked` and retries every 30 seconds. The MR releases the lock right after it publishes, so
+  the janitor operation that its event starts can take the lock.
 
 If the clearing event can never be delivered, the resource stays in `Terminating`. Removing
 the finalizer by hand is the escape hatch, at the cost of the node staying cordoned until an
