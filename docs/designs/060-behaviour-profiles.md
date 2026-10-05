@@ -216,6 +216,9 @@ its own definition and increments a metric.
 - **fault-quarantine**: For an unhealthy event, fault-quarantine first does the existing check for a node that is
   already in quarantine. Then, if the profile disables quarantine, it records `nodeQuarantined: SkippedByProfile`. It
   does not evaluate the rules.
+  - An event with `quarantineOverrides.force` does not use this check. fault-quarantine quarantines the node and
+    records `nodeQuarantined: Quarantined`, as it does at this time. Thus, the override on the event has priority
+    over the profile.
   - It marks this status as final, as it does for other intentional skips. Thus, a cold start does not change the
     decision.
   - node-drainer does not start for this status, so no later stage runs.
@@ -390,7 +393,7 @@ without these fields, and the sections have space for the fields.
 ### Kubernetes label selectors for node groups
 
 Use the label selector syntax for node groups, and use CEL for device and fault conditions.
-[#1871](https://github.com/NVIDIA/NVSentinel/pull/1871) and [ADR-055](055-pod-drain-policies.md) use label selectors
+[#1871](https://github.com/NVIDIA/NVSentinel/pull/1871) and the [pod label drain policies ADR](055-pod-drain-policies.md) use label selectors
 for drain scope.
 **Rejected** because: routes then need two syntaxes and a rule to combine them. A route that combines node and fault
 conditions needs CEL in all cases. CEL can express all label selector operators: `=`, `!=`, `in`, `notin`, and exists.
@@ -440,8 +443,8 @@ Each extension adds fields next to `enabled` in an existing section. Thus, profi
 ### Open questions
 
 - **The priority of a profile and the overrides on an event** (`quarantineOverrides`, `drainOverrides`). Proposed
-  answer: the overrides on the event have priority. Overrides are explicit and not frequent.
-  `quarantineOverrides.force` already bypasses the rule evaluation.
+  answer: the overrides on the event have priority. Overrides are explicit and not frequent. This ADR already applies
+  this answer to `quarantineOverrides.force`. The team must still decide it for `drainOverrides`.
 - **Profile changes for a fault in progress.** The team must select an option before phase 2. See
   [Profile changes for a fault in progress](#profile-changes-for-a-fault-in-progress).
 - **The behaviour when platform-connectors cannot read the node.** The `unresolved` profile is a safe choice. An
@@ -459,4 +462,4 @@ Each extension adds fields next to `enabled` in an existing section. Thus, profi
 - [ADR-023](023-health-event-transformer-pipeline.md): health event transformer pipeline
 - [ADR-040](040-external-remediation-request.md): external remediation request
 - [ADR-049](049-node-validation.md): node validation (`ValidationConfiguration`)
-- [ADR-055](055-pod-drain-policies.md): pod label drain policies
+- [Node Drainer — Pod label policies](055-pod-drain-policies.md): pod label drain policies
