@@ -46,6 +46,9 @@ const (
 	QuarantinedNodeIsUntaintedManuallyAnnotationKey       = "quarantinedNodeUntaintedManually"
 	QuarantinedNodeIsUntaintedManuallyAnnotationValue     = "True"
 	QuarantineValidationHealthEventAnnotationKey          = "quarantineValidationHealthEvent"
+	// Marks quarantine annotations written in dry run, where nothing was applied.
+	QuarantineHealthEventDryRunAnnotationKey   = "quarantineHealthEventDryRun"
+	QuarantineHealthEventDryRunAnnotationValue = "True"
 
 	ServiceName = "NVSentinel"
 
@@ -76,4 +79,5 @@ var QuarantineAnnotationKeys = []string{
 	QuarantinedNodeUncordonedManuallyAnnotationKey,
 	QuarantinedNodeIsUntaintedManuallyAnnotationKey,
 	QuarantineValidationHealthEventAnnotationKey,
+	QuarantineHealthEventDryRunAnnotationKey,
 }

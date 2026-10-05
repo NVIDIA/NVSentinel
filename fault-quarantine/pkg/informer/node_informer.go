@@ -160,14 +160,20 @@ func (ni *NodeInformer) WaitForSync(ctx context.Context) bool {
 	return true
 }
 
-// quarantineAnnotationIndexFunc is the indexer function for quarantined nodes
+// quarantineAnnotationIndexFunc is the indexer function for quarantined nodes. A node
+// counts only while it is actually cordoned: a real quarantine sets the cordon and the
+// annotation together. Dry run writes the annotation without the cordon, and on a node
+// someone else already cordoned only the marker tells the two apart.
 func quarantineAnnotationIndexFunc(obj any) ([]string, error) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		return nil, fmt.Errorf("expected node object, got %T", obj)
 	}
 
-	if _, exists := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
+	_, cordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+	_, dryRun := node.Annotations[common.QuarantineHealthEventDryRunAnnotationKey]
+
+	if cordonAnnotation && node.Spec.Unschedulable && !dryRun {
 		return []string{"quarantined"}, nil
 	}
 
@@ -264,6 +270,17 @@ func (ni *NodeInformer) handleAddNode(obj any) {
 // This handles the case where FQ crashed, node was manually uncordoned/untainted,
 // and FQ restarted (getting ADD events instead of UPDATE events).
 func (ni *NodeInformer) checkStaleStateOnAdd(node *v1.Node) {
+	// A dry-run quarantine is handed over whatever the node's cordon state: the handler
+	// keeps it in dry run and discards it otherwise. Dry run is a startup flag, so every
+	// switch reaches this through a restart.
+	if _, dryRun := node.Annotations[common.QuarantineHealthEventDryRunAnnotationKey]; dryRun {
+		if err := ni.onManualUncordon(node.Name); err != nil {
+			slog.Error("Failed to handle dry-run quarantine on node add", "node", node.Name, "error", err)
+		}
+
+		return
+	}
+
 	// Check for stale uncordon state: node has FQ cordon annotation but is not cordoned
 	if ni.checkStaleUncordonState(node) {
 		return
