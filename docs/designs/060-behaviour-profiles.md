@@ -355,8 +355,11 @@ These fields also need validation rules:
   of `drain.method` must define if node-drainer changes the method or keeps the method that it started with.
 
 The recommended first fields are `drain.method`, `remediation.mode`, and `remediation.actions`. With these fields,
-profiles cover the cases in the [Context](#context) that this ADR does not cover: an external repair for one group,
-a reset for bare metal and a replacement for virtual machines, and a drain plugin for Slurm nodes.
+profiles also cover the cases in the [Context](#context) that this ADR does not cover:
+
+- An external repair for one group of nodes.
+- A reset for bare metal and a replacement for virtual machines.
+- A drain plugin for Slurm nodes.
 
 ## Rationale
 
