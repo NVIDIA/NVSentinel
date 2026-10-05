@@ -46,6 +46,13 @@ const (
 	PreflightInheritedVolumeName = "nccl-preflight-inherited"
 	PreflightInheritedMountPath  = "/workload-nccl-config"
 
+	// What the webhook adds when preflight publishes to the deployment
+	// platform connector: the CA bundle copy it mounts and the label the
+	// connector's network policy admits.
+	PreflightCAConfigMapName = "nvsentinel-platform-connector-ca"
+	PreflightCAVolumeName    = "nvsentinel-platform-connector-ca"
+	HealthPublisherLabel     = "nvsentinel.nvidia.com/health-publisher"
+
 	GangConfigMapLabelManagedBy = "nvsentinel.nvidia.com/managed-by"
 	GangConfigMapManagedByVal   = "preflight"
 	GangDataKeyExpectedCount    = "expected_count"
@@ -206,6 +213,29 @@ func TeardownPreflightTest(
 	}
 
 	return ctx
+}
+
+// PreflightHealthPublish reads the live preflight config and returns the
+// deployment platform connector target the webhook hands to the checks, and
+// whether it hands them a CA bundle as well. An empty target means the checks
+// publish through the node-local socket.
+func PreflightHealthPublish(
+	ctx context.Context, t *testing.T, client klient.Client,
+) (target string, withCA bool) {
+	t.Helper()
+
+	cm := &v1.ConfigMap{}
+	require.NoError(t, client.Resources().Get(ctx, PreflightConfigMapName, NVSentinelNamespace, cm),
+		"read the preflight config ConfigMap")
+
+	var config map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(cm.Data[PreflightConfigKey]), &config),
+		"unmarshal preflight config")
+
+	target, _ = config["healthPublishTarget"].(string)
+	caFile, _ := config["healthPublishCAFile"].(string)
+
+	return target, caFile != ""
 }
 
 // ApplyPreflightInheritanceTestConfig replaces the live preflight config with

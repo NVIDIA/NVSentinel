@@ -311,7 +311,10 @@ func columnNames(cols []column) []string {
 // Multiple header lines are merged into one logical header to handle
 // potential line wrapping in narrow pipe contexts.
 func findHeaderRow(lines []string) (int, []string, error) {
-	const minGPUTokens = 2
+	// One GPU column is enough: single-GPU nodes still have GPU-to-NIC rows
+	// and NUMA affinity, and the NIC monitor cannot start without them.
+	// isHeaderLine already rejects preamble text and data rows.
+	const minGPUTokens = 1
 
 	var accumulated []string
 
@@ -343,7 +346,7 @@ func findHeaderRow(lines []string) (int, []string, error) {
 
 	if countGPUTokens(accumulated) < minGPUTokens {
 		return 0, nil, fmt.Errorf(
-			"no header row with multiple GPU columns found in nvidia-smi topo -m output (found %d)",
+			"no header row with a GPU column found in nvidia-smi topo -m output (found %d)",
 			countGPUTokens(accumulated),
 		)
 	}

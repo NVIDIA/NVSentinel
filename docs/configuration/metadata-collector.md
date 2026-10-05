@@ -77,9 +77,36 @@ Switching modes in order:
 
 Switching back needs only steps 2 and 3 with `false`; the label stays. With the default `false` the chart renders exactly as before.
 
-## Host-path driver access (NRI-mode clusters)
+## GPU Operator NRI plugin mode
 
-On clusters where GPU Operator is configured for CDI + NRI device injection, a `RuntimeClass` matching `operator.runtimeClass` is often never created. Setting `runtimeClassName` then fails admission, and leaving it unset crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND`. Requesting `nvidia.com/gpu` works but reserves a GPU for the DaemonSet.
+With the GPU Operator NRI plugin enabled (`cdi.nriPluginEnabled: true`), the GPU Operator does not create the `nvidia` RuntimeClass and deletes an existing one, so the default `runtimeClassName: nvidia` fails admission. Leaving it unset crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND`, and requesting `nvidia.com/gpu` reserves a GPU for the DaemonSet. Enable NRI plugin mode instead:
+
+```yaml
+metadata-collector:
+  nriPlugin:
+    enabled: true   # default false
+    # cdiDevice: management.nvidia.com/gpu=all   # default
+```
+
+The DaemonSet then omits `runtimeClassName` and adds the pod annotation `nvidia.cdi.k8s.io/container.metadata-collector: management.nvidia.com/gpu=all`. The Container Toolkit's NRI plugin injects the management CDI device, which carries the driver libraries, `nvidia-smi`, and the device nodes for every GPU on the node, the same way as for the GPU Operator's own management containers. It works with both the GPU Operator driver container and a host-installed driver, and does not consume a GPU. See [Requesting a Management CDI Device](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/cdi.html) in the GPU Operator documentation.
+
+By default, the NRI plugin injects management devices only into pods in the GPU Operator namespace. Add the NVSentinel namespace to the Container Toolkit's `NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES` environment variable (comma-separated) before enabling this mode:
+
+```yaml
+# GPU Operator Helm values
+toolkit:
+  env:
+    - name: NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES
+      value: nvsentinel
+```
+
+If the namespace is missing, the toolkit skips the injection and logs only at info level on its own pod, so metadata-collector crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND` and shows no other error. Check the toolkit log for `is not in one of the allowed namespaces`.
+
+`nriPlugin.enabled` cannot be combined with `global.gpuDraEnabled`: GPUCluster (DRA) mode has no Container Toolkit and so no NRI plugin. The chart refuses to render if both are set. With the default `false` the chart renders exactly as before.
+
+## Host-path driver access (host-installed driver)
+
+On NRI-mode clusters with a host-installed driver (GPU Operator `driver.enabled: false`), you can mount the host driver libraries instead of using [NRI plugin mode](#gpu-operator-nri-plugin-mode). This does not work with the GPU Operator driver container. Its library directory, `/run/nvidia/driver/usr/lib/<arch>`, also contains the container's own glibc, and the collector aborts when that glibc is on `LD_LIBRARY_PATH`.
 
 Use the same extra volume pattern as `gpu-health-monitor`: clear `runtimeClassName` and mount the host NVIDIA libraries. Set `LD_LIBRARY_PATH` when the mount path is not already on the dynamic linker search path. The container already runs as root (`runAsUser: 0`). NVLink/NIC topology also shells out to `nvidia-smi`; mount that host binary the same way if those fields are required.
 
