@@ -21,7 +21,7 @@ Without Platform Connectors, health monitors would need to directly integrate wi
 
 ## How It Works
 
-Platform Connectors typically runs as a deployment in the cluster:
+Platform Connectors typically runs as a DaemonSet in the cluster:
 
 1. Exposes gRPC service for health monitors to send events
 2. Receives health events via gRPC (`HealthEventOccurredV1` API)
@@ -38,13 +38,16 @@ Platform Connectors typically runs as a deployment in the cluster:
 
 The event processing pipeline runs transformers in order, allowing each transformer to build on previous enrichments. The ring buffer architecture ensures events are processed reliably even under high load, with retry logic for transient failures.
 
+The same binary can also run as a central Deployment, the deployment platform connector. Monitors set to `publishTo: deployment` publish to it directly over TLS, with a bearer token. It runs the pipeline and both connectors inside each request. It acknowledges a batch only after it stores the batch. See [Deployment Platform Connector](configuration/platform-connectors.md#deployment-platform-connector) and [ADR 052](designs/052-deployment-platform-connector.md).
+
 ## Configuration
 
 Configure Platform Connectors through Helm values:
 
 ```yaml
 platformConnector:
-  enabled: true
+  daemonset:
+    enabled: true
   
   # Transformer pipeline - defines execution order
   pipeline:

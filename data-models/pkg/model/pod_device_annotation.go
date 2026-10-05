@@ -23,6 +23,8 @@ var (
 		"GPU_UUID": {
 			"nvidia.com/gpu",
 			"nvidia.com/pgpu",
+			// DRA driver name used for GPUs allocated through ResourceClaims (GPU Operator GPUCluster mode).
+			"gpu.nvidia.com",
 		},
 	}
 )

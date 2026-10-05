@@ -34,6 +34,10 @@ Hands-on walkthroughs for extending NVSentinel:
   eviction step with a custom controller.
 - [Plugin Custom Remediation](./tutorials/plugin-custom-remediation.md) — extend the
   fault-remediation stage with your own repair via custom actions and a controller CRD.
+- [Requesting Node Maintenance](./tutorials/requesting-node-maintenance.md) — create a
+  MaintenanceRequest so that NVSentinel cordons and drains a node before planned maintenance.
+- [Integrating External Remediation](./tutorials/integrating-external-remediation.md) — let an
+  external system repair a node through an ExternalRemediationRequest, then return it to NVSentinel.
 
 ### [configuration/](./configuration/)
 **Component configuration guides**  
@@ -57,6 +61,7 @@ Individual component feature documentation:
 - [Fault Quarantine](./fault-quarantine.md)
 - [Node Drainer](./node-drainer.md)
 - [Fault Remediation](./fault-remediation.md)
+- [Validation](./validation.md)
 - [Kubernetes Object Monitor](./kubernetes-object-monitor.md)
 - [NVCRE Certification Monitor](./nvcre-certification-monitor.md)
 - [Circuit Breaker](./circuit-breaker.md)

@@ -1,0 +1,64 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# health-events-analyzer renders only with the umbrella's helpers (it is one of
+# the Makefile's UMBRELLA_ONLY_CHARTS), so its publish wiring is tested from
+# the umbrella rather than from a suite inside the subchart.
+suite: health-events-analyzer direct publishing wiring
+release:
+  namespace: nvsentinel
+templates:
+  - charts/health-events-analyzer/templates/deployment.yaml
+  # Rendered too because the template above checksum-annotates it.
+  - charts/health-events-analyzer/templates/configmap.yaml
+set:
+  # The chart ships disabled; its templates render only once enabled.
+  global.healthEventsAnalyzer.enabled: true
+tests:
+  # publishTo defaults to socket: no publisher pod label. The shared helpers'
+  # socket-path output is covered by the csp-health-monitor suite.
+  - it: renders no direct-publishing wiring on the default socket path
+    template: charts/health-events-analyzer/templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-token
+          any: true
+
+  - it: wires the target and the CA in deployment mode
+    template: charts/health-events-analyzer/templates/deployment.yaml
+    set:
+      health-events-analyzer.publishTo: deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HEALTH_PUBLISH_TARGET
+            value: "platform-connector-deployment.nvsentinel.svc.cluster.local:50051"
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: platform-connector-deployment-ca
+            mountPath: /etc/nvsentinel/platform-connector-deployment-ca
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+            secret:
+              secretName: platform-connector-deployment-grpc-cert
+              items:
+                - key: ca.crt
+                  path: ca.crt

@@ -1,0 +1,64 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Lives in the umbrella suite because the mongodb-store certificates and Job,
+# and health-events-analyzer, call umbrella helpers, so they cannot render
+# with their subchart alone.
+suite: cluster domain
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+templates:
+  - charts/mongodb-store/templates/certmanager.yaml
+  - charts/mongodb-store/templates/jobs.yaml
+  - charts/health-events-analyzer/templates/deployment.yaml
+  # Rendered too because the deployment above checksum-annotates it.
+  - charts/health-events-analyzer/templates/configmap.yaml
+set:
+  global.mongodbStore.enabled: true
+  global.clusterDomain: example.local
+tests:
+  - it: names the MongoDB server certificate in global.clusterDomain
+    template: charts/mongodb-store/templates/certmanager.yaml
+    documentSelector:
+      path: metadata.name
+      value: mongo-server-cert-0
+    asserts:
+      - equal:
+          path: spec.dnsNames
+          value:
+            - mongodb-0.mongodb-headless.nvsentinel.svc.example.local
+            - mongodb-headless.nvsentinel.svc.example.local
+
+  - it: resizes the oplog on members named in global.clusterDomain
+    template: charts/mongodb-store/templates/jobs.yaml
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'for host in mongodb-0\.mongodb-headless\.nvsentinel\.svc\.example\.local '
+
+  - it: publishes to the deployment platform connector in global.clusterDomain
+    template: charts/health-events-analyzer/templates/deployment.yaml
+    set:
+      global.healthEventsAnalyzer.enabled: true
+      health-events-analyzer.publishTo: deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HEALTH_PUBLISH_TARGET
+            value: "platform-connector-deployment.nvsentinel.svc.example.local:50051"

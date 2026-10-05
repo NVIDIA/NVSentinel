@@ -111,6 +111,9 @@ spec:
             {{- if include "gpu-health-monitor.pcAuth.enabled" . }}
             {{- include "gpu-health-monitor.pcAuth.volumeMount" . | nindent 12 }}
             {{- end }}
+            {{- with include "gpu-health-monitor.publish.volumeMounts" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
@@ -122,6 +125,9 @@ spec:
                  only names its own node, so it needs no cross-node allowlisting. */}}
             - name: PLATFORM_CONNECTOR_TOKEN_PATH
               value: {{ include "gpu-health-monitor.pcAuth.tokenPath" . | quote }}
+            {{- end }}
+            {{- with include "gpu-health-monitor.publish.envVars" . }}
+            {{- . | nindent 12 }}
             {{- end }}
       volumes:
         - name: config-vol
@@ -138,6 +144,9 @@ spec:
             type: DirectoryOrCreate
         {{- if include "gpu-health-monitor.pcAuth.enabled" . }}
         {{- include "gpu-health-monitor.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
+        {{- with include "gpu-health-monitor.publish.volumes" . }}
+        {{- . | nindent 8 }}
         {{- end }}
         {{- if .Values.additionalHostVolumes }}
         {{ toYaml .Values.additionalHostVolumes | nindent 8 }}

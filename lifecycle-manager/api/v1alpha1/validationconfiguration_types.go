@@ -248,6 +248,16 @@ type TestConfig struct {
 	// BatchFailurePolicy defines what to do when batch minimums are not met.
 	// +optional
 	BatchFailurePolicy BatchFailurePolicy `json:"batchFailurePolicy,omitempty"`
+
+	// BandwidthGBps is an optional pass threshold for bandwidth-oriented tests such as NCCL tests.
+	// It is passed to the test provider via its resource template. The provider enforces it.
+	// +optional
+	BandwidthGBps *string `json:"bandwidthGBps,omitempty"`
+
+	// GoodputRatio is an optional pass threshold for training-oriented tests such as Nemotron, passed
+	// to the test provider the same way as BandwidthGBps.
+	// +optional
+	GoodputRatio *string `json:"goodputRatio,omitempty"`
 }
 
 func init() {

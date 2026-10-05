@@ -45,6 +45,7 @@ type PodDeviceMapper interface {
 type clientConfig struct {
 	kubeconfigPath        string
 	kubeletKubeconfigPath string
+	uuidsByMinor          map[int]string
 }
 
 // Option configures mapper clients without changing the in-cluster defaults.
@@ -56,6 +57,20 @@ func WithKubeconfigs(apiPath, kubeletPath string) Option {
 	return func(config *clientConfig) {
 		config.kubeconfigPath = apiPath
 		config.kubeletKubeconfigPath = kubeletPath
+	}
+}
+
+// WithGPUs supplies the node's GPUs from the metadata collection so DRA device names, which the NVIDIA DRA
+// driver derives from GPU minor numbers, resolve to UUIDs without a second NVML session. GPUs without a
+// minor number are left out and their allocations stay unmapped.
+func WithGPUs(gpus []model.GPUInfo) Option {
+	return func(config *clientConfig) {
+		config.uuidsByMinor = make(map[int]string, len(gpus))
+		for _, gpu := range gpus {
+			if gpu.MinorNumber != nil {
+				config.uuidsByMinor[*gpu.MinorNumber] = gpu.UUID
+			}
+		}
 	}
 }
 
@@ -90,7 +105,7 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		return nil, fmt.Errorf("got an error creating Kubelet HTTPS client: %w", err)
 	}
 
-	grpcClient, err := NewKubeletGRPClient(ctx)
+	grpcClient, err := NewKubeletGRPClient(ctx, config.uuidsByMinor)
 	if err != nil {
 		return nil, fmt.Errorf("got an error creating Kubelet gRPC client: %w", err)
 	}
@@ -162,7 +177,7 @@ func hasClientCredentials(config *rest.Config) bool {
 /*
 This function will add a devices annotation to all pods running on the given node which have been allocated a GPU
 device. The annotation is named dgxc.nvidia.com/devices with keys as the device resource name, either nvidia.com/gpu or
-nvidia.com/pgpu, and values a list of GPU UUIDs for the corresponding devices.
+nvidia.com/pgpu, or the DRA driver name gpu.nvidia.com, and values a list of GPU UUIDs for the corresponding devices.
 
 Example annotation:
 

@@ -39,11 +39,132 @@ tests:
       - lengthEqual:
           path: spec.template.spec.containers[0].volumeMounts
           count: 3
+      - notExists:
+          path: spec.template.spec.resourceClaims
+      - notExists:
+          path: spec.template.spec.containers[0].resources.claims
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: LD_LIBRARY_PATH
           any: true
+
+  - it: must mount pod-resources from the default kubelet root dir
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /var/lib/kubelet/pod-resources
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: pod-gpu-resources
+            mountPath: /var/lib/kubelet/pod-resources
+            readOnly: true
+
+  - it: must mount pod-resources from a relocated kubelet root dir
+    set:
+      global.kubeletRootDir: /custom/kubelet
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /custom/kubelet/pod-resources
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: pod-gpu-resources
+            mountPath: /var/lib/kubelet/pod-resources
+            readOnly: true
+
+  - it: must strip a trailing slash from global.kubeletRootDir
+    set:
+      global.kubeletRootDir: /custom/kubelet/
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /custom/kubelet/pod-resources
+              type: Directory
+
+  - it: must strip surrounding whitespace from global.kubeletRootDir
+    set:
+      global.kubeletRootDir: " /custom/kubelet\n"
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /custom/kubelet/pod-resources
+              type: Directory
+
+  - it: must use the default kubelet root dir when global.kubeletRootDir is null
+    set:
+      global.kubeletRootDir: null
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /var/lib/kubelet/pod-resources
+              type: Directory
+
+  - it: must fail on an invalid global.kubeletRootDir
+    set:
+      global.kubeletRootDir: custom/kubelet
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must fail on a global.kubeletRootDir that is only a slash
+    set:
+      global.kubeletRootDir: /
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must use the default kubelet root dir when global.kubeletRootDir is empty
+    set:
+      global.kubeletRootDir: ""
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-gpu-resources
+            hostPath:
+              path: /var/lib/kubelet/pod-resources
+              type: Directory
+
+  - it: must fail on a boolean global.kubeletRootDir
+    set:
+      global.kubeletRootDir: false
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must fail on a numeric global.kubeletRootDir
+    set:
+      global.kubeletRootDir: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must fail on a global.kubeletRootDir that is the pod-resources directory
+    set:
+      global.kubeletRootDir: /custom/kubelet/pod-resources/
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
 
   - it: must render additional host volumes, mounts, and extra env
     set:
@@ -81,3 +202,106 @@ tests:
           content:
             name: LD_LIBRARY_PATH
             value: /usr/local/nvidia/lib
+
+  - it: must hold a DRA admin-access claim and omit runtimeClassName in GPUCluster mode
+    set:
+      global.gpuDraEnabled: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.runtimeClassName
+      - equal:
+          path: spec.template.spec.resourceClaims
+          value:
+            - name: gpus
+              resourceClaimTemplateName: metadata-collector-admin-gpus
+      - equal:
+          path: spec.template.spec.containers[0].resources.claims
+          value:
+            - name: gpus
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 3
+
+  - it: must fail on a quoted global.gpuDraEnabled
+    set:
+      global.gpuDraEnabled: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: global.gpuDraEnabled must be a boolean
+
+  - it: must not add the NRI CDI annotation by default
+    asserts:
+      - notExists:
+          path: spec.template.metadata.annotations
+      - equal:
+          path: spec.template.spec.runtimeClassName
+          value: nvidia
+
+  - it: must request the management CDI device and omit runtimeClassName in NRI plugin mode
+    set:
+      nriPlugin.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["nvidia.cdi.k8s.io/container.metadata-collector"]
+          value: management.nvidia.com/gpu=all
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: metadata-collector
+      - notExists:
+          path: spec.template.spec.runtimeClassName
+      - notExists:
+          path: spec.template.spec.resourceClaims
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 3
+
+  - it: must keep user pod annotations alongside the NRI CDI annotation
+    set:
+      nriPlugin.enabled: true
+      nriPlugin.cdiDevice: management.nvidia.com/gpu=all,k8s.device-plugin.nvidia.com/gpu=GPU-0
+      podAnnotations:
+        example.com/team: gpu
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations
+          value:
+            example.com/team: gpu
+            nvidia.cdi.k8s.io/container.metadata-collector: management.nvidia.com/gpu=all,k8s.device-plugin.nvidia.com/gpu=GPU-0
+
+  - it: must fail on a quoted nriPlugin.enabled
+    set:
+      nriPlugin.enabled: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: metadata-collector.nriPlugin.enabled must be a boolean
+
+  - it: must fail when NRI plugin mode is combined with GPUCluster mode
+    set:
+      nriPlugin.enabled: true
+      global.gpuDraEnabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: mutually exclusive
+
+  - it: must fail when NRI plugin mode has no CDI device
+    set:
+      nriPlugin.enabled: true
+      nriPlugin.cdiDevice: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: metadata-collector.nriPlugin.cdiDevice must be set
+
+  - it: must fail on a numeric nriPlugin.enabled instead of defaulting it
+    set:
+      nriPlugin.enabled: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: metadata-collector.nriPlugin.enabled must be a boolean
+
+  - it: must fail on a non-string nriPlugin.cdiDevice
+    set:
+      nriPlugin.enabled: true
+      nriPlugin.cdiDevice: 123
+    asserts:
+      - failedTemplate:
+          errorPattern: metadata-collector.nriPlugin.cdiDevice must be a string

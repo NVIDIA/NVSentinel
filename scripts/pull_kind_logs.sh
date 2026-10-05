@@ -54,7 +54,7 @@ echo "Found nodes: $NODES"
 echo ""
 
 # Components we're interested in
-COMPONENTS="fault-quarantine health-events-analyzer fault-remediation node-drainer labeler janitor platform-connectors simple-health-client"
+COMPONENTS="fault-quarantine health-events-analyzer fault-remediation node-drainer labeler janitor platform-connectors platform-connector-deployment simple-health-client"
 
 for NODE in $NODES; do
     echo "========================================"

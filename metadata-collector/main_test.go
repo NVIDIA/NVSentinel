@@ -282,7 +282,7 @@ current-context: test
 			// Client construction must reject the missing file before polling starts.
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
-			err := runMapper(ctx, newPodMapperMetrics(prometheus.NewRegistry()))
+			err := runMapper(ctx, newPodMapperMetrics(prometheus.NewRegistry()), nil)
 			require.ErrorContains(t, err, tt.want)
 			require.ErrorContains(t, err, missing)
 		})

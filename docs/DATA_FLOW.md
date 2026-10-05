@@ -24,7 +24,7 @@ NVSentinel uses a **publish-subscribe** pattern through MongoDB change streams:
 
 ### Preflight (optional admission checks)
 
-**Preflight** does not publish events through MongoDB or platform connectors. A **mutating admission webhook** injects init containers into GPU pods in labeled namespaces. When a check detects a failure, the init container sends a health event to the platform connector over the Unix domain socket (`PLATFORM_CONNECTOR_SOCKET`), which then follows the normal ingestion path. This is separate from the change-stream pipeline above because healthy checks produce no events at all. Multi-node checks use **gang discovery** and ConfigMap coordination ([ADR-026](./designs/026-preflight-checks.md), [configuration](./configuration/preflight.md)).
+**Preflight** does not publish events through MongoDB or platform connectors. A **mutating admission webhook** injects init containers into GPU pods in labeled namespaces. Each check sends its result as a health event to the platform connector. By default it uses the node-local Unix domain socket (`PLATFORM_CONNECTOR_SOCKET`). When `preflight.publishTo` is `deployment`, it sends the event directly to the deployment platform connector. The event then follows the normal ingestion path. This is separate from the change-stream pipeline above because the checks publish only at pod start. Multi-node checks use **gang discovery** and ConfigMap coordination ([ADR-026](./designs/026-preflight-checks.md), [configuration](./configuration/preflight.md)).
 
 ```mermaid
 graph TB

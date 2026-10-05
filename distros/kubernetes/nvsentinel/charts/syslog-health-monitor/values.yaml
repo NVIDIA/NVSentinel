@@ -119,3 +119,7 @@ updateStrategy:
   type: RollingUpdate
   rollingUpdate:
     maxUnavailable: 5%
+
+# Where health events go: socket (the node-local platform connector, default) or
+# deployment (the deployment platform connector; needs platformConnector.deployment.enabled).
+publishTo: socket

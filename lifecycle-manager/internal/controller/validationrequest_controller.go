@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/cel-go/cel"
@@ -152,6 +153,22 @@ fault-quarantine) do not poll for the ValidationRequest status to enter a termin
 whether the ValidationRequest entered a terminal status or is blocked (on either a NodeReadinessViolation or
 stuck TestProvider resource deletion). In the future, we could add an optional timeout to requests if there are clients
 watching for ValidationRequests entering a terminal status.
+
+Nodes targeted by a ValidationRequest will have the following 2 annotations:
+- active-validation-request: indicates if the node has a running ValidationRequest. This is used to ensure each node
+only has 1 running request at a time.
+- validation-session: tracks all ValidationRequests targeting the node which are pending, running, or failed
+(successful requests are removed from the session). This is used for managing the validation scheduling gate. See
+reconcilePending for more details.
+
+The state of these 2 annotations is converted into a validation-state label:
+- [no label]: validation-session has no entries for the node.
+- validation-pending: validation-session has at least 1 entry, active-validation-request is not set, and at least 1
+entry is not yet failed.
+- validating: active-validation-request is set. Its corresponding validation-session entry is never failed, but the
+node's session may also hold other, unrelated entries in any state.
+- validation-failed: validation-session has at least 1 entry, active-validation-request is not set, and every entry
+is marked failed.
 */
 func (r *ValidationRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var validationRequest v1alpha1.ValidationRequest
@@ -193,6 +210,10 @@ func (r *ValidationRequestReconciler) reconcileInit(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("update ValidationRequest %q status to pending: %w",
 			validationRequest.Name, err)
 	}
+
+	slog.InfoContext(ctx, "ValidationRequest started", "validationRequest", validationRequest.Name,
+		"nodes", nodeSpecNames(validationRequest.Spec.Nodes),
+		"tests", resolveValidationRequestTests(validationRequest, r.Config))
 
 	metrics.ValidationRequestsTotal.Inc()
 
@@ -244,29 +265,9 @@ func (r *ValidationRequestReconciler) reconcilePending(ctx context.Context,
 	criteria := r.Config.Validation.Spec.ReadinessCriteria
 	resolvedTests := resolveValidationRequestTests(validationRequest, r.Config)
 
-	existingNodes := make(map[string]bool, len(validationRequest.Spec.Nodes))
-
-	var deletedNodes []string
-
-	allReady := true
-
-	for _, ns := range validationRequest.Spec.Nodes {
-		exists, ready, err := r.addToSessionAndCheckEligibility(ctx, ns, validationRequest, criteria, resolvedTests)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-
-		switch {
-		case !exists:
-			// Deleted nodes will be marked as skipped
-			deletedNodes = append(deletedNodes, ns.Name)
-		case !ready:
-			// Any node with a NodeReadinessViolation will keep the request in Pending. We don't return early here so
-			// that every remaining node still gets added to the validation-session annotation
-			allReady = false
-		default:
-			existingNodes[ns.Name] = true
-		}
+	existingNodes, deletedNodes, allReady, err := r.classifyPendingNodes(ctx, validationRequest, criteria, resolvedTests)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if !allReady {
@@ -279,6 +280,11 @@ func (r *ValidationRequestReconciler) reconcilePending(ctx context.Context,
 	}
 
 	testGroups, failedGroupsPresent, skippedTests := buildInitialTestGroups(validationRequest, r.Config, existingNodes)
+
+	if len(skippedTests) > 0 {
+		slog.InfoContext(ctx, "Skipping tests: batch minimum not met and BatchFailurePolicy is ignore",
+			"validationRequest", validationRequest.Name, "tests", skippedTests)
+	}
 
 	// If all tests are skipped from BatchMinimumNotMet failures but all tests specify a BatchFailurePolicy of ignore,
 	// mark the request as successful
@@ -297,6 +303,34 @@ func (r *ValidationRequestReconciler) reconcilePending(ctx context.Context,
 	// If we have at least 1 existing node and there's at least 1 test which has not been skipped, mark the
 	// request as running and start the eligible TestGroups.
 	return r.transitionValidationRequestToRunning(ctx, validationRequest, existingNodes, deletedNodes, skippedTests)
+}
+
+func (r *ValidationRequestReconciler) classifyPendingNodes(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest, criteria []v1alpha1.CriteriaSpec, resolvedTests []string) (
+	existingNodes map[string]bool, deletedNodes []string, allReady bool, err error) {
+	existingNodes = make(map[string]bool, len(validationRequest.Spec.Nodes))
+	allReady = true
+
+	for _, ns := range validationRequest.Spec.Nodes {
+		exists, ready, err := r.addToSessionAndCheckEligibility(ctx, ns, validationRequest, criteria, resolvedTests)
+		if err != nil {
+			return nil, nil, false, err
+		}
+
+		switch {
+		case !exists:
+			// Deleted nodes will be marked as skipped
+			deletedNodes = append(deletedNodes, ns.Name)
+		case !ready:
+			// Any node with a NodeReadinessViolation will keep the request in Pending. We don't return early here so
+			// that every remaining node still gets added to the validation-session annotation
+			allReady = false
+		default:
+			existingNodes[ns.Name] = true
+		}
+	}
+
+	return existingNodes, deletedNodes, allReady, nil
 }
 
 /*
@@ -333,6 +367,10 @@ timeoutSeconds which ensures groups make progress.
 - The MaxConcurrentGroups limit, which specifies the maximum number of running TestGroups, has been reached.
 - A previous TestGroup attempt has a resource stuck deleting. This could be caused by foregroundDeletion waiting on
 child resources to be deleted, custom finalizers, or a delay in pod deletion.
+- A node referenced in the TestGroup overlaps with a different pending TestGroup that is blocked for the reason above
+(its previous attempt's resource is stuck deleting). In other words, the pending TestGroup with the stuck deleting
+resource will block other TestGroups which reference a subset of the same nodes (so it behaves as if its status
+was running).
 - Note that we check if nodes are deleted or not ready prior to starting new TestGroups so it's possible that a pending
 TestGroup is marked as Failed without ever starting an attempt, if removing its deleted nodes drops it below the
 minimum required for a test with a BatchFailurePolicy of fail. No attempt is created in this case, so no failure
@@ -459,6 +497,15 @@ func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Cont
 			validationRequest.Name, phase, err)
 	}
 
+	var skippedNodeNames, skippedTestNames []string
+	if validationRequest.Status.Skipped != nil {
+		skippedNodeNames = validationRequest.Status.Skipped.Nodes
+		skippedTestNames = validationRequest.Status.Skipped.Tests
+	}
+
+	slog.InfoContext(ctx, "ValidationRequest completed", "validationRequest", validationRequest.Name,
+		"phase", phase, "skippedNodes", skippedNodeNames, "skippedTests", skippedTestNames)
+
 	metricStatus := metrics.StatusFailure
 	if phase == v1alpha1.PhaseSucceeded {
 		metricStatus = metrics.StatusSuccess
@@ -574,7 +621,7 @@ func (r *ValidationRequestReconciler) reconcileRunningTestGroup(ctx context.Cont
 	switch {
 	case len(deletedNodes) > 0:
 		failedNodes = deletedNodes
-		newGroupPhase = removeDeletedNodesFromTestGroup(validationRequest, currentTestGroup, deletedNodes, r.Config)
+		newGroupPhase = removeDeletedNodesFromTestGroup(ctx, validationRequest, currentTestGroup, deletedNodes, r.Config)
 		attemptPhase = v1alpha1.PhaseFailed
 		attemptFailureReason = v1alpha1.FailureReasonNodeDeleted
 	case len(nodesFailingReadiness) > 0:
@@ -597,11 +644,11 @@ func (r *ValidationRequestReconciler) reconcileRunningTestGroup(ctx context.Cont
 		return nil
 	}
 
-	return r.finalizeTestGroupAttempt(ctx, currentTestGroup, testGroupAttempt, newGroupPhase, attemptPhase,
-		attemptFailureReason, failedNodes)
+	return r.finalizeTestGroupAttempt(ctx, validationRequest.Name, currentTestGroup, testGroupAttempt, newGroupPhase,
+		attemptPhase, attemptFailureReason, failedNodes)
 }
 
-func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Context,
+func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Context, validationRequestName string,
 	currentTestGroup *v1alpha1.TestGroupStatus, testGroupAttempt *v1alpha1.AttemptStatus,
 	newGroupPhase, attemptPhase v1alpha1.Phase, attemptFailureReason v1alpha1.FailureReason,
 	failedNodes []string) error {
@@ -611,6 +658,10 @@ func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Conte
 	now := metav1.Now()
 	testGroupAttempt.EndTime = &now
 	testGroupAttempt.FailedNodes = failedNodes
+
+	slog.InfoContext(ctx, "TestGroup attempt finished", "validationRequest", validationRequestName,
+		"testGroup", currentTestGroup.Name, "phase", attemptPhase, "failureReason", attemptFailureReason,
+		"failedNodes", failedNodes)
 
 	if err := r.deleteTestGroupObject(ctx, currentTestGroup, testGroupAttempt.ObjectName); err != nil {
 		return fmt.Errorf("deleting provider resource %q: %w", testGroupAttempt.ObjectName, err)
@@ -670,12 +721,19 @@ func (r *ValidationRequestReconciler) startPendingTestGroup(ctx context.Context,
 		}
 	}
 
-	isBlocked, err := r.checkPendingTestGroupBlocked(ctx, validationRequest, currentPendingTestGroup)
+	isBlocked, blockedByPendingDeletion, err := r.checkPendingTestGroupBlocked(ctx, validationRequest,
+		currentPendingTestGroup)
 	if err != nil {
 		return false, err
 	}
 
 	if isBlocked {
+		if blockedByPendingDeletion {
+			for _, n := range currentPendingTestGroup.Nodes {
+				runningTestGroupNodes[n] = true
+			}
+		}
+
 		return false, nil
 	}
 
@@ -684,6 +742,11 @@ func (r *ValidationRequestReconciler) startPendingTestGroup(ctx context.Context,
 	if err := r.createTestGroupObject(ctx, validationRequest, currentPendingTestGroup, objectName); err != nil {
 		return false, fmt.Errorf("creating provider resource for group %q: %w", currentPendingTestGroup.Name, err)
 	}
+
+	slog.InfoContext(ctx, "TestGroup running", "validationRequest", validationRequest.Name,
+		"testGroup", currentPendingTestGroup.Name, "provider", currentPendingTestGroup.Provider,
+		"tests", currentPendingTestGroup.Tests, "nodes", currentPendingTestGroup.Nodes,
+		"attempt", len(currentPendingTestGroup.Attempts)+1)
 
 	now := metav1.Now()
 	currentPendingTestGroup.Attempts = append(currentPendingTestGroup.Attempts, v1alpha1.AttemptStatus{
@@ -701,35 +764,38 @@ func (r *ValidationRequestReconciler) startPendingTestGroup(ctx context.Context,
 }
 
 func (r *ValidationRequestReconciler) checkPendingTestGroupBlocked(ctx context.Context,
-	validationRequest *v1alpha1.ValidationRequest, currentPendingTestGroup *v1alpha1.TestGroupStatus) (bool, error) {
+	validationRequest *v1alpha1.ValidationRequest,
+	currentPendingTestGroup *v1alpha1.TestGroupStatus) (blocked, blockedByPendingDeletion bool, err error) {
 	deletedNodes, nodesFailingReadiness, err := r.fetchDeletedAndNotReadyNodes(ctx, currentPendingTestGroup)
 	if err != nil {
-		return false, fmt.Errorf("checking group nodes for %q: %w", currentPendingTestGroup.Name, err)
+		return false, false, fmt.Errorf("checking group nodes for %q: %w", currentPendingTestGroup.Name, err)
 	}
 
 	if len(deletedNodes) > 0 {
-		nextPhase := removeDeletedNodesFromTestGroup(validationRequest, currentPendingTestGroup, deletedNodes, r.Config)
+		nextPhase := removeDeletedNodesFromTestGroup(ctx, validationRequest, currentPendingTestGroup, deletedNodes, r.Config)
 		if nextPhase != v1alpha1.PhasePending {
-			return true, nil
+			return true, false, nil
 		}
 	}
 
+	if len(currentPendingTestGroup.Attempts) > 0 {
+		previousAttempt := currentPendingTestGroup.Attempts[len(currentPendingTestGroup.Attempts)-1]
+
+		deleted, err := r.checkTestGroupObjectDeleted(ctx, currentPendingTestGroup, previousAttempt.ObjectName)
+		if err != nil {
+			return false, false, fmt.Errorf("checking previous attempt %q is deleted: %w", previousAttempt.ObjectName, err)
+		}
+
+		blockedByPendingDeletion = !deleted
+	}
+
+	// If the current TestGroup has both a test object stuck deleting and a NodeReadinessViolation, we will still
+	// include all nodes in runningTestGroupNodes.
 	if len(nodesFailingReadiness) > 0 {
-		return true, nil
+		return true, blockedByPendingDeletion, nil
 	}
 
-	if len(currentPendingTestGroup.Attempts) == 0 {
-		return false, nil
-	}
-
-	previousAttempt := currentPendingTestGroup.Attempts[len(currentPendingTestGroup.Attempts)-1]
-
-	deleted, err := r.checkTestGroupObjectDeleted(ctx, currentPendingTestGroup, previousAttempt.ObjectName)
-	if err != nil {
-		return false, fmt.Errorf("checking previous attempt %q is deleted: %w", previousAttempt.ObjectName, err)
-	}
-
-	return !deleted, nil
+	return blockedByPendingDeletion, blockedByPendingDeletion, nil
 }
 
 func terminalPhase(hasFailedTestGroups bool, validationRequest *v1alpha1.ValidationRequest) v1alpha1.Phase {

@@ -218,6 +218,18 @@ way to name other nodes. `AuthMode: audit` and `AuthFailOpenOnUnavailable` are
 socket settings: with no node to fall back on, the deployment platform
 connector always enforces, and logs a warning when either is set.
 
-Both roles read one `AuthAudience`, so a monitor's token stays valid when it
-switches from the socket to the Deployment; how the chart projects that token
-for a publisher is described with the chart.
+The chart refuses to render the deployment platform connector while node
+binding is off.
+
+A publisher on the deployment platform connector (`publishTo: deployment`)
+uses the same projected token as on the socket path. The chart mounts it at
+`tokenMountPath` and gives the file, `<tokenMountPath>/token`, to the
+publisher as `HEALTH_PUBLISH_TOKEN_PATH`. The token has the same `audience`
+and the same lifetime, `tokenExpirationSeconds`. Thus the token of a monitor
+stays valid when the monitor moves from the socket to the deployment platform
+connector.
+
+`crossNodeServiceAccounts` applies to both roles. The network policy of the
+deployment platform connector also admits publisher pods from the namespace
+of each entry. Such a pod must carry the label
+`nvsentinel.nvidia.com/health-publisher: "true"`.

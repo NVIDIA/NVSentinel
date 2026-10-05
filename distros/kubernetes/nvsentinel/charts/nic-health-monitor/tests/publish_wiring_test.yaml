@@ -1,0 +1,116 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: direct publishing wiring
+release:
+  namespace: nvsentinel
+templates:
+  - templates/daemonset.yaml
+set:
+  global.platformConnectorAuth.enabled: true
+  global.platformConnectorAuth.audience: test-audience
+  global.platformConnectorAuth.tokenMountPath: /var/run/secrets/nvsentinel/platform-connector
+  global.platformConnectorAuth.tokenExpirationSeconds: 3600
+  global.metricsPort: 2112
+  global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
+  global.initContainerImage.tag: "12-debian-12-r30"
+  global.initContainerImage.pullPolicy: IfNotPresent
+tests:
+  # publishTo defaults to socket: no HEALTH_PUBLISH_* env, CA volume or
+  # publisher pod label. daemonset_test.yaml covers the socket token.
+  - it: renders no direct-publishing wiring on the default socket path
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HEALTH_PUBLISH_TARGET
+          any: true
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+          any: true
+
+  # Direct mode presents the socket token from its usual mount.
+  - it: wires target, token and CA in deployment mode
+    set:
+      publishTo: deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HEALTH_PUBLISH_TARGET
+            value: "platform-connector-deployment.nvsentinel.svc.cluster.local:50051"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HEALTH_PUBLISH_TOKEN_PATH
+            value: "/var/run/secrets/nvsentinel/platform-connector/token"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HEALTH_PUBLISH_TLS_CA_FILE
+            value: "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-token
+          any: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+            secret:
+              secretName: platform-connector-deployment-grpc-cert
+              items:
+                - key: ca.crt
+                  path: ca.crt
+
+  # The explicitly named insecure development mode swaps the CA file for
+  # HEALTH_PUBLISH_INSECURE and renders no cert resources. The target port
+  # comes from global.platformConnectorDeployment, since a subchart cannot
+  # read the umbrella's platformConnector.deployment values.
+  - it: swaps to HEALTH_PUBLISH_INSECURE and follows global.platformConnectorDeployment
+    set:
+      publishTo: deployment
+      global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode
+      global.platformConnectorDeployment.grpcPort: 51000
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HEALTH_PUBLISH_INSECURE
+            value: "true"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HEALTH_PUBLISH_TLS_CA_FILE
+          any: true
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: platform-connector-deployment-ca
+          any: true
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HEALTH_PUBLISH_TARGET
+            value: "platform-connector-deployment.nvsentinel.svc.cluster.local:51000"
+
+  - it: refuses an unknown publishTo value
+    set:
+      publishTo: forwarding
+    asserts:
+      - failedTemplate:
+          errorPattern: publishTo must be "socket" or "deployment"

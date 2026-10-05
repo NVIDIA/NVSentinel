@@ -73,6 +73,16 @@ spec:
 {{- range .Nodes}}
   - name: "{{.NodeName}}"
 {{- end}}
+  tests:
+{{- range .Tests}}
+  - name: "{{.Name}}"
+{{- if .BandwidthGBps}}
+    bandwidthGBps: "{{.BandwidthGBps}}"
+{{- end}}
+{{- if .GoodputRatio}}
+    goodputRatio: "{{.GoodputRatio}}"
+{{- end}}
+{{- end}}
   command:
 {{- range .Command}}
   - "{{.}}"
@@ -102,6 +112,10 @@ spec:
   image: test-image:latest
   nodes:
   - name: %s
+  tests:
+  - name: basic
+    bandwidthGBps: "150"
+    goodputRatio: "0.9"
   command:
   - bash
   - -c
@@ -307,7 +321,7 @@ func runValidationRequestTest(ctx context.Context, vrName string, testCase valid
 
 		var current v1alpha1.ValidationRequest
 		if err := k8sClient.Get(ctx, req.NamespacedName, &current); apierrors.IsNotFound(err) {
-			checkNodeAnnotations(ctx, vrName, testCase.nodeNames, v1alpha1.PhaseSucceeded)
+			checkNodeValidationState(ctx, vrName, testCase.nodeNames, v1alpha1.PhaseSucceeded)
 			return v1alpha1.ValidationRequest{}
 		} else {
 			Expect(err).NotTo(HaveOccurred())
@@ -315,7 +329,7 @@ func runValidationRequestTest(ctx context.Context, vrName string, testCase valid
 
 		phase := current.Status.Phase
 		if phase == v1alpha1.PhaseSucceeded || phase == v1alpha1.PhaseFailed {
-			checkNodeAnnotations(ctx, vrName, testCase.nodeNames, phase)
+			checkNodeValidationState(ctx, vrName, testCase.nodeNames, phase)
 			normalizeStatus(&current.Status)
 			return current
 		}
@@ -329,7 +343,7 @@ func runValidationRequestTest(ctx context.Context, vrName string, testCase valid
 				if testCase.afterPending != nil {
 					Expect(testCase.afterPending(ctx, &current)).To(Succeed())
 				}
-				checkNodeAnnotations(ctx, vrName, testCase.nodeNames, phase)
+				checkNodeValidationState(ctx, vrName, testCase.nodeNames, phase)
 			}
 		}
 		if phase == v1alpha1.PhaseRunning && len(testCase.afterRunning) > 0 {
@@ -378,14 +392,17 @@ func reconcileUntilPhase(ctx context.Context, r *ValidationRequestReconciler, re
 }
 
 /*
-We verify the state of the active-validation-request and validation-session node annotations during the execution of
-runValidationRequestTest. The node annotations are checked on request deletion, when the request reaches a terminal
-state, and when the request transitions to running. The following checks are made depending on the phase:
+We verify the state of the active-validation-request and validation-session node annotations, plus the
+validation-state label derived from them, during the execution of runValidationRequestTest. These are checked on
+request deletion, when the request reaches a terminal state, and when the request transitions to running. The
+following checks are made depending on the phase:
 - Running: active-validation-request matches current request and session entry exists and is not failed.
 - PhaseSucceeded: active-validation-request is empty and no session entry for current request
 - PhaseFailed: active-validation-request is empty and session entry exists and is marked failed.
+The validation-state label is checked in every phase by independently deriving its expected value from the
+annotations above and comparing it to what's actually on the node.
 */
-func checkNodeAnnotations(ctx context.Context, vrName string, nodeNames []string, phase v1alpha1.Phase) {
+func checkNodeValidationState(ctx context.Context, vrName string, nodeNames []string, phase v1alpha1.Phase) {
 	for _, name := range nodeNames {
 		var node corev1.Node
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &node); err != nil {
@@ -401,6 +418,15 @@ func checkNodeAnnotations(ctx context.Context, vrName string, nodeNames []string
 				found = &entries[i]
 				break
 			}
+		}
+
+		wantLabel := deriveValidationStateLabel(node.Annotations[annotationActiveValidationRequest], entries)
+		if len(wantLabel) == 0 {
+			Expect(node.Labels).NotTo(HaveKey(validationStateLabelKey),
+				"node %q: validation-state label should be absent once the session has no entries", name)
+		} else {
+			Expect(node.Labels[validationStateLabelKey]).To(Equal(string(wantLabel)),
+				"node %q: validation-state label should match the derived state", name)
 		}
 
 		switch phase {
@@ -875,6 +901,7 @@ var _ = Describe("ValidationRequest Controller", func() {
 			Expect(entries).To(HaveLen(1))
 			Expect(entries[0].Name).To(Equal(vrName))
 			Expect(node.Annotations[annotationActiveValidationRequest]).To(BeEmpty())
+			Expect(node.Labels[validationStateLabelKey]).To(Equal(string(validationPendingLabelValue)))
 		})
 
 		It("adds the session annotation to every node even when an earlier node isn't ready", func() {
@@ -949,6 +976,65 @@ var _ = Describe("ValidationRequest Controller", func() {
 				Expect(g.Phase).To(Equal(v1alpha1.PhaseSucceeded))
 				Expect(g.Attempts).To(HaveLen(1))
 			}
+		})
+
+		It("does not start a new pending group if another pending group still has existing retries", func() {
+			vrName, nodeName := "vr-"+suffix, "node-"+suffix
+			testCfg := twoTestConfig(false, false)
+			testCfg.Validation.Spec.MaxConcurrentGroups = 10
+			p := testCfg.Validation.Spec.Providers["test-provider"]
+			p.Retries = 1
+			testCfg.Validation.Spec.Providers["test-provider"] = p
+
+			testClient, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+
+			r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+				config:    testCfg,
+				client:    testClient,
+				nodeNames: []string{nodeName},
+				spec:      v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+			})
+
+			vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 5)
+			Expect(vr.Status.TestGroups).To(HaveLen(2))
+
+			var runningGroupName, pendingGroupName string
+			var runningAttemptObjectName string
+			for _, g := range vr.Status.TestGroups {
+				switch g.Phase {
+				case v1alpha1.PhaseRunning:
+					runningGroupName = g.Name
+					runningAttemptObjectName = g.Attempts[0].ObjectName
+				case v1alpha1.PhasePending:
+					pendingGroupName = g.Name
+					Expect(g.Attempts).To(BeEmpty(), "the never-started group should have no attempts yet")
+				}
+			}
+			Expect(runningGroupName).NotTo(BeEmpty())
+			Expect(pendingGroupName).NotTo(BeEmpty())
+
+			// Fail the running group's only attempt. It has 1 retry configured, so it should
+			// go back to Pending rather than a terminal Failed.
+			Expect(updateObjectStatus(ctx, runningAttemptObjectName, testFailedCondType)).To(Succeed())
+			// The failed TestGroups's object will be stuck deleting during each reconcile
+			afterFailure := reconcileForIterations(ctx, r, req, 5)
+
+			var retryOwedGroup, neverStartedGroup v1alpha1.TestGroupStatus
+			for _, g := range afterFailure.Status.TestGroups {
+				switch g.Name {
+				case runningGroupName:
+					retryOwedGroup = g
+				case pendingGroupName:
+					neverStartedGroup = g
+				}
+			}
+
+			Expect(retryOwedGroup.Phase).To(Equal(v1alpha1.PhasePending), "the failed group should be pending")
+			Expect(retryOwedGroup.Attempts).To(HaveLen(1), "the failed group should not have retried yet")
+
+			Expect(neverStartedGroup.Phase).To(Equal(v1alpha1.PhasePending))
+			Expect(neverStartedGroup.Attempts).To(BeEmpty(), "should not start a new group if the failed group still has retries")
 		})
 
 		It("runs groups sequentially when MaxConcurrentGroups is 1", func() {
@@ -1830,6 +1916,8 @@ var _ = Describe("ValidationRequest Controller", func() {
 
 			vrb := reconcileForIterations(ctx, rB, reqB, 2)
 			Expect(vrb.Status.Phase).To(Equal(v1alpha1.PhasePending))
+			Expect(getNode(ctx, nodeName).Labels[validationStateLabelKey]).To(Equal(string(validatingLabelValue)),
+				"node %q: vrA running should win over vrB pending", nodeName)
 
 			Expect(updateObjectStatusForAllTestGroups(ctx, &vra, testFailedCondType)).To(Succeed())
 			finalA := reconcileUntilPhase(ctx, rA, reqA, v1alpha1.PhaseFailed, 10)
@@ -1896,6 +1984,8 @@ var _ = Describe("ValidationRequest Controller", func() {
 			}
 			Expect(vrAEntry).NotTo(BeNil())
 			Expect(vrAEntry.Failed).To(BeTrue())
+			Expect(node.Labels[validationStateLabelKey]).To(Equal(string(validationFailedLabelValue)),
+				"node %q: only a failed session entry remains, so the label should read validation-failed", nodeName)
 		})
 
 		It("leaves the failed request session entry when the succeeding request targets a subset of the failed tests", func() {
@@ -1937,6 +2027,8 @@ var _ = Describe("ValidationRequest Controller", func() {
 			}
 			Expect(vrAEntry).NotTo(BeNil())
 			Expect(vrAEntry.Failed).To(BeTrue())
+			Expect(node.Labels[validationStateLabelKey]).To(Equal(string(validationFailedLabelValue)),
+				"node %q: only a failed session entry remains, so the label should read validation-failed", nodeName)
 		})
 
 		It("adds concurrent requests to the session annotation", func() {
@@ -1958,6 +2050,8 @@ var _ = Describe("ValidationRequest Controller", func() {
 				names[i] = e.Name
 			}
 			Expect(names).To(ConsistOf(vrA, vrB))
+			Expect(node.Labels[validationStateLabelKey]).To(Equal(string(validatingLabelValue)),
+				"node %q: one of the two requests has already claimed the node", nodeName)
 		})
 	})
 
@@ -2165,6 +2259,11 @@ var _ = Describe("ValidationRequest Controller", func() {
 					{Key: "taint-equal", Value: "val", Effect: "NoSchedule"},
 				},
 			}
+			bandwidthGBps, goodputRatio := "150", "0.9"
+			basicTest := cfg.Validation.Spec.Tests["basic"]
+			basicTest.BandwidthGBps = &bandwidthGBps
+			basicTest.GoodputRatio = &goodputRatio
+			cfg.Validation.Spec.Tests["basic"] = basicTest
 			grp := groupName([]string{"basic"}, 1)
 
 			r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{

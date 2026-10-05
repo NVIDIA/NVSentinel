@@ -52,9 +52,61 @@ Runtime class name that provides GPU device access. Required for NVML to query G
 - `nvidia-legacy` - Legacy NVIDIA runtime
 - Empty string - Uses the default cluster runtime. Used for CRI-O environments and for NRI-mode clusters (see below)
 
-## Host-path driver access (NRI-mode clusters)
+## GPUCluster (DRA) mode
 
-On clusters where GPU Operator is configured for CDI + NRI device injection, a `RuntimeClass` matching `operator.runtimeClass` is often never created. Setting `runtimeClassName` then fails admission, and leaving it unset crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND`. Requesting `nvidia.com/gpu` works but reserves a GPU for the DaemonSet.
+If the GPU Operator is installed in `GPUCluster` (DRA) mode, there is no Container Toolkit and no `nvidia` RuntimeClass, so the default `runtimeClassName: nvidia` fails admission. Enable GPUCluster mode:
+
+```yaml
+global:
+  gpuDraEnabled: true   # default false
+```
+
+With it enabled the DaemonSet drops `runtimeClassName` and holds a DRA admin-access claim on the node's GPUs instead, the same way GPU Operator runs its own DCGM DaemonSet; the DRA driver injects the driver libraries via CDI, and admin access does not consume the GPUs.
+
+Label the NVSentinel namespace once, before the install or upgrade that switches to GPUCluster mode. Kubernetes accepts admin-access claims only from a labelled namespace and rejects the chart's `ResourceClaimTemplate` otherwise, which fails the Helm release:
+
+```bash
+kubectl label namespace nvsentinel resource.kubernetes.io/admin-access=true
+```
+
+Switching modes in order:
+
+1. Label the namespace (once).
+2. Switch the GPU Operator to `GPUCluster` mode.
+3. `helm upgrade` with `global.gpuDraEnabled: true`.
+
+Switching back needs only steps 2 and 3 with `false`; the label stays. With the default `false` the chart renders exactly as before.
+
+## GPU Operator NRI plugin mode
+
+With the GPU Operator NRI plugin enabled (`cdi.nriPluginEnabled: true`), the GPU Operator does not create the `nvidia` RuntimeClass and deletes an existing one, so the default `runtimeClassName: nvidia` fails admission. Leaving it unset crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND`, and requesting `nvidia.com/gpu` reserves a GPU for the DaemonSet. Enable NRI plugin mode instead:
+
+```yaml
+metadata-collector:
+  nriPlugin:
+    enabled: true   # default false
+    # cdiDevice: management.nvidia.com/gpu=all   # default
+```
+
+The DaemonSet then omits `runtimeClassName` and adds the pod annotation `nvidia.cdi.k8s.io/container.metadata-collector: management.nvidia.com/gpu=all`. The Container Toolkit's NRI plugin injects the management CDI device, which carries the driver libraries, `nvidia-smi`, and the device nodes for every GPU on the node, the same way as for the GPU Operator's own management containers. It works with both the GPU Operator driver container and a host-installed driver, and does not consume a GPU. See [Requesting a Management CDI Device](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/cdi.html) in the GPU Operator documentation.
+
+By default, the NRI plugin injects management devices only into pods in the GPU Operator namespace. Add the NVSentinel namespace to the Container Toolkit's `NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES` environment variable (comma-separated) before enabling this mode:
+
+```yaml
+# GPU Operator Helm values
+toolkit:
+  env:
+    - name: NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES
+      value: nvsentinel
+```
+
+If the namespace is missing, the toolkit skips the injection and logs only at info level on its own pod, so metadata-collector crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND` and shows no other error. Check the toolkit log for `is not in one of the allowed namespaces`.
+
+`nriPlugin.enabled` cannot be combined with `global.gpuDraEnabled`: GPUCluster (DRA) mode has no Container Toolkit and so no NRI plugin. The chart refuses to render if both are set. With the default `false` the chart renders exactly as before.
+
+## Host-path driver access (host-installed driver)
+
+On NRI-mode clusters with a host-installed driver (GPU Operator `driver.enabled: false`), you can mount the host driver libraries instead of using [NRI plugin mode](#gpu-operator-nri-plugin-mode). This does not work with the GPU Operator driver container. Its library directory, `/run/nvidia/driver/usr/lib/<arch>`, also contains the container's own glibc, and the collector aborts when that glibc is on `LD_LIBRARY_PATH`.
 
 Use the same extra volume pattern as `gpu-health-monitor`: clear `runtimeClassName` and mount the host NVIDIA libraries. Set `LD_LIBRARY_PATH` when the mount path is not already on the dynamic linker search path. The container already runs as root (`runAsUser: 0`). NVLink/NIC topology also shells out to `nvidia-smi`; mount that host binary the same way if those fields are required.
 
@@ -99,6 +151,20 @@ metadata-collector:
 
 Set `kubeletHost: {}` to leave the variable unset, which falls back to `localhost`. An explicit `--kubelet-kubeconfig` overrides this value entirely.
 
+## Kubelet Root Directory
+
+The collector maps pods to GPUs through the kubelet PodResources socket. Kubelet creates that socket under its `--root-dir`, so the chart mounts `<kubeletRootDir>/pod-resources` from the host at the fixed path the collector reads. Set this value to the kubelet `--root-dir` when a distribution runs kubelet from a non-default directory, for example `/var/lib/k0s/kubelet` on k0s:
+
+```yaml
+global:
+  kubeletRootDir: /var/lib/kubelet   # default
+```
+
+If the value does not match kubelet, one of these occurs:
+
+- The pod stays in `ContainerCreating` with a `FailedMount` event, because the host directory does not exist.
+- The container logs `Pod device mapper failed` with the error `got an error creating Kubelet gRPC client: stat /var/lib/kubelet/pod-resources/kubelet.sock: no such file or directory` and exits, because the host directory exists but kubelet does not use it.
+
 ## Pod Mapper Failure Tolerance
 
 Consecutive failed poll cycles the pod mapper tolerates before the container exits non-zero.
@@ -137,7 +203,7 @@ Provision credentials at node runtime. Keep kubeconfig and credential files acce
 
 - The Kubernetes API identity needs `patch` on pods in each workload namespace.
 - The kubelet identity needs permission to read `/pods`. With fine-grained kubelet authorization, use `get` on `nodes/pods`. Other configurations require `get` on `nodes/proxy`, which grants broader access.
-- The process needs access to `/var/lib/kubelet/pod-resources/kubelet.sock`, NVIDIA devices and libraries, and its output directory.
+- The process needs access to `/var/lib/kubelet/pod-resources/kubelet.sock`, NVIDIA devices and libraries, and its output directory. The binary always uses that path. If kubelet uses a different `--root-dir`, make the socket available at that path.
 
 Authentication does not grant permissions. Do not assume the kubelet's own client identity can patch workload pods. This feature creates no credentials or RBAC bindings.
 

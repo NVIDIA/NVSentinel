@@ -48,6 +48,33 @@ global:
   metricsPort: 2112
 ```
 
+### Cluster Domain
+
+DNS domain of the cluster. The chart uses it to build in-cluster service hostnames, such as the datastore URI and the deployment platform connector's address, and the DNS names of the certificates it issues. The default is `cluster.local`; set it when the cluster uses another domain (kubeadm `networking.dnsDomain`, Cluster API `clusterNetwork.serviceDomain`).
+
+```yaml
+global:
+  clusterDomain: example.local
+```
+
+The vendored datastore charts do not read NVSentinel's `global` values, and a few values hold a full hostname, so set the same domain there as well. The same goes for `global.datastore.connection.host` if you set it.
+
+```yaml
+mongodb-store:
+  mongodb:
+    clusterDomain: example.local                # Bitnami MongoDB
+  psmdb-db:
+    clusterServiceDNSSuffix: svc.example.local  # Percona
+postgresql:
+  clusterDomain: example.local
+janitor:
+  config:
+    cspProviderHost: janitor-provider.nvsentinel.svc.example.local:50051
+fault-remediation:
+  logCollector:
+    uploadURL: http://nvsentinel-incluster-file-server.nvsentinel.svc.example.local/upload
+```
+
 ### Change Stream Resume Tokens
 
 Watcher-based components persist change stream resume tokens so they can resume from the last processed event after a restart. To skip accumulated events and start from the current stream head, scale the component to zero, patch its key in the runtime resume-control ConfigMap from `RESUME` to `CREATE`, then restore its replicas. The component deletes only its own resume token, records a cold-start cutoff timestamp, skips startup cold-start recovery for that run, opens its watcher from the current stream head, and writes its key back to `RESUME`. Future restarts still run cold-start recovery, but only for records newer than the recorded cutoff.
@@ -204,6 +231,15 @@ global:
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 ```
 
+### Kubelet Root Directory
+
+The kubelet `--root-dir`. The chart mounts `<kubeletRootDir>/pod-resources` from the host at the fixed path the metadata collector reads. See [Kubelet Root Directory](./metadata-collector.md#kubelet-root-directory).
+
+```yaml
+global:
+  kubeletRootDir: /var/lib/kubelet
+```
+
 ### Client Certificate Rotation
 
 Lets modules pick up rotated datastore client certificates without a pod restart. A file watcher detects the change and supplies the new certificate to subsequent MongoDB connections. Existing connections keep the certificate they opened with.
@@ -296,6 +332,7 @@ Each module has additional configuration options documented in its dedicated gui
 - [Labeler](./labeler.md)
 - [Fault Quarantine](./fault-quarantine.md)
 - [Lifecycle Manager](./lifecycle-manager.md)
+- [Validation](./validation.md)
 - [Node Drainer](./node-drainer.md)
 - [Fault Remediation](./fault-remediation.md)
 - [Preflight](./preflight.md)

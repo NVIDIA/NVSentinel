@@ -1,0 +1,76 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{- if and (include "nvsentinel.pcDeployment.enabled" .) .Values.networkPolicy.enabled }}
+{{- $openReason := include "nvsentinel.pcDeployment.hostNetworkPublisherReason" . }}
+# gRPC ingress to the deployment platform connector; the chart's metrics-access
+# policy already opens the metrics port. It admits every pod in the release
+# namespace, labelled publisher pods in the namespaces of cross-node publishers,
+# and, while the preflight checks publish here, labelled pods in the namespaces
+# the preflight webhook injects into (preflight.namespaceSelector). A publisher
+# on the host network cannot be matched by any selector, so the gRPC port is
+# then open to every source and the caller token decides.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nvsentinel.pcDeployment.name" . }}-grpc-access
+  labels:
+    {{- include "nvsentinel.pcDeployment.labels" . | nindent 4 }}
+  {{- if $openReason }}
+  annotations:
+    nvsentinel.nvidia.com/grpc-ingress: {{ printf "open to every source: %s, which a policy-enforcing CNI identifies by node, not by pod labels; the caller token decides who may publish" $openReason | quote }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nvsentinel.pcDeployment.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- if $openReason }}
+    - ports:
+        - protocol: TCP
+          port: {{ include "nvsentinel.pcDeployment.grpcPort" . }}
+    {{- else }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+        {{- $namespaces := list }}
+        {{- range $sa := include "nvsentinel.pcAuth.crossNodeUsernames" . | fromJsonArray }}
+        {{- $ns := index (splitList ":" $sa) 2 }}
+        {{- if ne $ns $.Release.Namespace }}
+        {{- $namespaces = append $namespaces $ns }}
+        {{- end }}
+        {{- end }}
+        {{- range $ns := uniq $namespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns | quote }}
+          podSelector:
+            matchLabels:
+              nvsentinel.nvidia.com/health-publisher: "true"
+        {{- end }}
+        {{- if include "nvsentinel.pcDeployment.preflightPublisher" . }}
+        - namespaceSelector:
+            {{- toYaml (((.Values.preflight).namespaceSelector) | default dict) | nindent 12 }}
+          podSelector:
+            matchLabels:
+              nvsentinel.nvidia.com/health-publisher: "true"
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ include "nvsentinel.pcDeployment.grpcPort" . }}
+    {{- end }}
+{{- end }}

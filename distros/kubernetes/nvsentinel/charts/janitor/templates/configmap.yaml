@@ -15,7 +15,7 @@
 {{- $inclusterFileServer := get $global "inclusterFileServer" | default dict }}
 {{- $defaultGPUResetUploadURL := "" }}
 {{- if get $inclusterFileServer "enabled" }}
-{{- $defaultGPUResetUploadURL = printf "http://%s-incluster-file-server.%s.svc.cluster.local/upload" .Release.Name .Release.Namespace }}
+{{- $defaultGPUResetUploadURL = printf "http://%s-incluster-file-server.%s.svc.%s/upload" .Release.Name .Release.Namespace (get $global "clusterDomain" | default "cluster.local") }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap

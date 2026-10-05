@@ -64,6 +64,13 @@ spec:
             - name: config
               mountPath: /etc/preflight
               readOnly: true
+            {{- if include "preflight.publish.caCopy" . }}
+            # The deployment platform connector's CA bundle, copied by the
+            # controller into every namespace it injects checks into.
+            - name: platform-connector-deployment-ca
+              mountPath: /etc/nvsentinel/platform-connector-deployment-ca
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tls-certs
           secret:
@@ -71,6 +78,14 @@ spec:
         - name: config
           configMap:
             name: {{ include "preflight.fullname" . }}
+        {{- if include "preflight.publish.caCopy" . }}
+        - name: platform-connector-deployment-ca
+          secret:
+            secretName: platform-connector-deployment-grpc-cert
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
       {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

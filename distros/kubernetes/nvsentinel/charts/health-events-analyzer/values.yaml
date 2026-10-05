@@ -90,6 +90,10 @@ priorityClassName: ""
 nodeRecovery:
   enabled: false
 
+# Where health events go: socket (the node-local platform connector, default) or
+# deployment (the deployment platform connector; needs platformConnector.deployment.enabled).
+publishTo: socket
+
 config: |
   # Default rules do not enable annotation recovery. Without a recovery block, clear conditions manually.
   # Please run the command below to remove the node condition:

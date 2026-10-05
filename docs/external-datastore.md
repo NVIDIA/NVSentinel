@@ -207,12 +207,22 @@ Use the **exact connection string** your provider shows in its console as the **
 ### Database and Collection Setup (Automatic)
 
 You do **not** need to manually create the `HealthEventsDatabase` database or any collections
-in any of the CSPs below. On every `helm install` or `helm upgrade`, NVSentinel automatically
-runs the `<release>-external-mongodb-setup-<collectionExpirySeconds>-<scriptHash>` Job (`-l app.kubernetes.io/name=external-mongodb-setup`) which:
+in any of the CSPs below. On `helm install`, and on every upgrade that changes the Job name, NVSentinel
+automatically runs the `<release>-external-mongodb-setup-<collectionExpirySeconds>-<hash>` Job (`-l app.kubernetes.io/name=external-mongodb-setup`) which:
 
 - Creates the `HealthEventsDatabase` database (MongoDB creates it lazily on first write)
 - Creates the `HealthEvents`, `ResumeTokens`, and `MaintenanceEvents` collections if they don't exist
 - Creates TTL indexes from `mongodb-store.collectionExpirySeconds` (default 2592000). A TTL change recreates the setup Job and collMod's existing indexes.
+- Creates the query indexes and the unique idempotency index of the deployment platform connector (`healthevent_idempotency_key_unique`). The replicas of the deployment platform connector become ready only when this index exists. Documents that share an idempotency key block this index. The Job then prints an error with a query that lists the shared keys, and runs the rest of the setup. Remove the extra documents, then run the Job again.
+
+The Job is a plain release resource, not a Helm hook. It runs on install. An upgrade runs it again only when the Job name changes. The name changes with the TTL, the setup script, and the datastore, pull-secret and placement settings. Kubernetes deletes a finished Job after 24 hours, so the next upgrade after that also runs it again. Helm does not wait for the Job and does not fail when the Job fails. Check the Job yourself:
+
+```bash
+kubectl get job -n nvsentinel -l app.kubernetes.io/component=mongodb-init
+kubectl logs -n nvsentinel -l app.kubernetes.io/component=mongodb-init
+```
+
+The Job completes even when documents share an idempotency key; the log shows that error. To run the Job again, delete it and upgrade.
 
 All you need is a cluster endpoint and a database user with read/write access.
 

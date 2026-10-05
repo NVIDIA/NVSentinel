@@ -278,7 +278,7 @@ func TestK8sNodeConditions(t *testing.T) {
 	for testCase, healthEvent := range healthEventsList {
 		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent.healthEvent)
-		err := k8sConnector.processHealthEvents(ctx, &healthEvents)
+		err := k8sConnector.ProcessBatch(ctx, &healthEvents)
 		if err != nil {
 			t.Errorf("Failed to process healthEvent for testCase %d with err %s", testCase, err)
 		}
@@ -378,7 +378,7 @@ func TestK8sNodeEvents(t *testing.T) {
 	for _, event := range healthEventsList {
 		healthEvents.Events = append(healthEvents.Events, event.healthEvent)
 	}
-	err = k8sConnector.processHealthEvents(ctx, &healthEvents)
+	err = k8sConnector.ProcessBatch(ctx, &healthEvents)
 	if err != nil {
 		t.Errorf("Failed to process healthEvents with err %s", err)
 	}
@@ -1840,8 +1840,8 @@ func TestProcessHealthEvents_StoreOnlyStrategy(t *testing.T) {
 				Version: 1,
 				Events:  tc.healthEvents,
 			}
-			err = connector.processHealthEvents(localCtx, healthEvents)
-			require.NoError(t, err, "processHealthEvents should not return error")
+			err = connector.ProcessBatch(localCtx, healthEvents)
+			require.NoError(t, err, "ProcessBatch should not return error")
 
 			node, err := localClientSet.CoreV1().Nodes().Get(localCtx, nodeName, metav1.GetOptions{})
 			require.NoError(t, err, "Failed to get test node")
@@ -2412,7 +2412,7 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 	k8sEvent := connector.createK8sEvent(localCtx, healthEvent)
 
 	// First write populates the Event memory.
-	require.NoError(t, connector.processHealthEvents(localCtx, healthEvents))
+	require.NoError(t, connector.ProcessBatch(localCtx, healthEvents))
 
 	events, err := localClientSet.CoreV1().Events(DefaultNamespace).List(localCtx, metav1.ListOptions{})
 	require.NoError(t, err)
@@ -2440,7 +2440,7 @@ func TestWriteNodeEvent_UpdateRacesDeletion(t *testing.T) {
 		return true, nil, apierrors.NewNotFound(corev1.Resource("events"), firstName)
 	})
 
-	require.NoError(t, connector.processHealthEvents(localCtx, healthEvents),
+	require.NoError(t, connector.ProcessBatch(localCtx, healthEvents),
 		"A racing deletion should not surface as a write error")
 	require.NoError(t, trackerDeleteErr, "Failed to remove the raced event from the tracker")
 	require.True(t, updateCalled, "The cached event should have been updated in place before the race")

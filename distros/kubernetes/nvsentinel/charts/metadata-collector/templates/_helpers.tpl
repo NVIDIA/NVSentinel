@@ -41,6 +41,46 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 
 {{/*
+GPU Operator installation mode from global.gpuDraEnabled. Defaults to
+false;
+*/}}
+{{- define "metadata-collector.gpuDraEnabled" -}}
+{{- $enabled := (.Values.global | default dict).gpuDraEnabled | default false -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail (printf "global.gpuDraEnabled must be a boolean (true or false), got %s %#v" (kindOf $enabled) $enabled) -}}
+{{- end -}}
+{{- if $enabled -}}true{{- end -}}
+{{- end }}
+
+{{/*
+GPU Operator NRI plugin mode from nriPlugin.enabled. Defaults to false. The
+NRI plugin runs in the Container Toolkit, which GPUCluster (DRA) mode does not
+deploy, so the two modes cannot be combined.
+*/}}
+{{- define "metadata-collector.nriPluginEnabled" -}}
+{{- $nri := .Values.nriPlugin | default dict -}}
+{{- $enabled := false -}}
+{{- if hasKey $nri "enabled" -}}
+{{- $enabled = $nri.enabled -}}
+{{- end -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail (printf "metadata-collector.nriPlugin.enabled must be a boolean (true or false), got %s %#v" (kindOf $enabled) $enabled) -}}
+{{- end -}}
+{{- if $enabled -}}
+{{- if include "metadata-collector.gpuDraEnabled" . -}}
+{{- fail "metadata-collector.nriPlugin.enabled and global.gpuDraEnabled are mutually exclusive: GPUCluster (DRA) mode has no Container Toolkit, so there is no NRI plugin to inject the CDI device" -}}
+{{- end -}}
+{{- if and $nri.cdiDevice (not (kindIs "string" $nri.cdiDevice)) -}}
+{{- fail (printf "metadata-collector.nriPlugin.cdiDevice must be a string, got %s %#v" (kindOf $nri.cdiDevice) $nri.cdiDevice) -}}
+{{- end -}}
+{{- if not $nri.cdiDevice -}}
+{{- fail "metadata-collector.nriPlugin.cdiDevice must be set when nriPlugin.enabled is true" -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
 Whether the Prometheus metrics endpoint is enabled, as a template-truthy string.
 
 Must be a real YAML boolean. Go-template truthiness would otherwise decide it for us: the string
@@ -53,4 +93,22 @@ DaemonSet is hostNetwork. Fail the render instead, matching nvsentinel.pcAuth.en
 {{- fail (printf "metadata-collector.metrics.enabled must be a boolean (true or false), got %s %#v. Quoted strings, null and numbers are refused because they would silently enable or disable the endpoint, which binds a host port here." (kindOf $enabled) $enabled) -}}
 {{- end -}}
 {{- if $enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Kubelet's --root-dir on the host. Nil/empty → /var/lib/kubelet.
+*/}}
+{{- define "metadata-collector.kubeletRootDir" -}}
+{{- $dir := (.Values.global | default dict).kubeletRootDir -}}
+{{- if or (kindIs "invalid" $dir) (eq ($dir | toString) "") -}}
+{{- $dir = "/var/lib/kubelet" -}}
+{{- end -}}
+{{- $trimmed := "" -}}
+{{- if kindIs "string" $dir -}}
+{{- $trimmed = regexReplaceAll "/+$" (trim $dir) "" -}}
+{{- end -}}
+{{- if or (not (hasPrefix "/" $trimmed)) (hasSuffix "/pod-resources" $trimmed) -}}
+{{- fail (printf "global.kubeletRootDir must be kubelet's --root-dir as an absolute path, such as /var/lib/kubelet, not its pod-resources subdirectory; got %s %#v" (kindOf $dir) $dir) -}}
+{{- end -}}
+{{- $trimmed -}}
 {{- end -}}

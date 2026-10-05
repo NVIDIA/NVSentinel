@@ -53,6 +53,7 @@ type GPU struct {
 	NVLinkActiveLinkCount *int     `json:"nvlink_active_link_count,omitempty"`
 	NUMANode              int      `json:"numa_node"`
 	SlowdownTLimitC       *int     `json:"slowdown_tlimit_c,omitempty"`
+	MinorNumber           *int     `json:"minor_number,omitempty"`
 }
 
 type NVLink struct {

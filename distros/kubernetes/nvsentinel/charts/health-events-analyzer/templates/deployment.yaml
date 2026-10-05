@@ -133,6 +133,9 @@ spec:
           {{- if include "nvsentinel.pcAuth.enabled" . }}
           {{- include "nvsentinel.pcAuth.volumeMount" . | nindent 10 }}
           {{- end }}
+          {{- with include "nvsentinel.publish.volumeMounts" . }}
+          {{- . | nindent 10 }}
+          {{- end }}
           {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
           {{- if $certMountPath }}
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
@@ -150,6 +153,9 @@ spec:
           env:
             - name: LOG_LEVEL
               value: "{{ .Values.logLevel }}"
+            {{- with include "nvsentinel.publish.envVars" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
@@ -183,6 +189,9 @@ spec:
             path: config.toml
       {{- if include "nvsentinel.pcAuth.enabled" . }}
       {{- include "nvsentinel.pcAuth.volume" . | nindent 6 }}
+      {{- end }}
+      {{- with include "nvsentinel.publish.volumes" . }}
+      {{- . | nindent 6 }}
       {{- end }}
       - name: var-run-vol
         hostPath:

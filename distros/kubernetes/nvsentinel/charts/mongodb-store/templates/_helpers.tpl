@@ -124,16 +124,17 @@ Direct-connection hostnames for replSetResizeOplog (must run on every member).
 */}}
 {{- define "mongodb-store.oplogMemberHosts" -}}
 {{- $ns := .Release.Namespace -}}
+{{- $domain := (.Values.global).clusterDomain | default "cluster.local" -}}
 {{- $hosts := list -}}
 {{- if .Values.usePerconaOperator -}}
 {{- $n := index .Values "psmdb-db" "replsets" "rs0" "size" | default 3 | int -}}
 {{- range $i := until $n -}}
-{{- $hosts = append $hosts (printf "mongodb-rs0-%d.mongodb-rs0.%s.svc.cluster.local" $i $ns) -}}
+{{- $hosts = append $hosts (printf "mongodb-rs0-%d.mongodb-rs0.%s.svc.%s" $i $ns $domain) -}}
 {{- end -}}
 {{- else -}}
 {{- $n := .Values.mongodb.replicaCount | default 3 | int -}}
 {{- range $i := until $n -}}
-{{- $hosts = append $hosts (printf "mongodb-%d.mongodb-headless.%s.svc.cluster.local" $i $ns) -}}
+{{- $hosts = append $hosts (printf "mongodb-%d.mongodb-headless.%s.svc.%s" $i $ns $domain) -}}
 {{- end -}}
 {{- end -}}
 {{- join " " $hosts -}}

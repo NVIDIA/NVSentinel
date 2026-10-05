@@ -79,7 +79,11 @@ func NewNICHealthMonitor(
 		stateInterval: stateInterval,
 	}
 
+	names := make([]string, 0, len(allChecks))
+
 	for _, chk := range allChecks {
+		names = append(names, chk.Name())
+
 		switch checks.CategoryOf(chk.Name()) {
 		case checks.StateCheck:
 			m.stateChecks = append(m.stateChecks, chk)
@@ -87,6 +91,11 @@ func NewNICHealthMonitor(
 			m.counterChecks = append(m.counterChecks, chk)
 		}
 	}
+
+	// Export these counters at 0 from startup. They are otherwise absent until
+	// the first event, and the checks only emit on change, so on a healthy
+	// fleet they would never appear.
+	metrics.InitForChecks(nodeName, names)
 
 	slog.Info("NIC Health Monitor initialized",
 		"state_checks", len(m.stateChecks),
