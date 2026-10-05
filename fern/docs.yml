@@ -16,6 +16,10 @@ products:
     slug: /
     path: ../docs/index.yml
     versions:
+      - display-name: v1.26.0
+        path: versions/v1.26.0.yml
+        slug: v1.26.0
+        availability: stable
       - display-name: v1.25.0
         path: versions/v1.25.0.yml
         slug: v1.25.0
@@ -23,10 +27,6 @@ products:
       - display-name: v1.24.0
         path: versions/v1.24.0.yml
         slug: v1.24.0
-        availability: stable
-      - display-name: v1.23.0
-        path: versions/v1.23.0.yml
-        slug: v1.23.0
         availability: stable
 redirects:
   - source: "/nvsentinel/index.html"
