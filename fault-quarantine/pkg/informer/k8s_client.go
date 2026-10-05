@@ -458,11 +458,14 @@ func (c *FaultQuarantineClient) handleCordon(ctx context.Context, node *v1.Node,
 
 		slog.InfoContext(ctx, "Node is cordoned manually; applying FQM taints/annotations", "node", nodename)
 	} else {
+		if c.DryRunMode {
+			slog.InfoContext(ctx, "Would cordon node (dry run)", "node", nodename)
+			return
+		}
+
 		slog.InfoContext(ctx, "Cordoning node", "node", nodename)
 
-		if !c.DryRunMode {
-			node.Spec.Unschedulable = true
-		}
+		node.Spec.Unschedulable = true
 	}
 }
 
@@ -802,9 +805,11 @@ func (c *FaultQuarantineClient) removeTaints(
 func (c *FaultQuarantineClient) handleUncordon(
 	ctx context.Context, node *v1.Node, labels map[string]string, nodename string,
 ) {
-	slog.InfoContext(ctx, "Uncordoning node", "node", nodename)
+	if c.DryRunMode {
+		slog.InfoContext(ctx, "Would uncordon node (dry run)", "node", nodename)
+	} else {
+		slog.InfoContext(ctx, "Uncordoning node", "node", nodename)
 
-	if !c.DryRunMode {
 		node.Spec.Unschedulable = false
 	}
 

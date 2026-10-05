@@ -115,6 +115,8 @@ Labels use the configured `{labelPrefix}` (default `k8saas.nvidia.com/`):
 
 Prevents too many nodes from being quarantined simultaneously, protecting against cluster-wide cascading failures.
 
+The breaker is not created in dry-run mode. Dry run cordons nothing, so it neither counts toward nor is halted by the breaker, and no trip carries over when dry run is switched off.
+
 ### Configuration
 
 ```yaml
@@ -349,3 +351,12 @@ helm upgrade nvsentinel ./distros/kubernetes/nvsentinel \
 The chart renders the list into the `fault-quarantine` ConfigMap (`config.toml`); a config change triggers a pod restart.
 
 Use `global.dryRun: true` to test without cordoning nodes (see [Dry Run Mode](./README.md#dry-run-mode)). Confirm the rollout with `kubectl -n nvsentinel rollout status deployment/fault-quarantine` and check `kubectl -n nvsentinel logs deployment/fault-quarantine`.
+
+In dry run, fault-quarantine records what it would have done without cordoning, tainting or labelling:
+
+- The quarantine annotations are written as usual, plus `quarantineHealthEventDryRun: "True"`. They are kept across restarts and when something else cordons or uncordons the node.
+- `fault_quarantine_dry_run_actions_total{action="quarantine|unquarantine"}` counts these decisions. The quarantine metrics (`fault_quarantine_cordons_applied_total` and the rest) count only applied actions.
+- Logs read `Would cordon node (dry run)` and `Would uncordon node (dry run)`.
+- The datastore status is still `Quarantined`, so dry-run and real decisions are told apart by when dry run was enabled.
+
+When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it removes their annotations and cancels their quarantining events, so node-drainer does not act on them. The next fault on the node is quarantined for real.

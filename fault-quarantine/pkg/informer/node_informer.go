@@ -160,14 +160,17 @@ func (ni *NodeInformer) WaitForSync(ctx context.Context) bool {
 	return true
 }
 
-// quarantineAnnotationIndexFunc is the indexer function for quarantined nodes
+// quarantineAnnotationIndexFunc is the indexer function for quarantined nodes. A node
+// counts only while it is actually cordoned: a real quarantine sets the cordon and the
+// annotation together, and dry run writes the annotation without the cordon.
 func quarantineAnnotationIndexFunc(obj any) ([]string, error) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		return nil, fmt.Errorf("expected node object, got %T", obj)
 	}
 
-	if _, exists := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
+	if _, exists := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists &&
+		node.Spec.Unschedulable {
 		return []string{"quarantined"}, nil
 	}
 
