@@ -359,4 +359,9 @@ In dry run, fault-quarantine records what it would have done without cordoning, 
 - Logs read `Would cordon node (dry run)` and `Would uncordon node (dry run)`.
 - The datastore status is still `Quarantined`, so dry-run and real decisions are told apart by when dry run was enabled.
 
-When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it removes their annotations and cancels their quarantining events, so node-drainer does not act on them. The next fault on the node is quarantined for real.
+When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it removes their annotations and cancels their quarantining events, so node-drainer does not act on them. A cordon someone else applied is left in place. The next fault on the node is quarantined for real.
+
+Before switching dry run off on a cluster that ran dry run on an earlier version:
+
+- Check the circuit breaker ConfigMap. Earlier versions counted dry-run cordons, so the breaker may have tripped and persisted `TRIPPED`, which halts fault-quarantine at startup once dry run is off. Reset it as described in [Circuit Breaker](#circuit-breaker).
+- Switch dry run off before upgrading. Annotations written by an earlier version carry no dry-run marker, so after an upgrade a restart in dry run would still report them once as manual uncordons.

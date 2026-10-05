@@ -299,3 +299,68 @@ func TestE2E_DryRunSwitchedOffDiscardsQuarantineRecord(t *testing.T) {
 		return err == nil && n.Spec.Unschedulable && n.Annotations[common.QuarantineHealthEventDryRunAnnotationKey] == ""
 	}, statusCheckTimeout, statusCheckPollInterval, "the node should be cordoned with no dry-run marker")
 }
+
+// A node already cordoned by someone else is still unschedulable when dry run annotates it.
+func TestE2E_DryRunOnCordonedNodeIsNotCountedAndIsDiscardedOnSwitch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-dryrun-cordoned-" + generateShortTestID()
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, true)
+	t.Cleanup(func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	})
+
+	r, watcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig: dryRunRules(true, false),
+		DryRun:     true,
+	})
+
+	id, ev := dryRunEvent(nodeName, false)
+	watcher.EventsChan <- ev
+	require.Eventually(t, func() bool {
+		s := getStatus(id)
+		return s != nil && *s == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval)
+
+	require.Eventually(t, func() bool {
+		_, quarantined, err := r.k8sClient.NodeInformer.GetNodeCounts()
+		n, getErr := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && getErr == nil && n.Annotations[common.QuarantineHealthEventDryRunAnnotationKey] != "" &&
+			!quarantined[nodeName]
+	}, statusCheckTimeout, statusCheckPollInterval, "a dry-run quarantine must not count even on a cordoned node")
+
+	var (
+		mu        sync.Mutex
+		cancelled []string
+	)
+
+	// Switch dry run off. The node stays cordoned, so the stale-uncordon check does not apply.
+	setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig: dryRunRules(true, false),
+		DryRun:     false,
+		EventWatcher: &MockEventWatcher{
+			CancelLatestQuarantiningEventsFn: func(_ context.Context, node string, _ string) error {
+				mu.Lock()
+				defer mu.Unlock()
+				cancelled = append(cancelled, node)
+
+				return nil
+			},
+		},
+	})
+
+	require.Eventually(t, func() bool {
+		n, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && n.Annotations[common.QuarantineHealthEventDryRunAnnotationKey] == "" &&
+			n.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+	}, statusCheckTimeout, statusCheckPollInterval, "the dry-run record should be discarded on the switch")
+
+	n, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.True(t, n.Spec.Unschedulable, "the existing cordon is not fault-quarantine's to remove")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{nodeName}, cancelled)
+}
