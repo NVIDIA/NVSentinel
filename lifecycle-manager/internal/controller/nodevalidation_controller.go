@@ -25,11 +25,15 @@ import (
 
 	"github.com/google/cel-go/cel"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
@@ -76,10 +80,17 @@ func NewNodeValidationReconciler(cl client.Client, apiReader client.Reader, sche
 }
 
 func (r *NodeValidationReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	controllerManager := ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
-		Named("nodevalidation").
-		Complete(r)
+		Named("nodevalidation")
+
+	if referencesResourceSlices(r.Config.Validation.Spec.NewNodeValidation.Criteria) {
+		controllerManager = controllerManager.Watches(&resourcev1.ResourceSlice{},
+			handler.EnqueueRequestsFromMapFunc(resourceSliceToNode),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+	}
+
+	return controllerManager.Complete(r)
 }
 
 /*
@@ -148,7 +159,7 @@ func (r *NodeValidationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, fmt.Errorf("get node %q: %w", req.Name, err)
 	}
 
-	eligible, err := r.isNodeEligibleForBatch(&node)
+	eligible, err := r.isNodeEligibleForBatch(ctx, &node)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -236,14 +247,14 @@ func (r *NodeValidationReconciler) removeNodeFromPendingBatch(ctx context.Contex
 	}
 }
 
-func (r *NodeValidationReconciler) isNodeEligibleForBatch(node *corev1.Node) (bool, error) {
+func (r *NodeValidationReconciler) isNodeEligibleForBatch(ctx context.Context, node *corev1.Node) (bool, error) {
 	cfg := r.Config.Validation.Spec.NewNodeValidation
 
 	if isNodeConditionTrue(node, cfg.Condition) {
 		return false, nil
 	}
 
-	failedCriterion, err := evaluateCriteria(node, cfg.Criteria, r.CriteriaPrograms)
+	failedCriterion, err := evaluateNodeCriteria(ctx, r.Client, node, cfg.Criteria, r.CriteriaPrograms)
 	if err != nil {
 		return false, fmt.Errorf("evaluate newNodeValidation criteria for node %q: %w", node.Name, err)
 	}
@@ -267,7 +278,7 @@ func (r *NodeValidationReconciler) getEligibleNodesInBatch(ctx context.Context, 
 			return nil, fmt.Errorf("get node %q: %w", name, err)
 		}
 
-		isEligible, err := r.isNodeEligibleForBatch(&node)
+		isEligible, err := r.isNodeEligibleForBatch(ctx, &node)
 		if err != nil {
 			return nil, err
 		}

@@ -55,6 +55,15 @@ rules:
   verbs:
   - update
   - patch
+{{- if eq (include "lifecycle-manager.criteriaRequireResourceSlices" .) "true" }}
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - resourceslices
+  verbs:
+  - list
+  - watch
+{{- end }}
 - apiGroups:
   - coordination.k8s.io
   resources:

@@ -15,7 +15,10 @@
 package controller
 
 import (
+	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/cel-go/cel"
@@ -23,14 +26,25 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
 
+const (
+	resourceSlicesVariable = "resourceSlices"
+	// resourceSliceNodeNameField is both the manager cache index name and an API server field selector for
+	// ResourceSlices, so listResourceSlicesForNode works against the cached client and a direct client.
+	resourceSliceNodeNameField = "spec.nodeName"
+)
+
 func buildCELEnvironment() (*cel.Env, error) {
-	env, err := cel.NewEnv(cel.Variable("node", cel.AnyType), ext.Strings(),
+	env, err := cel.NewEnv(cel.Variable("node", cel.AnyType),
+		cel.Variable(resourceSlicesVariable, cel.ListType(cel.DynType)), ext.Strings(),
 		cel.CrossTypeNumericComparisons(true),
 		cel.Function("quantity",
 			cel.Overload("quantity_string", []*cel.Type{cel.StringType}, cel.DoubleType,
@@ -66,18 +80,49 @@ func quantityToDouble(val ref.Val) ref.Val {
 	return types.Double(q.AsApproximateFloat64())
 }
 
-// evaluateCriteria evaluates each CEL criterion against the given node in order. It returns the name of the first
-// criterion that fails, or an empty string if all criteria evaluate to true. This is shared by
-// theValidationRequestReconciler and NodeValidationReconciler, which each maintain their own compiled program map.
-func evaluateCriteria(node *corev1.Node, criteria []v1alpha1.CriteriaSpec,
+// evaluateNodeCriteria looks up the ResourceSlices of the node, if any criterion references them, and evaluates the
+// criteria against the node. This is shared by the ValidationRequestReconciler and NodeValidationReconciler, which each
+// maintain their own compiled program map.
+func evaluateNodeCriteria(ctx context.Context, c client.Reader, node *corev1.Node, criteria []v1alpha1.CriteriaSpec,
+	programs map[string]cel.Program) (string, error) {
+	var resourceSlices []resourcev1.ResourceSlice
+
+	if referencesResourceSlices(criteria) {
+		var err error
+
+		resourceSlices, err = listResourceSlicesForNode(ctx, c, node.Name)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	return evaluateCriteria(node, resourceSlices, criteria, programs)
+}
+
+// evaluateCriteria evaluates each CEL criterion against the given node and its ResourceSlices in order. It returns the
+// name of the first criterion that fails, or an empty string if all criteria evaluate to true.
+func evaluateCriteria(node *corev1.Node, resourceSlices []resourcev1.ResourceSlice, criteria []v1alpha1.CriteriaSpec,
 	programs map[string]cel.Program) (string, error) {
 	nodeMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(node)
 	if err != nil {
 		return "", fmt.Errorf("convert node %s to unstructured: %w", node.Name, err)
 	}
 
+	resourceSliceMaps := make([]map[string]any, 0, len(resourceSlices))
+
+	for i := range resourceSlices {
+		m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&resourceSlices[i])
+		if err != nil {
+			return "", fmt.Errorf("convert ResourceSlice %s to unstructured: %w", resourceSlices[i].Name, err)
+		}
+
+		resourceSliceMaps = append(resourceSliceMaps, m)
+	}
+
+	vars := map[string]any{"node": nodeMap, resourceSlicesVariable: resourceSliceMaps}
+
 	for _, c := range criteria {
-		ok, err := evalCriterion(programs, c.Expression, nodeMap)
+		ok, err := evalCriterion(programs, c.Expression, vars)
 		if err != nil {
 			return c.Name, fmt.Errorf("criterion %q: %w", c.Name, err)
 		}
@@ -90,13 +135,13 @@ func evaluateCriteria(node *corev1.Node, criteria []v1alpha1.CriteriaSpec,
 	return "", nil
 }
 
-func evalCriterion(programs map[string]cel.Program, expr string, nodeMap map[string]any) (bool, error) {
+func evalCriterion(programs map[string]cel.Program, expr string, vars map[string]any) (bool, error) {
 	prg, ok := programs[expr]
 	if !ok {
 		return false, fmt.Errorf("no compiled program for expression %q ", expr)
 	}
 
-	out, _, err := prg.Eval(map[string]any{"node": nodeMap})
+	out, _, err := prg.Eval(vars)
 	if err != nil {
 		return false, fmt.Errorf("eval: %w", err)
 	}
@@ -145,4 +190,69 @@ func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Pr
 	}
 
 	return programs, nil
+}
+
+func referencesResourceSlices(criteria []v1alpha1.CriteriaSpec) bool {
+	return slices.ContainsFunc(criteria, func(c v1alpha1.CriteriaSpec) bool {
+		return strings.Contains(c.Expression, resourceSlicesVariable)
+	})
+}
+
+// SetupResourceSliceIndex registers the cache index that readiness and new node criteria use to look up the
+// ResourceSlices of a node. It does nothing when no criterion references resourceSlices, so the manager does not
+// start a ResourceSlice informer that the Helm chart has not granted RBAC for.
+func SetupResourceSliceIndex(ctx context.Context, indexer client.FieldIndexer,
+	spec v1alpha1.ValidationConfigurationSpec) error {
+	criteria := slices.Clone(spec.ReadinessCriteria)
+
+	if spec.NewNodeValidation != nil {
+		criteria = append(criteria, spec.NewNodeValidation.Criteria...)
+	}
+
+	if !referencesResourceSlices(criteria) {
+		return nil
+	}
+
+	err := indexer.IndexField(ctx, &resourcev1.ResourceSlice{}, resourceSliceNodeNameField,
+		func(obj client.Object) []string {
+			if nodeName := resourceSliceNodeName(obj); len(nodeName) != 0 {
+				return []string{nodeName}
+			}
+
+			return nil
+		})
+	if err != nil {
+		return fmt.Errorf("index ResourceSlices by %s: %w", resourceSliceNodeNameField, err)
+	}
+
+	return nil
+}
+
+func listResourceSlicesForNode(ctx context.Context, c client.Reader,
+	nodeName string) ([]resourcev1.ResourceSlice, error) {
+	var list resourcev1.ResourceSliceList
+	if err := c.List(ctx, &list, client.MatchingFields{resourceSliceNodeNameField: nodeName}); err != nil {
+		return nil, fmt.Errorf("list ResourceSlices for node %q: %w", nodeName, err)
+	}
+
+	return list.Items, nil
+}
+
+func resourceSliceNodeName(obj client.Object) string {
+	resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
+	if !ok || resourceSlice.Spec.NodeName == nil {
+		return ""
+	}
+
+	return *resourceSlice.Spec.NodeName
+}
+
+// resourceSliceToNode maps a node-local ResourceSlice event to a reconcile request for its node.
+func resourceSliceToNode(_ context.Context, obj client.Object) []reconcile.Request {
+	nodeName := resourceSliceNodeName(obj)
+	if len(nodeName) == 0 {
+		return nil
+	}
+
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: nodeName}}}
 }

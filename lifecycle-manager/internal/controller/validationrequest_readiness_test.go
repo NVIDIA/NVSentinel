@@ -15,10 +15,12 @@
 package controller
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -30,8 +32,10 @@ var (
 	gpuAllocatableCriteria = []v1alpha1.CriteriaSpec{
 		{
 			Name: "gpu-allocatable",
-			Expression: `has(node.status.allocatable) && "nvidia.com/gpu" in node.status.allocatable &&
-				quantity(node.status.allocatable["nvidia.com/gpu"]) > 0`,
+			Expression: `(has(node.status.allocatable) && "nvidia.com/gpu" in node.status.allocatable &&
+				quantity(node.status.allocatable["nvidia.com/gpu"]) > 0) ||
+				resourceSlices.exists(s, s.spec.driver == "gpu.nvidia.com" && has(s.spec.devices) &&
+				size(s.spec.devices) > 0)`,
 		},
 	}
 	cordonedCriteria = []v1alpha1.CriteriaSpec{
@@ -74,11 +78,21 @@ var (
 	}
 )
 
+func newResourceSlice(driver string, deviceCount int) resourcev1.ResourceSlice {
+	devices := make([]resourcev1.Device, deviceCount)
+	for i := range devices {
+		devices[i] = resourcev1.Device{Name: fmt.Sprintf("gpu-%d", i)}
+	}
+
+	return resourcev1.ResourceSlice{Spec: resourcev1.ResourceSliceSpec{Driver: driver, Devices: devices}}
+}
+
 func TestEvaluateNodeReadinessCriteria(t *testing.T) {
 	tests := []struct {
 		name               string
 		criteria           []v1alpha1.CriteriaSpec
 		node               *corev1.Node
+		resourceSlices     []resourcev1.ResourceSlice
 		wantErr            bool
 		wantFailedCriteria string
 	}{
@@ -117,6 +131,41 @@ func TestEvaluateNodeReadinessCriteria(t *testing.T) {
 				Status: corev1.NodeStatus{
 					Allocatable: corev1.ResourceList{"cpu": resource.MustParse("4")},
 				},
+			},
+			wantFailedCriteria: "gpu-allocatable",
+		},
+		{
+			name:     "gpu-allocatable: DRA GPU ResourceSlice with devices and zero allocatable",
+			criteria: gpuAllocatableCriteria,
+			node: &corev1.Node{
+				Status: corev1.NodeStatus{
+					Allocatable: corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("0")},
+				},
+			},
+			resourceSlices:     []resourcev1.ResourceSlice{newResourceSlice("gpu.nvidia.com", 8)},
+			wantFailedCriteria: "",
+		},
+		{
+			name:               "gpu-allocatable: DRA GPU ResourceSlice with devices and no allocatable section",
+			criteria:           gpuAllocatableCriteria,
+			node:               &corev1.Node{},
+			resourceSlices:     []resourcev1.ResourceSlice{newResourceSlice("gpu.nvidia.com", 1)},
+			wantFailedCriteria: "",
+		},
+		{
+			name:               "gpu-allocatable: DRA GPU ResourceSlice without devices",
+			criteria:           gpuAllocatableCriteria,
+			node:               &corev1.Node{},
+			resourceSlices:     []resourcev1.ResourceSlice{newResourceSlice("gpu.nvidia.com", 0)},
+			wantFailedCriteria: "gpu-allocatable",
+		},
+		{
+			name:     "gpu-allocatable: only non-GPU DRA driver ResourceSlices",
+			criteria: gpuAllocatableCriteria,
+			node:     &corev1.Node{},
+			resourceSlices: []resourcev1.ResourceSlice{
+				newResourceSlice("compute-domain.nvidia.com", 1),
+				newResourceSlice("dra.net", 2),
 			},
 			wantFailedCriteria: "gpu-allocatable",
 		},
@@ -281,7 +330,7 @@ func TestEvaluateNodeReadinessCriteria(t *testing.T) {
 				t.Fatalf("failed to construct reconciler: %v", err)
 			}
 
-			failedCriterion, err := evaluateCriteria(tt.node, tt.criteria, reconciler.ReadinessPrograms)
+			failedCriterion, err := evaluateCriteria(tt.node, tt.resourceSlices, tt.criteria, reconciler.ReadinessPrograms)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got none")
