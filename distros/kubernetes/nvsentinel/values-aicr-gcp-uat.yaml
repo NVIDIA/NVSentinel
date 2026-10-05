@@ -43,36 +43,9 @@ janitor-provider:
 fault-quarantine:
   circuitBreaker:
     enabled: false
-  validation:
-    enabled: true
-
-fault-remediation:
-  maintenance:
-    actions:
-      COMPONENT_RESET:
-        apiGroup: "janitor.dgxc.nvidia.com"
-        version: "v1alpha1"
-        kind: "GPUReset"
-        scope: "Cluster"
-        completeConditionType: "Complete"
-        templateFileName: "gpureset-template.yaml"
-        equivalenceGroup: "reset"
-        impactedEntityScope: "GPU_UUID"
-        supersedingEquivalenceGroups: ["restart"]
-    templates:
-      "gpureset-template.yaml": |
-        apiVersion: {{ .ApiGroup }}/{{ .Version }}
-        kind: GPUReset
-        metadata:
-          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
-        spec:
-          nodeName: {{ .HealthEvent.NodeName }}
-          selector:
-            uuids:
-              - {{ .ImpactedEntityScopeValue }}
-
-node-drainer:
-  partialDrainEnabled: true
+  # enable after https://github.com/NVIDIA/nodewright/issues/759 is fixed
+  # validation:
+  #   enabled: true
 
 labeler:
   assumeDriverInstalled: true

@@ -17,7 +17,7 @@ module csp-api-mock
 go 1.27.0
 
 require (
-	cloud.google.com/go/logging v1.19.1
+	cloud.google.com/go/logging v1.20.0
 	google.golang.org/genproto v0.0.0-20260819154853-08b0e4226688
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260921155816-b14227669459

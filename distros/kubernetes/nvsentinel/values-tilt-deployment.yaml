@@ -1,0 +1,53 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Tilt with USE_DEPLOYMENT_PLATFORM_CONNECTOR=1: the deployment platform
+# connector with two replicas, and every publisher sending to it. The node-local
+# DaemonSet stays on (the chart default) because the gpu monitor mounts the
+# socket directory it creates.
+
+platformConnector:
+  deployment:
+    enabled: true
+    replicas: 2
+
+preflight:
+  publishTo: deployment
+
+gpu-health-monitor:
+  publishTo: deployment
+
+syslog-health-monitor:
+  publishTo: deployment
+
+nic-health-monitor:
+  publishTo: deployment
+
+csp-health-monitor:
+  publishTo: deployment
+
+kubernetes-object-monitor:
+  publishTo: deployment
+
+slurm-drain-monitor:
+  publishTo: deployment
+
+nvcre-certification-monitor:
+  publishTo: deployment
+
+health-events-analyzer:
+  publishTo: deployment
+
+lifecycle-manager:
+  publishTo: deployment
