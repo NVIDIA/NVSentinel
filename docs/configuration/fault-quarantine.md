@@ -367,3 +367,5 @@ Before switching dry run off on a cluster that ran dry run on an earlier version
 
 - Check the circuit breaker ConfigMap. Earlier versions counted dry-run cordons, so the breaker may have tripped and persisted `TRIPPED`, which halts fault-quarantine at startup once dry run is off. Reset it as described in [Circuit Breaker](#circuit-breaker).
 - Switch dry run off before upgrading. Annotations written by an earlier version carry no dry-run marker, so after an upgrade a restart in dry run would still report them once as manual uncordons.
+
+Before rolling back to an earlier version, remove the marker from every node with `kubectl annotate nodes --all quarantineHealthEventDryRun-`. Earlier versions do not know it and leave it in place. A real quarantine made by the earlier version would then carry the marker, and after the next upgrade it would be discarded as a dry run, leaving the node cordoned with no record. A real quarantine made by this version removes any leftover marker.

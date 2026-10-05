@@ -1756,6 +1756,11 @@ func (r *Reconciler) addEventToAnnotation(
 			node.Annotations = make(map[string]string)
 		}
 
+		// See QuarantineNodeAndSetAnnotations: a live event makes the quarantine real.
+		if !r.config.DryRun {
+			delete(node.Annotations, common.QuarantineHealthEventDryRunAnnotationKey)
+		}
+
 		healthEventsMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
 		existingAnnotation := node.Annotations[common.QuarantineHealthEventAnnotationKey]
 

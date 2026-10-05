@@ -364,3 +364,63 @@ func TestE2E_DryRunOnCordonedNodeIsNotCountedAndIsDiscardedOnSwitch(t *testing.T
 	defer mu.Unlock()
 	assert.Equal(t, []string{nodeName}, cancelled)
 }
+
+// A marker left on a node, for example by a rollback to a version that does not know it,
+// must not make a later real quarantine look like a dry run.
+func TestE2E_LiveQuarantineRemovesLeftoverDryRunMarker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := newDryRunTestNode(ctx, t, "e2e-dryrun-leftover-")
+	r, watcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig: dryRunRules(true, false),
+		DryRun:     false,
+	})
+
+	addMarker := func() {
+		patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`,
+			common.QuarantineHealthEventDryRunAnnotationKey, common.QuarantineHealthEventDryRunAnnotationValue)
+		_, err := e2eTestClient.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+		require.NoError(t, err)
+	}
+
+	send := func(gpu string, want model.Status) {
+		id := generateTestID()
+		watcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(id, nodeName, "GpuXidError", false, true,
+			[]*protos.Entity{{EntityType: "GPU", EntityValue: gpu}}, model.StatusInProgress)}
+		require.Eventually(t, func() bool {
+			s := getStatus(id)
+			return s != nil && *s == want
+		}, statusCheckTimeout, statusCheckPollInterval)
+	}
+
+	markerGone := func() bool {
+		n, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && n.Spec.Unschedulable && n.Annotations[common.QuarantineHealthEventDryRunAnnotationKey] == ""
+	}
+
+	// Fresh quarantine path.
+	addMarker()
+	send("0", model.Quarantined)
+	require.Eventually(t, markerGone, statusCheckTimeout, statusCheckPollInterval,
+		"a real quarantine should remove a leftover marker")
+	require.Eventually(t, func() bool {
+		_, quarantined, err := r.k8sClient.NodeInformer.GetNodeCounts()
+		return err == nil && quarantined[nodeName]
+	}, statusCheckTimeout, statusCheckPollInterval, "the real quarantine should be counted")
+
+	// Already-quarantined path.
+	addMarker()
+	send("1", model.AlreadyQuarantined)
+	require.Eventually(t, markerGone, statusCheckTimeout, statusCheckPollInterval,
+		"a further real event should remove a leftover marker")
+
+	// A restart must keep the real quarantine.
+	setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{TomlConfig: dryRunRules(true, false), DryRun: false})
+	time.Sleep(time.Second)
+
+	n, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.True(t, n.Spec.Unschedulable)
+	assert.NotEmpty(t, n.Annotations[common.QuarantineHealthEventAnnotationKey], "the real quarantine record should survive a restart")
+}

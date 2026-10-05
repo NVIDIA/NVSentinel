@@ -341,6 +341,12 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 	updateFn := func(node *v1.Node) error {
 		alreadyQuarantined = hasNonEmptyQuarantineHealthEvent(node)
 
+		// A live quarantine is real, so a dry-run marker left on the node (for example
+		// after a rollback to a version that does not know it) must not survive it.
+		if !c.DryRunMode {
+			delete(node.Annotations, common.QuarantineHealthEventDryRunAnnotationKey)
+		}
+
 		if len(taints) > 0 {
 			if err := c.applyTaints(ctx, node, taints, nodename); err != nil {
 				return fmt.Errorf("failed to apply taints to node %s: %w", nodename, err)
