@@ -227,6 +227,9 @@ func recoveryEvent(fault *protos.HealthEvent, entities []*protos.Entity,
 
 func (r *Reconciler) publishRecoveryUntilStored(ctx context.Context, event *protos.HealthEvent,
 	rule config.HealthEventsAnalyzerRule, identity recoveryIdentity) error {
+	// Initialize the series once both the rule and node are known, even if the send fails.
+	counter := recoveryEventsPublishedTotal.WithLabelValues(rule.Name, event.NodeName)
+
 	// Direct-mode Publish already confirms durable storage. Socket mode only
 	// confirms queue acceptance, so check storage immediately and then poll.
 	_, err := r.config.Publisher.PublishRecovery(ctx, event, rule)
@@ -234,7 +237,7 @@ func (r *Reconciler) publishRecoveryUntilStored(ctx context.Context, event *prot
 		return err
 	}
 
-	recoveryEventsPublishedTotal.WithLabelValues(rule.Name).Inc()
+	counter.Inc()
 
 	if r.config.Publisher.AcknowledgesStorage() {
 		return nil
@@ -280,7 +283,7 @@ func (r *Reconciler) waitForRecoveryStorage(ctx context.Context, event *protos.H
 				return err
 			}
 
-			recoveryEventsPublishedTotal.WithLabelValues(rule.Name).Inc()
+			recoveryEventsPublishedTotal.WithLabelValues(rule.Name, event.NodeName).Inc()
 
 			nextPublish = time.Now().Add(republish)
 		}

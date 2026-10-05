@@ -86,7 +86,7 @@ func TestRecoveryEventsPublished_CountsAcceptedSends(t *testing.T) {
 			event.Metadata = map[string]string{annotationRequestKey: "metric-request"}
 			identity, ok := recoveryIdentityForEvent(rule, event)
 			require.True(t, ok)
-			counter := recoveryEventsPublishedTotal.WithLabelValues(rule.Name)
+			counter := recoveryEventsPublishedTotal.WithLabelValues(rule.Name, event.NodeName)
 			before := counterValue(t, counter)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
@@ -118,7 +118,7 @@ func TestRecoveryEventsPublished_RetainedRequestDoesNotDoubleCount(t *testing.T)
 	}}
 	request, err := parseAnnotationRecovery(node, rule, now.Format(time.RFC3339Nano), now)
 	require.NoError(t, err)
-	counter := recoveryEventsPublishedTotal.WithLabelValues(rule.Name)
+	counter := recoveryEventsPublishedTotal.WithLabelValues(rule.Name, node.Name)
 	before := counterValue(t, counter)
 	for range 2 {
 		recovered, err := r.recoverFromAnnotation(t.Context(), request, rule)
@@ -139,29 +139,53 @@ func TestRecoveryEventsPublished_RetainedRequestDoesNotDoubleCount(t *testing.T)
 	require.EqualValues(t, 2, sink.calls.Load())
 }
 
-func TestNewReconciler_InitializesRecoveryCounter(t *testing.T) {
+func TestRecoveryEventsPublished_ExportsSeparateNodeSeries(t *testing.T) {
+	db := &recoveryTestDB{}
+	sink := &recoveryMetricSink{db: db, storeOn: 1, rejectOn: 2}
 	rule := annotationRule()
 	rule.Name = t.Name()
-	NewReconciler(HealthEventsAnalyzerReconcilerConfig{
+	r := NewReconciler(HealthEventsAnalyzerReconcilerConfig{
 		HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{rule}},
+		Publisher:                 publisher.NewPublisher(sink, protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 	})
+	r.databaseClient = db
+
+	for _, node := range []string{"metric-accepted", "metric-rejected"} {
+		event := testRecoveryFault(node, "GPU-a")
+		event.CheckName = rule.Name
+		event.Metadata = map[string]string{annotationRequestKey: "metric-request"}
+		identity, ok := recoveryIdentityForEvent(rule, event)
+		require.True(t, ok)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		err := r.publishRecoveryUntilStored(ctx, event, rule, identity)
+		if node == "metric-rejected" {
+			require.ErrorIs(t, err, healthpub.ErrPublishRejected)
+		} else {
+			require.NoError(t, err)
+		}
+	}
+
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(recoveryEventsPublishedTotal)
 	families, err := registry.Gather()
 	require.NoError(t, err)
+	counts := make(map[string]float64)
 	for _, family := range families {
 		if family.GetName() != "recovery_events_published_total" {
 			continue
 		}
 		for _, metric := range family.Metric {
+			labels := make(map[string]string)
 			for _, label := range metric.Label {
-				if label.GetName() == "rule_name" && label.GetValue() == rule.Name {
-					require.Len(t, metric.Label, 1, "the counter must not add node or entity labels")
-					require.Zero(t, metric.GetCounter().GetValue())
-					return
-				}
+				labels[label.GetName()] = label.GetValue()
+			}
+			if labels["rule_name"] == rule.Name {
+				require.Len(t, labels, 2)
+				require.NotEmpty(t, labels["node_name"], "must not initialize a series without a node")
+				counts[labels["node_name"]] = metric.GetCounter().GetValue()
 			}
 		}
 	}
-	t.Fatal("configured recovery rule must be exposed with a zero counter before its first publication")
+	require.Equal(t, map[string]float64{"metric-accepted": 1, "metric-rejected": 0}, counts)
 }

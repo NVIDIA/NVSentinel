@@ -60,7 +60,7 @@ var (
 			Help: "Total number of recovery health events accepted by the platform connector, " +
 				"including republishes awaiting storage.",
 		},
-		[]string{labelRuleName},
+		[]string{labelRuleName, labelNodeName},
 	)
 
 	ruleMatchedTotal = promauto.NewCounterVec(
