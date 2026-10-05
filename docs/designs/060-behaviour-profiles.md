@@ -267,8 +267,6 @@ Advantages:
 
 Disadvantages:
 
-- Stages can use different profiles for one fault. For example, a node gets a quarantine under one profile and a drain
-  under a different profile.
 - A change can start an action that the profile at the start of the fault disabled.
 - A change does not undo an action that a stage already did.
 
@@ -311,8 +309,7 @@ for copies of events that other components publish again.
 
 - The drain method and the remediation action continue to apply to the full cluster. Thus, this ADR does not cover an
   external repair for one group, or a reset for bare metal and a replacement for virtual machines.
-- Different stages can use different profiles for one fault, and a change can start an action that was disabled when
-  the fault started.
+- A change can start an action that was disabled when the fault started.
 - A profile change does not stop a maintenance CR that fault-remediation already created.
 - The sequence of the routes controls the behaviour. A route in the wrong position hides the routes after it, and
   NVSentinel does not show a warning.
