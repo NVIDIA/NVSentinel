@@ -22,6 +22,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -782,6 +783,184 @@ func TestGPUReplacementRecoveryClearsOldUUIDCondition(t *testing.T) {
 	}
 
 	assert.Empty(t, k8sConnector.aggregateEventMessages(messages, events))
+}
+
+func TestLegacyGPURecovery(t *testing.T) {
+	gpu0 := []*protos.Entity{
+		{EntityType: "GPU", EntityValue: "0"},
+		{EntityType: "PCI", EntityValue: "0000:0f:00.0"},
+		{EntityType: "GPU_UUID", EntityValue: "GPU-abc"},
+	}
+
+	tests := []struct {
+		name       string
+		class      string
+		entities   []*protos.Entity
+		errorCodes []string
+		messages   []string
+		expected   []string
+	}{
+		{
+			name: "legacy GPU-only message clears, other GPU kept",
+			messages: []string{
+				"ErrorCode:48 GPU:0 fault Recommended Action=RESTART_VM;",
+				"ErrorCode:48 GPU:1 fault Recommended Action=RESTART_VM;",
+			},
+			expected: []string{"ErrorCode:48 GPU:1 fault Recommended Action=RESTART_VM;"},
+		},
+		{
+			name:     "conflicting PCI kept",
+			messages: []string{"ErrorCode:48 GPU:0 PCI:0000:1a:00.0 fault Recommended Action=RESTART_VM;"},
+			expected: []string{"ErrorCode:48 GPU:0 PCI:0000:1a:00.0 fault Recommended Action=RESTART_VM;"},
+		},
+		{
+			name: "legacy entry clears, conflicting modern entry kept",
+			messages: []string{
+				"ErrorCode:48 GPU:0 fault Recommended Action=RESTART_VM;",
+				"ErrorCode:49 GPU:0 PCI:0000:1a:00.0 fault Recommended Action=RESTART_VM;",
+			},
+			expected: []string{"ErrorCode:49 GPU:0 PCI:0000:1a:00.0 fault Recommended Action=RESTART_VM;"},
+		},
+		{
+			name:     "PCI in diagnostic text does not block recovery",
+			messages: []string{"ErrorCode:48 GPU:0 cannot read PCI: configuration Recommended Action=RESTART_VM;"},
+			expected: nil,
+		},
+		{
+			name:     "cut PCI token kept",
+			messages: []string{"ErrorCode:48 GPU:0 PCI:"},
+			expected: []string{"ErrorCode:48 GPU:0 PCI:"},
+		},
+		{
+			name:     "GPU token inside another type kept",
+			messages: []string{"ErrorCode:48 OTHERGPU:0 fault Recommended Action=RESTART_VM;"},
+			expected: []string{"ErrorCode:48 OTHERGPU:0 fault Recommended Action=RESTART_VM;"},
+		},
+		{
+			name:     "GPU only in diagnostic text kept",
+			messages: []string{"ErrorCode:48 GPU:1 comparison with GPU:0 failed Recommended Action=RESTART_VM;"},
+			expected: []string{"ErrorCode:48 GPU:1 comparison with GPU:0 failed Recommended Action=RESTART_VM;"},
+		},
+		{
+			name:     "GPU index prefix kept",
+			messages: []string{"ErrorCode:48 GPU:01 fault Recommended Action=RESTART_VM;"},
+			expected: []string{"ErrorCode:48 GPU:01 fault Recommended Action=RESTART_VM;"},
+		},
+		{
+			name:       "error code scoping kept",
+			errorCodes: []string{"48"},
+			messages: []string{
+				"ErrorCode:48 GPU:0 fault Recommended Action=RESTART_VM;",
+				"ErrorCode:98 GPU:0 other Recommended Action=RESTART_VM;",
+			},
+			expected: []string{"ErrorCode:98 GPU:0 other Recommended Action=RESTART_VM;"},
+		},
+		{
+			name:     "legacy entry without diagnostic text clears",
+			messages: []string{"ErrorCode:48 GPU:0 Recommended Action=RESTART_VM;"},
+			expected: nil,
+		},
+		{
+			name:     "later GPU mention does not override leading GPU",
+			messages: []string{"ErrorCode:48 GPU:1 details:comparison GPU:0 failed Recommended Action=RESTART_VM;"},
+			expected: []string{"ErrorCode:48 GPU:1 details:comparison GPU:0 failed Recommended Action=RESTART_VM;"},
+		},
+		{
+			name:     "entry cut before the PCI colon kept",
+			messages: []string{"ErrorCode:48 GPU:0 PC"},
+			expected: []string{"ErrorCode:48 GPU:0 PC"},
+		},
+		{
+			name: "entry cut inside the GPU index kept",
+			entities: []*protos.Entity{
+				{EntityType: "GPU", EntityValue: "1"},
+				{EntityType: "PCI", EntityValue: "0000:01:00.0"},
+			},
+			messages: []string{"ErrorCode:48 GPU:1"},
+			expected: []string{"ErrorCode:48 GPU:1"},
+		},
+		{
+			name:     "PCI-only recovery kept",
+			entities: []*protos.Entity{{EntityType: "PCI", EntityValue: "0000:0f:00.0"}},
+			messages: []string{"ErrorCode:48 GPU:0 fault Recommended Action=RESTART_VM;"},
+			expected: []string{"ErrorCode:48 GPU:0 fault Recommended Action=RESTART_VM;"},
+		},
+		{
+			name:  "non-GPU recovery missing PCI kept",
+			class: "NIC",
+			entities: []*protos.Entity{
+				{EntityType: "NIC", EntityValue: "mlx5_0"},
+				{EntityType: "PCI", EntityValue: "0000:0f:00.0"},
+			},
+			messages: []string{"ErrorCode:48 NIC:mlx5_0 fault Recommended Action=RESTART_VM;"},
+			expected: []string{"ErrorCode:48 NIC:mlx5_0 fault Recommended Action=RESTART_VM;"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			event := &protos.HealthEvent{
+				ComponentClass:   "GPU",
+				IsHealthy:        true,
+				EntitiesImpacted: gpu0,
+				ErrorCode:        tc.errorCodes,
+			}
+			if tc.class != "" {
+				event.ComponentClass = tc.class
+			}
+
+			if tc.entities != nil {
+				event.EntitiesImpacted = tc.entities
+			}
+
+			actual := k8sConnector.aggregateEventMessages(tc.messages, []*protos.HealthEvent{event})
+			assert.Equal(t, tc.expected, actual)
+		})
+	}
+}
+
+func TestLegacyGPURecoveryKeepsTruncatedModernEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		padding [2]int
+		last    string
+		gpu     string
+	}{
+		{name: "cut inside the GPU index", padding: [2]int{25, 25}, last: "GPU:10", gpu: "1"},
+		{name: "cut before the PCI colon", padding: [2]int{23, 24}, last: "GPU:0", gpu: "0"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var messages []string
+
+			for i := range 17 {
+				padding := ""
+				if i < len(tc.padding) {
+					padding = strings.Repeat("x", tc.padding[i])
+				}
+
+				messages = append(messages,
+					fmt.Sprintf("ErrorCode:%d GPU:7 fault%s Recommended Action=RESTART_VM", 100+i, padding))
+			}
+
+			messages = append(messages,
+				"ErrorCode:48 "+tc.last+" PCI:0000:10:00.0 fault Recommended Action=RESTART_VM")
+			stored := parseMessages(k8sConnector.truncateNodeConditionMessage(messages))
+			require.Len(t, stored, 18)
+
+			event := &protos.HealthEvent{
+				ComponentClass: "GPU",
+				IsHealthy:      true,
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "GPU", EntityValue: tc.gpu},
+					{EntityType: "PCI", EntityValue: "0000:01:00.0"},
+				},
+			}
+
+			assert.Equal(t, stored, k8sConnector.aggregateEventMessages(slices.Clone(stored), []*protos.HealthEvent{event}))
+		})
+	}
 }
 
 func TestUpdateHealthEventReason(t *testing.T) {
