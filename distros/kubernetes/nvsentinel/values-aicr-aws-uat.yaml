@@ -55,8 +55,8 @@ janitor-provider:
 fault-quarantine:
   circuitBreaker:
     enabled: false
-  validation:
-    enabled: true
+  # validation:
+  #   enabled: true
 
 fault-remediation:
   maintenance:
