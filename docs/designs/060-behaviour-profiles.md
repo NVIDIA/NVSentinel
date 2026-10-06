@@ -43,8 +43,9 @@ Status: Proposed.
 
 ## Context
 
-NVSentinel applies the same quarantine, drain, and remediation behaviour to all nodes and all devices in a cluster.
-Many clusters contain different types of nodes and devices. Examples are bare-metal nodes and virtual machines, Slurm
+Some NVSentinel components can already apply different behaviour to different nodes. fault-quarantine rule sets can
+match node labels, and node-drainer can send selected nodes to a drain plugin. But each component uses a different
+mechanism, and fault-remediation applies one configuration to the full cluster. Many clusters contain different types of nodes and devices. Examples are bare-metal nodes and virtual machines, Slurm
 nodes and Kubernetes nodes, different GPU models, and accelerators that are not GPUs. Operators must set a different
 behaviour for each group ([#1903](https://github.com/NVIDIA/NVSentinel/issues/1903),
 [#1904](https://github.com/NVIDIA/NVSentinel/issues/1904)). Typical cases are:
