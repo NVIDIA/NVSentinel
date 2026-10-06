@@ -51,23 +51,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Whether any readinessCriteria or newNodeValidation.criteria expression reads ResourceSlices. The lifecycle-manager
-only watches ResourceSlices in this case, so the ClusterRole only grants access to them in this case.
-*/}}
-{{- define "lifecycle-manager.criteriaRequireResourceSlices" -}}
-{{- $requires := false -}}
-{{- if .Values.controllers.validationRequest.enabled -}}
-{{- $criteria := concat (.Values.config.readinessCriteria | default list) ((.Values.config.newNodeValidation).criteria | default list) -}}
-{{- range $criteria }}
-{{- if contains "resourceSlices" (toString (default "" .expression)) -}}
-{{- $requires = true -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- $requires -}}
-{{- end -}}
-
-{{/*
 Create the name of the service account to use
 */}}
 {{- define "lifecycle-manager.serviceAccountName" -}}

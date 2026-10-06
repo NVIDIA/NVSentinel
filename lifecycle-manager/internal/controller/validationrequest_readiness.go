@@ -199,8 +199,7 @@ func referencesResourceSlices(criteria []v1alpha1.CriteriaSpec) bool {
 }
 
 // SetupResourceSliceIndex registers the cache index that readiness and new node criteria use to look up the
-// ResourceSlices of a node. It does nothing when no criterion references resourceSlices, so the manager does not
-// start a ResourceSlice informer that the Helm chart has not granted RBAC for.
+// ResourceSlices of a node. It does nothing when no criterion references resourceSlices.
 func SetupResourceSliceIndex(ctx context.Context, indexer client.FieldIndexer,
 	spec v1alpha1.ValidationConfigurationSpec) error {
 	criteria := slices.Clone(spec.ReadinessCriteria)
