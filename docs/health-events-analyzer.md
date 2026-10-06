@@ -1,5 +1,7 @@
 # Health Events Analyzer
 
+For operator-verified recovery of configured derived conditions, see the [recovery guide](health-events-analyzer-recovery.md).
+
 ## Overview
 
 The Health Events Analyzer runs MongoDB aggregation pipelines against the health events collection to detect failure patterns that no single raw event can represent alone — repeated hardware failures on the same node, errors clustering on a specific GPU die, multiple remediations within a short window, and NVLink signal integrity issues encoded inside XID 74 register fields.

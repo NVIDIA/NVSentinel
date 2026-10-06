@@ -606,7 +606,7 @@ fault-quarantine:
     # maxNodes: 10 means 5% but never more than 10 nodes. Prefer it when the blast radius
     # you care about is a number of machines rather than a share of the fleet, since a
     # percentage silently changes meaning as the fleet grows. At least one of percentage,
-    # maxNodes and maxCordonedNodes must be positive.
+    # maxNodes, maxCordonedNodes and maxCordonedPercentage must be positive.
     maxNodes: 0
     # Standing cap on how many nodes NVSentinel holds quarantined at once, counting only
     # its own cordons. 0 disables it, and it is off by default.
@@ -615,6 +615,12 @@ fault-quarantine:
     # so a rate that stays under the threshold still cordons a whole fleet given enough
     # windows. This is the only bound that caps that.
     maxCordonedNodes: 0
+    # Percentage form of maxCordonedNodes: trip when this share of the GPU fleet is held
+    # quarantined at once. 0 disables it. When both are set the lower one binds, exactly as
+    # percentage and maxNodes pair above. Prefer it when the blast radius you care about is
+    # a share of the fleet rather than a number of machines, since an absolute count
+    # silently changes meaning when the fleet is resized.
+    maxCordonedPercentage: 0
     # Cooldown period after circuit breaker trips
     # Circuit breaker waits this long before attempting to close again
     # Even if node count drops below threshold during cooldown, it stays open
@@ -833,7 +839,9 @@ node-drainer:
 
   # Flag to restrict draining to GPU workloads
   # If enabled, only pods with the metadata-collector device annotation
-  # (indicating assigned GPU devices) are eligible for draining
+  # (indicating assigned GPU devices) are eligible for draining. Pods without
+  # the annotation are also eligible if a DRA ResourceClaim requests the
+  # gpu.nvidia.com DeviceClass for them
   # Default: false if not specified
   drainGPUPods: false
 
@@ -2423,6 +2431,7 @@ preflight:
     # Mirror pod-level DRA resource claims to init containers.
     # Ensures init containers get same device access (GPUs, RDMA NICs,
     # IMEX channels). Defaults to true when omitted.
+    # DRA GPU pods (claims for gpu.nvidia.com) always get their claims mirrored.
     # mirrorResourceClaims: true
 
   ##############################################################################

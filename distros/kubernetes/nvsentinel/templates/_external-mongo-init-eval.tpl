@@ -52,6 +52,13 @@ function ensureTTL(collName, field) {
 ensureTTL('$MONGODB_COLLECTION_NAME', 'createdAt');
 ensureTTL('$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME', 'actualEndTime');
 db.$MONGODB_COLLECTION_NAME.createIndex({ 'createdAt': 1, '_id': 1 });
+// Derived state and recovery history lookups, scoped to one rule and node.
+db.$MONGODB_COLLECTION_NAME.createIndex({
+  'healthevent.agent': 1,
+  'healthevent.checkname': 1,
+  'healthevent.nodename': 1,
+  'createdAt': -1
+}, { name: 'idx_health_events_analyzer_lookup' });
 db.$MONGODB_COLLECTION_NAME.createIndex({
   'healthevent.agent': 1,
   'healthevent.componentclass': 1,

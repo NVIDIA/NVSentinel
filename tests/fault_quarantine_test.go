@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/util/retry"
 
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -225,8 +226,14 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		if err == nil {
+		// Retried on conflict: other components write the node right after the
+		// test, and a lost update would leave manual-taint on it for later tests.
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return err
+			}
+
 			node.Spec.Unschedulable = false
 			newTaints := []v1.Taint{}
 			for _, taint := range node.Spec.Taints {
@@ -235,8 +242,10 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 				}
 			}
 			node.Spec.Taints = newTaints
-			client.Resources().Update(ctx, node)
-		}
+
+			return client.Resources().Update(ctx, node)
+		})
+		require.NoError(t, err, "failed to remove the manual cordon and taint from node %s", testCtx.NodeName)
 
 		return helpers.TeardownQuarantineTest(ctx, t, c)
 	})

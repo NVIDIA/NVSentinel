@@ -264,6 +264,9 @@ type E2EReconcilerConfig struct {
 	// path that records a status, so an event that failed to process times the
 	// waiting test out rather than reading as "no quarantine".
 	OnEventProcessed func(eventID string)
+	// EventWatcher, when set, is attached before the node informer starts, so the
+	// stale-state checks it runs on ADD can reach it.
+	EventWatcher eventwatcher.EventWatcherInterface
 }
 
 // setupE2EReconciler creates a test reconciler with mock watcher
@@ -350,6 +353,10 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 
 	r := NewReconciler(reconcilerCfg, fqClient, cb)
 	r.validationClient = validationClient
+
+	if cfg.EventWatcher != nil {
+		r.eventWatcher = cfg.EventWatcher
+	}
 
 	if cfg.TomlConfig.LabelPrefix != "" {
 		r.SetLabelKeys(cfg.TomlConfig.LabelPrefix)
@@ -1132,6 +1139,7 @@ func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {
 	beforeTaints := getCounterVecValue(t, metrics.TaintsApplied, "nvidia.com/gpu-xid-error", "NoSchedule")
 	beforeLabels := getCounterVecValue(t, metrics.LabelsApplied, "nvidia.com/gpu-fault")
 	beforeCordons := getCounterValue(t, metrics.CordonsApplied)
+	beforeCordonsRemoved := getCounterValue(t, metrics.CordonsRemoved)
 	beforeRulesetPassed := getCounterVecValue(t, metrics.RulesetEvaluations, "gpu-xid-critical-errors", metrics.StatusPassed)
 
 	t.Log("Sending unhealthy event for initial quarantine")
@@ -1246,7 +1254,7 @@ func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {
 	assert.Equal(t, float64(0), finalGauge, "CurrentQuarantinedNodes should be 0 after unquarantine")
 	assert.GreaterOrEqual(t, afterTaintsRemoved, beforeTaints+1, "TaintsRemoved should increment")
 	assert.GreaterOrEqual(t, afterLabelsRemoved, beforeLabels+1, "LabelsRemoved should increment")
-	assert.GreaterOrEqual(t, afterCordonsRemoved, beforeCordons+1, "CordonsRemoved should increment")
+	assert.GreaterOrEqual(t, afterCordonsRemoved, beforeCordonsRemoved+1, "CordonsRemoved should increment")
 	assert.GreaterOrEqual(t, finalProcessed, beforeProcessed+2, "TotalEventsSuccessfullyProcessed should increment for both events")
 }
 
@@ -5151,6 +5159,8 @@ func TestE2E_DryRunMode(t *testing.T) {
 	assert.NotEmpty(t, node.Annotations[common.QuarantineHealthEventAnnotationKey], "Annotations are still added in dry run")
 	assert.NotEmpty(t, node.Annotations[common.QuarantineHealthEventAppliedLabelsAnnotationKey],
 		"Intended rule labels should still be recorded for dry-run observability")
+	assert.Equal(t, common.QuarantineHealthEventDryRunAnnotationValue,
+		node.Annotations[common.QuarantineHealthEventDryRunAnnotationKey], "Dry-run annotations should be marked")
 
 	healthyID := generateTestID()
 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
@@ -5178,6 +5188,8 @@ func TestE2E_DryRunMode(t *testing.T) {
 		"Dry-run recovery should clear the intended labels annotation")
 	assert.NotContains(t, node.Annotations, common.QuarantineHealthEventIsCordonedAnnotationKey,
 		"Dry-run recovery should clear the intended cordon annotation")
+	assert.NotContains(t, node.Annotations, common.QuarantineHealthEventDryRunAnnotationKey,
+		"Dry-run recovery should clear the dry-run marker")
 	assert.False(t, node.Spec.Unschedulable, "Dry-run recovery should not change the node spec")
 	for _, taint := range node.Spec.Taints {
 		assert.NotEqual(t, "nvidia.com/gpu-xid-error", taint.Key,

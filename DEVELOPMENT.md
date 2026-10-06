@@ -178,6 +178,8 @@ make tilt-down                 # Stops Tilt (runs: tilt down -f tilt/Tiltfile)
 make cluster-delete            # Deletes the cluster
 ```
 
+By default the monitors publish through the node-local platform connector socket. `USE_DEPLOYMENT_PLATFORM_CONNECTOR=1 make dev-env` also deploys the deployment platform connector and points every publisher at it (`values-tilt-deployment.yaml`). CI runs this mode in two extra jobs, AMD64 + MongoDB + Deployment PC and ARM64 + PostgreSQL + Deployment PC. The `TestPlatformConnectorDeployment*` e2e tests need it and skip without it.
+
 **ctlptl Cluster Features:**
 
 - Declarative cluster configuration with YAML

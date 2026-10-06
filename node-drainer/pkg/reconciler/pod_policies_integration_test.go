@@ -108,7 +108,7 @@ func TestProcessEventGeneric_PodPoliciesMixedModesAndRestart_PreservesDrainModes
 	createPolicyPod(t, setup, "system-workloads", "excluded", node, map[string]string{"role": "worker"}, "")
 	createPolicyPod(t, setup, "workloads", "other-node", "other-node", map[string]string{"role": "worker"}, "")
 	require.Eventually(t, func() bool {
-		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode("workloads", node, nil)
+		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode(setup.ctx, "workloads", node, nil)
 		return err == nil && len(pods) == 4
 	}, 10*time.Second, 50*time.Millisecond)
 
@@ -178,7 +178,7 @@ func TestProcessEventGeneric_PodPoliciesForcePartialDrain_EvictsOnlyAffectedGPU(
 	createPolicyPod(t, setup, "workloads", "cpu-only", node, map[string]string{"role": "worker"}, "")
 	target := &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-0"}
 	require.Eventually(t, func() bool {
-		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode("workloads", node, target)
+		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode(setup.ctx, "workloads", node, target)
 		return err == nil && len(pods) == 1
 	}, 10*time.Second, 50*time.Millisecond)
 	opts := healthEventOptions{nodeName: node, nodeQuarantined: model.Quarantined,
@@ -205,7 +205,7 @@ func TestProcessEventGeneric_PodPoliciesDryRun_PreservesPods(t *testing.T) {
 	createPolicyPod(t, setup, "workloads", "worker", node, map[string]string{"role": "worker"}, "")
 	createPolicyPod(t, setup, "workloads", "protected", node, map[string]string{"protected": "yes"}, "")
 	require.Eventually(t, func() bool {
-		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode("workloads", node, nil)
+		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode(setup.ctx, "workloads", node, nil)
 		return err == nil && len(pods) == 2
 	}, 10*time.Second, 50*time.Millisecond)
 	opts := healthEventOptions{nodeName: node, nodeQuarantined: model.Quarantined}
@@ -226,7 +226,7 @@ func TestProcessEventGeneric_PodPoliciesRelabel_ObservesNewModeAndPreservesUnmat
 	createPolicyPod(t, setup, "workloads", "selected", node, map[string]string{"protected": "yes"}, "")
 	createPolicyPod(t, setup, "workloads", "unmatched", node, nil, "")
 	require.Eventually(t, func() bool {
-		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode("workloads", node, nil)
+		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode(setup.ctx, "workloads", node, nil)
 		return err == nil && len(pods) == 2
 	}, 10*time.Second, 50*time.Millisecond)
 	opts := healthEventOptions{nodeName: node, nodeQuarantined: model.Quarantined}
@@ -266,7 +266,7 @@ func TestProcessEventGeneric_PodPoliciesPartialTerminationTimeout_DeletesOnlySel
 	require.NoError(t, setup.client.CoreV1().Pods("workloads").Delete(setup.ctx, "immediate",
 		metav1.DeleteOptions{GracePeriodSeconds: new(int64(1))}))
 	require.Eventually(t, func() bool {
-		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode("workloads", node, target)
+		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode(setup.ctx, "workloads", node, target)
 		if err != nil || len(pods) != 3 {
 			return false
 		}

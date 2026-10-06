@@ -18,7 +18,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+	"k8s.io/client-go/kubernetes"
 
 	multierror "github.com/hashicorp/go-multierror"
 	"go.opentelemetry.io/otel/attribute"
@@ -52,6 +56,7 @@ const (
 )
 
 type HealthEventsAnalyzerReconcilerConfig struct {
+	KubernetesClient          kubernetes.Interface
 	DataStoreConfig           *datastore.DataStoreConfig
 	Pipeline                  any
 	HealthEventsAnalyzerRules *config.TomlConfig
@@ -64,12 +69,17 @@ type HealthEventsAnalyzerReconcilerConfig struct {
 }
 
 type Reconciler struct {
-	config         HealthEventsAnalyzerReconcilerConfig
-	datastore      datastore.DataStore
-	databaseClient client.DatabaseClient // MongoDB-specific client for aggregation
-	eventProcessor client.EventProcessor
-	xidDetector    *analyzer.XidBurstDetector // PostgreSQL-specific XID burst detection
-	useXidDetector bool                       // True if using PostgreSQL
+	nodeRecovery      *nodeRecoveryController
+	nodeProcessing    nodeProcessingLocks
+	terminalRequests  sync.Map
+	recoveryPoll      time.Duration
+	recoveryRepublish time.Duration
+	config            HealthEventsAnalyzerReconcilerConfig
+	datastore         datastore.DataStore
+	databaseClient    client.DatabaseClient // MongoDB-specific client for aggregation
+	eventProcessor    client.EventProcessor
+	xidDetector       *analyzer.XidBurstDetector // PostgreSQL-specific XID burst detection
+	useXidDetector    bool                       // True if using PostgreSQL
 }
 
 func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
@@ -112,6 +122,10 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create datastore: %w", err)
 	}
 	defer ds.Close(ctx)
+
+	if r.config.HealthEventsAnalyzerRules.HasAnnotationRecovery() && ds.Provider() != datastore.ProviderMongoDB {
+		return fmt.Errorf("annotation recovery currently requires MongoDB; PostgreSQL rule support is tracked in issue #606")
+	}
 
 	r.datastore = ds
 
@@ -170,11 +184,19 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Starting health events analyzer with unified event processor...")
 
 	// Start the event processor
-	return r.eventProcessor.Start(ctx)
+	return r.runProcessors(ctx)
 }
 
 // processHealthEvent handles individual health events and implements the EventHandler interface
 func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.HealthEventWithStatus) error {
+	if r.nodeRecovery != nil {
+		unlock, err := r.nodeProcessing.acquire(ctx, event.HealthEvent.GetNodeName())
+		if err != nil {
+			return fmt.Errorf("lock node processing: %w", err)
+		}
+		defer unlock()
+	}
+
 	startTime := time.Now()
 
 	traceID := tracing.TraceIDFromMetadata(event.HealthEvent.GetMetadata())
@@ -505,7 +527,13 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 
 	actionVal := r.getRecommendedActionValue(rule.RecommendedAction, rule.Name)
 
-	err := r.config.Publisher.Publish(ctx, event.HealthEvent, protos.RecommendedAction(actionVal),
+	fault := event.HealthEvent
+	if identity, ok := recoveryIdentityForEvent(rule, fault); ok {
+		fault = proto.Clone(fault).(*protos.HealthEvent)
+		fault.EntitiesImpacted = identity.entities
+	}
+
+	err := r.config.Publisher.Publish(ctx, fault, protos.RecommendedAction(actionVal),
 		rule.Name, rule.Message, &rule)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error in publishing the new fatal event", "error", err)
@@ -565,6 +593,12 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 		)
 
 		return false, fmt.Errorf("failed to build pipeline stages: %w", err)
+	}
+
+	if rule.Recovery != nil {
+		if err := r.applyRecoveryBoundary(ctx, rule, healthEventWithStatus.HealthEvent, pipelineStages); err != nil {
+			return false, fmt.Errorf("apply recovery history boundary: %w", err)
+		}
 	}
 
 	var result []map[string]any

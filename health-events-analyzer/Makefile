@@ -32,6 +32,11 @@ CLEAN_EXTRA_FILES := health-events-analyzer
 include ../make/common.mk
 include ../make/go.mk
 
+# Match the envtest setup used by the other Kubernetes controllers, including CI.
+TEST_SETUP_COMMANDS := \
+    go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION) && \
+    eval $$(setup-envtest use --use-env -p env) &&
+
 # =============================================================================
 # DEFAULT TARGET
 # =============================================================================
