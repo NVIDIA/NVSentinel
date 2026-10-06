@@ -167,6 +167,12 @@ func setupCircuitBreaker(
 		return nil, nil
 	}
 
+	// Dry run never cordons, so there is nothing for the breaker to bound.
+	if params.DryRun {
+		slog.InfoContext(ctx, "Circuit breaker is not created in dry-run mode")
+		return nil, nil
+	}
+
 	// Use command line parameters if provided, otherwise fall back to TOML config
 	cbConfig := tomlCfg.CircuitBreaker
 
