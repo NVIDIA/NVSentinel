@@ -314,6 +314,18 @@ field is added next to `enabled`, so the profiles in this ADR continue to be val
 configuration that stays in the component. Thus, a profile stays small, and each component keeps the validation of
 its own configuration. Each field needs a change in its component. The team selects the fields and their sequence.
 
+A setting can become a profile field only if all of these conditions are true:
+
+- The setting must be different for different node groups, device types, or fault types. Examples are bare metal and
+  virtual machines, Slurm nodes and Kubernetes nodes, or the system that repairs the node.
+- The setting controls what NVSentinel does to the node. It does not control how the component operates. For
+  example, the drain method is a profile field, but a retry count or a diagnostic setting is not.
+- The component can apply the setting for each event. A setting that applies to the full process, for example a
+  command-line flag, is not a profile field.
+
+Each field keeps its global value in the configuration of the component. A profile only replaces this value. When
+the team adds a field, the change must show why the setting is different for different groups.
+
 ```yaml
 profiles:
   slurm-vm:
@@ -333,8 +345,6 @@ profiles:
       actions:                                # recommended action -> named resource
         COMPONENT_RESET: terminate-node
         RESTART_BM: terminate-node
-      maxAttempts: 2
-      logCollector: true
 ```
 
 | Field | Result | Refers to | Change in the component |
@@ -343,11 +353,9 @@ profiles:
 | `quarantine.cordon` | Replaces the cordon setting of the rule sets, for example a taint without a cordon | None | fault-quarantine applies the value when it quarantines the node |
 | `drain.method` and `drain.customDrainTarget` | Selects the eviction API or a named drain plugin | Named custom drain targets in node-drainer | The single `customDrain` block becomes a map of named targets, and replaces `customDrain.nodeSelector` |
 | `drain.podDrainPolicies` | Only these pod policies apply | Names of node-drainer pod policies ([pod label drain policies ADR](055-pod-drain-policies.md)) | node-drainer filters the pod policies |
-| `drain.partialDrain` | Replaces `partialDrainEnabled` for this profile | None | node-drainer reads the value for each event |
+| `drain.partialDrain` | Replaces `partialDrainEnabled` for this profile. Partial drain needs hardware that isolates each GPU, and this is different for different device types | None | node-drainer reads the value for each event |
 | `remediation.mode` | `External` gives the repair to an external system | [ADR-040](040-external-remediation-request.md) | fault-remediation creates an external remediation request for all actions |
 | `remediation.actions` | Selects the maintenance resource for each recommended action | Named maintenance resources in fault-remediation | `remediationActions` becomes a map of named resources. fault-remediation finds the CR status by resource, not by action name |
-| `remediation.maxAttempts` | Replaces `maxRemediationAttempts` for this profile | None | fault-remediation reads the value for each event |
-| `remediation.logCollector` | Enables or disables the log collector for this profile | None | fault-remediation reads the value for each event |
 | Device attributes in routes | Routes can select a GPU product or a device type | None | Health events must identify each device |
 
 These fields also need validation rules:
