@@ -652,7 +652,7 @@ func TestValidateBounds_RejectsConfigsThatCannotLimit(t *testing.T) {
 			// Would leave threshold 0, and IsTripped compares with >=, so the breaker
 			// would trip immediately with no cordons.
 			name:    "neither bound set is rejected",
-			wantErr: "requires percentage, maxNodes or maxCordonedNodes",
+			wantErr: "requires percentage, maxNodes, maxCordonedNodes or maxCordonedPercentage",
 		},
 		{
 			// NaN passes every ordinary comparison, then becomes int(NaN) == 0, which trips
@@ -712,14 +712,15 @@ func TestNewSlidingWindowBreaker_NoBoundsConfigured_ReturnsError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, b)
-	assert.Contains(t, err.Error(), "requires percentage, maxNodes or maxCordonedNodes")
+	assert.Contains(t, err.Error(), "requires percentage, maxNodes, maxCordonedNodes or maxCordonedPercentage")
 }
 
 // newStandingBoundBreaker builds a breaker whose only configured limit is the standing
 // bound, with the fake reporting cordonedNodes. The window bounds are left off so these
 // tests exercise the standing bound alone.
 func newStandingBoundBreaker(
-	t *testing.T, ctx context.Context, maxCordonedNodes, cordonedNodes int, cordonedErr error,
+	t *testing.T, ctx context.Context,
+	maxCordonedNodes, maxCordonedPercentage, cordonedNodes int, cordonedErr error,
 ) (CircuitBreaker, *testK8sClient) {
 	t.Helper()
 
@@ -742,11 +743,12 @@ func newStandingBoundBreaker(
 	configMapName := "test-standing-" + generateTestID()[:8]
 
 	b, err := NewSlidingWindowBreaker(ctx, Config{
-		Window:               1 * time.Second,
-		TripMaxCordonedNodes: maxCordonedNodes,
-		K8sClient:            k8sClient,
-		ConfigMapName:        configMapName,
-		ConfigMapNamespace:   "default",
+		Window:                    1 * time.Second,
+		TripMaxCordonedNodes:      maxCordonedNodes,
+		TripMaxCordonedPercentage: float64(maxCordonedPercentage),
+		K8sClient:                 k8sClient,
+		ConfigMapName:             configMapName,
+		ConfigMapNamespace:        "default",
 	})
 	require.NoError(t, err)
 
@@ -761,7 +763,7 @@ func newStandingBoundBreaker(
 func TestIsTripped_StandingBoundReached_Trips(t *testing.T) {
 	ctx := context.Background()
 	// No cordon events are added, so only the standing bound can trip this.
-	b, _ := newStandingBoundBreaker(t, ctx, 3, 3, nil)
+	b, _ := newStandingBoundBreaker(t, ctx, 3, 0, 3, nil)
 
 	tripped, err := b.IsTripped(ctx)
 	require.NoError(t, err)
@@ -771,7 +773,7 @@ func TestIsTripped_StandingBoundReached_Trips(t *testing.T) {
 
 func TestIsTripped_StandingBoundNotReached_DoesNotTrip(t *testing.T) {
 	ctx := context.Background()
-	b, _ := newStandingBoundBreaker(t, ctx, 5, 4, nil)
+	b, _ := newStandingBoundBreaker(t, ctx, 5, 0, 4, nil)
 
 	tripped, err := b.IsTripped(ctx)
 	require.NoError(t, err)
@@ -821,7 +823,7 @@ func TestIsTripped_StandingBoundDisabled_IgnoresCordonedCount(t *testing.T) {
 
 func TestIsTripped_CordonedNodeLookupFails_ReturnsError(t *testing.T) {
 	ctx := context.Background()
-	b, _ := newStandingBoundBreaker(t, ctx, 3, 0, fmt.Errorf("informer cache not synced"))
+	b, _ := newStandingBoundBreaker(t, ctx, 3, 0, 0, fmt.Errorf("informer cache not synced"))
 
 	// A failed lookup must surface rather than being read as "under the bound", which
 	// would silently disable the guard exactly when the cluster state is unknown.
@@ -882,4 +884,146 @@ func TestIsTripped_WindowBoundReachedAndCordonedLookupFails_StillTrips(t *testin
 	require.NoError(t, err)
 	require.True(t, tripped, "window bound reached should trip even if the cordoned lookup would fail")
 	require.Equal(t, StateTripped, b.CurrentState())
+}
+
+func TestStandingThreshold_ConfiguredBounds_ReturnsEffectiveThreshold(t *testing.T) {
+	tests := []struct {
+		name             string
+		maxCordonedNodes int
+		maxCordonedPct   float64
+		totalNodes       int
+		wantThreshold    int
+		wantBound        Bound
+	}{
+		{
+			name:             "absolute only, unchanged from previous behaviour",
+			maxCordonedNodes: 3,
+			totalNodes:       12,
+			wantThreshold:    3,
+			wantBound:        boundMaxCordonedNodes,
+		},
+		{
+			// The motivating case: 3 of 12 is a quarter today, and 19% after a resize to 16.
+			name:           "percentage tracks the fleet so a resize keeps the same share",
+			maxCordonedPct: 25,
+			totalNodes:     16,
+			wantThreshold:  4,
+			wantBound:      boundMaxCordonedPercentage,
+		},
+		{
+			name:           "percentage rounds up, so 25 percent of 12 is 3",
+			maxCordonedPct: 25,
+			totalNodes:     12,
+			wantThreshold:  3,
+			wantBound:      boundMaxCordonedPercentage,
+		},
+		{
+			name:           "percentage rounds up rather than to zero on a small fleet",
+			maxCordonedPct: 1,
+			totalNodes:     12,
+			wantThreshold:  1,
+			wantBound:      boundMaxCordonedPercentage,
+		},
+		{
+			name:             "both set, absolute is lower so it binds",
+			maxCordonedNodes: 3,
+			maxCordonedPct:   50,
+			totalNodes:       287,
+			wantThreshold:    3,
+			wantBound:        boundMaxCordonedNodes,
+		},
+		{
+			name:             "both set, percentage is lower so it binds",
+			maxCordonedNodes: 100,
+			maxCordonedPct:   1,
+			totalNodes:       287,
+			wantThreshold:    3,
+			wantBound:        boundMaxCordonedPercentage,
+		},
+		{
+			name:             "fleet growth cannot raise the effective limit past the absolute bound",
+			maxCordonedNodes: 10,
+			maxCordonedPct:   5,
+			totalNodes:       1000,
+			wantThreshold:    10,
+			wantBound:        boundMaxCordonedNodes,
+		},
+		{
+			name:          "neither bound set yields no threshold, which disables the lookup",
+			totalNodes:    12,
+			wantThreshold: 0,
+			wantBound:     boundNone,
+		},
+		{
+			// Unlike tripThreshold, which clamps. The quarantined count comes from the
+			// annotation index over every watched node while totalNodes counts only
+			// GPU-labelled ones, so it can exceed the fleet size and clamping here would
+			// trip the breaker spuriously.
+			name:             "absolute bound above the fleet size is NOT clamped",
+			maxCordonedNodes: 1000,
+			totalNodes:       288,
+			wantThreshold:    1000,
+			wantBound:        boundMaxCordonedNodes,
+		},
+		{
+			// The int conversion is the unsafe part, so this one is still clamped.
+			name:           "percentage large enough to overflow int still clamps",
+			maxCordonedPct: 3.3e18,
+			totalNodes:     288,
+			wantThreshold:  288,
+			wantBound:      boundFleetSize,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := &slidingWindowBreaker{cfg: Config{
+				TripMaxCordonedNodes:      tt.maxCordonedNodes,
+				TripMaxCordonedPercentage: tt.maxCordonedPct,
+			}}
+
+			threshold, bound := b.standingThreshold(tt.totalNodes)
+			require.Equal(t, tt.wantThreshold, threshold)
+			require.Equal(t, tt.wantBound, bound)
+		})
+	}
+}
+
+func TestValidateBounds_StandingPercentage(t *testing.T) {
+	require.NoError(t, Config{TripMaxCordonedPercentage: 25}.validateBounds(),
+		"the standing percentage alone should satisfy the at-least-one-bound requirement")
+
+	err := Config{TripMaxCordonedPercentage: -1}.validateBounds()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "maxCordonedPercentage must not be negative")
+
+	err = Config{TripMaxCordonedPercentage: math.NaN()}.validateBounds()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "maxCordonedPercentage must be a finite number")
+
+	err = Config{TripMaxCordonedPercentage: math.Inf(1)}.validateBounds()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "maxCordonedPercentage must be a finite number")
+}
+
+func TestIsTripped_StandingPercentageReached_Trips(t *testing.T) {
+	ctx := context.Background()
+	// One GPU node in the test fleet, so 100% is one node and the single cordoned node
+	// reaches it. No cordon events are added, so only the standing bound can trip this.
+	b, _ := newStandingBoundBreaker(t, ctx, 0, 100, 1, nil)
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.True(t, tripped, "standing percentage reached should trip the breaker")
+	require.Equal(t, StateTripped, b.CurrentState())
+}
+
+func TestIsTripped_StandingPercentageNotReached_DoesNotTrip(t *testing.T) {
+	ctx := context.Background()
+	b, _ := newStandingBoundBreaker(t, ctx, 0, 100, 0, nil)
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, tripped, "no cordoned nodes should not reach the standing percentage")
+	require.Equal(t, StateClosed, b.CurrentState())
 }

@@ -27,6 +27,7 @@ data:
     percentage = {{ .Values.circuitBreaker.percentage }}
     maxNodes = {{ .Values.circuitBreaker.maxNodes | default 0 }}
     maxCordonedNodes = {{ .Values.circuitBreaker.maxCordonedNodes | default 0 }}
+    maxCordonedPercentage = {{ .Values.circuitBreaker.maxCordonedPercentage | default 0 }}
     duration = {{ .Values.circuitBreaker.duration | quote }}
     
     {{- range .Values.ruleSets }}

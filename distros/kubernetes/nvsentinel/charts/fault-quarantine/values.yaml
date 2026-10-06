@@ -81,6 +81,15 @@ circuitBreaker:
   # total, so a rate that stays under the threshold still cordons a whole fleet
   # given enough windows. This is the only bound that caps that.
   maxCordonedNodes: 0
+  # Percentage form of maxCordonedNodes: trip when this share of the GPU fleet is held
+  # quarantined at once. 0 disables it. When both are set the lower one binds, exactly as
+  # percentage and maxNodes pair above.
+  #
+  # Prefer this when the blast radius you care about is a share of the fleet rather than a
+  # number of machines, since an absolute count silently changes meaning when the fleet is
+  # resized: maxCordonedNodes: 3 is a quarter of a 12 node cluster, and 19% once it grows
+  # to 16.
+  maxCordonedPercentage: 0
   # Time window for the sliding window circuit breaker
   # The circuit breaker counts cordon events within this time window
   # Example: "5m" means if 50% of GPU nodes are cordoned within any 5-minute window, the circuit breaker trips
