@@ -94,8 +94,7 @@ func (r *ValidationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// resourceSlices need slice events to unblock pending requests.
 	if referencesResourceSlices(r.Config.Validation.Spec.ReadinessCriteria) {
 		controllerManager = controllerManager.Watches(&resourcev1.ResourceSlice{},
-			handler.EnqueueRequestsFromMapFunc(r.resourceSliceToValidationRequest),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+			handler.EnqueueRequestsFromMapFunc(r.resourceSliceToValidationRequest))
 	}
 
 	// We need to reference the dynamic types from the TestProviders in the ValidationConfiguration. Normally, you can
@@ -164,7 +163,7 @@ for each ValidationRequest listed in the session annotation. In practice, CREATE
 annotation not existing. DELETE events still fire, since the last-known cached object retains the annotation, and
 this is the only signal that drives reconciling a ValidationRequest after one of its nodes is deleted.
 - TestProvider resource CREATE, UPDATE, and DELETE events which have an OwnerReference for a ValidationRequest.
-- ResourceSlice CREATE, spec UPDATE, and DELETE events, only if a readinessCriteria expression references
+- ResourceSlice CREATE, UPDATE, and DELETE events, only if a readinessCriteria expression references
 resourceSlices. These fire the reconciler for each ValidationRequest in the session annotation of the slice's node.
 
 The only place where we rely on a level-based signal to trigger reconciling is to detect test provider

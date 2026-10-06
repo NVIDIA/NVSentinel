@@ -60,7 +60,14 @@ lifecycle-manager:
         command:
           - sh
           - -c
-          - dcgmi diag --host "nvidia-dcgm.gpu-operator.svc:5555" --run 2 --json
+          - |
+            # One DCGM Service exists per cluster: nvidia-dcgm-dra in GPU Operator GPUCluster (DRA) mode,
+            # nvidia-dcgm otherwise. Use the first name that resolves.
+            for h in nvidia-dcgm-dra.gpu-operator.svc nvidia-dcgm.gpu-operator.svc; do
+              getent hosts "$h" >/dev/null 2>&1 && exec dcgmi diag --host "$h:5555" --run 2 --json
+            done
+            echo "no DCGM hostengine Service resolved" >&2
+            exit 1
         supportsBatchingNodes: false
         minimumNodesPerBatch: 1
         batchFailurePolicy: fail
