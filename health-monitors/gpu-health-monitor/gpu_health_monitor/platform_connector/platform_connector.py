@@ -212,12 +212,17 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         for code in sorted(entry.active_errors) if entry else []:
             metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", error_code=code).set(0)
 
-    def _persist_dcgm_unresponsive_state(self, processing_strategy: platformconnector_pb2.ProcessingStrategy) -> None:
-        """Remember a delivered local-managed probe hang across liveness restarts.
+    def _persist_dcgm_unresponsive_state(
+        self,
+        processing_strategy: platformconnector_pb2.ProcessingStrategy,
+        check_name: str = "GpuDcgmUnresponsive",
+    ) -> None:
+        """Remember a delivered probe hang across liveness restarts.
 
-        Format is two lines: error code, then the ProcessingStrategy name used
-        for the unhealthy event. The strategy must be restored for the clear
-        path so fault-quarantine still matches the pair after a config change.
+        Format is error code, ProcessingStrategy name, then check name. The
+        optional third line preserves compatibility with existing local markers.
+        The strategy must be restored for the clear path so fault-quarantine
+        still matches the pair after a config change.
         The marker is written to a sibling temporary file and renamed so a
         restart mid-write cannot leave the strategy line missing.
         """
@@ -226,6 +231,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             strategy_name = platformconnector_pb2.ProcessingStrategy.Name(processing_strategy)
             with open(tmp_path, "w") as state_file:
                 state_file.write(f"DCGM_PROBE_HANG\n{strategy_name}\n")
+                if check_name != "GpuDcgmUnresponsive":
+                    state_file.write(f"{check_name}\n")
             os.replace(tmp_path, self._dcgm_unresponsive_state_path)
             self._dcgm_unresponsive_strategy = processing_strategy
         except OSError as e:
@@ -237,6 +244,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             return
 
         strategy = self._effective_strategy("GpuDcgmUnresponsive")
+        check_name = "GpuDcgmUnresponsive"
         try:
             with open(self._dcgm_unresponsive_state_path, "r") as state_file:
                 lines = [line.strip() for line in state_file.read().splitlines() if line.strip()]
@@ -249,15 +257,15 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         lines[1],
                         self._dcgm_unresponsive_state_path,
                     )
+            if len(lines) >= 3:
+                check_name = lines[2]
         except OSError as e:
             log.error("Failed to read unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
 
-        key = self._build_cache_key("GpuDcgmUnresponsive", "DCGM", "ALL")
+        key = self._build_cache_key(check_name, "DCGM", "ALL")
         self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
         self._dcgm_unresponsive_strategy = strategy
-        metrics.dcgm_health_active_events.labels(
-            event_type="GpuDcgmUnresponsive", gpu_id="", error_code="DCGM_PROBE_HANG"
-        ).set(1)
+        metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", error_code="DCGM_PROBE_HANG").set(1)
 
     def _clear_dcgm_unresponsive_state(self) -> None:
         try:
@@ -320,7 +328,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 recommendedAction=platformconnector_pb2.NONE,
                 nodeName=self._node_name,
                 metadata=event_metadata,
-                processingStrategy=self._processing_strategy,
+                processingStrategy=(
+                    self._dcgm_unresponsive_strategy
+                    if self._dcgm_unresponsive_strategy is not None
+                    else self._processing_strategy
+                ),
             )
             health_events.append(health_event)
 
@@ -332,6 +344,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 ):
                     self._clear_active_event_metric(check_name, key)
                     self.entity_cache[key] = EntityCacheEntry()
+                    if self._dcgm_unresponsive_strategy is not None:
+                        self._clear_dcgm_unresponsive_state()
                     self._consecutive_connectivity_successes = 0
                     self._connectivity_escalated = False
                     metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
@@ -1054,7 +1068,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             recommended_action = (
                 platformconnector_pb2.RESTART_BM if local_managed else platformconnector_pb2.CONTACT_SUPPORT
             )
-            processing_strategy = self._effective_strategy(check_name) if local_managed else self._processing_strategy
+            # Remote probe hangs use the same condition as ordinary connectivity
+            # failures, but only the hang consults probeStoreOnly. Do not apply
+            # this override to dcgm_connectivity_failed().
+            processing_strategy = self._effective_strategy("GpuDcgmUnresponsive")
 
             log.error(
                 f"DCGM probe {operation} unresponsive for {elapsed_seconds:.1f}s, "
@@ -1114,8 +1131,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
                     self.entity_cache[key] = EntityCacheEntry(active_errors={error_code})
-                    if local_managed:
-                        self._persist_dcgm_unresponsive_state(processing_strategy)
+                    self._persist_dcgm_unresponsive_state(processing_strategy, check_name)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
                         event_type=check_name, gpu_id="", error_code=error_code
