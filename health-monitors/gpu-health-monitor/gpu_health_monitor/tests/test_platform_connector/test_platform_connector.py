@@ -2498,6 +2498,77 @@ class TestPlatformConnectors(unittest.TestCase):
             assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
             assert not os.path.exists(marker)
 
+    def test_connectivity_recovery_preserves_local_probe_hang_state(self):
+        """Connectivity recovery must not consume a separate local probe-hang marker."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed")
+            marker = processor._dcgm_unresponsive_state_path
+            assert os.path.exists(marker)
+            restarted = self._make_processor(
+                processor.state_file_path,
+                processor._metadata_reader._path,
+                store_only_checks=frozenset(),
+            )
+
+            servicer.health_events = None
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            restarted.clear_dcgm_connectivity_failure(timestamp)
+
+            assert servicer.health_events[0].checkName == "GpuDcgmConnectivityFailure"
+            assert servicer.health_events[0].isHealthy is True
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert os.path.exists(marker)
+
+            servicer.health_events = None
+            restarted.clear_dcgm_unresponsive(timestamp)
+
+            assert servicer.health_events[0].checkName == "GpuDcgmUnresponsive"
+            assert servicer.health_events[0].isHealthy is True
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
+            assert not os.path.exists(marker)
+
+    def test_escalated_remote_probe_hang_uses_replacement_strategy_on_recovery(self):
+        """Escalation replaces the saved remote-hang strategy with the active event strategy."""
+        with self._running_connector(
+            store_only_checks=frozenset({"GpuDcgmUnresponsive"}),
+            connectivity_failure_escalation_threshold=2,
+        ) as (servicer, processor):
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "remote")
+            marker = processor._dcgm_unresponsive_state_path
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
+            assert processor._dcgm_unresponsive_check_name == "GpuDcgmConnectivityFailure"
+
+            processor.dcgm_connectivity_failed()
+            servicer.health_events = None
+            processor.dcgm_connectivity_failed()
+
+            escalation = servicer.health_events[0]
+            assert escalation.checkName == "GpuDcgmConnectivityFailure"
+            assert escalation.isHealthy is False
+            assert escalation.recommendedAction == platformconnector_pb2.RESTART_BM
+            assert escalation.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            with open(marker) as marker_file:
+                assert marker_file.read().splitlines() == [
+                    "DCGM_PROBE_HANG",
+                    "EXECUTE_REMEDIATION",
+                    "GpuDcgmConnectivityFailure",
+                ]
+
+            servicer.health_events = None
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+
+            recovery = servicer.health_events[0]
+            assert recovery.checkName == "GpuDcgmConnectivityFailure"
+            assert recovery.isHealthy is True
+            assert recovery.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert not os.path.exists(marker)
+
     def test_dcgm_unresponsive_cleared_when_probe_returns(self):
         """A completed health check proves DCGM answered, so the event must clear."""
         with self._running_connector() as (servicer, processor):
