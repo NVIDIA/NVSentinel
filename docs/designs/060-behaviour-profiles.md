@@ -82,6 +82,8 @@ and remediation. An ordered list of **profile routes** selects the profile.
    `enabled`. The configuration of each component continues to set how an enabled stage operates, for example the
    drain method or the remediation action. Later work can add fields to these sections (see
    [Additional configuration for behaviour profiles](#additional-configuration-for-behaviour-profiles)). The `enabled` field stays the main switch of each section.
+   All profiles keep the monitoring. NVSentinel continues to detect faults, store health events, and set node
+   conditions for all profiles.
 2. A route selects a profile with a CEL expression. The expression can use the health event and the node labels.
    NVSentinel evaluates the routes in sequence, and the first route that matches selects the profile. When no route
    matches, the built-in `default` profile applies.
@@ -98,7 +100,7 @@ This ADR covers three of the cases above:
 
 - A staged rollout of remediation.
 - No remediation for one device type.
-- Groups of nodes that only get monitoring, or that only get a quarantine.
+- Groups of nodes that only get monitoring, or that only get monitoring and a quarantine.
 
 A drain method, an external repair, or a remediation action for each profile is future work. Until then, these
 settings apply to the full cluster. `customDrain.nodeSelector` from
