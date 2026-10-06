@@ -27,6 +27,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // GangRegistration is sent to the controller to register a pod with its gang.
@@ -58,18 +59,20 @@ type Handler struct {
 }
 
 // NewHandler builds a Handler from the preflight config, the namespace-aware
-// gang discoverer resolver, the callback invoked to register a pod with its
-// gang after admission, and the callback that copies the platform connector CA
-// bundle into the pod's namespace (nil when the checks publish to the socket
-// or do not verify the server).
+// gang discoverer resolver, the reader used for DRA GPU detection, the
+// callback invoked to register a pod with its gang after admission, and the
+// callback that copies the platform connector CA bundle into the pod's
+// namespace (nil when the checks publish to the socket or do not verify the
+// server).
 func NewHandler(
 	cfg *config.Config,
 	resolver *gang.DiscovererResolver,
+	draReader client.Reader,
 	onGangRegister GangRegistrationFunc,
 	ensureCA EnsureCAFunc,
 ) *Handler {
 	return &Handler{
-		injector:       NewInjector(cfg, resolver),
+		injector:       NewInjector(cfg, resolver, draReader),
 		onGangRegister: onGangRegister,
 		ensureCA:       ensureCA,
 	}
