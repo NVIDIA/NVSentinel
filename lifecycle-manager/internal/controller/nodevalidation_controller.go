@@ -30,8 +30,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
@@ -47,6 +49,8 @@ type NodeValidationReconciler struct {
 	Scheme           *runtime.Scheme
 	Config           *config.Config
 	CriteriaPrograms map[string]cel.Program
+	// ReadsResourceSlices is set when a newNodeValidation criterion references the resourceSlices variable.
+	ReadsResourceSlices bool
 
 	nodesInBatch map[string]bool
 	batchEndTime time.Time
@@ -63,18 +67,29 @@ nodesInBatch and batchEndTime state within this controller.
 */
 func NewNodeValidationReconciler(cl client.Client, apiReader client.Reader, scheme *runtime.Scheme,
 	cfg *config.Config) (*NodeValidationReconciler, error) {
-	programs, err := buildReadinessPrograms(cfg.Validation.Spec.NewNodeValidation.Criteria)
+	programs, readsResourceSlices, err := buildReadinessPrograms(cfg.Validation.Spec.NewNodeValidation.Criteria)
 	if err != nil {
 		return nil, fmt.Errorf("build newNodeValidation criteria programs: %w", err)
 	}
 
 	return &NodeValidationReconciler{
-		Client:           cl,
-		APIReader:        apiReader,
-		Scheme:           scheme,
-		Config:           cfg,
-		CriteriaPrograms: programs,
+		Client:              cl,
+		APIReader:           apiReader,
+		Scheme:              scheme,
+		Config:              cfg,
+		CriteriaPrograms:    programs,
+		ReadsResourceSlices: readsResourceSlices,
 	}, nil
+}
+
+// resourceSliceToNode maps a node-local ResourceSlice event to a reconcile request for its node.
+func resourceSliceToNode(_ context.Context, obj client.Object) []reconcile.Request {
+	nodeName := resourceSliceNodeName(obj)
+	if len(nodeName) == 0 {
+		return nil
+	}
+
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: nodeName}}}
 }
 
 func (r *NodeValidationReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -82,9 +97,10 @@ func (r *NodeValidationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&corev1.Node{}).
 		Named("nodevalidation")
 
-	if referencesResourceSlices(r.Config.Validation.Spec.NewNodeValidation.Criteria) {
+	if r.ReadsResourceSlices {
 		controllerManager = controllerManager.Watches(&resourcev1.ResourceSlice{},
-			handler.EnqueueRequestsFromMapFunc(resourceSliceToNode))
+			handler.EnqueueRequestsFromMapFunc(resourceSliceToNode),
+			builder.WithPredicates(gpuResourceSlicePredicate()))
 	}
 
 	return controllerManager.Complete(r)
@@ -251,7 +267,7 @@ func (r *NodeValidationReconciler) isNodeEligibleForBatch(ctx context.Context, n
 		return false, nil
 	}
 
-	failedCriterion, err := evaluateNodeCriteria(ctx, r.Client, node, cfg.Criteria, r.CriteriaPrograms)
+	failedCriterion, err := evaluateCriteria(ctx, r.Client, node, cfg.Criteria, r.CriteriaPrograms, r.ReadsResourceSlices)
 	if err != nil {
 		return false, fmt.Errorf("evaluate newNodeValidation criteria for node %q: %w", node.Name, err)
 	}

@@ -23,6 +23,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
@@ -330,7 +331,8 @@ func TestEvaluateNodeReadinessCriteria(t *testing.T) {
 				t.Fatalf("failed to construct reconciler: %v", err)
 			}
 
-			failedCriterion, err := evaluateCriteria(tt.node, tt.resourceSlices, tt.criteria, reconciler.ReadinessPrograms)
+			failedCriterion, err := evaluateCriteriaWithSlices(tt.node, tt.resourceSlices, tt.criteria,
+				reconciler.ReadinessPrograms)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got none")
@@ -345,6 +347,55 @@ func TestEvaluateNodeReadinessCriteria(t *testing.T) {
 
 			if failedCriterion != tt.wantFailedCriteria {
 				t.Fatalf("failedCriterion = %q, want %q", failedCriterion, tt.wantFailedCriteria)
+			}
+		})
+	}
+}
+
+func TestGPUResourceSlicePredicate(t *testing.T) {
+	gpuSlice := newResourceSlice("gpu.nvidia.com", 1)
+	imexSlice := newResourceSlice("compute-domain.nvidia.com", 1)
+	p := gpuResourceSlicePredicate()
+
+	if !p.Create(event.CreateEvent{Object: &gpuSlice}) {
+		t.Fatal("expected gpu.nvidia.com slice to be admitted")
+	}
+
+	if p.Delete(event.DeleteEvent{Object: &imexSlice}) {
+		t.Fatal("expected compute-domain.nvidia.com slice to be dropped")
+	}
+
+	if p.Create(event.CreateEvent{Object: &corev1.Node{}}) {
+		t.Fatal("expected a non-ResourceSlice object to be dropped")
+	}
+}
+
+func TestBuildReadinessProgramsReadsResourceSlices(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression string
+		want       bool
+	}{
+		{name: "node only", expression: `has(node.spec.unschedulable)`, want: false},
+		{
+			name:       "resourceSlices comprehension",
+			expression: `resourceSlices.exists(s, s.spec.driver == "gpu.nvidia.com")`,
+			want:       true,
+		},
+		{name: "resourceSlices size", expression: `size(resourceSlices) > 0`, want: true},
+		{name: "name only in a string literal", expression: `"resourceSlices" in node.metadata.labels`, want: false},
+		{name: "name only in a comment", expression: "// resourceSlices\ntrue", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, got, err := buildReadinessPrograms([]v1alpha1.CriteriaSpec{{Name: tt.name, Expression: tt.expression}})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if got != tt.want {
+				t.Fatalf("readsResourceSlices = %v, want %v", got, tt.want)
 			}
 		})
 	}

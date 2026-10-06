@@ -17,8 +17,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/google/cel-go/cel"
@@ -30,8 +28,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
 
@@ -80,14 +79,14 @@ func quantityToDouble(val ref.Val) ref.Val {
 	return types.Double(q.AsApproximateFloat64())
 }
 
-// evaluateNodeCriteria looks up the ResourceSlices of the node, if any criterion references them, and evaluates the
-// criteria against the node. This is shared by the ValidationRequestReconciler and NodeValidationReconciler, which each
-// maintain their own compiled program map.
-func evaluateNodeCriteria(ctx context.Context, c client.Reader, node *corev1.Node, criteria []v1alpha1.CriteriaSpec,
-	programs map[string]cel.Program) (string, error) {
+// evaluateCriteria looks up the ResourceSlices of the node, if readsResourceSlices is set, and evaluates the criteria
+// against the node. This is shared by the ValidationRequestReconciler and NodeValidationReconciler, which each maintain
+// their own compiled program map.
+func evaluateCriteria(ctx context.Context, c client.Reader, node *corev1.Node, criteria []v1alpha1.CriteriaSpec,
+	programs map[string]cel.Program, readsResourceSlices bool) (string, error) {
 	var resourceSlices []resourcev1.ResourceSlice
 
-	if referencesResourceSlices(criteria) {
+	if readsResourceSlices {
 		var err error
 
 		resourceSlices, err = listResourceSlicesForNode(ctx, c, node.Name)
@@ -96,13 +95,13 @@ func evaluateNodeCriteria(ctx context.Context, c client.Reader, node *corev1.Nod
 		}
 	}
 
-	return evaluateCriteria(node, resourceSlices, criteria, programs)
+	return evaluateCriteriaWithSlices(node, resourceSlices, criteria, programs)
 }
 
-// evaluateCriteria evaluates each CEL criterion against the given node and its ResourceSlices in order. It returns the
-// name of the first criterion that fails, or an empty string if all criteria evaluate to true.
-func evaluateCriteria(node *corev1.Node, resourceSlices []resourcev1.ResourceSlice, criteria []v1alpha1.CriteriaSpec,
-	programs map[string]cel.Program) (string, error) {
+// evaluateCriteriaWithSlices evaluates each CEL criterion against the given node and its ResourceSlices in order. It
+// returns the name of the first criterion that fails, or an empty string if all criteria evaluate to true.
+func evaluateCriteriaWithSlices(node *corev1.Node, resourceSlices []resourcev1.ResourceSlice,
+	criteria []v1alpha1.CriteriaSpec, programs map[string]cel.Program) (string, error) {
 	nodeMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(node)
 	if err != nil {
 		return "", fmt.Errorf("convert node %s to unstructured: %w", node.Name, err)
@@ -154,17 +153,20 @@ func evalCriterion(programs map[string]cel.Program, expr string, vars map[string
 	return result, nil
 }
 
-func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Program, error) {
+// buildReadinessPrograms compiles the criteria, keyed by expression, and reports whether any of them references the
+// resourceSlices variable.
+func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Program, bool, error) {
 	if len(criteria) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	env, err := buildCELEnvironment()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	programs := make(map[string]cel.Program, len(criteria))
+	readsResourceSlices := false
 
 	for _, c := range criteria {
 		if _, ok := programs[c.Expression]; ok {
@@ -173,45 +175,41 @@ func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Pr
 
 		ast, issues := env.Parse(c.Expression)
 		if issues != nil && issues.Err() != nil {
-			return nil, fmt.Errorf("criterion %q: parse: %w", c.Name, issues.Err())
+			return nil, false, fmt.Errorf("criterion %q: parse: %w", c.Name, issues.Err())
 		}
 
 		checkedAST, issues := env.Check(ast)
 		if issues != nil && issues.Err() != nil {
-			return nil, fmt.Errorf("criterion %q: check: %w", c.Name, issues.Err())
+			return nil, false, fmt.Errorf("criterion %q: check: %w", c.Name, issues.Err())
 		}
 
 		prg, err := env.Program(checkedAST)
 		if err != nil {
-			return nil, fmt.Errorf("criterion %q: program: %w", c.Name, err)
+			return nil, false, fmt.Errorf("criterion %q: program: %w", c.Name, err)
 		}
 
 		programs[c.Expression] = prg
+		readsResourceSlices = readsResourceSlices || referencesVariable(checkedAST, resourceSlicesVariable)
 	}
 
-	return programs, nil
+	return programs, readsResourceSlices, nil
 }
 
-func referencesResourceSlices(criteria []v1alpha1.CriteriaSpec) bool {
-	return slices.ContainsFunc(criteria, func(c v1alpha1.CriteriaSpec) bool {
-		return strings.Contains(c.Expression, resourceSlicesVariable)
-	})
+// referencesVariable reports whether the checked expression resolves an identifier to the variable name. The checker
+// only records identifiers it resolved, so the name inside a comment or a string literal does not count.
+func referencesVariable(checkedAST *cel.Ast, name string) bool {
+	for _, ref := range checkedAST.NativeRep().ReferenceMap() {
+		if ref.Name == name {
+			return true
+		}
+	}
+
+	return false
 }
 
 // SetupResourceSliceIndex registers the cache index that readiness and new node criteria use to look up the
-// ResourceSlices of a node. It does nothing when no criterion references resourceSlices.
-func SetupResourceSliceIndex(ctx context.Context, indexer client.FieldIndexer,
-	spec v1alpha1.ValidationConfigurationSpec) error {
-	criteria := slices.Clone(spec.ReadinessCriteria)
-
-	if spec.NewNodeValidation != nil {
-		criteria = append(criteria, spec.NewNodeValidation.Criteria...)
-	}
-
-	if !referencesResourceSlices(criteria) {
-		return nil
-	}
-
+// ResourceSlices of a node. Callers register it only when a criterion references resourceSlices.
+func SetupResourceSliceIndex(ctx context.Context, indexer client.FieldIndexer) error {
 	err := indexer.IndexField(ctx, &resourcev1.ResourceSlice{}, resourceSliceNodeNameField,
 		func(obj client.Object) []string {
 			if nodeName := resourceSliceNodeName(obj); len(nodeName) != 0 {
@@ -246,12 +244,13 @@ func resourceSliceNodeName(obj client.Object) string {
 	return *resourceSlice.Spec.NodeName
 }
 
-// resourceSliceToNode maps a node-local ResourceSlice event to a reconcile request for its node.
-func resourceSliceToNode(_ context.Context, obj client.Object) []reconcile.Request {
-	nodeName := resourceSliceNodeName(obj)
-	if len(nodeName) == 0 {
-		return nil
-	}
+// gpuResourceSlicePredicate admits only gpu.nvidia.com ResourceSlice events, so slices of unrelated DRA drivers
+// (for example ComputeDomain IMEX channels, which churn with workloads) do not trigger reconciles. The cache and the
+// resourceSlices CEL variable are not filtered.
+func gpuResourceSlicePredicate() predicate.Predicate {
+	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
 
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: nodeName}}}
+		return ok && resourceSlice.Spec.Driver == model.GPUDRADriverName
+	})
 }

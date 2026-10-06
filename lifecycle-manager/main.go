@@ -216,39 +216,36 @@ func setupControllers(
 func setupValidationController(
 	mgr ctrl.Manager, cfg *config.Config, validation *v1alpha1.ValidationConfiguration, namespace string,
 ) error {
-	if err := controller.SetupResourceSliceIndex(context.Background(), mgr.GetFieldIndexer(),
-		validation.Spec); err != nil {
-		return fmt.Errorf("failed to set up ResourceSlice index: %w", err)
-	}
-
 	reconciler, err := controller.NewValidationRequestReconciler(mgr.GetClient(), mgr.GetAPIReader(),
 		mgr.GetScheme(), cfg, namespace)
 	if err != nil {
 		return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
 	}
 
+	var nodeReconciler *controller.NodeValidationReconciler
+
+	if validation.Spec.NewNodeValidation != nil {
+		nodeReconciler, err = controller.NewNodeValidationReconciler(mgr.GetClient(), mgr.GetAPIReader(),
+			mgr.GetScheme(), cfg)
+		if err != nil {
+			return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
+		}
+	}
+
+	if reconciler.ReadsResourceSlices || (nodeReconciler != nil && nodeReconciler.ReadsResourceSlices) {
+		if err := controller.SetupResourceSliceIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+			return fmt.Errorf("failed to set up ResourceSlice index: %w", err)
+		}
+	}
+
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to create ValidationRequest controller: %w", err)
 	}
 
-	if validation.Spec.NewNodeValidation != nil {
-		if err := setupNodeValidationController(mgr, cfg); err != nil {
-			return err
+	if nodeReconciler != nil {
+		if err := nodeReconciler.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed to create NodeValidation controller: %w", err)
 		}
-	}
-
-	return nil
-}
-
-func setupNodeValidationController(mgr ctrl.Manager, cfg *config.Config) error {
-	nodeReconciler, err := controller.NewNodeValidationReconciler(mgr.GetClient(), mgr.GetAPIReader(),
-		mgr.GetScheme(), cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
-	}
-
-	if err := nodeReconciler.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to create NodeValidation controller: %w", err)
 	}
 
 	return nil
