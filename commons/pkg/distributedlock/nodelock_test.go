@@ -78,6 +78,56 @@ func TestNodeLock_GetHolder_ExpectedLeaseOwnerReference(t *testing.T) {
 	assert.Equal(t, expected, *holder)
 }
 
+func TestNodeLock_WithLeaseName_DoesNotContendWithDefaultLease(t *testing.T) {
+	t.Parallel()
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(testScheme))
+	require.NoError(t, coordinationv1.AddToScheme(testScheme))
+
+	const nodeName = "test-node"
+
+	defaultLease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      nodeName,
+			Namespace: testNamespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+				Kind:       "RebootNode",
+				Name:       "other-reboot",
+				UID:        "other-uid",
+			}},
+		},
+	}
+	resource := newTestResource("test-resource")
+	kubeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(defaultLease, resource).Build()
+	lock := NewNodeLock(kubeClient, testScheme, testNamespace, nil,
+		WithLeaseName(func(nodeName string) string { return "claim." + nodeName }))
+	ctx := context.Background()
+
+	require.True(t, lock.LockNode(ctx, resource, nodeName),
+		"a renamed lock must not be blocked by the default node lease")
+
+	var claim coordinationv1.Lease
+	require.NoError(t, kubeClient.Get(ctx, types.NamespacedName{
+		Name: "claim." + nodeName, Namespace: testNamespace,
+	}, &claim))
+
+	holder, err := lock.GetHolder(ctx, nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, resource.GetUID(), holder.UID)
+
+	require.False(t, lock.CheckUnlock(ctx, resource, nodeName))
+
+	err = kubeClient.Get(ctx, types.NamespacedName{Name: "claim." + nodeName, Namespace: testNamespace}, &claim)
+	assert.True(t, apierrors.IsNotFound(err), "CheckUnlock must delete the renamed lease")
+
+	var untouched coordinationv1.Lease
+	require.NoError(t, kubeClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: testNamespace}, &untouched),
+		"the default node lease must be left alone")
+	assert.Equal(t, types.UID("other-uid"), untouched.OwnerReferences[0].UID)
+}
+
 // testResource is a simple object that satisfies client.Object for tests.
 // We use ConfigMap because it's registered in the corev1 scheme.
 func newTestResource(name string) *corev1.ConfigMap {
