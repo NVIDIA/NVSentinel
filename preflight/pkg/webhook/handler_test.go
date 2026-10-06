@@ -79,7 +79,7 @@ func handlerGangConfig() *config.Config {
 // gang registration callback, and error responses for invalid input.
 func TestHandleMutate(t *testing.T) {
 	t.Run("valid GPU pod returns patch", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -111,7 +111,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("valid non-GPU pod returns allowed without patch", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -135,7 +135,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("invalid body returns 400", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader([]byte("not-json")))
 		rec := httptest.NewRecorder()
@@ -146,7 +146,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("invalid pod JSON returns not allowed", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		// Build the outer JSON manually so that object.raw contains invalid JSON
 		// without json.Marshal rejecting it.
@@ -180,7 +180,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("nil request returns allowed", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		review := admissionv1.AdmissionReview{
 			APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview",
@@ -201,7 +201,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("response UID matches request", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -231,7 +231,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, gang.NewResolver(disc, nil), func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, gang.NewResolver(disc, nil), nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
@@ -273,7 +273,7 @@ func TestHandleMutate(t *testing.T) {
 			"team-a": overrideDisc,
 		})
 
-		handler := NewHandler(handlerGangConfig(), resolver, func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(handlerGangConfig(), resolver, nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
@@ -312,7 +312,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-default-pg1"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, gang.NewResolver(disc, nil), func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, gang.NewResolver(disc, nil), nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			called = true
@@ -352,7 +352,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, gang.NewResolver(disc, nil), func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, gang.NewResolver(disc, nil), nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
@@ -392,7 +392,7 @@ func TestHandleMutate(t *testing.T) {
 		cfg.HealthPublishTarget = "platform-connector-deployment.nvsentinel.svc.cluster.local:50051"
 		cfg.HealthPublishCAFile = "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"
 
-		handler := NewHandler(cfg, nil, nil, func(_ context.Context, namespace string) {
+		handler := NewHandler(cfg, nil, nil, nil, func(_ context.Context, namespace string) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = append(captured, namespace)
@@ -430,7 +430,7 @@ func TestHandleMutate(t *testing.T) {
 
 	t.Run("EnsureCA callback not invoked for a non GPU pod", func(t *testing.T) {
 		called := false
-		handler := NewHandler(handlerConfig(), nil, nil, func(_ context.Context, _ string) {
+		handler := NewHandler(handlerConfig(), nil, nil, nil, func(_ context.Context, _ string) {
 			called = true
 		})
 
@@ -452,7 +452,7 @@ func TestHandleMutate(t *testing.T) {
 
 	t.Run("gang registration not called without gang", func(t *testing.T) {
 		called := false
-		handler := NewHandler(handlerConfig(), nil, func(_ context.Context, _ GangRegistration) {
+		handler := NewHandler(handlerConfig(), nil, nil, func(_ context.Context, _ GangRegistration) {
 			called = true
 		}, nil)
 

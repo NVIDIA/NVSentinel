@@ -115,7 +115,8 @@ tests:
 
   # The controller copies the CA bundle into tenant namespaces, so it needs
   # a ClusterRole even when gang coordination is off: namespaces and
-  # ConfigMaps only, without the gang discovery roles.
+  # ConfigMaps only, without the gang discovery roles. The second document is
+  # the DRA claim reader, which always renders.
   - it: keeps a ClusterRole for the CA copy when gang coordination is off but the checks publish to the deployment
     templates:
       - templates/clusterrole.yaml
@@ -125,7 +126,7 @@ tests:
       gangCoordination.enabled: false
     asserts:
       - hasDocuments:
-          count: 1
+          count: 2
       - contains:
           path: rules
           content:
@@ -133,6 +134,9 @@ tests:
             resources: ["configmaps"]
             verbs: ["get", "list", "create", "update"]
         template: templates/clusterrole.yaml
+        documentSelector:
+          path: metadata.name
+          value: preflight
       - notContains:
           path: rules
           content:
@@ -140,9 +144,13 @@ tests:
             resources: ["pods"]
             verbs: ["get", "list", "watch"]
         template: templates/clusterrole.yaml
+        documentSelector:
+          path: metadata.name
+          value: preflight
 
-  # No CA is copied in the insecure development mode, so no API access is needed.
-  - it: renders no ClusterRole in the insecure development mode without gang coordination
+  # No CA is copied in the insecure development mode, so only the DRA claim
+  # reader renders.
+  - it: renders only the DRA ClusterRole in the insecure development mode without gang coordination
     templates:
       - templates/clusterrole.yaml
       - templates/clusterrolebinding.yaml
@@ -152,8 +160,13 @@ tests:
       global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode
     asserts:
       - hasDocuments:
-          count: 0
+          count: 1
+      - equal:
+          path: metadata.name
+          value: preflight-dra
 
+  # Three gang roles plus the DRA claim reader; two gang bindings plus the
+  # DRA binding.
   - it: keeps the full gang roles when gang coordination is on
     templates:
       - templates/clusterrole.yaml
@@ -162,10 +175,10 @@ tests:
       publishTo: deployment
     asserts:
       - hasDocuments:
-          count: 3
+          count: 4
         template: templates/clusterrole.yaml
       - hasDocuments:
-          count: 2
+          count: 3
         template: templates/clusterrolebinding.yaml
 
   # config.yaml raises the refusals; the Deployment renders it first through

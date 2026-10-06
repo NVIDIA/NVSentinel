@@ -35,7 +35,6 @@ import (
 const (
 	podResourcesKubeletSocket = "/var/lib/kubelet/pod-resources/kubelet.sock"
 
-	draGPUDriverName = "gpu.nvidia.com"
 	// draGPUDeviceNameFormat is how the NVIDIA DRA driver names a full GPU from its minor number, the N in
 	// /dev/nvidiaN. It mirrors GpuInfo.CanonicalName() in cmd/gpu-kubelet-plugin/deviceinfo.go
 	// (https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/495bf4c/cmd/gpu-kubelet-plugin/deviceinfo.go#L122),
@@ -199,7 +198,7 @@ func draDeviceUUIDs(uuidsByMinor map[int]string) map[string]string {
 // device name is unknown is skipped; the pod is annotated once it resolves on a later poll.
 func addDRADevice(devicesPerPod map[string]*model.DeviceAnnotation, podKey string, resource *v1.ClaimResource,
 	draDeviceUUIDs map[string]string) {
-	if resource.GetDriverName() != draGPUDriverName {
+	if resource.GetDriverName() != model.GPUDRADriverName {
 		return
 	}
 
@@ -211,7 +210,7 @@ func addDRADevice(devicesPerPod map[string]*model.DeviceAnnotation, podKey strin
 		return
 	}
 
-	addPodDevices(devicesPerPod, podKey, draGPUDriverName, uuid)
+	addPodDevices(devicesPerPod, podKey, model.GPUDRADriverName, uuid)
 }
 
 func sortAndRemoveDuplicateDevices(devicesPerPod map[string]*model.DeviceAnnotation) {
