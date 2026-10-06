@@ -918,7 +918,6 @@ e2e-test-ci: tilt-ci ## Run end-to-end test suite in CI mode
 # Tilt end-to-end test target
 .PHONY: e2e-test
 e2e-test:
-	$(MAKE) -C dev tilt-up
 	$(MAKE) -C tests test
 
 # Kubernetes Helm targets (delegate to distros/kubernetes/Makefile)

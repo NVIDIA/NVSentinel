@@ -441,7 +441,8 @@ platformConnector:
       # batch: a few thousand batches per second across the fleet is about a
       # thousand per replica. Node metadata reads per second per replica are
       # at most the number of nodes divided by the cache TTL in seconds
-      # (every replica caches every node it sees). The values under
+      # (every replica caches every node it sees), plus one read per event
+      # from a node opted out with the skip label. The values under
       # platformConnector.k8sConnector and
       # platformConnector.transformers.MetadataAugmentor size these for one
       # node; the replicas serve the whole fleet, so they are set here and
@@ -451,7 +452,9 @@ platformConnector:
       # Nodes whose metadata is cached per replica.
       nodeMetadataCacheSize: 200000
       # How long a node's cached metadata is reused. A node opted out with
-      # the skip label takes up to this long to be honored by the replicas.
+      # the skip label takes up to this long to be honored by the replicas;
+      # removing the label takes effect on the node's next event, unless that
+      # event's node read fails.
       nodeMetadataCacheTtl: "10m"
 
   # The node-local platform connector DaemonSet (the Unix-socket ingestion
@@ -574,9 +577,11 @@ platformConnector:
     MetadataAugmentor:
       cacheSize: 50
       # How long cached node metadata is considered fresh. Lower values mean
-      # label changes (e.g. managed=false) take effect faster, at the cost of
-      # more Kubernetes API GET calls. Failed lookups proceed ungated, so the
-      # gating window can exceed this during a Kubernetes API outage.
+      # a new managed=false label takes effect faster, at the cost of more
+      # Kubernetes API GET calls; removing the label takes effect on the
+      # node's next event, unless that event's node read fails. A failed read
+      # keeps a cached opt-out; a node without one is not gated, so during a
+      # Kubernetes API outage a new label can take longer than this to apply.
       cacheTTLSeconds: 60
       # Managed-label gate: when a node carries this label, its events are set
       # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
