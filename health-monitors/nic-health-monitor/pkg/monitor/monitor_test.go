@@ -10,9 +10,11 @@ package monitor
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -22,6 +24,7 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/metrics"
 )
 
 // publishFailOnceClient fails the first call with the given status.
@@ -93,6 +96,78 @@ func (c *stagedTestCheck) Discard() {
 	}
 
 	c.pending = false
+}
+
+type blockingPollCheck struct {
+	block   bool
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingPollCheck) Name() string                    { return checks.InfiniBandStateCheckName }
+func (c *blockingPollCheck) Run() ([]*pb.HealthEvent, error) { return c.Prepare() }
+func (c *blockingPollCheck) Prepare() ([]*pb.HealthEvent, error) {
+	if c.block {
+		close(c.started)
+		<-c.release
+	}
+
+	return nil, nil
+}
+func (c *blockingPollCheck) Commit()  {}
+func (c *blockingPollCheck) Discard() {}
+
+func TestRunChecks_PollCompletionTimestampWaitsForBlockedCheck(t *testing.T) {
+	const node = "blocked-poll-node"
+	check := &blockingPollCheck{started: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(check.release) }) }
+	defer release()
+
+	monitor := NewNICHealthMonitor(node, &publishFailOnceClient{}, "127.0.0.1:5555",
+		[]checks.TransactionalCheck{check}, time.Second)
+	require.NoError(t, monitor.RunStateChecks(context.Background()))
+
+	readTimestamp := func() float64 {
+		families, err := prometheus.DefaultGatherer.Gather()
+		require.NoError(t, err)
+		for _, family := range families {
+			if family.GetName() != "nic_health_monitor_poll_cycle_last_completed_timestamp_seconds" {
+				continue
+			}
+			for _, metric := range family.GetMetric() {
+				labels := map[string]string{}
+				for _, label := range metric.GetLabel() {
+					labels[label.GetName()] = label.GetValue()
+				}
+				if labels["node"] == node && labels["category"] == "state" {
+					return metric.GetGauge().GetValue()
+				}
+			}
+		}
+		t.Fatalf("missing completed-poll timestamp for node %q", node)
+		return 0
+	}
+	timestamp := metrics.PollCycleLastCompletedTimestamp.WithLabelValues(node, "state")
+	// Give the metric an old value so the test can distinguish an update at
+	// poll start from the required update after the blocked check returns.
+	timestamp.Set(1)
+	check.block = true
+	done := make(chan error, 1)
+	go func() { done <- monitor.RunStateChecks(context.Background()) }()
+
+	select {
+	case <-check.started:
+	case <-time.After(time.Second):
+		t.Fatal("poll did not reach the blocking check")
+	}
+
+	assert.Equal(t, float64(1), readTimestamp(),
+		"the timestamp must not advance while a check is blocked")
+	release()
+	require.NoError(t, <-done)
+	assert.Greater(t, readTimestamp(), float64(1),
+		"the timestamp must advance once the poll completes")
 }
 
 // TestRunChecks_PublishFailureDiscardsAndReemits: a failure the server may

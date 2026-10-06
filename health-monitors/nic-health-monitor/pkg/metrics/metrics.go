@@ -47,6 +47,13 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{labelNode, "category"})
 
+	// PollCycleLastCompletedTimestamp records when each poll category last
+	// completed. Its age remains observable while a later sysfs read is blocked.
+	PollCycleLastCompletedTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "nic_health_monitor_poll_cycle_last_completed_timestamp_seconds",
+		Help: "Unix timestamp of the last completed poll cycle",
+	}, []string{labelNode, "category"})
+
 	// StateCheckErrors counts per-device state-check error events (port
 	// DOWN, device disappeared, etc.).
 	StateCheckErrors = promauto.NewCounterVec(prometheus.CounterOpts{
