@@ -63,6 +63,12 @@ rules:
   - get
   - update
   - create
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - resourceclaims
+  verbs:
+  - get
 {{- if .Values.customDrain.enabled }}
 - apiGroups:
   - {{ .Values.customDrain.apiGroup | quote }}

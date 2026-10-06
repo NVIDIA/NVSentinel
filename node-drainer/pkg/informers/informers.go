@@ -29,6 +29,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -199,10 +200,12 @@ func drainEligiblePodCacheObject(pod *v1.Pod, podLabelKeys ...string) *v1.Pod {
 			TerminationGracePeriodSeconds: terminationGracePeriodSeconds,
 			Containers:                    trimContainers(pod.Spec.Containers),
 			InitContainers:                trimContainers(pod.Spec.InitContainers),
+			ResourceClaims:                pod.Spec.ResourceClaims,
 		},
 		Status: v1.PodStatus{
-			Phase:      pod.Status.Phase,
-			Conditions: trimPodReadyConditions(pod.Status.Conditions),
+			Phase:                 pod.Status.Phase,
+			Conditions:            trimPodReadyConditions(pod.Status.Conditions),
+			ResourceClaimStatuses: pod.Status.ResourceClaimStatuses,
 		},
 	}
 }
@@ -355,7 +358,7 @@ func (i *Informers) Run(ctx context.Context) error {
 
 // FindEvictablePodsInNamespaceAndNode returns cached pods that pass the drain eligibility,
 // GPU, partial-drain, and supplied pod filters. All non-nil pod filters must match.
-func (i *Informers) FindEvictablePodsInNamespaceAndNode(namespace, nodeName string,
+func (i *Informers) FindEvictablePodsInNamespaceAndNode(ctx context.Context, namespace, nodeName string,
 	partialDrainEntity *protos.Entity, podFilters ...PodFilter) ([]*v1.Pod, error) {
 	compositeKey := fmt.Sprintf("%s/%s", namespace, nodeName)
 
@@ -378,10 +381,13 @@ func (i *Informers) FindEvictablePodsInNamespaceAndNode(namespace, nodeName stri
 	pods = i.filterEvictablePods(pods, partialDrainEntity)
 
 	if i.drainGPUPods && partialDrainEntity == nil {
-		pods = i.filterPodsWithGPURequests(pods)
+		pods, err = i.filterPodsWithGPURequests(ctx, pods)
+		if err != nil {
+			return nil, fmt.Errorf("failed to filter pods with GPU requests: %w", err)
+		}
 	}
 
-	pods, err = i.filterPodsUsingEntity(pods, partialDrainEntity, nodeName)
+	pods, err = i.filterPodsUsingEntity(ctx, pods, partialDrainEntity, nodeName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to filter pods using entity: %w", err)
 	}
@@ -450,7 +456,7 @@ pods with a device annotation that includes GPU-123:
 
 ...
 */
-func (i *Informers) filterPodsUsingEntity(pods []*v1.Pod, partialDrainEntity *protos.Entity,
+func (i *Informers) filterPodsUsingEntity(ctx context.Context, pods []*v1.Pod, partialDrainEntity *protos.Entity,
 	nodeName string) ([]*v1.Pod, error) {
 	if partialDrainEntity == nil {
 		return pods, nil
@@ -472,29 +478,110 @@ func (i *Informers) filterPodsUsingEntity(pods []*v1.Pod, partialDrainEntity *pr
 		deviceAnnotationJSON, podHasDeviceAnnotation := pod.Annotations[model.PodDeviceAnnotationName]
 		// While we can't detect a stale annotation for devices, we can detect pods that are requesting GPUs that do
 		// not have the device annotation at all which would indicate an issue with the metadata-collector.
-		isPodRequestingDevices := areContainersRequestingDevice(pod.Spec.Containers, resourceNames) ||
-			areContainersRequestingDevice(pod.Spec.InitContainers, resourceNames)
+		if !podHasDeviceAnnotation {
+			isPodRequestingDevices, err := i.isPodRequestingDevices(ctx, pod, resourceNames)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check device requests for pod %s: %w", pod.Name, err)
+			}
 
-		if isPodRequestingDevices && !podHasDeviceAnnotation {
-			return nil, fmt.Errorf("pod %s is requesting devices but is missing device annotation", pod.Name)
+			if isPodRequestingDevices {
+				return nil, fmt.Errorf("pod %s is requesting devices but is missing device annotation", pod.Name)
+			}
+
+			continue
 		}
 
-		if podHasDeviceAnnotation {
-			var deviceAnnotation model.DeviceAnnotation
-			if err := json.Unmarshal([]byte(deviceAnnotationJSON), &deviceAnnotation); err != nil {
-				return nil, fmt.Errorf("error unmarshalling device annotation for pod %s: %w", pod.Name, err)
-			}
+		var deviceAnnotation model.DeviceAnnotation
+		if err := json.Unmarshal([]byte(deviceAnnotationJSON), &deviceAnnotation); err != nil {
+			return nil, fmt.Errorf("error unmarshalling device annotation for pod %s: %w", pod.Name, err)
+		}
 
-			if isPodUsingPartialDrainEntity(deviceAnnotation, resourceNames, partialDrainEntity) {
-				slog.Info("Pod is eligible to be drained since it's using impacted entity",
-					"podName", pod.Name, "nodeName", nodeName, "entityType", partialDrainEntity.EntityType,
-					"entityValue", partialDrainEntity.EntityValue)
-				filteredPods = append(filteredPods, pod)
-			}
+		if isPodUsingPartialDrainEntity(deviceAnnotation, resourceNames, partialDrainEntity) {
+			slog.Info("Pod is eligible to be drained since it's using impacted entity",
+				"podName", pod.Name, "nodeName", nodeName, "entityType", partialDrainEntity.EntityType,
+				"entityValue", partialDrainEntity.EntityValue)
+			filteredPods = append(filteredPods, pod)
 		}
 	}
 
 	return filteredPods, nil
+}
+
+// isPodRequestingDevices reports whether a pod requests the devices through container limits or DRA claims.
+func (i *Informers) isPodRequestingDevices(ctx context.Context, pod *v1.Pod, resourceNames []string) (bool, error) {
+	if areContainersRequestingDevice(pod.Spec.Containers, resourceNames) ||
+		areContainersRequestingDevice(pod.Spec.InitContainers, resourceNames) {
+		return true, nil
+	}
+
+	return i.isPodClaimingDeviceClass(ctx, pod, resourceNames)
+}
+
+// isPodClaimingDeviceClass reports whether any DRA claim of the pod requests one of the device classes.
+func (i *Informers) isPodClaimingDeviceClass(ctx context.Context, pod *v1.Pod,
+	deviceClassNames []string) (bool, error) {
+	for _, podClaim := range pod.Spec.ResourceClaims {
+		claimSpec, err := i.getPodResourceClaimSpec(ctx, pod, podClaim)
+		if err != nil {
+			return false, fmt.Errorf("failed to resolve claim %s of pod %s/%s: %w",
+				podClaim.Name, pod.Namespace, pod.Name, err)
+		}
+
+		if claimSpec != nil && isClaimRequestingDeviceClass(claimSpec, deviceClassNames) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// getPodResourceClaimSpec returns the spec of the ResourceClaim a pod claim uses, or nil when the pod needs no
+// claim for it. A claim generated from a ResourceClaimTemplate is bound to the pod in status.resourceClaimStatuses
+// before the pod is scheduled, so the template itself is never read and deleting it does not affect the lookup.
+func (i *Informers) getPodResourceClaimSpec(ctx context.Context, pod *v1.Pod,
+	podClaim v1.PodResourceClaim) (*resourcev1.ResourceClaimSpec, error) {
+	claimName := podClaim.ResourceClaimName
+	if claimName == nil {
+		for _, claimStatus := range pod.Status.ResourceClaimStatuses {
+			if claimStatus.Name == podClaim.Name {
+				// An unset name means generating a claim was not necessary, so the entry holds no device.
+				if claimStatus.ResourceClaimName == nil {
+					return nil, nil
+				}
+
+				claimName = claimStatus.ResourceClaimName
+
+				break
+			}
+		}
+	}
+
+	if claimName == nil {
+		return nil, fmt.Errorf("no ResourceClaim is bound to claim %s of pod %s/%s", podClaim.Name, pod.Namespace, pod.Name)
+	}
+
+	claim, err := i.clientset.ResourceV1().ResourceClaims(pod.Namespace).Get(ctx, *claimName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ResourceClaim %s/%s: %w", pod.Namespace, *claimName, err)
+	}
+
+	return &claim.Spec, nil
+}
+
+func isClaimRequestingDeviceClass(claimSpec *resourcev1.ResourceClaimSpec, deviceClassNames []string) bool {
+	for _, request := range claimSpec.Devices.Requests {
+		if request.Exactly != nil && slices.Contains(deviceClassNames, request.Exactly.DeviceClassName) {
+			return true
+		}
+
+		for _, subRequest := range request.FirstAvailable {
+			if slices.Contains(deviceClassNames, subRequest.DeviceClassName) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func isPodUsingPartialDrainEntity(deviceAnnotation model.DeviceAnnotation, resourceNames []string,
@@ -557,14 +644,23 @@ func (i *Informers) filterEvictablePods(pods []*v1.Pod, partialDrainEntity *prot
 	return filteredPods
 }
 
-func (i *Informers) filterPodsWithGPURequests(pods []*v1.Pod) []*v1.Pod {
+// filterPodsWithGPURequests keeps pods with a device annotation, and unannotated pods that request GPUs through
+// container limits or DRA claims, so a missed metadata-collector update does not leave a GPU pod running.
+func (i *Informers) filterPodsWithGPURequests(ctx context.Context, pods []*v1.Pod) ([]*v1.Pod, error) {
 	filteredPods := []*v1.Pod{}
 
 	for _, pod := range pods {
-		_, podHasDeviceAnnotation := pod.Annotations[model.PodDeviceAnnotationName]
+		_, isPodRequestingGPU := pod.Annotations[model.PodDeviceAnnotationName]
+		if !isPodRequestingGPU {
+			var err error
 
-		// If the pod has been assigned GPU it must have device annotation
-		if podHasDeviceAnnotation {
+			isPodRequestingGPU, err = i.isPodRequestingDevices(ctx, pod, model.EntityTypeToResourceNames["GPU_UUID"])
+			if err != nil {
+				return nil, fmt.Errorf("failed to check GPU requests for pod %s: %w", pod.Name, err)
+			}
+		}
+
+		if isPodRequestingGPU {
 			slog.Info("Pod is eligible for draining as it is requesting GPU",
 				"pod", pod.Name,
 				"namespace", pod.Namespace,
@@ -574,7 +670,7 @@ func (i *Informers) filterPodsWithGPURequests(pods []*v1.Pod) []*v1.Pod {
 		}
 	}
 
-	return filteredPods
+	return filteredPods, nil
 }
 
 func (i *Informers) isDaemonSetPod(pod *v1.Pod) bool {
@@ -647,7 +743,7 @@ func (i *Informers) isPodNotReady(pod *v1.Pod) bool {
 // A nil error means the requests succeeded, not that the pods have finished terminating.
 func (i *Informers) EvictAllPodsInImmediateMode(ctx context.Context,
 	namespace, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity, podFilters ...PodFilter) error {
-	pods, err := i.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity, podFilters...)
+	pods, err := i.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, partialDrainEntity, podFilters...)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to find evictable pods in namespace on node",
 			"namespace", namespace,
@@ -802,12 +898,17 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 	timeoutReached := drainTimeout <= 0
 
 	evicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(
-		namespaces, nodeName, partialDrainEntity, podFilters...)
+		ctx, namespaces, nodeName, partialDrainEntity, podFilters...)
 	if evicted {
 		slog.InfoContext(ctx, "All pods on node have been deleted", "node", nodeName)
 		metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(0)
 
 		return nil
+	}
+
+	if len(remainingPods) == 0 {
+		// A namespace could not be checked (already logged); requeue instead of force deleting nothing.
+		return fmt.Errorf("could not check every namespace on node %s, requeuing", nodeName)
 	}
 
 	if timeoutReached {
@@ -1037,14 +1138,14 @@ func (i *Informers) convertSetToSlice(namespaceSet map[string]struct{}) []string
 
 // checkIfPodsPresentInNamespaceAndNode returns whether all selected pods are gone and
 // any remaining pods. A cache lookup error prevents reporting that all pods are gone.
-func (i *Informers) checkIfPodsPresentInNamespaceAndNode(namespaces []string, nodeName string,
+func (i *Informers) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, namespaces []string, nodeName string,
 	partialDrainEntity *protos.Entity, podFilters ...PodFilter) (bool, []*v1.Pod) {
 	allEvicted := true
 
 	var remainingPods []*v1.Pod
 
 	for _, namespace := range namespaces {
-		pods, err := i.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity, podFilters...)
+		pods, err := i.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, partialDrainEntity, podFilters...)
 		if err != nil {
 			slog.Error("Failed to check namespace on node",
 				"namespace", namespace,
@@ -1071,7 +1172,7 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 	namespaces []string, nodeName string, timeout time.Duration, partialDrainEntity *protos.Entity,
 	podFilters ...PodFilter) bool {
 	allEvicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(
-		namespaces, nodeName, partialDrainEntity, podFilters...)
+		ctx, namespaces, nodeName, partialDrainEntity, podFilters...)
 
 	if allEvicted {
 		slog.InfoContext(ctx, "All pods evicted in namespace from node",
@@ -1132,7 +1233,8 @@ func (i *Informers) CheckIfObservedPodsAreEvictedInImmediateMode(ctx context.Con
 			return false
 		}
 
-		allEvicted, _ := i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName, partialDrainEntity, podFilters...)
+		allEvicted, _ := i.checkIfPodsPresentInNamespaceAndNode(ctx, namespaces, nodeName, partialDrainEntity,
+			podFilters...)
 		if allEvicted {
 			slog.InfoContext(ctx, "All pods evicted after force deletion on node",
 				"node", nodeName)

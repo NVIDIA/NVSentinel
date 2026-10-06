@@ -356,7 +356,7 @@ func (e *NodeDrainEvaluator) handleAllowCompletionNamespaces(ctx context.Context
 	hasRemainingPods := false
 
 	for _, namespace := range ns.allowCompletionNamespaces {
-		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity,
+		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, partialDrainEntity,
 			ns.podFilters[config.ModeAllowCompletion])
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to check pods in namespace on node",
@@ -397,7 +397,7 @@ func (e *NodeDrainEvaluator) handleDeleteAfterTimeoutNamespaces(ctx context.Cont
 	hasRemainingPods := false
 
 	for _, namespace := range ns.deleteAfterTimeoutNamespaces {
-		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity,
+		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, partialDrainEntity,
 			ns.podFilters[config.ModeDeleteAfterTimeout])
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to check pods in namespace on node",

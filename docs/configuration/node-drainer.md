@@ -75,6 +75,8 @@ kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
 
 If enabled, the node-drainer will only drain pods which are leveraging the GPU_UUID impacted entity in COMPONENT_RESET HealthEvents. If disabled, the node-drainer will drain all eligible pods on the impacted node for the configured namespaces regardless of the remediation action. HealthEvents with the COMPONENT_RESET remediation action must include an impacted entity for the unhealthy GPU_UUID or else the drain will fail. 
 
+A partial drain also fails if a pod requests GPUs but has no `dgxc.nvidia.com/devices` annotation, because the metadata-collector is then not working. A pod requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. The node-drainer reads ResourceClaims only for pods that have DRA claims and no device annotation.
+
 IMPORTANT: If this setting is enabled, the COMPONENT_RESET action in fault-remediation must map to a custom resource which takes action only against the GPU_UUID. If partial drain was enabled in node-drainer but fault-remediation mapped COMPONENT_RESET to a reboot action, pods which weren't drained would be restarted as part of the reboot.
 ```yaml
 node-drainer:
@@ -160,7 +162,7 @@ node-drainer:
   drainGPUPods: false
 ```
 
-The node-drainer detects GPU resource requests through device annotations added to pods by the metadata-collector. Pods with device annotations are identified as GPU workloads and eligible for eviction.
+The node-drainer detects GPU resource requests through device annotations added to pods by the metadata-collector. Pods with device annotations are identified as GPU workloads and eligible for eviction. A pod without the annotation is also a GPU workload if it requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. If the node-drainer cannot read a ResourceClaim, the drain stops and retries.
 
 Device annotations are added to pods requesting GPU resources by metadata-collector with the format:
 ```yaml
@@ -170,7 +172,7 @@ annotations:
 
 #### Behavior
 
-- **When enabled (`true`)**: Only pods with GPU device annotations are evicted during drain operations
+- **When enabled (`true`)**: Only pods with GPU device annotations, or that request GPUs through container limits or DRA claims, are evicted during drain operations
 - **When disabled (`false`)**: All eligible pods in configured namespaces are evicted (default behavior)
 - Pods without GPU requests are preserved, maintaining critical infrastructure services
 
