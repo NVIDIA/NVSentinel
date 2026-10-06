@@ -2280,6 +2280,48 @@ class TestPlatformConnectors(unittest.TestCase):
             assert event.metadata["dcgm_mode"] == "remote"
             assert event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
 
+    def test_remote_probe_hang_respects_probe_store_only_and_clears_with_same_strategy(self):
+        """Remote probe hangs honor the probe setting across recovery and restart."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "remote") is True
+
+            event = servicer.health_events[0]
+            assert event.checkName == "GpuDcgmConnectivityFailure"
+            assert event.errorCode == ["DCGM_PROBE_HANG"]
+            assert event.processingStrategy == platformconnector_pb2.STORE_ONLY
+
+            restarted = self._make_processor(
+                processor.state_file_path,
+                processor._metadata_reader._path,
+                store_only_checks=frozenset(),
+            )
+            assert restarted._dcgm_unresponsive_strategy == platformconnector_pb2.STORE_ONLY
+            servicer.health_events = None
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            restarted.clear_dcgm_connectivity_failure(timestamp)
+
+            clear_event = servicer.health_events[0]
+            assert clear_event.isHealthy is True
+            assert clear_event.processingStrategy == platformconnector_pb2.STORE_ONLY
+            assert not os.path.exists(processor._dcgm_unresponsive_state_path)
+
+    def test_probe_store_only_does_not_change_regular_remote_connectivity_failures(self):
+        """The probe-specific setting must not suppress ordinary connectivity events."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            assert processor.dcgm_connectivity_failed() is True
+
+            event = servicer.health_events[0]
+            assert event.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
+            assert event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
     def test_probe_unresponsive_returns_false_when_socket_missing(self):
         """Watchdog must retry when the platform-connector socket is not yet up."""
         tmpdir = tempfile.mkdtemp(prefix="ghm_probe_no_socket_")
