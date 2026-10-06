@@ -69,13 +69,16 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
 
 
 class TestDCGMHealthChecks:
-    def _make_thermal_margin_watcher(self, metadata_reader: MetadataReader) -> dcgm.DCGMWatcher:
+    def _make_thermal_margin_watcher(
+        self, metadata_reader: MetadataReader, min_consecutive_polls: int = 1
+    ) -> dcgm.DCGMWatcher:
         watcher = dcgm.DCGMWatcher(
             dcgm.types.DCGMWatcherConfig(
                 addr="localhost:5555",
                 poll_interval_seconds=10,
                 dcgm_k8s_service_enabled=False,
                 thermal_margin_enabled=True,
+                thermal_margin_min_consecutive_polls=min_consecutive_polls,
             ),
             callbacks=[],
             metadata_reader=metadata_reader,
@@ -448,6 +451,81 @@ class TestDCGMHealthChecks:
         cleared = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
         assert cleared.status == dcgm.types.HealthStatus.PASS
         assert cleared.entity_failures == {}
+
+    def _thermal_threshold_reader(self, threshold: int = -2) -> MagicMock:
+        reader = MagicMock()
+        reader.get_slowdown_tlimit_c.return_value = threshold
+        return reader
+
+    def test_evaluate_gpu_thermal_margin_requires_consecutive_polls(self):
+        """With a threshold of 3, only the third consecutive sample below the limit fails."""
+        watcher = self._make_thermal_margin_watcher(self._thermal_threshold_reader(), min_consecutive_polls=3)
+        dcgm_group_mock = MagicMock()
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: -3})
+
+        first = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
+        second = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
+        third = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
+
+        assert first.status == dcgm.types.HealthStatus.PASS
+        assert first.evaluated_gpu_ids == {0}
+        assert second.status == dcgm.types.HealthStatus.PASS
+        assert third.status == dcgm.types.HealthStatus.FAIL
+        (failure,) = third.entity_failures[0]
+        assert failure.code == "GPU_TEMP_HW_SLOWDOWN_VIOLATION"
+        assert failure.message == "GPU 0 thermal margin -3°C below HW slowdown T.Limit (slowdown=-2°C)"
+
+    def test_evaluate_gpu_thermal_margin_streak_resets_when_cleared(self):
+        """A sample at or above the limit resets the streak, so isolated spikes never accumulate to a failure."""
+        watcher = self._make_thermal_margin_watcher(self._thermal_threshold_reader(), min_consecutive_polls=2)
+        dcgm_group_mock = MagicMock()
+
+        for margin in (-3, -2, -3):
+            watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: margin})
+            result = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
+            assert result.status == dcgm.types.HealthStatus.PASS
+        assert watcher._thermal_margin_streaks == {0: 1}
+
+        result = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
+        assert result.status == dcgm.types.HealthStatus.FAIL
+
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: 10})
+        recovered = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
+        assert recovered.status == dcgm.types.HealthStatus.PASS
+        assert watcher._thermal_margin_streaks == {}
+
+    def test_evaluate_gpu_thermal_margin_unusable_sample_keeps_streak(self):
+        """A blank sample is skipped without resetting or advancing the streak."""
+        watcher = self._make_thermal_margin_watcher(self._thermal_threshold_reader(), min_consecutive_polls=2)
+        dcgm_group_mock = MagicMock()
+
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: -3})
+        assert watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0]).status == (
+            dcgm.types.HealthStatus.PASS
+        )
+
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: dcgmvalue.DCGM_INT64_BLANK})
+        assert watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0]) is None
+        assert watcher._thermal_margin_streaks == {0: 1}
+
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: -3})
+        assert watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0]).status == (
+            dcgm.types.HealthStatus.FAIL
+        )
+
+    def test_evaluate_gpu_thermal_margin_streaks_are_per_gpu(self):
+        """One GPU's streak neither advances nor resets another's."""
+        watcher = self._make_thermal_margin_watcher(self._thermal_threshold_reader(), min_consecutive_polls=2)
+        dcgm_group_mock = MagicMock()
+
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: -3, 1: 5})
+        watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0, 1])
+        watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: -3, 1: -3})
+        result = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0, 1])
+
+        assert result.status == dcgm.types.HealthStatus.FAIL
+        assert set(result.entity_failures) == {0}
+        assert watcher._thermal_margin_streaks == {0: 2, 1: 1}
 
     def test_evaluate_gpu_thermal_margin_mixed_gpus(self, tmp_path):
         """Test mixed scenario: GPU 0 passes, GPU 1 fails."""

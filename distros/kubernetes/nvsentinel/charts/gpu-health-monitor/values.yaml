@@ -90,6 +90,11 @@ dcgmFieldsMonitoring:
   # Dry-run for GpuThermalMarginWatch. When true, this check's
   # events are emitted with processingStrategy=STORE_ONLY
   gpuTempLimitStoreOnly: true
+  # Consecutive polls with the margin below the slowdown T.Limit before the GPU is
+  # failed. The margin is sampled once per poll and swings by tens of degrees within
+  # seconds under load, so one sample past the threshold is usually a transient.
+  # 1 fails on first observation.
+  gpuTempLimitMinConsecutivePolls: 3
   # Enable GpuPowerBrakeWatch: fails a GPU whose clocks-event-reasons mask has the
   # HW power brake bit (0x80) set, i.e. the power delivery path is forcing clocks
   # down. DCGM's POWER health watch does not report this; its dominant code

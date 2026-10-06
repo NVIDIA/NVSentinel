@@ -247,6 +247,16 @@ class DCGMWatcher:
                 "GpuThermalMarginWatch requested but the thermal margin field (153) is unavailable; "
                 "disabling the optional monitor"
             )
+        # The margin is one sample per poll and swings by tens of degrees within
+        # seconds under load, so a single sample past the threshold is usually a
+        # transient the hardware's own slowdown already handled.
+        self._thermal_margin_min_consecutive_polls = max(1, config.thermal_margin_min_consecutive_polls)
+        self._thermal_margin_streaks: dict[int, int] = {}
+        if self._thermal_margin_enabled:
+            log.info(
+                "GpuThermalMarginWatch enabled: %d consecutive poll(s) to fail",
+                self._thermal_margin_min_consecutive_polls,
+            )
         power_brake_supported = "gpupowerbrakemonitoringenabled" in DCGM_FIELDS_MONITORING
         self._power_brake_enabled = config.power_brake_enabled and power_brake_supported
         if config.power_brake_enabled and not power_brake_supported:
@@ -827,8 +837,11 @@ class DCGMWatcher:
         HW slowdown T.Limit threshold from metadata.
 
         For each GPU it reads the live margin and fails ``GpuThermalMarginWatch``
-        when ``margin < slowdown_threshold``; GPUs missing the threshold or a
-        usable margin sample are skipped. Returns ``HealthDetails`` for the
+        when ``margin < slowdown_threshold`` on at least
+        ``thermal_margin_min_consecutive_polls`` consecutive polls; a sample at or
+        above the threshold resets the count. GPUs missing the threshold or a
+        usable margin sample are skipped and keep their count, so a gap in DCGM
+        data neither raises nor clears a finding. Returns ``HealthDetails`` for the
         evaluated GPUs, or ``None`` when the watch is disabled, the field group
         is unset, or no metadata reader is configured.
         """
@@ -880,11 +893,25 @@ class DCGMWatcher:
             margin_details.evaluated_gpu_ids.add(gpu_id)
 
             if margin_c < slowdown_threshold:
+                streak = self._thermal_margin_streaks.get(gpu_id, 0) + 1
+                self._thermal_margin_streaks[gpu_id] = streak
+                if streak < self._thermal_margin_min_consecutive_polls:
+                    log.debug(
+                        "GPU %s thermal margin %s°C below HW slowdown T.Limit (slowdown=%s°C), "
+                        "%d/%d consecutive polls; not failing yet",
+                        gpu_id,
+                        margin_c,
+                        slowdown_threshold,
+                        streak,
+                        self._thermal_margin_min_consecutive_polls,
+                    )
+                    continue
                 log.debug(
-                    "GPU %s thermal margin %s°C below HW slowdown T.Limit (slowdown=%s°C) for GpuThermalMarginWatch",
+                    "GPU %s thermal margin %s°C below HW slowdown T.Limit (slowdown=%s°C) for %d consecutive polls",
                     gpu_id,
                     margin_c,
                     slowdown_threshold,
+                    streak,
                 )
                 margin_details.status = types.HealthStatus.FAIL
                 margin_details.entity_failures[gpu_id] = [
@@ -894,6 +921,7 @@ class DCGMWatcher:
                     )
                 ]
             else:
+                self._thermal_margin_streaks.pop(gpu_id, None)
                 log.debug(
                     "GPU %s thermal margin %s°C at or above HW slowdown T.Limit (slowdown=%s°C) for GpuThermalMarginWatch",
                     gpu_id,

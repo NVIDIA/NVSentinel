@@ -253,6 +253,7 @@ gpu-health-monitor:
   dcgmFieldsMonitoring:
     gpuTempLimitMonitoringEnabled: true
     gpuTempLimitStoreOnly: true
+    gpuTempLimitMinConsecutivePolls: 3
 ```
 
 ### gpuTempLimitMonitoringEnabled
@@ -262,6 +263,10 @@ Enables the watch. On by default.
 ### gpuTempLimitStoreOnly
 
 Dry run. When true, this check's events are emitted with `processingStrategy=STORE_ONLY`, so they are persisted and exported as metrics but excluded from the remediation pipeline: no node condition and no cordon. Defaults to true, so the watch is observable before it can act. Set it to `false` once you have confirmed the thresholds suit your hardware and cooling.
+
+### gpuTempLimitMinConsecutivePolls
+
+Consecutive polls with the margin below the slowdown threshold before the GPU is failed. Defaults to 3. The margin is read as one sample per poll, and under load it can move by tens of degrees within seconds, so a single sample past the threshold is usually a transient that the GPU's own hardware slowdown has already handled. A sustained excursion is the actionable case. A sample at or above the threshold resets the counter, and `1` fails on first observation. A GPU with no usable sample is skipped and keeps its counter, so a gap in DCGM data neither raises nor clears a finding.
 
 To interpret a firing check, see the [GPU Thermal Margin runbook](../runbooks/gpu-thermal-margin.md).
 
