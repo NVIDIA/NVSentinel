@@ -2553,15 +2553,31 @@ class TestPlatformConnectors(unittest.TestCase):
             assert escalation.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
             with open(marker) as marker_file:
                 assert marker_file.read().splitlines() == [
-                    "DCGM_PROBE_HANG",
+                    "DCGM_CONNECTIVITY_ERROR",
                     "EXECUTE_REMEDIATION",
                     "GpuDcgmConnectivityFailure",
                 ]
 
             servicer.health_events = None
+            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
+                gauge_labels = unittest.mock.MagicMock()
+                gauge.labels.return_value = gauge_labels
+                restarted = self._make_processor(
+                    processor.state_file_path,
+                    processor._metadata_reader._path,
+                )
+                gauge.labels.assert_called_with(
+                    event_type="GpuDcgmConnectivityFailure",
+                    gpu_id="",
+                    error_code="DCGM_CONNECTIVITY_ERROR",
+                )
+                gauge_labels.set.assert_called_with(1)
+
+            key = restarted._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
+            assert restarted.entity_cache[key].active_errors == {"DCGM_CONNECTIVITY_ERROR"}
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            processor.clear_dcgm_connectivity_failure(timestamp)
+            restarted.clear_dcgm_connectivity_failure(timestamp)
 
             recovery = servicer.health_events[0]
             assert recovery.checkName == "GpuDcgmConnectivityFailure"

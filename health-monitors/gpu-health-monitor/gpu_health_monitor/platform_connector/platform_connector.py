@@ -217,6 +217,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self,
         processing_strategy: platformconnector_pb2.ProcessingStrategy,
         check_name: str = "GpuDcgmUnresponsive",
+        error_code: str = "DCGM_PROBE_HANG",
     ) -> None:
         """Remember a delivered probe hang across liveness restarts.
 
@@ -233,7 +234,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         try:
             strategy_name = platformconnector_pb2.ProcessingStrategy.Name(processing_strategy)
             with open(tmp_path, "w") as state_file:
-                state_file.write(f"DCGM_PROBE_HANG\n{strategy_name}\n")
+                state_file.write(f"{error_code}\n{strategy_name}\n")
                 if check_name != "GpuDcgmUnresponsive":
                     state_file.write(f"{check_name}\n")
             os.replace(tmp_path, self._dcgm_unresponsive_state_path)
@@ -247,9 +248,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
         strategy = self._effective_strategy("GpuDcgmUnresponsive")
         check_name = "GpuDcgmUnresponsive"
+        error_code = "DCGM_PROBE_HANG"
         try:
             with open(self._dcgm_unresponsive_state_path, "r") as state_file:
                 lines = [line.strip() for line in state_file.read().splitlines() if line.strip()]
+            if lines:
+                error_code = lines[0]
             if len(lines) >= 2:
                 try:
                     strategy = platformconnector_pb2.ProcessingStrategy.Value(lines[1])
@@ -265,10 +269,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.error("Failed to read unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
 
         key = self._build_cache_key(check_name, "DCGM", "ALL")
-        self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
+        self.entity_cache[key] = EntityCacheEntry(active_errors={error_code})
         self._dcgm_unresponsive_strategy = strategy
         self._dcgm_unresponsive_check_name = check_name
-        metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", error_code="DCGM_PROBE_HANG").set(1)
+        metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", error_code=error_code).set(1)
 
     def _clear_dcgm_unresponsive_state(self) -> None:
         try:
@@ -1037,7 +1041,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             # Escalation replaces a remote probe-hang event with
                             # the active connectivity event; persist the strategy
                             # of the replacement so its eventual clear matches.
-                            self._persist_dcgm_unresponsive_state(self._processing_strategy, check_name)
+                            self._persist_dcgm_unresponsive_state(
+                                self._processing_strategy,
+                                check_name,
+                                error_code="DCGM_CONNECTIVITY_ERROR",
+                            )
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
                         event_type=check_name, gpu_id="", error_code="DCGM_CONNECTIVITY_ERROR"
