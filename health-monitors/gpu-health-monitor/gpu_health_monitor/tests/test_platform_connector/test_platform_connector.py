@@ -2245,7 +2245,12 @@ class TestPlatformConnectors(unittest.TestCase):
             yield healthEventProcessor, self._make_processor(state_file_path, metadata_path, **kwargs)
         finally:
             server.stop(0)
-            for p in (state_file_path, f"{state_file_path}.dcgm-unresponsive", metadata_path):
+            for p in (
+                state_file_path,
+                f"{state_file_path}.dcgm-unresponsive",
+                f"{state_file_path}.dcgm-connectivity",
+                metadata_path,
+            ):
                 if os.path.exists(p):
                     os.unlink(p)
 
@@ -2454,6 +2459,67 @@ class TestPlatformConnectors(unittest.TestCase):
             assert cleared.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
             assert self._active_connectivity_gauge("DCGM_PROBE_HANG") == 0
             assert self._active_connectivity_gauge("DCGM_CONNECTIVITY_ERROR") == 0
+
+    @staticmethod
+    def _write_window(processor: platform_connector.PlatformConnectorEventProcessor, since: float, last: float) -> None:
+        with open(f"{processor.state_file_path}.dcgm-connectivity", "w") as window_file:
+            json.dump({"since": since, "last": last}, window_file)
+
+    def test_remote_probe_hang_is_deferred_until_window_elapses(self):
+        """With a debounce, a remote hang waits until DCGM has been unreachable long enough."""
+        with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, processor):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is False
+            assert servicer.health_events is None
+            assert os.path.exists(f"{processor.state_file_path}.dcgm-connectivity")
+
+            processor._connectivity_failing_since -= 200
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 46.6, "remote") is True
+            event = servicer.health_events[0]
+            assert event.checkName == "GpuDcgmConnectivityFailure"
+            assert event.errorCode == ["DCGM_PROBE_HANG"]
+
+    def test_remote_probe_hang_window_survives_process_restart(self):
+        """A liveness restart during a hang resumes the window instead of starting over."""
+        with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, first):
+            now = time.time()
+            self._write_window(first, since=now - 250, last=now - 60)
+
+            restarted = self._make_processor(
+                first.state_file_path, first._metadata_reader._path, connectivity_failure_window_seconds=240
+            )
+            assert restarted.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is True
+            assert servicer.health_events[0].errorCode == ["DCGM_PROBE_HANG"]
+
+    def test_stale_connectivity_window_is_not_resumed(self):
+        """A window whose last failure is older than the gap limit starts over."""
+        with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, first):
+            now = time.time()
+            self._write_window(first, since=now - 1000, last=now - 400)
+
+            restarted = self._make_processor(
+                first.state_file_path, first._metadata_reader._path, connectivity_failure_window_seconds=240
+            )
+            assert restarted._connectivity_failing_since is None
+            assert restarted.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is False
+            assert servicer.health_events is None
+
+    def test_connectivity_window_resets_on_success(self):
+        """A successful cycle ends the window, so the next hang starts counting again."""
+        with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, processor):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is False
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+
+            assert processor._connectivity_failing_since is None
+            assert not os.path.exists(f"{processor.state_file_path}.dcgm-connectivity")
+
+    def test_local_managed_hang_is_not_deferred_by_window(self):
+        """The embedded hang keeps publishing at once: its fault is node-local."""
+        with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, processor):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "local-managed") is True
+            assert servicer.health_events[0].checkName == "GpuDcgmUnresponsive"
 
     def test_probe_unresponsive_is_not_republished_while_active(self):
         """The watchdog reports once per episode; a repeat must not duplicate the event."""

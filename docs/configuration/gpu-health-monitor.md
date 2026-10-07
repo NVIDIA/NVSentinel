@@ -391,7 +391,7 @@ Runtime debounce and the startup gate address different phases:
 
 - `startupGate` prevents the monitor from starting and publishing connectivity failures before DCGM has been functional once.
 - `runtimeDebounce` filters short connectivity transitions after the monitor is running.
-- The probe watchdog is not delayed by `failureThreshold`: a DCGM call that has stopped returning may have no later poll from which to build a failure streak.
+- In remote modes, a probe hang is debounced on time instead of cycles: it is published once DCGM has been unreachable for `failureThreshold * pollIntervalSeconds`. A hung call has no later poll to count, and the liveness probe restarts the container before a long deadline elapses, so the start of the unreachable window is persisted under the monitor's state directory and resumed after a restart. Any successful cycle ends the window, and a failure more than five minutes after the previous one starts a new window. With the default `failureThreshold: 1` the hang is published as soon as it is detected. The embedded-mode `GpuDcgmUnresponsive` event is not delayed: its fault is node-local.
 
 `dcgmHealthCheck.connectivityFailureEscalationThreshold` continues to count consecutive failed observations. If its threshold is lower than the debounce failure threshold, the first published unhealthy event may already recommend `RESTART_BM`; configure escalation at or above `failureThreshold` when a preliminary `CONTACT_SUPPORT` event is desired.
 

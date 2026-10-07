@@ -80,7 +80,9 @@ dcgmConnectivity:
   runtimeDebounce:
     # Example: failureThreshold: 4 and successThreshold: 2 publishes failure
     # after four failed cycles and recovery after two successful cycles.
-    # Consecutive failed cycles required to publish an unhealthy event.
+    # Consecutive failed cycles required to publish an unhealthy event. A remote-mode
+    # probe hang waits for failureThreshold * pollIntervalSeconds of unreachability,
+    # measured across liveness restarts.
     failureThreshold: 1
     # Consecutive successful cycles required to clear a published failure.
     successThreshold: 1

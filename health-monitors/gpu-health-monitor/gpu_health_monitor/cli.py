@@ -301,6 +301,14 @@ def cli(
         connectivity_success_threshold,
     )
 
+    # A remote probe hang is debounced on time unreachable, the same span the
+    # cycle threshold covers for prompt failures.
+    connectivity_failure_window_seconds = (
+        connectivity_failure_threshold * int(dcgm_config["PollIntervalSeconds"])
+        if connectivity_failure_threshold > 1
+        else 0
+    )
+
     event_processor_config = platform_connector.PlatformConnectorConfig(
         socket_path=config["eventprocessors.platformconnector"]["SocketPath"],
         node_name=node_name,
@@ -312,6 +320,7 @@ def cli(
         connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
         connectivity_failure_threshold=connectivity_failure_threshold,
         connectivity_success_threshold=connectivity_success_threshold,
+        connectivity_failure_window_seconds=connectivity_failure_window_seconds,
         token_path=platform_connector_token_path or None,
     )
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
