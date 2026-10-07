@@ -1156,10 +1156,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             # the same unvalidated signal whether the hostengine is local or not.
             processing_strategy = self._effective_strategy("GpuDcgmUnresponsive")
 
-            log.error(
-                f"DCGM probe {operation} unresponsive for {elapsed_seconds:.1f}s, "
-                f"sending {check_name} health event (mode={dcgm_mode})"
-            )
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             health_events = []
@@ -1188,6 +1184,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     )
                     return False
 
+            log.error(
+                f"DCGM probe {operation} unresponsive for {elapsed_seconds:.1f}s, "
+                f"sending {check_name} health event (mode={dcgm_mode})"
+            )
             event_metadata = {"probe_operation": operation, "dcgm_mode": dcgm_mode}
             chassis_serial = self._metadata_reader.get_chassis_serial()
             if chassis_serial:

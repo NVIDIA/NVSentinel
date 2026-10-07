@@ -2468,12 +2468,15 @@ class TestPlatformConnectors(unittest.TestCase):
     def test_remote_probe_hang_is_deferred_until_window_elapses(self):
         """With a debounce, a remote hang waits until DCGM has been unreachable long enough."""
         with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, processor):
-            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is False
+            # The watchdog retries a deferred hang every second, so deferral stays quiet.
+            with self.assertNoLogs(level="ERROR"):
+                assert processor.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is False
             assert servicer.health_events is None
             assert os.path.exists(f"{processor.state_file_path}.dcgm-connectivity")
 
             processor._connectivity_failing_since -= 200
-            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 46.6, "remote") is True
+            with self.assertLogs(level="ERROR"):
+                assert processor.dcgm_probe_unresponsive("dcgm_health_check", 46.6, "remote") is True
             event = servicer.health_events[0]
             assert event.checkName == "GpuDcgmConnectivityFailure"
             assert event.errorCode == ["DCGM_PROBE_HANG"]
