@@ -209,16 +209,18 @@ func initializeCircuitBreaker(
 		"percentage", cbConfig.Percentage,
 		"maxNodes", cbConfig.MaxNodes,
 		"maxCordonedNodes", cbConfig.MaxCordonedNodes,
+		"maxCordonedPercentage", cbConfig.MaxCordonedPercentage,
 		"duration", cbConfig.Duration)
 
 	cb, err := breaker.NewSlidingWindowBreaker(ctx, breaker.Config{
-		Window:               duration,
-		TripPercentage:       float64(cbConfig.Percentage),
-		TripMaxNodes:         cbConfig.MaxNodes,
-		TripMaxCordonedNodes: cbConfig.MaxCordonedNodes,
-		K8sClient:            k8sClient,
-		ConfigMapName:        circuitBreakerName,
-		ConfigMapNamespace:   namespace,
+		Window:                    duration,
+		TripPercentage:            float64(cbConfig.Percentage),
+		TripMaxNodes:              cbConfig.MaxNodes,
+		TripMaxCordonedNodes:      cbConfig.MaxCordonedNodes,
+		TripMaxCordonedPercentage: float64(cbConfig.MaxCordonedPercentage),
+		K8sClient:                 k8sClient,
+		ConfigMapName:             circuitBreakerName,
+		ConfigMapNamespace:        namespace,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize circuit breaker: %w", err)

@@ -47,10 +47,13 @@ type Cordon struct {
 }
 
 type CircuitBreaker struct {
-	Percentage       int    `toml:"percentage"`
-	MaxNodes         int    `toml:"maxNodes"`
-	MaxCordonedNodes int    `toml:"maxCordonedNodes"`
-	Duration         string `toml:"duration"`
+	Percentage       int `toml:"percentage"`
+	MaxNodes         int `toml:"maxNodes"`
+	MaxCordonedNodes int `toml:"maxCordonedNodes"`
+	// MaxCordonedPercentage is the percentage form of MaxCordonedNodes. When both are set
+	// the lower one binds.
+	MaxCordonedPercentage int    `toml:"maxCordonedPercentage"`
+	Duration              string `toml:"duration"`
 }
 
 type Match struct {
