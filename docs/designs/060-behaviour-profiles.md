@@ -61,13 +61,13 @@ behaviour for each group ([#1903](https://github.com/NVIDIA/NVSentinel/issues/19
   ([#1857](https://github.com/NVIDIA/NVSentinel/issues/1857)).
 - NVSentinel reboots the node after a fault on one device type, but not after a fault on a different device type.
 
-At this time, each stage has a different, partial control for each node:
+At this time, each stage has a different control for each node. Only the fault-quarantine control is complete:
 
 | Stage | Control for each node at this time | Limitation |
 |---|---|---|
 | platform-connectors | `nvsentinel.dgxc.nvidia.com/managed=false` changes events to `STORE_ONLY` | It stops all actions. It also stops node conditions and recovery events |
-| fault-quarantine | CEL `Node` rules in each rule set | When no rule matches, no later stage runs. There is no fallback group |
-| node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) | It selects only the drain plugin or the eviction API |
+| fault-quarantine | CEL `Node` rules in each rule set | Complete for quarantine. A rule set with a catch-all `Node` rule is a fallback. But node-drainer drains each quarantined node, and fault-remediation then acts on it. These rules cannot change the later stages |
+| node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) | It selects only the drain plugin or the eviction API. It cannot skip the drain for a node. `drainOverrides.skip` applies to one event, and the publisher sets it |
 | fault-remediation | None | One map from action to CR applies to the full cluster. NVSentinel records an action that is not in the map as `remediation-failed` |
 
 If each component gets its own node selector, each component has its own selection logic, its own group definitions,
