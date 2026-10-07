@@ -15,6 +15,7 @@
 package gpuservices
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 	"time"
@@ -154,5 +155,73 @@ func TestNewGPUServicesManager(t *testing.T) {
 				t.Errorf("Result mismatch.\nExpected:\n%v\nGot:\n%v", tc.expected, result)
 			}
 		})
+	}
+}
+
+func TestRegistry_GPUOperator_ListsTheOperandsOfBothModes(t *testing.T) {
+	type expectedApp struct {
+		appSelector map[string]string
+		nodeLabel   string
+		draMode     bool
+	}
+
+	managedBy := map[string]string{"app.kubernetes.io/managed-by": "gpu-operator"}
+	devicePluginSelector := func(app string) map[string]string {
+		selector := map[string]string{"app": app}
+		maps.Copy(selector, managedBy)
+
+		return selector
+	}
+
+	// DRA mode operand pods do not carry the app.kubernetes.io/managed-by label.
+	expected := []expectedApp{
+		{devicePluginSelector("nvidia-device-plugin-daemonset"), "nvidia.com/gpu.deploy.device-plugin", false},
+		{devicePluginSelector("nvidia-dcgm"), "nvidia.com/gpu.deploy.dcgm", false},
+		{devicePluginSelector("nvidia-dcgm-exporter"), "nvidia.com/gpu.deploy.dcgm-exporter", false},
+		{devicePluginSelector("gpu-feature-discovery"), "nvidia.com/gpu.deploy.gpu-feature-discovery", false},
+		{map[string]string{"app": "nvidia-dcgm-dra"}, "nvidia.com/gpu.deploy.dcgm-dra", true},
+		{map[string]string{"app": "nvidia-dcgm-exporter-dra"}, "nvidia.com/gpu.deploy.dcgm-exporter-dra", true},
+	}
+
+	spec, found := Registry["gpu-operator"]
+	if !found {
+		t.Fatalf("Expected registry entry gpu-operator")
+	}
+
+	if spec.Namespace != "gpu-operator" {
+		t.Errorf("Expected namespace gpu-operator, got %q", spec.Namespace)
+	}
+
+	if len(spec.ManagerSelector) != 0 {
+		t.Errorf("Expected no manager selector, got %v", spec.ManagerSelector)
+	}
+
+	if len(spec.Apps) != len(expected) {
+		t.Fatalf("Expected %d apps, got %d", len(expected), len(spec.Apps))
+	}
+
+	for i, app := range spec.Apps {
+		want := expected[i]
+
+		if !maps.Equal(app.AppSelector, want.appSelector) {
+			t.Errorf("App %d: expected selector %v, got %v", i, want.appSelector, app.AppSelector)
+		}
+
+		if app.NodeLabel != want.nodeLabel {
+			t.Errorf("App %v: expected node label %q, got %q", app.AppSelector, want.nodeLabel, app.NodeLabel)
+		}
+
+		if app.DRAMode() != want.draMode {
+			t.Errorf("App %v: expected DRAMode %v, got %v", app.AppSelector, want.draMode, app.DRAMode())
+		}
+
+		if app.EnabledValue != "true" || app.DisabledValue != "false" {
+			t.Errorf("App %v: expected enabled/disabled values true/false, got %q/%q",
+				app.AppSelector, app.EnabledValue, app.DisabledValue)
+		}
+	}
+
+	if spec.TeardownTimeout != 5*time.Minute || spec.RestoreTimeout != 10*time.Minute {
+		t.Errorf("Expected teardown/restore timeouts 5m/10m, got %v/%v", spec.TeardownTimeout, spec.RestoreTimeout)
 	}
 }

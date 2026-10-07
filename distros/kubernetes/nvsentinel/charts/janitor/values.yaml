@@ -169,7 +169,10 @@ config:
         name: "gpu-operator"
       resetJob:
         writeSysLogEvent: true
-        runtimeClassName: "nvidia"
+        # Leave empty: the privileged reset Job reaches the driver through the
+        # hostDriverRootPath hostPath, so it needs no RuntimeClass. Set this only
+        # if your cluster requires a RuntimeClass for privileged pods.
+        runtimeClassName: ""
         # Host path that contains the NVIDIA driver filesystem. Containerized
         # driver installations commonly use /run/nvidia/driver. Set this to /
         # when the NVIDIA driver is installed directly on the host.

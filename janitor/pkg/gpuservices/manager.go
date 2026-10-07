@@ -61,6 +61,24 @@ type AppSpec struct {
 	// The value to set the NodeLabel to for disabling/undeploying the application.
 	// Defaults to "false" if not specified.
 	DisabledValue string `mapstructure:"disabledValue" json:"disabledValue"`
+
+	// draMode marks a built-in application that runs only when the GPU Operator is in DRA mode.
+	// It is not part of the configuration, so a custom spec cannot set it.
+	draMode bool
+}
+
+// DRAMode reports whether the application runs only when the GPU Operator is in DRA mode.
+//
+// It exists for one edge case: a GPUReset that was already torn down by a janitor version that
+// predates DRA mode support. That version recorded nothing in the GPUReset status and stopped
+// every application in its registry, which were the device plugin mode ones. When the new
+// janitor picks up such a GPUReset it must still restore those services, or the node is left
+// without a device plugin and DCGM, so it falls back to the applications that are not DRA mode
+// only. Skipping the restore instead is not an option: a failed GPUReset is acceptable, a node
+// with its operands left disabled is not. For a GPUReset started by this version the status
+// record is authoritative and this flag is never consulted.
+func (a AppSpec) DRAMode() bool {
+	return a.draMode
 }
 
 // Well-known values used by the pre-defined manager configurations below.
@@ -69,6 +87,8 @@ const (
 	managerGPUOperator = "gpu-operator"
 	// labelApp is the pod label used to select an individual managed application.
 	labelApp = "app"
+	// labelManagedBy is the pod label that the GPU Operator sets on its device plugin mode operands.
+	labelManagedBy = "app.kubernetes.io/managed-by"
 	// nodeLabelEnabled / nodeLabelDisabled are the default node-label values
 	// that enable and disable a managed application.
 	nodeLabelEnabled  = "true"
@@ -77,33 +97,49 @@ const (
 
 // Registry holds all known, pre-defined Manager configurations.
 var Registry = map[string]ManagerSpec{
+	// The gpu-operator entry lists the operands of both GPU Operator modes. The controller stops only the
+	// operands that have a pod on the node when the reset starts. The device plugin mode operands carry the
+	// app.kubernetes.io/managed-by label. The DRA mode operands do not, so their selector uses only the app label.
 	managerGPUOperator: {
-		ManagerSelector: map[string]string{"app.kubernetes.io/managed-by": managerGPUOperator},
-		Namespace:       managerGPUOperator,
+		Namespace: managerGPUOperator,
 		Apps: []AppSpec{
 			{
-				AppSelector:   map[string]string{labelApp: "nvidia-device-plugin-daemonset"},
+				AppSelector:   map[string]string{labelApp: "nvidia-device-plugin-daemonset", labelManagedBy: managerGPUOperator},
 				NodeLabel:     "nvidia.com/gpu.deploy.device-plugin",
 				EnabledValue:  nodeLabelEnabled,
 				DisabledValue: nodeLabelDisabled,
 			},
 			{
-				AppSelector:   map[string]string{labelApp: "nvidia-dcgm"},
+				AppSelector:   map[string]string{labelApp: "nvidia-dcgm", labelManagedBy: managerGPUOperator},
 				NodeLabel:     "nvidia.com/gpu.deploy.dcgm",
 				EnabledValue:  nodeLabelEnabled,
 				DisabledValue: nodeLabelDisabled,
 			},
 			{
-				AppSelector:   map[string]string{labelApp: "nvidia-dcgm-exporter"},
+				AppSelector:   map[string]string{labelApp: "nvidia-dcgm-exporter", labelManagedBy: managerGPUOperator},
 				NodeLabel:     "nvidia.com/gpu.deploy.dcgm-exporter",
 				EnabledValue:  nodeLabelEnabled,
 				DisabledValue: nodeLabelDisabled,
 			},
 			{
-				AppSelector:   map[string]string{labelApp: "gpu-feature-discovery"},
+				AppSelector:   map[string]string{labelApp: "gpu-feature-discovery", labelManagedBy: managerGPUOperator},
 				NodeLabel:     "nvidia.com/gpu.deploy.gpu-feature-discovery",
 				EnabledValue:  nodeLabelEnabled,
 				DisabledValue: nodeLabelDisabled,
+			},
+			{
+				AppSelector:   map[string]string{labelApp: "nvidia-dcgm-dra"},
+				NodeLabel:     "nvidia.com/gpu.deploy.dcgm-dra",
+				EnabledValue:  nodeLabelEnabled,
+				DisabledValue: nodeLabelDisabled,
+				draMode:       true,
+			},
+			{
+				AppSelector:   map[string]string{labelApp: "nvidia-dcgm-exporter-dra"},
+				NodeLabel:     "nvidia.com/gpu.deploy.dcgm-exporter-dra",
+				EnabledValue:  nodeLabelEnabled,
+				DisabledValue: nodeLabelDisabled,
+				draMode:       true,
 			},
 		},
 		TeardownTimeout: 5 * time.Minute,

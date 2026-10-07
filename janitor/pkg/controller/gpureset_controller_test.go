@@ -17,6 +17,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +73,48 @@ func (m *mockNodeLock) CheckUnlock(ctx context.Context, maintenanceObject client
 	return false
 }
 
+// devicePluginDeployLabels returns the deploy labels that GPU Operator sets on a GPU node in device plugin mode for
+// the operands that the gpu-operator service manager tears down.
+func devicePluginDeployLabels() map[string]string {
+	return map[string]string{
+		"nvidia.com/gpu.deploy.device-plugin":         "true",
+		"nvidia.com/gpu.deploy.dcgm":                  "true",
+		"nvidia.com/gpu.deploy.dcgm-exporter":         "true",
+		"nvidia.com/gpu.deploy.gpu-feature-discovery": "true",
+	}
+}
+
+// draDeployLabels returns the deploy labels that GPU Operator sets on a GPU node in DRA mode.
+func draDeployLabels() map[string]string {
+	return map[string]string{
+		"nvidia.com/gpu.deploy.driver":            "true",
+		"nvidia.com/gpu.deploy.dra-driver":        "true",
+		"nvidia.com/gpu.deploy.dra-validator":     "true",
+		"nvidia.com/gpu.deploy.dcgm-dra":          "true",
+		"nvidia.com/gpu.deploy.dcgm-exporter-dra": "true",
+	}
+}
+
+// devicePluginOperandPodLabels returns the pod labels of the GPU Operator operands that the gpu-operator service
+// manager tears down in device plugin mode.
+func devicePluginOperandPodLabels() []map[string]string {
+	return []map[string]string{
+		{"app": "nvidia-device-plugin-daemonset", "app.kubernetes.io/managed-by": "gpu-operator"},
+		{"app": "nvidia-dcgm", "app.kubernetes.io/managed-by": "gpu-operator"},
+		{"app": "nvidia-dcgm-exporter", "app.kubernetes.io/managed-by": "gpu-operator"},
+		{"app": "gpu-feature-discovery", "app.kubernetes.io/managed-by": "gpu-operator"},
+	}
+}
+
+// draOperandPodLabels returns the pod labels of the GPU Operator operands that the gpu-operator service manager tears
+// down in DRA mode. GPU Operator does not set the managed-by label on them.
+func draOperandPodLabels() []map[string]string {
+	return []map[string]string{
+		{"app": "nvidia-dcgm-dra"},
+		{"app": "nvidia-dcgm-exporter-dra"},
+	}
+}
+
 var _ = Describe("GPUReset Controller", func() {
 	var reconciler *GPUResetReconciler
 	var mgrClient client.Client
@@ -111,6 +155,7 @@ var _ = Describe("GPUReset Controller", func() {
 			}
 			return []string{gr.Spec.NodeName}
 		})).To(Succeed())
+		Expect(mgr.GetFieldIndexer().IndexField(ctx, &corev1.Pod{}, "spec.nodeName", podNodeNameIndexer)).To(Succeed())
 
 		janitorNamespace := &corev1.Namespace{
 			Name: "dgxc-janitor-system",
@@ -161,11 +206,21 @@ var _ = Describe("GPUReset Controller", func() {
 		}
 
 		// Default simulated pod status check helpers
-		reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string) (bool, error) {
+		reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 			return true, nil
 		}
-		reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string) (bool, error) {
+		reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 			return true, nil
+		}
+		// Default simulated detection: the device plugin mode operands run on the node.
+		reconciler.runningAppsFn = func(_ context.Context, _ string, apps []gpuservices.AppSpec) ([]gpuservices.AppSpec, error) {
+			running := make([]gpuservices.AppSpec, 0, len(apps))
+			for _, app := range apps {
+				if !app.DRAMode() {
+					running = append(running, app)
+				}
+			}
+			return running, nil
 		}
 
 		var testCtx context.Context
@@ -430,7 +485,7 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCompleted)).Reason).To(Equal(string(v1alpha1.ReasonResetJobSucceeded)))
 
 			By("Simulating pods becoming ready for service restoration")
-			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string) (bool, error) {
+			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 				return true, nil
 			}
 
@@ -954,7 +1009,7 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
 
 			// Ensure pods are "never" terminated
-			reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string) (bool, error) {
+			reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 				return false, nil
 			}
 
@@ -1012,7 +1067,7 @@ var _ = Describe("GPUReset Controller", func() {
 			}, "10s", "100ms").Should(Succeed())
 
 			// Ensure pods are "never" ready
-			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string) (bool, error) {
+			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 				return false, nil
 			}
 
@@ -1140,7 +1195,7 @@ var _ = Describe("GPUReset Controller", func() {
 			createdJob.Status.Failed = 1
 			Expect(k8sClient.Status().Update(ctx, &createdJob)).To(Succeed())
 
-			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string) (bool, error) {
+			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 				return true, nil
 			}
 
@@ -1172,7 +1227,7 @@ var _ = Describe("GPUReset Controller", func() {
 			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string) (bool, error) {
+			reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 				return true, nil
 			}
 		})
@@ -1246,7 +1301,7 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(k8sClient.Patch(ctx, &updatedNode, patch)).To(Succeed())
 
 			By("Simulating pod drift (e.g., pods restarted due to node label being reverted)")
-			reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string) (bool, error) {
+			reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 				return false, nil
 			}
 
@@ -1390,7 +1445,7 @@ var _ = Describe("GPUReset Controller", func() {
 			}, "10s", "250ms").Should(Succeed())
 
 			By("Simulating service restoration success")
-			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string) (bool, error) {
+			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 				return true, nil
 			}
 
@@ -1452,6 +1507,347 @@ var _ = Describe("GPUReset Controller", func() {
 
 	})
 
+	Context("GPU Operator mode detection", func() {
+		var nodeName = "mode-detection-test-node"
+		var resetName = "mode-detection-test-reset"
+		var typeNamespacedName = types.NamespacedName{Name: resetName}
+		var operandPods []*corev1.Pod
+
+		BeforeEach(func() {
+			operandPods = nil
+
+			// Detect the operands from real pods on the node.
+			reconciler.runningAppsFn = reconciler.runningApps
+
+			namespace := &corev1.Namespace{Name: gpuOperatorServiceManager.Spec.Namespace}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, namespace))).To(Succeed())
+		})
+
+		AfterEach(func() {
+			for _, pod := range operandPods {
+				if err := k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0)); err != nil && !apierrors.IsNotFound(err) {
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}
+
+			if err := k8sClient.Delete(ctx, &corev1.Node{Name: nodeName}); err != nil && !apierrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			reset := &v1alpha1.GPUReset{Name: resetName}
+			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, typeNamespacedName, reset)
+				if apierrors.IsNotFound(err) {
+					return
+				}
+				g.Expect(err).NotTo(HaveOccurred())
+
+				if controllerutil.ContainsFinalizer(reset, gpuResetFinalizer) {
+					controllerutil.RemoveFinalizer(reset, gpuResetFinalizer)
+					g.Expect(k8sClient.Update(ctx, reset)).To(Succeed())
+				}
+			}, "20s", "250ms").Should(Succeed())
+
+			var jobList batchv1.JobList
+			Expect(k8sClient.List(ctx, &jobList, client.InNamespace("default"))).To(Succeed())
+			for _, job := range jobList.Items {
+				if strings.HasPrefix(job.Name, resetName) {
+					if err := k8sClient.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+						Expect(err).NotTo(HaveOccurred())
+					}
+				}
+			}
+		})
+
+		// createNodeWithOperandPods creates the node and one pod on it for each label set. It waits until the
+		// reconciler cache holds the pods, so that the detection reads them.
+		createNodeWithOperandPods := func(nodeLabels map[string]string, podLabels []map[string]string) {
+			Expect(k8sClient.Create(ctx, &corev1.Node{Name: nodeName, Labels: maps.Clone(nodeLabels)})).To(Succeed())
+
+			for i, labels := range podLabels {
+				pod := &corev1.Pod{
+					Name:      fmt.Sprintf("%s-operand-%d", nodeName, i),
+					Namespace: gpuOperatorServiceManager.Spec.Namespace,
+					Labels:    labels,
+					Spec: corev1.PodSpec{
+						NodeName:   nodeName,
+						Containers: []corev1.Container{{Name: "operand", Image: "operand:test"}},
+					},
+				}
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				operandPods = append(operandPods, pod)
+			}
+
+			Eventually(func(g Gomega) {
+				var pods corev1.PodList
+				g.Expect(mgrClient.List(ctx, &pods, client.MatchingFields{"spec.nodeName": nodeName})).To(Succeed())
+				g.Expect(pods.Items).To(HaveLen(len(podLabels)))
+			}, "10s", "100ms").Should(Succeed())
+		}
+
+		createReset := func() {
+			Expect(k8sClient.Create(ctx, &v1alpha1.GPUReset{
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+					Selector: &v1alpha1.GPUSelector{
+						UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"},
+					},
+				},
+			})).To(Succeed())
+		}
+
+		getReset := func() v1alpha1.GPUReset {
+			var updatedReset v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+
+			return updatedReset
+		}
+
+		// reconcileUntil reconciles the GPUReset until the condition is true, and marks the reset job as succeeded
+		// when it exists. It returns the node labels read after each reconcile.
+		reconcileUntil := func(conditionType v1alpha1.GPUResetConditionType) []map[string]string {
+			var observed []map[string]string
+
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var currentNode corev1.Node
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &currentNode)).To(Succeed())
+				observed = append(observed, currentNode.Labels)
+
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+
+				if updatedReset.Status.JobRef != nil {
+					var job batchv1.Job
+					jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
+					if err := k8sClient.Get(ctx, jobKey, &job); err == nil && job.Status.Succeeded == 0 {
+						job.Status.Succeeded = 1
+						g.Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+					}
+				}
+
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(conditionType))).To(BeTrue())
+			}, "20s", "100ms").Should(Succeed())
+
+			return observed
+		}
+
+		getNodeLabels := func() map[string]string {
+			var currentNode corev1.Node
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &currentNode)).To(Succeed())
+
+			return currentNode.Labels
+		}
+
+		getConditionReason := func(conditionType v1alpha1.GPUResetConditionType) string {
+			updatedReset := getReset()
+			cond := meta.FindStatusCondition(updatedReset.Status.Conditions, string(conditionType))
+			Expect(cond).NotTo(BeNil())
+
+			return cond.Reason
+		}
+
+		// expectUnchanged checks that the node labels of the services that the reset does not manage kept their
+		// original value in every observation.
+		expectUnchanged := func(observed []map[string]string, nodeLabels map[string]string, managedLabels []string) {
+			for _, app := range gpuOperatorServiceManager.Spec.Apps {
+				if slices.Contains(managedLabels, app.NodeLabel) {
+					continue
+				}
+
+				if value, exists := nodeLabels[app.NodeLabel]; exists {
+					Expect(observed).To(HaveEach(HaveKeyWithValue(app.NodeLabel, value)))
+				} else {
+					Expect(observed).To(HaveEach(Not(HaveKey(app.NodeLabel))))
+				}
+			}
+		}
+
+		DescribeTable("should stop and restore only the services that run on the node",
+			func(nodeLabels map[string]string, podLabels []map[string]string, managedLabels []string) {
+				createNodeWithOperandPods(nodeLabels, podLabels)
+				createReset()
+
+				By("Reconciling until services are torn down")
+				observed := reconcileUntil(v1alpha1.ServicesTornDown)
+				Expect(getConditionReason(v1alpha1.ServicesTornDown)).To(Equal(string(v1alpha1.ReasonServiceTeardownSucceeded)))
+
+				updatedReset := getReset()
+				Expect(updatedReset.Status.ManagedServices).NotTo(BeNil())
+				Expect(updatedReset.Status.ManagedServices.NodeLabels).To(ConsistOf(managedLabels))
+
+				tornDownLabels := maps.Clone(nodeLabels)
+				for _, label := range managedLabels {
+					tornDownLabels[label] = "false"
+				}
+				Expect(getNodeLabels()).To(Equal(tornDownLabels))
+
+				By("Reconciling until the reset is complete")
+				observed = append(observed, reconcileUntil(v1alpha1.Complete)...)
+				Expect(getConditionReason(v1alpha1.ServicesRestored)).To(Equal(string(v1alpha1.ReasonServiceRestoreSucceeded)))
+				Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+				Expect(getNodeLabels()).To(Equal(nodeLabels))
+
+				By("Verifying the node labels of services that do not run on the node were never changed")
+				expectUnchanged(observed, nodeLabels, managedLabels)
+			},
+			Entry("in DRA mode",
+				draDeployLabels(), draOperandPodLabels(),
+				[]string{"nvidia.com/gpu.deploy.dcgm-dra", "nvidia.com/gpu.deploy.dcgm-exporter-dra"}),
+			Entry("in DRA mode with device plugin mode deploy labels left by an older janitor",
+				func() map[string]string {
+					nodeLabels := draDeployLabels()
+					for label := range devicePluginDeployLabels() {
+						nodeLabels[label] = "false"
+					}
+
+					return nodeLabels
+				}(),
+				draOperandPodLabels(),
+				[]string{"nvidia.com/gpu.deploy.dcgm-dra", "nvidia.com/gpu.deploy.dcgm-exporter-dra"}),
+			Entry("in DRA mode with the DCGM exporter disabled",
+				draDeployLabels(), draOperandPodLabels()[:1],
+				[]string{"nvidia.com/gpu.deploy.dcgm-dra"}),
+			Entry("in device plugin mode",
+				devicePluginDeployLabels(), devicePluginOperandPodLabels(),
+				[]string{
+					"nvidia.com/gpu.deploy.device-plugin",
+					"nvidia.com/gpu.deploy.dcgm",
+					"nvidia.com/gpu.deploy.dcgm-exporter",
+					"nvidia.com/gpu.deploy.gpu-feature-discovery",
+				}),
+			Entry("in device plugin mode, ignoring operand pods without the GPU Operator managed-by label",
+				devicePluginDeployLabels(),
+				[]map[string]string{
+					devicePluginOperandPodLabels()[0],
+					{"app": "nvidia-dcgm"},
+				},
+				[]string{"nvidia.com/gpu.deploy.device-plugin"}),
+		)
+
+		It("should skip the service teardown and restoration when no managed service pods run on the node", func() {
+			nodeLabels := draDeployLabels()
+			maps.Copy(nodeLabels, devicePluginDeployLabels())
+			createNodeWithOperandPods(nodeLabels, []map[string]string{{"app": "nvidia-operator-validator"}})
+			createReset()
+
+			By("Reconciling until the reset is complete")
+			observed := reconcileUntil(v1alpha1.Complete)
+			Expect(getConditionReason(v1alpha1.ServicesTornDown)).To(Equal(string(v1alpha1.ReasonSkipped)))
+			Expect(getConditionReason(v1alpha1.ServicesRestored)).To(Equal(string(v1alpha1.ReasonSkipped)))
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+
+			By("Verifying the API server keeps the empty record")
+			updatedReset := getReset()
+			Expect(updatedReset.Status.ManagedServices).NotTo(BeNil())
+			Expect(updatedReset.Status.ManagedServices.NodeLabels).To(BeEmpty())
+
+			By("Verifying no node label was ever changed")
+			expectUnchanged(observed, nodeLabels, nil)
+		})
+
+		It("should stop the device plugin mode services for a GPUReset that an older janitor started", func() {
+			nodeLabels := draDeployLabels()
+			maps.Copy(nodeLabels, devicePluginDeployLabels())
+			createNodeWithOperandPods(nodeLabels, draOperandPodLabels())
+			createReset()
+
+			By("Reconciling until the node is ready for reset")
+			reconcileUntil(v1alpha1.Ready)
+
+			By("Starting the teardown the way an older janitor did, with no record of the managed services")
+			updatedReset := getReset()
+			patch := client.MergeFrom(updatedReset.DeepCopy())
+			meta.SetStatusCondition(&updatedReset.Status.Conditions, NewCondition(v1alpha1.ServicesTornDown,
+				metav1.ConditionFalse, v1alpha1.ReasonTearingDownServices, "Removing gpu-operator managed services"))
+			Expect(k8sClient.Status().Patch(ctx, &updatedReset, patch)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				var cachedReset v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cachedReset)).To(Succeed())
+				g.Expect(meta.FindStatusCondition(cachedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).NotTo(BeNil())
+			}, "10s", "100ms").Should(Succeed())
+
+			By("Reconciling until services are torn down")
+			observed := reconcileUntil(v1alpha1.ServicesTornDown)
+			Expect(getReset().Status.ManagedServices).To(BeNil())
+
+			tornDownLabels := maps.Clone(nodeLabels)
+			for label := range devicePluginDeployLabels() {
+				tornDownLabels[label] = "false"
+			}
+			Expect(getNodeLabels()).To(Equal(tornDownLabels))
+
+			By("Reconciling until the reset is complete")
+			observed = append(observed, reconcileUntil(v1alpha1.Complete)...)
+			Expect(getNodeLabels()).To(Equal(nodeLabels))
+
+			By("Verifying the DRA mode deploy labels were never changed")
+			expectUnchanged(observed, nodeLabels, slices.Collect(maps.Keys(devicePluginDeployLabels())))
+		})
+
+		It("should not restore services when the GPUReset is deleted before the teardown starts", func() {
+			nodeLabels := devicePluginDeployLabels()
+			createNodeWithOperandPods(nodeLabels, devicePluginOperandPodLabels())
+			createReset()
+
+			By("Reconciling until the node is ready for reset")
+			observed := reconcileUntil(v1alpha1.Ready)
+			updatedReset := getReset()
+			Expect(controllerutil.ContainsFinalizer(&updatedReset, gpuResetFinalizer)).To(BeTrue())
+
+			By("Deleting the GPUReset before the teardown starts")
+			Expect(k8sClient.Delete(ctx, &v1alpha1.GPUReset{Name: resetName})).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				var cachedReset v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cachedReset)).To(Succeed())
+				g.Expect(cachedReset.DeletionTimestamp).NotTo(BeNil())
+			}, "10s", "100ms").Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var currentNode corev1.Node
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &currentNode)).To(Succeed())
+				observed = append(observed, currentNode.Labels)
+
+				var deletedReset v1alpha1.GPUReset
+				g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &deletedReset))).To(BeTrue())
+			}, "10s", "100ms").Should(Succeed())
+
+			By("Verifying no node label was ever changed")
+			expectUnchanged(observed, nodeLabels, nil)
+		})
+
+		It("should move to a Failed state without detection if the node is not found", func() {
+			createReset()
+
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.CompletionTime).NotTo(BeNil())
+			}, "10s", "100ms").Should(Succeed())
+
+			updatedReset := getReset()
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.NodeNotFound)))
+			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			Expect(updatedReset.Status.ManagedServices).To(BeNil())
+			Expect(updatedReset.Status.JobRef).To(BeNil())
+		})
+	})
+
 	Context("Metrics", func() {
 		var nodeName string
 		var resetName string
@@ -1468,10 +1864,10 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			// Mock pod checks
-			reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string) (bool, error) {
+			reconciler.checkPodsTerminatedFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 				return true, nil
 			}
-			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string) (bool, error) {
+			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
 				return true, nil
 			}
 		})
@@ -1723,6 +2119,80 @@ func TestExpectedJobName(t *testing.T) {
 			if len(jobName) > validation.DNS1123LabelMaxLength {
 				t.Errorf("job name %q exceeds max length %d", jobName, validation.DNS1123LabelMaxLength)
 			}
+		})
+	}
+}
+
+func TestManagedApps_RecordAndLegacyGPUResets_ReturnsTheStoppedServices(t *testing.T) {
+	manager, err := gpuservices.NewManager("gpu-operator", gpuservices.ManagerSpec{})
+	require.NoError(t, err)
+
+	r := &GPUResetReconciler{serviceManager: manager}
+
+	tearingDown := []metav1.Condition{
+		NewCondition(v1alpha1.ServicesTornDown, metav1.ConditionFalse, v1alpha1.ReasonTearingDownServices, ""),
+	}
+
+	cases := []struct {
+		name       string
+		conditions []metav1.Condition
+		services   *v1alpha1.ManagedServicesStatus
+		want       []string
+	}{
+		{
+			name: "teardown not started",
+			want: nil,
+		},
+		{
+			name:       "older janitor started the teardown",
+			conditions: tearingDown,
+			want: []string{
+				"nvidia.com/gpu.deploy.device-plugin",
+				"nvidia.com/gpu.deploy.dcgm",
+				"nvidia.com/gpu.deploy.dcgm-exporter",
+				"nvidia.com/gpu.deploy.gpu-feature-discovery",
+			},
+		},
+		{
+			name:       "DRA mode services recorded",
+			conditions: tearingDown,
+			services: &v1alpha1.ManagedServicesStatus{
+				NodeLabels: []string{"nvidia.com/gpu.deploy.dcgm-dra", "nvidia.com/gpu.deploy.dcgm-exporter-dra"},
+			},
+			want: []string{"nvidia.com/gpu.deploy.dcgm-dra", "nvidia.com/gpu.deploy.dcgm-exporter-dra"},
+		},
+		{
+			name:       "no services recorded",
+			conditions: tearingDown,
+			services:   &v1alpha1.ManagedServicesStatus{},
+			want:       nil,
+		},
+		{
+			name:       "recorded service no longer configured",
+			conditions: tearingDown,
+			services: &v1alpha1.ManagedServicesStatus{
+				NodeLabels: []string{"nvidia.com/gpu.deploy.dcgm-dra", "nvidia.com/gpu.deploy.removed"},
+			},
+			want: []string{"nvidia.com/gpu.deploy.dcgm-dra"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gr := &v1alpha1.GPUReset{
+				Name: "managed-apps",
+				Status: v1alpha1.GPUResetStatus{
+					Conditions:      tc.conditions,
+					ManagedServices: tc.services,
+				},
+			}
+
+			var got []string
+			for _, app := range r.managedApps(context.Background(), gr) {
+				got = append(got, app.NodeLabel)
+			}
+
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
