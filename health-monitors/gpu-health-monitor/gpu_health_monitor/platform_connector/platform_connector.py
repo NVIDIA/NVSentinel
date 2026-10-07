@@ -991,8 +991,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 and self._consecutive_connectivity_failures >= self._connectivity_failure_escalation_threshold
             )
             newly_escalated = escalate and not self._connectivity_escalated
+            upgrades_observe_only = (
+                self._dcgm_unresponsive_check_name == check_name
+                and self._dcgm_unresponsive_strategy == platformconnector_pb2.STORE_ONLY
+                and self._processing_strategy != platformconnector_pb2.STORE_ONLY
+            )
 
-            if entry is None or entry.is_healthy or newly_escalated:
+            if entry is None or entry.is_healthy or newly_escalated or upgrades_observe_only:
                 message = "Failed to connect to DCGM for health check"
                 recommended_action = platformconnector_pb2.CONTACT_SUPPORT
                 if escalate:
@@ -1034,18 +1039,21 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
-                    self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_CONNECTIVITY_ERROR"})
+                    latched_errors = entry.active_errors if entry is not None else set()
+                    self.entity_cache[key] = EntityCacheEntry(
+                        active_errors=latched_errors | {"DCGM_CONNECTIVITY_ERROR"}
+                    )
                     if escalate:
                         self._connectivity_escalated = True
-                        if self._dcgm_unresponsive_check_name == check_name:
-                            # Escalation replaces a remote probe-hang event with
-                            # the active connectivity event; persist the strategy
-                            # of the replacement so its eventual clear matches.
-                            self._persist_dcgm_unresponsive_state(
-                                self._processing_strategy,
-                                check_name,
-                                error_code="DCGM_CONNECTIVITY_ERROR",
-                            )
+                    if self._dcgm_unresponsive_check_name == check_name:
+                        # A remediable connectivity event replaces an
+                        # observe-only remote probe hang. Persist its strategy
+                        # so recovery after a restart matches the active event.
+                        self._persist_dcgm_unresponsive_state(
+                            self._processing_strategy,
+                            check_name,
+                            error_code="DCGM_CONNECTIVITY_ERROR",
+                        )
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
                         event_type=check_name, gpu_id="", error_code="DCGM_CONNECTIVITY_ERROR"

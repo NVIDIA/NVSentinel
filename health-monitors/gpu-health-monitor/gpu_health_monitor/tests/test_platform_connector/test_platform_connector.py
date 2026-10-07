@@ -2585,6 +2585,53 @@ class TestPlatformConnectors(unittest.TestCase):
             assert recovery.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
             assert not os.path.exists(marker)
 
+    def test_remediable_connectivity_failure_replaces_store_only_probe_hang_and_clears_all_metrics(self):
+        """An observe-only hang must not mask a later remediable failure or leave its gauge latched."""
+        with self._running_connector(
+            store_only_checks=frozenset({"GpuDcgmUnresponsive"}),
+            connectivity_failure_escalation_threshold=2,
+        ) as (servicer, processor):
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "remote")
+            servicer.health_events = None
+
+            assert processor.dcgm_connectivity_failed() is True
+            connectivity_event = servicer.health_events[0]
+            assert connectivity_event.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
+            assert connectivity_event.recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
+            assert connectivity_event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
+            servicer.health_events = None
+            assert processor.dcgm_connectivity_failed() is True
+            escalation_event = servicer.health_events[0]
+            assert escalation_event.recommendedAction == platformconnector_pb2.RESTART_BM
+            assert escalation_event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
+            key = processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
+            assert processor.entity_cache[key].active_errors == {
+                "DCGM_CONNECTIVITY_ERROR",
+                "DCGM_PROBE_HANG",
+            }
+
+            servicer.health_events = None
+            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
+                gauge_labels = unittest.mock.MagicMock()
+                gauge.labels.return_value = gauge_labels
+                timestamp = Timestamp()
+                timestamp.GetCurrentTime()
+                processor.clear_dcgm_connectivity_failure(timestamp)
+
+                gauge.labels.assert_any_call(
+                    event_type="GpuDcgmConnectivityFailure", gpu_id="", error_code="DCGM_CONNECTIVITY_ERROR"
+                )
+                gauge.labels.assert_any_call(
+                    event_type="GpuDcgmConnectivityFailure", gpu_id="", error_code="DCGM_PROBE_HANG"
+                )
+                assert gauge_labels.set.call_args_list[-2:] == [unittest.mock.call(0), unittest.mock.call(0)]
+
+            recovery_event = servicer.health_events[0]
+            assert recovery_event.isHealthy is True
+            assert recovery_event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
     def test_dcgm_unresponsive_cleared_when_probe_returns(self):
         """A completed health check proves DCGM answered, so the event must clear."""
         with self._running_connector() as (servicer, processor):
