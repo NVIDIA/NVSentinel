@@ -306,7 +306,7 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
-| `nic_health_monitor_poll_cycle_last_completed_timestamp_seconds` | Gauge | `node`, `category` | Unix timestamp of the last completed poll cycle (`state` or `counter`). Use `time() - metric` to measure its age. The series appears after the first completed poll. |
+| `nic_health_monitor_poll_cycle_last_completed_timestamp_seconds` | Gauge | `node`, `category` | Unix timestamp initialized at monitor startup and advanced after each completed poll cycle (`state` or `counter`). Use `time() - metric` to measure how long the category has gone without completing a poll, including a stall in the first poll. |
 
 ---
 
