@@ -249,8 +249,9 @@ class TestDCGMHealthChecks:
         second = watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0])
         third = watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0])
 
-        assert first.status == dcgm.types.HealthStatus.PASS
-        assert second.status == dcgm.types.HealthStatus.PASS
+        # Polls still counting evaluate nothing, so no healthy result is published.
+        assert first is None
+        assert second is None
         assert third.status == dcgm.types.HealthStatus.FAIL
         assert third.entity_failures[0][0].code == "GPU_HW_POWER_BRAKE_VIOLATION"
 
@@ -260,9 +261,7 @@ class TestDCGMHealthChecks:
         dcgm_group_mock = MagicMock()
 
         watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
-        assert (
-            watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
-        )
+        assert watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]) is None
 
         watcher._read_power_brake_samples.return_value = self._brake_samples({0: 0x00})
         assert (
@@ -271,9 +270,8 @@ class TestDCGMHealthChecks:
         assert watcher._power_brake_streaks == {}
 
         watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
-        assert (
-            watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
-        )
+        assert watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]) is None
+        assert watcher._power_brake_streaks == {0: 1}
 
     def test_evaluate_gpu_power_brake_mixed_gpus(self) -> None:
         """Only the braked GPU is failed; the other is left clean."""
@@ -327,9 +325,7 @@ class TestDCGMHealthChecks:
         dcgm_group_mock = MagicMock()
 
         watcher._read_power_brake_samples.return_value = self._brake_samples({0: dcgm.HW_POWER_BRAKE_REASON_BIT})
-        assert (
-            watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]).status == dcgm.types.HealthStatus.PASS
-        )
+        assert watcher._evaluate_gpu_power_brake(MagicMock(), dcgm_group_mock, [0]) is None
         assert watcher._power_brake_streaks == {0: 1}
 
         # A blank in the middle is skipped: the streak survives rather than
@@ -467,10 +463,11 @@ class TestDCGMHealthChecks:
         second = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
         third = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
 
-        assert first.status == dcgm.types.HealthStatus.PASS
-        assert first.evaluated_gpu_ids == {0}
-        assert second.status == dcgm.types.HealthStatus.PASS
+        # Polls still counting evaluate nothing, so no healthy result is published.
+        assert first is None
+        assert second is None
         assert third.status == dcgm.types.HealthStatus.FAIL
+        assert third.evaluated_gpu_ids == {0}
         (failure,) = third.entity_failures[0]
         assert failure.code == "GPU_TEMP_HW_SLOWDOWN_VIOLATION"
         assert failure.message == "GPU 0 thermal margin -3°C below HW slowdown T.Limit (slowdown=-2°C)"
@@ -480,10 +477,10 @@ class TestDCGMHealthChecks:
         watcher = self._make_thermal_margin_watcher(self._thermal_threshold_reader(), min_consecutive_polls=2)
         dcgm_group_mock = MagicMock()
 
-        for margin in (-3, -2, -3):
+        for margin, expected in ((-3, None), (-2, dcgm.types.HealthStatus.PASS), (-3, None)):
             watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: margin})
             result = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
-            assert result.status == dcgm.types.HealthStatus.PASS
+            assert (result and result.status) == expected
         assert watcher._thermal_margin_streaks == {0: 1}
 
         result = watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0])
@@ -500,9 +497,7 @@ class TestDCGMHealthChecks:
         dcgm_group_mock = MagicMock()
 
         watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: -3})
-        assert watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0]).status == (
-            dcgm.types.HealthStatus.PASS
-        )
+        assert watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0]) is None
 
         watcher._read_thermal_margin_samples.return_value = self._thermal_read_result({0: dcgmvalue.DCGM_INT64_BLANK})
         assert watcher._evaluate_gpu_thermal_margin(MagicMock(), dcgm_group_mock, [0]) is None
@@ -525,6 +520,8 @@ class TestDCGMHealthChecks:
 
         assert result.status == dcgm.types.HealthStatus.FAIL
         assert set(result.entity_failures) == {0}
+        # GPU 1 is still counting, so it is left out rather than reported healthy.
+        assert result.evaluated_gpu_ids == {0}
         assert watcher._thermal_margin_streaks == {0: 2, 1: 1}
 
     def test_evaluate_gpu_thermal_margin_mixed_gpus(self, tmp_path):

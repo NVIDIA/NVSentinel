@@ -266,7 +266,7 @@ Dry run. When true, this check's events are emitted with `processingStrategy=STO
 
 ### gpuTempLimitMinConsecutivePolls
 
-Consecutive polls with the margin below the slowdown threshold before the GPU is failed. Defaults to 3. The margin is read as one sample per poll, and under load it can move by tens of degrees within seconds, so a single sample past the threshold is usually a transient that the GPU's own hardware slowdown has already handled. A sustained excursion is the actionable case. A sample at or above the threshold resets the counter, and `1` fails on first observation. A GPU with no usable sample is skipped and keeps its counter, so a gap in DCGM data neither raises nor clears a finding.
+Consecutive polls with the margin below the slowdown threshold before the GPU is failed. Defaults to 3. The margin is read as one sample per poll, and under load it can move by tens of degrees within seconds, so a single sample past the threshold is usually a transient that the GPU's own hardware slowdown has already handled. A sustained excursion is the actionable case. A sample at or above the threshold resets the counter, and `1` fails on first observation. A GPU with no usable sample is skipped and keeps its counter, so a gap in DCGM data neither raises nor clears a finding. While the counter is below the threshold the GPU is not reported either way, so a restart cannot publish a healthy event for a GPU that is still past the threshold.
 
 To interpret a firing check, see the [GPU Thermal Margin runbook](../runbooks/gpu-thermal-margin.md).
 
@@ -309,7 +309,7 @@ Dry run. When true, this check's events are emitted with `processingStrategy=STO
 
 ### gpuPowerBrakeMinConsecutivePolls
 
-Consecutive polls with the bit set before the GPU is failed. A brake asserted for a single poll can be a load transient; a sustained assertion is the actionable case. A clear resets the counter, so a flapping brake never accumulates to a failure. `1` fails on first observation. A GPU with no usable sample is skipped and keeps its counter, so a gap in DCGM data neither raises nor clears a finding. This includes DCGM's int64 "no data" sentinels, whose low byte has the brake bit set and which would otherwise read as an assertion.
+Consecutive polls with the bit set before the GPU is failed. A brake asserted for a single poll can be a load transient; a sustained assertion is the actionable case. A clear resets the counter, so a flapping brake never accumulates to a failure. `1` fails on first observation. A GPU with no usable sample is skipped and keeps its counter, so a gap in DCGM data neither raises nor clears a finding. This includes DCGM's int64 "no data" sentinels, whose low byte has the brake bit set and which would otherwise read as an assertion. While the counter is below the threshold the GPU is not reported either way, so a restart cannot publish a healthy event for a GPU whose brake is still asserted.
 
 ## DCGM Startup Gate
 

@@ -841,9 +841,11 @@ class DCGMWatcher:
         ``thermal_margin_min_consecutive_polls`` consecutive polls; a sample at or
         above the threshold resets the count. GPUs missing the threshold or a
         usable margin sample are skipped and keep their count, so a gap in DCGM
-        data neither raises nor clears a finding. Returns ``HealthDetails`` for the
+        data neither raises nor clears a finding. A GPU still counting toward the
+        threshold is not evaluated either, so it cannot be reported healthy, for
+        example on the first poll after a restart. Returns ``HealthDetails`` for the
         evaluated GPUs, or ``None`` when the watch is disabled, the field group
-        is unset, or no metadata reader is configured.
+        is unset, no metadata reader is configured, or no GPU was evaluated.
         """
         if not self._thermal_margin_enabled or self._field_group is None or self._metadata_reader is None:
             return None
@@ -890,7 +892,6 @@ class DCGMWatcher:
                 continue
 
             margin_c = sample.value
-            margin_details.evaluated_gpu_ids.add(gpu_id)
 
             if margin_c < slowdown_threshold:
                 streak = self._thermal_margin_streaks.get(gpu_id, 0) + 1
@@ -913,6 +914,7 @@ class DCGMWatcher:
                     slowdown_threshold,
                     streak,
                 )
+                margin_details.evaluated_gpu_ids.add(gpu_id)
                 margin_details.status = types.HealthStatus.FAIL
                 margin_details.entity_failures[gpu_id] = [
                     types.ErrorDetails(
@@ -922,6 +924,7 @@ class DCGMWatcher:
                 ]
             else:
                 self._thermal_margin_streaks.pop(gpu_id, None)
+                margin_details.evaluated_gpu_ids.add(gpu_id)
                 log.debug(
                     "GPU %s thermal margin %s°C at or above HW slowdown T.Limit (slowdown=%s°C) for GpuThermalMarginWatch",
                     gpu_id,
@@ -946,7 +949,9 @@ class DCGMWatcher:
         ``HW_POWER_BRAKE_REASON_BIT`` set on at least
         ``power_brake_min_consecutive_polls`` consecutive polls. GPUs without a
         usable sample are skipped and leave their streak untouched, so a gap in
-        DCGM data neither raises nor clears a finding.
+        DCGM data neither raises nor clears a finding. A GPU still counting toward
+        the threshold is not evaluated either, so it cannot be reported healthy,
+        for example on the first poll after a restart.
 
         This exists because DCGM's POWER health watch does not report the brake:
         its dominant code, ``DCGM_FR_CLOCK_THROTTLE_POWER``, tracks power-capped
@@ -995,7 +1000,6 @@ class DCGMWatcher:
                 continue
 
             reasons_mask = sample.value
-            brake_details.evaluated_gpu_ids.add(gpu_id)
 
             if reasons_mask & HW_POWER_BRAKE_REASON_BIT:
                 streak = self._power_brake_streaks.get(gpu_id, 0) + 1
@@ -1015,6 +1019,7 @@ class DCGMWatcher:
                     reasons_mask,
                     streak,
                 )
+                brake_details.evaluated_gpu_ids.add(gpu_id)
                 brake_details.status = types.HealthStatus.FAIL
                 brake_details.entity_failures[gpu_id] = [
                     types.ErrorDetails(
@@ -1027,6 +1032,7 @@ class DCGMWatcher:
                 ]
             else:
                 self._power_brake_streaks.pop(gpu_id, None)
+                brake_details.evaluated_gpu_ids.add(gpu_id)
 
         if not brake_details.evaluated_gpu_ids:
             return None
