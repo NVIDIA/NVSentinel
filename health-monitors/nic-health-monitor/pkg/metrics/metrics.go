@@ -68,6 +68,13 @@ var (
 		Help: "Total number of counter threshold breaches detected",
 	}, []string{labelNode, "counter", "device", "port", "is_fatal"})
 
+	// PollStalled is 1 while a poll of the category has been in flight past
+	// the stall deadline, and 0 otherwise.
+	PollStalled = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "nic_health_monitor_poll_stalled",
+		Help: "1 while a poll of this category has been running past the stall deadline",
+	}, []string{labelNode, "category"})
+
 	// FirstPollDeferred counts polls a check skipped before its first
 	// complete evaluation because discovery reported unreadable devices.
 	// A non-zero value that stops growing means the deferral limit was

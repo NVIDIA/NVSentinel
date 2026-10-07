@@ -31,6 +31,10 @@ const (
 	EthernetStateCheckName         = "EthernetStateCheck"
 	EthernetDegradationCheckName   = "EthernetDegradationCheck"
 
+	// PollStallCheckName reports the monitor itself: a poll that has not
+	// completed within its deadline, so NIC state cannot be observed.
+	PollStallCheckName = "NICPollStallCheck"
+
 	// Agent / component identifiers used in every HealthEvent.
 	AgentName      = "nic-health-monitor"
 	ComponentClass = "NIC"
