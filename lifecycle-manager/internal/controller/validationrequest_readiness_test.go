@@ -428,6 +428,11 @@ func TestBuildReadinessProgramsResourceSliceWatch(t *testing.T) {
 			want:        resourceSliceWatch{true, nil},
 		},
 		{
+			name:        "negated equality",
+			expressions: []string{`resourceSlices.exists(s, !(s.spec.driver == "x"))`},
+			want:        resourceSliceWatch{true, nil},
+		},
+		{
 			name:        "computed comparand",
 			expressions: []string{`resourceSlices.exists(s, s.spec.driver == node.metadata.labels["d"])`},
 			want:        resourceSliceWatch{true, nil},

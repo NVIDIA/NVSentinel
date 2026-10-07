@@ -203,7 +203,7 @@ func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Pr
 
 		watch.Enabled = true
 
-		drivers, derived := resourceSliceDriverLiterals(checkedAST.NativeRep().Expr())
+		drivers, derived := resourceSliceDriverLiterals(checkedAST)
 		if !derived {
 			admitAllDrivers = true
 
@@ -298,87 +298,75 @@ func resourceSliceNodeName(obj client.Object) string {
 // against, as `x.spec.driver == "name"` in either operand order or `x.spec.driver in ["a", "b"]`. derived is false
 // when the expression reads spec.driver in any other way, or not at all, because then the literals do not describe
 // every slice the expression depends on and the caller must not filter events by them.
-func resourceSliceDriverLiterals(e ast.Expr) (drivers []string, derived bool) {
-	w := &driverLiteralWalker{derived: true}
-	w.walk(e)
+func resourceSliceDriverLiterals(checkedAST *cel.Ast) (drivers []string, derived bool) {
+	root := ast.NavigateAST(checkedAST.NativeRep())
 
-	return w.drivers, w.derived && len(w.drivers) != 0
-}
-
-type driverLiteralWalker struct {
-	drivers []string
-	derived bool
-}
-
-func (w *driverLiteralWalker) walk(e ast.Expr) {
-	if e == nil || !w.derived {
-		return
+	driverSelects := ast.MatchDescendants(root, func(e ast.NavigableExpr) bool { return isDriverSelect(e) })
+	if len(driverSelects) == 0 {
+		return nil, false
 	}
 
-	if e.Kind() == ast.CallKind && w.recordDriverTest(e.AsCall()) {
-		return
+	for _, driverSelect := range driverSelects {
+		literals, ok := driverTestLiterals(driverSelect)
+		if !ok {
+			return nil, false
+		}
+
+		drivers = append(drivers, literals...)
 	}
 
-	if isDriverSelect(e) {
-		// spec.driver is read outside a recognised comparison, for example startsWith() or !=.
-		w.derived = false
-
-		return
-	}
-
-	forEachChild(e, w.walk)
+	return drivers, true
 }
 
-// recordDriverTest records the literals of `x.spec.driver == "name"` or `x.spec.driver in [...]` and reports whether
-// call was one of those forms.
-func (w *driverLiteralWalker) recordDriverTest(call ast.CallExpr) bool {
+// driverTestLiterals returns the literals the comparison enclosing driverSelect tests it against, and whether that
+// comparison is a plain `== "literal"` or `in [literals]` not wrapped in a negation.
+func driverTestLiterals(driverSelect ast.NavigableExpr) ([]string, bool) {
+	parent, ok := driverSelect.Parent()
+	if !ok || parent.Kind() != ast.CallKind || isNegated(parent) {
+		return nil, false
+	}
+
+	call := parent.AsCall()
 	if call.IsMemberFunction() || len(call.Args()) != 2 {
-		return false
+		return nil, false
 	}
-
-	left, right := call.Args()[0], call.Args()[1]
 
 	switch call.FunctionName() {
 	case operators.Equals:
-		return w.recordDriverEquality(left, right) || w.recordDriverEquality(right, left)
+		return equalityLiteral(call, driverSelect.ID())
 	case operators.In, operators.OldIn:
-		return w.recordDriverMembership(left, right)
+		return membershipLiterals(call, driverSelect.ID())
 	default:
-		return false
+		return nil, false
 	}
 }
 
-// recordDriverEquality records `<driver select> == "literal"` and reports whether the operands had that shape.
-func (w *driverLiteralWalker) recordDriverEquality(selectExpr, literalExpr ast.Expr) bool {
-	literal, ok := stringLiteral(literalExpr)
-	if !ok || !isDriverSelect(selectExpr) {
-		return false
+// equalityLiteral returns the string literal the `==` call compares the operand with ID selectID against.
+func equalityLiteral(call ast.CallExpr, selectID int64) ([]string, bool) {
+	other := call.Args()[1]
+	if other.ID() == selectID {
+		other = call.Args()[0]
 	}
 
-	w.drivers = append(w.drivers, literal)
+	literal, ok := stringLiteral(other)
 
-	return true
+	return []string{literal}, ok
 }
 
-// recordDriverMembership records `<driver select> in [literals]` and reports whether the operands had that shape. A
-// list element that is not a string literal stops derivation, since the literals then do not cover every driver.
-func (w *driverLiteralWalker) recordDriverMembership(selectExpr, listExpr ast.Expr) bool {
-	if !isDriverSelect(selectExpr) || listExpr.Kind() != ast.ListKind {
-		return false
+// membershipLiterals returns the list literals of an `in` call whose left operand has ID selectID.
+func membershipLiterals(call ast.CallExpr, selectID int64) ([]string, bool) {
+	left, right := call.Args()[0], call.Args()[1]
+	if left.ID() != selectID || right.Kind() != ast.ListKind {
+		return nil, false
 	}
 
-	for _, element := range listExpr.AsList().Elements() {
-		literal, ok := stringLiteral(element)
-		if !ok {
-			w.derived = false
+	return stringLiterals(right.AsList().Elements())
+}
 
-			return true
-		}
+func isNegated(e ast.NavigableExpr) bool {
+	parent, ok := e.Parent()
 
-		w.drivers = append(w.drivers, literal)
-	}
-
-	return true
+	return ok && parent.Kind() == ast.CallKind && parent.AsCall().FunctionName() == operators.LogicalNot
 }
 
 // isDriverSelect reports whether e is a `<anything>.spec.driver` field access.
@@ -402,57 +390,20 @@ func stringLiteral(e ast.Expr) (string, bool) {
 	return string(value), ok
 }
 
-// forEachChild calls fn on every direct child expression of e.
-func forEachChild(e ast.Expr, fn func(ast.Expr)) {
-	switch e.Kind() {
-	case ast.SelectKind:
-		fn(e.AsSelect().Operand())
-	case ast.CallKind:
-		forEachCallChild(e.AsCall(), fn)
-	case ast.ListKind:
-		for _, element := range e.AsList().Elements() {
-			fn(element)
-		}
-	case ast.MapKind, ast.StructKind:
-		forEachEntryChild(e, fn)
-	case ast.ComprehensionKind:
-		forEachComprehensionChild(e.AsComprehension(), fn)
-	case ast.IdentKind, ast.LiteralKind, ast.UnspecifiedExprKind:
-	}
-}
+// stringLiterals returns the values of elements when every element is a string literal.
+func stringLiterals(elements []ast.Expr) ([]string, bool) {
+	values := make([]string, 0, len(elements))
 
-func forEachCallChild(call ast.CallExpr, fn func(ast.Expr)) {
-	if call.IsMemberFunction() {
-		fn(call.Target())
-	}
-
-	for _, arg := range call.Args() {
-		fn(arg)
-	}
-}
-
-// forEachEntryChild visits the entries of a map or struct literal.
-func forEachEntryChild(e ast.Expr, fn func(ast.Expr)) {
-	if e.Kind() == ast.MapKind {
-		for _, entry := range e.AsMap().Entries() {
-			fn(entry.AsMapEntry().Key())
-			fn(entry.AsMapEntry().Value())
+	for _, element := range elements {
+		value, ok := stringLiteral(element)
+		if !ok {
+			return nil, false
 		}
 
-		return
+		values = append(values, value)
 	}
 
-	for _, field := range e.AsStruct().Fields() {
-		fn(field.AsStructField().Value())
-	}
-}
-
-func forEachComprehensionChild(c ast.ComprehensionExpr, fn func(ast.Expr)) {
-	fn(c.IterRange())
-	fn(c.AccuInit())
-	fn(c.LoopCondition())
-	fn(c.LoopStep())
-	fn(c.Result())
+	return values, true
 }
 
 // resourceSliceDriverPredicate admits ResourceSlice events whose spec.driver is one of drivers, so slices of DRA
