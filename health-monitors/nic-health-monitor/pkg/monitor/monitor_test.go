@@ -126,7 +126,6 @@ func TestRunChecks_PollCompletionTimestampWaitsForBlockedCheck(t *testing.T) {
 
 	monitor := NewNICHealthMonitor(node, &publishFailOnceClient{}, "127.0.0.1:5555",
 		[]checks.TransactionalCheck{check}, time.Second)
-	require.NoError(t, monitor.RunStateChecks(context.Background()))
 
 	readTimestamp := func() float64 {
 		families, err := prometheus.DefaultGatherer.Gather()
@@ -148,10 +147,11 @@ func TestRunChecks_PollCompletionTimestampWaitsForBlockedCheck(t *testing.T) {
 		t.Fatalf("missing completed-poll timestamp for node %q", node)
 		return 0
 	}
-	timestamp := metrics.PollCycleLastCompletedTimestamp.WithLabelValues(node, "state")
-	// Give the metric an old value so the test can distinguish an update at
-	// poll start from the required update after the blocked check returns.
-	timestamp.Set(1)
+
+	startupTimestamp := readTimestamp()
+	assert.Greater(t, startupTimestamp, float64(0),
+		"the timestamp must be exported before the first poll completes")
+
 	check.block = true
 	done := make(chan error, 1)
 	go func() { done <- monitor.RunStateChecks(context.Background()) }()
@@ -162,11 +162,11 @@ func TestRunChecks_PollCompletionTimestampWaitsForBlockedCheck(t *testing.T) {
 		t.Fatal("poll did not reach the blocking check")
 	}
 
-	assert.Equal(t, float64(1), readTimestamp(),
+	assert.Equal(t, startupTimestamp, readTimestamp(),
 		"the timestamp must not advance while a check is blocked")
 	release()
 	require.NoError(t, <-done)
-	assert.Greater(t, readTimestamp(), float64(1),
+	assert.Greater(t, readTimestamp(), startupTimestamp,
 		"the timestamp must advance once the poll completes")
 }
 
