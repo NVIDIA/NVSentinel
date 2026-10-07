@@ -160,7 +160,7 @@ func (m *NICHealthMonitor) runChecks(
 	metrics.PollCycleDuration.WithLabelValues(m.nodeName, category).
 		Observe(time.Since(start).Seconds())
 	metrics.PollCycleLastCompletedTimestamp.WithLabelValues(m.nodeName, category).SetToCurrentTime()
-	m.endPoll(ctx, category)
+	m.endPoll(category)
 
 	return nil
 }

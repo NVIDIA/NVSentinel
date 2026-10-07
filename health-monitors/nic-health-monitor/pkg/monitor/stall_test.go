@@ -5,6 +5,12 @@
 // You may obtain a copy of the License at
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package monitor
 
@@ -18,6 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -25,10 +33,12 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/metrics"
 )
 
-// capturingClient records every batch it is sent.
+// capturingClient records every batch it is sent, or fails every send while
+// failing is set.
 type capturingClient struct {
-	mu     sync.Mutex
-	events []*pb.HealthEvent
+	mu      sync.Mutex
+	events  []*pb.HealthEvent
+	failing bool
 }
 
 func (c *capturingClient) HealthEventOccurredV1(
@@ -37,9 +47,20 @@ func (c *capturingClient) HealthEventOccurredV1(
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.failing {
+		return nil, status.Error(codes.Internal, "platform connector unavailable")
+	}
+
 	c.events = append(c.events, in.Events...)
 
 	return &emptypb.Empty{}, nil
+}
+
+func (c *capturingClient) setFailing(failing bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.failing = failing
 }
 
 func (c *capturingClient) stallEvents() []*pb.HealthEvent {
@@ -72,6 +93,15 @@ func newStallMonitor(t *testing.T, node string) (*NICHealthMonitor, *capturingCl
 	return m, client, &clock
 }
 
+// publishBaseline completes a state poll and runs the watchdog once, which
+// publishes the healthy baseline.
+func publishBaseline(t *testing.T, m *NICHealthMonitor) {
+	t.Helper()
+
+	require.NoError(t, m.RunStateChecks(context.Background()))
+	m.checkPollStalls(context.Background())
+}
+
 // stalledGauge reads nic_health_monitor_poll_stalled for one node and category.
 func stalledGauge(t *testing.T, node, category string) float64 {
 	t.Helper()
@@ -82,12 +112,18 @@ func stalledGauge(t *testing.T, node, category string) float64 {
 	return m.GetGauge().GetValue()
 }
 
-func TestEndPoll_FirstPollAfterStart_PublishesOneHealthyBaseline(t *testing.T) {
+func TestCheckPollStalls_FirstCompletedPoll_PublishesOneHealthyBaseline(t *testing.T) {
 	m, client, _ := newStallMonitor(t, "baseline-node")
 
+	m.checkPollStalls(context.Background())
+	assert.Empty(t, client.stallEvents(), "no baseline before any poll has completed")
+
 	require.NoError(t, m.RunStateChecks(context.Background()))
+	assert.Empty(t, client.stallEvents(), "polling loops never publish stall events")
+
+	m.checkPollStalls(context.Background())
 	require.NoError(t, m.RunCounterChecks(context.Background()))
-	require.NoError(t, m.RunStateChecks(context.Background()))
+	m.checkPollStalls(context.Background())
 
 	events := client.stallEvents()
 	require.Len(t, events, 1, "one baseline per process start, not per poll")
@@ -100,7 +136,7 @@ func TestEndPoll_FirstPollAfterStart_PublishesOneHealthyBaseline(t *testing.T) {
 
 func TestCheckPollStalls_PollPastDeadline_PublishesUnhealthyOnce(t *testing.T) {
 	m, client, clock := newStallMonitor(t, "stalled-node")
-	require.NoError(t, m.RunStateChecks(context.Background()))
+	publishBaseline(t, m)
 
 	m.beginPoll("state")
 	*clock = clock.Add(11 * time.Second)
@@ -115,14 +151,18 @@ func TestCheckPollStalls_PollPastDeadline_PublishesUnhealthyOnce(t *testing.T) {
 	assert.InDelta(t, 1, stalledGauge(t, "stalled-node", "state"), 0)
 }
 
-func TestEndPoll_AfterReportedStall_PublishesHealthyAndClearsGauge(t *testing.T) {
+func TestCheckPollStalls_AfterReportedStallEnds_PublishesHealthyAndClearsGauge(t *testing.T) {
 	m, client, clock := newStallMonitor(t, "recovering-node")
-	require.NoError(t, m.RunStateChecks(context.Background()))
+	publishBaseline(t, m)
 
 	m.beginPoll("state")
 	*clock = clock.Add(11 * time.Second)
 	m.checkPollStalls(context.Background())
-	m.endPoll(context.Background(), "state")
+	m.endPoll("state")
+	assert.InDelta(t, 0, stalledGauge(t, "recovering-node", "state"), 0)
+	assert.Len(t, client.stallEvents(), 2, "the poll does not publish the recovery itself")
+
+	m.checkPollStalls(context.Background())
 
 	events := client.stallEvents()
 	require.Len(t, events, 3)
@@ -139,7 +179,7 @@ func TestEndPoll_AfterReportedStall_PublishesHealthyAndClearsGauge(t *testing.T)
 
 func TestCheckPollStalls_PollWithinDeadline_PublishesNothing(t *testing.T) {
 	m, client, clock := newStallMonitor(t, "slow-node")
-	require.NoError(t, m.RunStateChecks(context.Background()))
+	publishBaseline(t, m)
 
 	m.beginPoll("state")
 	*clock = clock.Add(9 * time.Second)
@@ -149,9 +189,9 @@ func TestCheckPollStalls_PollWithinDeadline_PublishesNothing(t *testing.T) {
 	assert.InDelta(t, 0, stalledGauge(t, "slow-node", "state"), 0)
 }
 
-func TestEndPoll_OtherCategoryStillStalled_KeepsStallOpen(t *testing.T) {
+func TestCheckPollStalls_OtherCategoryStillStalled_KeepsStallOpen(t *testing.T) {
 	m, client, clock := newStallMonitor(t, "both-node")
-	require.NoError(t, m.RunStateChecks(context.Background()))
+	publishBaseline(t, m)
 
 	m.beginPoll("state")
 	m.beginPoll("counter")
@@ -164,13 +204,39 @@ func TestEndPoll_OtherCategoryStillStalled_KeepsStallOpen(t *testing.T) {
 		"NIC state cannot be observed: counter poll in flight for 11s, state poll in flight for 11s",
 		events[1].Message)
 
-	m.endPoll(context.Background(), "counter")
+	m.endPoll("counter")
+	m.checkPollStalls(context.Background())
 	assert.Len(t, client.stallEvents(), 2, "state is still stalled, so no recovery yet")
 
-	m.endPoll(context.Background(), "state")
+	m.endPoll("state")
+	m.checkPollStalls(context.Background())
 	events = client.stallEvents()
 	require.Len(t, events, 3)
 	assert.True(t, events[2].IsHealthy)
+}
+
+func TestCheckPollStalls_StallPublishFailsAndPollCompletes_ReportsStallThenRecovery(t *testing.T) {
+	m, client, clock := newStallMonitor(t, "unreported-node")
+	publishBaseline(t, m)
+
+	m.beginPoll("state")
+	*clock = clock.Add(11 * time.Second)
+	client.setFailing(true)
+	m.checkPollStalls(context.Background())
+	assert.Len(t, client.stallEvents(), 1, "the stall publish failed")
+
+	m.endPoll("state")
+	client.setFailing(false)
+	m.checkPollStalls(context.Background())
+
+	events := client.stallEvents()
+	require.Len(t, events, 3, "the stall is still reported after it ended, then cleared")
+	assert.False(t, events[1].IsHealthy)
+	assert.Equal(t, "NIC state cannot be observed: state poll in flight for 11s", events[1].Message)
+	assert.True(t, events[2].IsHealthy)
+
+	m.checkPollStalls(context.Background())
+	assert.Len(t, client.stallEvents(), 3)
 }
 
 func TestEnablePollStallDetection_ZeroDeadline_LeavesItOff(t *testing.T) {

@@ -39,9 +39,13 @@ var pollCategories = []string{"state", "counter"}
 // observed. The watchdog publishes that as an event before liveness acts.
 //
 // One node-level event covers both loops: unhealthy once any category has
-// been in flight past the deadline, healthy once none is. The first poll to
-// complete after start publishes a healthy baseline, which closes a stall
-// left open by a liveness restart.
+// been in flight past the deadline, healthy once none is. Once a poll has
+// completed after start, a healthy baseline is published, which closes a
+// stall left open by a liveness restart.
+//
+// Only the watchdog publishes these events, so they leave in order and a
+// publish retrying against an unavailable platform connector never holds up
+// a polling loop.
 type pollStall struct {
 	deadline time.Duration
 	strategy pb.ProcessingStrategy
@@ -49,12 +53,13 @@ type pollStall struct {
 
 	mu        sync.Mutex
 	started   map[string]time.Time
+	completed bool
+	// pending is the message of a stall not yet delivered. It outlives the
+	// stall, so a stall that ends before a failed publish is retried is
+	// still reported.
+	pending   string
 	reported  bool
 	baselined bool
-
-	// publishMu serializes stall publications so a recovery can never be
-	// delivered ahead of the stall it clears.
-	publishMu sync.Mutex
 }
 
 // EnablePollStallDetection turns on the poll stall watchdog. A deadline of
@@ -111,24 +116,79 @@ func (m *NICHealthMonitor) beginPoll(category string) {
 	m.stall.mu.Unlock()
 }
 
-// endPoll records that a poll of category completed, and publishes the
-// healthy event when it ends a reported stall or is the first poll since
-// start.
-func (m *NICHealthMonitor) endPoll(ctx context.Context, category string) {
+// endPoll records that a poll of category completed. The watchdog publishes
+// any recovery this causes.
+func (m *NICHealthMonitor) endPoll(category string) {
 	s := m.stall
 	if s == nil {
 		return
 	}
 
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-
 	s.mu.Lock()
 	delete(s.started, category)
-	metrics.PollStalled.WithLabelValues(m.nodeName, category).Set(0)
+	s.completed = true
+	s.mu.Unlock()
 
+	metrics.PollStalled.WithLabelValues(m.nodeName, category).Set(0)
+}
+
+// checkPollStalls publishes the stall event once any category has been in
+// flight past the deadline, and the healthy event once none is and a poll
+// has completed. A failed publish is retried on the next check.
+func (m *NICHealthMonitor) checkPollStalls(ctx context.Context) {
+	s := m.stall
+
+	s.mu.Lock()
 	stalled := s.stalledLocked()
-	needHealthy := len(stalled) == 0 && (s.reported || !s.baselined)
+
+	for category := range stalled {
+		metrics.PollStalled.WithLabelValues(m.nodeName, category).Set(1)
+	}
+
+	if len(stalled) > 0 && !s.reported {
+		s.pending = stallMessage(stalled)
+	}
+	s.mu.Unlock()
+
+	if m.publishPendingStall(ctx) {
+		m.publishRecovery(ctx)
+	}
+}
+
+// publishPendingStall publishes the pending stall event, if any, and reports
+// whether none is left pending.
+func (m *NICHealthMonitor) publishPendingStall(ctx context.Context) bool {
+	s := m.stall
+
+	s.mu.Lock()
+	pending := s.pending
+	s.mu.Unlock()
+
+	if pending == "" {
+		return true
+	}
+
+	evt := checks.NewHealthEvent(m.nodeName, checks.PollStallCheckName,
+		pending, nil, false, false, pb.RecommendedAction_NONE, s.strategy)
+	if !m.publishStallEvent(ctx, evt) {
+		return false
+	}
+
+	s.mu.Lock()
+	s.pending = ""
+	s.reported = true
+	s.mu.Unlock()
+
+	return true
+}
+
+// publishRecovery publishes the healthy event when a poll has completed, none
+// is stalled, and it either ends a reported stall or is the first since start.
+func (m *NICHealthMonitor) publishRecovery(ctx context.Context) {
+	s := m.stall
+
+	s.mu.Lock()
+	needHealthy := s.completed && len(s.stalledLocked()) == 0 && (s.reported || !s.baselined)
 	s.mu.Unlock()
 
 	if !needHealthy {
@@ -144,38 +204,6 @@ func (m *NICHealthMonitor) endPoll(ctx context.Context, category string) {
 	s.mu.Lock()
 	s.reported = false
 	s.baselined = true
-	s.mu.Unlock()
-}
-
-// checkPollStalls publishes the stall event once any category has been in
-// flight past the deadline.
-func (m *NICHealthMonitor) checkPollStalls(ctx context.Context) {
-	s := m.stall
-
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-
-	s.mu.Lock()
-	stalled := s.stalledLocked()
-
-	for category := range stalled {
-		metrics.PollStalled.WithLabelValues(m.nodeName, category).Set(1)
-	}
-
-	if len(stalled) == 0 || s.reported {
-		s.mu.Unlock()
-		return
-	}
-	s.mu.Unlock()
-
-	evt := checks.NewHealthEvent(m.nodeName, checks.PollStallCheckName,
-		stallMessage(stalled), nil, false, false, pb.RecommendedAction_NONE, s.strategy)
-	if !m.publishStallEvent(ctx, evt) {
-		return
-	}
-
-	s.mu.Lock()
-	s.reported = true
 	s.mu.Unlock()
 }
 
@@ -212,8 +240,8 @@ func stallMessage(stalled map[string]time.Duration) string {
 }
 
 // publishStallEvent publishes one stall event and reports whether it is
-// settled. A failure is retried on the next check or poll; a permanent
-// rejection counts as settled, as it does for check events.
+// settled. A permanent rejection counts as settled, as it does for check
+// events.
 func (m *NICHealthMonitor) publishStallEvent(ctx context.Context, evt *pb.HealthEvent) bool {
 	batch := &pb.HealthEvents{Version: 1, Events: []*pb.HealthEvent{evt}}
 	if err := m.pub.Publish(ctx, batch); err != nil {
