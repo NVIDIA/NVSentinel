@@ -24,7 +24,6 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
-	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/metrics"
 )
 
 // publishFailOnceClient fails the first call with the given status.
