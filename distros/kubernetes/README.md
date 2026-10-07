@@ -262,7 +262,7 @@ janitor:
 
   # Cloud provider configuration
   csp:
-    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci
+    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, akamai
 ```
 
 ##### AWS Configuration
@@ -314,6 +314,20 @@ janitor:
       credentialsFile: ""
       profile: "DEFAULT"
       principalId: "ocid1.principal.oc1..aaa..."
+```
+
+##### Akamai Configuration
+
+The Akamai provider reads the Akamai Cloud API token from a Kubernetes Secret. The token needs the `linodes:read_write` and `lke:read_write` scopes. See the [janitor-provider configuration](../../docs/configuration/janitor-provider.md) for details.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "akamai"
+    akamai:
+      apiTokenSecretRef:
+        name: "akamai-api-token"
+        key: "LINODE_TOKEN"
 ```
 
 ##### Label provider

@@ -53,7 +53,7 @@ janitor:
     timeout: "25m"
 ```
 
-Choose a value that covers the slowest expected operation for your cloud provider. AWS, Azure, and OCI node reboots typically complete within 25 minutes. GCP can be shorter. For `kind` clusters used in development, a much shorter value (e.g. `"5m"`) is sufficient.
+Choose a value that covers the slowest expected operation for your cloud provider. AWS, Azure, and OCI node reboots typically complete within 25 minutes. GCP can be shorter. On Akamai (LKE), one GPU node reboot and one node recycle each took about 3 minutes in testing. For `kind` clusters used in development, a much shorter value (e.g. `"5m"`) is sufficient.
 
 ## CSP Provider Connection
 

@@ -246,7 +246,7 @@ global:
 
   # Janitor Module - executes node reboots and terminations
   # Integrates with cloud provider APIs to perform actual maintenance
-  # Supports: AWS, GCP, Azure, OCI, kind (for testing)
+  # Supports: AWS, GCP, Azure, OCI, Akamai (LKE), kind (for testing)
   # Requires: Cloud provider credentials configured
   janitor:
     enabled: false

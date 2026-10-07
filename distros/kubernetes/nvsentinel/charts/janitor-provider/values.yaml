@@ -104,7 +104,7 @@ auth:
 # The janitor-provider module supports multiple cloud providers for node reboot operations
 # Configure the appropriate CSP for your environment
 csp:
-  # CSP provider type (kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic, label)
+  # CSP provider type (kind, kwok, aws, gcp, azure, oci, nebius, lambda, akamai, generic, label)
   # - kind: For local development with kind clusters (simulated reboots)
   # - kwok: For testing with kwok (simulated nodes)
   # - aws: For AWS EKS clusters
@@ -113,6 +113,7 @@ csp:
   # - oci: For Oracle Cloud Infrastructure OKE clusters
   # - nebius: For Nebius Managed Kubernetes (MK8s) clusters
   # - lambda: For Lambda Cloud clusters (reboot = power cycle, terminate = terminate instance)
+  # - akamai: For Akamai Cloud (LKE) clusters (reboot = instance reboot, terminate = recycle the LKE node)
   # - generic: For bare-metal / on-premises clusters (reboots via privileged Job)
   # - label: Request reboot/terminate by labeling the Node (default keys are NKE)
   provider: "kind"
@@ -283,4 +284,23 @@ csp:
       # It needs permission to power cycle and terminate instances, and must
       # trust this cluster's ServiceAccount.
       identityLRN: ""
+
+  # Akamai Cloud specific configuration (only required when provider=akamai)
+  # Reboot maps to the instance reboot operation. Terminate recycles the LKE node,
+  # which deletes it and provisions a replacement, or deletes a standalone instance.
+  akamai:
+    # apiEndpoint overrides the Akamai Cloud API base URL, set via AKAMAI_API_ENDPOINT.
+    # Must be https, and the host is checked in code against a fixed host
+    # allowlist (api.linode.com), so any other host fails at startup.
+    apiEndpoint: ""
+    # apiTokenSecretRef names the Secret containing the LINODE_TOKEN env var.
+    # Required when provider=akamai; plaintext token values are not supported.
+    # The token needs the linodes:read_write and lke:read_write scopes.
+    # Example:
+    #   apiTokenSecretRef:
+    #     name: akamai-api-token
+    #     key: LINODE_TOKEN
+    apiTokenSecretRef:
+      name: ""
+      key: "LINODE_TOKEN"
 
