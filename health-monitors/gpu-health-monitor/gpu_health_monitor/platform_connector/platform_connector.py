@@ -160,6 +160,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._consecutive_connectivity_failures = 0
         self._consecutive_connectivity_successes = 0
         self._connectivity_escalated = False
+        # Strategy of the active GpuDcgmConnectivityFailure event, so its clear
+        # matches it and an observe-only probe hang cannot hide a remediable
+        # connectivity failure that follows it.
+        self._connectivity_failure_strategy: platformconnector_pb2.ProcessingStrategy | None = None
         metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
         metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
         # Strategy used for the active local-managed probe-hang event. Restored
@@ -320,7 +324,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 recommendedAction=platformconnector_pb2.NONE,
                 nodeName=self._node_name,
                 metadata=event_metadata,
-                processingStrategy=self._processing_strategy,
+                processingStrategy=self._connectivity_failure_strategy or self._processing_strategy,
             )
             health_events.append(health_event)
 
@@ -334,6 +338,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     self.entity_cache[key] = EntityCacheEntry()
                     self._consecutive_connectivity_successes = 0
                     self._connectivity_escalated = False
+                    self._connectivity_failure_strategy = None
                     metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
             except Exception as e:
@@ -969,8 +974,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 and self._consecutive_connectivity_failures >= self._connectivity_failure_escalation_threshold
             )
             newly_escalated = escalate and not self._connectivity_escalated
+            # An observe-only probe hang may already hold the entry; a failure
+            # that the pipeline may act on must still be published over it.
+            upgrades_observe_only = (
+                self._connectivity_failure_strategy == platformconnector_pb2.STORE_ONLY
+                and self._processing_strategy != platformconnector_pb2.STORE_ONLY
+            )
 
-            if entry is None or entry.is_healthy or newly_escalated:
+            if entry is None or entry.is_healthy or newly_escalated or upgrades_observe_only:
                 message = "Failed to connect to DCGM for health check"
                 recommended_action = platformconnector_pb2.CONTACT_SUPPORT
                 if escalate:
@@ -1012,7 +1023,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
-                    self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_CONNECTIVITY_ERROR"})
+                    # Keep any code already latched, so the clear zeroes its gauge too.
+                    latched = entry.active_errors if entry is not None else set()
+                    self.entity_cache[key] = EntityCacheEntry(active_errors=latched | {"DCGM_CONNECTIVITY_ERROR"})
+                    self._connectivity_failure_strategy = self._processing_strategy
                     if escalate:
                         self._connectivity_escalated = True
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
@@ -1054,7 +1068,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             recommended_action = (
                 platformconnector_pb2.RESTART_BM if local_managed else platformconnector_pb2.CONTACT_SUPPORT
             )
-            processing_strategy = self._effective_strategy(check_name) if local_managed else self._processing_strategy
+            # probeStoreOnly governs the watchdog in every mode: a hung probe is
+            # the same unvalidated signal whether the hostengine is local or not.
+            processing_strategy = self._effective_strategy("GpuDcgmUnresponsive")
 
             log.error(
                 f"DCGM probe {operation} unresponsive for {elapsed_seconds:.1f}s, "
@@ -1116,6 +1132,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     self.entity_cache[key] = EntityCacheEntry(active_errors={error_code})
                     if local_managed:
                         self._persist_dcgm_unresponsive_state(processing_strategy)
+                    else:
+                        self._connectivity_failure_strategy = processing_strategy
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
                         event_type=check_name, gpu_id="", error_code=error_code

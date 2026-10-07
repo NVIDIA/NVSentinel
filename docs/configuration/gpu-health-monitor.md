@@ -424,13 +424,15 @@ gpu-health-monitor:
 
 ### probeStoreOnly
 
-Ships the check in dry-run. While `true` (the default) `GpuDcgmUnresponsive` is emitted with `processingStrategy=STORE_ONLY`, so it is persisted and exported as metrics but excluded from the remediation pipeline — no node condition, no cordon, no reboot. The event still carries `RESTART_BM` so the record shows what the node needs.
+Ships the check in dry-run. While `true` (the default), probe-hang events are emitted with `processingStrategy=STORE_ONLY`, so they are persisted and exported as metrics but excluded from the remediation pipeline: no node condition, no cordon, no reboot. That covers `GpuDcgmUnresponsive` in embedded mode, and `GpuDcgmConnectivityFailure` with error code `DCGM_PROBE_HANG` in remote modes. The events still carry their recommended action (`RESTART_BM`, or `CONTACT_SUPPORT` in remote modes), so the record shows what was detected.
+
+A remote-mode hang means the node got no answer from the DCGM endpoint within the deadline, which is a host, network or hostengine stall at least as often as a GPU fault, so it is gated the same way. Ordinary remote connectivity failures (`DCGM_CONNECTIVITY_ERROR`) are not: they keep the monitor's processing strategy. If one follows an observe-only hang, it is published over it, and the clearing event uses the strategy of whichever event is active.
 
 Watch `dcgm_probe_hangs` and the stored events for a release or two, confirm the detections match real on-node hangs on your fleet, then set `probeStoreOnly: false` to let remediation act on them. Both the unhealthy and the clearing event use the same strategy, so fault-quarantine always sees a consistent pair.
 
 ### probeDeadlineSeconds
 
-Seconds a single DCGM probe may run before a watchdog thread — which the blocked probe cannot stop — reports the stalled operation. In `embedded-mode` the call is in-process and node-local, so it publishes `GpuDcgmUnresponsive` with error code `DCGM_PROBE_HANG` and recommended action `RESTART_BM`. In `operator-service` and `external-hostengine` modes, the same symptom can come from the endpoint, DNS, or network; those modes publish `GpuDcgmConnectivityFailure` with `CONTACT_SUPPORT` instead. Defaults to `PollIntervalSeconds * 3` when unset. Set to `0` to disable the watchdog.
+Seconds a single DCGM probe may run before a watchdog thread — which the blocked probe cannot stop — reports the stalled operation. In `embedded-mode` the call is in-process and node-local, so it publishes `GpuDcgmUnresponsive` with error code `DCGM_PROBE_HANG` and recommended action `RESTART_BM`. In `operator-service` and `external-hostengine` modes, the same symptom can come from the endpoint, DNS, or network; those modes publish `GpuDcgmConnectivityFailure` with `CONTACT_SUPPORT` instead, gated by `probeStoreOnly` like the embedded event. Defaults to `PollIntervalSeconds * 3` when unset. Set to `0` to disable the watchdog.
 
 The default equals the `/healthz` staleness window (`PollIntervalSeconds * 3`), so the monitor reports when the poll loop is officially considered stalled. Critical event delivery is capped at 15 seconds, leaving the liveness probe's remaining failure budget to persist the finding before kubelet restarts the container.
 

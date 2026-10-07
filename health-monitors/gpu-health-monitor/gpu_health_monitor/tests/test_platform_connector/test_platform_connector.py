@@ -2381,6 +2381,80 @@ class TestPlatformConnectors(unittest.TestCase):
             assert event.isHealthy is True
             assert event.processingStrategy == platformconnector_pb2.STORE_ONLY
 
+    @staticmethod
+    def _active_connectivity_gauge(error_code: str) -> float | None:
+        from prometheus_client import REGISTRY
+
+        return REGISTRY.get_sample_value(
+            "dcgm_health_active_events",
+            {"event_type": "GpuDcgmConnectivityFailure", "gpu_id": "", "error_code": error_code},
+        )
+
+    def test_remote_probe_hang_is_observe_only_when_configured(self):
+        """probeStoreOnly also gates the remote-mode hang, which is often a host stall."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is True
+
+            event = servicer.health_events[0]
+            assert event.checkName == "GpuDcgmConnectivityFailure"
+            assert event.errorCode == ["DCGM_PROBE_HANG"]
+            assert event.recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
+            assert event.processingStrategy == platformconnector_pb2.STORE_ONLY
+
+    def test_remote_probe_hang_clear_matches_observe_only_strategy(self):
+        """The clear of an observe-only hang is observe-only too, and the next episode starts fresh."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote")
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+
+            cleared = servicer.health_events[0]
+            assert cleared.isHealthy is True
+            assert cleared.processingStrategy == platformconnector_pb2.STORE_ONLY
+            assert self._active_connectivity_gauge("DCGM_PROBE_HANG") == 0
+
+            # A later ordinary failure uses the monitor's own strategy again.
+            assert processor.dcgm_connectivity_failed() is True
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
+    def test_connectivity_failure_is_published_over_observe_only_hang(self):
+        """An observe-only hang must not hide a remediable connectivity failure that follows it."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote")
+
+            assert processor.dcgm_connectivity_failed() is True
+            failure = servicer.health_events[0]
+            assert failure.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
+            assert failure.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            key = "GpuDcgmConnectivityFailure|DCGM|ALL"
+            assert processor.entity_cache[key].active_errors == {"DCGM_PROBE_HANG", "DCGM_CONNECTIVITY_ERROR"}
+
+            # Already remediable: a further failure is not republished.
+            servicer.health_events = None
+            assert processor.dcgm_connectivity_failed() is True
+            assert servicer.health_events is None
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+
+            cleared = servicer.health_events[0]
+            assert cleared.isHealthy is True
+            assert cleared.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert self._active_connectivity_gauge("DCGM_PROBE_HANG") == 0
+            assert self._active_connectivity_gauge("DCGM_CONNECTIVITY_ERROR") == 0
+
     def test_probe_unresponsive_is_not_republished_while_active(self):
         """The watchdog reports once per episode; a repeat must not duplicate the event."""
         with self._running_connector() as (servicer, processor):

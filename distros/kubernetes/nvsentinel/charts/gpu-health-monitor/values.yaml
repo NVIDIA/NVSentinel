@@ -54,10 +54,12 @@ dcgm:
   # timeout; validate this deadline with probeStoreOnly before enabling
   # remediation. Set to 0 to disable the watchdog (0 is not treated as unset).
   probeDeadlineSeconds: null
-  # Dry-run for the embedded-mode GpuDcgmUnresponsive event. While true the
-  # check is persisted/exported but kept out of remediation. Remote modes emit
-  # GpuDcgmConnectivityFailure with CONTACT_SUPPORT regardless of this setting.
-  # Set to false only after validating embedded-mode detections on your fleet.
+  # Dry-run for probe-hang events: GpuDcgmUnresponsive in embedded mode, and
+  # GpuDcgmConnectivityFailure with DCGM_PROBE_HANG in remote modes. While true
+  # they are persisted/exported but kept out of remediation. A remote hang does
+  # not show that this node's GPU failed: it is often a host or endpoint stall.
+  # Ordinary remote connectivity failures are not affected by this setting.
+  # Set to false only after validating probe-hang detections on your fleet.
   probeStoreOnly: true
 
 # DCGM connection lifecycle configuration
