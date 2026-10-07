@@ -222,14 +222,9 @@ func setupValidationController(
 		return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
 	}
 
-	var nodeReconciler *controller.NodeValidationReconciler
-
-	if validation.Spec.NewNodeValidation != nil {
-		nodeReconciler, err = controller.NewNodeValidationReconciler(mgr.GetClient(), mgr.GetAPIReader(),
-			mgr.GetScheme(), cfg)
-		if err != nil {
-			return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
-		}
+	nodeReconciler, err := newNodeValidationReconciler(mgr, cfg, validation)
+	if err != nil {
+		return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
 	}
 
 	if reconciler.ReadsResourceSlices || (nodeReconciler != nil && nodeReconciler.ReadsResourceSlices) {
@@ -249,6 +244,25 @@ func setupValidationController(
 	}
 
 	return nil
+}
+
+func newNodeValidationReconciler(
+	mgr ctrl.Manager,
+	cfg *config.Config,
+	validation *v1alpha1.ValidationConfiguration,
+) (*controller.NodeValidationReconciler, error) {
+	if validation.Spec.NewNodeValidation == nil {
+		return nil, nil
+	}
+
+	reconciler, err := controller.NewNodeValidationReconciler(
+		mgr.GetClient(), mgr.GetAPIReader(), mgr.GetScheme(), cfg,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
+	}
+
+	return reconciler, nil
 }
 
 // closePublisher closes the publisher's connection on shutdown; nil when the

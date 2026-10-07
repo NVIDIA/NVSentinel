@@ -173,19 +173,9 @@ func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Pr
 			continue
 		}
 
-		ast, issues := env.Parse(c.Expression)
-		if issues != nil && issues.Err() != nil {
-			return nil, false, fmt.Errorf("criterion %q: parse: %w", c.Name, issues.Err())
-		}
-
-		checkedAST, issues := env.Check(ast)
-		if issues != nil && issues.Err() != nil {
-			return nil, false, fmt.Errorf("criterion %q: check: %w", c.Name, issues.Err())
-		}
-
-		prg, err := env.Program(checkedAST)
+		prg, checkedAST, err := buildReadinessProgram(env, c)
 		if err != nil {
-			return nil, false, fmt.Errorf("criterion %q: program: %w", c.Name, err)
+			return nil, false, err
 		}
 
 		programs[c.Expression] = prg
@@ -193,6 +183,25 @@ func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Pr
 	}
 
 	return programs, readsResourceSlices, nil
+}
+
+func buildReadinessProgram(env *cel.Env, criterion v1alpha1.CriteriaSpec) (cel.Program, *cel.Ast, error) {
+	ast, issues := env.Parse(criterion.Expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, nil, fmt.Errorf("criterion %q: parse: %w", criterion.Name, issues.Err())
+	}
+
+	checkedAST, issues := env.Check(ast)
+	if issues != nil && issues.Err() != nil {
+		return nil, nil, fmt.Errorf("criterion %q: check: %w", criterion.Name, issues.Err())
+	}
+
+	prg, err := env.Program(checkedAST)
+	if err != nil {
+		return nil, nil, fmt.Errorf("criterion %q: program: %w", criterion.Name, err)
+	}
+
+	return prg, checkedAST, nil
 }
 
 // referencesVariable reports whether the checked expression resolves an identifier to the variable name. The checker
