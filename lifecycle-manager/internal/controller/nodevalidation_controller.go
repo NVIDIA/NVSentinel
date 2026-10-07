@@ -25,11 +25,15 @@ import (
 
 	"github.com/google/cel-go/cel"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
@@ -45,6 +49,9 @@ type NodeValidationReconciler struct {
 	Scheme           *runtime.Scheme
 	Config           *config.Config
 	CriteriaPrograms map[string]cel.Program
+	// ResourceSliceWatch is derived from the newNodeValidation criteria: whether they read resourceSlices and which
+	// drivers.
+	ResourceSliceWatch resourceSliceWatch
 
 	nodesInBatch map[string]bool
 	batchEndTime time.Time
@@ -61,25 +68,43 @@ nodesInBatch and batchEndTime state within this controller.
 */
 func NewNodeValidationReconciler(cl client.Client, apiReader client.Reader, scheme *runtime.Scheme,
 	cfg *config.Config) (*NodeValidationReconciler, error) {
-	programs, err := buildReadinessPrograms(cfg.Validation.Spec.NewNodeValidation.Criteria)
+	programs, watch, err := buildReadinessPrograms(cfg.Validation.Spec.NewNodeValidation.Criteria)
 	if err != nil {
 		return nil, fmt.Errorf("build newNodeValidation criteria programs: %w", err)
 	}
 
 	return &NodeValidationReconciler{
-		Client:           cl,
-		APIReader:        apiReader,
-		Scheme:           scheme,
-		Config:           cfg,
-		CriteriaPrograms: programs,
+		Client:             cl,
+		APIReader:          apiReader,
+		Scheme:             scheme,
+		Config:             cfg,
+		CriteriaPrograms:   programs,
+		ResourceSliceWatch: watch,
 	}, nil
 }
 
+// resourceSliceToNode maps a node-local ResourceSlice event to a reconcile request for its node.
+func resourceSliceToNode(_ context.Context, obj client.Object) []reconcile.Request {
+	nodeName := resourceSliceNodeName(obj)
+	if len(nodeName) == 0 {
+		return nil
+	}
+
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: nodeName}}}
+}
+
 func (r *NodeValidationReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	controllerManager := ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
-		Named("nodevalidation").
-		Complete(r)
+		Named("nodevalidation")
+
+	if r.ResourceSliceWatch.Enabled {
+		controllerManager = controllerManager.Watches(&resourcev1.ResourceSlice{},
+			handler.EnqueueRequestsFromMapFunc(resourceSliceToNode),
+			builder.WithPredicates(resourceSliceDriverPredicate(r.ResourceSliceWatch.Drivers)))
+	}
+
+	return controllerManager.Complete(r)
 }
 
 /*
@@ -148,7 +173,7 @@ func (r *NodeValidationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, fmt.Errorf("get node %q: %w", req.Name, err)
 	}
 
-	eligible, err := r.isNodeEligibleForBatch(&node)
+	eligible, err := r.isNodeEligibleForBatch(ctx, &node)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -236,14 +261,15 @@ func (r *NodeValidationReconciler) removeNodeFromPendingBatch(ctx context.Contex
 	}
 }
 
-func (r *NodeValidationReconciler) isNodeEligibleForBatch(node *corev1.Node) (bool, error) {
+func (r *NodeValidationReconciler) isNodeEligibleForBatch(ctx context.Context, node *corev1.Node) (bool, error) {
 	cfg := r.Config.Validation.Spec.NewNodeValidation
 
 	if isNodeConditionTrue(node, cfg.Condition) {
 		return false, nil
 	}
 
-	failedCriterion, err := evaluateCriteria(node, cfg.Criteria, r.CriteriaPrograms)
+	failedCriterion, err := evaluateCriteria(ctx, r.Client, node, cfg.Criteria, r.CriteriaPrograms,
+		r.ResourceSliceWatch.Enabled)
 	if err != nil {
 		return false, fmt.Errorf("evaluate newNodeValidation criteria for node %q: %w", node.Name, err)
 	}
@@ -267,7 +293,7 @@ func (r *NodeValidationReconciler) getEligibleNodesInBatch(ctx context.Context, 
 			return nil, fmt.Errorf("get node %q: %w", name, err)
 		}
 
-		isEligible, err := r.isNodeEligibleForBatch(&node)
+		isEligible, err := r.isNodeEligibleForBatch(ctx, &node)
 		if err != nil {
 			return nil, err
 		}
