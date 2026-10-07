@@ -129,6 +129,32 @@ metadata-collector:
 
 `additionalHostVolumes`, `additionalVolumeMounts`, and `extraEnv` default to empty lists. Existing RuntimeClass-based installs are unchanged.
 
+## GPU Operator driver upgrades and MIG changes
+
+The metadata collector holds the GPUs open through NVML. GPU Operator 26.7 and later uses the `nvidia.com/gpu.deploy.client` node label to remove GPU clients from a node before it unloads the driver or changes the MIG layout. The metadata collector DaemonSet has a required node affinity on this label. No Helm value controls it.
+
+| `nvidia.com/gpu.deploy.client` value | Metadata collector pod |
+|---|---|
+| Not present (GPU Operator before 26.7, or GPUCluster mode) | Runs |
+| `true` | Runs |
+| `paused-for-driver-upgrade` or `paused-for-mig-change` | Removed until the label is `true` again |
+| `false`, or any other value | Removed |
+
+Your `affinity` value still applies. The chart adds the label rule to each of your `nodeSelectorTerms` and keeps all other affinity rules.
+
+Know these limits:
+
+- The GPU Operator driver manager waits only for pods that select the label with `nodeSelector`. It does not wait for this pod. The DaemonSet controller removes the pod when the label changes, at the same time as the GPU Operator's own clients, but nothing makes sure that the pod stops before the driver unloads.
+- An administrator can set the label to `false` to keep GPU clients off a node. The GPU Operator keeps that value, so the metadata collector does not run on that node.
+- The GPU Operator sets the label back to `true` before the new driver loads. The pod also needs `nvsentinel.dgxc.nvidia.com/driver.installed: "true"`, which the labeler sets when the node has a ready driver pod. Thus the pod starts again after the new driver is ready.
+- In GPU Operator 26.7.0, a MIG change that times out can leave the label at `paused-for-mig-change`. The pod then stays off the node. Use GPU Operator 26.7.1 or later.
+
+If the pod is missing on a GPU node, examine the label:
+
+```bash
+kubectl get node <node> -L nvidia.com/gpu.deploy.client
+```
+
 ## Kubelet Host
 
 Sets the `KUBELET_HOST` environment variable, which tells the collector where to reach the kubelet `/pods` endpoint.

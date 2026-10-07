@@ -144,6 +144,10 @@ gpu-health-monitor:
 
 This mode does not set the [DCGM version node label](#dcgm-version-node-label) for you. Label every GPU node before you install, or no monitor pod schedules.
 
+In embedded mode the monitor holds the GPUs open, so it can stop the GPU Operator from unloading the driver. Thus the DaemonSet gets the same required node affinity on the `nvidia.com/gpu.deploy.client` label as the metadata collector. The monitor runs when the label is `true` or is not present. It leaves the node for all other values, such as `paused-for-driver-upgrade` and `paused-for-mig-change`. Your `affinity` value still applies. See [GPU Operator driver upgrades and MIG changes](metadata-collector.md#gpu-operator-driver-upgrades-and-mig-changes) for the full rules and limits. The other modes connect to DCGM over the network and render your `affinity` unchanged.
+
+The GPU Operator sets the label back to `true` before the new driver loads, so the monitor can start again before the driver is ready. Until the driver is ready, the monitor pod can fail to start or report `GpuDcgmConnectivityFailure`.
+
 ### DCGM Version Node Label
 
 GPU Health Monitor ships one DaemonSet per DCGM major version. Each DaemonSet selects nodes with the `nvsentinel.dgxc.nvidia.com/dcgm.version` label, so every node gets the monitor image that matches its DCGM. All three modes render this `nodeSelector`, but only `operator-service` supplies the label for you.

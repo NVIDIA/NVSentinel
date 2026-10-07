@@ -1,0 +1,173 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# In embedded-mode the pod runs its own DCGM hostengine and holds the GPUs open,
+# so it must leave the node while the GPU Operator pauses
+# nvidia.com/gpu.deploy.client. The other modes hold no GPU handle and keep the
+# user's affinity unchanged.
+suite: gpu.deploy.client affinity
+templates:
+  - templates/daemonset-dcgm-4.x.yaml
+  - templates/daemonset-dcgm-3.x.yaml
+  - templates/configmap.yaml
+tests:
+  - it: requires gpu.deploy.client to be true or absent in embedded-mode with DCGM 4.x
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgm.mode: embedded-mode
+      runtimeClassName: nvidia
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: In
+                        values: ["true"]
+                  - matchExpressions:
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: DoesNotExist
+
+  - it: requires gpu.deploy.client to be true or absent in embedded-mode with DCGM 3.x
+    template: templates/daemonset-dcgm-3.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgm.mode: embedded-mode
+      runtimeClassName: nvidia
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: In
+                        values: ["true"]
+                  - matchExpressions:
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: DoesNotExist
+
+  - it: reads embedded-mode from global.dcgm.mode
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      global.dcgm.mode: embedded-mode
+      runtimeClassName: nvidia
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms
+          count: 2
+
+  - it: ANDs each user nodeSelectorTerm with both client terms in embedded-mode
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgm.mode: embedded-mode
+      runtimeClassName: nvidia
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: pool
+                    operator: In
+                    values: ["a"]
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: x
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: pool
+                        operator: In
+                        values: ["a"]
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: In
+                        values: ["true"]
+                  - matchExpressions:
+                      - key: pool
+                        operator: In
+                        values: ["a"]
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: DoesNotExist
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app: x
+
+  - it: renders no affinity in operator-service mode with DCGM 4.x
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.affinity
+
+  - it: renders no affinity in operator-service mode with DCGM 3.x
+    template: templates/daemonset-dcgm-3.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.affinity
+
+  - it: renders no affinity in external-hostengine mode
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgm.mode: external-hostengine
+    asserts:
+      - notExists:
+          path: spec.template.spec.affinity
+
+  - it: keeps the user affinity unchanged outside embedded-mode
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgm.mode: external-hostengine
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: pool
+                    operator: In
+                    values: ["a"]
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: pool
+                        operator: In
+                        values: ["a"]
