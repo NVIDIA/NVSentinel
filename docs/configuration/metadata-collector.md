@@ -146,6 +146,7 @@ Know these limits:
 
 - The GPU Operator driver manager waits only for pods that select the label with `nodeSelector`. It does not wait for this pod. The DaemonSet controller removes the pod when the label changes, at the same time as the GPU Operator's own clients, but nothing makes sure that the pod stops before the driver unloads.
 - An administrator can set the label to `false` to keep GPU clients off a node. The GPU Operator keeps that value, so the metadata collector does not run on that node.
+- If someone removes the label, the pod still runs. The GPU Operator adds the label again only at its next reconcile, not at once.
 - The GPU Operator sets the label back to `true` before the new driver loads. The pod also needs `nvsentinel.dgxc.nvidia.com/driver.installed: "true"`, which the labeler sets when the node has a ready driver pod. Thus the pod starts again after the new driver is ready.
 - In GPU Operator 26.7.0, a MIG change that times out can leave the label at `paused-for-mig-change`. The pod then stays off the node. Use GPU Operator 26.7.1 or later.
 
