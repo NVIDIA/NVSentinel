@@ -90,7 +90,7 @@ and remediation. An ordered list of **profile routes** selects the profile.
 3. Each component that acts on a fault selects the profile itself, immediately before it acts. These components are
    fault-quarantine, node-drainer, and fault-remediation. Each one evaluates the routes with the stored health event
    and the current node labels. It gets the labels from the node data that it already reads. Thus, a label change or
-   a route change applies to faults in progress, at the next action.
+   a route change applies to faults in progress, at the next stage that has not started.
 4. Each component records the profile and the route that it used on the status of the event.
 5. The operator configures profiles with Helm values. The configuration is one typed document with the structure of a
    CRD. A shared package parses and validates it. Helm writes it into the ConfigMap of each component that uses it. It
@@ -144,7 +144,7 @@ global:
 | Section | Result of `enabled: false` | Record |
 |---|---|---|
 | `quarantine` | NVSentinel does not cordon, taint, or label the node for this fault. No later stage runs | `nodeQuarantined: SkippedByProfile` |
-| `drain` | The node stays in quarantine. NVSentinel does not evict more pods | `userPodsEvictionStatus: Skipped` and the node state `drain-skipped` |
+| `drain` | The node stays in quarantine. NVSentinel does not evict pods | `userPodsEvictionStatus: Skipped` and the node state `drain-skipped` |
 | `remediation` | The node stays in quarantine and drained. NVSentinel does not create a maintenance CR | The node state `remediation-skipped` |
 
 When a profile does not set a section, the profile gets that section from `default`. When `default` does not set a
@@ -216,11 +216,12 @@ The record shows each profile and the stage that used it.
     read (`fault-quarantine/pkg/nodecache`).
   - The circuit breaker, the rule evaluation, the recovery path, and the taints and labels of the rule sets do not
     change.
-- **node-drainer**: At each attempt for an event, node-drainer selects the profile with the node labels from its node
-  informer. The informer is a local cache, so this read does not add API calls.
-  - If the profile disables drain, node-drainer stops. It removes a custom drain CR, as it does for a cancelled
-    event. It records `userPodsEvictionStatus: Skipped` and the node state label `drain-skipped`. The status
-    `Skipped` is different from `AlreadyDrained`.
+- **node-drainer**: Before it starts a drain for an event, node-drainer selects the profile with the node labels from
+  its node informer. The informer is a local cache, so this read does not add API calls. A drain starts at the first
+  eviction or when node-drainer creates the custom drain CR. After the drain starts, a profile change does not stop it.
+  - If the profile disables drain, node-drainer does not drain the node. It records
+    `userPodsEvictionStatus: Skipped` and the node state label `drain-skipped`. The status `Skipped` is different
+    from `AlreadyDrained`.
   - If the profile enables drain, node-drainer drains the node as it does at this time, with the drain method from its
     own configuration.
   - The node informer keeps only the label keys that node-drainer reads. node-drainer adds the keys that the routes
@@ -232,6 +233,8 @@ The record shows each profile and the stage that used it.
   Thus, the trigger filter of fault-remediation does not change.
 
 A profile change does not undo an action that a stage already did. NVSentinel does not return pods that it evicted.
+node-drainer does not stop a drain that has started, so it does not delete a custom drain CR. A deleted custom drain
+CR causes the drain plugin to undo its work, as it does for a cancelled event.
 After fault-remediation creates a maintenance CR, a profile change does not stop the CR.
 
 When a component cannot read the node, it tries again, as it does at this time.
@@ -287,7 +290,7 @@ routes, and profile settings.
 
 Advantages:
 
-- A label change or a route change applies to faults in progress at the next action.
+- A label change or a route change applies to faults in progress, at the next stage that has not started.
 - Operators can change the behaviour during an incident without a cancel of the fault.
 - This is the usual Kubernetes model, in which a controller acts on the current state.
 - The components already read the node for their actions, so this adds little work.
