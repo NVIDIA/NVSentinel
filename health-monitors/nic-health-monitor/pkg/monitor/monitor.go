@@ -102,6 +102,7 @@ func NewNICHealthMonitor(
 	if len(m.stateChecks) > 0 {
 		metrics.PollCycleLastCompletedTimestamp.WithLabelValues(nodeName, "state").SetToCurrentTime()
 	}
+
 	if len(m.counterChecks) > 0 {
 		metrics.PollCycleLastCompletedTimestamp.WithLabelValues(nodeName, "counter").SetToCurrentTime()
 	}
