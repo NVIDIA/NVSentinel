@@ -49,8 +49,9 @@ type NodeValidationReconciler struct {
 	Scheme           *runtime.Scheme
 	Config           *config.Config
 	CriteriaPrograms map[string]cel.Program
-	// ReadsResourceSlices is set when a newNodeValidation criterion references the resourceSlices variable.
-	ReadsResourceSlices bool
+	// ResourceSliceWatch is derived from the newNodeValidation criteria: whether they read resourceSlices and which
+	// drivers.
+	ResourceSliceWatch resourceSliceWatch
 
 	nodesInBatch map[string]bool
 	batchEndTime time.Time
@@ -67,18 +68,18 @@ nodesInBatch and batchEndTime state within this controller.
 */
 func NewNodeValidationReconciler(cl client.Client, apiReader client.Reader, scheme *runtime.Scheme,
 	cfg *config.Config) (*NodeValidationReconciler, error) {
-	programs, readsResourceSlices, err := buildReadinessPrograms(cfg.Validation.Spec.NewNodeValidation.Criteria)
+	programs, watch, err := buildReadinessPrograms(cfg.Validation.Spec.NewNodeValidation.Criteria)
 	if err != nil {
 		return nil, fmt.Errorf("build newNodeValidation criteria programs: %w", err)
 	}
 
 	return &NodeValidationReconciler{
-		Client:              cl,
-		APIReader:           apiReader,
-		Scheme:              scheme,
-		Config:              cfg,
-		CriteriaPrograms:    programs,
-		ReadsResourceSlices: readsResourceSlices,
+		Client:             cl,
+		APIReader:          apiReader,
+		Scheme:             scheme,
+		Config:             cfg,
+		CriteriaPrograms:   programs,
+		ResourceSliceWatch: watch,
 	}, nil
 }
 
@@ -97,10 +98,10 @@ func (r *NodeValidationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&corev1.Node{}).
 		Named("nodevalidation")
 
-	if r.ReadsResourceSlices {
+	if r.ResourceSliceWatch.Enabled {
 		controllerManager = controllerManager.Watches(&resourcev1.ResourceSlice{},
 			handler.EnqueueRequestsFromMapFunc(resourceSliceToNode),
-			builder.WithPredicates(gpuResourceSlicePredicate()))
+			builder.WithPredicates(resourceSliceDriverPredicate(r.ResourceSliceWatch.Drivers)))
 	}
 
 	return controllerManager.Complete(r)
@@ -267,7 +268,8 @@ func (r *NodeValidationReconciler) isNodeEligibleForBatch(ctx context.Context, n
 		return false, nil
 	}
 
-	failedCriterion, err := evaluateCriteria(ctx, r.Client, node, cfg.Criteria, r.CriteriaPrograms, r.ReadsResourceSlices)
+	failedCriterion, err := evaluateCriteria(ctx, r.Client, node, cfg.Criteria, r.CriteriaPrograms,
+		r.ResourceSliceWatch.Enabled)
 	if err != nil {
 		return false, fmt.Errorf("evaluate newNodeValidation criteria for node %q: %w", node.Name, err)
 	}

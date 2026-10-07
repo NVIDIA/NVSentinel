@@ -227,7 +227,7 @@ func setupValidationController(
 		return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
 	}
 
-	if reconciler.ReadsResourceSlices || (nodeReconciler != nil && nodeReconciler.ReadsResourceSlices) {
+	if reconciler.ResourceSliceWatch.Enabled || (nodeReconciler != nil && nodeReconciler.ResourceSliceWatch.Enabled) {
 		if err := controller.SetupResourceSliceIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
 			return fmt.Errorf("failed to set up ResourceSlice index: %w", err)
 		}

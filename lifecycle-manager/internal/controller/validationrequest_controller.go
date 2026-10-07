@@ -56,8 +56,8 @@ type ValidationRequestReconciler struct {
 	Config            *config.Config
 	Namespace         string
 	ReadinessPrograms map[string]cel.Program
-	// ReadsResourceSlices is set when a readiness criterion references the resourceSlices variable.
-	ReadsResourceSlices bool
+	// ResourceSliceWatch is derived from the readiness criteria: whether they read resourceSlices and which drivers.
+	ResourceSliceWatch resourceSliceWatch
 }
 
 func NewValidationRequestReconciler(cl client.Client, apiReader client.Reader, scheme *runtime.Scheme,
@@ -71,13 +71,13 @@ func NewValidationRequestReconciler(cl client.Client, apiReader client.Reader, s
 	}
 
 	if cfg != nil && cfg.Validation != nil {
-		programs, readsResourceSlices, err := buildReadinessPrograms(cfg.Validation.Spec.ReadinessCriteria)
+		programs, watch, err := buildReadinessPrograms(cfg.Validation.Spec.ReadinessCriteria)
 		if err != nil {
 			return nil, fmt.Errorf("build readiness criteria programs: %w", err)
 		}
 
 		r.ReadinessPrograms = programs
-		r.ReadsResourceSlices = readsResourceSlices
+		r.ResourceSliceWatch = watch
 	}
 
 	return r, nil
@@ -95,10 +95,10 @@ func (r *ValidationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// A DRA driver can publish a ResourceSlice after the last node update, so readiness criteria that read
 	// resourceSlices need slice events to unblock pending requests.
-	if r.ReadsResourceSlices {
+	if r.ResourceSliceWatch.Enabled {
 		controllerManager = controllerManager.Watches(&resourcev1.ResourceSlice{},
 			handler.EnqueueRequestsFromMapFunc(r.resourceSliceToValidationRequest),
-			builder.WithPredicates(gpuResourceSlicePredicate()))
+			builder.WithPredicates(resourceSliceDriverPredicate(r.ResourceSliceWatch.Drivers)))
 	}
 
 	// We need to reference the dynamic types from the TestProviders in the ValidationConfiguration. Normally, you can

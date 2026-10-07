@@ -16,6 +16,7 @@ package controller
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -352,50 +353,131 @@ func TestEvaluateNodeReadinessCriteria(t *testing.T) {
 	}
 }
 
-func TestGPUResourceSlicePredicate(t *testing.T) {
+func TestResourceSliceDriverPredicate(t *testing.T) {
 	gpuSlice := newResourceSlice("gpu.nvidia.com", 1)
 	imexSlice := newResourceSlice("compute-domain.nvidia.com", 1)
-	p := gpuResourceSlicePredicate()
 
-	if !p.Create(event.CreateEvent{Object: &gpuSlice}) {
+	filtered := resourceSliceDriverPredicate([]string{"gpu.nvidia.com"})
+	if !filtered.Create(event.CreateEvent{Object: &gpuSlice}) {
 		t.Fatal("expected gpu.nvidia.com slice to be admitted")
 	}
 
-	if p.Delete(event.DeleteEvent{Object: &imexSlice}) {
+	if filtered.Delete(event.DeleteEvent{Object: &imexSlice}) {
 		t.Fatal("expected compute-domain.nvidia.com slice to be dropped")
 	}
 
-	if p.Create(event.CreateEvent{Object: &corev1.Node{}}) {
+	if filtered.Create(event.CreateEvent{Object: &corev1.Node{}}) {
 		t.Fatal("expected a non-ResourceSlice object to be dropped")
+	}
+
+	admitAll := resourceSliceDriverPredicate(nil)
+	if !admitAll.Update(event.UpdateEvent{ObjectOld: &imexSlice, ObjectNew: &imexSlice}) {
+		t.Fatal("expected a nil driver list to admit every driver")
+	}
+
+	if admitAll.Create(event.CreateEvent{Object: &corev1.Node{}}) {
+		t.Fatal("expected a nil driver list to still drop non-ResourceSlice objects")
 	}
 }
 
-func TestBuildReadinessProgramsReadsResourceSlices(t *testing.T) {
+func TestBuildReadinessProgramsResourceSliceWatch(t *testing.T) {
+	const (
+		gpuDriver  = `resourceSlices.exists(s, s.spec.driver == "gpu.nvidia.com" && size(s.spec.devices) > 0)`
+		netDriver  = `resourceSlices.exists(s, "dra.net" == s.spec.driver)`
+		startsWith = `resourceSlices.exists(s, s.spec.driver.startsWith("gpu"))`
+	)
+
 	tests := []struct {
-		name       string
-		expression string
-		want       bool
+		name        string
+		expressions []string
+		want        resourceSliceWatch
+		wantErr     bool
 	}{
-		{name: "node only", expression: `has(node.spec.unschedulable)`, want: false},
+		// Drivers derived: every spec.driver read is a literal comparison.
+		{name: "equality", expressions: []string{gpuDriver}, want: resourceSliceWatch{true, []string{"gpu.nvidia.com"}}},
+		{name: "reversed equality", expressions: []string{netDriver}, want: resourceSliceWatch{true, []string{"dra.net"}}},
 		{
-			name:       "resourceSlices comprehension",
-			expression: `resourceSlices.exists(s, s.spec.driver == "gpu.nvidia.com")`,
-			want:       true,
+			name:        "in list",
+			expressions: []string{`resourceSlices.exists(s, s.spec.driver in ["b.example.com", "a.example.com"])`},
+			want:        resourceSliceWatch{true, []string{"a.example.com", "b.example.com"}},
 		},
-		{name: "resourceSlices size", expression: `size(resourceSlices) > 0`, want: true},
-		{name: "name only in a string literal", expression: `"resourceSlices" in node.metadata.labels`, want: false},
-		{name: "name only in a comment", expression: "// resourceSlices\ntrue", want: false},
+		{
+			name: "default gpu-allocatable expression",
+			expressions: []string{`(has(node.status.allocatable) && "nvidia.com/gpu" in node.status.allocatable &&
+				quantity(node.status.allocatable["nvidia.com/gpu"]) > 0) ||
+				resourceSlices.exists(s, s.spec.driver == "gpu.nvidia.com" && has(s.spec.devices) &&
+				size(s.spec.devices) > 0)`},
+			want: resourceSliceWatch{true, []string{"gpu.nvidia.com"}},
+		},
+		{
+			name:        "union across criteria, node-only criterion ignored",
+			expressions: []string{gpuDriver, `has(node.spec.unschedulable)`, netDriver},
+			want:        resourceSliceWatch{true, []string{"dra.net", "gpu.nvidia.com"}},
+		},
+		{
+			name:        "same driver in two criteria is listed once",
+			expressions: []string{gpuDriver, `resourceSlices.all(s, s.spec.driver == "gpu.nvidia.com")`},
+			want:        resourceSliceWatch{true, []string{"gpu.nvidia.com"}},
+		},
+		// Fallback: resourceSlices is read but the drivers cannot be derived, so every driver is admitted.
+		{name: "no driver test", expressions: []string{`size(resourceSlices) > 0`}, want: resourceSliceWatch{true, nil}},
+		{name: "startsWith", expressions: []string{startsWith}, want: resourceSliceWatch{true, nil}},
+		{
+			name:        "inequality",
+			expressions: []string{`resourceSlices.exists(s, s.spec.driver != "x")`},
+			want:        resourceSliceWatch{true, nil},
+		},
+		{
+			name:        "computed comparand",
+			expressions: []string{`resourceSlices.exists(s, s.spec.driver == node.metadata.labels["d"])`},
+			want:        resourceSliceWatch{true, nil},
+		},
+		{
+			name:        "literal and non-literal test in one criterion",
+			expressions: []string{`resourceSlices.exists(s, s.spec.driver == "a" || s.spec.driver.startsWith("b"))`},
+			want:        resourceSliceWatch{true, nil},
+		},
+		{
+			name:        "one derivable criterion and one that is not",
+			expressions: []string{gpuDriver, startsWith},
+			want:        resourceSliceWatch{true, nil},
+		},
+		// Not reading resourceSlices at all.
+		{name: "node only", expressions: []string{`has(node.spec.unschedulable)`}, want: resourceSliceWatch{}},
+		{
+			name:        "name only in a string literal",
+			expressions: []string{`"resourceSlices" in node.metadata.labels`},
+			want:        resourceSliceWatch{},
+		},
+		{name: "name only in a comment", expressions: []string{"// resourceSlices\ntrue"}, want: resourceSliceWatch{}},
+		{name: "no criteria", expressions: nil, want: resourceSliceWatch{}},
+		// Errors fail at startup instead of silently evaluating to false.
+		{name: "undeclared lower-case variant", expressions: []string{`size(resourceslices) > 0`}, wantErr: true},
+		{name: "syntax error", expressions: []string{`resourceSlices.exists(s,`}, wantErr: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, got, err := buildReadinessPrograms([]v1alpha1.CriteriaSpec{{Name: tt.name, Expression: tt.expression}})
+			criteria := make([]v1alpha1.CriteriaSpec, 0, len(tt.expressions))
+			for i, expr := range tt.expressions {
+				criteria = append(criteria, v1alpha1.CriteriaSpec{Name: fmt.Sprintf("c%d", i), Expression: expr})
+			}
+
+			_, got, err := buildReadinessPrograms(criteria)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got none")
+				}
+
+				return
+			}
+
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			if got != tt.want {
-				t.Fatalf("readsResourceSlices = %v, want %v", got, tt.want)
+			if got.Enabled != tt.want.Enabled || !slices.Equal(got.Drivers, tt.want.Drivers) {
+				t.Fatalf("watch = %+v, want %+v", got, tt.want)
 			}
 		})
 	}

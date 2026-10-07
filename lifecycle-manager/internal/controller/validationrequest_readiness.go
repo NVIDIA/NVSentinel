@@ -17,9 +17,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/operators"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
@@ -30,7 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
 
@@ -153,20 +156,34 @@ func evalCriterion(programs map[string]cel.Program, expr string, vars map[string
 	return result, nil
 }
 
-// buildReadinessPrograms compiles the criteria, keyed by expression, and reports whether any of them references the
-// resourceSlices variable.
-func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Program, bool, error) {
+// resourceSliceWatch describes the ResourceSlice events the criteria of one controller need.
+type resourceSliceWatch struct {
+	// Enabled is set when a criterion references the resourceSlices variable.
+	Enabled bool
+	// Drivers are the spec.driver values the criteria compare against, derived from the expressions. nil admits
+	// every driver: some criterion reads resourceSlices without a derivable driver test, so filtering could drop
+	// an event that criterion needs.
+	Drivers []string
+}
+
+// buildReadinessPrograms compiles the criteria, keyed by expression, and derives the ResourceSlice watch the criteria
+// need: whether any of them references resourceSlices and, if every such criterion names the drivers it tests, which
+// drivers. Derivation is an optimisation only. A criterion it cannot derive drivers from falls back to admitting every
+// driver's events, which costs reconciles but never changes an evaluation result.
+func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Program, resourceSliceWatch, error) {
+	var watch resourceSliceWatch
+
 	if len(criteria) == 0 {
-		return nil, false, nil
+		return nil, watch, nil
 	}
 
 	env, err := buildCELEnvironment()
 	if err != nil {
-		return nil, false, err
+		return nil, watch, err
 	}
 
 	programs := make(map[string]cel.Program, len(criteria))
-	readsResourceSlices := false
+	admitAllDrivers := false
 
 	for _, c := range criteria {
 		if _, ok := programs[c.Expression]; ok {
@@ -175,14 +192,38 @@ func buildReadinessPrograms(criteria []v1alpha1.CriteriaSpec) (map[string]cel.Pr
 
 		prg, checkedAST, err := buildReadinessProgram(env, c)
 		if err != nil {
-			return nil, false, err
+			return nil, watch, err
 		}
 
 		programs[c.Expression] = prg
-		readsResourceSlices = readsResourceSlices || referencesVariable(checkedAST, resourceSlicesVariable)
+
+		if !referencesVariable(checkedAST, resourceSlicesVariable) {
+			continue
+		}
+
+		watch.Enabled = true
+
+		drivers, derived := resourceSliceDriverLiterals(checkedAST.NativeRep().Expr())
+		if !derived {
+			admitAllDrivers = true
+
+			slog.Info("Admitting ResourceSlice events from every driver: criterion does not compare spec.driver "+
+				"with string literals only", "criterion", c.Name)
+
+			continue
+		}
+
+		watch.Drivers = append(watch.Drivers, drivers...)
 	}
 
-	return programs, readsResourceSlices, nil
+	if admitAllDrivers {
+		watch.Drivers = nil
+	} else if watch.Enabled {
+		slices.Sort(watch.Drivers)
+		watch.Drivers = slices.Compact(watch.Drivers)
+	}
+
+	return programs, watch, nil
 }
 
 func buildReadinessProgram(env *cel.Env, criterion v1alpha1.CriteriaSpec) (cel.Program, *cel.Ast, error) {
@@ -253,13 +294,147 @@ func resourceSliceNodeName(obj client.Object) string {
 	return *resourceSlice.Spec.NodeName
 }
 
-// gpuResourceSlicePredicate admits only gpu.nvidia.com ResourceSlice events, so slices of unrelated DRA drivers
-// (for example ComputeDomain IMEX channels, which churn with workloads) do not trigger reconciles. The cache and the
-// resourceSlices CEL variable are not filtered.
-func gpuResourceSlicePredicate() predicate.Predicate {
+// resourceSliceDriverLiterals collects the string literals an expression compares a ResourceSlice spec.driver
+// against, as `x.spec.driver == "name"` in either operand order or `x.spec.driver in ["a", "b"]`. derived is false
+// when the expression reads spec.driver in any other way, or not at all, because then the literals do not describe
+// every slice the expression depends on and the caller must not filter events by them.
+func resourceSliceDriverLiterals(e ast.Expr) (drivers []string, derived bool) {
+	w := &driverLiteralWalker{derived: true}
+	w.walk(e)
+
+	return w.drivers, w.derived && len(w.drivers) != 0
+}
+
+type driverLiteralWalker struct {
+	drivers []string
+	derived bool
+}
+
+func (w *driverLiteralWalker) walk(e ast.Expr) {
+	if e == nil || !w.derived {
+		return
+	}
+
+	if e.Kind() == ast.CallKind && w.recordDriverTest(e.AsCall()) {
+		return
+	}
+
+	if isDriverSelect(e) {
+		// spec.driver is read outside a recognised comparison, for example startsWith() or !=.
+		w.derived = false
+
+		return
+	}
+
+	forEachChild(e, w.walk)
+}
+
+// recordDriverTest records the literals of `x.spec.driver == "name"` or `x.spec.driver in [...]` and reports whether
+// call was one of those forms.
+func (w *driverLiteralWalker) recordDriverTest(call ast.CallExpr) bool {
+	if call.IsMemberFunction() || len(call.Args()) != 2 {
+		return false
+	}
+
+	left, right := call.Args()[0], call.Args()[1]
+
+	switch call.FunctionName() {
+	case operators.Equals:
+		for _, pair := range [][2]ast.Expr{{left, right}, {right, left}} {
+			if literal, ok := stringLiteral(pair[1]); ok && isDriverSelect(pair[0]) {
+				w.drivers = append(w.drivers, literal)
+
+				return true
+			}
+		}
+	case operators.In, operators.OldIn:
+		if !isDriverSelect(left) || right.Kind() != ast.ListKind {
+			return false
+		}
+
+		for _, element := range right.AsList().Elements() {
+			literal, ok := stringLiteral(element)
+			if !ok {
+				w.derived = false
+
+				return true
+			}
+
+			w.drivers = append(w.drivers, literal)
+		}
+
+		return true
+	}
+
+	return false
+}
+
+// isDriverSelect reports whether e is a `<anything>.spec.driver` field access.
+func isDriverSelect(e ast.Expr) bool {
+	if e.Kind() != ast.SelectKind || e.AsSelect().FieldName() != "driver" {
+		return false
+	}
+
+	operand := e.AsSelect().Operand()
+
+	return operand.Kind() == ast.SelectKind && operand.AsSelect().FieldName() == "spec"
+}
+
+func stringLiteral(e ast.Expr) (string, bool) {
+	if e.Kind() != ast.LiteralKind {
+		return "", false
+	}
+
+	value, ok := e.AsLiteral().(types.String)
+
+	return string(value), ok
+}
+
+// forEachChild calls fn on every direct child expression of e.
+func forEachChild(e ast.Expr, fn func(ast.Expr)) {
+	switch e.Kind() {
+	case ast.SelectKind:
+		fn(e.AsSelect().Operand())
+	case ast.CallKind:
+		call := e.AsCall()
+		if call.IsMemberFunction() {
+			fn(call.Target())
+		}
+
+		for _, arg := range call.Args() {
+			fn(arg)
+		}
+	case ast.ListKind:
+		for _, element := range e.AsList().Elements() {
+			fn(element)
+		}
+	case ast.MapKind:
+		for _, entry := range e.AsMap().Entries() {
+			fn(entry.AsMapEntry().Key())
+			fn(entry.AsMapEntry().Value())
+		}
+	case ast.StructKind:
+		for _, field := range e.AsStruct().Fields() {
+			fn(field.AsStructField().Value())
+		}
+	case ast.ComprehensionKind:
+		c := e.AsComprehension()
+		fn(c.IterRange())
+		fn(c.AccuInit())
+		fn(c.LoopCondition())
+		fn(c.LoopStep())
+		fn(c.Result())
+	case ast.IdentKind, ast.LiteralKind, ast.UnspecifiedExprKind:
+	}
+}
+
+// resourceSliceDriverPredicate admits ResourceSlice events whose spec.driver is one of drivers, so slices of DRA
+// drivers the criteria never test (for example ComputeDomain IMEX channels, which churn with workloads) do not
+// trigger reconciles. A nil list admits every driver. The cache and the resourceSlices CEL variable are not filtered.
+func resourceSliceDriverPredicate(drivers []string) predicate.Predicate {
 	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
 
-		return ok && resourceSlice.Spec.Driver == model.GPUDRADriverName
+		return ok && (drivers == nil || slices.Contains(drivers, resourceSlice.Spec.Driver))
 	})
 }
