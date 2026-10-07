@@ -22,6 +22,8 @@ import (
 
 	"github.com/google/cel-go/cel"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -54,6 +56,8 @@ type ValidationRequestReconciler struct {
 	Config            *config.Config
 	Namespace         string
 	ReadinessPrograms map[string]cel.Program
+	// ResourceSliceWatch is derived from the readiness criteria: whether they read resourceSlices and which drivers.
+	ResourceSliceWatch resourceSliceWatch
 }
 
 func NewValidationRequestReconciler(cl client.Client, apiReader client.Reader, scheme *runtime.Scheme,
@@ -67,12 +71,13 @@ func NewValidationRequestReconciler(cl client.Client, apiReader client.Reader, s
 	}
 
 	if cfg != nil && cfg.Validation != nil {
-		programs, err := buildReadinessPrograms(cfg.Validation.Spec.ReadinessCriteria)
+		programs, watch, err := buildReadinessPrograms(cfg.Validation.Spec.ReadinessCriteria)
 		if err != nil {
 			return nil, fmt.Errorf("build readiness criteria programs: %w", err)
 		}
 
 		r.ReadinessPrograms = programs
+		r.ResourceSliceWatch = watch
 	}
 
 	return r, nil
@@ -87,6 +92,14 @@ func (r *ValidationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return ok
 			}))).
 		Named("validationrequest")
+
+	// A DRA driver can publish a ResourceSlice after the last node update, so readiness criteria that read
+	// resourceSlices need slice events to unblock pending requests.
+	if r.ResourceSliceWatch.Enabled {
+		controllerManager = controllerManager.Watches(&resourcev1.ResourceSlice{},
+			handler.EnqueueRequestsFromMapFunc(r.resourceSliceToValidationRequest),
+			builder.WithPredicates(resourceSliceDriverPredicate(r.ResourceSliceWatch.Drivers)))
+	}
 
 	// We need to reference the dynamic types from the TestProviders in the ValidationConfiguration. Normally, you can
 	// specify a static type in Owns like this: Owns(&batchv1.Job{})
@@ -125,6 +138,26 @@ func (r *ValidationRequestReconciler) nodeToValidationRequest(ctx context.Contex
 	return requests
 }
 
+func (r *ValidationRequestReconciler) resourceSliceToValidationRequest(ctx context.Context,
+	obj client.Object) []reconcile.Request {
+	nodeName := resourceSliceNodeName(obj)
+	if len(nodeName) == 0 {
+		return nil
+	}
+
+	var node corev1.Node
+	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logf.FromContext(ctx).Error(err, "Failed to get node for ResourceSlice", "node", nodeName,
+				"resourceSlice", obj.GetName())
+		}
+
+		return nil
+	}
+
+	return r.nodeToValidationRequest(ctx, &node)
+}
+
 /*
 Outside of controller start-up or a SyncPeriod, we expect the Reconcile function to be triggered by edge-based signals
 for ValidationRequest, nodes, or test provider resources. This is configured above in SetupWithManager:
@@ -134,6 +167,8 @@ for each ValidationRequest listed in the session annotation. In practice, CREATE
 annotation not existing. DELETE events still fire, since the last-known cached object retains the annotation, and
 this is the only signal that drives reconciling a ValidationRequest after one of its nodes is deleted.
 - TestProvider resource CREATE, UPDATE, and DELETE events which have an OwnerReference for a ValidationRequest.
+- ResourceSlice CREATE, UPDATE, and DELETE events, only if a readinessCriteria expression references
+resourceSlices. These fire the reconciler for each ValidationRequest in the session annotation of the slice's node.
 
 The only place where we rely on a level-based signal to trigger reconciling is to detect test provider
 timeouts where we specify an explicit RequeueAfter time that is after the configured test provider timeout.

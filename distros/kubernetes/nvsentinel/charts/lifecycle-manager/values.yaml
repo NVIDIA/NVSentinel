@@ -63,11 +63,16 @@ config:
     # since a toleration for this taint is always added in test provider templates which
     # consume the Tolerations field. Setting cordon.remove to true will remove the node
     # cordon (and this taint) if present.
+  # Expressions can read the node being validated (node) and the node's ResourceSlices (resourceSlices).
   readinessCriteria:
+    # The device plugin advertises nvidia.com/gpu in node.status.allocatable. In GPU Operator GPUCluster (DRA)
+    # mode, there is no device plugin and the gpu.nvidia.com DRA driver publishes the GPUs in ResourceSlices.
     - name: gpu-allocatable
       expression: >-
-        has(node.status.allocatable) && "nvidia.com/gpu" in node.status.allocatable &&
-        quantity(node.status.allocatable["nvidia.com/gpu"]) > 0
+        (has(node.status.allocatable) && "nvidia.com/gpu" in node.status.allocatable &&
+        quantity(node.status.allocatable["nvidia.com/gpu"]) > 0) ||
+        resourceSlices.exists(s, s.spec.driver == "gpu.nvidia.com" && has(s.spec.devices) &&
+        size(s.spec.devices) > 0)
     - name: not-under-quarantine
       expression: >-
         !(has(node.metadata.annotations) &&

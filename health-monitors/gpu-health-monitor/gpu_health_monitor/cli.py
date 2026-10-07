@@ -207,6 +207,7 @@ def cli(
 
     thermal_margin_enabled = False
     thermal_margin_store_only = False
+    thermal_margin_min_consecutive_polls = 1
     power_brake_enabled = False
     power_brake_store_only = False
     power_brake_min_consecutive_polls = 1
@@ -214,10 +215,14 @@ def cli(
         fields_monitoring_config = config["dcgmfieldsmonitoring"]
         thermal_margin_enabled = fields_monitoring_config.getboolean("gputemplimitmonitoringenabled", fallback=False)
         thermal_margin_store_only = fields_monitoring_config.getboolean("gputemplimitstoreonly", fallback=False)
+        thermal_margin_min_consecutive_polls = fields_monitoring_config.getint(
+            "gputemplimitminconsecutivepolls", fallback=1
+        )
         log.info(
-            "GpuThermalMarginWatch field monitor: enabled=%s store_only=%s",
+            "GpuThermalMarginWatch field monitor: enabled=%s store_only=%s min_consecutive_polls=%s",
             thermal_margin_enabled,
             thermal_margin_store_only,
+            thermal_margin_min_consecutive_polls,
         )
 
         power_brake_enabled = fields_monitoring_config.getboolean("gpupowerbrakemonitoringenabled", fallback=False)
@@ -361,6 +366,7 @@ def cli(
         poll_interval_seconds=poll_interval,
         dcgm_k8s_service_enabled=dcgm_k8s_service_enabled,
         thermal_margin_enabled=thermal_margin_enabled,
+        thermal_margin_min_consecutive_polls=thermal_margin_min_consecutive_polls,
         dcgm_mode=dcgm_mode,
         suppressed_error_codes=suppressed_error_codes,
         suppress_unbridged_pcie_nvlink_down=suppress_nvlink_down_unbridged_pcie,
