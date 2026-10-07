@@ -431,7 +431,7 @@ gpu-health-monitor:
 
 Ships probe-hang checks in dry-run. While `true` (the default), local `GpuDcgmUnresponsive` and remote `DCGM_PROBE_HANG` events are emitted with `processingStrategy=STORE_ONLY`, so they are persisted and exported as metrics but excluded from the remediation pipeline. Remote `DCGM_CONNECTIVITY_ERROR` events continue to use the configured processing strategy. Probe-hang events still carry their recommended action so the record shows what the node needs.
 
-Watch `dcgm_probe_hangs` and the stored events for a release or two, confirm the detections match the hangs on your fleet, then set `probeStoreOnly: false` to let the configured processing strategy act on them. Both the unhealthy and the clearing event use the same strategy, so fault-quarantine always sees a consistent pair.
+Watch `dcgm_probe_hangs` and the stored events for a release or two, confirm the detections match the hangs on your fleet, then set `probeStoreOnly: false` to let the configured processing strategy act on them. Recovery matches the active event: when a remediable connectivity failure replaces a remote `STORE_ONLY` probe hang, the clearing event uses `EXECUTE_REMEDIATION`, so the original unhealthy event and its clearing event do not always use the same strategy.
 
 ### probeDeadlineSeconds
 
