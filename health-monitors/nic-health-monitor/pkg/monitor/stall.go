@@ -27,11 +27,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
-	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/metrics"
 )
-
-// pollCategories are the polling loops the stall watchdog tracks.
-var pollCategories = []string{"state", "counter"}
 
 // pollStall reports a poll that stops completing. When the host stalls the
 // sysfs reads a poll makes, the loop freezes and liveness restarts the
@@ -50,6 +46,9 @@ type pollStall struct {
 	deadline time.Duration
 	strategy pb.ProcessingStrategy
 	now      func() time.Time
+	// waitingOnServer reports a publish waiting out the platform connector's
+	// retry window; a poll blocked there is not a NIC stall.
+	waitingOnServer func() bool
 
 	mu        sync.Mutex
 	started   map[string]time.Time
@@ -74,10 +73,8 @@ func (m *NICHealthMonitor) EnablePollStallDetection(deadline time.Duration, stra
 		strategy: strategy,
 		now:      time.Now,
 		started:  map[string]time.Time{},
-	}
 
-	for _, category := range pollCategories {
-		metrics.PollStalled.WithLabelValues(m.nodeName, category).Set(0)
+		waitingOnServer: m.WaitingOnServer,
 	}
 
 	slog.Info("NIC poll stall detection enabled", "deadline", deadline, "processing_strategy", strategy.String())
@@ -128,22 +125,21 @@ func (m *NICHealthMonitor) endPoll(category string) {
 	delete(s.started, category)
 	s.completed = true
 	s.mu.Unlock()
-
-	metrics.PollStalled.WithLabelValues(m.nodeName, category).Set(0)
 }
 
 // checkPollStalls publishes the stall event once any category has been in
 // flight past the deadline, and the healthy event once none is and a poll
-// has completed. A failed publish is retried on the next check.
+// has completed. A failed publish is retried on the next check. Nothing is
+// checked while a publish waits on the platform connector.
 func (m *NICHealthMonitor) checkPollStalls(ctx context.Context) {
 	s := m.stall
 
+	if s.waitingOnServer() {
+		return
+	}
+
 	s.mu.Lock()
 	stalled := s.stalledLocked()
-
-	for category := range stalled {
-		metrics.PollStalled.WithLabelValues(m.nodeName, category).Set(1)
-	}
 
 	if len(stalled) > 0 && !s.reported {
 		s.pending = stallMessage(stalled)

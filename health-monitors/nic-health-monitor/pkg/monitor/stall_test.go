@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -30,7 +29,6 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
-	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/metrics"
 )
 
 // capturingClient records every batch it is sent, or fails every send while
@@ -102,16 +100,6 @@ func publishBaseline(t *testing.T, m *NICHealthMonitor) {
 	m.checkPollStalls(context.Background())
 }
 
-// stalledGauge reads nic_health_monitor_poll_stalled for one node and category.
-func stalledGauge(t *testing.T, node, category string) float64 {
-	t.Helper()
-
-	var m dto.Metric
-	require.NoError(t, metrics.PollStalled.WithLabelValues(node, category).Write(&m))
-
-	return m.GetGauge().GetValue()
-}
-
 func TestCheckPollStalls_FirstCompletedPoll_PublishesOneHealthyBaseline(t *testing.T) {
 	m, client, _ := newStallMonitor(t, "baseline-node")
 
@@ -148,7 +136,6 @@ func TestCheckPollStalls_PollPastDeadline_PublishesUnhealthyOnce(t *testing.T) {
 	assert.False(t, events[1].IsHealthy)
 	assert.False(t, events[1].IsFatal)
 	assert.Equal(t, "NIC state cannot be observed: state poll in flight for 11s", events[1].Message)
-	assert.InDelta(t, 1, stalledGauge(t, "stalled-node", "state"), 0)
 }
 
 func TestCheckPollStalls_AfterReportedStallEnds_PublishesHealthyAndClearsGauge(t *testing.T) {
@@ -159,7 +146,6 @@ func TestCheckPollStalls_AfterReportedStallEnds_PublishesHealthyAndClearsGauge(t
 	*clock = clock.Add(11 * time.Second)
 	m.checkPollStalls(context.Background())
 	m.endPoll("state")
-	assert.InDelta(t, 0, stalledGauge(t, "recovering-node", "state"), 0)
 	assert.Len(t, client.stallEvents(), 2, "the poll does not publish the recovery itself")
 
 	m.checkPollStalls(context.Background())
@@ -168,7 +154,6 @@ func TestCheckPollStalls_AfterReportedStallEnds_PublishesHealthyAndClearsGauge(t
 	require.Len(t, events, 3)
 	assert.False(t, events[1].IsHealthy)
 	assert.True(t, events[2].IsHealthy)
-	assert.InDelta(t, 0, stalledGauge(t, "recovering-node", "state"), 0)
 
 	// Recovery closes the episode, so a later stall is reported again.
 	m.beginPoll("state")
@@ -186,7 +171,6 @@ func TestCheckPollStalls_PollWithinDeadline_PublishesNothing(t *testing.T) {
 	m.checkPollStalls(context.Background())
 
 	assert.Len(t, client.stallEvents(), 1, "only the baseline")
-	assert.InDelta(t, 0, stalledGauge(t, "slow-node", "state"), 0)
 }
 
 func TestCheckPollStalls_OtherCategoryStillStalled_KeepsStallOpen(t *testing.T) {
@@ -237,6 +221,26 @@ func TestCheckPollStalls_StallPublishFailsAndPollCompletes_ReportsStallThenRecov
 
 	m.checkPollStalls(context.Background())
 	assert.Len(t, client.stallEvents(), 3)
+}
+
+func TestCheckPollStalls_PublishWaitingOnServer_ReportsNoStall(t *testing.T) {
+	m, client, clock := newStallMonitor(t, "waiting-node")
+	publishBaseline(t, m)
+
+	waiting := true
+	m.stall.waitingOnServer = func() bool { return waiting }
+
+	m.beginPoll("state")
+	*clock = clock.Add(11 * time.Second)
+	m.checkPollStalls(context.Background())
+	assert.Len(t, client.stallEvents(), 1, "a poll waiting on the platform connector is not a NIC stall")
+
+	waiting = false
+	m.checkPollStalls(context.Background())
+
+	events := client.stallEvents()
+	require.Len(t, events, 2, "still in flight once the wait ends, so it is reported")
+	assert.False(t, events[1].IsHealthy)
 }
 
 func TestEnablePollStallDetection_ZeroDeadline_LeavesItOff(t *testing.T) {
