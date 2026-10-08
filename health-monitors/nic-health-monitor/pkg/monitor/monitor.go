@@ -97,6 +97,16 @@ func NewNICHealthMonitor(
 	// fleet they would never appear.
 	metrics.InitForChecks(nodeName, names)
 
+	// Initialize poll-age series at startup so a check that stalls on its first
+	// cycle is observable. Successful cycles advance the timestamp in runChecks.
+	if len(m.stateChecks) > 0 {
+		metrics.PollCycleLastCompletedTimestamp.WithLabelValues(nodeName, "state").SetToCurrentTime()
+	}
+
+	if len(m.counterChecks) > 0 {
+		metrics.PollCycleLastCompletedTimestamp.WithLabelValues(nodeName, "counter").SetToCurrentTime()
+	}
+
 	slog.Info("NIC Health Monitor initialized",
 		"state_checks", len(m.stateChecks),
 		"counter_checks", len(m.counterChecks),
@@ -144,6 +154,7 @@ func (m *NICHealthMonitor) runChecks(
 
 	metrics.PollCycleDuration.WithLabelValues(m.nodeName, category).
 		Observe(time.Since(start).Seconds())
+	metrics.PollCycleLastCompletedTimestamp.WithLabelValues(m.nodeName, category).SetToCurrentTime()
 
 	return nil
 }

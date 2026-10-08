@@ -13,6 +13,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 - [Health Monitors](#health-monitors)
   - [Health Event Publisher](#health-event-publisher)
   - [GPU Health Monitor](#gpu-health-monitor)
+  - [NIC Health Monitor](#nic-health-monitor)
   - [Syslog Health Monitor](#syslog-health-monitor)
   - [CSP Health Monitor](#csp-health-monitor)
 - [Change Stream Metrics](#change-stream-metrics)
@@ -298,6 +299,14 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `dcgm_api_failures`                               | Counter   | `error_name`                       | Number of DCGM API errors                                                                                 |
 | `dcgm_health_check_unknown_system_skipped`        | Counter   | -                                  | Number of DCGM health check incidents skipped due to unrecognized system value                            |
 | `dcgm_probe_hangs`                                | Counter   | `operation_name`                   | Number of DCGM probes that exceeded the watchdog deadline without returning                                |
+
+---
+
+### NIC Health Monitor
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `nic_health_monitor_poll_cycle_last_completed_timestamp_seconds` | Gauge | `node`, `category` | Unix timestamp initialized at monitor startup and advanced after each completed poll cycle (`state` or `counter`). Use `time() - metric` to measure how long the category has gone without completing a poll, including a stall in the first poll. |
 
 ---
 
