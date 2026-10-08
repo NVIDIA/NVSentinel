@@ -461,6 +461,101 @@ class TestPlatformConnectors(unittest.TestCase):
         finally:
             os.unlink(temp_file_path)
 
+    def test_active_events_metric_is_fatal_matches_sent_event(self) -> None:
+        """is_fatal mirrors the event's isFatal, and every recovery zeroes the same series.
+
+        The label is derived from the error code on both set and clear. A clear
+        that computed a different value would create a second series and leave
+        the first reading 1 for the process lifetime.
+        """
+        temp_file_path = metadata_file()
+        processor = platform_connector.PlatformConnectorEventProcessor(
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={
+                    "DCGM_FR_NVLINK_DOWN": "RESTART_VM",
+                    "DCGM_FR_NVLINK_ERROR_CRITICAL": "NONE",
+                },
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            ),
+            exit=Event(),
+        )
+        sent: list[platformconnector_pb2.HealthEvent] = []
+
+        def record_send(events: list[platformconnector_pb2.HealthEvent], delivery_timeout_seconds: Any = None) -> bool:
+            sent.extend(events)
+            return True
+
+        processor.send_health_event_with_retries = record_send  # type: ignore[method-assign]
+
+        observed: dict[tuple[str, Any, str, str], int] = {}
+
+        def fake_labels(**kwargs: Any) -> unittest.mock.MagicMock:
+            child = unittest.mock.MagicMock()
+            key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"], kwargs["is_fatal"])
+            child.set.side_effect = lambda value: observed.__setitem__(key, value)
+            return child
+
+        def nvlink_failing(*codes: str) -> dict[str, dcgmtypes.HealthDetails]:
+            return {
+                "DCGM_HEALTH_WATCH_NVLINK": dcgmtypes.HealthDetails(
+                    status=dcgmtypes.HealthStatus.FAIL,
+                    entity_failures={0: [dcgmtypes.ErrorDetails(code=code, message=code) for code in codes]},
+                )
+            }
+
+        try:
+            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
+                gauge.labels.side_effect = fake_labels
+
+                # Mapped fatal, mapped NONE, and unmapped (CONTACT_SUPPORT fallback).
+                processor.health_event_occurred(
+                    nvlink_failing("DCGM_FR_NVLINK_DOWN", "DCGM_FR_NVLINK_ERROR_CRITICAL", "DCGM_FR_UNMAPPED"),
+                    [0],
+                )
+
+                assert observed == {
+                    ("GpuNvlinkWatch", 0, "DCGM_FR_NVLINK_DOWN", "true"): 1,
+                    ("GpuNvlinkWatch", 0, "DCGM_FR_NVLINK_ERROR_CRITICAL", "false"): 1,
+                    ("GpuNvlinkWatch", 0, "DCGM_FR_UNMAPPED", "true"): 1,
+                }
+                # sent also holds the first-poll connectivity baseline, so compare only NVLink failures.
+                sent_is_fatal = {
+                    event.errorCode[0]: str(event.isFatal).lower()
+                    for event in sent
+                    if event.checkName == "GpuNvlinkWatch" and not event.isHealthy
+                }
+                assert sent_is_fatal == {code: is_fatal for (_, _, code, is_fatal) in observed}
+
+                # Partial recovery zeroes the recovered codes' existing series.
+                processor.health_event_occurred(nvlink_failing("DCGM_FR_NVLINK_DOWN"), [0])
+
+                assert observed == {
+                    ("GpuNvlinkWatch", 0, "DCGM_FR_NVLINK_DOWN", "true"): 1,
+                    ("GpuNvlinkWatch", 0, "DCGM_FR_NVLINK_ERROR_CRITICAL", "false"): 0,
+                    ("GpuNvlinkWatch", 0, "DCGM_FR_UNMAPPED", "true"): 0,
+                }
+
+                processor.health_event_occurred(
+                    {
+                        "DCGM_HEALTH_WATCH_NVLINK": dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.PASS, entity_failures={}
+                        )
+                    },
+                    [0],
+                )
+
+                assert observed == {
+                    ("GpuNvlinkWatch", 0, "DCGM_FR_NVLINK_DOWN", "true"): 0,
+                    ("GpuNvlinkWatch", 0, "DCGM_FR_NVLINK_ERROR_CRITICAL", "false"): 0,
+                    ("GpuNvlinkWatch", 0, "DCGM_FR_UNMAPPED", "true"): 0,
+                }
+        finally:
+            os.unlink(temp_file_path)
+
     def test_active_events_metric_covers_nvswitch_entities(self) -> None:
         """NVSwitch faults must reach the gauge, and recovery must zero every code.
 
@@ -2411,7 +2506,7 @@ class TestPlatformConnectors(unittest.TestCase):
                     processor._metadata_reader._path,
                 )
                 gauge.labels.assert_called_with(
-                    event_type="GpuDcgmUnresponsive", gpu_id="", error_code="DCGM_PROBE_HANG"
+                    event_type="GpuDcgmUnresponsive", gpu_id="", error_code="DCGM_PROBE_HANG", is_fatal="true"
                 )
                 gauge_labels.set.assert_called_with(1)
 
@@ -2573,6 +2668,31 @@ class TestPlatformConnectors(unittest.TestCase):
             assert len(servicer.health_events) == 1
             assert servicer.health_events[0].isHealthy is True
             assert processor._consecutive_connectivity_successes == 0
+
+    def test_connectivity_failure_active_events_metric_is_fatal(self) -> None:
+        """The connectivity event is always fatal, and its clear zeroes the series it set."""
+        observed: dict[tuple[str, Any, str, str], int] = {}
+
+        def fake_labels(**kwargs: Any) -> unittest.mock.MagicMock:
+            child = unittest.mock.MagicMock()
+            key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"], kwargs["is_fatal"])
+            child.set.side_effect = lambda value: observed.__setitem__(key, value)
+            return child
+
+        with self._running_connector() as (servicer, processor):
+            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
+                gauge.labels.side_effect = fake_labels
+
+                assert processor.dcgm_connectivity_failed() is True
+                assert servicer.health_events[0].isFatal is True
+                assert observed == {("GpuDcgmConnectivityFailure", "", "DCGM_CONNECTIVITY_ERROR", "true"): 1}
+
+                timestamp = Timestamp()
+                timestamp.GetCurrentTime()
+                processor.clear_dcgm_connectivity_failure(timestamp)
+
+                assert servicer.health_events[0].isHealthy is True
+                assert observed == {("GpuDcgmConnectivityFailure", "", "DCGM_CONNECTIVITY_ERROR", "true"): 0}
 
     def test_connectivity_failure_interrupts_pending_recovery(self) -> None:
         """A failed cycle resets recovery confirmation without duplicating the active event."""

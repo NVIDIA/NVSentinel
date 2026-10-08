@@ -201,16 +201,31 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
         return f"{check_name}|{entity_type}|{entity_value}"
 
+    def _is_fatal_label(self, error_code: str) -> str:
+        """is_fatal label value for a DCGM health-watch error code.
+
+        Uses the same rule as the unhealthy event's isFatal. The value comes from
+        the code, not the event, so the series a failure sets and the series its
+        recovery zeroes always carry identical labels.
+        """
+        is_fatal = self.get_recommended_action_from_dcgm_error_map(error_code) != platformconnector_pb2.NONE
+        return str(is_fatal).lower()
+
     def _clear_active_event_metric(self, check_name: str, key: str) -> None:
         """Zero every error_code series the cache says this check latched.
 
         A check can be latched by more than one code, so zeroing a single
         assumed code would leave the others reading 1 for the process lifetime.
         Call this before the cache entry is reset.
+
+        Only the connectivity and unresponsive checks call this. Both always
+        send isFatal=True, so their series always carry is_fatal="true".
         """
         entry = self.entity_cache.get(key)
         for code in sorted(entry.active_errors) if entry else []:
-            metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", error_code=code).set(0)
+            metrics.dcgm_health_active_events.labels(
+                event_type=check_name, gpu_id="", error_code=code, is_fatal="true"
+            ).set(0)
 
     def _persist_dcgm_unresponsive_state(self, processing_strategy: platformconnector_pb2.ProcessingStrategy) -> None:
         """Remember a delivered local-managed probe hang across liveness restarts.
@@ -256,7 +271,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
         self._dcgm_unresponsive_strategy = strategy
         metrics.dcgm_health_active_events.labels(
-            event_type="GpuDcgmUnresponsive", gpu_id="", error_code="DCGM_PROBE_HANG"
+            event_type="GpuDcgmUnresponsive", gpu_id="", error_code="DCGM_PROBE_HANG", is_fatal="true"
         ).set(1)
 
     def _clear_dcgm_unresponsive_state(self) -> None:
@@ -758,7 +773,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             )
                         for event_type, gpu_id, error_code, value in pending_metric_updates:
                             metrics.dcgm_health_active_events.labels(
-                                event_type=event_type, gpu_id=gpu_id, error_code=error_code
+                                event_type=event_type,
+                                gpu_id=gpu_id,
+                                error_code=error_code,
+                                is_fatal=self._is_fatal_label(error_code),
                             ).set(value)
                         for event_type, switch_id, error_code, value in pending_switch_metric_updates:
                             metrics.dcgm_health_active_switch_events.labels(
@@ -1017,7 +1035,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         self._connectivity_escalated = True
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
-                        event_type=check_name, gpu_id="", error_code="DCGM_CONNECTIVITY_ERROR"
+                        event_type=check_name, gpu_id="", error_code="DCGM_CONNECTIVITY_ERROR", is_fatal="true"
                     ).set(1)
                     return True
                 return False
@@ -1118,7 +1136,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         self._persist_dcgm_unresponsive_state(processing_strategy)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
-                        event_type=check_name, gpu_id="", error_code=error_code
+                        event_type=check_name, gpu_id="", error_code=error_code, is_fatal="true"
                     ).set(1)
                     return True
                 return False
