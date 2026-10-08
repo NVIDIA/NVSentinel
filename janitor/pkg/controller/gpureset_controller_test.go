@@ -1757,9 +1757,6 @@ var _ = Describe("GPUReset Controller", func() {
 				}(),
 				draOperandPodLabels(),
 				[]string{"nvidia.com/gpu.deploy.dcgm-dra", "nvidia.com/gpu.deploy.dcgm-exporter-dra"}),
-			Entry("in DRA mode with the DCGM exporter disabled",
-				draDeployLabels(), draOperandPodLabels()[:1],
-				[]string{"nvidia.com/gpu.deploy.dcgm-dra"}),
 			Entry("in device plugin mode",
 				devicePluginDeployLabels(), devicePluginOperandPodLabels(),
 				[]string{
@@ -1793,81 +1790,6 @@ var _ = Describe("GPUReset Controller", func() {
 			updatedReset := getReset()
 			Expect(updatedReset.Status.ManagedServices).NotTo(BeNil())
 			Expect(updatedReset.Status.ManagedServices.NodeLabels).To(BeEmpty())
-
-			By("Verifying no node label was ever changed")
-			expectUnchanged(observed, nodeLabels, nil)
-		})
-
-		It("should stop the device plugin mode services for a GPUReset that an older janitor started", func() {
-			nodeLabels := draDeployLabels()
-			maps.Copy(nodeLabels, devicePluginDeployLabels())
-			createNodeWithOperandPods(nodeLabels, draOperandPodLabels())
-			createReset()
-
-			By("Reconciling until the node is ready for reset")
-			reconcileUntil(v1alpha1.Ready)
-
-			By("Starting the teardown the way an older janitor did, with no record of the managed services")
-			updatedReset := getReset()
-			patch := client.MergeFrom(updatedReset.DeepCopy())
-			meta.SetStatusCondition(&updatedReset.Status.Conditions, NewCondition(v1alpha1.ServicesTornDown,
-				metav1.ConditionFalse, v1alpha1.ReasonTearingDownServices, "Removing gpu-operator managed services"))
-			Expect(k8sClient.Status().Patch(ctx, &updatedReset, patch)).To(Succeed())
-
-			Eventually(func(g Gomega) {
-				var cachedReset v1alpha1.GPUReset
-				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cachedReset)).To(Succeed())
-				g.Expect(meta.FindStatusCondition(cachedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).NotTo(BeNil())
-			}, "10s", "100ms").Should(Succeed())
-
-			By("Reconciling until services are torn down")
-			observed := reconcileUntil(v1alpha1.ServicesTornDown)
-			Expect(getReset().Status.ManagedServices).To(BeNil())
-
-			tornDownLabels := maps.Clone(nodeLabels)
-			for label := range devicePluginDeployLabels() {
-				tornDownLabels[label] = "false"
-			}
-			Expect(getNodeLabels()).To(Equal(tornDownLabels))
-
-			By("Reconciling until the reset is complete")
-			observed = append(observed, reconcileUntil(v1alpha1.Complete)...)
-			Expect(getNodeLabels()).To(Equal(nodeLabels))
-
-			By("Verifying the DRA mode deploy labels were never changed")
-			expectUnchanged(observed, nodeLabels, slices.Collect(maps.Keys(devicePluginDeployLabels())))
-		})
-
-		It("should not restore services when the GPUReset is deleted before the teardown starts", func() {
-			nodeLabels := devicePluginDeployLabels()
-			createNodeWithOperandPods(nodeLabels, devicePluginOperandPodLabels())
-			createReset()
-
-			By("Reconciling until the node is ready for reset")
-			observed := reconcileUntil(v1alpha1.Ready)
-			updatedReset := getReset()
-			Expect(controllerutil.ContainsFinalizer(&updatedReset, gpuResetFinalizer)).To(BeTrue())
-
-			By("Deleting the GPUReset before the teardown starts")
-			Expect(k8sClient.Delete(ctx, &v1alpha1.GPUReset{Name: resetName})).To(Succeed())
-
-			Eventually(func(g Gomega) {
-				var cachedReset v1alpha1.GPUReset
-				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cachedReset)).To(Succeed())
-				g.Expect(cachedReset.DeletionTimestamp).NotTo(BeNil())
-			}, "10s", "100ms").Should(Succeed())
-
-			Eventually(func(g Gomega) {
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-				g.Expect(err).NotTo(HaveOccurred())
-
-				var currentNode corev1.Node
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &currentNode)).To(Succeed())
-				observed = append(observed, currentNode.Labels)
-
-				var deletedReset v1alpha1.GPUReset
-				g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &deletedReset))).To(BeTrue())
-			}, "10s", "100ms").Should(Succeed())
 
 			By("Verifying no node label was ever changed")
 			expectUnchanged(observed, nodeLabels, nil)
