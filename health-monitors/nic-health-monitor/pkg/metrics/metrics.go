@@ -64,11 +64,11 @@ var (
 		Help: "Total number of state check error events",
 	}, []string{labelNode, labelCheck, labelDevice, labelPort})
 
-	// PortStateBlips counts ports that turned unhealthy and recovered within
-	// the port-state hold-down, so were never reported.
+	// PortStateBlips counts ports that turned unhealthy and recovered before
+	// the port-state hold-down reported them.
 	PortStateBlips = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "nic_health_monitor_port_state_blips_total",
-		Help: "Ports that turned unhealthy and recovered within the port-state hold-down, so were not reported",
+		Help: "Ports that turned unhealthy and recovered before the port-state hold-down reported them",
 	}, []string{labelNode, labelCheck, labelDevice, labelPort})
 
 	// CounterThresholdBreaches counts counter threshold breaches.

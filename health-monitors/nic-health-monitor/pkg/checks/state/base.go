@@ -264,7 +264,7 @@ func (b *baseStateCheck) holdPort(
 	if portIsHealthy(current) || reported {
 		// The hold-down only gates a healthy-to-unhealthy edge.
 		if held && !reported {
-			slog.Info("Port recovered within the hold-down; not reported",
+			slog.Info("Port recovered before the hold-down reported it",
 				"check", b.strategy.checkName(), "device", current.Device, "port", current.Port,
 				"unhealthyFor", now.Sub(since).Round(time.Millisecond))
 			metrics.PortStateBlips.WithLabelValues(

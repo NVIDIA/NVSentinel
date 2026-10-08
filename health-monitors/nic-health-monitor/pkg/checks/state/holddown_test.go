@@ -444,3 +444,25 @@ func TestIBState_DeviceMissedDuringHoldDown_KeepsHold(t *testing.T) {
 	portFatal, _ := fatalEventKinds(runPoll(t, check), "mlx5_1")
 	assert.True(t, portFatal, "a missed enumeration must not restart the hold-down")
 }
+
+func TestIBState_RecoverySeenAsHoldDownElapses_CountsBlip(t *testing.T) {
+	const nodeName = "hold-ib-boundary"
+
+	node := singlePortIBNode()
+	check, clock := newHeldIBCheck(t, nodeName, node, testHoldDown, freshStateManager(t))
+
+	assert.Empty(t, runPoll(t, check))
+
+	node.ib["mlx5_0"].ports[1] = holdIBDown
+	assert.Empty(t, runPoll(t, check))
+
+	clock.Advance(testHoldDown - time.Second)
+	assert.Empty(t, runPoll(t, check))
+
+	// Last seen down short of the hold-down, so it was never reported.
+	node.ib["mlx5_0"].ports[1] = holdIBUp
+	clock.Advance(time.Second)
+	assert.Empty(t, runPoll(t, check))
+	assert.InDelta(t, 1, blips(t, nodeName, checks.InfiniBandStateCheckName, "mlx5_0", "1"), 0,
+		"an outage that ended before it was reported is a blip")
+}

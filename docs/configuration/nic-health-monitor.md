@@ -113,11 +113,11 @@ nic-health-monitor:
 
 - **Off by default.** `"0s"` reports on the first unhealthy poll.
 - **Port and card events alike.** While a port is held, its card's homogeneity check sees it as up too, so the card event waits as well.
-- **Blips are counted, not reported.** A port that recovers within the hold-down publishes no event and increments `nic_health_monitor_port_state_blips_total{node,check,device,port}`.
+- **Blips are counted, not reported.** A port that recovers before it is reported publishes no event and increments `nic_health_monitor_port_state_blips_total{node,check,device,port}`.
 - **Recovery is immediate.** The healthy event is never delayed.
 - **A restart restarts the hold.** The hold-down is not persisted.
 
-The hold-down applies only to port state. The `link_downed` counter (InfiniBandDegradationCheck) is fatal on any increase and stays latched until a reboot, so a blip that bumps it still produces a fatal event. If you see blips there, you can disable that counter (see [Disable a noisy counter](#disable-a-noisy-counter)).
+The hold-down applies only to port state. The `link_downed` counter (InfiniBandDegradationCheck) is fatal on any increase and stays latched until the counter resets or the host reboots, so a blip that bumps it still produces a fatal event. If you see blips there, you can disable that counter (see [Disable a noisy counter](#disable-a-noisy-counter)).
 
 ## Poll Stall Detection
 
