@@ -88,6 +88,11 @@ var (
 			"is cleared and healthy baselines are emitted when it changes).")
 	processingStrategyFlag = flag.String("processing-strategy", "EXECUTE_REMEDIATION",
 		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
+	pollStallDeadline = flag.Duration("poll-stall-deadline", 10*time.Second,
+		"Publish a NICPollStallCheck event when a poll has been in flight this long. "+
+			"Keep it below the liveness restart window. 0 disables.")
+	pollStallStoreOnly = flag.Bool("poll-stall-store-only", true,
+		"Emit NICPollStallCheck events as STORE_ONLY instead of with --processing-strategy")
 )
 
 func main() {
@@ -151,6 +156,13 @@ func run() error {
 		enabledChecks, rc.statePollingInterval, pubOpt)
 	// Closes the publisher and the connection it owns.
 	defer nicMonitor.Close()
+
+	stallStrategy := rc.processingStrategy
+	if *pollStallStoreOnly {
+		stallStrategy = pb.ProcessingStrategy_STORE_ONLY
+	}
+
+	nicMonitor.EnablePollStallDetection(*pollStallDeadline, stallStrategy)
 
 	return runServerAndLoops(ctx, rc, nicMonitor)
 }
@@ -363,6 +375,10 @@ func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monit
 
 	g.Go(func() error {
 		return pollingLoop(gCtx, "counter", monitor.CounterPollingInterval, nicMonitor.RunCounterChecks, nil)
+	})
+
+	g.Go(func() error {
+		return nicMonitor.RunPollStallWatchdog(gCtx)
 	})
 
 	return g.Wait()
