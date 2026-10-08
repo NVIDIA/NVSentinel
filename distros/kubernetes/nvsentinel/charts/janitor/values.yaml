@@ -169,10 +169,10 @@ config:
         name: "gpu-operator"
       resetJob:
         writeSysLogEvent: true
-        # RuntimeClass for the reset Job. Ignored (rendered empty) when
-        # global.gpuDraEnabled is true: GPU Operator GPUCluster (DRA) mode creates
-        # no nvidia RuntimeClass, and the privileged Job reaches the driver through
-        # the hostDriverRootPath hostPath anyway.
+        # RuntimeClass for the reset Job. Must be "" when global.gpuDraEnabled is
+        # true (the chart fails to render otherwise): GPU Operator GPUCluster (DRA)
+        # mode creates no nvidia RuntimeClass. The privileged Job reaches the driver
+        # through the hostDriverRootPath hostPath and does not need one.
         runtimeClassName: "nvidia"
         # Host path that contains the NVIDIA driver filesystem. Containerized
         # driver installations commonly use /run/nvidia/driver. Set this to /

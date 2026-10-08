@@ -1774,6 +1774,78 @@ var _ = Describe("GPUReset Controller", func() {
 				[]string{"nvidia.com/gpu.deploy.device-plugin"}),
 		)
 
+		// A GPUReset torn down by a janitor version without status.managedServices must get its record once,
+		// from the node, and then be handled exactly like a GPUReset started by this version.
+		DescribeTable("should record the managed services of a GPUReset that an older janitor tore down",
+			func(nodeLabels map[string]string, podLabels []map[string]string, tornDown metav1.ConditionStatus,
+				reason v1alpha1.GPUResetReason, expectedRecord []string) {
+				createNodeWithOperandPods(nodeLabels, podLabels)
+				createReset()
+
+				By("Reconciling until the node is ready for reset")
+				reconcileUntil(v1alpha1.Ready)
+
+				By("Rewriting the status the way the older janitor left it: teardown condition set, no record")
+				// Status().Update replaces the whole status, so a record a previous reconcile may already have
+				// written is removed; a merge patch would leave a nil field untouched.
+				Eventually(func(g Gomega) {
+					updatedReset := getReset()
+					meta.SetStatusCondition(&updatedReset.Status.Conditions, NewCondition(v1alpha1.ServicesTornDown, tornDown, reason, ""))
+					updatedReset.Status.ManagedServices = nil
+					g.Expect(k8sClient.Status().Update(ctx, &updatedReset)).To(Succeed())
+				}, "5s", "100ms").Should(Succeed())
+				Expect(getReset().Status.ManagedServices).To(BeNil())
+
+				By("Reconciling until the record is written")
+				Eventually(func(g Gomega) {
+					_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(getReset().Status.ManagedServices).NotTo(BeNil())
+				}, "10s", "250ms").Should(Succeed())
+
+				Expect(getReset().Status.ManagedServices.NodeLabels).To(ConsistOf(expectedRecord))
+
+				By("Deleting the GPUReset: the finalizer must restore the recorded services from the record")
+				Expect(k8sClient.Delete(ctx, &v1alpha1.GPUReset{Name: resetName})).To(Succeed())
+				reconciler.checkPodsReadyFn = func(context.Context, string, []gpuservices.AppSpec) (bool, error) { return true, nil }
+				Eventually(func(g Gomega) {
+					_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+					g.Expect(err).NotTo(HaveOccurred())
+					var deleted v1alpha1.GPUReset
+					g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &deleted))).To(BeTrue())
+				}, "10s", "250ms").Should(Succeed())
+
+				for _, label := range expectedRecord {
+					Expect(getNodeLabels()).To(HaveKeyWithValue(label, "true"))
+				}
+			},
+			Entry("teardown still in progress: detect from the operand pods still on the node",
+				devicePluginDeployLabels(), devicePluginOperandPodLabels(),
+				metav1.ConditionFalse, v1alpha1.ReasonTearingDownServices,
+				[]string{
+					"nvidia.com/gpu.deploy.device-plugin",
+					"nvidia.com/gpu.deploy.dcgm",
+					"nvidia.com/gpu.deploy.dcgm-exporter",
+					"nvidia.com/gpu.deploy.gpu-feature-discovery",
+				}),
+			Entry("teardown finished: take the labels holding the disabled value",
+				func() map[string]string {
+					labels := devicePluginDeployLabels()
+					for k := range labels {
+						labels[k] = "false"
+					}
+					labels["nvidia.com/gpu.deploy.dcgm-dra"] = "true" // other mode, enabled: not stopped by anyone
+					return labels
+				}(), nil,
+				metav1.ConditionTrue, v1alpha1.ReasonServiceTeardownSucceeded,
+				[]string{
+					"nvidia.com/gpu.deploy.device-plugin",
+					"nvidia.com/gpu.deploy.dcgm",
+					"nvidia.com/gpu.deploy.dcgm-exporter",
+					"nvidia.com/gpu.deploy.gpu-feature-discovery",
+				}),
+		)
+
 		It("should skip the service teardown and restoration when no managed service pods run on the node", func() {
 			nodeLabels := draDeployLabels()
 			maps.Copy(nodeLabels, devicePluginDeployLabels())
@@ -2090,7 +2162,7 @@ func TestExpectedJobName(t *testing.T) {
 	}
 }
 
-func TestManagedApps_RecordAndLegacyGPUResets_ReturnsTheStoppedServices(t *testing.T) {
+func TestManagedApps_ReturnsTheRecordedServices(t *testing.T) {
 	manager, err := gpuservices.NewManager("gpu-operator", gpuservices.ManagerSpec{})
 	require.NoError(t, err)
 
@@ -2100,44 +2172,20 @@ func TestManagedApps_RecordAndLegacyGPUResets_ReturnsTheStoppedServices(t *testi
 		NewCondition(v1alpha1.ServicesTornDown, metav1.ConditionFalse, v1alpha1.ReasonTearingDownServices, ""),
 	}
 
-	// Node labels an older janitor (no record) leaves behind on a device plugin mode node that also carries
-	// DRA labels: the four device plugin operands disabled, the DRA operands still enabled.
-	olderJanitorNodeLabels := map[string]string{
-		"nvidia.com/gpu.deploy.device-plugin":         "false",
-		"nvidia.com/gpu.deploy.dcgm":                  "false",
-		"nvidia.com/gpu.deploy.dcgm-exporter":         "false",
-		"nvidia.com/gpu.deploy.gpu-feature-discovery": "false",
-		"nvidia.com/gpu.deploy.dcgm-dra":              "true",
-		"nvidia.com/gpu.deploy.dcgm-exporter-dra":     "true",
-	}
-
 	cases := []struct {
 		name       string
 		conditions []metav1.Condition
 		services   *v1alpha1.ManagedServicesStatus
-		nodeLabels map[string]string
 		want       []string
 	}{
 		{
-			name:       "teardown not started",
-			nodeLabels: olderJanitorNodeLabels,
-			want:       nil,
+			name: "teardown not started",
+			want: nil,
 		},
 		{
-			name:       "older janitor started the teardown: services whose label holds the disabled value",
+			// ensureManagedServicesRecord fills the record in before any caller of managedApps runs.
+			name:       "torn down without a record",
 			conditions: tearingDown,
-			nodeLabels: olderJanitorNodeLabels,
-			want: []string{
-				"nvidia.com/gpu.deploy.device-plugin",
-				"nvidia.com/gpu.deploy.dcgm",
-				"nvidia.com/gpu.deploy.dcgm-exporter",
-				"nvidia.com/gpu.deploy.gpu-feature-discovery",
-			},
-		},
-		{
-			name:       "older janitor started the teardown but the node is gone",
-			conditions: tearingDown,
-			nodeLabels: nil,
 			want:       nil,
 		},
 		{
@@ -2175,7 +2223,7 @@ func TestManagedApps_RecordAndLegacyGPUResets_ReturnsTheStoppedServices(t *testi
 			}
 
 			var got []string
-			for _, app := range r.managedApps(context.Background(), gr, tc.nodeLabels) {
+			for _, app := range r.managedApps(context.Background(), gr) {
 				got = append(got, app.NodeLabel)
 			}
 
