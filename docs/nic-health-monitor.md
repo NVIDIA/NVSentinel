@@ -23,7 +23,7 @@ The NIC Health Monitor uses a **three-layer detection approach**, running as two
 
 Polls `/sys/class/infiniband/` sysfs files at `statePollingInterval` (1s by default) for hard UP/DOWN transitions:
 
-- Port transitions to `DOWN` or `phys_state=Disabled` at runtime → **Fatal** (`REPLACE_VM`); first-poll ports without peer-card evidence are suppressed (see [NIC Health Monitor Configuration](./configuration/nic-health-monitor.md))
+- Port transitions to `DOWN` or `phys_state=Disabled` at runtime → **Fatal** (`REPLACE_VM`), after `portStateHoldDown` when that is set; first-poll ports without peer-card evidence are suppressed (see [NIC Health Monitor Configuration](./configuration/nic-health-monitor.md))
 - NIC disappears from sysfs (fell off PCIe bus), confirmed across 3 consecutive polls → **Fatal** (`REPLACE_VM`)
 - Card has fewer active ports than peer NICs of the same role (uncabled port anomaly) → **Fatal** (`REPLACE_VM`)
 

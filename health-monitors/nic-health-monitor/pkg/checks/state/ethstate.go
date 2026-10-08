@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
@@ -90,6 +91,7 @@ func NewEthernetStateCheck(
 		state:                stateManager,
 		emitHealthyBaselines: pendingBaseline,
 		strategy:             c,
+		now:                  time.Now,
 	}
 
 	c.seedFromPersistedState()
@@ -205,6 +207,13 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.retainUnreadableDevices(
 		result.UnreadableDevices, st.seenDevices, st.currentDevices, st.currentPorts,
 	)
+	c.applyPortHoldDown(st.currentPorts, st.cardActive, st.portCard, result.UnreadableDevices)
+
+	// The per-port evaluator reads each port's own copy of the snapshot.
+	for i := range st.allPorts {
+		st.allPorts[i].snap = st.currentPorts[st.allPorts[i].key]
+	}
+
 	events := c.buildEventsForPoll(st, firstPoll, baselineRun)
 	c.logDiscoverySummaryIfChanged(st)
 

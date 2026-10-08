@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strconv"
 	"strings"
+	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
@@ -110,6 +112,15 @@ type baseStateCheck struct {
 	// deliberately outside the transactional commit (like saveFailed).
 	firstPollDeferrals int
 
+	// portHeldSince records when each port held by the port-state hold-down
+	// was first seen unhealthy. Like firstPollDeferrals it is kept outside
+	// the transactional commit, so a discarded poll neither restarts a hold
+	// nor delays an event that is due. An entry is dropped when its port is
+	// next read healthy or already reported. It is not persisted: a restart
+	// restarts any hold in progress.
+	portHeldSince map[string]time.Time
+	now           func() time.Time
+
 	pending *statePollCommit
 
 	strategy linkLayerStrategy
@@ -197,6 +208,82 @@ func (b *baseStateCheck) seedFromPersistedState() {
 		"port_states", len(b.previousPorts),
 		"known_devices", len(b.previousDevices),
 	)
+}
+
+// applyPortHoldDown holds back a port that has just turned unhealthy until it
+// has stayed unhealthy for stateCheck.portStateHoldDown. A held port is
+// presented with its last reported (healthy) snapshot and counted active on
+// its card, so neither its port event nor its card's homogeneity verdict
+// changes. Once the hold-down has elapsed, the real snapshot goes through and
+// the usual transition is reported. A port that recovers first is counted in
+// PortStateBlips and never reported. A port that was not read this poll (its
+// device unreadable or missing) keeps its hold. Off when the hold-down is zero.
+func (b *baseStateCheck) applyPortHoldDown(
+	currentPorts map[string]portSnapshot, cardActive map[string]int, portCard map[string]string,
+	unreadable map[string]error,
+) {
+	holdDown := b.cfg.StateCheck.HoldDown
+	if holdDown <= 0 {
+		return
+	}
+
+	if b.portHeldSince == nil {
+		b.portHeldSince = make(map[string]time.Time)
+	}
+
+	now := b.now()
+
+	for key, current := range currentPorts {
+		if _, retained := unreadable[current.Device]; retained {
+			continue // last committed snapshot, not an observation
+		}
+
+		prev, held := b.holdPort(key, current, now, holdDown)
+		if !held {
+			continue
+		}
+
+		currentPorts[key] = prev
+
+		if card, ok := portCard[key]; ok {
+			cardActive[card]++
+		}
+	}
+}
+
+// holdPort updates one port's hold-down and reports whether its current
+// snapshot is held back, returning the last reported snapshot to present
+// instead.
+func (b *baseStateCheck) holdPort(
+	key string, current portSnapshot, now time.Time, holdDown time.Duration,
+) (portSnapshot, bool) {
+	since, held := b.portHeldSince[key]
+	prev, hasPrev := b.previousPorts[key]
+	reported := !hasPrev || !portIsHealthy(prev)
+
+	if portIsHealthy(current) || reported {
+		// The hold-down only gates a healthy-to-unhealthy edge.
+		if held && !reported {
+			slog.Info("Port recovered within the hold-down; not reported",
+				"check", b.strategy.checkName(), "device", current.Device, "port", current.Port,
+				"unhealthyFor", now.Sub(since).Round(time.Millisecond))
+			metrics.PortStateBlips.WithLabelValues(
+				b.nodeName, b.strategy.checkName(), current.Device, strconv.Itoa(current.Port)).Inc()
+		}
+
+		delete(b.portHeldSince, key)
+
+		return portSnapshot{}, false
+	}
+
+	if !held {
+		since = now
+		b.portHeldSince[key] = since
+	}
+
+	// Once due, the entry stays until the unhealthy state is committed, so a
+	// discarded poll reports it again next time.
+	return prev, now.Sub(since) < holdDown
 }
 
 // portIsHealthy reports whether a port snapshot is fully operational.
