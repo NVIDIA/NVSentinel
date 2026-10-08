@@ -162,7 +162,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._connectivity_escalated = False
         metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
         metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
-        # Strategy and check name for the active probe-hang event. Restored from
+        # Strategy and check name for the active persisted DCGM event. Restored from
         # the marker so recovery after a liveness restart still matches the
         # unhealthy event even if Helm config changed in between.
         self._dcgm_unresponsive_strategy: platformconnector_pb2.ProcessingStrategy | None = None
@@ -219,12 +219,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         check_name: str = "GpuDcgmUnresponsive",
         error_code: str = "DCGM_PROBE_HANG",
     ) -> None:
-        """Remember a delivered probe hang across liveness restarts.
+        """Remember a delivered DCGM fault across liveness restarts.
 
         Format is error code, ProcessingStrategy name, then check name. The
         optional third line preserves compatibility with existing local markers.
         The strategy must be restored for the clear path so fault-quarantine
-        still matches the pair after a config change.
+        still matches the pair after a config change. Remote connectivity
+        failures share this marker because they share the probe-hang check.
         The marker is written to a sibling temporary file and renamed so a
         restart mid-write cannot leave the strategy line missing.
         """
@@ -1045,15 +1046,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     )
                     if escalate:
                         self._connectivity_escalated = True
-                    if self._dcgm_unresponsive_check_name == check_name:
-                        # A remediable connectivity event replaces an
-                        # observe-only remote probe hang. Persist its strategy
-                        # so recovery after a restart matches the active event.
-                        self._persist_dcgm_unresponsive_state(
-                            self._processing_strategy,
-                            check_name,
-                            error_code="DCGM_CONNECTIVITY_ERROR",
-                        )
+                    # Persist every delivered connectivity fault, including
+                    # when no probe-hang marker existed before this event.
+                    self._persist_dcgm_unresponsive_state(
+                        self._processing_strategy,
+                        check_name,
+                        error_code="DCGM_CONNECTIVITY_ERROR",
+                    )
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
                         event_type=check_name, gpu_id="", error_code="DCGM_CONNECTIVITY_ERROR"

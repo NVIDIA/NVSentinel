@@ -2585,6 +2585,52 @@ class TestPlatformConnectors(unittest.TestCase):
             assert recovery.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
             assert not os.path.exists(marker)
 
+    def test_connectivity_failure_without_probe_marker_survives_restart(self):
+        """A persisted actionable connectivity fault is cleared after restart, even if a remote hang follows."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            assert processor.dcgm_connectivity_failed() is True
+            failure = servicer.health_events[0]
+            assert failure.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
+            assert failure.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
+            marker = processor._dcgm_unresponsive_state_path
+            assert os.path.exists(marker)
+            with open(marker) as marker_file:
+                assert marker_file.read().splitlines() == [
+                    "DCGM_CONNECTIVITY_ERROR",
+                    "EXECUTE_REMEDIATION",
+                    "GpuDcgmConnectivityFailure",
+                ]
+
+            restarted = self._make_processor(
+                processor.state_file_path,
+                processor._metadata_reader._path,
+                store_only_checks=frozenset({"GpuDcgmUnresponsive"}),
+            )
+            key = restarted._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
+            assert restarted.entity_cache[key].active_errors == {"DCGM_CONNECTIVITY_ERROR"}
+            assert restarted._dcgm_unresponsive_strategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
+            # A later remote probe hang shares the active connectivity check;
+            # it must not replace the actionable fault with STORE_ONLY state.
+            servicer.health_events = None
+            assert restarted.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "remote") is True
+            assert servicer.health_events is None
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            restarted.clear_dcgm_connectivity_failure(timestamp)
+
+            recovery = servicer.health_events[0]
+            assert recovery.checkName == "GpuDcgmConnectivityFailure"
+            assert recovery.isHealthy is True
+            assert recovery.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert restarted.entity_cache[key].is_healthy
+            assert not os.path.exists(marker)
+
     def test_remediable_connectivity_failure_replaces_store_only_probe_hang_and_clears_all_metrics(self):
         """An observe-only hang must not mask a later remediable failure or leave its gauge latched."""
         with self._running_connector(
