@@ -208,6 +208,8 @@ gpu-health-monitor:
       - DCGM_FR_CLOCKS_EVENT_POWER
       - DCGM_FR_CLOCK_THROTTLE_THERMAL
       - DCGM_FR_CLOCKS_EVENT_THERMAL
+      - DCGM_FR_NVLINK_EFFECTIVE_BER_THRESHOLD
+      - DCGM_FR_NVLINK_SYMBOL_BER_THRESHOLD
 ```
 
 ### imexMonitoringEnabled
@@ -230,13 +232,17 @@ The defaults include throttling: of the errors these two watches raise, it is th
 
 Four names, two codes: `DCGM_FR_CLOCK_THROTTLE_*` is a deprecated alias of `DCGM_FR_CLOCKS_EVENT_*` with the same number, and either name can be reported, so both are listed.
 
-`DCGM_FR_NVLINK_ERROR_CRITICAL` (71) temporarily maps to `NONE` as clarity is not there around supported recovery and counter-clearing procedure. Both WARN and FAIL incidents produce non-fatal unhealthy events. The default quarantine policy does not cordon nodes for these events. This applies to every incident with code 71, including other NVLink errors that share this code. Other error codes retain their configured actions.
+The defaults also include the NVLink bit error rate (BER) codes `DCGM_FR_NVLINK_EFFECTIVE_BER_THRESHOLD` (119) and `DCGM_FR_NVLINK_SYMBOL_BER_THRESHOLD` (121) from `GpuNvlinkWatch`. [DCGM 4.7.0 removed these checks](https://docs.nvidia.com/datacenter/dcgm/latest/release-notes/changelog.html) from the health watch and from diagnostics, because they failed healthy GPUs. A DCGM 4.7 or newer hostengine does not report these codes, so this suppression has no effect there. An older hostengine still reports them, `dcgmerrorsmapping.csv` maps them to `CONTACT_SUPPORT`, and the default quarantine policy cordons the node. The suppression makes an older hostengine behave like DCGM 4.7.
+
+The cost is the same as in DCGM 4.7: a link with a truly high BER also produces no health event. Other `GpuNvlinkWatch` codes are still reported. To alert on BER, use the DCGM fields `DCGM_FI_DEV_NVLINK_SYMBOL_BER_RATIO` (1216) and `DCGM_FI_DEV_NVLINK_EFFECTIVE_BER_RATIO` (1218) with a threshold from your hardware vendor. If you set your own `suppressedErrorCodes`, your list replaces the default list, so add these two codes to it. The `dcgm_health_check_suppressed_incidents` metric counts each dropped incident by `error_code`.
+
+`DCGM_FR_NVLINK_ERROR_CRITICAL` (71) temporarily maps to `NONE` as clarity is not there around supported recovery and counter-clearing procedure(DCGM Issue =>  https://github.com/NVIDIA/DCGM/issues/318 ). Both WARN and FAIL incidents produce non-fatal unhealthy events. The default quarantine policy does not cordon nodes for these events. This applies to every incident with code 71, including other NVLink errors that share this code. Other error codes retain their configured actions.
 
 Genuine power and cooling faults are unaffected, arriving as `GPU_HW_POWER_BRAKE_VIOLATION` via [`GpuPowerBrakeWatch`](#hardware-power-brake-detection) and `GPU_TEMP_HW_SLOWDOWN_VIOLATION` via `GpuThermalMarginWatch`, both `CONTACT_SUPPORT`. `DCGM_FR_THROTTLING_VIOLATION` is not suppressed either: it comes only from `dcgmi diag`, not these watches.
 
 ### Example: Disable suppression
 
-Use this to report all error codes again, including throttling.
+Use this to report all error codes again, including throttling and NVLink BER.
 
 ```yaml
 gpu-health-monitor:
