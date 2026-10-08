@@ -10,9 +10,11 @@ package monitor
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -93,6 +95,78 @@ func (c *stagedTestCheck) Discard() {
 	}
 
 	c.pending = false
+}
+
+type blockingPollCheck struct {
+	block   bool
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingPollCheck) Name() string                    { return checks.InfiniBandStateCheckName }
+func (c *blockingPollCheck) Run() ([]*pb.HealthEvent, error) { return c.Prepare() }
+func (c *blockingPollCheck) Prepare() ([]*pb.HealthEvent, error) {
+	if c.block {
+		close(c.started)
+		<-c.release
+	}
+
+	return nil, nil
+}
+func (c *blockingPollCheck) Commit()  {}
+func (c *blockingPollCheck) Discard() {}
+
+func TestRunChecks_PollCompletionTimestampWaitsForBlockedCheck(t *testing.T) {
+	const node = "blocked-poll-node"
+	check := &blockingPollCheck{started: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(check.release) }) }
+	defer release()
+
+	monitor := NewNICHealthMonitor(node, &publishFailOnceClient{}, "127.0.0.1:5555",
+		[]checks.TransactionalCheck{check}, time.Second)
+
+	readTimestamp := func() float64 {
+		families, err := prometheus.DefaultGatherer.Gather()
+		require.NoError(t, err)
+		for _, family := range families {
+			if family.GetName() != "nic_health_monitor_poll_cycle_last_completed_timestamp_seconds" {
+				continue
+			}
+			for _, metric := range family.GetMetric() {
+				labels := map[string]string{}
+				for _, label := range metric.GetLabel() {
+					labels[label.GetName()] = label.GetValue()
+				}
+				if labels["node"] == node && labels["category"] == "state" {
+					return metric.GetGauge().GetValue()
+				}
+			}
+		}
+		t.Fatalf("missing completed-poll timestamp for node %q", node)
+		return 0
+	}
+
+	startupTimestamp := readTimestamp()
+	assert.Greater(t, startupTimestamp, float64(0),
+		"the timestamp must be exported before the first poll completes")
+
+	check.block = true
+	done := make(chan error, 1)
+	go func() { done <- monitor.RunStateChecks(context.Background()) }()
+
+	select {
+	case <-check.started:
+	case <-time.After(time.Second):
+		t.Fatal("poll did not reach the blocking check")
+	}
+
+	assert.Equal(t, startupTimestamp, readTimestamp(),
+		"the timestamp must not advance while a check is blocked")
+	release()
+	require.NoError(t, <-done)
+	assert.Greater(t, readTimestamp(), startupTimestamp,
+		"the timestamp must advance once the poll completes")
 }
 
 // TestRunChecks_PublishFailureDiscardsAndReemits: a failure the server may

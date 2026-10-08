@@ -43,6 +43,7 @@ class DCGMWatcherConfig:
     suppressed_error_codes: frozenset[str] | None = None
     suppress_unbridged_pcie_nvlink_down: bool = False
     probe_deadline_seconds: float = 0.0
+    thermal_margin_min_consecutive_polls: int = 1
     power_brake_enabled: bool = False
     power_brake_min_consecutive_polls: int = 1
     health_check_min_consecutive_polls: dict[str, int] | None = None
