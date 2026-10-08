@@ -1464,6 +1464,51 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(updatedNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("true"))
 		})
 
+		It("should request a requeue from restoreServices while restoration is only starting", func() {
+			// The deletion finalizer treats a restoreServices result without RequeueAfter as "restoration
+			// complete" and removes itself. The pass that merely initialises the ServicesRestored condition
+			// must therefore ask for a requeue, or the finalizer could be removed before any label is restored.
+			reset := &v1alpha1.GPUReset{
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
+
+			By("Reconciling until services are torn down")
+			var tornDown v1alpha1.GPUReset
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &tornDown)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(tornDown.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeTrue())
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(tornDown.Status.Conditions, string(v1alpha1.ServicesRestored))).To(BeNil())
+
+			By("Calling restoreServices for the first time")
+			res, err := reconciler.restoreServices(ctx, &tornDown)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0),
+				"the condition-initialising pass must not look like a completed restoration")
+
+			var started v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &started)).To(Succeed())
+			Expect(meta.IsStatusConditionFalse(started.Status.Conditions, string(v1alpha1.ServicesRestored))).To(BeTrue())
+
+			By("Cleaning up")
+			Expect(k8sClient.Delete(ctx, reset)).To(Succeed())
+			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
+				return true, nil
+			}
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				var deleted v1alpha1.GPUReset
+				g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &deleted))).To(BeTrue())
+			}, "10s", "250ms").Should(Succeed())
+		})
+
 		It("should allow GPUReset deletion if node is deleted", func() {
 			reset := &v1alpha1.GPUReset{
 				Name: resetName,

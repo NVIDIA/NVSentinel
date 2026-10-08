@@ -860,7 +860,10 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 			return ctrl.Result{}, err
 		}
 
-		return ctrl.Result{}, nil
+		// Restoration has only started. Callers, in particular the deletion finalizer, treat a result
+		// without RequeueAfter as "restoration complete", so ask for a requeue like every other
+		// in-progress return of this function.
+		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 
 	restoreTimeout := r.serviceManager.Spec.RestoreTimeout
