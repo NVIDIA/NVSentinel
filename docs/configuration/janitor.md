@@ -233,7 +233,7 @@ janitor:
           name: "gpu-operator"
         resetJob:
           writeSysLogEvent: true
-          runtimeClassName: ""
+          runtimeClassName: "nvidia"
           hostDriverRootPath: "/run/nvidia/driver"
           driverRoot: "/run/nvidia/driver"
           image:
@@ -272,7 +272,7 @@ When the teardown starts, the controller lists the pods of each operand on the n
 
 When no operand pod runs on the node, the controller skips the teardown and the restore. The `ServicesTornDown` and `ServicesRestored` conditions then have the reason `Skipped`.
 
-A GPUReset that an earlier janitor version started has no record. For such a GPUReset, the controller stops and restores the device plugin mode operands, as the earlier version did.
+A GPUReset that an earlier janitor version started has no record. For such a GPUReset, the controller treats every operand whose node label currently holds its disabled value as stopped, and restores those.
 
 Before the controller creates the reset Job, it makes sure that no pod of a stopped operand runs on the node.
 
@@ -282,13 +282,13 @@ The controller finds the operands only one time, when the teardown starts. An op
 
 #### Same values in both modes
 
-No `gpuReset` value changes between GPU Operator modes. The built-in `gpu-operator` service manager, the empty `resetJob.runtimeClassName`, and the `/run/nvidia/driver` driver paths work unchanged on ClusterPolicy and `GPUCluster` (DRA) clusters, and on a cluster that is being migrated from one to the other. Set `serviceManager.spec` only for a GPU services manager other than the GPU Operator; it replaces the built-in entry completely, including its mode detection.
+No `gpuReset` value changes between GPU Operator modes. The built-in `gpu-operator` service manager and the `/run/nvidia/driver` driver paths work unchanged on ClusterPolicy and `GPUCluster` (DRA) clusters, and `resetJob.runtimeClassName` follows the existing `global.gpuDraEnabled` flag that GPUCluster clusters already set for the metadata-collector. Set `serviceManager.spec` only for a GPU services manager other than the GPU Operator; it replaces the built-in entry completely, including its mode detection.
 
 ### resetJob.writeSysLogEvent
 When `true`, the reset job writes a kernel syslog message on reset completion. Useful for correlating reset events with node-level logs.
 
 ### resetJob.runtimeClassName
-RuntimeClass name for the GPU reset Job. Empty by default: the Job is privileged and reaches the driver through `resetJob.hostDriverRootPath`, so it works without a RuntimeClass in both GPU Operator modes. GPU Operator DRA mode does not create the `nvidia` RuntimeClass, so a non-empty value there fails admission. Set it only when your cluster requires a RuntimeClass for privileged pods, and make sure that RuntimeClass exists.
+RuntimeClass name for the GPU reset Job. Defaults to `nvidia`. When `global.gpuDraEnabled` is `true` the chart renders it empty, because GPU Operator `GPUCluster` (DRA) mode creates no `nvidia` RuntimeClass and a Job naming it fails admission. The Job is privileged and reaches the driver through `resetJob.hostDriverRootPath`, so it does not need a RuntimeClass in either mode; on ClusterPolicy clusters the default is kept for compatibility. Set it to `""` by hand on a ClusterPolicy cluster that has no `nvidia` RuntimeClass, for example with the GPU Operator NRI plugin enabled.
 
 ### resetJob.hostDriverRootPath
 Host path containing the NVIDIA driver filesystem. The reset Job mounts it at `resetJob.driverRoot` inside the reset container.

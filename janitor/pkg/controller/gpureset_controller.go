@@ -369,7 +369,12 @@ func (r *GPUResetReconciler) reconcileDelete(ctx context.Context, gr *v1alpha1.G
 	managerName := r.serviceManager.Name
 
 	if controllerutil.ContainsFinalizer(gr, gpuResetFinalizer) {
-		if len(r.managedApps(ctx, gr)) == 0 {
+		nodeLabels, err := r.nodeLabelsFor(ctx, nodeName)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to get node %s for service restoration: %w", nodeName, err)
+		}
+
+		if len(r.managedApps(ctx, gr, nodeLabels)) == 0 {
 			log.V(1).Info("No managed services were stopped, skipping service restoration", "manager",
 				managerName, "node", nodeName)
 			controllerutil.RemoveFinalizer(gr, gpuResetFinalizer)
@@ -517,7 +522,7 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 	nodeToUpdate := node.DeepCopy()
 	nodeUpdated := false
 
-	apps := r.managedApps(ctx, gr)
+	apps := r.managedApps(ctx, gr, node.Labels)
 
 	// Set node labels to disable managed services
 	for _, app := range apps {
@@ -623,7 +628,7 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 			"nodeLabels", nodeLabels)
 	}
 
-	if len(r.managedApps(ctx, grWithServices)) == 0 {
+	if len(r.managedApps(ctx, grWithServices, nil)) == 0 {
 		return ctrl.Result{}, r.updateCondition(ctx, grWithServices, v1alpha1.ServicesTornDown, metav1.ConditionTrue,
 			v1alpha1.ReasonSkipped, "No managed service pods run on the node")
 	}
@@ -636,11 +641,16 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 // The status records them when the teardown starts, and that record is authoritative for the rest of the reset.
 //
 // A nil record means one of two things. If the teardown has not started, nothing was stopped and there is
-// nothing to restore. If the teardown has started, the GPUReset was torn down by a janitor version that predates
-// DRA mode support and kept no record; that version stopped every configured service that does not run only in
-// GPU Operator DRA mode, so those are restored. The restore must not be skipped in that case, because the node
-// labels of those services are still set to their disabled value and the node would stay without them.
-func (r *GPUResetReconciler) managedApps(ctx context.Context, gr *v1alpha1.GPUReset) []gpuservices.AppSpec {
+// nothing to restore. If the teardown has started, the GPUReset was torn down by a janitor version that kept no
+// record. The restore must not be skipped in that case, because the node labels of the stopped services are
+// still set to their disabled value and the node would stay without them. Those labels are the record: every
+// configured service whose node label currently holds its disabled value is treated as stopped by that janitor.
+// nodeLabels are the target node's labels, or nil when the node no longer exists.
+func (r *GPUResetReconciler) managedApps(
+	ctx context.Context,
+	gr *v1alpha1.GPUReset,
+	nodeLabels map[string]string,
+) []gpuservices.AppSpec {
 	configured := r.serviceManager.Spec.Apps
 
 	if gr.Status.ManagedServices == nil {
@@ -651,7 +661,7 @@ func (r *GPUResetReconciler) managedApps(ctx context.Context, gr *v1alpha1.GPURe
 		apps := make([]gpuservices.AppSpec, 0, len(configured))
 
 		for _, app := range configured {
-			if !app.DRAMode() {
+			if value, ok := nodeLabels[app.NodeLabel]; ok && value == app.DisabledValue {
 				apps = append(apps, app)
 			}
 		}
@@ -675,6 +685,20 @@ func (r *GPUResetReconciler) managedApps(ctx context.Context, gr *v1alpha1.GPURe
 	}
 
 	return apps
+}
+
+// nodeLabelsFor returns the labels of the named node, or nil when the node does not exist.
+func (r *GPUResetReconciler) nodeLabelsFor(ctx context.Context, nodeName string) (map[string]string, error) {
+	node, err := r.getNode(ctx, nodeName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return node.Labels, nil
 }
 
 // createJob ensures the GPU reset Job is claimed in the status. It first sets
@@ -833,7 +857,12 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		nodeExists = false
 	}
 
-	apps := r.managedApps(ctx, gr)
+	var nodeLabels map[string]string
+	if nodeExists {
+		nodeLabels = node.Labels
+	}
+
+	apps := r.managedApps(ctx, gr, nodeLabels)
 
 	if len(apps) == 0 || !nodeExists {
 		if len(apps) == 0 {
@@ -1056,7 +1085,12 @@ func (r *GPUResetReconciler) getOrCreateJob(ctx context.Context, gr *v1alpha1.GP
 	nodeName := gr.Spec.NodeName
 	managerName := r.serviceManager.Name
 
-	apps := r.managedApps(ctx, gr)
+	nodeLabels, err := r.nodeLabelsFor(ctx, nodeName)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get node %s before creating the reset job: %w", nodeName, err)
+	}
+
+	apps := r.managedApps(ctx, gr, nodeLabels)
 
 	podsAreGone, err := r.checkPodsTerminatedFn(ctx, nodeName, apps)
 	if err != nil {

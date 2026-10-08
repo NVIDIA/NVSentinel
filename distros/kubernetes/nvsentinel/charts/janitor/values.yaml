@@ -169,10 +169,11 @@ config:
         name: "gpu-operator"
       resetJob:
         writeSysLogEvent: true
-        # Leave empty: the privileged reset Job reaches the driver through the
-        # hostDriverRootPath hostPath, so it needs no RuntimeClass. Set this only
-        # if your cluster requires a RuntimeClass for privileged pods.
-        runtimeClassName: ""
+        # RuntimeClass for the reset Job. Ignored (rendered empty) when
+        # global.gpuDraEnabled is true: GPU Operator GPUCluster (DRA) mode creates
+        # no nvidia RuntimeClass, and the privileged Job reaches the driver through
+        # the hostDriverRootPath hostPath anyway.
+        runtimeClassName: "nvidia"
         # Host path that contains the NVIDIA driver filesystem. Containerized
         # driver installations commonly use /run/nvidia/driver. Set this to /
         # when the NVIDIA driver is installed directly on the host.

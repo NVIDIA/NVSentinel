@@ -216,7 +216,7 @@ var _ = Describe("GPUReset Controller", func() {
 		reconciler.runningAppsFn = func(_ context.Context, _ string, apps []gpuservices.AppSpec) ([]gpuservices.AppSpec, error) {
 			running := make([]gpuservices.AppSpec, 0, len(apps))
 			for _, app := range apps {
-				if !app.DRAMode() {
+				if _, ok := devicePluginDeployLabels()[app.NodeLabel]; ok {
 					running = append(running, app)
 				}
 			}
@@ -2100,25 +2100,45 @@ func TestManagedApps_RecordAndLegacyGPUResets_ReturnsTheStoppedServices(t *testi
 		NewCondition(v1alpha1.ServicesTornDown, metav1.ConditionFalse, v1alpha1.ReasonTearingDownServices, ""),
 	}
 
+	// Node labels an older janitor (no record) leaves behind on a device plugin mode node that also carries
+	// DRA labels: the four device plugin operands disabled, the DRA operands still enabled.
+	olderJanitorNodeLabels := map[string]string{
+		"nvidia.com/gpu.deploy.device-plugin":         "false",
+		"nvidia.com/gpu.deploy.dcgm":                  "false",
+		"nvidia.com/gpu.deploy.dcgm-exporter":         "false",
+		"nvidia.com/gpu.deploy.gpu-feature-discovery": "false",
+		"nvidia.com/gpu.deploy.dcgm-dra":              "true",
+		"nvidia.com/gpu.deploy.dcgm-exporter-dra":     "true",
+	}
+
 	cases := []struct {
 		name       string
 		conditions []metav1.Condition
 		services   *v1alpha1.ManagedServicesStatus
+		nodeLabels map[string]string
 		want       []string
 	}{
 		{
-			name: "teardown not started",
-			want: nil,
+			name:       "teardown not started",
+			nodeLabels: olderJanitorNodeLabels,
+			want:       nil,
 		},
 		{
-			name:       "older janitor started the teardown",
+			name:       "older janitor started the teardown: services whose label holds the disabled value",
 			conditions: tearingDown,
+			nodeLabels: olderJanitorNodeLabels,
 			want: []string{
 				"nvidia.com/gpu.deploy.device-plugin",
 				"nvidia.com/gpu.deploy.dcgm",
 				"nvidia.com/gpu.deploy.dcgm-exporter",
 				"nvidia.com/gpu.deploy.gpu-feature-discovery",
 			},
+		},
+		{
+			name:       "older janitor started the teardown but the node is gone",
+			conditions: tearingDown,
+			nodeLabels: nil,
+			want:       nil,
 		},
 		{
 			name:       "DRA mode services recorded",
@@ -2155,7 +2175,7 @@ func TestManagedApps_RecordAndLegacyGPUResets_ReturnsTheStoppedServices(t *testi
 			}
 
 			var got []string
-			for _, app := range r.managedApps(context.Background(), gr) {
+			for _, app := range r.managedApps(context.Background(), gr, tc.nodeLabels) {
 				got = append(got, app.NodeLabel)
 			}
 

@@ -162,7 +162,6 @@ func TestRegistry_GPUOperator_ListsTheOperandsOfBothModes(t *testing.T) {
 	type expectedApp struct {
 		appSelector map[string]string
 		nodeLabel   string
-		draMode     bool
 	}
 
 	managedBy := map[string]string{"app.kubernetes.io/managed-by": "gpu-operator"}
@@ -175,12 +174,12 @@ func TestRegistry_GPUOperator_ListsTheOperandsOfBothModes(t *testing.T) {
 
 	// DRA mode operand pods do not carry the app.kubernetes.io/managed-by label.
 	expected := []expectedApp{
-		{devicePluginSelector("nvidia-device-plugin-daemonset"), "nvidia.com/gpu.deploy.device-plugin", false},
-		{devicePluginSelector("nvidia-dcgm"), "nvidia.com/gpu.deploy.dcgm", false},
-		{devicePluginSelector("nvidia-dcgm-exporter"), "nvidia.com/gpu.deploy.dcgm-exporter", false},
-		{devicePluginSelector("gpu-feature-discovery"), "nvidia.com/gpu.deploy.gpu-feature-discovery", false},
-		{map[string]string{"app": "nvidia-dcgm-dra"}, "nvidia.com/gpu.deploy.dcgm-dra", true},
-		{map[string]string{"app": "nvidia-dcgm-exporter-dra"}, "nvidia.com/gpu.deploy.dcgm-exporter-dra", true},
+		{devicePluginSelector("nvidia-device-plugin-daemonset"), "nvidia.com/gpu.deploy.device-plugin"},
+		{devicePluginSelector("nvidia-dcgm"), "nvidia.com/gpu.deploy.dcgm"},
+		{devicePluginSelector("nvidia-dcgm-exporter"), "nvidia.com/gpu.deploy.dcgm-exporter"},
+		{devicePluginSelector("gpu-feature-discovery"), "nvidia.com/gpu.deploy.gpu-feature-discovery"},
+		{map[string]string{"app": "nvidia-dcgm-dra"}, "nvidia.com/gpu.deploy.dcgm-dra"},
+		{map[string]string{"app": "nvidia-dcgm-exporter-dra"}, "nvidia.com/gpu.deploy.dcgm-exporter-dra"},
 	}
 
 	spec, found := Registry["gpu-operator"]
@@ -209,10 +208,6 @@ func TestRegistry_GPUOperator_ListsTheOperandsOfBothModes(t *testing.T) {
 
 		if app.NodeLabel != want.nodeLabel {
 			t.Errorf("App %v: expected node label %q, got %q", app.AppSelector, want.nodeLabel, app.NodeLabel)
-		}
-
-		if app.DRAMode() != want.draMode {
-			t.Errorf("App %v: expected DRAMode %v, got %v", app.AppSelector, want.draMode, app.DRAMode())
 		}
 
 		if app.EnabledValue != "true" || app.DisabledValue != "false" {

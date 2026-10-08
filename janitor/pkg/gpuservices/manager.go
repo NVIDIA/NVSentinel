@@ -61,24 +61,6 @@ type AppSpec struct {
 	// The value to set the NodeLabel to for disabling/undeploying the application.
 	// Defaults to "false" if not specified.
 	DisabledValue string `mapstructure:"disabledValue" json:"disabledValue"`
-
-	// draMode marks a built-in application that runs only when the GPU Operator is in DRA mode.
-	// It is not part of the configuration, so a custom spec cannot set it.
-	draMode bool
-}
-
-// DRAMode reports whether the application runs only when the GPU Operator is in DRA mode.
-//
-// It exists for one edge case: a GPUReset that was already torn down by a janitor version that
-// predates DRA mode support. That version recorded nothing in the GPUReset status and stopped
-// every application in its registry, which were the device plugin mode ones. When the new
-// janitor picks up such a GPUReset it must still restore those services, or the node is left
-// without a device plugin and DCGM, so it falls back to the applications that are not DRA mode
-// only. Skipping the restore instead is not an option: a failed GPUReset is acceptable, a node
-// with its operands left disabled is not. For a GPUReset started by this version the status
-// record is authoritative and this flag is never consulted.
-func (a AppSpec) DRAMode() bool {
-	return a.draMode
 }
 
 // Well-known values used by the pre-defined manager configurations below.
@@ -132,14 +114,12 @@ var Registry = map[string]ManagerSpec{
 				NodeLabel:     "nvidia.com/gpu.deploy.dcgm-dra",
 				EnabledValue:  nodeLabelEnabled,
 				DisabledValue: nodeLabelDisabled,
-				draMode:       true,
 			},
 			{
 				AppSelector:   map[string]string{labelApp: "nvidia-dcgm-exporter-dra"},
 				NodeLabel:     "nvidia.com/gpu.deploy.dcgm-exporter-dra",
 				EnabledValue:  nodeLabelEnabled,
 				DisabledValue: nodeLabelDisabled,
-				draMode:       true,
 			},
 		},
 		TeardownTimeout: 5 * time.Minute,
