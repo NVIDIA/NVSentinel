@@ -63,6 +63,13 @@ const (
 	// (/sys/class/net/<iface>/<attr>) rather than under statistics/ —
 	// e.g. carrier_changes.
 	netdevAttrPathPrefix = "netdev/"
+
+	// deviceHWCounterPathPrefix marks counters that live in the
+	// device-level hardware counter directory
+	// (/sys/class/infiniband/<dev>/hw_counters/<counter>) rather than
+	// under a port. The efa driver publishes its admin-queue statistics
+	// there; such counters are still keyed and reported per port.
+	deviceHWCounterPathPrefix = "device_hw_counters/"
 )
 
 // isNetCounterPath reports whether a configured counter is read from
@@ -71,6 +78,21 @@ const (
 func isNetCounterPath(path string) bool {
 	return strings.HasPrefix(path, netStatisticsPathPrefix) ||
 		strings.HasPrefix(path, netdevAttrPathPrefix)
+}
+
+// readIBCounter routes an IB-tree counter read to the port directory or,
+// for the device_hw_counters/ path class, to the device-level
+// hw_counters directory.
+func (e *Evaluator) readIBCounter(device string, port int, path string) (uint64, error) {
+	if after, ok := strings.CutPrefix(path, deviceHWCounterPathPrefix); ok {
+		if after == "" {
+			return 0, fmt.Errorf("empty device hw_counters path %q", path)
+		}
+
+		return e.reader.ReadIBDeviceHWCounter(device, after)
+	}
+
+	return e.reader.ReadIBPortCounter(device, port, path)
 }
 
 // Evaluator owns the counter evaluation state for one degradation
@@ -246,7 +268,8 @@ func (e *Evaluator) BreachFlags() map[string]statefile.CounterBreachFlag {
 
 // EvaluateCounters reads each enabled IB-tree counter for the given port.
 // Counters with a statistics/ path prefix are skipped (handled by
-// EvaluateNetCounters).
+// EvaluateNetCounters), as are counters that do not exist on the port's
+// link layer (e.g. mlx5 IBTA counters on an EFA port).
 func (e *Evaluator) EvaluateCounters(
 	dev *discovery.IBDevice,
 	port *discovery.IBPort,
@@ -258,13 +281,14 @@ func (e *Evaluator) EvaluateCounters(
 	now := time.Now()
 
 	for _, counterCfg := range counters {
-		if !counterCfg.Enabled || isNetCounterPath(counterCfg.Path) {
+		if !counterCfg.Enabled || isNetCounterPath(counterCfg.Path) ||
+			!counterCfg.AppliesToLinkLayer(port.LinkLayer) {
 			continue
 		}
 
 		key := portCounterKey(port.Device, port.Port, counterCfg.Name)
 
-		currentValue, err := e.reader.ReadIBPortCounter(port.Device, port.Port, counterCfg.Path)
+		currentValue, err := e.readIBCounter(port.Device, port.Port, counterCfg.Path)
 		if err != nil {
 			e.warnUnreadableOnce(key, counterCfg.Path, err)
 			continue
@@ -299,7 +323,8 @@ func (e *Evaluator) EvaluateNetCounters(
 	now := time.Now()
 
 	for _, counterCfg := range counters {
-		if !counterCfg.Enabled || !isNetCounterPath(counterCfg.Path) {
+		if !counterCfg.Enabled || !isNetCounterPath(counterCfg.Path) ||
+			!counterCfg.AppliesToLinkLayer(port.LinkLayer) {
 			continue
 		}
 

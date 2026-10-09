@@ -31,31 +31,74 @@ import (
 
 const ethLinkLayer = topology.LinkLayerEthernet
 
-// EthernetStateCheck is the RoCE counterpart of InfiniBandStateCheck.
-// It uses the InfiniBand sysfs interface (state/phys_state) plus the
-// associated net device's operstate for richer event messages and
-// shares the persistent state file with the IB check (each owns
-// entries tagged with its LinkLayer).
-type EthernetStateCheck struct {
-	baseStateCheck
+// netdevFlavor parametrises netdevStateCheck for one family of
+// netdev-backed RDMA adapters. RoCE (mlx5) and EFA share the whole
+// poll/transition/persistence pipeline and differ only in which ports
+// they own, how a port's health snapshot is derived, and how events are
+// worded.
+type netdevFlavor struct {
+	checkName string
+	// linkLayer tags this check's entries in the shared state file and
+	// selects the ports it owns.
+	linkLayer string
+	// label prefixes event messages, e.g. "RoCE" or "EFA".
+	label        string
+	isTargetPort func(port *discovery.IBPort) bool
+	// snapshot derives the logical/physical state a port is judged on.
+	snapshot func(c *netdevStateCheck, dev discovery.IBDevice, p discovery.IBPort) portSnapshot
 }
 
-var _ linkLayerStrategy = (*EthernetStateCheck)(nil)
+// roceFlavor judges a RoCE port on the mlx5 driver's state/phys_state
+// sysfs attributes; operstate only enriches DOWN messages.
+var roceFlavor = netdevFlavor{
+	checkName:    checks.EthernetStateCheckName,
+	linkLayer:    ethLinkLayer,
+	label:        "RoCE",
+	isTargetPort: discovery.IsEthernetPort,
+	snapshot:     sysfsPortSnapshot,
+}
+
+// sysfsPortSnapshot takes the port's state and phys_state verbatim.
+func sysfsPortSnapshot(_ *netdevStateCheck, dev discovery.IBDevice, p discovery.IBPort) portSnapshot {
+	return portSnapshot{
+		State:         p.State,
+		PhysicalState: p.PhysicalState,
+		Device:        dev.Name,
+		Port:          p.Port,
+	}
+}
+
+// netdevStateCheck is the shared implementation behind EthernetStateCheck
+// and EFAStateCheck. It uses the InfiniBand sysfs interface
+// (state/phys_state) plus the associated net device's operstate and
+// shares the persistent state file with the IB check (each check owns
+// entries tagged with its LinkLayer).
+type netdevStateCheck struct {
+	baseStateCheck
+	flavor netdevFlavor
+}
+
+// EthernetStateCheck is the RoCE counterpart of InfiniBandStateCheck.
+type EthernetStateCheck struct {
+	netdevStateCheck
+}
+
+var _ linkLayerStrategy = (*netdevStateCheck)(nil)
 var _ checks.TransactionalCheck = (*EthernetStateCheck)(nil)
 
-func (c *EthernetStateCheck) checkName() string { return checks.EthernetStateCheckName }
-func (c *EthernetStateCheck) linkLayer() string { return ethLinkLayer }
+func (c *netdevStateCheck) checkName() string { return c.flavor.checkName }
+func (c *netdevStateCheck) linkLayer() string { return c.flavor.linkLayer }
 
-func (c *EthernetStateCheck) isTargetPort(port *discovery.IBPort) bool {
-	return discovery.IsEthernetPort(port)
+func (c *netdevStateCheck) isTargetPort(port *discovery.IBPort) bool {
+	return c.flavor.isTargetPort(port)
 }
 
-func (c *EthernetStateCheck) formatDeviceDisappearance(device string) string {
-	return fmt.Sprintf("RoCE device %s disappeared from sysfs", device)
+func (c *netdevStateCheck) formatDeviceDisappearance(device string) string {
+	return fmt.Sprintf("%s device %s disappeared from sysfs", c.flavor.label, device)
 }
 
-func (c *EthernetStateCheck) formatPortDisappearance(device string, port int) string {
-	return fmt.Sprintf("RoCE port %s port %d disappeared from sysfs", device, port)
+func (c *netdevStateCheck) formatPortDisappearance(device string, port int) string {
+	return fmt.Sprintf("%s port %s port %d disappeared from sysfs", c.flavor.label, device, port)
 }
 
 // NewEthernetStateCheck wires the dependencies used by the RoCE state check.
@@ -72,15 +115,34 @@ func NewEthernetStateCheck(
 	stateManager *statefile.Manager,
 	bootIDChanged bool,
 ) *EthernetStateCheck {
+	c := &EthernetStateCheck{}
+	c.init(roceFlavor, nodeName, reader, cfg, classifier, processingStrategy, stateManager, bootIDChanged)
+
+	return c
+}
+
+// init wires a netdev-backed state check for the given flavor. It must be
+// called on the check's final address: the base strategy pointer refers
+// back to this struct.
+func (c *netdevStateCheck) init(
+	flavor netdevFlavor,
+	nodeName string,
+	reader sysfs.Reader,
+	cfg *config.Config,
+	classifier *topology.Classifier,
+	processingStrategy pb.ProcessingStrategy,
+	stateManager *statefile.Manager,
+	bootIDChanged bool,
+) {
 	// A baseline owed by a previous pod (deferred/partial window, then
 	// restart) is picked up from the persisted flag; a fresh trigger is
 	// registered so it survives partial-window commits.
-	pendingBaseline := bootIDChanged || stateManager.PendingBaseline(checks.EthernetStateCheckName)
+	pendingBaseline := bootIDChanged || stateManager.PendingBaseline(flavor.checkName)
 	if pendingBaseline {
-		stateManager.SetPendingBaseline(checks.EthernetStateCheckName)
+		stateManager.SetPendingBaseline(flavor.checkName)
 	}
 
-	c := &EthernetStateCheck{}
+	c.flavor = flavor
 	c.baseStateCheck = baseStateCheck{
 		nodeName:             nodeName,
 		reader:               reader,
@@ -93,12 +155,10 @@ func NewEthernetStateCheck(
 	}
 
 	c.seedFromPersistedState()
-
-	return c
 }
 
 // Name returns the check identifier.
-func (c *EthernetStateCheck) Name() string { return checks.EthernetStateCheckName }
+func (c *netdevStateCheck) Name() string { return c.flavor.checkName }
 
 // ethPortInfo captures the per-port data needed by the transition
 // evaluator.
@@ -109,7 +169,7 @@ type ethPortInfo struct {
 	snap portSnapshot
 }
 
-// ethPollState is the poll-level aggregate for EthernetStateCheck.
+// ethPollState is the poll-level aggregate for netdevStateCheck.
 type ethPollState struct {
 	seenDevices        map[string]bool
 	parsedDevices      map[string]bool
@@ -143,7 +203,7 @@ func newEthPollState() *ethPollState {
 // Run executes and commits one poll for direct callers. The production
 // monitor uses Prepare/Commit/Discard so publication succeeds before state
 // advances.
-func (c *EthernetStateCheck) Run() ([]*pb.HealthEvent, error) {
+func (c *netdevStateCheck) Run() ([]*pb.HealthEvent, error) {
 	events, err := c.Prepare()
 	if err != nil {
 		return nil, err
@@ -156,7 +216,7 @@ func (c *EthernetStateCheck) Run() ([]*pb.HealthEvent, error) {
 
 // Prepare observes one poll and stages its candidate state without advancing
 // the committed transition maps or persistent state.
-func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
+func (c *netdevStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.Discard()
 
 	result, err := discovery.DiscoverDevicesWithOverride(
@@ -219,7 +279,7 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 		disappearedLatch:     c.disappearedLatch,
 		disappearedPortLatch: c.disappearedPortLatch,
 		deviceMissCounts:     c.deviceMissCounts,
-		linkLayer:            ethLinkLayer,
+		linkLayer:            c.linkLayer(),
 		baselineRan:          baselineRun,
 	}
 
@@ -232,7 +292,7 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 }
 
 // Commit installs and persists the most recently prepared state.
-func (c *EthernetStateCheck) Commit() {
+func (c *netdevStateCheck) Commit() {
 	if c.pending == nil {
 		return
 	}
@@ -248,14 +308,14 @@ func (c *EthernetStateCheck) Commit() {
 
 	if pending.baselineRan {
 		c.emitHealthyBaselines = false
-		c.state.ClearPendingBaseline(checks.EthernetStateCheckName)
+		c.state.ClearPendingBaseline(c.checkName())
 	}
 
 	c.persistState(pending.linkLayer, pending.devices, pending.ports)
 }
 
 // Discard abandons a prepared poll after check or publication failure.
-func (c *EthernetStateCheck) Discard() {
+func (c *netdevStateCheck) Discard() {
 	c.pending = nil
 }
 
@@ -265,11 +325,11 @@ func (c *EthernetStateCheck) Discard() {
 //
 // Device-level lifecycle (disappearance detection and its latch) is
 // scoped to this check's link layer: a device joins currentDevices only
-// while it exposes at least one Ethernet port. Without this scoping a
+// while it exposes at least one port of this flavor. Without this scoping a
 // sibling-layer device (e.g., a pure-IB NIC) would be latched by this
 // check on disappearance and could never recover — latch consumption is
 // driven by this layer's port events, which such a device never emits.
-func (c *EthernetStateCheck) collectDevicesAndPorts(devices []discovery.IBDevice, st *ethPollState) {
+func (c *netdevStateCheck) collectDevicesAndPorts(devices []discovery.IBDevice, st *ethPollState) {
 	for _, dev := range devices {
 		st.seenDevices[dev.Name] = true
 		st.parsedDevices[dev.Name] = true
@@ -289,7 +349,7 @@ func (c *EthernetStateCheck) collectDevicesAndPorts(devices []discovery.IBDevice
 
 		for i := range dev.Ports {
 			p := dev.Ports[i]
-			if !discovery.IsEthernetPort(&p) {
+			if !c.isTargetPort(&p) {
 				continue
 			}
 
@@ -302,22 +362,25 @@ func (c *EthernetStateCheck) collectDevicesAndPorts(devices []discovery.IBDevice
 }
 
 // recordPort writes one port into the poll state and bumps the card
-// aggregates used by the homogeneity check.
-func (c *EthernetStateCheck) recordPort(
+// aggregates used by the homogeneity check. The health snapshot comes
+// from the flavor: RoCE trusts the driver's sysfs state, EFA folds in
+// the netdev link signal.
+func (c *netdevStateCheck) recordPort(
 	st *ethPollState, dev discovery.IBDevice, card string, p discovery.IBPort,
 ) {
 	key := portKey(dev.Name, p.Port)
-	snap := portSnapshot{
-		State:         p.State,
-		PhysicalState: p.PhysicalState,
-		Device:        dev.Name,
-		Port:          p.Port,
-	}
+	snap := c.flavor.snapshot(c, dev, p)
 
 	st.currentPorts[key] = snap
 	st.cardTotal[card]++
 
-	if p.State == checks.IBStateActive && p.PhysicalState == checks.IBPhysLinkUp {
+	// Count active ports from the flavor snapshot, not the raw sysfs
+	// port. For EFA the driver hard-codes ACTIVE/LinkUp, so only the
+	// snapshot (which folds in the netdev link) can mark a port DOWN;
+	// counting the raw state would hide the peer anomaly that permits a
+	// first-poll fatal verdict and leave the DOWN snapshot persisted
+	// with no transition left to report.
+	if snap.State == checks.IBStateActive && snap.PhysicalState == checks.IBPhysLinkUp {
 		st.cardActive[card]++
 	}
 
@@ -326,13 +389,13 @@ func (c *EthernetStateCheck) recordPort(
 	st.allPorts = append(st.allPorts, ethPortInfo{dev: dev, port: p, key: key, snap: snap})
 }
 
-// buildEventsForPoll adapts the Ethernet poll state to the shared event
+// buildEventsForPoll adapts the netdev poll state to the shared event
 // pipeline in baseStateCheck.buildEvents.
 //
 // baselineRun is true on the first poll after a boot-ID change and
 // asks the per-port evaluator to emit healthy baselines for every
 // currently-healthy port so stale platform conditions clear.
-func (c *EthernetStateCheck) buildEventsForPoll(
+func (c *netdevStateCheck) buildEventsForPoll(
 	st *ethPollState, firstPoll, baselineRun bool,
 ) []*pb.HealthEvent {
 	agg := pollAggregates{
@@ -355,7 +418,7 @@ func (c *EthernetStateCheck) buildEventsForPoll(
 
 // portTransitionEvents iterates every recorded port and emits events on
 // health-boundary crossings.
-func (c *EthernetStateCheck) portTransitionEvents(
+func (c *netdevStateCheck) portTransitionEvents(
 	st *ethPollState, firstPoll, baselineRun bool, anomalousCards map[string]topology.CardAnomaly,
 ) []*pb.HealthEvent {
 	var events []*pb.HealthEvent
@@ -377,7 +440,7 @@ func (c *EthernetStateCheck) portTransitionEvents(
 // baselineRun flips the first-seen-healthy path from "emit nothing" to
 // "emit a healthy baseline" to clear stale FATAL conditions after a
 // host reboot.
-func (c *EthernetStateCheck) evaluatePortTransition(
+func (c *netdevStateCheck) evaluatePortTransition(
 	pi ethPortInfo,
 	firstPoll, baselineRun bool,
 	anomalousCards map[string]topology.CardAnomaly,
@@ -428,7 +491,7 @@ func (c *EthernetStateCheck) evaluatePortTransition(
 // escalationEvent emits when a still-unhealthy port escalates from a
 // non-fatal state to DOWN; other unhealthy→unhealthy and steady-state
 // polls stay silent.
-func (c *EthernetStateCheck) escalationEvent(
+func (c *netdevStateCheck) escalationEvent(
 	pi ethPortInfo, prev portSnapshot, isHealthy, firstPoll bool,
 	anomalousCards map[string]topology.CardAnomaly, portCard map[string]string,
 ) *pb.HealthEvent {
@@ -444,15 +507,15 @@ func (c *EthernetStateCheck) escalationEvent(
 // (to avoid spamming healthy events on routine restarts) unless
 // baselineRun is true, in which case it emits a healthy baseline so
 // the platform clears stale FATAL conditions from the previous boot.
-func (c *EthernetStateCheck) healthyRecoveryEvent(
+func (c *netdevStateCheck) healthyRecoveryEvent(
 	pi ethPortInfo, prev portSnapshot, existed, baselineRun, disappearanceRecovery bool,
 ) *pb.HealthEvent {
 	if !existed && !baselineRun && !disappearanceRecovery {
 		return nil
 	}
 
-	msg := fmt.Sprintf("RoCE port %s port %d: healthy (%s, %s)",
-		pi.snap.Device, pi.snap.Port, pi.snap.State, pi.snap.PhysicalState)
+	msg := fmt.Sprintf("%s port %s port %d: healthy (%s, %s)",
+		c.flavor.label, pi.snap.Device, pi.snap.Port, pi.snap.State, pi.snap.PhysicalState)
 
 	slog.Info(msg,
 		"prevState", prev.State, "newState", pi.snap.State,
@@ -485,13 +548,13 @@ func ethernetPortIsFatal(snap portSnapshot) bool {
 // Devices pinned by the explicit inclusion override are never
 // suppressed: the operator asked to watch exactly this device, and that
 // intent replaces peer evidence.
-func (c *EthernetStateCheck) unhealthyEvent(
+func (c *netdevStateCheck) unhealthyEvent(
 	pi ethPortInfo, prev portSnapshot,
 	firstPoll bool, anomalousCards map[string]topology.CardAnomaly, portCard map[string]string,
 ) *pb.HealthEvent {
 	if pi.snap.State != checks.IBStateDown {
-		slog.Debug("RoCE port in non-ACTIVE state, ignoring",
-			"device", pi.snap.Device, "port", pi.snap.Port,
+		slog.Debug("Port in non-ACTIVE state, ignoring",
+			"check", c.Name(), "device", pi.snap.Device, "port", pi.snap.Port,
 			"state", pi.snap.State, "physState", pi.snap.PhysicalState,
 		)
 
@@ -501,8 +564,8 @@ func (c *EthernetStateCheck) unhealthyEvent(
 	if firstPoll && !pi.dev.IncludedByOverride {
 		card := portCard[pi.key]
 		if _, anomalous := anomalousCards[card]; !anomalous {
-			slog.Info("Suppressing first-poll unhealthy RoCE port: no peer evidence of failure",
-				"device", pi.snap.Device, "port", pi.snap.Port, "card", card,
+			slog.Info("Suppressing first-poll unhealthy port: no peer evidence of failure",
+				"check", c.Name(), "device", pi.snap.Device, "port", pi.snap.Port, "card", card,
 				"state", pi.snap.State, "physState", pi.snap.PhysicalState)
 
 			return nil
@@ -515,8 +578,8 @@ func (c *EthernetStateCheck) unhealthyEvent(
 
 	msg := c.buildDownMessage(pi)
 
-	slog.Warn("RoCE port DOWN detected",
-		"device", pi.snap.Device, "port", pi.snap.Port,
+	slog.Warn("Port DOWN detected",
+		"check", c.Name(), "device", pi.snap.Device, "port", pi.snap.Port,
 		"prevState", prev.State, "newState", pi.snap.State,
 		"prevPhysState", prev.PhysicalState, "newPhysState", pi.snap.PhysicalState,
 	)
@@ -526,33 +589,34 @@ func (c *EthernetStateCheck) unhealthyEvent(
 
 // logDiscoverySummaryIfChanged emits a one-line summary whenever the
 // discovered set of devices/ports changes size.
-func (c *EthernetStateCheck) logDiscoverySummaryIfChanged(st *ethPollState) {
+func (c *netdevStateCheck) logDiscoverySummaryIfChanged(st *ethPollState) {
 	if len(st.currentDevices) == len(c.previousDevices) &&
 		len(st.currentPorts) == len(c.previousPorts) {
 		return
 	}
 
-	slog.Info("Ethernet discovery summary",
+	slog.Info("Discovery summary",
 		"check", c.Name(),
+		"link_layer", c.linkLayer(),
 		"devices", len(st.currentDevices),
-		"eth_ports", len(st.currentPorts),
+		"ports", len(st.currentPorts),
 	)
 }
 
 // buildDownMessage composes the fatal event message, enriching it with
 // operstate when the associated net device is known and readable.
-func (c *EthernetStateCheck) buildDownMessage(pi ethPortInfo) string {
+func (c *netdevStateCheck) buildDownMessage(pi ethPortInfo) string {
+	base := fmt.Sprintf("%s port %s port %d: state %s, phys_state %s",
+		c.flavor.label, pi.snap.Device, pi.snap.Port, pi.snap.State, pi.snap.PhysicalState)
+
 	if pi.dev.NetDev == "" {
-		return fmt.Sprintf("RoCE port %s port %d: state %s, phys_state %s",
-			pi.snap.Device, pi.snap.Port, pi.snap.State, pi.snap.PhysicalState)
+		return base
 	}
 
 	oper, err := c.reader.ReadNetOperState(pi.dev.NetDev)
 	if err != nil {
-		return fmt.Sprintf("RoCE port %s port %d: state %s, phys_state %s",
-			pi.snap.Device, pi.snap.Port, pi.snap.State, pi.snap.PhysicalState)
+		return base
 	}
 
-	return fmt.Sprintf("RoCE port %s port %d: state %s, phys_state %s, operstate %s",
-		pi.snap.Device, pi.snap.Port, pi.snap.State, pi.snap.PhysicalState, oper)
+	return fmt.Sprintf("%s, operstate %s (%s)", base, oper, pi.dev.NetDev)
 }

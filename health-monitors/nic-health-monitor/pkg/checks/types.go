@@ -30,6 +30,8 @@ const (
 	InfiniBandCharDeviceCheckName  = "InfiniBandCharDeviceCheck"
 	EthernetStateCheckName         = "EthernetStateCheck"
 	EthernetDegradationCheckName   = "EthernetDegradationCheck"
+	EFAStateCheckName              = "EFAStateCheck"
+	EFADegradationCheckName        = "EFADegradationCheck"
 
 	// PollStallCheckName reports the monitor itself: a poll that has not
 	// completed within its deadline, so NIC state cannot be observed.
@@ -52,6 +54,12 @@ const (
 	IBPhysDisabled          = "Disabled"
 	IBPhysPolling           = "Polling"
 	IBPhysLinkErrorRecovery = "LinkErrorRecovery"
+
+	// EFAPhysLinkDown is the synthetic physical-state label the EFA state
+	// check assigns when the adapter's netdev reports no carrier or a
+	// down operstate. The efa driver hard-codes ACTIVE/LinkUp in sysfs,
+	// so the netdev is the only observable link signal.
+	EFAPhysLinkDown = "LinkDown"
 )
 
 // Check is the interface every poll-driven health check implements.
@@ -95,7 +103,7 @@ const (
 // CategoryOf returns the polling category for a given check name.
 func CategoryOf(checkName string) CheckCategory {
 	switch checkName {
-	case InfiniBandDegradationCheckName, EthernetDegradationCheckName:
+	case InfiniBandDegradationCheckName, EthernetDegradationCheckName, EFADegradationCheckName:
 		return CounterCheck
 	default:
 		return StateCheck
