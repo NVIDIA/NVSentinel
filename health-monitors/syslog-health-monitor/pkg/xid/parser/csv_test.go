@@ -195,6 +195,17 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedMetadata:  map[string]string{},
 		},
 		{
+			name:              "XID 154 recovery action returned to None",
+			message:           "NVRM: Xid (PCI:0008:01:00): 154, GPU recovery action changed from 0x1 (GPU Reset Required) to 0x0 (None)",
+			expectedSuccess:   true,
+			expectedXIDCode:   154,
+			expectedPCIAddr:   "0008:01:00",
+			expectedAction:    pb.RecommendedAction_NONE,
+			expectedMnemonic:  "XID 154",
+			expectedErrorCode: "154",
+			expectedMetadata:  map[string]string{},
+		},
+		{
 			// Untrusted/garbage syslog line that matches the XID 154 pattern but has its
 			// last ')' before its last '(' (trailing unmatched '('). The parser must not
 			// panic with slice-bounds-out-of-range and must fall back to CONTACT_SUPPORT.

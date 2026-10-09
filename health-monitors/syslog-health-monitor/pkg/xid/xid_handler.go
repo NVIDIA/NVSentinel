@@ -278,9 +278,39 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 	events := []*pb.HealthEvent{event}
 	events = append(events, xidHandler.buildCancellationEvents(xidResp.Result.DecodedXIDStr, entities, event)...)
 
+	if xidResp.Result.Number == 154 && recommendedAction == pb.RecommendedAction_NONE {
+		events = append(events, xidHandler.buildHealthyRecoveryEvent(event,
+			"GPU recovery action returned to None"))
+	}
+
 	return &pb.HealthEvents{
 		Version: 1,
 		Events:  events,
+	}
+}
+
+// buildHealthyRecoveryEvent creates an unscoped healthy event for the same
+// entities as source. An empty ErrorCode clears all prior XID conditions for
+// those entities.
+func (xidHandler *XIDHandler) buildHealthyRecoveryEvent(source *pb.HealthEvent, message string) *pb.HealthEvent {
+	clonedEntities := make([]*pb.Entity, len(source.EntitiesImpacted))
+	for i, entity := range source.EntitiesImpacted {
+		clonedEntities[i] = &pb.Entity{EntityType: entity.EntityType, EntityValue: entity.EntityValue}
+	}
+
+	return &pb.HealthEvent{
+		Version:            source.Version,
+		Agent:              source.Agent,
+		CheckName:          source.CheckName,
+		ComponentClass:     source.ComponentClass,
+		GeneratedTimestamp: timestamppb.New(time.Now()),
+		EntitiesImpacted:   clonedEntities,
+		Message:            message,
+		IsFatal:            false,
+		IsHealthy:          true,
+		NodeName:           source.NodeName,
+		RecommendedAction:  pb.RecommendedAction_NONE,
+		ProcessingStrategy: source.ProcessingStrategy,
 	}
 }
 
