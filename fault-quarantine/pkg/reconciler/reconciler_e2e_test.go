@@ -1567,6 +1567,8 @@ func TestE2E_ValidationRequestSkippedWhenDrainIsPartial(t *testing.T) {
 		}),
 	}
 
+	tomlConfig.Validation.PartialDrainEnabled = true
+
 	_, mockWatcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
 		TomlConfig:       tomlConfig,
 		HealthEventStore: mockHealthEventStoreWithDrainedComponentResetEvent(t, "GPU_UUID", "GPU-0"),
@@ -1611,6 +1613,89 @@ func TestE2E_ValidationRequestSkippedWhenDrainIsPartial(t *testing.T) {
 	assert.False(t, node.Spec.Unschedulable, "Node should be uncordoned")
 	verifyFQTaintAbsent(t, node, "nvidia.com/gpu-xid-error")
 	assert.Empty(t, listValidationRequestTests(ctx, t, nodeName))
+}
+
+func TestE2E_ValidationRequestCreatedWhenComponentResetEventFullyDrained(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-validation-reset-full-drain-" + generateShortTestID()
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	t.Cleanup(func() {
+		_ = e2eTestDynamicClient.Resource(validationRequestGVR).DeleteCollection(
+			context.Background(), metav1.DeleteOptions{}, metav1.ListOptions{})
+	})
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{
+			{
+				Enabled: true, Name: "gpu-xid-critical", Version: "1",
+				Match: config.Match{Any: []config.Rule{
+					{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
+				}},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+		Validation: validationConfig([]config.ValidationRuleSet{
+			{
+				Enabled: true, Name: "dcgm-diag", Version: "1",
+				Match: config.Match{Any: []config.Rule{
+					{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+				}},
+				Tests: []string{"dcgm-diag-test"},
+			},
+		}),
+	}
+
+	_, mockWatcher, _, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig:       tomlConfig,
+		HealthEventStore: mockHealthEventStoreWithDrainedComponentResetEvent(t, "GPU_UUID", "GPU-0"),
+	})
+
+	eventID1 := generateTestID()
+	unhealthyBSON := createHealthEventBSON(
+		eventID1, nodeName, "GpuXidError", false, true,
+		[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
+	)
+	unhealthyBSON["fullDocument"].(datastore.Event)["healthevent"].(datastore.Event)["recommendedaction"] =
+		float64(protos.RecommendedAction_COMPONENT_RESET)
+	mockWatcher.EventsChan <- &TestEvent{Data: unhealthyBSON}
+
+	t.Log("Wait for node to be quarantined with a validation annotation recorded")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Spec.Unschedulable &&
+			node.Annotations[common.QuarantineValidationHealthEventAnnotationKey] != ""
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined with a validation annotation")
+
+	eventID2 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		eventID2, nodeName, "GpuXidError", true, false,
+		[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
+	)}
+
+	t.Log("Verify a ValidationRequest was created (with partial drain disabled, the drain covered the whole node)")
+	require.Eventually(t, func() bool {
+		return len(listValidationRequestTests(ctx, t, nodeName)) == 1
+	}, eventuallyTimeout, eventuallyPollInterval, "A ValidationRequest should be created")
+	assert.ElementsMatch(t, []string{"dcgm-diag-test"}, listValidationRequestTests(ctx, t, nodeName)[0])
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+	}, eventuallyTimeout, eventuallyPollInterval, "Quarantine annotation should be removed")
+
+	t.Log("Verify the node stays cordoned pending validation")
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.True(t, node.Spec.Unschedulable, "Node should stay unschedulable pending validation")
+	verifyFQTaintAbsent(t, node, "nvidia.com/gpu-xid-error")
 }
 
 func TestE2E_ValidationRequestSkippedWhenNoEventDrained(t *testing.T) {

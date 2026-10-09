@@ -129,7 +129,7 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	nodeName := healthEvent.HealthEvent.NodeName
 	statusStr := healthEvent.HealthEventStatus.NodeQuarantined
 
-	partialDrainEntity, err := e.shouldExecutePartialDrain(healthEvent.HealthEvent)
+	partialDrainEntity, err := drain.PartialDrainEntity(healthEvent.HealthEvent, e.config.PartialDrainEnabled)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to check if node should be partially drained",
 			"node", nodeName,
@@ -665,7 +665,7 @@ func (e *NodeDrainEvaluator) isNodeAlreadyDrained(ctx context.Context, currentEv
 	}
 
 	alreadyDrained, err := drain.IsNodeDrained(ctx, healthEventStore, nodeName, events, currentEventId,
-		currentPartialDrainEntity, e.shouldExecutePartialDrain)
+		currentPartialDrainEntity, e.config.PartialDrainEnabled)
 	if err != nil {
 		return false, true, err
 	}
@@ -673,33 +673,11 @@ func (e *NodeDrainEvaluator) isNodeAlreadyDrained(ctx context.Context, currentEv
 	return alreadyDrained, true, nil
 }
 
-/*
-This function determines if the given unhealthy HealthEvent should result in a partial drain. A partial drain occurs if
-the feature is enabled (from the partialDrainEnabled value in the node-drainer Helm chart), the recommended action is
-COMPONENT_RESET, and the given unhealthy HealthEvent has an impacted entity which supports partial draining, which is
-configured in pod_device_annotation.go. Currently, the node-drainer will execute partial drains against nodes which
-have a COMPONENT_RESET recommended action and have a GPU_UUID impacted entity.
-
-If the recommended action is COMPONENT_RESET but the given HealthEvent does not include a supported entity for partial
-drain, we will return an error. For all other recommended actions, we will proceed with a full drain.
-*/
-func (e *NodeDrainEvaluator) shouldExecutePartialDrain(healthEvent *protos.HealthEvent) (*protos.Entity, error) {
-	if e.config.PartialDrainEnabled {
-		return drain.PartialDrainEntity(healthEvent)
-	}
-
-	return nil, nil
-}
-
 // DrainScopeFor reports whether the event drains the whole node or a single entity, and the
 // entity when the drain is partial. Callers need both, so returning them together keeps the
 // scope label and the entity from being derived independently and drifting apart.
 func DrainScopeFor(healthEvent *protos.HealthEvent, partialDrainEnabled bool) (DrainScope, *protos.Entity) {
-	if !partialDrainEnabled {
-		return DrainScopeFull, nil
-	}
-
-	entity, err := drain.PartialDrainEntity(healthEvent)
+	entity, err := drain.PartialDrainEntity(healthEvent, partialDrainEnabled)
 	if err != nil || entity == nil {
 		return DrainScopeFull, nil
 	}

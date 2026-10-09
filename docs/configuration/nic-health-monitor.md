@@ -102,6 +102,20 @@ nic-health-monitor:
 
 Counter checks always run on a fixed 1-second cadence regardless of this setting — they need fresh data for velocity window calculations and cannot share the state check interval.
 
+## Poll Stall Detection
+
+Reports when the monitor itself cannot observe NIC state. If a state or counter poll has been in flight for `pollStallDeadline`, the monitor publishes an unhealthy, non-fatal `NICPollStallCheck` event (recommended action `NONE`). Once no poll is stalled it publishes the healthy event. No check runs while a publish is waiting for the deployment platform connector, so a connector outage is not reported as a NIC stall. For the same condition as a metric, use `time() - nic_health_monitor_poll_cycle_last_completed_timestamp_seconds`. A stall event that fails to publish is retried until delivered, even if the poll has completed in the meantime, so the episode is still recorded. The first poll to complete after the monitor starts also publishes a healthy event, which closes a stall left open when the liveness probe restarted the container.
+
+A stalled poll usually means the host is stalling the sysfs reads, for example through lock contention in the network stack. Restarting the container does not fix that, and without this check the only trace is the restart count.
+
+```yaml
+nic-health-monitor:
+  pollStallDeadline: "10s"
+  pollStallStoreOnly: true
+```
+
+Keep `pollStallDeadline` well below the liveness restart window, which is about 60 to 90 seconds into a stall, or the stall is never reported. `"0s"` disables detection. `pollStallStoreOnly` emits the events as `STORE_ONLY` whatever `processingStrategy` is, because the cause is the host rather than a NIC.
+
 ## Character-Device Check Tuning
 
 ### charDeviceCheck.issm
