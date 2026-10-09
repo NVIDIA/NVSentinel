@@ -555,7 +555,16 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 	}
 
 	if nodeUpdated {
-		if err := r.Patch(ctx, nodeToUpdate, client.MergeFrom(node)); err != nil {
+		// The optimistic lock makes the patch fail if the node changed after the held-label check above, so a
+		// label another controller took in the meantime is never overwritten. The next reconcile re-reads the node.
+		patch := client.MergeFromWithOptions(node, client.MergeFromWithOptimisticLock{})
+		if err := r.Patch(ctx, nodeToUpdate, patch); err != nil {
+			if apierrors.IsConflict(err) {
+				log.V(1).Info("Node changed since it was read, retrying", "node", node.Name)
+
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+
 			span.SetAttributes(
 				attribute.String("janitor.error.type", "node_update_failed"),
 				attribute.String("janitor.error.message", err.Error()),
@@ -1007,7 +1016,16 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 	}
 
 	if nodeUpdated {
-		if err := r.Patch(ctx, nodeToUpdate, client.MergeFrom(node)); err != nil {
+		// The optimistic lock makes the patch fail if the node changed after the held-label check above, so a
+		// label another controller took in the meantime is never overwritten. The next reconcile re-reads the node.
+		patch := client.MergeFromWithOptions(node, client.MergeFromWithOptimisticLock{})
+		if err := r.Patch(ctx, nodeToUpdate, patch); err != nil {
+			if apierrors.IsConflict(err) {
+				log.V(1).Info("Node changed since it was read, retrying", "node", node.Name)
+
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+
 			span.SetAttributes(
 				attribute.String("janitor.error.type", "node_update_failed"),
 				attribute.String("janitor.error.message", err.Error()),
