@@ -356,6 +356,8 @@ status:
 | ruleSets | []RuleSet | Maps HealthEvents from a quarantine session to the tests they require |
 | partialDrainEnabled | bool | Must match node-drainer partialDrainEnabled. When false, a completed drain of a COMPONENT_RESET event counts as a full drain. Defaults to false. Set both with global.partialDrainEnabled |
 
+When fault-quarantine creates a ValidationRequest, it keeps the cordon and every taint it applied during the quarantine session, and it stops tracking them. lifecycle-manager releases them when validation passes. Every taint that a fault-quarantine rule-set applies must therefore be listed in lifecycle-manager schedulingGate.taints with remove set to true. A taint that is not listed is not tolerated by the test pods, so validation cannot run on the node, and it is never removed. Keep the not-under-quarantine readiness criterion so a new quarantine fails the pending validation instead of releasing the node. Use remove set to true only for taints that fault-quarantine alone applies: lifecycle-manager matches on key, value, and effect, so it also lifts a matching taint that was on the node before the quarantine. When no ValidationRequest is created, fault-quarantine removes its taints itself.
+
 ### fault-quarantine.validation.ruleSets
 
 | Key | Type | Purpose |
