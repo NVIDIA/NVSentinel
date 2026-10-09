@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -496,6 +497,7 @@ func TestNewIdempotencyKeyFormat(t *testing.T) {
 	for range 100 {
 		key := newIdempotencyKey()
 		assert.Regexp(t, idempotencyKeyFormat, key)
+		assert.Equal(t, uuid.Version(7), uuid.MustParse(key).Version(), "keys must be time-ordered UUIDv7")
 		assert.False(t, seen[key], "keys must not repeat")
 		seen[key] = true
 	}

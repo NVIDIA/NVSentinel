@@ -54,8 +54,8 @@ import dataclasses
 import logging as log
 import os
 import random
+import time
 import re
-import uuid
 from collections import deque
 from collections.abc import Mapping
 from threading import Condition
@@ -129,6 +129,27 @@ PERMANENT_STATUS_CODES = frozenset(
         grpc.StatusCode.UNIMPLEMENTED,
     }
 )
+
+
+def uuid7_hex() -> str:
+    """Return a UUIDv7 as 32 hex characters.
+
+    The first 48 bits are the Unix time in milliseconds, so keys minted later
+    sort later and the datastore's unique idempotency index appends new
+    entries instead of scattering them. Python's uuid module only gains
+    uuid7() in 3.14, so the layout is built here: 48-bit timestamp, version 7,
+    12 random bits, the RFC 9562 variant, 62 random bits.
+    """
+    millis = time.time_ns() // 1_000_000
+    rand = int.from_bytes(os.urandom(10), "big")
+    value = (
+        (millis & ((1 << 48) - 1)) << 80
+        | 0x7 << 76
+        | ((rand >> 68) & 0xFFF) << 64
+        | 0b10 << 62
+        | (rand & ((1 << 62) - 1))
+    )
+    return f"{value:032x}"
 
 
 def rpc_status_code(error: grpc.RpcError) -> grpc.StatusCode | None:
@@ -330,7 +351,7 @@ class DirectPublisher:
             request=platformconnector_pb2.HealthEvents(events=health_events, version=1),
             # Generated once per batch and reused verbatim on every retry so
             # the server can recognise a resend.
-            idempotency_key=uuid.uuid4().hex,
+            idempotency_key=uuid7_hex(),
             deadline=now + self._retry_window,
             wait_deadline=None if timeout is None else now + timeout,
         )

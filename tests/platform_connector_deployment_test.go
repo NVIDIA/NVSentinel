@@ -301,7 +301,7 @@ func TestPlatformConnectorDeploymentCallerContract(t *testing.T) {
 			// runs have no MongoDB pod and keep the metric evidence alone.
 			if mongoPod, ok := helpers.TryGetMongoDBPrimaryPodName(ctx, t, c.Client()); ok {
 				js := fmt.Sprintf(`print("DOCS=" + db.getSiblingDB("%s").HealthEvents.countDocuments(`+
-					`{"healthevent.metadata.idempotencyKey": {$regex: "#%s#0$"}}) + ";")`, helpers.MongoDBDatabase, key)
+					`{"healthevent.metadata.idempotencyKey": {$regex: "^%s#[^#]+#0$"}}) + ";")`, helpers.MongoDBDatabase, key)
 				stdout, _ := helpers.ExecMongosh(ctx, t, c.Client().RESTConfig(), c.Client(), mongoPod, js)
 				require.Contains(t, stdout, "DOCS=1;", "exactly one document for the resent key")
 			}

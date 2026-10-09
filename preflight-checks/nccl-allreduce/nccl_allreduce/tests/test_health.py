@@ -15,6 +15,7 @@
 """Unit tests for nccl_allreduce/health.py"""
 
 import re
+import uuid
 from collections.abc import Callable, Iterator
 from concurrent import futures
 from contextlib import contextmanager
@@ -413,6 +414,7 @@ class TestDirectMode:
         assert len(request.events) == 1
         assert received_metadata["authorization"] == "Bearer wire-token"
         assert IDEMPOTENCY_KEY_FORMAT.match(received_metadata["idempotency-key"])
+        assert uuid.UUID(hex=received_metadata["idempotency-key"]).version == 7
 
     @pytest.mark.parametrize(
         "code",
