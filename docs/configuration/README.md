@@ -191,6 +191,25 @@ global:
   imagePullSecrets: []
 ```
 
+### SELinux
+
+SELinux options for the pods that share host directories without running privileged: platform-connectors, syslog-health-monitor and nic-health-monitor. Privileged pods already run as `spc_t`.
+
+```yaml
+global:
+  seLinuxOptions: {}   # default: nothing rendered
+```
+
+On SELinux-enforcing nodes where the container runtime applies SELinux labels, those pods run as `container_t` and are denied the shared host paths. platform-connectors then cannot create `/var/run/nvsentinel.sock`, so no monitor can publish health events. This applies to RKE2 with SELinux support, which its RPM install enables by default on SUSE Linux Enterprise Server 16 and RHEL. On those nodes set:
+
+```yaml
+global:
+  seLinuxOptions:
+    type: spc_t
+```
+
+To check a node, run `sestatus` and `ps -eZ | grep containerd`: `container_runtime_t` means the runtime applies labels.
+
 ### Tracing
 
 Enable OpenTelemetry distributed tracing to get end-to-end visibility into health event processing across all modules.

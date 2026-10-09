@@ -201,6 +201,16 @@ global:
   # the nvidia RuntimeClass.
   gpuDraEnabled: false
 
+  # SELinux options for the pods that share host directories without running
+  # privileged: platform-connectors, syslog-health-monitor and
+  # nic-health-monitor. Privileged pods already run as spc_t.
+  # On SELinux-enforcing nodes with RKE2 SELinux support (the default for RKE2
+  # RPM installs on SLES 16 and RHEL), container_t is denied the shared host
+  # paths (/var/run/nvsentinel, the NIC monitor state directories), so the
+  # platform-connector socket is never created and no monitor can publish.
+  # Set {type: spc_t} on those nodes. Empty (default) renders nothing.
+  seLinuxOptions: {}
+
   # GPU Health Monitor - monitors GPU hardware health via DCGM
   # Detects: XID errors, thermal issues, ECC errors, memory errors, NVLink failures
   # Requires: NVIDIA GPU Operator with DCGM installed
