@@ -36,9 +36,16 @@ type XIDHandler struct {
 	processingStrategy    pb.ProcessingStrategy
 
 	pciToGPUUUID   map[string]string
+	// entitiesByPCI lets an XID 154 recovery clear metadata entities emitted by earlier XIDs on that GPU.
+	entitiesByPCI  map[string]*trackedEntities
 	parser         parser.Parser
 	metadataReader *metadata.Reader
 
 	// cancellations is the per-check rule map; nil disables emission.
 	cancellations cancellation.Resolver
+}
+
+type trackedEntities struct {
+	seen     map[string]struct{}
+	entities []*pb.Entity
 }

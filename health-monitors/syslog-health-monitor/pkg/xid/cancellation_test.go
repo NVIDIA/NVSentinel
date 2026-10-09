@@ -192,6 +192,47 @@ func TestProcessLine_XID154RecoveryToNoneEmitsHealthyClear(t *testing.T) {
 	assert.Equal(t, source.EntitiesImpacted, clear.EntitiesImpacted)
 }
 
+func TestProcessLine_XID154ClearsTrackedMetadataForOnlyRecoveredGPU(t *testing.T) {
+	h := newHandlerWithMetadata(t)
+	h.parser = &mockParser{parseFunc: func(line string) (*parser.Response, error) {
+		switch line {
+		case "gpu-a-xid-74":
+			return &parser.Response{Success: true, Result: parser.XIDDetails{
+				DecodedXIDStr: "74", Number: 74, PCIE: "0000:00:08.0", Resolution: "NONE",
+				Metadata: map[string]string{"NVLINK": "7", "REG0": "gpu-a-reg"},
+			}}, nil
+		case "gpu-b-xid-74":
+			return &parser.Response{Success: true, Result: parser.XIDDetails{
+				DecodedXIDStr: "74", Number: 74, PCIE: "0000:00:09.0", Resolution: "NONE",
+				Metadata: map[string]string{"NVLINK": "8", "REG0": "gpu-b-reg"},
+			}}, nil
+		case "gpu-a-recovered":
+			return &parser.Response{Success: true, Result: parser.XIDDetails{
+				DecodedXIDStr: "154", Number: 154, PCIE: "0000:00:08.0", Resolution: "NONE",
+			}}, nil
+		default:
+			t.Fatalf("unexpected parser input %q", line)
+			return nil, nil
+		}
+	}}
+
+	for _, line := range []string{"gpu-a-xid-74", "gpu-b-xid-74"} {
+		_, err := h.ProcessLine(line)
+		require.NoError(t, err)
+	}
+
+	events, err := h.ProcessLine("gpu-a-recovered")
+	require.NoError(t, err)
+	require.Len(t, events.Events, 2)
+
+	clear := events.Events[1]
+	require.True(t, clear.IsHealthy)
+	assert.Contains(t, clear.EntitiesImpacted, &pb.Entity{EntityType: "NVLINK", EntityValue: "7"})
+	assert.Contains(t, clear.EntitiesImpacted, &pb.Entity{EntityType: "REG0", EntityValue: "gpu-a-reg"})
+	assert.NotContains(t, clear.EntitiesImpacted, &pb.Entity{EntityType: "NVLINK", EntityValue: "8"})
+	assert.NotContains(t, clear.EntitiesImpacted, &pb.Entity{EntityType: "REG0", EntityValue: "gpu-b-reg"})
+}
+
 func TestProcessLine_OnlyXID154RecoveryToNoneEmitsHealthyClear(t *testing.T) {
 	testCases := []struct {
 		name     string

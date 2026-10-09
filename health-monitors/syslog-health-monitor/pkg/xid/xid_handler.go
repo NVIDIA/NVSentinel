@@ -76,6 +76,7 @@ func NewXIDHandler(nodeName, defaultAgentName,
 		checkName:             checkName,
 		processingStrategy:    processingStrategy,
 		pciToGPUUUID:          make(map[string]string),
+		entitiesByPCI:         make(map[string]*trackedEntities),
 		parser:                xidParser,
 		metadataReader:        metadataReader,
 	}, nil
@@ -238,6 +239,7 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 
 		entities = append(entities, metadata...)
 	}
+	trackedEntities := xidHandler.trackEntities(normPCI, entities)
 
 	metadata := make(map[string]string)
 	if chassisSerial := xidHandler.metadataReader.GetChassisSerial(); chassisSerial != nil {
@@ -279,8 +281,9 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 	events = append(events, xidHandler.buildCancellationEvents(xidResp.Result.DecodedXIDStr, entities, event)...)
 
 	if xidResp.Result.Number == 154 && recommendedAction == pb.RecommendedAction_NONE {
-		events = append(events, xidHandler.buildHealthyRecoveryEvent(event,
-			"GPU recovery action returned to None"))
+		events = append(events, xidHandler.buildHealthyRecoveryEvent(
+			event, "GPU recovery action returned to None", trackedEntities))
+		delete(xidHandler.entitiesByPCI, normPCI)
 	}
 
 	return &pb.HealthEvents{
@@ -292,11 +295,12 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 // buildHealthyRecoveryEvent creates an unscoped healthy event for the same
 // entities as source. An empty ErrorCode clears all prior XID conditions for
 // those entities.
-func (xidHandler *XIDHandler) buildHealthyRecoveryEvent(source *pb.HealthEvent, message string) *pb.HealthEvent {
-	clonedEntities := make([]*pb.Entity, len(source.EntitiesImpacted))
-	for i, entity := range source.EntitiesImpacted {
-		clonedEntities[i] = &pb.Entity{EntityType: entity.EntityType, EntityValue: entity.EntityValue}
-	}
+func (xidHandler *XIDHandler) buildHealthyRecoveryEvent(
+	source *pb.HealthEvent,
+	message string,
+	entities []*pb.Entity,
+) *pb.HealthEvent {
+	clonedEntities := cloneEntities(entities)
 
 	return &pb.HealthEvent{
 		Version:            source.Version,
@@ -312,6 +316,48 @@ func (xidHandler *XIDHandler) buildHealthyRecoveryEvent(source *pb.HealthEvent, 
 		RecommendedAction:  pb.RecommendedAction_NONE,
 		ProcessingStrategy: source.ProcessingStrategy,
 	}
+}
+
+// trackEntities retains each entity until that GPU emits its recovery signal.
+func (xidHandler *XIDHandler) trackEntities(pci string, entities []*pb.Entity) []*pb.Entity {
+	if pci == "" {
+		return cloneEntities(entities)
+	}
+
+	if xidHandler.entitiesByPCI == nil {
+		xidHandler.entitiesByPCI = make(map[string]*trackedEntities)
+	}
+	tracked, ok := xidHandler.entitiesByPCI[pci]
+	if !ok {
+		tracked = &trackedEntities{seen: make(map[string]struct{})}
+		xidHandler.entitiesByPCI[pci] = tracked
+	}
+	for _, entity := range entities {
+		if entity == nil {
+			continue
+		}
+		key := entity.EntityType + "\x00" + entity.EntityValue
+		if _, exists := tracked.seen[key]; exists {
+			continue
+		}
+		tracked.seen[key] = struct{}{}
+		tracked.entities = append(tracked.entities, &pb.Entity{
+			EntityType:  entity.EntityType,
+			EntityValue: entity.EntityValue,
+		})
+	}
+
+	return cloneEntities(tracked.entities)
+}
+
+func cloneEntities(entities []*pb.Entity) []*pb.Entity {
+	cloned := make([]*pb.Entity, 0, len(entities))
+	for _, entity := range entities {
+		if entity != nil {
+			cloned = append(cloned, &pb.Entity{EntityType: entity.EntityType, EntityValue: entity.EntityValue})
+		}
+	}
+	return cloned
 }
 
 // buildCancellationEvents returns synthetic healthy events for every target
