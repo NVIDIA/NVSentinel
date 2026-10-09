@@ -1,0 +1,171 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The GPU Operator pauses nvidia.com/gpu.deploy.client during driver upgrades
+# and MIG changes. The pod must leave the node for any value other than "true",
+# and must still schedule when the label is absent (GPU Operator before 26.7).
+suite: gpu.deploy.client affinity
+templates:
+  - templates/daemonset.yaml
+set:
+  global.metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+tests:
+  - it: requires gpu.deploy.client to be true or absent by default
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: In
+                        values: ["true"]
+                  - matchExpressions:
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: DoesNotExist
+
+  - it: keeps the driver.installed nodeSelector
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            nvidia.com/gpu.present: "true"
+            nvsentinel.dgxc.nvidia.com/driver.installed: "true"
+
+  - it: ANDs each user nodeSelectorTerm with both client terms and keeps the other rules
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: pool
+                    operator: In
+                    values: ["a"]
+              - matchFields:
+                  - key: metadata.name
+                    operator: In
+                    values: ["n1"]
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                  - key: zone
+                    operator: In
+                    values: ["z1"]
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: x
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: pool
+                        operator: In
+                        values: ["a"]
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: In
+                        values: ["true"]
+                  - matchExpressions:
+                      - key: pool
+                        operator: In
+                        values: ["a"]
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: DoesNotExist
+                  - matchFields:
+                      - key: metadata.name
+                        operator: In
+                        values: ["n1"]
+                    matchExpressions:
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: In
+                        values: ["true"]
+                  - matchFields:
+                      - key: metadata.name
+                        operator: In
+                        values: ["n1"]
+                    matchExpressions:
+                      - key: nvidia.com/gpu.deploy.client
+                        operator: DoesNotExist
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 1
+                  preference:
+                    matchExpressions:
+                      - key: zone
+                        operator: In
+                        values: ["z1"]
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app: x
+
+  - it: adds the client terms when the user sets only podAffinity
+    set:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: y
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms
+          count: 2
+      - equal:
+          path: spec.template.spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels.app
+          value: y
+
+  - it: uses global.affinity instead of the chart affinity
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: local
+                    operator: Exists
+      global.affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: global
+                    operator: Exists
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms
+          value:
+            - matchExpressions:
+                - key: global
+                  operator: Exists
+                - key: nvidia.com/gpu.deploy.client
+                  operator: In
+                  values: ["true"]
+            - matchExpressions:
+                - key: global
+                  operator: Exists
+                - key: nvidia.com/gpu.deploy.client
+                  operator: DoesNotExist

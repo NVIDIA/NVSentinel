@@ -165,9 +165,9 @@ spec:
         {{- with (.Values.global.nodeSelector | default .Values.nodeSelector) }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      {{- with include "gpu-health-monitor.affinity" . }}
       affinity:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
       {{- with (.Values.global.tolerations | default .Values.tolerations) }}
       tolerations:
