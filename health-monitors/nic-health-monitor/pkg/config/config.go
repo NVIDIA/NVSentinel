@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
@@ -202,6 +203,21 @@ type Config struct {
 
 	// CharDeviceCheck tunes the InfiniBandCharDeviceCheck.
 	CharDeviceCheck CharDeviceCheckConfig `toml:"charDeviceCheck"`
+
+	// StateCheck tunes InfiniBandStateCheck and EthernetStateCheck.
+	StateCheck StateCheckConfig `toml:"stateCheck"`
+}
+
+// StateCheckConfig tunes InfiniBandStateCheck and EthernetStateCheck.
+type StateCheckConfig struct {
+	// PortStateHoldDown is how long a port must stay unhealthy before either
+	// state check reports it, as a port event or through its card's
+	// homogeneity verdict. Empty or "0s", the default, reports on the first
+	// unhealthy poll.
+	PortStateHoldDown string `toml:"portStateHoldDown"`
+
+	// HoldDown is PortStateHoldDown parsed by LoadConfig.
+	HoldDown time.Duration `toml:"-"`
 }
 
 // IssmMode selects whether InfiniBandCharDeviceCheck expects the per-port
@@ -284,7 +300,32 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid charDeviceCheck: %w", err)
 	}
 
+	holdDown, err := parseHoldDown(cfg.StateCheck.PortStateHoldDown)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stateCheck: %w", err)
+	}
+
+	cfg.StateCheck.HoldDown = holdDown
+
 	return cfg, nil
+}
+
+// parseHoldDown parses stateCheck.portStateHoldDown. Empty means off.
+func parseHoldDown(value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("portStateHoldDown %q: %w", value, err)
+	}
+
+	if d < 0 {
+		return 0, fmt.Errorf("portStateHoldDown %q must not be negative", value)
+	}
+
+	return d, nil
 }
 
 // validateIssmMode rejects any charDeviceCheck.issm value outside the

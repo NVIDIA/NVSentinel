@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
@@ -102,6 +103,7 @@ func NewInfiniBandStateCheck(
 		state:                stateManager,
 		emitHealthyBaselines: pendingBaseline,
 		strategy:             c,
+		now:                  time.Now,
 	}
 
 	c.seedFromPersistedState()
@@ -219,6 +221,7 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.retainUnreadableDevices(
 		result.UnreadableDevices, st.seenDevices, st.currentDevices, st.currentPorts,
 	)
+	c.applyPortHoldDown(st.currentPorts, st.cardActive, st.portCard, result.UnreadableDevices)
 
 	events := c.buildEventsForPoll(st, firstPoll, baselineRun)
 	c.logDiscoverySummaryIfChanged(st)

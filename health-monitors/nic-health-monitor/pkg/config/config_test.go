@@ -16,7 +16,10 @@ package config
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -307,4 +310,32 @@ func TestCarrierChanges_UsesNetdevRootPath(t *testing.T) {
 	c := &CounterConfig{Name: "carrier_changes", Enabled: true, ThresholdType: "delta", Threshold: 0}
 	require.NoError(t, validateCounter(c))
 	assert.Equal(t, "netdev/carrier_changes", c.Path)
+}
+
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+
+	return path
+}
+
+func TestLoadConfig_PortStateHoldDown_ParsedFromStateCheckTable(t *testing.T) {
+	cfg, err := LoadConfig(writeConfig(t, "[stateCheck]\nportStateHoldDown = \"15s\"\n"))
+	require.NoError(t, err)
+	assert.Equal(t, 15*time.Second, cfg.StateCheck.HoldDown)
+}
+
+func TestLoadConfig_PortStateHoldDown_UnsetIsOff(t *testing.T) {
+	cfg, err := LoadConfig(writeConfig(t, ""))
+	require.NoError(t, err)
+	assert.Zero(t, cfg.StateCheck.HoldDown)
+}
+
+func TestLoadConfig_PortStateHoldDown_RejectsInvalidValues(t *testing.T) {
+	for _, value := range []string{"15", "soon", "-5s"} {
+		_, err := LoadConfig(writeConfig(t, "[stateCheck]\nportStateHoldDown = \""+value+"\"\n"))
+		assert.ErrorContains(t, err, "portStateHoldDown", "value %q", value)
+	}
 }
