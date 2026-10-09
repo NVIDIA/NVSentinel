@@ -531,6 +531,14 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 
 	apps := r.managedApps(ctx, gr)
 
+	// The teardown timeout above bounds this wait.
+	if held := heldLabels(apps, node.Labels); len(held) > 0 {
+		log.Info("Waiting for node labels held by another controller before disabling managed services",
+			"node", node.Name, "manager", managerName, "nodeLabels", held, "recheck_after", 3*time.Second)
+
+		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+	}
+
 	// Set node labels to disable managed services
 	for _, app := range apps {
 		if value, exists := nodeToUpdate.Labels[app.NodeLabel]; !exists || value != app.DisabledValue {
@@ -609,7 +617,8 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 
 	if grWithServices.Status.ManagedServices == nil {
 		// A missing node has no pods. Check the node first, so that the reset fails instead of skipping the teardown.
-		if _, err := r.getNode(ctx, gr.Spec.NodeName); err != nil {
+		node, err := r.getNode(ctx, gr.Spec.NodeName)
+		if err != nil {
 			if apierrors.IsNotFound(err) {
 				return r.reconcileTerminalFailure(ctx, gr, v1alpha1.NodeNotFound,
 					"Target node for GPU reset was not found")
@@ -622,6 +631,20 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to find %s managed services on node %s: %w",
 				managerName, gr.Spec.NodeName, err)
+		}
+
+		// Check every configured service, not only the running ones: a driver upgrade holds the labels of all
+		// operands and removes their pods, and the reset must not run against a driver that is being reloaded.
+		if held := heldLabels(r.serviceManager.Spec.Apps, node.Labels); len(held) > 0 {
+			if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
+				return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonServiceTeardownTimeoutExceeded,
+					fmt.Sprintf("Node labels %v stayed held by another controller for the GPUReset timeout", held))
+			}
+
+			log.Info("Waiting for node labels held by another controller before the teardown", "node",
+				gr.Spec.NodeName, "manager", managerName, "nodeLabels", held, "recheck_after", 3*time.Second)
+
+			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 		}
 
 		nodeLabels := make([]string, 0, len(running))
@@ -670,6 +693,21 @@ func (r *GPUResetReconciler) managedApps(ctx context.Context, gr *v1alpha1.GPURe
 	}
 
 	return apps
+}
+
+// heldLabels returns the node labels of the apps that hold a value the janitor does not own: neither the enabled
+// nor the disabled value. The GPU Operator upgrade controller sets paused-for-driver-upgrade on them during a driver
+// upgrade. An absent label is not held.
+func heldLabels(apps []gpuservices.AppSpec, nodeLabels map[string]string) []string {
+	var held []string
+
+	for _, app := range apps {
+		if value, ok := nodeLabels[app.NodeLabel]; ok && value != app.EnabledValue && value != app.DisabledValue {
+			held = append(held, app.NodeLabel)
+		}
+	}
+
+	return held
 }
 
 // ensureManagedServicesRecord gives a GPUReset that a janitor version without the record tore down the record it
@@ -940,6 +978,14 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 
 		return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonRestoreTimeoutExceeded,
 			fmt.Sprintf("failed to restore %s managed services within the timeout period", managerName))
+	}
+
+	// The restore timeout above bounds this wait.
+	if held := heldLabels(apps, node.Labels); len(held) > 0 {
+		log.Info("Waiting for node labels held by another controller before re-enabling managed services",
+			"node", node.Name, "manager", managerName, "nodeLabels", held, "recheck_after", 3*time.Second)
+
+		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 	}
 
 	nodeToUpdate := node.DeepCopy()
