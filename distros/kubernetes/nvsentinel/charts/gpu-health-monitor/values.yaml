@@ -119,12 +119,16 @@ dcgmHealthCheck:
   # dcgmerrorsmapping.csv and tracks load rather than a fault. Each throttle code is
   # listed twice because DCGM_FR_CLOCK_THROTTLE_* is a deprecated alias of
   # DCGM_FR_CLOCKS_EVENT_* with the same number and either name can be
-  # reported. Set to [] to report all codes.
+  # reported. DCGM 4.7.0 removed the NVLink BER checks
+  # (DCGM_FR_NVLINK_*_BER_THRESHOLD) because they failed healthy GPUs; only
+  # older hostengines still report them. Set to [] to report all codes.
   suppressedErrorCodes:
     - DCGM_FR_CLOCK_THROTTLE_POWER
     - DCGM_FR_CLOCKS_EVENT_POWER
     - DCGM_FR_CLOCK_THROTTLE_THERMAL
     - DCGM_FR_CLOCKS_EVENT_THERMAL
+    - DCGM_FR_NVLINK_EFFECTIVE_BER_THRESHOLD
+    - DCGM_FR_NVLINK_SYMBOL_BER_THRESHOLD
   # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
   # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only when the
   # endpoint is node-local and repeated unreachability is known to represent a
