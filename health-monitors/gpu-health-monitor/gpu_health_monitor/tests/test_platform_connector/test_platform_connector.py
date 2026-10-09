@@ -2245,7 +2245,14 @@ class TestPlatformConnectors(unittest.TestCase):
             yield healthEventProcessor, self._make_processor(state_file_path, metadata_path, **kwargs)
         finally:
             server.stop(0)
-            for p in (state_file_path, f"{state_file_path}.dcgm-unresponsive", metadata_path):
+            for p in (
+                state_file_path,
+                f"{state_file_path}.dcgm-state",
+                f"{state_file_path}.dcgm-state.tmp",
+                f"{state_file_path}.dcgm-unresponsive",
+                f"{state_file_path}.dcgm-connectivity-failure",
+                metadata_path,
+            ):
                 if os.path.exists(p):
                     os.unlink(p)
 
@@ -2308,7 +2315,7 @@ class TestPlatformConnectors(unittest.TestCase):
             clear_event = servicer.health_events[0]
             assert clear_event.isHealthy is True
             assert clear_event.processingStrategy == platformconnector_pb2.STORE_ONLY
-            assert not os.path.exists(processor._dcgm_unresponsive_state_path)
+            assert not os.path.exists(processor._dcgm_state_path)
 
     def test_probe_store_only_does_not_change_regular_remote_connectivity_failures(self):
         """The probe-specific setting must not suppress ordinary connectivity events."""
@@ -2437,13 +2444,15 @@ class TestPlatformConnectors(unittest.TestCase):
         """Persistent wedges must not republish on every liveness restart."""
         with self._running_connector() as (servicer, processor):
             assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
-            marker = processor._dcgm_unresponsive_state_path
+            marker = processor._dcgm_state_path
             assert os.path.exists(marker)
             with open(marker) as marker_file:
-                assert marker_file.read().splitlines() == [
-                    "DCGM_PROBE_HANG",
-                    "EXECUTE_REMEDIATION",
-                ]
+                assert json.load(marker_file) == {
+                    "GpuDcgmUnresponsive": {
+                        "error_codes": ["DCGM_PROBE_HANG"],
+                        "strategy": "EXECUTE_REMEDIATION",
+                    }
+                }
 
             with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
                 gauge_labels = unittest.mock.MagicMock()
@@ -2479,7 +2488,7 @@ class TestPlatformConnectors(unittest.TestCase):
         ):
             assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
             assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
-            marker = processor._dcgm_unresponsive_state_path
+            marker = processor._dcgm_state_path
 
             # Simulate a Helm change that removes observe-only for this check
             # before the liveness restart recreates the processor.
@@ -2505,7 +2514,7 @@ class TestPlatformConnectors(unittest.TestCase):
             processor,
         ):
             processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed")
-            marker = processor._dcgm_unresponsive_state_path
+            marker = processor._dcgm_state_path
             assert os.path.exists(marker)
             restarted = self._make_processor(
                 processor.state_file_path,
@@ -2538,7 +2547,7 @@ class TestPlatformConnectors(unittest.TestCase):
             connectivity_failure_escalation_threshold=2,
         ) as (servicer, processor):
             processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "remote")
-            marker = processor._dcgm_connectivity_state_path
+            marker = processor._dcgm_state_path
             assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
             assert processor._dcgm_state_strategies["GpuDcgmConnectivityFailure"] == platformconnector_pb2.STORE_ONLY
 
@@ -2552,11 +2561,12 @@ class TestPlatformConnectors(unittest.TestCase):
             assert escalation.recommendedAction == platformconnector_pb2.RESTART_BM
             assert escalation.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
             with open(marker) as marker_file:
-                assert marker_file.read().splitlines() == [
-                    "DCGM_CONNECTIVITY_ERROR",
-                    "EXECUTE_REMEDIATION",
-                    "GpuDcgmConnectivityFailure",
-                ]
+                assert json.load(marker_file) == {
+                    "GpuDcgmConnectivityFailure": {
+                        "error_codes": ["DCGM_CONNECTIVITY_ERROR"],
+                        "strategy": "EXECUTE_REMEDIATION",
+                    }
+                }
 
             servicer.health_events = None
             with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
@@ -2596,14 +2606,15 @@ class TestPlatformConnectors(unittest.TestCase):
             assert failure.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
             assert failure.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
 
-            marker = processor._dcgm_connectivity_state_path
+            marker = processor._dcgm_state_path
             assert os.path.exists(marker)
             with open(marker) as marker_file:
-                assert marker_file.read().splitlines() == [
-                    "DCGM_CONNECTIVITY_ERROR",
-                    "EXECUTE_REMEDIATION",
-                    "GpuDcgmConnectivityFailure",
-                ]
+                assert json.load(marker_file) == {
+                    "GpuDcgmConnectivityFailure": {
+                        "error_codes": ["DCGM_CONNECTIVITY_ERROR"],
+                        "strategy": "EXECUTE_REMEDIATION",
+                    }
+                }
 
             restarted = self._make_processor(
                 processor.state_file_path,
@@ -2640,10 +2651,18 @@ class TestPlatformConnectors(unittest.TestCase):
             assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
             assert processor.dcgm_connectivity_failed() is True
 
-            unresponsive_marker = processor._dcgm_unresponsive_state_path
-            connectivity_marker = processor._dcgm_connectivity_state_path
-            assert os.path.exists(unresponsive_marker)
-            assert os.path.exists(connectivity_marker)
+            state_path = processor._dcgm_state_path
+            assert os.path.exists(state_path)
+            assert processor._dcgm_state_records == {
+                "GpuDcgmUnresponsive": {
+                    "error_codes": ["DCGM_PROBE_HANG"],
+                    "strategy": "STORE_ONLY",
+                },
+                "GpuDcgmConnectivityFailure": {
+                    "error_codes": ["DCGM_CONNECTIVITY_ERROR"],
+                    "strategy": "EXECUTE_REMEDIATION",
+                },
+            }
 
             restarted = self._make_processor(
                 processor.state_file_path,
@@ -2660,14 +2679,47 @@ class TestPlatformConnectors(unittest.TestCase):
             restarted.clear_dcgm_connectivity_failure(timestamp)
             assert servicer.health_events[0].checkName == "GpuDcgmConnectivityFailure"
             assert servicer.health_events[0].processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
-            assert os.path.exists(unresponsive_marker)
-            assert not os.path.exists(connectivity_marker)
+            assert os.path.exists(state_path)
+            with open(state_path) as state_file:
+                assert json.load(state_file) == {
+                    "GpuDcgmUnresponsive": {
+                        "error_codes": ["DCGM_PROBE_HANG"],
+                        "strategy": "STORE_ONLY",
+                    }
+                }
 
             servicer.health_events = None
             restarted.clear_dcgm_unresponsive(timestamp)
             assert servicer.health_events[0].checkName == "GpuDcgmUnresponsive"
             assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
-            assert not os.path.exists(unresponsive_marker)
+            assert not os.path.exists(state_path)
+
+    def test_legacy_dcgm_state_files_migrate_to_one_state_file(self):
+        with self._running_connector() as (_, processor):
+            legacy_unresponsive = f"{processor.state_file_path}.dcgm-unresponsive"
+            legacy_connectivity = f"{processor.state_file_path}.dcgm-connectivity-failure"
+            with open(legacy_unresponsive, "w") as state_file:
+                state_file.write("DCGM_PROBE_HANG\nSTORE_ONLY\n")
+            with open(legacy_connectivity, "w") as state_file:
+                state_file.write("DCGM_CONNECTIVITY_ERROR\nEXECUTE_REMEDIATION\nGpuDcgmConnectivityFailure\n")
+
+            restarted = self._make_processor(
+                processor.state_file_path,
+                processor._metadata_reader._path,
+            )
+            assert restarted._dcgm_state_records == {
+                "GpuDcgmUnresponsive": {
+                    "error_codes": ["DCGM_PROBE_HANG"],
+                    "strategy": "STORE_ONLY",
+                },
+                "GpuDcgmConnectivityFailure": {
+                    "error_codes": ["DCGM_CONNECTIVITY_ERROR"],
+                    "strategy": "EXECUTE_REMEDIATION",
+                },
+            }
+            assert os.path.exists(restarted._dcgm_state_path)
+            assert not os.path.exists(legacy_unresponsive)
+            assert not os.path.exists(legacy_connectivity)
 
     def test_remediable_connectivity_failure_replaces_store_only_probe_hang_and_clears_all_metrics(self):
         """An observe-only hang must not mask a later remediable failure or leave its gauge latched."""
