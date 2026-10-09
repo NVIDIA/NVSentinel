@@ -127,6 +127,8 @@ fault-quarantine:
 
 The default ruleset creates a ValidationRequest which runs dcgm-diag-test against any unquarantined node that had an unhealthy event requiring a VM or BM restart remediation during its quarantine session.
 
+A ValidationRequest is only created if at least one event from the quarantine session completed a full drain, so validation tests do not run while workloads that node-drainer would evict are still on the node. `fault-quarantine.validation.partialDrainEnabled` tells fault-quarantine whether node-drainer drains COMPONENT_RESET events partially (only the pods using the impacted GPU). It defaults to `false`, the same as `node-drainer.partialDrainEnabled`, so a completed drain of a COMPONENT_RESET event counts as a full drain and can trigger validation; a validation ruleset must also match the event, and the default ruleset does not match COMPONENT_RESET. If partial drain is enabled in node-drainer, set `fault-quarantine.validation.partialDrainEnabled: true` as well (or set `global.partialDrainEnabled: true`, which overrides both), so a partial drain never counts as a full drain. Change this together with node-drainer's setting, after open quarantine sessions finish: fault-quarantine judges each event by the current value, so an event drained partially before the change may count as a full drain after it. See [Partial Drain](node-drainer.md#partial-drain).
+
 ## Enabling NVCRE Validation
 
 [NVCRE](https://github.com/NVIDIA/cluster-readiness-engine) support adds new node or post-remediation validation tests from an NVCRE test provider. The default configuration only supports a k8s-job-provider test provider that can run a dcgm-diag-test. The nvcre-provider is an additional test provider which currently supports nccl-loopback-nvswitch and nccl-all-reduce tests. An operator must opt-in to running NVCRE after enabling lifecycle-manager with its existing defaults.
@@ -352,6 +354,9 @@ status:
 | templateFileName | string | The filename of the Go text/template, resolved from templates, rendered to build the ValidationRequest |
 | templates | map[string]string | Inline template content, keyed by filename |
 | ruleSets | []RuleSet | Maps HealthEvents from a quarantine session to the tests they require |
+| partialDrainEnabled | bool | Must match node-drainer partialDrainEnabled. When false, a completed drain of a COMPONENT_RESET event counts as a full drain. Defaults to false. Set both with global.partialDrainEnabled |
+
+When fault-quarantine creates a ValidationRequest, it keeps the cordon and every taint it applied during the quarantine session, and it stops tracking them. lifecycle-manager releases them when validation passes. Every taint that a fault-quarantine rule-set applies must therefore be listed in lifecycle-manager schedulingGate.taints with remove set to true. A taint that is not listed is not tolerated by the test pods, so validation cannot run on the node, and it is never removed. Keep the not-under-quarantine readiness criterion so a new quarantine fails the pending validation instead of releasing the node. Use remove set to true only for taints that fault-quarantine alone applies: lifecycle-manager matches on key, value, and effect, so it also lifts a matching taint that was on the node before the quarantine. When no ValidationRequest is created, fault-quarantine removes its taints itself.
 
 ### fault-quarantine.validation.ruleSets
 
