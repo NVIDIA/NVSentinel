@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 import unittest.mock
 from concurrent import futures
 from typing import Any
@@ -430,6 +431,7 @@ class TestDirectPublisherDelivery(unittest.TestCase):
         self.assertEqual(len(stub.calls), 4)
         second_key = stub.calls[3][direct_publisher.IDEMPOTENCY_KEY_HEADER]
         self.assertNotIn(second_key, first_batch_keys, "each batch needs its own key")
+        self.assertEqual(uuid.UUID(hex=second_key).version, 7, "keys must be time-ordered UUIDv7")
 
     def test_error_without_status_code_is_retried(self) -> None:
         # A bare RpcError carries no verdict, so it is retried like a transport failure.

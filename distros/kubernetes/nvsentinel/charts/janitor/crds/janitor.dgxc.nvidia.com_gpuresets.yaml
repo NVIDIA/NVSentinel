@@ -206,6 +206,19 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              managedServices:
+                description: |-
+                  ManagedServices records the managed services that the controller stopped on the node before the reset.
+                  The controller sets it once, when it starts to tear down the services, and restores only these services.
+                properties:
+                  nodeLabels:
+                    description: |-
+                      NodeLabels are the node labels of the stopped services.
+                      It is empty when no managed service pod ran on the node.
+                    items:
+                      type: string
+                    type: array
+                type: object
               phase:
                 description: |-
                   The phase of a GPUReset is a simple, high-level summary of where the reset operation is in its lifecycle.

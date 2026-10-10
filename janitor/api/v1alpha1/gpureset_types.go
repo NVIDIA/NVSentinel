@@ -146,6 +146,21 @@ type GPUResetStatus struct {
 	// +kubebuilder:validation:Optional
 	// +optional
 	JobRef *v1.ObjectReference `json:"jobRef,omitempty"`
+
+	// ManagedServices records the managed services that the controller stopped on the node before the reset.
+	// The controller sets it once, when it starts to tear down the services, and restores only these services.
+	// +kubebuilder:validation:Optional
+	// +optional
+	ManagedServices *ManagedServicesStatus `json:"managedServices,omitempty"`
+}
+
+// ManagedServicesStatus records the managed services that the controller stopped on the node.
+type ManagedServicesStatus struct {
+	// NodeLabels are the node labels of the stopped services.
+	// It is empty when no managed service pod ran on the node.
+	// +kubebuilder:validation:Optional
+	// +optional
+	NodeLabels []string `json:"nodeLabels,omitempty"`
 }
 
 // +kubebuilder:object:root=true
