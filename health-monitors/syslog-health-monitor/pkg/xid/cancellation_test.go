@@ -157,6 +157,114 @@ func TestProcessLine_NoMatchingRuleEmitsOnlySource(t *testing.T) {
 	assert.Equal(t, []string{"162"}, events.Events[0].ErrorCode)
 }
 
+func TestProcessLine_XID154RecoveryToNoneEmitsHealthyClear(t *testing.T) {
+	h := newHandlerWithMetadata(t)
+	h.parser = &mockParser{parseFunc: func(string) (*parser.Response, error) {
+		return &parser.Response{
+			Success: true,
+			Result: parser.XIDDetails{
+				DecodedXIDStr: "154",
+				Number:        154,
+				PCIE:          "0000:00:08.0",
+				Resolution:    "NONE",
+			},
+		}, nil
+	}}
+
+	events, err := h.ProcessLine("NVRM: Xid (PCI:0000:00:08.0): 154, GPU recovery action changed from 0x1 (GPU Reset Required) to 0x0 (None)")
+	require.NoError(t, err)
+	require.NotNil(t, events)
+	require.Len(t, events.Events, 2)
+
+	source := events.Events[0]
+	assert.Equal(t, []string{"154"}, source.ErrorCode)
+	assert.False(t, source.IsHealthy)
+
+	clear := events.Events[1]
+	assert.True(t, clear.IsHealthy)
+	assert.False(t, clear.IsFatal)
+	assert.Equal(t, pb.RecommendedAction_NONE, clear.RecommendedAction)
+	assert.Empty(t, clear.ErrorCode, "an empty error code clears all XID conditions for the impacted entities")
+	assert.Equal(t, source.Agent, clear.Agent)
+	assert.Equal(t, source.CheckName, clear.CheckName)
+	assert.Equal(t, source.ComponentClass, clear.ComponentClass)
+	assert.Equal(t, source.NodeName, clear.NodeName)
+	assert.Equal(t, source.EntitiesImpacted, clear.EntitiesImpacted)
+}
+
+func TestProcessLine_XID154ClearsTrackedMetadataForOnlyRecoveredGPU(t *testing.T) {
+	h := newHandlerWithMetadata(t)
+	h.parser = &mockParser{parseFunc: func(line string) (*parser.Response, error) {
+		switch line {
+		case "gpu-a-xid-74":
+			return &parser.Response{Success: true, Result: parser.XIDDetails{
+				DecodedXIDStr: "74", Number: 74, PCIE: "0000:00:08.0", Resolution: "NONE",
+				Metadata: map[string]string{"NVLINK": "7", "REG0": "gpu-a-reg"},
+			}}, nil
+		case "gpu-b-xid-74":
+			return &parser.Response{Success: true, Result: parser.XIDDetails{
+				DecodedXIDStr: "74", Number: 74, PCIE: "0000:00:09.0", Resolution: "NONE",
+				Metadata: map[string]string{"NVLINK": "8", "REG0": "gpu-b-reg"},
+			}}, nil
+		case "gpu-a-recovered":
+			return &parser.Response{Success: true, Result: parser.XIDDetails{
+				DecodedXIDStr: "154", Number: 154, PCIE: "0000:00:08.0", Resolution: "NONE",
+			}}, nil
+		default:
+			t.Fatalf("unexpected parser input %q", line)
+			return nil, nil
+		}
+	}}
+
+	for _, line := range []string{"gpu-a-xid-74", "gpu-b-xid-74"} {
+		_, err := h.ProcessLine(line)
+		require.NoError(t, err)
+	}
+
+	events, err := h.ProcessLine("gpu-a-recovered")
+	require.NoError(t, err)
+	require.Len(t, events.Events, 2)
+
+	clear := events.Events[1]
+	require.True(t, clear.IsHealthy)
+	assert.Contains(t, clear.EntitiesImpacted, &pb.Entity{EntityType: "NVLINK", EntityValue: "7"})
+	assert.Contains(t, clear.EntitiesImpacted, &pb.Entity{EntityType: "REG0", EntityValue: "gpu-a-reg"})
+	assert.NotContains(t, clear.EntitiesImpacted, &pb.Entity{EntityType: "NVLINK", EntityValue: "8"})
+	assert.NotContains(t, clear.EntitiesImpacted, &pb.Entity{EntityType: "REG0", EntityValue: "gpu-b-reg"})
+}
+
+func TestProcessLine_OnlyXID154RecoveryToNoneEmitsHealthyClear(t *testing.T) {
+	testCases := []struct {
+		name     string
+		response *parser.Response
+	}{
+		{
+			name: "XID 154 still requests reset",
+			response: &parser.Response{Success: true, Result: parser.XIDDetails{
+				DecodedXIDStr: "154", Number: 154, PCIE: "0000:00:08.0", Resolution: "COMPONENT_RESET",
+			}},
+		},
+		{
+			name: "another non-fatal XID with no action",
+			response: &parser.Response{Success: true, Result: parser.XIDDetails{
+				DecodedXIDStr: "32", Number: 32, PCIE: "0000:00:08.0", Resolution: "NONE",
+			}},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHandlerWithMetadata(t)
+			h.parser = &mockParser{parseFunc: func(string) (*parser.Response, error) { return tc.response, nil }}
+
+			events, err := h.ProcessLine("ignored")
+			require.NoError(t, err)
+			require.NotNil(t, events)
+			require.Len(t, events.Events, 1)
+		})
+	}
+}
+
 // MutatingTheCancellationEvent must not affect the source — the synthetic event
 // owns its own EntitiesImpacted slice.
 func TestProcessLine_CancellationEntityCloneIsIndependent(t *testing.T) {

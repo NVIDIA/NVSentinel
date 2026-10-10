@@ -81,6 +81,15 @@ A GPU became inaccessible to the system - critical failure requiring immediate a
 ### GPU Reset
 A GPU was reset by nvidia-smi, indicating that a remediation action for a previous GPU failure has completed.
 
+### Clearing XID conditions
+XID conditions require an explicit recovery signal; a quiet period does not clear them.
+
+After a successful GPU reset, Janitor writes a syslog message. The monitor responds with a healthy event for the reset GPU.
+
+The monitor also emits a healthy event when XID 154 reports recovery action `None`. This clears XID conditions for the same PCI and GPU UUID, when available.
+
+Without Janitor, the reset message is not available, so conditions and related cordons can remain until the node reboots. A reboot emits a healthy event for each check and clears conditions from the previous boot.
+
 ## Key Features
 
 ### Log Parsing with State Persistence
