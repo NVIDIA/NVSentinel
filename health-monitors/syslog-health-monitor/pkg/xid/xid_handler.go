@@ -327,19 +327,23 @@ func (xidHandler *XIDHandler) trackEntities(pci string, entities []*pb.Entity) [
 	if xidHandler.entitiesByPCI == nil {
 		xidHandler.entitiesByPCI = make(map[string]*trackedEntities)
 	}
+
 	tracked, ok := xidHandler.entitiesByPCI[pci]
 	if !ok {
 		tracked = &trackedEntities{seen: make(map[string]struct{})}
 		xidHandler.entitiesByPCI[pci] = tracked
 	}
+
 	for _, entity := range entities {
 		if entity == nil {
 			continue
 		}
+
 		key := entity.EntityType + "\x00" + entity.EntityValue
 		if _, exists := tracked.seen[key]; exists {
 			continue
 		}
+
 		tracked.seen[key] = struct{}{}
 		tracked.entities = append(tracked.entities, &pb.Entity{
 			EntityType:  entity.EntityType,
@@ -357,6 +361,7 @@ func cloneEntities(entities []*pb.Entity) []*pb.Entity {
 			cloned = append(cloned, &pb.Entity{EntityType: entity.EntityType, EntityValue: entity.EntityValue})
 		}
 	}
+
 	return cloned
 }
 
