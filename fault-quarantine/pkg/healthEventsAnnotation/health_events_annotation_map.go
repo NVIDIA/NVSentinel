@@ -442,43 +442,49 @@ func entityMatches(storedKey HealthEventKey, storedEvent, event *protos.HealthEv
 }
 
 func entityInEvent(key HealthEventKey, event *protos.HealthEvent) bool {
-	for _, e := range event.EntitiesImpacted {
-		if e.EntityType == key.EntityType && e.EntityValue == key.EntityValue {
-			return true
-		}
-	}
+	return hasEntity(event.EntitiesImpacted, key.EntityType, key.EntityValue)
+}
 
-	return false
+func hasEntity(entities []*protos.Entity, entityType, entityValue string) bool {
+	return slices.ContainsFunc(entities, func(e *protos.Entity) bool {
+		return e.EntityType == entityType && e.EntityValue == entityValue
+	})
 }
 
 // replacedGPUMatches: a healthy GPU event also clears a GPU_UUID key when it
 // covers every GPU and PCI entity of the stored fault, since a replaced GPU
 // keeps its slot but gets a new UUID.
 func replacedGPUMatches(storedKey HealthEventKey, storedEvent, event *protos.HealthEvent) bool {
-	if !event.IsHealthy ||
-		storedEvent == nil ||
-		!strings.EqualFold(event.ComponentClass, "GPU") ||
-		!strings.EqualFold(storedKey.EntityType, "GPU_UUID") {
+	if !event.IsHealthy || event.ComponentClass != "GPU" || storedKey.EntityType != "GPU_UUID" {
 		return false
 	}
 
-	slotEntities := 0
+	slot := gpuSlotEntities(storedEvent)
+	if len(slot) == 0 {
+		return false
+	}
 
-	for _, stored := range storedEvent.EntitiesImpacted {
-		if !strings.EqualFold(stored.EntityType, "GPU") && !strings.EqualFold(stored.EntityType, "PCI") {
-			continue
-		}
-
-		slotEntities++
-
-		if !slices.ContainsFunc(event.EntitiesImpacted, func(e *protos.Entity) bool {
-			return e.EntityType == stored.EntityType && e.EntityValue == stored.EntityValue
-		}) {
+	for _, e := range slot {
+		if !hasEntity(event.EntitiesImpacted, e.EntityType, e.EntityValue) {
 			return false
 		}
 	}
 
-	return slotEntities > 0
+	return true
+}
+
+// gpuSlotEntities returns the GPU index and PCI entities, which stay the same
+// when a GPU is replaced.
+func gpuSlotEntities(event *protos.HealthEvent) []*protos.Entity {
+	var slot []*protos.Entity
+
+	for _, e := range event.EntitiesImpacted {
+		if e.EntityType == "GPU" || e.EntityType == "PCI" {
+			slot = append(slot, e)
+		}
+	}
+
+	return slot
 }
 
 func errorCodeMatches(stored string, incoming []string) bool {
