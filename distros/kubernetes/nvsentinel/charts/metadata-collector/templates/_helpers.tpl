@@ -112,3 +112,29 @@ Kubelet's --root-dir on the host. Nil/empty → /var/lib/kubelet.
 {{- end -}}
 {{- $trimmed -}}
 {{- end -}}
+
+{{/*
+Pod affinity: by default, a required rule on the GPU Operator's
+nvidia.com/gpu.deploy.client label, so this NVML client leaves the node while
+the GPU Operator unloads the driver or changes the MIG layout.
+
+GPU Operator 26.7+ sets the label to "true" on GPU nodes (state_manager.go).
+k8s-driver-manager v0.12.0 (maybeSetPaused) changes it to
+"paused-for-driver-upgrade", and mig-parted v0.15.0 to "paused-for-mig-change".
+They set it back to "true" when they finish. Older GPU Operator releases never
+set the label, so an absent label must still schedule the pod.
+
+The two terms are ORed: the pod runs when the label is "true" or absent, and
+the DaemonSet controller removes it for any other value.
+
+A user-set affinity overrides the default and renders unchanged.
+*/}}
+{{- define "metadata-collector.affinity" -}}
+{{- $affinity := .Values.global.affinity | default .Values.affinity -}}
+{{- if not $affinity -}}
+{{- $affinity = dict "nodeAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (dict "nodeSelectorTerms" (list
+  (dict "matchExpressions" (list (dict "key" "nvidia.com/gpu.deploy.client" "operator" "In" "values" (list "true"))))
+  (dict "matchExpressions" (list (dict "key" "nvidia.com/gpu.deploy.client" "operator" "DoesNotExist")))))) -}}
+{{- end -}}
+{{- toYaml $affinity -}}
+{{- end -}}

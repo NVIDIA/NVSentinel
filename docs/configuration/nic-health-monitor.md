@@ -102,6 +102,23 @@ nic-health-monitor:
 
 Counter checks always run on a fixed 1-second cadence regardless of this setting — they need fresh data for velocity window calculations and cannot share the state check interval.
 
+## Port State Hold-Down
+
+A port that drops for a few seconds and comes back is reported at once by default, and a `DOWN` port is fatal, so a short fabric blip can cordon a node. `portStateHoldDown` makes a port stay unhealthy for that long before `InfiniBandStateCheck` or `EthernetStateCheck` reports it.
+
+```yaml
+nic-health-monitor:
+  portStateHoldDown: "15s"
+```
+
+- **Off by default.** `"0s"` reports on the first unhealthy poll.
+- **Port and card events alike.** While a port is held, its card's homogeneity check sees it as up too, so the card event waits as well.
+- **Blips are counted, not reported.** A port that recovers before it is reported publishes no event and increments `nic_health_monitor_port_state_blips_total{node,check,device,port}`.
+- **Recovery is immediate.** The healthy event is never delayed.
+- **A restart restarts the hold.** The hold-down is not persisted.
+
+The hold-down applies only to port state. The `link_downed` counter (InfiniBandDegradationCheck) is fatal on any increase and stays latched until the counter resets or the host reboots, so a blip that bumps it still produces a fatal event. If you see blips there, you can disable that counter (see [Disable a noisy counter](#disable-a-noisy-counter)).
+
 ## Poll Stall Detection
 
 Reports when the monitor itself cannot observe NIC state. If a state or counter poll has been in flight for `pollStallDeadline`, the monitor publishes an unhealthy, non-fatal `NICPollStallCheck` event (recommended action `NONE`). Once no poll is stalled it publishes the healthy event. No check runs while a publish is waiting for the deployment platform connector, so a connector outage is not reported as a NIC stall. For the same condition as a metric, use `time() - nic_health_monitor_poll_cycle_last_completed_timestamp_seconds`. A stall event that fails to publish is retried until delivered, even if the poll has completed in the meantime, so the episode is still recorded. The first poll to complete after the monitor starts also publishes a healthy event, which closes a stall left open when the liveness probe restarted the container.
