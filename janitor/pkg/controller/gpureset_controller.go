@@ -133,9 +133,10 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	reconcileDelete := !gpuReset.DeletionTimestamp.IsZero()
 	completedReconciling := gpuReset.Status.CompletionTime != nil
-	// A reset that failed on the restore timeout still owes the node its labels. Keep the lock and the restoration
-	// going until the labels are written; held labels are waited on, never overwritten.
-	restorePending := restorationInProgress(&gpuReset)
+	// A reset that failed after stopping services still owes the node its labels: only the janitor writes them
+	// back. Keep the lock and the restoration going until they are written; held labels are waited on, never
+	// overwritten.
+	restorePending := restorationPending(&gpuReset)
 
 	if !completedReconciling || reconcileDelete || restorePending {
 		// Start or retrieve the long-lived session span that covers the entire GPU reset lifecycle.
@@ -425,6 +426,10 @@ func (r *GPUResetReconciler) reconcileDelete(ctx context.Context, gr *v1alpha1.G
 
 				return ctrl.Result{}, err
 			}
+
+			// The status write above leaves gr stale; the finalizer removal below updates the object, so let the
+			// next reconcile continue from a fresh read.
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 
 		if res, err := r.restoreServices(ctx, gr); err != nil || res.RequeueAfter > 0 {
@@ -738,11 +743,16 @@ func (r *GPUResetReconciler) waitForHeldLabels(
 	return ctrl.Result{RequeueAfter: 3 * time.Second}, true, nil
 }
 
-// restorationInProgress reports whether the restoration of the managed services has started and not ended.
-func restorationInProgress(gr *v1alpha1.GPUReset) bool {
+// restorationPending reports whether managed services were stopped and their restoration has not ended: the
+// record holds labels and the ServicesRestored condition is absent or still in progress.
+func restorationPending(gr *v1alpha1.GPUReset) bool {
+	if gr.Status.ManagedServices == nil || len(gr.Status.ManagedServices.NodeLabels) == 0 {
+		return false
+	}
+
 	cond := meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.ServicesRestored))
 
-	return cond != nil && cond.Status != metav1.ConditionTrue && cond.Reason == string(v1alpha1.ReasonRestoringServices)
+	return cond == nil || (cond.Status != metav1.ConditionTrue && cond.Reason == string(v1alpha1.ReasonRestoringServices))
 }
 
 // heldLabels returns the node labels of the apps that hold a value the janitor does not own: neither the enabled
@@ -1010,6 +1020,12 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 
+	// Only the deletion finalizer reaches this point with a finished restoration. There is nothing left to do,
+	// and the pods must not be waited for again.
+	if currentCond.Status == metav1.ConditionTrue {
+		return ctrl.Result{}, nil
+	}
+
 	restoreTimeout := r.serviceManager.Spec.RestoreTimeout
 
 	timeSinceInProgress := 0 * time.Minute
@@ -1019,6 +1035,8 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 
 	// Once the reset has failed, the restoration is no longer bounded: the labels must still go back, and a
 	// label held by another controller is waited on. The pods are not waited for any more.
+	// After the early return above, a completed GPUReset reaching this point is a failed reset whose restoration
+	// is unfinished; the phase cannot be used, it reads Terminating during deletion.
 	failed := gr.Status.CompletionTime != nil
 
 	if timeSinceInProgress > restoreTimeout && !failed {
@@ -1040,21 +1058,12 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 	}
 
 	// The restore timeout above bounds this wait. After the failure, one more GPUReset timeout bounds it: a label
-	// that is never released must not hold the node lock forever, so the janitor gives up and leaves it as it is.
-	if held := heldLabels(apps, node.Labels); len(held) > 0 {
-		if failed && time.Since(gr.Status.CompletionTime.Time) > r.Config.Timeout {
-			log.Error(nil, "Giving up on node labels held by another controller; they were not restored",
-				"node", node.Name, "manager", managerName, "nodeLabels", held)
+	// that is never released must not hold the node lock forever, so the janitor gives up on it, leaves it as it
+	// is, and still restores the labels it owns.
+	held := heldLabels(apps, node.Labels)
+	givenUp := len(held) > 0 && failed && time.Since(gr.Status.CompletionTime.Time) > r.Config.Timeout
 
-			if err := r.updateCondition(ctx, gr, v1alpha1.ServicesRestored, metav1.ConditionFalse,
-				v1alpha1.ReasonRestoreTimeoutExceeded, fmt.Sprintf("Node labels %v are held by another controller "+
-					"and were not restored", held)); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			return ctrl.Result{}, nil
-		}
-
+	if len(held) > 0 && !givenUp {
 		log.Info("Waiting for node labels held by another controller before re-enabling managed services",
 			"node", node.Name, "manager", managerName, "nodeLabels", held, "recheck_after", 3*time.Second)
 
@@ -1063,9 +1072,14 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 
 	nodeToUpdate := node.DeepCopy()
 	nodeUpdated := false
+	heldSet := sets.New(held...)
 
 	// Set node labels back to enabled value to restore services
 	for _, app := range apps {
+		if heldSet.Has(app.NodeLabel) {
+			continue
+		}
+
 		if value, exists := nodeToUpdate.Labels[app.NodeLabel]; !exists || value != app.EnabledValue {
 			log.V(1).Info("Setting node label to enable managed service", "node", node.Name, "manager", managerName,
 				"label", app.NodeLabel, "value", app.EnabledValue)
@@ -1105,10 +1119,30 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 
-	if failed {
+	if givenUp {
+		log.Error(nil, "Giving up on node labels held by another controller; they were not restored",
+			"node", node.Name, "manager", managerName, "nodeLabels", held)
+
 		if err := r.updateCondition(ctx, gr, v1alpha1.ServicesRestored, metav1.ConditionFalse,
-			v1alpha1.ReasonRestoreTimeoutExceeded, fmt.Sprintf("%s managed service node labels restored after the "+
-				"restore timeout; pods not waited for", managerName)); err != nil {
+			v1alpha1.ReasonRestoreTimeoutExceeded, fmt.Sprintf("Node labels %v are held by another controller "+
+				"and were not restored", held)); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	if failed {
+		// The labels are back. Record it under the reason the reset failed with, so the condition ends the pending
+		// restoration without claiming the pods are Ready.
+		reason := v1alpha1.ReasonRestoreTimeoutExceeded
+		if complete := meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.Complete)); complete != nil {
+			reason = v1alpha1.GPUResetReason(complete.Reason)
+		}
+
+		if err := r.updateCondition(ctx, gr, v1alpha1.ServicesRestored, metav1.ConditionFalse, reason,
+			fmt.Sprintf("%s managed service node labels restored after the reset failed; pods not waited for",
+				managerName)); err != nil {
 			return ctrl.Result{}, err
 		}
 

@@ -1868,19 +1868,20 @@ var _ = Describe("GPUReset Controller", func() {
 			expectUnchanged(observed, nodeLabels, nil)
 		})
 
-		// setLabel sets the dcgm deploy label on the node and waits until the reconciler cache holds the value.
-		setLabel := func(value string) {
+		// setNodeLabel sets a deploy label on the node and waits until the reconciler cache holds the value.
+		setNodeLabel := func(label, value string) {
 			var node corev1.Node
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &node)).To(Succeed())
-			node.Labels["nvidia.com/gpu.deploy.dcgm"] = value
+			node.Labels[label] = value
 			Expect(k8sClient.Update(ctx, &node)).To(Succeed())
 
 			Eventually(func(g Gomega) {
 				var cached corev1.Node
 				g.Expect(reconciler.Get(ctx, types.NamespacedName{Name: nodeName}, &cached)).To(Succeed())
-				g.Expect(cached.Labels).To(HaveKeyWithValue("nvidia.com/gpu.deploy.dcgm", value))
+				g.Expect(cached.Labels).To(HaveKeyWithValue(label, value))
 			}, "10s", "50ms").Should(Succeed())
 		}
+		setLabel := func(value string) { setNodeLabel("nvidia.com/gpu.deploy.dcgm", value) }
 
 		// reconcileTimes reconciles the GPUReset n times and returns the node labels read after each reconcile.
 		reconcileTimes := func(n int) []map[string]string {
@@ -1943,7 +1944,7 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(getNodeLabels()).To(Equal(devicePluginDeployLabels()))
 		})
 
-		It("should wait on a held node label even when its operand pod is already gone", func() {
+		It("should wait on a held node label even when its operand pod is already gone, and fail on the GPUReset timeout", func() {
 			// A driver upgrade holds the labels of all operands and removes their pods. The reset must still wait.
 			heldLabels := devicePluginDeployLabels()
 			heldLabels["nvidia.com/gpu.deploy.dcgm"] = "paused-for-driver-upgrade"
@@ -1956,6 +1957,16 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(reconcileTimes(5)).To(HaveEach(Equal(heldLabels)))
 			Expect(meta.FindStatusCondition(getReset().Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeNil())
 			Expect(getReset().Status.ManagedServices).To(BeNil())
+
+			By("Letting the GPUReset timeout expire while the label stays held")
+			reconciler.Config.Timeout = time.Millisecond
+			Eventually(func(g Gomega) {
+				reconcileTimes(1)
+				g.Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			}, "10s", "100ms").Should(Succeed())
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonServiceTeardownTimeoutExceeded)))
+			Expect(getReset().Status.ManagedServices).To(BeNil())
+			Expect(getNodeLabels()).To(Equal(heldLabels))
 		})
 
 		It("should keep restoring the labels after the restore timeout and wait on a held label, also on deletion", func() {
@@ -2024,12 +2035,10 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(cond.Message).To(ContainSubstring("nvidia.com/gpu.deploy.dcgm"))
 			Expect(cond.Message).To(ContainSubstring("not restored"))
 
-			heldLabels := devicePluginDeployLabels()
-			for label := range heldLabels {
-				heldLabels[label] = "false"
-			}
-			heldLabels["nvidia.com/gpu.deploy.dcgm"] = "paused-for-driver-upgrade"
-			Expect(reconcileTimes(3)).To(HaveEach(Equal(heldLabels)))
+			// The labels the janitor owns are restored; only the held one is left as it is.
+			expected := devicePluginDeployLabels()
+			expected["nvidia.com/gpu.deploy.dcgm"] = "paused-for-driver-upgrade"
+			Expect(reconcileTimes(3)).To(HaveEach(Equal(expected)))
 
 			By("Deleting the GPUReset: the finalizer no longer waits")
 			Expect(k8sClient.Delete(ctx, &v1alpha1.GPUReset{Name: resetName})).To(Succeed())
@@ -2039,25 +2048,32 @@ var _ = Describe("GPUReset Controller", func() {
 				var deleted v1alpha1.GPUReset
 				g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &deleted))).To(BeTrue())
 			}, "10s", "100ms").Should(Succeed())
-			Expect(getNodeLabels()).To(Equal(heldLabels))
+			Expect(getNodeLabels()).To(Equal(expected))
 		})
 
-		It("should not create the reset job while a configured operand label is held after the teardown", func() {
+		It("should remove the finalizer of a completed GPUReset without restoring or waiting for pods again", func() {
+			createNodeWithOperandPods(devicePluginDeployLabels(), devicePluginOperandPodLabels())
+			createReset()
+			reconcileUntil(v1alpha1.Complete)
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+
+			By("Deleting it while the operand pods are not Ready: the finished restoration is not re-run")
+			reconciler.checkPodsReadyFn = func(context.Context, string, []gpuservices.AppSpec) (bool, error) { return false, nil }
+			Expect(k8sClient.Delete(ctx, &v1alpha1.GPUReset{Name: resetName})).To(Succeed())
+			reconcileTimes(3)
+
+			var deleted v1alpha1.GPUReset
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &deleted))).To(BeTrue())
+			Expect(getNodeLabels()).To(Equal(devicePluginDeployLabels()))
+		})
+
+		It("should not create the reset job while a configured operand label is held after the teardown, and restore the stopped services if that hold times out", func() {
 			createNodeWithOperandPods(devicePluginDeployLabels(), devicePluginOperandPodLabels())
 			createReset()
 
 			By("Reconciling until the teardown is done, then holding a label the reset did not stop")
 			reconcileUntil(v1alpha1.ServicesTornDown)
-
-			var node corev1.Node
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &node)).To(Succeed())
-			node.Labels["nvidia.com/gpu.deploy.dcgm-dra"] = "paused-for-driver-upgrade"
-			Expect(k8sClient.Update(ctx, &node)).To(Succeed())
-			Eventually(func(g Gomega) {
-				var cached corev1.Node
-				g.Expect(reconciler.Get(ctx, types.NamespacedName{Name: nodeName}, &cached)).To(Succeed())
-				g.Expect(cached.Labels).To(HaveKeyWithValue("nvidia.com/gpu.deploy.dcgm-dra", "paused-for-driver-upgrade"))
-			}, "10s", "50ms").Should(Succeed())
+			setNodeLabel("nvidia.com/gpu.deploy.dcgm-dra", "paused-for-driver-upgrade")
 
 			reconcileTimes(5)
 			Expect(meta.IsStatusConditionTrue(getReset().Status.Conditions, string(v1alpha1.ResetJobCreated))).To(BeFalse())
@@ -2065,30 +2081,23 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(k8sClient.List(ctx, &jobs, client.InNamespace("default"))).To(Succeed())
 			Expect(jobs.Items).To(BeEmpty())
 
-			By("Releasing the label: the job is created and the reset completes")
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &node)).To(Succeed())
-			delete(node.Labels, "nvidia.com/gpu.deploy.dcgm-dra")
-			Expect(k8sClient.Update(ctx, &node)).To(Succeed())
-			reconcileUntil(v1alpha1.Complete)
-			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
-		})
-
-		It("should fail the reset when node labels stay held for the GPUReset timeout", func() {
+			By("Letting the GPUReset timeout expire: the reset fails, the stopped services are restored, the held label is left alone")
 			reconciler.Config.Timeout = time.Millisecond
-
-			heldLabels := devicePluginDeployLabels()
-			heldLabels["nvidia.com/gpu.deploy.dcgm"] = "paused-for-driver-upgrade"
-			createNodeWithOperandPods(heldLabels, devicePluginOperandPodLabels())
-			createReset()
-
 			Eventually(func(g Gomega) {
 				reconcileTimes(1)
 				g.Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
 			}, "10s", "100ms").Should(Succeed())
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonResetJobCreationFailed)))
 
-			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonServiceTeardownTimeoutExceeded)))
-			Expect(getReset().Status.ManagedServices).To(BeNil())
-			Expect(getNodeLabels()).To(Equal(heldLabels))
+			Eventually(func(g Gomega) {
+				reconcileTimes(1)
+				g.Expect(getConditionReason(v1alpha1.ServicesRestored)).To(Equal(string(v1alpha1.ReasonResetJobCreationFailed)))
+			}, "10s", "100ms").Should(Succeed())
+
+			expected := devicePluginDeployLabels()
+			expected["nvidia.com/gpu.deploy.dcgm-dra"] = "paused-for-driver-upgrade"
+			Expect(getNodeLabels()).To(Equal(expected))
+			Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
 		})
 
 		It("should move to a Failed state without detection if the node is not found", func() {
