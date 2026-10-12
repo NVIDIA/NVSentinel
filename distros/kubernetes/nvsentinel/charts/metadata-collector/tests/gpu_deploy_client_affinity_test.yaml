@@ -45,7 +45,7 @@ tests:
             nvidia.com/gpu.present: "true"
             nvsentinel.dgxc.nvidia.com/driver.installed: "true"
 
-  - it: ANDs each user nodeSelectorTerm with both client terms and keeps the other rules
+  - it: uses the user affinity unchanged instead of the default
     set:
       affinity:
         nodeAffinity:
@@ -83,30 +83,10 @@ tests:
                       - key: pool
                         operator: In
                         values: ["a"]
-                      - key: nvidia.com/gpu.deploy.client
-                        operator: In
-                        values: ["true"]
-                  - matchExpressions:
-                      - key: pool
-                        operator: In
-                        values: ["a"]
-                      - key: nvidia.com/gpu.deploy.client
-                        operator: DoesNotExist
                   - matchFields:
                       - key: metadata.name
                         operator: In
                         values: ["n1"]
-                    matchExpressions:
-                      - key: nvidia.com/gpu.deploy.client
-                        operator: In
-                        values: ["true"]
-                  - matchFields:
-                      - key: metadata.name
-                        operator: In
-                        values: ["n1"]
-                    matchExpressions:
-                      - key: nvidia.com/gpu.deploy.client
-                        operator: DoesNotExist
               preferredDuringSchedulingIgnoredDuringExecution:
                 - weight: 1
                   preference:
@@ -121,7 +101,31 @@ tests:
                     matchLabels:
                       app: x
 
-  - it: adds the client terms when the user sets only podAffinity
+  - it: uses the user preferred node affinity unchanged without the client terms
+    set:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                  - key: zone
+                    operator: In
+                    values: ["z1"]
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 1
+                  preference:
+                    matchExpressions:
+                      - key: zone
+                        operator: In
+                        values: ["z1"]
+
+  - it: uses the user podAffinity unchanged without the client terms
     set:
       affinity:
         podAffinity:
@@ -131,12 +135,15 @@ tests:
                 matchLabels:
                   app: y
     asserts:
-      - lengthEqual:
-          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms
-          count: 2
       - equal:
-          path: spec.template.spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels.app
-          value: y
+          path: spec.template.spec.affinity
+          value:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app: y
 
   - it: uses global.affinity instead of the chart affinity
     set:
@@ -161,11 +168,3 @@ tests:
             - matchExpressions:
                 - key: global
                   operator: Exists
-                - key: nvidia.com/gpu.deploy.client
-                  operator: In
-                  values: ["true"]
-            - matchExpressions:
-                - key: global
-                  operator: Exists
-                - key: nvidia.com/gpu.deploy.client
-                  operator: DoesNotExist

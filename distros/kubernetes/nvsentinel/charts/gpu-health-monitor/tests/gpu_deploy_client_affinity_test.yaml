@@ -75,7 +75,7 @@ tests:
           path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms
           count: 2
 
-  - it: ANDs each user nodeSelectorTerm with both client terms in embedded-mode
+  - it: uses the user affinity unchanged instead of the default in embedded-mode
     template: templates/daemonset-dcgm-4.x.yaml
     set:
       global.platformConnectorAuth.enabled: false
@@ -106,15 +106,30 @@ tests:
                       - key: pool
                         operator: In
                         values: ["a"]
-                      - key: nvidia.com/gpu.deploy.client
-                        operator: In
-                        values: ["true"]
-                  - matchExpressions:
-                      - key: pool
-                        operator: In
-                        values: ["a"]
-                      - key: nvidia.com/gpu.deploy.client
-                        operator: DoesNotExist
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app: x
+
+  - it: uses the user podAntiAffinity unchanged without the client terms in embedded-mode
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgm.mode: embedded-mode
+      runtimeClassName: nvidia
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: x
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity
+          value:
             podAntiAffinity:
               requiredDuringSchedulingIgnoredDuringExecution:
                 - topologyKey: kubernetes.io/hostname

@@ -114,7 +114,7 @@ Kubelet's --root-dir on the host. Nil/empty → /var/lib/kubelet.
 {{- end -}}
 
 {{/*
-Pod affinity: the user's affinity plus a required rule on the GPU Operator's
+Pod affinity: by default, a required rule on the GPU Operator's
 nvidia.com/gpu.deploy.client label, so this NVML client leaves the node while
 the GPU Operator unloads the driver or changes the MIG layout.
 
@@ -125,26 +125,16 @@ They set it back to "true" when they finish. Older GPU Operator releases never
 set the label, so an absent label must still schedule the pod.
 
 The two terms are ORed: the pod runs when the label is "true" or absent, and
-the DaemonSet controller removes it for any other value. Each user
-nodeSelectorTerm is ANDed with both terms, so a user rule still applies.
+the DaemonSet controller removes it for any other value.
+
+A user-set affinity overrides the default and renders unchanged.
 */}}
 {{- define "metadata-collector.affinity" -}}
-{{- $affinity := deepCopy (.Values.global.affinity | default .Values.affinity | default dict) -}}
-{{- $nodeAffinity := $affinity.nodeAffinity | default dict -}}
-{{- $required := $nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution | default dict -}}
-{{- $clientRules := list
-  (dict "key" "nvidia.com/gpu.deploy.client" "operator" "In" "values" (list "true"))
-  (dict "key" "nvidia.com/gpu.deploy.client" "operator" "DoesNotExist") -}}
-{{- $terms := list -}}
-{{- range $userTerm := ($required.nodeSelectorTerms | default (list (dict))) -}}
-{{- range $rule := $clientRules -}}
-{{- $term := deepCopy $userTerm -}}
-{{- $_ := set $term "matchExpressions" (append ($term.matchExpressions | default list) $rule) -}}
-{{- $terms = append $terms $term -}}
+{{- $affinity := .Values.global.affinity | default .Values.affinity -}}
+{{- if not $affinity -}}
+{{- $affinity = dict "nodeAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (dict "nodeSelectorTerms" (list
+  (dict "matchExpressions" (list (dict "key" "nvidia.com/gpu.deploy.client" "operator" "In" "values" (list "true"))))
+  (dict "matchExpressions" (list (dict "key" "nvidia.com/gpu.deploy.client" "operator" "DoesNotExist")))))) -}}
 {{- end -}}
-{{- end -}}
-{{- $_ := set $required "nodeSelectorTerms" $terms -}}
-{{- $_ = set $nodeAffinity "requiredDuringSchedulingIgnoredDuringExecution" $required -}}
-{{- $_ = set $affinity "nodeAffinity" $nodeAffinity -}}
 {{- toYaml $affinity -}}
 {{- end -}}

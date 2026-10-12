@@ -131,7 +131,7 @@ metadata-collector:
 
 ## GPU Operator driver upgrades and MIG changes
 
-The metadata collector holds the GPUs open through NVML. GPU Operator 26.7 and later uses the `nvidia.com/gpu.deploy.client` node label to remove GPU clients from a node before it unloads the driver or changes the MIG layout. The metadata collector DaemonSet has a required node affinity on this label. No Helm value controls it.
+The metadata collector holds the GPUs open through NVML. GPU Operator 26.7 and later uses the `nvidia.com/gpu.deploy.client` node label to remove GPU clients from a node before it unloads the driver or changes the MIG layout. By default, the metadata collector DaemonSet has a required node affinity on this label.
 
 | `nvidia.com/gpu.deploy.client` value | Metadata collector pod |
 |---|---|
@@ -140,7 +140,21 @@ The metadata collector holds the GPUs open through NVML. GPU Operator 26.7 and l
 | `paused-for-driver-upgrade` or `paused-for-mig-change` | Removed until the label is `true` again |
 | `false`, or any other value | Removed |
 
-Your `affinity` value still applies. The chart adds the label rule to each of your `nodeSelectorTerms` and keeps all other affinity rules.
+If you set `affinity` or `global.affinity`, the chart uses your value unchanged and does not add the label rule. To keep the label rule, add both terms to your value. Kubernetes ORs the `nodeSelectorTerms` and ANDs the expressions in each term. Thus, if you have your own node expressions, add them to both terms.
+
+```yaml
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.deploy.client
+              operator: In
+              values: ["true"]
+        - matchExpressions:
+            - key: nvidia.com/gpu.deploy.client
+              operator: DoesNotExist
+```
 
 Know these limits:
 

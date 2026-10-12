@@ -383,32 +383,20 @@ Pod affinity. In embedded-mode the pod runs its own DCGM hostengine and holds
 the GPUs open, so it gets the same required rule on the GPU Operator's
 nvidia.com/gpu.deploy.client label as metadata-collector.affinity: the pod
 runs when the label is "true" or absent, and leaves the node for any other
-value, such as "paused-for-driver-upgrade" or "paused-for-mig-change". Each
-user nodeSelectorTerm is ANDed with both terms. See metadata-collector.affinity
-for the upstream sources, and keep the two helpers in step.
+value, such as "paused-for-driver-upgrade" or "paused-for-mig-change". A
+user-set affinity overrides this default and renders unchanged. See
+metadata-collector.affinity for the upstream sources, and keep the two helpers
+in step.
 
 The other modes reach DCGM over the network and hold no GPU handle, so they
 render the user's affinity unchanged.
 */}}
 {{- define "gpu-health-monitor.affinity" -}}
-{{- $affinity := deepCopy (.Values.global.affinity | default .Values.affinity | default dict) -}}
-{{- if eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode" -}}
-{{- $nodeAffinity := $affinity.nodeAffinity | default dict -}}
-{{- $required := $nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution | default dict -}}
-{{- $clientRules := list
-  (dict "key" "nvidia.com/gpu.deploy.client" "operator" "In" "values" (list "true"))
-  (dict "key" "nvidia.com/gpu.deploy.client" "operator" "DoesNotExist") -}}
-{{- $terms := list -}}
-{{- range $userTerm := ($required.nodeSelectorTerms | default (list (dict))) -}}
-{{- range $rule := $clientRules -}}
-{{- $term := deepCopy $userTerm -}}
-{{- $_ := set $term "matchExpressions" (append ($term.matchExpressions | default list) $rule) -}}
-{{- $terms = append $terms $term -}}
-{{- end -}}
-{{- end -}}
-{{- $_ := set $required "nodeSelectorTerms" $terms -}}
-{{- $_ = set $nodeAffinity "requiredDuringSchedulingIgnoredDuringExecution" $required -}}
-{{- $_ = set $affinity "nodeAffinity" $nodeAffinity -}}
+{{- $affinity := .Values.global.affinity | default .Values.affinity -}}
+{{- if and (eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode") (not $affinity) -}}
+{{- $affinity = dict "nodeAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (dict "nodeSelectorTerms" (list
+  (dict "matchExpressions" (list (dict "key" "nvidia.com/gpu.deploy.client" "operator" "In" "values" (list "true"))))
+  (dict "matchExpressions" (list (dict "key" "nvidia.com/gpu.deploy.client" "operator" "DoesNotExist")))))) -}}
 {{- end -}}
 {{- with $affinity }}{{ toYaml . }}{{ end -}}
 {{- end -}}
