@@ -107,6 +107,7 @@ def _serialized_critical_event(method: Callable[..., bool]) -> Callable[..., boo
 @dataclasses.dataclass
 class EntityCacheEntry:
     active_errors: set[str] = dataclasses.field(default_factory=set)
+    error_strategies: dict[str, platformconnector_pb2.ProcessingStrategy] = dataclasses.field(default_factory=dict)
 
     @property
     def is_healthy(self) -> bool:
@@ -170,7 +171,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         # Persisted strategies are keyed by check because embedded probe hangs
         # and connectivity failures can be active at the same time. Both live
         # in one state file so recovery can match each event after a restart.
-        self._dcgm_state_records: dict[str, dict[str, str | list[str]]] = {}
+        self._dcgm_state_records: dict[str, dict[str, str | list[str] | dict[str, str]]] = {}
         self._dcgm_state_strategies: dict[str, platformconnector_pb2.ProcessingStrategy] = {}
         self._restore_dcgm_unresponsive_state()
         # Direct mode: when HEALTH_PUBLISH_TARGET is set, publishes go over
@@ -228,16 +229,18 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
         Only the connectivity and unresponsive checks call this. Both always
         send isFatal=True, so their series always carry is_fatal="true".
-        strategy must be the one the unhealthy event was sent with.
+        Use the strategy recorded for each error code; older cache entries use the
+        check-level strategy passed by the caller.
         """
         entry = self.entity_cache.get(key)
         for code in sorted(entry.active_errors) if entry else []:
+            code_strategy = entry.error_strategies.get(code, strategy)
             metrics.dcgm_health_active_events.labels(
                 event_type=check_name,
                 gpu_id="",
                 error_code=code,
                 is_fatal="true",
-                processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(strategy),
+                processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(code_strategy),
             ).set(0)
 
     def _persist_dcgm_unresponsive_state(
@@ -249,7 +252,20 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         """Remember a delivered DCGM fault across liveness restarts."""
         self._dcgm_state_strategies[check_name] = processing_strategy
         records = self._dcgm_state_records.setdefault(check_name, {})
-        records["error_codes"] = [error_code]
+        error_codes = records.get("error_codes", [])
+        if not isinstance(error_codes, list):
+            error_codes = []
+        records["error_codes"] = sorted(set(error_codes) | {error_code})
+        error_strategies = records.get("error_strategies", {})
+        if not isinstance(error_strategies, dict):
+            error_strategies = {}
+        previous_strategy = records.get("strategy")
+        if len(records["error_codes"]) > 1 and isinstance(previous_strategy, str):
+            for previous_code in error_codes:
+                error_strategies.setdefault(previous_code, previous_strategy)
+        if len(records["error_codes"]) > 1 or error_strategies:
+            error_strategies[error_code] = platformconnector_pb2.ProcessingStrategy.Name(processing_strategy)
+            records["error_strategies"] = error_strategies
         records["strategy"] = platformconnector_pb2.ProcessingStrategy.Name(processing_strategy)
         self._write_dcgm_state()
 
@@ -303,6 +319,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                 or key == "error_codes"
                                 and isinstance(value, list)
                                 and all(isinstance(code, str) for code in value)
+                                or key == "error_strategies"
+                                and isinstance(value, dict)
+                                and all(isinstance(code, str) and isinstance(name, str) for code, name in value.items())
                             }
             except (OSError, json.JSONDecodeError) as e:
                 log.error("Failed to read DCGM state at %s: %s", self._dcgm_state_path, e)
@@ -339,12 +358,38 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             error_codes = record.get("error_codes", [])
             if not isinstance(error_codes, list):
                 error_codes = []
+            error_strategies = record.get("error_strategies", {})
+            if not isinstance(error_strategies, dict):
+                error_strategies = {}
             for error_code in error_codes:
                 key = self._build_cache_key(check_name, "DCGM", "ALL")
                 entry = self.entity_cache.get(key)
                 active_errors = entry.active_errors if entry is not None else set()
-                self.entity_cache[key] = EntityCacheEntry(active_errors=active_errors | {error_code})
-                metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", error_code=error_code).set(1)
+                active_strategies = dict(entry.error_strategies) if entry is not None else {}
+                strategy_name_for_code = error_strategies.get(error_code, strategy_name)
+                strategy_for_code = strategy
+                if isinstance(strategy_name_for_code, str):
+                    try:
+                        strategy_for_code = platformconnector_pb2.ProcessingStrategy.Value(strategy_name_for_code)
+                    except ValueError:
+                        log.warning(
+                            "Unknown processing strategy %r for %s in %s; using check strategy",
+                            strategy_name_for_code,
+                            error_code,
+                            self._dcgm_state_path,
+                        )
+                active_strategies[error_code] = strategy_for_code
+                self.entity_cache[key] = EntityCacheEntry(
+                    active_errors=active_errors | {error_code},
+                    error_strategies=active_strategies,
+                )
+                metrics.dcgm_health_active_events.labels(
+                    event_type=check_name,
+                    gpu_id="",
+                    error_code=error_code,
+                    is_fatal="true",
+                    processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(strategy_for_code),
+                ).set(1)
             self._dcgm_state_strategies[check_name] = strategy
 
         if found_legacy_state and self._write_dcgm_state():
@@ -1121,8 +1166,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
                     latched_errors = entry.active_errors if entry is not None else set()
+                    error_strategies = dict(entry.error_strategies) if entry is not None else {}
+                    error_strategies["DCGM_CONNECTIVITY_ERROR"] = self._processing_strategy
                     self.entity_cache[key] = EntityCacheEntry(
-                        active_errors=latched_errors | {"DCGM_CONNECTIVITY_ERROR"}
+                        active_errors=latched_errors | {"DCGM_CONNECTIVITY_ERROR"},
+                        error_strategies=error_strategies,
                     )
                     if escalate:
                         self._connectivity_escalated = True
@@ -1238,7 +1286,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
-                    self.entity_cache[key] = EntityCacheEntry(active_errors={error_code})
+                    self.entity_cache[key] = EntityCacheEntry(
+                        active_errors={error_code},
+                        error_strategies={error_code: processing_strategy},
+                    )
                     self._persist_dcgm_unresponsive_state(processing_strategy, check_name)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
