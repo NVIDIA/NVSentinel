@@ -377,3 +377,26 @@ template names are global; this chart also renders standalone. Keep them in step
         path: ca.crt
 {{- end -}}
 {{- end -}}
+
+{{/*
+Pod affinity. In embedded-mode the pod runs its own DCGM hostengine and holds
+the GPUs open, so it gets the same required rule on the GPU Operator's
+nvidia.com/gpu.deploy.client label as metadata-collector.affinity: the pod
+runs when the label is "true" or absent, and leaves the node for any other
+value, such as "paused-for-driver-upgrade" or "paused-for-mig-change". A
+user-set affinity overrides this default and renders unchanged. See
+metadata-collector.affinity for the upstream sources, and keep the two helpers
+in step.
+
+The other modes reach DCGM over the network and hold no GPU handle, so they
+render the user's affinity unchanged.
+*/}}
+{{- define "gpu-health-monitor.affinity" -}}
+{{- $affinity := .Values.global.affinity | default .Values.affinity -}}
+{{- if and (eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode") (not $affinity) -}}
+{{- $affinity = dict "nodeAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (dict "nodeSelectorTerms" (list
+  (dict "matchExpressions" (list (dict "key" "nvidia.com/gpu.deploy.client" "operator" "In" "values" (list "true"))))
+  (dict "matchExpressions" (list (dict "key" "nvidia.com/gpu.deploy.client" "operator" "DoesNotExist")))))) -}}
+{{- end -}}
+{{- with $affinity }}{{ toYaml . }}{{ end -}}
+{{- end -}}
