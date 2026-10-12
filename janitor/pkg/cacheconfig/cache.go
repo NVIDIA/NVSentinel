@@ -21,6 +21,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -30,7 +32,7 @@ import (
 
 // Build returns cache options that retain only Node and Pod fields read by
 // Janitor. When GPU reset is enabled, the Pod cache is also limited to the
-// configured GPU service manager's namespace and common label selector.
+// configured GPU service manager's namespace and the pods of its apps.
 func Build(cfg *config.Config) (cache.Options, error) {
 	byObject := map[client.Object]cache.ByObject{
 		&corev1.Node{}: {
@@ -47,10 +49,15 @@ func Build(cfg *config.Config) (cache.Options, error) {
 			return cache.Options{}, fmt.Errorf("resolve GPU service manager for Pod cache: %w", err)
 		}
 
+		podSelector, err := podCacheSelector(serviceManager.Spec)
+		if err != nil {
+			return cache.Options{}, err
+		}
+
 		byObject[&corev1.Pod{}] = cache.ByObject{
 			Namespaces: map[string]cache.Config{
 				serviceManager.Spec.Namespace: {
-					LabelSelector: labels.SelectorFromSet(serviceManager.Spec.ManagerSelector),
+					LabelSelector: podSelector,
 				},
 			},
 			Transform: transformPodForCache,
@@ -58,6 +65,54 @@ func Build(cfg *config.Config) (cache.Options, error) {
 	}
 
 	return cache.Options{ByObject: byObject}, nil
+}
+
+// podCacheSelector returns the manager selector. For each label key that every
+// app selector uses, the selector also requires that key to have one of the app
+// values. The built-in gpu-operator manager has no manager selector, so this keeps
+// other pods in its namespace out of the cache. Each app pod still matches,
+// because it has one of the values for every such key.
+func podCacheSelector(spec gpuservices.ManagerSpec) (labels.Selector, error) {
+	selector := labels.SelectorFromSet(spec.ManagerSelector)
+
+	for key, values := range sharedAppSelectorValues(spec.Apps) {
+		requirement, err := labels.NewRequirement(key, selection.In, sets.List(values))
+		if err != nil {
+			return nil, fmt.Errorf("build Pod cache selector for label %s: %w", key, err)
+		}
+
+		selector = selector.Add(*requirement)
+	}
+
+	return selector, nil
+}
+
+// sharedAppSelectorValues returns, for each label key that every app selector
+// uses, the values of that key across the app selectors.
+func sharedAppSelectorValues(apps []gpuservices.AppSpec) map[string]sets.Set[string] {
+	if len(apps) == 0 {
+		return nil
+	}
+
+	shared := make(map[string]sets.Set[string], len(apps[0].AppSelector))
+	for key := range apps[0].AppSelector {
+		shared[key] = sets.New[string]()
+	}
+
+	for _, app := range apps {
+		for key, values := range shared {
+			value, ok := app.AppSelector[key]
+			if !ok {
+				delete(shared, key)
+
+				continue
+			}
+
+			values.Insert(value)
+		}
+	}
+
+	return shared
 }
 
 // transformNodeForCache keeps fields used by Node patches, taint handling, and

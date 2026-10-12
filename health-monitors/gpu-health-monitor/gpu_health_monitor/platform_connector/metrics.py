@@ -53,10 +53,22 @@ health_events_direct_publish_retries = Counter(
     "Total number of direct-publish send retries",
 )
 
+# is_fatal is "true" or "false": the isFatal that gpu-health-monitor sends for
+# the event that set the series. Platform-connectors overrides do not change it.
+# Alerts can use it to skip informational events (recommendedAction NONE)
+# without keeping their own list of error codes.
+#
+# processing_strategy is the ProcessingStrategy enum name that
+# gpu-health-monitor sends with the event that set the series (global or
+# per-check), for example EXECUTE_REMEDIATION or STORE_ONLY. Platform-connectors
+# never changes STORE_ONLY to a strategy that acts, so STORE_ONLY means
+# NVSentinel does not act. EXECUTE_REMEDIATION means the monitor requests
+# action; platform-connectors can still change the strategy, for example to
+# STORE_ONLY on a node labelled nvsentinel.dgxc.nvidia.com/managed=false.
 dcgm_health_active_events = Gauge(
     "dcgm_health_active_events",
-    "Active health events by watch type, GPU, and error code",
-    labelnames=["event_type", "gpu_id", "error_code"],
+    "Active health events by watch type, GPU, error code, whether the event is fatal, and processing strategy",
+    labelnames=["event_type", "gpu_id", "error_code", "is_fatal", "processing_strategy"],
 )
 
 # Switches get their own gauge rather than sharing gpu_id: switch and GPU ids are

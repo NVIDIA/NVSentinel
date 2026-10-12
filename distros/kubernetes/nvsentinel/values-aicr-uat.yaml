@@ -45,6 +45,7 @@ fault-quarantine:
     enabled: false
   validation:
     enabled: true
+    partialDrainEnabled: true
 
 fault-remediation:
   maintenance:

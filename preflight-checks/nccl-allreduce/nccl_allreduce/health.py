@@ -15,8 +15,9 @@
 """Health event reporting to Platform Connector."""
 
 import logging
+import os
 import random
-import uuid
+import time
 from time import monotonic, sleep
 
 import grpc
@@ -70,6 +71,27 @@ PERMANENT_STATUS_CODES = frozenset(
         grpc.StatusCode.UNIMPLEMENTED,
     }
 )
+
+
+def uuid7_hex() -> str:
+    """Return a UUIDv7 as 32 hex characters.
+
+    The first 48 bits are the Unix time in milliseconds, so keys minted later
+    sort later and the datastore's unique idempotency index appends new
+    entries instead of scattering them. Python's uuid module only gains
+    uuid7() in 3.14, so the layout is built here: 48-bit timestamp, version 7,
+    12 random bits, the RFC 9562 variant, 62 random bits.
+    """
+    millis = time.time_ns() // 1_000_000
+    rand = int.from_bytes(os.urandom(10), "big")
+    value = (
+        (millis & ((1 << 48) - 1)) << 80
+        | 0x7 << 76
+        | ((rand >> 68) & 0xFFF) << 64
+        | 0b10 << 62
+        | (rand & ((1 << 62) - 1))
+    )
+    return f"{value:032x}"
 
 
 def _rpc_status_code(error: grpc.RpcError) -> grpc.StatusCode | None:
@@ -345,7 +367,7 @@ class HealthReporter:
         event gets one attempt of ``SPENT_BUDGET_ATTEMPT_SECONDS``.
         """
         publish = self._publish
-        idempotency_key = uuid.uuid4().hex
+        idempotency_key = uuid7_hex()
         backoff = INITIAL_BACKOFF_SECONDS
         attempt = 0
         # Seconds of the shared budget this event may spend; the window of

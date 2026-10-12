@@ -1945,8 +1945,9 @@ func (r *Reconciler) performUncordon(
 		return false, nil
 	}
 
-	annotationsToBeRemoved, isUnCordon, validationRequestCreated, err := r.triggerValidationOnUnquarantine(
-		ctx, span, event, annotations, annotationsToBeRemoved, isUnCordon)
+	annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, validationRequestCreated, err :=
+		r.triggerValidationOnUnquarantine(ctx, span, event, annotations, annotationsToBeRemoved, taintsToBeRemoved,
+			isUnCordon)
 	if err != nil {
 		return true, err
 	}
@@ -2006,15 +2007,16 @@ func (r *Reconciler) buildUncordonLabelsToRemove(ruleLabelsToRemove []config.Lab
 // annotation present when it is being unquarantined. Note that we also require that the node was fully drained
 // as part of its quarantine session so it's possible that ValidationRequest creation is skipped even if the
 // annotation present. If a ValidationRequest is created, we will skip removing the cordon, skip removing the
-// cordon-by labels, and skip adding the uncordon-by labels. Note that taints are still removed regardless of whether
-// a ValidationRequest was created.
+// taints fault-quarantine applied, skip removing the cordon-by labels, and skip adding the uncordon-by labels.
+// lifecycle-manager removes the cordon and the taints listed in schedulingGate.taints when validation succeeds.
 //
 // If a ValidationRequest creation fails, the node will not be uncordoned or untainted and all fault-quarantine labels
 // and annotations will be preserved.
 func (r *Reconciler) triggerValidationOnUnquarantine(ctx context.Context, span trace.Span, event *protos.HealthEvent,
-	annotations map[string]string, annotationsToBeRemoved []string, isUnCordon bool) ([]string, bool, bool, error) {
+	annotations map[string]string, annotationsToBeRemoved []string, taintsToBeRemoved []config.Taint,
+	isUnCordon bool) ([]string, []config.Taint, bool, bool, error) {
 	if _, exists := annotations[common.QuarantineValidationHealthEventAnnotationKey]; !exists {
-		return annotationsToBeRemoved, isUnCordon, false, nil
+		return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, false, nil
 	}
 
 	validationRequestCreated, err := r.createValidationRequestIfRequested(ctx, event, annotations)
@@ -2028,18 +2030,19 @@ func (r *Reconciler) triggerValidationOnUnquarantine(ctx context.Context, span t
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return annotationsToBeRemoved, isUnCordon, false, err
+		return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, false, err
 	}
 
 	annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineValidationHealthEventAnnotationKey)
 
 	if validationRequestCreated {
+		taintsToBeRemoved = nil
 		isUnCordon = false
 
 		span.SetAttributes(attribute.Bool("fault_quarantine.validation_request.created", true))
 	}
 
-	return annotationsToBeRemoved, isUnCordon, validationRequestCreated, nil
+	return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, validationRequestCreated, nil
 }
 
 func (r *Reconciler) createValidationRequestIfRequested(ctx context.Context, event *protos.HealthEvent,
