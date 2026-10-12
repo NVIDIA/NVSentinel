@@ -437,12 +437,8 @@ func keyMatchesEvent(storedKey HealthEventKey, storedEvent, event *protos.Health
 // entityMatches: any entity matches when the event lists none.
 func entityMatches(storedKey HealthEventKey, storedEvent, event *protos.HealthEvent) bool {
 	return len(event.EntitiesImpacted) == 0 ||
-		entityInEvent(storedKey, event) ||
+		hasEntity(event.EntitiesImpacted, storedKey.EntityType, storedKey.EntityValue) ||
 		replacedGPUMatches(storedKey, storedEvent, event)
-}
-
-func entityInEvent(key HealthEventKey, event *protos.HealthEvent) bool {
-	return hasEntity(event.EntitiesImpacted, key.EntityType, key.EntityValue)
 }
 
 func hasEntity(entities []*protos.Entity, entityType, entityValue string) bool {
