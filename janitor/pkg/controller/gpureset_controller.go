@@ -133,8 +133,11 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	reconcileDelete := !gpuReset.DeletionTimestamp.IsZero()
 	completedReconciling := gpuReset.Status.CompletionTime != nil
+	// A reset that failed on the restore timeout still owes the node its labels. Keep the lock and the restoration
+	// going until the labels are written; held labels are waited on, never overwritten.
+	restorePending := restorationInProgress(&gpuReset)
 
-	if !completedReconciling || reconcileDelete {
+	if !completedReconciling || reconcileDelete || restorePending {
 		// Start or retrieve the long-lived session span that covers the entire GPU reset lifecycle.
 		// Per-reconcile spans are created as children of this session span.
 		sessionCtx, _ := r.startResetSessionIfNeeded(ctx, crKey, traceID, spanID)
@@ -182,7 +185,16 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return result, err
 		}
 
-		result, err := r.reconcileHelper(ctx, &gpuReset)
+		var (
+			result ctrl.Result
+			err    error
+		)
+
+		if completedReconciling {
+			result, err = r.restoreServices(ctx, &gpuReset)
+		} else {
+			result, err = r.reconcileHelper(ctx, &gpuReset)
+		}
 		// We will always re-queue the object and check if Unlock is needed on the next reconcile rather than
 		// re-fetch the object or require reconcileHelper to specify it completed reconciling. If the controller
 		// forces a re-queue by returning an error or setting a RequeueAfter, we will respect that re-queue behavior,
@@ -560,7 +572,7 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 		patch := client.MergeFromWithOptions(node, client.MergeFromWithOptimisticLock{})
 		if err := r.Patch(ctx, nodeToUpdate, patch); err != nil {
 			if apierrors.IsConflict(err) {
-				log.V(1).Info("Node changed since it was read, retrying", "node", node.Name)
+				log.Info("Node changed since it was read, retrying", "node", node.Name)
 
 				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
@@ -642,18 +654,9 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 				managerName, gr.Spec.NodeName, err)
 		}
 
-		// Check every configured service, not only the running ones: a driver upgrade holds the labels of all
-		// operands and removes their pods, and the reset must not run against a driver that is being reloaded.
-		if held := heldLabels(r.serviceManager.Spec.Apps, node.Labels); len(held) > 0 {
-			if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
-				return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonServiceTeardownTimeoutExceeded,
-					fmt.Sprintf("Node labels %v stayed held by another controller for the GPUReset timeout", held))
-			}
-
-			log.Info("Waiting for node labels held by another controller before the teardown", "node",
-				gr.Spec.NodeName, "manager", managerName, "nodeLabels", held, "recheck_after", 3*time.Second)
-
-			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+		if res, wait, err := r.waitForHeldLabels(ctx, gr, node.Labels, "the teardown",
+			v1alpha1.ReasonServiceTeardownTimeoutExceeded); wait {
+			return res, err
 		}
 
 		nodeLabels := make([]string, 0, len(running))
@@ -702,6 +705,44 @@ func (r *GPUResetReconciler) managedApps(ctx context.Context, gr *v1alpha1.GPURe
 	}
 
 	return apps
+}
+
+// waitForHeldLabels requeues while any configured operand label is held by another controller, bounded by the
+// GPUReset timeout. Every configured operand is checked, not only the ones with a pod on the node: a driver upgrade
+// holds the labels of all operands and removes their pods, and the reset must not run against a driver that is
+// being reloaded. wait is true when the caller must return res and err.
+func (r *GPUResetReconciler) waitForHeldLabels(
+	ctx context.Context,
+	gr *v1alpha1.GPUReset,
+	nodeLabels map[string]string,
+	step string,
+	reason v1alpha1.GPUResetReason,
+) (ctrl.Result, bool, error) {
+	log := log.FromContext(ctx)
+
+	held := heldLabels(r.serviceManager.Spec.Apps, nodeLabels)
+	if len(held) == 0 {
+		return ctrl.Result{}, false, nil
+	}
+
+	if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
+		res, err := r.reconcileTerminalFailure(ctx, gr, reason,
+			fmt.Sprintf("Node labels %v stayed held by another controller for the GPUReset timeout", held))
+
+		return res, true, err
+	}
+
+	log.Info("Waiting for node labels held by another controller before "+step, "node",
+		gr.Spec.NodeName, "manager", r.serviceManager.Name, "nodeLabels", held, "recheck_after", 3*time.Second)
+
+	return ctrl.Result{RequeueAfter: 3 * time.Second}, true, nil
+}
+
+// restorationInProgress reports whether the restoration of the managed services has started and not ended.
+func restorationInProgress(gr *v1alpha1.GPUReset) bool {
+	cond := meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.ServicesRestored))
+
+	return cond != nil && cond.Status != metav1.ConditionTrue && cond.Reason == string(v1alpha1.ReasonRestoringServices)
 }
 
 // heldLabels returns the node labels of the apps that hold a value the janitor does not own: neither the enabled
@@ -976,7 +1017,11 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		timeSinceInProgress = time.Since(currentCond.LastTransitionTime.Time)
 	}
 
-	if timeSinceInProgress > restoreTimeout {
+	// Once the reset has failed, the restoration is no longer bounded: the labels must still go back, and a
+	// label held by another controller is waited on. The pods are not waited for any more.
+	failed := gr.Status.CompletionTime != nil
+
+	if timeSinceInProgress > restoreTimeout && !failed {
 		log.Error(nil, "Managed service restoration timeout exceeded", "manager", managerName, "timeout", restoreTimeout)
 
 		span.SetAttributes(
@@ -985,12 +1030,31 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		)
 		tracing.RecordError(span, errors.New("restore timeout exceeded"))
 
-		return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonRestoreTimeoutExceeded,
-			fmt.Sprintf("failed to restore %s managed services within the timeout period", managerName))
+		if res, err := r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonRestoreTimeoutExceeded,
+			fmt.Sprintf("failed to restore %s managed services within the timeout period", managerName)); err != nil {
+			return res, err
+		}
+
+		// The labels are still owed. The next reconcile continues the restoration without the timeout.
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	// The restore timeout above bounds this wait.
+	// The restore timeout above bounds this wait. After the failure, one more GPUReset timeout bounds it: a label
+	// that is never released must not hold the node lock forever, so the janitor gives up and leaves it as it is.
 	if held := heldLabels(apps, node.Labels); len(held) > 0 {
+		if failed && time.Since(gr.Status.CompletionTime.Time) > r.Config.Timeout {
+			log.Error(nil, "Giving up on node labels held by another controller; they were not restored",
+				"node", node.Name, "manager", managerName, "nodeLabels", held)
+
+			if err := r.updateCondition(ctx, gr, v1alpha1.ServicesRestored, metav1.ConditionFalse,
+				v1alpha1.ReasonRestoreTimeoutExceeded, fmt.Sprintf("Node labels %v are held by another controller "+
+					"and were not restored", held)); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			return ctrl.Result{}, nil
+		}
+
 		log.Info("Waiting for node labels held by another controller before re-enabling managed services",
 			"node", node.Name, "manager", managerName, "nodeLabels", held, "recheck_after", 3*time.Second)
 
@@ -1021,7 +1085,7 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		patch := client.MergeFromWithOptions(node, client.MergeFromWithOptimisticLock{})
 		if err := r.Patch(ctx, nodeToUpdate, patch); err != nil {
 			if apierrors.IsConflict(err) {
-				log.V(1).Info("Node changed since it was read, retrying", "node", node.Name)
+				log.Info("Node changed since it was read, retrying", "node", node.Name)
 
 				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
@@ -1039,6 +1103,16 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		log.Info("Managed services re-enabled", "node", node.Name, "manager", managerName)
 
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
+	}
+
+	if failed {
+		if err := r.updateCondition(ctx, gr, v1alpha1.ServicesRestored, metav1.ConditionFalse,
+			v1alpha1.ReasonRestoreTimeoutExceeded, fmt.Sprintf("%s managed service node labels restored after the "+
+				"restore timeout; pods not waited for", managerName)); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
 	}
 
 	// Wait for pods to become ready
@@ -1172,9 +1246,22 @@ func (r *GPUResetReconciler) getOrCreateJob(ctx context.Context, gr *v1alpha1.GP
 
 	// Job NOT found. Create it.
 
-	// Drift check: verify managed service pods are NOT running
 	nodeName := gr.Spec.NodeName
 	managerName := r.serviceManager.Name
+
+	// A driver upgrade that started after the teardown holds the labels of the operands the reset did not stop.
+	// The reset must not run against a driver that is being reloaded.
+	node, err := r.getNode(ctx, nodeName)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get node %s before creating the reset job: %w", nodeName, err)
+	}
+
+	if res, wait, err := r.waitForHeldLabels(ctx, gr, node.Labels, "creating the reset job",
+		v1alpha1.ReasonResetJobCreationFailed); wait {
+		return res, err
+	}
+
+	// Drift check: verify managed service pods are NOT running
 
 	apps := r.managedApps(ctx, gr)
 
