@@ -57,10 +57,14 @@ health_events_direct_publish_retries = Counter(
 # the event that set the series. Platform-connectors overrides do not change it.
 # Alerts can use it to skip informational events (recommendedAction NONE)
 # without keeping their own list of error codes.
+#
+# store_only is "true" when gpu-health-monitor sends the event with the
+# STORE_ONLY processing strategy (global or per-check). Platform-connectors
+# can still change the strategy, so "false" does not mean NVSentinel acts.
 dcgm_health_active_events = Gauge(
     "dcgm_health_active_events",
-    "Active health events by watch type, GPU, error code, and whether the event is fatal",
-    labelnames=["event_type", "gpu_id", "error_code", "is_fatal"],
+    "Active health events by watch type, GPU, error code, whether the event is fatal, and whether it is store-only",
+    labelnames=["event_type", "gpu_id", "error_code", "is_fatal", "store_only"],
 )
 
 # Switches get their own gauge rather than sharing gpu_id: switch and GPU ids are

@@ -211,7 +211,18 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         is_fatal = self.get_recommended_action_from_dcgm_error_map(error_code) != platformconnector_pb2.NONE
         return str(is_fatal).lower()
 
-    def _clear_active_event_metric(self, check_name: str, key: str) -> None:
+    @staticmethod
+    def _store_only_label(strategy: platformconnector_pb2.ProcessingStrategy) -> str:
+        """store_only label value for the processing strategy sent with an event.
+
+        Callers pass the same strategy source on set and on clear, so the
+        series a failure sets and the series its recovery zeroes match.
+        """
+        return str(strategy == platformconnector_pb2.STORE_ONLY).lower()
+
+    def _clear_active_event_metric(
+        self, check_name: str, key: str, strategy: platformconnector_pb2.ProcessingStrategy
+    ) -> None:
         """Zero every error_code series the cache says this check latched.
 
         A check can be latched by more than one code, so zeroing a single
@@ -220,11 +231,16 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
         Only the connectivity and unresponsive checks call this. Both always
         send isFatal=True, so their series always carry is_fatal="true".
+        strategy must be the one the unhealthy event was sent with.
         """
         entry = self.entity_cache.get(key)
         for code in sorted(entry.active_errors) if entry else []:
             metrics.dcgm_health_active_events.labels(
-                event_type=check_name, gpu_id="", error_code=code, is_fatal="true"
+                event_type=check_name,
+                gpu_id="",
+                error_code=code,
+                is_fatal="true",
+                store_only=self._store_only_label(strategy),
             ).set(0)
 
     def _persist_dcgm_unresponsive_state(self, processing_strategy: platformconnector_pb2.ProcessingStrategy) -> None:
@@ -271,7 +287,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
         self._dcgm_unresponsive_strategy = strategy
         metrics.dcgm_health_active_events.labels(
-            event_type="GpuDcgmUnresponsive", gpu_id="", error_code="DCGM_PROBE_HANG", is_fatal="true"
+            event_type="GpuDcgmUnresponsive",
+            gpu_id="",
+            error_code="DCGM_PROBE_HANG",
+            is_fatal="true",
+            store_only=self._store_only_label(strategy),
         ).set(1)
 
     def _clear_dcgm_unresponsive_state(self) -> None:
@@ -345,7 +365,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
-                    self._clear_active_event_metric(check_name, key)
+                    self._clear_active_event_metric(check_name, key, self._processing_strategy)
                     self.entity_cache[key] = EntityCacheEntry()
                     self._consecutive_connectivity_successes = 0
                     self._connectivity_escalated = False
@@ -412,7 +432,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
-                    self._clear_active_event_metric(check_name, key)
+                    self._clear_active_event_metric(check_name, key, clear_strategy)
                     self.entity_cache[key] = EntityCacheEntry()
                     self._clear_dcgm_unresponsive_state()
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
@@ -777,6 +797,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                 gpu_id=gpu_id,
                                 error_code=error_code,
                                 is_fatal=self._is_fatal_label(error_code),
+                                store_only=self._store_only_label(self._effective_strategy(event_type)),
                             ).set(value)
                         for event_type, switch_id, error_code, value in pending_switch_metric_updates:
                             metrics.dcgm_health_active_switch_events.labels(
@@ -1035,7 +1056,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         self._connectivity_escalated = True
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
-                        event_type=check_name, gpu_id="", error_code="DCGM_CONNECTIVITY_ERROR", is_fatal="true"
+                        event_type=check_name,
+                        gpu_id="",
+                        error_code="DCGM_CONNECTIVITY_ERROR",
+                        is_fatal="true",
+                        store_only=self._store_only_label(self._processing_strategy),
                     ).set(1)
                     return True
                 return False
@@ -1136,7 +1161,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         self._persist_dcgm_unresponsive_state(processing_strategy)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
-                        event_type=check_name, gpu_id="", error_code=error_code, is_fatal="true"
+                        event_type=check_name,
+                        gpu_id="",
+                        error_code=error_code,
+                        is_fatal="true",
+                        store_only=self._store_only_label(processing_strategy),
                     ).set(1)
                     return True
                 return False
