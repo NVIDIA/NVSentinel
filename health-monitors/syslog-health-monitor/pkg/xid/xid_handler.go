@@ -239,6 +239,7 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 
 		entities = append(entities, metadata...)
 	}
+
 	trackedEntities := xidHandler.trackEntities(normPCI, entities)
 
 	metadata := make(map[string]string)
