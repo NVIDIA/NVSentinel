@@ -172,6 +172,11 @@ config:
     newNodeTests:
       - dcgm-diag-test
 
+  # The Job sets nodeName, so the scheduler does not place it and NoSchedule taints do not block it.
+  # A NoExecute taint that the pod does not tolerate makes the kubelet reject or evict it. The Job
+  # therefore tolerates every NoExecute taint, which includes taints that users apply at run time.
+  # The not-under-quarantine readiness criterion still fails the test group if fault-quarantine
+  # quarantines the node during validation.
   templates:
     "k8s-job-template.yaml": |
       apiVersion: batch/v1
@@ -187,6 +192,8 @@ config:
             nodeName: {{(index .Nodes 0).NodeName}}
             restartPolicy: Never
             tolerations:
+              - operator: Exists
+                effect: NoExecute
               {{- range .Tolerations}}
               - key: {{.Key}}
                 value: {{.Value}}
