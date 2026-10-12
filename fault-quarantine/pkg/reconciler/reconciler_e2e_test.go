@@ -8442,8 +8442,7 @@ func TestE2E_ManualUntaintAnnotationCleanup(t *testing.T) {
 	}, eventuallyTimeout, eventuallyPollInterval, "Manual untaint annotation should be removed, FQ annotations added with taint applied")
 }
 
-// TestE2E_ReplacedGPUsUncordonNode checks that a node whose GPUs were all
-// replaced (same slots, new UUIDs) is uncordoned once the healthy events arrive.
+// TestE2E_ReplacedGPUsUncordonNode: a node whose GPUs were replaced (same slots, new UUIDs) is uncordoned.
 func TestE2E_ReplacedGPUsUncordonNode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
 	defer cancel()
@@ -8483,7 +8482,7 @@ func TestE2E_ReplacedGPUsUncordonNode(t *testing.T) {
 		}
 	}
 
-	// The first fault quarantines the node; the others then only add entities.
+	t.Log("Quarantine with faults on 4 GPUs, one at a time")
 	for i := 0; i < 4; i++ {
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(), nodeName, "GpuNvlinkWatch", false, true,
@@ -8502,8 +8501,7 @@ func TestE2E_ReplacedGPUsUncordonNode(t *testing.T) {
 		}, eventuallyTimeout, eventuallyPollInterval, "GPU %d should be tracked", i)
 	}
 
-	// The GPUs are replaced: same index and PCI address, new UUIDs. Healthy
-	// events arrive one at a time, as they do in practice.
+	t.Log("Replace the GPUs: same index and PCI address, new UUIDs")
 	for i := 0; i < 4; i++ {
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(), nodeName, "GpuNvlinkWatch", true, false,

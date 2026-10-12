@@ -1103,7 +1103,7 @@ func TestRemoveEvent_PartialCompoundRemovalSurvivesJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// gpuEvent builds a GpuNvlinkWatch event for the given entities and optional error code.
+// gpuEvent builds a GpuNvlinkWatch event on node1.
 func gpuEvent(healthy bool, errorCode string, entities ...*protos.Entity) *protos.HealthEvent {
 	e := &protos.HealthEvent{
 		Version:          1,
@@ -1131,7 +1131,7 @@ func gpuSlot(idx, pci, uuid string) []*protos.Entity {
 	}
 }
 
-// A replaced GPU's healthy event must clear faults stored under the old UUID.
+// TestRemoveEvent_ReplacedGPUClearsOldUUIDKeys: a healthy event with a new UUID clears the old UUID's keys.
 func TestRemoveEvent_ReplacedGPUClearsOldUUIDKeys(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()
 	hem.AddOrUpdateEvent(gpuEvent(false, "NVLINK_DOWN", gpuSlot("0", "0000:04:00", "GPU-old0")...))
@@ -1152,7 +1152,7 @@ func TestRemoveEvent_ReplacedGPUClearsOldUUIDKeys(t *testing.T) {
 	}
 }
 
-// TestRemoveEvent_ReplacedGPURespectsErrorCodeAndSlot checks that a mismatched error code or slot clears nothing.
+// TestRemoveEvent_ReplacedGPURespectsErrorCodeAndSlot: a different error code or slot clears nothing.
 func TestRemoveEvent_ReplacedGPURespectsErrorCodeAndSlot(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()
 	hem.AddOrUpdateEvent(gpuEvent(false, "FIELD_VIOLATION", gpuSlot("0", "0000:04:00", "GPU-old0")...))
@@ -1164,7 +1164,7 @@ func TestRemoveEvent_ReplacedGPURespectsErrorCodeAndSlot(t *testing.T) {
 	assert.Equal(t, 3, hem.Count())
 }
 
-// TestRemoveEvent_UUIDOnlyHealthyEventDoesNotMatchOtherUUID checks that a UUID-only healthy event has no slot identity to match on.
+// TestRemoveEvent_UUIDOnlyHealthyEventDoesNotMatchOtherUUID: a UUID-only healthy event only matches its own UUID.
 func TestRemoveEvent_UUIDOnlyHealthyEventDoesNotMatchOtherUUID(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()
 	hem.AddOrUpdateEvent(gpuEvent(false, "NVLINK_DOWN", gpuSlot("0", "0000:04:00", "GPU-old0")...))
@@ -1173,7 +1173,7 @@ func TestRemoveEvent_UUIDOnlyHealthyEventDoesNotMatchOtherUUID(t *testing.T) {
 	assert.Zero(t, hem.RemoveEvent(healthy))
 }
 
-// An unhealthy event on a replaced GPU is a new fault, not a duplicate.
+// TestGetEvent_UnhealthyReplacedGPUDoesNotMatchOldUUID: an unhealthy event on a replaced GPU is a new fault.
 func TestGetEvent_UnhealthyReplacedGPUDoesNotMatchOldUUID(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()
 	hem.AddOrUpdateEvent(gpuEvent(false, "NVLINK_DOWN", gpuSlot("0", "0000:04:00", "GPU-old0")...))
@@ -1183,9 +1183,7 @@ func TestGetEvent_UnhealthyReplacedGPUDoesNotMatchOldUUID(t *testing.T) {
 	assert.False(t, found)
 }
 
-// All 4 GPUs of a node are replaced after per-GPU, per-code faults (as
-// gpu-health-monitor emits them): the map must end up empty so the node can
-// uncordon.
+// TestRemoveEvent_AllGPUsReplacedEmptiesMap: after all GPUs of a node are replaced the map is empty.
 func TestRemoveEvent_AllGPUsReplacedEmptiesMap(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()
 	pci := []string{"0000:04:00", "0000:05:00", "0000:06:00", "0000:07:00"}
@@ -1199,7 +1197,6 @@ func TestRemoveEvent_AllGPUsReplacedEmptiesMap(t *testing.T) {
 	require.Equal(t, 24, hem.Count(), "4 GPUs x 2 codes x (GPU, PCI, GPU_UUID)")
 
 	for i := range pci {
-		// Healthy events carry no error code: they clear every code on the GPU.
 		healthy := gpuEvent(true, "", gpuSlot(fmt.Sprint(i), pci[i], fmt.Sprintf("GPU-new%d", i))...)
 		assert.Equal(t, 6, hem.RemoveEvent(healthy), "GPU %d", i)
 	}
@@ -1207,8 +1204,7 @@ func TestRemoveEvent_AllGPUsReplacedEmptiesMap(t *testing.T) {
 	assert.True(t, hem.IsEmpty(), "stale keys left: %d", hem.Count())
 }
 
-// A healthy event for a different PCI address must not clear this slot's old
-// UUID.
+// TestRemoveEvent_ReplacedGPURequiresAllSlotEntities: a different PCI address keeps the old UUID.
 func TestRemoveEvent_ReplacedGPURequiresAllSlotEntities(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()
 	hem.AddOrUpdateEvent(gpuEvent(false, "NVLINK_DOWN", gpuSlot("0", "0000:04:00", "GPU-old0")...))
@@ -1223,18 +1219,37 @@ func TestRemoveEvent_ReplacedGPURequiresAllSlotEntities(t *testing.T) {
 	assert.True(t, stillStored, "old UUID key must survive a healthy event for a different slot")
 }
 
-// TestRemoveEvent_ReplacedGPUInCompoundEventKeepsOtherGPUsBlocking checks that
-// when a stored event names several GPUs, one GPU recovering never empties the
-// map: the other GPUs' GPU and PCI keys keep the node quarantined, and the map
-// empties once the last GPU recovers.
-func TestRemoveEvent_ReplacedGPUInCompoundEventKeepsOtherGPUsBlocking(t *testing.T) {
+// TestRemoveEvent_ReplacedGPUInCompoundEventKeepsOtherGPUsUUID: one GPU recovering keeps the old UUID of the others.
+func TestRemoveEvent_ReplacedGPUInCompoundEventKeepsOtherGPUsUUID(t *testing.T) {
+	hasUUID := func(hem *HealthEventsAnnotationMap, uuid string) bool {
+		_, ok := hem.Events[HealthEventKey{
+			Agent: "gpu-health-monitor", ComponentClass: "GPU", CheckName: "GpuNvlinkWatch", NodeName: "node1",
+			Version: 1, EntityType: "GPU_UUID", EntityValue: uuid, ErrorCode: "NVLINK_DOWN",
+		}]
+
+		return ok
+	}
+
 	hem := NewHealthEventsAnnotationMap()
 	stored := append(gpuSlot("0", "0000:04:00", "GPU-old0"), gpuSlot("1", "0000:05:00", "GPU-old1")...)
 	hem.AddOrUpdateEvent(gpuEvent(false, "NVLINK_DOWN", stored...))
 
 	hem.RemoveEvent(gpuEvent(true, "NVLINK_DOWN", gpuSlot("0", "0000:04:00", "GPU-new0")...))
+	assert.True(t, hasUUID(hem, "GPU-old1"), "GPU 1 has not recovered, its old UUID must stay")
 	assert.False(t, hem.IsEmpty(), "GPU 1 has not recovered, node must stay quarantined")
 
 	hem.RemoveEvent(gpuEvent(true, "NVLINK_DOWN", gpuSlot("1", "0000:05:00", "GPU-new1")...))
 	assert.True(t, hem.IsEmpty(), "stale keys left: %d", hem.Count())
+}
+
+// TestRemoveEvent_ReplacedGPUWithoutPCIDoesNotClearUUID: a healthy event without the stored PCI keeps the old UUID.
+func TestRemoveEvent_ReplacedGPUWithoutPCIDoesNotClearUUID(t *testing.T) {
+	hem := NewHealthEventsAnnotationMap()
+	hem.AddOrUpdateEvent(gpuEvent(false, "NVLINK_DOWN", gpuSlot("0", "0000:04:00", "GPU-old0")...))
+
+	hem.RemoveEvent(gpuEvent(true, "NVLINK_DOWN",
+		&protos.Entity{EntityType: "GPU", EntityValue: "0"},
+		&protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-new0"},
+	))
+	assert.Equal(t, 2, hem.Count(), "the PCI and old GPU_UUID keys are left")
 }

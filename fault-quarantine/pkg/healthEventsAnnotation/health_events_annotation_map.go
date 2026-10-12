@@ -441,7 +441,6 @@ func entityMatches(storedKey HealthEventKey, storedEvent, event *protos.HealthEv
 		replacedGPUMatches(storedKey, storedEvent, event)
 }
 
-// entityInEvent reports whether the event lists the key's entity.
 func entityInEvent(key HealthEventKey, event *protos.HealthEvent) bool {
 	for _, e := range event.EntitiesImpacted {
 		if e.EntityType == key.EntityType && e.EntityValue == key.EntityValue {
@@ -452,55 +451,34 @@ func entityInEvent(key HealthEventKey, event *protos.HealthEvent) bool {
 	return false
 }
 
-// replacedGPUMatches reports whether a healthy GPU event clears a GPU_UUID key
-// whose stored fault names every entity of the event's recovery identity. A
-// replaced GPU keeps its slot but gets a new UUID, so exact matching would
-// leave the node quarantined forever.
+// replacedGPUMatches: a healthy GPU event also clears a GPU_UUID key when it
+// covers every GPU and PCI entity of the stored fault, since a replaced GPU
+// keeps its slot but gets a new UUID.
 func replacedGPUMatches(storedKey HealthEventKey, storedEvent, event *protos.HealthEvent) bool {
 	if !event.IsHealthy ||
 		storedEvent == nil ||
+		!strings.EqualFold(event.ComponentClass, "GPU") ||
 		!strings.EqualFold(storedKey.EntityType, "GPU_UUID") {
 		return false
 	}
 
-	recovery, ok := recoveryEntities(event)
-	if !ok {
-		return false
-	}
+	slotEntities := 0
 
-	for _, want := range recovery {
-		if !slices.ContainsFunc(storedEvent.EntitiesImpacted, func(e *protos.Entity) bool {
-			return e.EntityType == want.EntityType && e.EntityValue == want.EntityValue
+	for _, stored := range storedEvent.EntitiesImpacted {
+		if !strings.EqualFold(stored.EntityType, "GPU") && !strings.EqualFold(stored.EntityType, "PCI") {
+			continue
+		}
+
+		slotEntities++
+
+		if !slices.ContainsFunc(event.EntitiesImpacted, func(e *protos.Entity) bool {
+			return e.EntityType == stored.EntityType && e.EntityValue == stored.EntityValue
 		}) {
 			return false
 		}
 	}
 
-	return true
-}
-
-// recoveryEntities drops GPU_UUID from a healthy GPU event's identity when a
-// GPU index or PCI address is present, and reports whether one was. Mirrors
-// platform-connectors' recoveryEntities.
-func recoveryEntities(event *protos.HealthEvent) ([]*protos.Entity, bool) {
-	if !strings.EqualFold(event.ComponentClass, "GPU") {
-		return nil, false
-	}
-
-	hasStableGPUIdentity := false
-	entities := make([]*protos.Entity, 0, len(event.EntitiesImpacted))
-
-	for _, entity := range event.EntitiesImpacted {
-		if strings.EqualFold(entity.EntityType, "GPU") || strings.EqualFold(entity.EntityType, "PCI") {
-			hasStableGPUIdentity = true
-		}
-
-		if !strings.EqualFold(entity.EntityType, "GPU_UUID") {
-			entities = append(entities, entity)
-		}
-	}
-
-	return entities, hasStableGPUIdentity
+	return slotEntities > 0
 }
 
 func errorCodeMatches(stored string, incoming []string) bool {
