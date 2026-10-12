@@ -52,6 +52,9 @@ type NICHealthMonitor struct {
 	counterChecks []checks.TransactionalCheck
 
 	stateInterval time.Duration
+
+	// stall is nil unless EnablePollStallDetection turned it on.
+	stall *pollStall
 }
 
 // NewNICHealthMonitor constructs a NICHealthMonitor. The allChecks
@@ -148,6 +151,8 @@ func (m *NICHealthMonitor) runChecks(
 ) error {
 	start := time.Now()
 
+	m.beginPoll(category)
+
 	for _, chk := range checkList {
 		m.runOneCheck(ctx, chk, category)
 	}
@@ -155,6 +160,7 @@ func (m *NICHealthMonitor) runChecks(
 	metrics.PollCycleDuration.WithLabelValues(m.nodeName, category).
 		Observe(time.Since(start).Seconds())
 	metrics.PollCycleLastCompletedTimestamp.WithLabelValues(m.nodeName, category).SetToCurrentTime()
+	m.endPoll(category)
 
 	return nil
 }

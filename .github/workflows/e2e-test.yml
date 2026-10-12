@@ -231,7 +231,7 @@ jobs:
 
       - name: Upload Kind container logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: e2e-kind-container-logs-${{ env.E2E_JOB_ID }}-${{ github.run_id }}
           path: /tmp/kind-container-logs/
@@ -258,7 +258,7 @@ jobs:
 
       - name: Upload Kind logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: e2e-kind-logs-${{ env.E2E_JOB_ID }}-${{ github.run_id }}
           path: /tmp/kind-logs/
@@ -266,7 +266,7 @@ jobs:
 
       - name: Upload debug artifacts
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: e2e-debug-artifacts-${{ env.E2E_JOB_ID }}-${{ github.run_id }}
           path: /tmp/debug-artifacts/

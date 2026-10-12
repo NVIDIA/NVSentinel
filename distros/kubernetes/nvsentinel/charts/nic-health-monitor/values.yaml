@@ -51,6 +51,16 @@ enabledChecks:
 # of statePollingInterval.
 statePollingInterval: "1s"
 
+# Publish NICPollStallCheck when a poll has been in flight this long, so a host
+# that stalls the monitor's sysfs reads is reported before the liveness probe
+# restarts the container (about 60 to 90s into a stall). Keep it well below
+# that. "0s" disables.
+pollStallDeadline: "10s"
+
+# Emit NICPollStallCheck events as STORE_ONLY, whatever processingStrategy is.
+# The cause is the host, not a NIC, so the event is observe-only by default.
+pollStallStoreOnly: true
+
 # Regex patterns for NICs to exclude from normal discovery (comma-separated).
 # Ignored when nicInclusionRegexOverride is set.
 nicExclusionRegex: "^veth.*,^docker.*,^br-.*,^lo$"

@@ -103,6 +103,8 @@ podDrainPolicies: []
 # action in fault-remediation must map to a custom resource which takes action only against the GPU_UUID.
 # If partial drain was enabled in node-drainer but fault-remediation mapped COMPONENT_RESET to a reboot
 # action, pods which weren't drained would be restarted as part of the reboot.
+# With post-remediation validation, keep fault-quarantine.validation.partialDrainEnabled in sync with
+# this value, or set global.partialDrainEnabled, which overrides both.
 partialDrainEnabled: false
 
 # Registers node_drainer_partial_drains_total{node, entity_type, entity_value}. Off by default:

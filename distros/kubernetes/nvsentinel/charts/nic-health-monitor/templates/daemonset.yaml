@@ -97,6 +97,8 @@ spec:
             - "{{ .Values.global.metadataPath }}"
             - "--processing-strategy"
             - "{{ .Values.processingStrategy }}"
+            - "--poll-stall-deadline={{ .Values.pollStallDeadline }}"
+            - "--poll-stall-store-only={{ .Values.pollStallStoreOnly }}"
             - "--config"
             - "/etc/nic-health-monitor/config.toml"
             - "--state-file"
