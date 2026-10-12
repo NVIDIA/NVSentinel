@@ -13,10 +13,6 @@ A single bad GPU can silently corrupt a training run or leave a node sitting idl
 - 🔧 **Remediate**: auto-repair with a targeted GPU reset or a full reboot, then bring the node back into service
 - 🧩 **Extensible**: pluggable health monitors, drain strategies, and remediation actions
 
-> [!NOTE]
-> **Beta / Stable**
-> NVSentinel is ready for production testing and use. APIs, configurations, and features may change between releases. If you encounter issues, please [open an issue](https://github.com/NVIDIA/NVSentinel/issues) or [start a discussion](https://github.com/NVIDIA/NVSentinel/discussions).
-
 ## Prerequisites
 
 - Kubernetes 1.34+ 
