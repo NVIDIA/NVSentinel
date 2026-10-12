@@ -437,14 +437,18 @@ func keyMatchesEvent(storedKey HealthEventKey, storedEvent, event *protos.Health
 // entityMatches: any entity matches when the event lists none.
 func entityMatches(storedKey HealthEventKey, storedEvent, event *protos.HealthEvent) bool {
 	return len(event.EntitiesImpacted) == 0 ||
-		hasEntity(event.EntitiesImpacted, storedKey.EntityType, storedKey.EntityValue) ||
+		entityInEvent(storedKey, event) ||
 		replacedGPUMatches(storedKey, storedEvent, event)
 }
 
-func hasEntity(entities []*protos.Entity, entityType, entityValue string) bool {
-	return slices.ContainsFunc(entities, func(e *protos.Entity) bool {
-		return e.EntityType == entityType && e.EntityValue == entityValue
-	})
+func entityInEvent(key HealthEventKey, event *protos.HealthEvent) bool {
+	for _, e := range event.EntitiesImpacted {
+		if e.EntityType == key.EntityType && e.EntityValue == key.EntityValue {
+			return true
+		}
+	}
+
+	return false
 }
 
 // replacedGPUMatches: a healthy GPU event also clears a GPU_UUID key when it
@@ -460,8 +464,10 @@ func replacedGPUMatches(storedKey HealthEventKey, storedEvent, event *protos.Hea
 		return false
 	}
 
-	for _, e := range slot {
-		if !hasEntity(event.EntitiesImpacted, e.EntityType, e.EntityValue) {
+	for _, stored := range slot {
+		if !slices.ContainsFunc(event.EntitiesImpacted, func(e *protos.Entity) bool {
+			return e.EntityType == stored.EntityType && e.EntityValue == stored.EntityValue
+		}) {
 			return false
 		}
 	}
