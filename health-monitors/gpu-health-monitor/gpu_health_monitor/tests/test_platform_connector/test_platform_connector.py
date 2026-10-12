@@ -556,26 +556,32 @@ class TestPlatformConnectors(unittest.TestCase):
         finally:
             os.unlink(temp_file_path)
 
-    def test_active_events_metric_store_only_matches_sent_strategy(self) -> None:
-        """store_only mirrors the strategy sent with the event, and recovery zeroes the same series.
+    def test_active_events_metric_processing_strategy_matches_sent_strategy(self) -> None:
+        """processing_strategy mirrors the strategy sent with the event, and recovery zeroes the same series.
 
         A per-check flag forces only that check to STORE_ONLY. Every other check
         uses the global strategy.
         """
         thermal_code = "GPU_TEMP_HW_SLOWDOWN_VIOLATION"
-        # (name, global strategy, store-only checks, thermal store_only, pcie store_only)
+        # (name, global strategy, store-only checks, thermal label, pcie label)
         cases = [
-            ("default", platformconnector_pb2.EXECUTE_REMEDIATION, frozenset(), "false", "false"),
+            (
+                "default",
+                platformconnector_pb2.EXECUTE_REMEDIATION,
+                frozenset(),
+                "EXECUTE_REMEDIATION",
+                "EXECUTE_REMEDIATION",
+            ),
             (
                 "per-check",
                 platformconnector_pb2.EXECUTE_REMEDIATION,
                 frozenset({"GpuThermalMarginWatch"}),
-                "true",
-                "false",
+                "STORE_ONLY",
+                "EXECUTE_REMEDIATION",
             ),
-            ("global", platformconnector_pb2.STORE_ONLY, frozenset(), "true", "true"),
+            ("global", platformconnector_pb2.STORE_ONLY, frozenset(), "STORE_ONLY", "STORE_ONLY"),
         ]
-        for name, strategy, store_only_checks, thermal_store_only, pcie_store_only in cases:
+        for name, strategy, store_only_checks, thermal_strategy, pcie_strategy in cases:
             with self.subTest(name):
                 temp_file_path = metadata_file()
                 processor = platform_connector.PlatformConnectorEventProcessor(
@@ -604,7 +610,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
                 def fake_labels(**kwargs: Any) -> unittest.mock.MagicMock:
                     child = unittest.mock.MagicMock()
-                    key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"], kwargs["store_only"])
+                    key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"], kwargs["processing_strategy"])
                     child.set.side_effect = lambda value: observed.__setitem__(key, value)
                     return child
 
@@ -625,19 +631,19 @@ class TestPlatformConnectors(unittest.TestCase):
                         )
 
                         expected = {
-                            ("GpuThermalMarginWatch", 0, thermal_code, thermal_store_only): 1,
-                            ("GpuPcieWatch", 0, "GPU_ERROR", pcie_store_only): 1,
+                            ("GpuThermalMarginWatch", 0, thermal_code, thermal_strategy): 1,
+                            ("GpuPcieWatch", 0, "GPU_ERROR", pcie_strategy): 1,
                         }
                         assert observed == expected
                         # sent also holds the first-poll connectivity baseline, so compare only the two watches.
-                        sent_store_only = {
-                            event.checkName: str(event.processingStrategy == platformconnector_pb2.STORE_ONLY).lower()
+                        sent_strategy = {
+                            event.checkName: platformconnector_pb2.ProcessingStrategy.Name(event.processingStrategy)
                             for event in sent
                             if event.checkName in ("GpuThermalMarginWatch", "GpuPcieWatch") and not event.isHealthy
                         }
-                        assert sent_store_only == {
-                            "GpuThermalMarginWatch": thermal_store_only,
-                            "GpuPcieWatch": pcie_store_only,
+                        assert sent_strategy == {
+                            "GpuThermalMarginWatch": thermal_strategy,
+                            "GpuPcieWatch": pcie_strategy,
                         }
 
                         processor.health_event_occurred(
@@ -2606,7 +2612,7 @@ class TestPlatformConnectors(unittest.TestCase):
                     gpu_id="",
                     error_code="DCGM_PROBE_HANG",
                     is_fatal="true",
-                    store_only="false",
+                    processing_strategy="EXECUTE_REMEDIATION",
                 )
                 gauge_labels.set.assert_called_with(1)
 
@@ -2651,17 +2657,17 @@ class TestPlatformConnectors(unittest.TestCase):
             assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
             assert not os.path.exists(marker)
 
-    def test_dcgm_unresponsive_metric_keeps_store_only_after_config_change(self):
-        """Set, restore and clear must use one store_only series across a config change.
+    def test_dcgm_unresponsive_metric_keeps_processing_strategy_after_config_change(self):
+        """Set, restore and clear must use one processing_strategy series across a config change.
 
-        A restore or clear that took store_only from the new config would create
-        a second series and leave the first reading 1 for the process lifetime.
+        A restore or clear that took processing_strategy from the new config would
+        create a second series and leave the first reading 1 for the process lifetime.
         """
         observed: dict[tuple[str, Any, str, str], int] = {}
 
         def fake_labels(**kwargs: Any) -> unittest.mock.MagicMock:
             child = unittest.mock.MagicMock()
-            key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"], kwargs["store_only"])
+            key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"], kwargs["processing_strategy"])
             child.set.side_effect = lambda value: observed.__setitem__(key, value)
             return child
 
@@ -2673,7 +2679,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 gauge.labels.side_effect = fake_labels
 
                 assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
-                assert observed == {("GpuDcgmUnresponsive", "", "DCGM_PROBE_HANG", "true"): 1}
+                assert observed == {("GpuDcgmUnresponsive", "", "DCGM_PROBE_HANG", "STORE_ONLY"): 1}
 
                 # Remove observe-only for this check before the liveness restart.
                 restarted = self._make_processor(
@@ -2681,7 +2687,7 @@ class TestPlatformConnectors(unittest.TestCase):
                     processor._metadata_reader._path,
                     store_only_checks=frozenset(),
                 )
-                assert observed == {("GpuDcgmUnresponsive", "", "DCGM_PROBE_HANG", "true"): 1}
+                assert observed == {("GpuDcgmUnresponsive", "", "DCGM_PROBE_HANG", "STORE_ONLY"): 1}
 
                 timestamp = Timestamp()
                 timestamp.GetCurrentTime()
@@ -2689,7 +2695,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
                 assert servicer.health_events[0].isHealthy is True
                 assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
-                assert observed == {("GpuDcgmUnresponsive", "", "DCGM_PROBE_HANG", "true"): 0}
+                assert observed == {("GpuDcgmUnresponsive", "", "DCGM_PROBE_HANG", "STORE_ONLY"): 0}
 
     def test_dcgm_unresponsive_cleared_when_probe_returns(self):
         """A completed health check proves DCGM answered, so the event must clear."""
@@ -2834,13 +2840,13 @@ class TestPlatformConnectors(unittest.TestCase):
                 assert servicer.health_events[0].isHealthy is True
                 assert observed == {("GpuDcgmConnectivityFailure", "", "DCGM_CONNECTIVITY_ERROR", "true"): 0}
 
-    def test_connectivity_failure_active_events_metric_store_only_matches_strategy(self) -> None:
+    def test_connectivity_failure_active_events_metric_processing_strategy_matches_strategy(self) -> None:
         """The connectivity series carries the global strategy, and its clear zeroes that series."""
         cases = [
-            (platformconnector_pb2.EXECUTE_REMEDIATION, "false"),
-            (platformconnector_pb2.STORE_ONLY, "true"),
+            (platformconnector_pb2.EXECUTE_REMEDIATION, "EXECUTE_REMEDIATION"),
+            (platformconnector_pb2.STORE_ONLY, "STORE_ONLY"),
         ]
-        for strategy, store_only in cases:
+        for strategy, strategy_label in cases:
             with self.subTest(strategy=platformconnector_pb2.ProcessingStrategy.Name(strategy)):
                 temp_file_path = metadata_file()
                 processor = platform_connector.PlatformConnectorEventProcessor(
@@ -2868,7 +2874,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
                 def fake_labels(**kwargs: Any) -> unittest.mock.MagicMock:
                     child = unittest.mock.MagicMock()
-                    key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"], kwargs["store_only"])
+                    key = (kwargs["event_type"], kwargs["gpu_id"], kwargs["error_code"], kwargs["processing_strategy"])
                     child.set.side_effect = lambda value: observed.__setitem__(key, value)
                     return child
 
@@ -2880,7 +2886,7 @@ class TestPlatformConnectors(unittest.TestCase):
                         assert sent[-1].isHealthy is False
                         assert sent[-1].processingStrategy == strategy
                         assert observed == {
-                            ("GpuDcgmConnectivityFailure", "", "DCGM_CONNECTIVITY_ERROR", store_only): 1
+                            ("GpuDcgmConnectivityFailure", "", "DCGM_CONNECTIVITY_ERROR", strategy_label): 1
                         }
 
                         timestamp = Timestamp()
@@ -2889,7 +2895,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
                         assert sent[-1].isHealthy is True
                         assert observed == {
-                            ("GpuDcgmConnectivityFailure", "", "DCGM_CONNECTIVITY_ERROR", store_only): 0
+                            ("GpuDcgmConnectivityFailure", "", "DCGM_CONNECTIVITY_ERROR", strategy_label): 0
                         }
                 finally:
                     os.unlink(temp_file_path)

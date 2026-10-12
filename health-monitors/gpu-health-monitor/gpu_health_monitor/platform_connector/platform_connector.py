@@ -211,15 +211,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         is_fatal = self.get_recommended_action_from_dcgm_error_map(error_code) != platformconnector_pb2.NONE
         return str(is_fatal).lower()
 
-    @staticmethod
-    def _store_only_label(strategy: platformconnector_pb2.ProcessingStrategy) -> str:
-        """store_only label value for the processing strategy sent with an event.
-
-        Callers pass the same strategy source on set and on clear, so the
-        series a failure sets and the series its recovery zeroes match.
-        """
-        return str(strategy == platformconnector_pb2.STORE_ONLY).lower()
-
     def _clear_active_event_metric(
         self, check_name: str, key: str, strategy: platformconnector_pb2.ProcessingStrategy
     ) -> None:
@@ -240,7 +231,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 gpu_id="",
                 error_code=code,
                 is_fatal="true",
-                store_only=self._store_only_label(strategy),
+                processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(strategy),
             ).set(0)
 
     def _persist_dcgm_unresponsive_state(self, processing_strategy: platformconnector_pb2.ProcessingStrategy) -> None:
@@ -291,7 +282,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             gpu_id="",
             error_code="DCGM_PROBE_HANG",
             is_fatal="true",
-            store_only=self._store_only_label(strategy),
+            processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(strategy),
         ).set(1)
 
     def _clear_dcgm_unresponsive_state(self) -> None:
@@ -797,7 +788,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                 gpu_id=gpu_id,
                                 error_code=error_code,
                                 is_fatal=self._is_fatal_label(error_code),
-                                store_only=self._store_only_label(self._effective_strategy(event_type)),
+                                processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(
+                                    self._effective_strategy(event_type)
+                                ),
                             ).set(value)
                         for event_type, switch_id, error_code, value in pending_switch_metric_updates:
                             metrics.dcgm_health_active_switch_events.labels(
@@ -1060,7 +1053,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         gpu_id="",
                         error_code="DCGM_CONNECTIVITY_ERROR",
                         is_fatal="true",
-                        store_only=self._store_only_label(self._processing_strategy),
+                        processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(self._processing_strategy),
                     ).set(1)
                     return True
                 return False
@@ -1165,7 +1158,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         gpu_id="",
                         error_code=error_code,
                         is_fatal="true",
-                        store_only=self._store_only_label(processing_strategy),
+                        processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(processing_strategy),
                     ).set(1)
                     return True
                 return False
