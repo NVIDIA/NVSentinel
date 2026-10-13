@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-062: Configuration — Node and Device Selection in Each Component
+# ADR-064: Configuration — Node and Device Selection in Each Component
 
 Status: Proposed.
 
@@ -60,11 +60,11 @@ Each component that acts on a fault already reads the node, and two of them can 
 | Stage | Control for each node at this time | Limitation |
 |---|---|---|
 | platform-connectors | `managed=false` changes events to `STORE_ONLY`. Override rules ([ADR-021](021-health-event-property-overrides.md)) can change `recommendedAction` | `STORE_ONLY` also stops node conditions. Override rules read node labels from a cache that can be 10 minutes old, skip a rule that fails, and change the event for all later stages |
-| fault-quarantine | CEL `Node` and `HealthEvent` rules in each rule set ([ADR-003](003-rule-based-node-quarantine.md)) | Complete for the first event on a node. A later event on a quarantined node applies only its labels, not its taints or cordon ([#1439](https://github.com/NVIDIA/NVSentinel/issues/1439)) |
+| fault-quarantine | CEL `Node` and `HealthEvent` rules in each rule set ([ADR-003](003-rule-based-node-quarantine.md)) | None. A later event on a quarantined node also applies its taints and cordon, which are released when the session ends ([ADR-062](062-fault-quarantine-release-at-session-end.md)) |
 | node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) and `podDrainPolicies` ([pod label drain policies ADR](055-pod-drain-policies.md)) | Cannot skip the drain for a group. Checks the selector again on each pass, so a label change during a drain can change the drain method. Records the method only in a log |
 | fault-remediation | None | One map from action to CR applies to the full cluster. An action that is not in the map is recorded as `remediation-failed` |
 
-Thus, case 4 and most of case 6 work at this time. The gap is mostly in fault-remediation, which has no selection,
+Thus, case 4 and case 6 work at this time. The gap is mostly in fault-remediation, which has no selection,
 and in the event, which does not identify the device model.
 
 [ADR-060](https://github.com/NVIDIA/NVSentinel/pull/1952) proposed one shared behaviour profile that all three
@@ -75,9 +75,9 @@ selection syntax that each component already uses.
 
 1. **Each component keeps its own configuration.** There is no shared profile and no shared definition of node
    groups. fault-quarantine and fault-remediation use the same rule set format and the same evaluator.
-2. **fault-quarantine:** no new configuration. A later event on a quarantined node applies the taints and the cordon
-   of the rule sets that it matches ([#1439](https://github.com/NVIDIA/NVSentinel/issues/1439)). This ADR requires that
-   fix.
+2. **fault-quarantine:** no change. Its rule sets already select by node and by event. A later event on a quarantined
+   node applies the taints and the cordon of the rule sets that it matches
+   ([ADR-062](062-fault-quarantine-release-at-session-end.md)).
 3. **node-drainer:**
    - Add `skipDrain.nodeSelector`. A node that matches is not drained. It stays in quarantine and is not remediated.
    - Select the drain method one time, when the drain for an event starts. Record the method and the scope on the
@@ -114,11 +114,10 @@ The configuration does not change. The rule sets already select by node labels a
 that match apply, and `priority` resolves label conflicts. The cordon-reason label lists the rule sets that matched.
 A rule set that cannot be evaluated does not match, and a metric counts the error.
 
-The fix for [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439) is a prerequisite:
-
-- When a later unhealthy event on a quarantined node matches a rule set, fault-quarantine applies the taints and the
-  cordon of that rule set, and adds the rule set to the cordon-reason label.
-- When an event recovers, fault-quarantine removes only the taints that no remaining event needs.
+[ADR-062](062-fault-quarantine-release-at-session-end.md) fixed the case of a later event on a quarantined node
+([#1439](https://github.com/NVIDIA/NVSentinel/issues/1439), [#2021](https://github.com/NVIDIA/NVSentinel/pull/2021)).
+fault-quarantine now applies the taints and the cordon of each rule set that a later event matches. It releases them
+when the last event of the session recovers, not when each event recovers.
 
 **Monitoring only.** An operator excludes a group from quarantine with a `Node` rule, for example
 `!("example.com/pool" in node.metadata.labels && node.metadata.labels["example.com/pool"] in ["legacy-a", "legacy-b"])`. Health events and node conditions continue for
@@ -305,18 +304,17 @@ message HealthEventStatus {
 
 fault-quarantine already records its decision in the cordon-reason label and the quarantine annotation.
 
-[#1950](https://github.com/NVIDIA/NVSentinel/issues/1950) proposes a `NodeHealth` CR that replaces the datastore. If
+[#1950](https://github.com/NVIDIA/NVSentinel/issues/1950) and ADR-063 ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) propose a `NodeHealth` CR that replaces the datastore. If
 it is accepted, these two records move to `NodeHealth.status.remediation`. The fields stay the same.
 
 ### Phases
 
 Each phase is independent and compatible with earlier versions. Empty configuration gives the current behaviour.
 
-1. fault-quarantine: the fix for [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439).
-2. node-drainer: the drain decision and its record, then `skipDrain.nodeSelector`.
-3. The rule set evaluator moves to `commons`. fault-quarantine uses it with no change in behaviour.
-4. fault-remediation: `maintenance.ruleSets`, the record, and `remediation-skipped`.
-5. Entity attributes and the monitors that set them.
+1. node-drainer: the drain decision and its record, then `skipDrain.nodeSelector`.
+2. The rule set evaluator moves to `commons`. fault-quarantine uses it with no change in behaviour.
+3. fault-remediation: `maintenance.ruleSets`, the record, and `remediation-skipped`.
+4. Entity attributes and the monitors that set them.
 
 ## Changes for a fault in progress
 
@@ -406,9 +404,7 @@ does not evaluate rules itself.
 - The decision occurs at quarantine time, which can be hours before remediation. That is the same problem as a profile
   that is fixed when the event arrives.
 - A group that needs a different action must also have its own quarantine rule set.
-- Events with `quarantineOverrides.force` skip the rule sets, so they have no record of a match. Until
-  [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439) is fixed, later events on a quarantined node also have no
-  record.
+- Events with `quarantineOverrides.force` skip the rule sets, so they have no record of a match.
 
 ### `managed=false` or `STORE_ONLY` to disable remediation
 
@@ -453,12 +449,13 @@ Two syntaxes in one component are harder to read than one.
 
 - [#1903](https://github.com/NVIDIA/NVSentinel/issues/1903), [#1904](https://github.com/NVIDIA/NVSentinel/issues/1904): heterogeneous cluster support (node and device dimensions)
 - [#1952](https://github.com/NVIDIA/NVSentinel/pull/1952): ADR-060 behaviour profiles
-- [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439): later events on a quarantined node do not apply taints or cordon
+- [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439), [#2021](https://github.com/NVIDIA/NVSentinel/pull/2021): later events on a quarantined node apply taints and cordon (fixed)
 - [#1857](https://github.com/NVIDIA/NVSentinel/issues/1857), [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871): custom drain for a subset of nodes
 - [#1960](https://github.com/NVIDIA/NVSentinel/pull/1960): validation after a full drain of a `COMPONENT_RESET` event
-- [#1950](https://github.com/NVIDIA/NVSentinel/issues/1950): remediation pipeline without a database
+- [#1950](https://github.com/NVIDIA/NVSentinel/issues/1950), [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015): remediation pipeline without a database (ADR-063)
 - [#1758](https://github.com/NVIDIA/NVSentinel/pull/1758): removal of the Node cache from fault-remediation
 - [ADR-003](003-rule-based-node-quarantine.md): rule-based node quarantine (CEL rules)
+- [ADR-062](062-fault-quarantine-release-at-session-end.md): fault-quarantine release at session end
 - [ADR-021](021-health-event-property-overrides.md): health event property overrides
 - [ADR-036](036-custom-remediation-actions.md): custom remediation actions
 - [ADR-040](040-external-remediation-request.md): external remediation request
