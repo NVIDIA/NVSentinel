@@ -27,6 +27,7 @@ Status: Proposed.
    - [fault-quarantine](#fault-quarantine)
    - [node-drainer](#node-drainer)
    - [fault-remediation](#fault-remediation)
+   - [Node state labels](#node-state-labels)
    - [The record on the event](#the-record-on-the-event)
    - [Phases](#phases)
 4. [Changes for a fault in progress](#changes-for-a-fault-in-progress)
@@ -166,17 +167,32 @@ applies.
 other rule sets, and it does not use the default. The failed rule set can be the one that selects `skip` for the node.
 The component records the rule set name and the error, and a metric counts the error for each rule set.
 
-**Validation** occurs at startup and as a Helm `fail`:
+Startup validation cannot find all errors. For example, a rule that reads a label without a test for the key fails
+on each node that does not have the label. The component tries the decision again with its existing requeue backoff,
+and the metric shows the error on each attempt.
+
+**Validation.** The Helm chart checks the structure, and `helm install` or `helm upgrade` fails for an error:
 
 - Rule set names are unique DNS-1123 labels.
-- Each `expression` compiles and returns a boolean.
-- Each `Node` rule reads only `node.metadata.name` and labels with a literal key.
 - `match` has exactly one of `all` and `any`, and that list has at least one rule.
 - Each rule set has exactly one outcome key, and the key is the key of the component.
 - The outcome has exactly one of `skip: true` and the selection field.
 
+The component checks all of the items above again at startup, and also checks the CEL, which Helm cannot do. Startup
+fails for an error:
+
+- Each `expression` compiles and returns a boolean.
+- Each `Node` rule reads only `node.metadata.name` and labels with a literal key.
+
+The component also logs a warning at startup, but continues, for:
+
+- Two enabled rule sets with the same `priority`. The sequence in the configuration then selects the winner.
+- A rule that reads `node.metadata.labels["<key>"]` but does not test `"<key>" in node.metadata.labels`. The rule
+  fails at runtime on each node that does not have the label.
+
 **Metrics.** Each component counts the wins and the errors of each rule set, with the same metric names and labels.
-A rule set that another rule set always hides has a count of zero.
+A rule set that another rule set always hides has a count of zero. The rule set name is a metric label. The number of
+rule sets in the configuration limits its cardinality, not the number of nodes or events.
 
 #### Node rules read only named labels
 
@@ -293,7 +309,7 @@ customDrain:
 
 **Use of the schema.** The outcome key is `drain`. A `Node` rule reads the Node from the node informer of
 node-drainer. A `HealthEvent` rule reads the event, so a rule set can also select by fault type. A label selector
-cannot. `method: Custom` is valid only when `customDrain.enabled` is true. Startup validation and a Helm `fail` check
+cannot. `method: Custom` is valid only when `customDrain.enabled` is true. The Helm chart and startup validation check
 this.
 
 **One decision for each event.** Before node-drainer evicts the first pod or creates the custom drain CR for an event,
@@ -314,7 +330,9 @@ correct the failure.
 
 **Skip.** node-drainer records `userPodsEvictionStatus: Skipped` and the node state `drain-skipped`. `Skipped` is
 different from `AlreadyDrained`. fault-remediation starts only for `Succeeded` and `AlreadyDrained`, so it does not
-start for this event. The node stays in quarantine until the event recovers or the operator cancels it.
+start for this event. The node stays in quarantine until the event recovers or the operator cancels it. For a fault
+that does not recover by itself, this is until the operator acts. A gauge counts the nodes in `drain-skipped` and
+`remediation-skipped`, so that the operator can alert on nodes that stay in these states.
 
 The recorded scope also replaces the configuration that
 [#1960](https://github.com/NVIDIA/NVSentinel/pull/1960) copies into fault-quarantine to find out if a drain was
@@ -407,7 +425,7 @@ ruleSets:
 **Use of the schema.** The outcome key is `remediation`. A `Node` rule reads the Node that fault-remediation gets
 from the API server for the event. fault-remediation has no Node cache
 ([#1758](https://github.com/NVIDIA/NVSentinel/pull/1758)), so the labels are current. Each `action` must be a key of
-`maintenance.actions`. Startup validation and a Helm `fail` check this.
+`maintenance.actions`. The Helm chart and startup validation check this.
 
 **Evaluation.** At this time, fault-remediation selects the action and then reads the Node for the owner reference of
 the CR. The change reads the Node first, then evaluates the rule sets, then selects the action. This does not add an
@@ -423,8 +441,25 @@ API call.
 fault-remediation records the name of the entry that it used, not only the recommended action. It uses that name to
 find the CR and its `completeConditionType` later. Thus, a rule set change does not lose a CR that is in progress.
 
-A new label value, `remediation-skipped`, joins the node state labels. It has the transition
-`drain-succeeded → remediation-skipped`.
+### Node state labels
+
+Two new values join the node state labels: `drain-skipped` and `remediation-skipped`. A quarantine session can have
+more than one event, and each event has its own decision. Thus, the state label can move between a skipped state and
+the other states:
+
+| From | New expected transitions | Example |
+|---|---|---|
+| `quarantined` | `drain-skipped` | The first event matches a rule set with `drain: { skip: true }` |
+| `drain-skipped` | `draining`, `drain-succeeded` | A later event in the session does not match a skip rule set, and node-drainer drains the node, or marks it `AlreadyDrained` |
+| `drain-succeeded` | `remediation-skipped` | The event matches a rule set with `remediation: { skip: true }` |
+| `remediation-skipped` | `remediating`, `remediation-succeeded`, `remediation-failed` | A later event in the session is remediated |
+| `remediating`, `remediation-succeeded`, `remediation-failed` | `remediation-skipped` | fault-remediation computes the label again from the remaining active failures, and all of them are skipped |
+
+fault-remediation includes `remediation-skipped` when it computes the node label from the active failures. The label
+shows the state of the node. The record on each event shows the decision for that event.
+
+When the quarantine session ends, the existing removal of the state label removes `drain-skipped` and
+`remediation-skipped`, as it removes the other values. The removal accepts any state, so it needs no change.
 
 ### The record on the event
 
@@ -449,6 +484,10 @@ message HealthEventStatus {
 ```
 
 fault-quarantine already records its decision in the cordon-reason label and the quarantine annotation.
+
+The records are new fields of `HealthEventStatus` (fields 1 to 7 are in use at this time). The datastore keeps them
+with the event. A reader that does not know the fields ignores them, so the change is compatible with earlier
+versions.
 
 [#1950](https://github.com/NVIDIA/NVSentinel/issues/1950) and ADR-063
 ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) propose a `NodeHealth` CR that replaces the datastore. If it
@@ -477,6 +516,9 @@ this time. Each stage decides one time, when it starts, with the current state:
 
 Thus, a label change applies to the stages of a fault that have not started. A change does not undo an action that a
 stage already did.
+
+A rule set change is a configuration change. As at this time, the component reads it when it starts. The records keep
+the decisions of events that are in progress, so a restart does not change them.
 
 ## Rationale
 
@@ -627,11 +669,12 @@ main advantage.
 
 ### Open questions
 
-- **Event overrides and `skip`.** Proposed answer: `drainOverrides.force` on the event has priority over a rule set
-  with `drain: { skip: true }`, as `quarantineOverrides.force` has priority over the quarantine rule sets.
+- **Event overrides and `skip`.** `drainOverrides.skip` on the event marks the drain `AlreadyDrained`, so
+  remediation continues. `drainOverrides.force` evicts all pods immediately; it changes how node-drainer evicts, not
+  whether it drains. Which override has priority over a rule set with `drain: { skip: true }`? Also, the name `skip`
+  has a different effect on remediation in `drainOverrides.skip` (remediation continues) and in the `drain` outcome
+  (no remediation).
 - **Duration of the deprecation period.** Proposed answer: two minor releases after the release that adds `ruleSets`.
-- **A `remediation-skipped` node after the event recovers.** Proposed answer: the label is removed when the
-  quarantine ends.
 - **Enum names in rules.** A rule compares `event.recommendedAction` with a number, not with a name such as
   `COMPONENT_RESET`. Proposed answer: keep the numbers in this ADR, so that existing fault-quarantine rules do not
   change. A later change to the shared CEL rule evaluators can add the names for all three components.
