@@ -120,13 +120,12 @@ ruleSets:
   - name: vm-nodes              # required. Unique DNS-1123 label in the component
     enabled: true               # optional. Default: true
     priority: 10                # optional. Default: 0. The highest priority match wins
-    match:                      # required. At least one rule in all or any
-      all:                      # every rule must match
+    match:                      # required. Exactly one of all or any
+      all:                      # every rule must match. With any: at least one rule must match
         - kind: Node
           expression: >-
             "example.com/platform" in node.metadata.labels &&
             node.metadata.labels["example.com/platform"] == "vm"
-      any:                      # at least one rule must match
         - kind: HealthEvent
           expression: 'event.componentClass == "GPU"'
     <outcome>:                  # exactly one outcome key: drain or remediation
@@ -136,8 +135,11 @@ ruleSets:
 **The common part.** `name`, `enabled`, `priority`, and `match` have the same meaning in each component:
 
 - `enabled` is true when it is not set. A rule set with `enabled: false` is not evaluated.
-- `match` matches when all rules in `all` match and at least one rule in `any` matches. An empty list is not a
-  condition.
+- `match` has exactly one of `all` and `any`. With `all`, the rule set matches when every rule matches. With `any`,
+  it matches when at least one rule matches.
+- A condition that needs `all` and `any` together is written as CEL in one rule, or as more than one rule set. In one
+  rule, `&&` and `||` combine conditions of the same kind. An `any` across kinds, for example "the node is in the
+  legacy pool, or the event is from an LPU", can be two rule sets with the same outcome.
 - Each rule has a `kind` and a CEL `expression` that returns a boolean:
   - `kind: HealthEvent` reads `event`, which has the fields of the health event, including `entitiesImpacted` with the
     entity attributes. Enum fields, such as `recommendedAction`, are numbers, as they are in fault-quarantine.
@@ -165,7 +167,7 @@ The component records the rule set name and the error, and a metric counts the e
 
 - Rule set names are unique DNS-1123 labels.
 - Each `expression` compiles and returns a boolean.
-- `match` has at least one rule.
+- `match` has exactly one of `all` and `any`, and that list has at least one rule.
 - Each rule set has exactly one outcome key, and the key is the key of the component.
 - The outcome has exactly one of `skip: true` and the selection field.
 
@@ -232,7 +234,7 @@ differences, because each one changes the behaviour of an existing configuration
 | Key `rule-sets` in TOML, `ruleSets` in Helm values | Key `ruleSets` in TOML and in Helm values |
 | `enabled` is false when it is not set | `enabled` is true when it is not set |
 | `taint`, `label`, and `cordon` are next to `match` | The outcome is under one key (`quarantine`) |
-| A rule set with `all` and `any` gives two evaluators with the same name | `all` and `any` are two conditions of one match |
+| A rule set can have `all` and `any`. Each list is a separate evaluator, and the rule set applies if either one matches: `all` OR `any`. The metrics count each list separately. No shipped configuration uses `any` | A rule set has exactly one of `all` and `any` |
 | A rule set that fails does not match | An error stops the decision |
 | A `version` field on each rule set | No `version` field |
 
