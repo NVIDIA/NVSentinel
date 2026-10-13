@@ -524,7 +524,7 @@ main advantage.
   quarantine ends.
 - **Enum names in rules.** A rule compares `event.recommendedAction` with a number, not with a name such as
   `COMPONENT_RESET`. Proposed answer: keep the numbers in this ADR, so that existing fault-quarantine rules do not
-  change. A later change to the shared evaluator can add the names for both components.
+  change. A later change to the shared evaluator can add the names for all three components.
 - **Attribute sources outside GPUs.** NVSwitch and NIC entities do not have a model source at this time.
 
 ## References
