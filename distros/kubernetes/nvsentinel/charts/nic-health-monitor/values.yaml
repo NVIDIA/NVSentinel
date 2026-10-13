@@ -51,6 +51,23 @@ enabledChecks:
 # of statePollingInterval.
 statePollingInterval: "1s"
 
+# How long a port must stay unhealthy before InfiniBandStateCheck and
+# EthernetStateCheck report it, as a port event or through its card's
+# homogeneity check. A port that recovers sooner is only counted in
+# nic_health_monitor_port_state_blips_total. "0s" reports on the first
+# unhealthy poll.
+portStateHoldDown: "0s"
+
+# Publish NICPollStallCheck when a poll has been in flight this long, so a host
+# that stalls the monitor's sysfs reads is reported before the liveness probe
+# restarts the container (about 60 to 90s into a stall). Keep it well below
+# that. "0s" disables.
+pollStallDeadline: "10s"
+
+# Emit NICPollStallCheck events as STORE_ONLY, whatever processingStrategy is.
+# The cause is the host, not a NIC, so the event is observe-only by default.
+pollStallStoreOnly: true
+
 # Regex patterns for NICs to exclude from normal discovery (comma-separated).
 # Ignored when nicInclusionRegexOverride is set.
 nicExclusionRegex: "^veth.*,^docker.*,^br-.*,^lo$"

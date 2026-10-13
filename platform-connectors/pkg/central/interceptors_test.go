@@ -87,8 +87,8 @@ func TestStampIdempotencyKeys(t *testing.T) {
 	}}
 
 	stampIdempotencyKeys(he, podUID, "batch-1")
-	require.Equal(t, podUID+"#batch-1#0", he.Events[0].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
-	require.Equal(t, podUID+"#batch-1#1", he.Events[1].Metadata[datastore.HealthEventIdempotencyKeyMetadataField],
+	require.Equal(t, "batch-1#"+podUID+"#0", he.Events[0].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
+	require.Equal(t, "batch-1#"+podUID+"#1", he.Events[1].Metadata[datastore.HealthEventIdempotencyKeyMetadataField],
 		"an inbound idempotencyKey value must be overwritten, never trusted")
 	require.Equal(t, "kept", he.Events[1].Metadata["other"])
 }
@@ -130,8 +130,8 @@ func TestIdempotencyInterceptor(t *testing.T) {
 		_, err := interceptor(requestFrom(true), he, unaryInfo, h.handle)
 		require.NoError(t, err)
 		require.Equal(t, 1, h.calls)
-		require.Equal(t, "pod-uid-1#batch-1#0", he.Events[0].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
-		require.Equal(t, "pod-uid-1#batch-1#1", he.Events[1].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
+		require.Equal(t, "batch-1#pod-uid-1#0", he.Events[0].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
+		require.Equal(t, "batch-1#pod-uid-1#1", he.Events[1].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
 	})
 
 	t.Run("missing key is InvalidArgument and counted", func(t *testing.T) {

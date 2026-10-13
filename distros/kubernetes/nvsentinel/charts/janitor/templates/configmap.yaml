@@ -93,7 +93,14 @@ data:
       {{- $gpuResetUploadURL := .Values.config.controllers.gpuReset.resetJob.uploadURL | default $defaultGPUResetUploadURL }}
       resetJob:
         writeSysLogEvent: "{{ .Values.config.controllers.gpuReset.resetJob.writeSysLogEvent }}"
-        runtimeClassName: "{{ .Values.config.controllers.gpuReset.resetJob.runtimeClassName }}"
+        {{- /* GPU Operator GPUCluster (DRA) mode creates no nvidia RuntimeClass, so a reset Job that
+             names one fails admission. The privileged Job reaches the driver through the
+             hostDriverRootPath hostPath and needs no RuntimeClass. */}}
+        {{- $runtimeClassName := .Values.config.controllers.gpuReset.resetJob.runtimeClassName }}
+        {{- if and $global.gpuDraEnabled $runtimeClassName }}
+        {{- fail (printf "janitor: config.controllers.gpuReset.resetJob.runtimeClassName must be \"\" when global.gpuDraEnabled is true (GPUCluster/DRA mode has no %q RuntimeClass)" $runtimeClassName) }}
+        {{- end }}
+        runtimeClassName: "{{ $runtimeClassName }}"
         hostDriverRootPath: "{{ .Values.config.controllers.gpuReset.resetJob.hostDriverRootPath }}"
         {{- with .Values.config.controllers.gpuReset.resetJob.driverRoot }}
         driverRoot: {{ . | quote }}

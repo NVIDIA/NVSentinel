@@ -1246,13 +1246,16 @@ gpu-health-monitor:
     # List of error code names to suppress (native DCGM codes like
     # DCGM_FR_CLOCK_THROTTLE_POWER, or custom field-monitor codes like
     # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Defaults include POWER/THERMAL watch
-    # throttling, under both its canonical and deprecated alias names.
+    # throttling, under both its canonical and deprecated alias names, and the
+    # NVLink BER codes that DCGM 4.7.0 removed because they failed healthy GPUs.
     # Set to [] to report all codes.
     suppressedErrorCodes:
       - DCGM_FR_CLOCK_THROTTLE_POWER
       - DCGM_FR_CLOCKS_EVENT_POWER
       - DCGM_FR_CLOCK_THROTTLE_THERMAL
       - DCGM_FR_CLOCKS_EVENT_THERMAL
+      - DCGM_FR_NVLINK_EFFECTIVE_BER_THRESHOLD
+      - DCGM_FR_NVLINK_SYMBOL_BER_THRESHOLD
 
     # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
     # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only for a

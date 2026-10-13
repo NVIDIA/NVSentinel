@@ -13,10 +13,6 @@ A single bad GPU can silently corrupt a training run or leave a node sitting idl
 - 🔧 **Remediate**: auto-repair with a targeted GPU reset or a full reboot, then bring the node back into service
 - 🧩 **Extensible**: pluggable health monitors, drain strategies, and remediation actions
 
-> [!NOTE]
-> **Beta / Stable**
-> NVSentinel is ready for production testing and use. APIs, configurations, and features may change between releases. If you encounter issues, please [open an issue](https://github.com/NVIDIA/NVSentinel/issues) or [start a discussion](https://github.com/NVIDIA/NVSentinel/discussions).
-
 ## Prerequisites
 
 - Kubernetes 1.34+ 
@@ -51,7 +47,7 @@ helm upgrade --install cert-manager jetstack/cert-manager \
 This block works for both a first install and every later upgrade; rerun it as is. By default it only turns on health monitoring: it won't cordon a node, evict a pod, or reboot a machine, so it's safe to run anywhere. The flags below the command are everything you can layer on later; see [Adoption](#adoption) for what each one does.
 
 ```bash
-NVSENTINEL_VERSION=v1.26.0
+NVSENTINEL_VERSION=v1.27.0
 
 kubectl create namespace nvsentinel --dry-run=client -o yaml | kubectl apply -f -
 

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -52,6 +53,11 @@ type NodeInformer struct {
 	informerSynced    cache.InformerSynced
 	gpuNodeLabelKey   string
 	gpuNodeLabelValue string
+
+	// gpuNodes counts cached nodes carrying gpuNodeLabelKey=gpuNodeLabelValue. It is kept
+	// current by its own event handler so the circuit breaker reads its denominator in
+	// O(1) instead of listing the node cache on every event.
+	gpuNodes atomic.Int64
 
 	// onQuarantinedNodeDeleted is called when a quarantined node with annotations is deleted
 	onQuarantinedNodeDeleted func(nodeName string)
@@ -96,7 +102,6 @@ func NewNodeInformer(clientset kubernetes.Interface,
 	nodeInformerObj := informerFactory.Core().V1().Nodes()
 	ni.informer = nodeInformerObj.Informer()
 	ni.lister = nodeInformerObj.Lister()
-	ni.informerSynced = nodeInformerObj.Informer().HasSynced
 
 	if err := ni.informer.SetTransform(retained.Transform()); err != nil {
 		return nil, fmt.Errorf("failed to set node cache transform: %w", err)
@@ -116,6 +121,21 @@ func NewNodeInformer(clientset kubernetes.Interface,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to add event handler: %w", err)
+	}
+
+	gpuCounter, err := ni.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    ni.countAddedNode,
+		UpdateFunc: ni.countUpdatedNode,
+		DeleteFunc: ni.countDeletedNode,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to add GPU node counter: %w", err)
+	}
+
+	// The store syncs before handlers have processed the initial list, so the GPU count
+	// is complete only once the counter's own registration has synced too.
+	ni.informerSynced = func() bool {
+		return ni.informer.HasSynced() && gpuCounter.HasSynced()
 	}
 
 	slog.Info("NodeInformer created, watching all nodes",
@@ -185,19 +205,16 @@ func quarantineAnnotationIndexFunc(obj any) ([]string, error) {
 // the circuit breaker denominator reflects the GPU population, not every node in the
 // cluster. The informer itself watches all nodes so that FQ can still look up and
 // recover a quarantined node even if its GPU label is temporarily absent.
+//
+// The circuit breaker calls this on every event, so neither value scans the cache: the
+// GPU total comes from a counter its own event handler maintains, and the quarantined
+// set from an index.
 func (ni *NodeInformer) GetNodeCounts() (totalNodes int, quarantinedNodesMap map[string]bool, err error) {
 	if !ni.HasSynced() {
 		return 0, nil, fmt.Errorf("node informer cache not synced yet")
 	}
 
-	gpuSelector := labels.Set{ni.gpuNodeLabelKey: ni.gpuNodeLabelValue}.AsSelector()
-
-	gpuNodes, err := ni.lister.List(gpuSelector)
-	if err != nil {
-		return 0, nil, fmt.Errorf("failed to list GPU nodes: %w", err)
-	}
-
-	total := len(gpuNodes)
+	total := int(ni.gpuNodes.Load())
 
 	quarantinedObjs, err := ni.informer.GetIndexer().ByIndex(quarantineAnnotationIndexName, "quarantined")
 	if err != nil {
@@ -510,6 +527,53 @@ func (ni *NodeInformer) handleDeleteNode(obj any) {
 	// currentQuarantinedNodes metric is decremented
 	if hadQuarantineAnnotation && ni.onQuarantinedNodeDeleted != nil {
 		ni.onQuarantinedNodeDeleted(node.Name)
+	}
+}
+
+// isGPUNode reports whether a node counts toward the circuit breaker's denominator. The
+// label must be present, as the label selector this replaces required: an empty
+// configured value must not match nodes that lack the label.
+func (ni *NodeInformer) isGPUNode(node *v1.Node) bool {
+	value, ok := node.Labels[ni.gpuNodeLabelKey]
+
+	return ok && value == ni.gpuNodeLabelValue
+}
+
+// countAddedNode counts a node entering the cache, including every node of the initial list.
+func (ni *NodeInformer) countAddedNode(obj any) {
+	if node, ok := obj.(*v1.Node); ok && ni.isGPUNode(node) {
+		ni.gpuNodes.Add(1)
+	}
+}
+
+// countUpdatedNode adjusts the count when a node gains or loses the GPU label.
+func (ni *NodeInformer) countUpdatedNode(oldObj, newObj any) {
+	oldNode, okOld := oldObj.(*v1.Node)
+	newNode, okNew := newObj.(*v1.Node)
+
+	if !okOld || !okNew {
+		return
+	}
+
+	wasGPU, isGPU := ni.isGPUNode(oldNode), ni.isGPUNode(newNode)
+
+	switch {
+	case !wasGPU && isGPU:
+		ni.gpuNodes.Add(1)
+	case wasGPU && !isGPU:
+		ni.gpuNodes.Add(-1)
+	}
+}
+
+// countDeletedNode uncounts a node leaving the cache. A tombstone carries the node's last
+// known state, which is the state that was counted.
+func (ni *NodeInformer) countDeletedNode(obj any) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+
+	if node, ok := obj.(*v1.Node); ok && ni.isGPUNode(node) {
+		ni.gpuNodes.Add(-1)
 	}
 }
 

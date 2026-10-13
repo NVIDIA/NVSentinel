@@ -415,7 +415,7 @@ platformConnector:
     datastore:
       # Database connections per replica; must cover the writes in flight at
       # once.
-      maxPoolSize: 10
+      maxPoolSize: 30
     # Bounded wait for the node condition update inside one request. The
     # datastore write alone decides the reply; a slower update is counted and
     # the node shows the old state until the monitor next reports.
