@@ -27,7 +27,6 @@ Status: Proposed.
    - [fault-quarantine](#fault-quarantine)
    - [node-drainer](#node-drainer)
    - [fault-remediation](#fault-remediation)
-   - [Device attributes on health events](#device-attributes-on-health-events)
    - [The record on the event](#the-record-on-the-event)
    - [Phases](#phases)
 4. [Changes for a fault in progress](#changes-for-a-fault-in-progress)
@@ -65,8 +64,7 @@ Each component that acts on a fault already reads the node, and two of them can 
 | node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) and `podDrainPolicies` ([pod label drain policies ADR](055-pod-drain-policies.md)) | Cannot skip the drain for a group. Checks the selector again on each pass, so a label change during a drain can change the drain method. Records the method only in a log |
 | fault-remediation | None | One map from action to CR applies to the full cluster. An action that is not in the map is recorded as `remediation-failed` |
 
-Thus, case 4 and case 6 work at this time. The gap is mostly in fault-remediation, which has no selection,
-and in the event, which does not identify the device model.
+Thus, case 4 and case 6 work at this time. The gap is mostly in fault-remediation, which has no selection.
 
 [ADR-060](https://github.com/NVIDIA/NVSentinel/pull/1952) proposed one shared behaviour profile that all three
 components read. This ADR replaces it. It adds the missing controls to node-drainer and fault-remediation, with one
@@ -95,8 +93,9 @@ rule set schema that both components use. The schema starts from the fault-quara
    - fault-remediation evaluates the rule sets immediately before it creates the CR, with the Node that it already
      reads. It records the rule set and the action on the event status.
    - A skipped remediation is recorded as `remediation-skipped`, not `remediation-failed`.
-6. **Health events identify the device model and architecture.** Each impacted entity can carry these as attributes.
-   Rules can then select a GPU model or a device type.
+6. **Device selection reads the health event.** A `HealthEvent` rule can read each field of the event. Device
+   information that a later change adds to the event is available to the rules with no change to this ADR. Changes
+   that add device information to the event are not part of this ADR.
 
 | Case | Configuration |
 |---|---|
@@ -104,7 +103,7 @@ rule set schema that both components use. The schema starts from the fault-quara
 | 2. External repair | fault-remediation rule set: an action entry for an `ExternalRemediationRequest` |
 | 3. Reset bare metal, replace VMs | fault-remediation rule set: `COMPONENT_RESET` on VM nodes selects a `TerminateNode` entry |
 | 4. Slurm drain plugin | node-drainer rule set: `drain: { method: Custom }` for Slurm nodes. `customDrain.nodeSelector` works at this time |
-| 5. Device type or model | A rule set on `event.componentClass` or entity attributes, in any of the three components |
+| 5. Device type or model | A rule set on `event.componentClass`, `event.entitiesImpacted`, or other device fields of the event, in any of the three components |
 | 6. Monitoring only | fault-quarantine rule sets whose `Node` rule excludes the group, at this time |
 | 6. Monitoring and quarantine | node-drainer rule set: `drain: { skip: true }` |
 
@@ -141,8 +140,10 @@ ruleSets:
   rule, `&&` and `||` combine conditions of the same kind. An `any` across kinds, for example "the node is in the
   legacy pool, or the event is from an LPU", can be two rule sets with the same outcome.
 - Each rule has a `kind` and a CEL `expression` that returns a boolean:
-  - `kind: HealthEvent` reads `event`, which has the fields of the health event, including `entitiesImpacted` with the
-    entity attributes. Enum fields, such as `recommendedAction`, are numbers, as they are in fault-quarantine.
+  - `kind: HealthEvent` reads `event`, which has all fields of the health event, including `componentClass` and
+    `entitiesImpacted`. The evaluator converts each field of the event, so a field that is added to the event later is
+    available with no change to the schema. Enum fields, such as `recommendedAction`, are numbers, as they are in
+    fault-quarantine.
   - `kind: Node` reads `node`. A `Node` rule can read only `node.metadata.name` and labels with a literal key, as
     `node.metadata.labels["example.com/pool"]` or `"example.com/pool" in node.metadata.labels`. See
     [Node rules read only named labels](#node-rules-read-only-named-labels).
@@ -425,27 +426,6 @@ find the CR and its `completeConditionType` later. Thus, a rule set change does 
 A new label value, `remediation-skipped`, joins the node state labels. It has the transition
 `drain-succeeded → remediation-skipped`.
 
-### Device attributes on health events
-
-`Entity` has only a type and a value. A rule cannot select a GPU model or architecture.
-
-```proto
-message Entity {
-  string entityType = 1;
-  string entityValue = 2;
-  // Optional. Well-known keys: "model" (for example "NVIDIA H100 80GB HBM3"),
-  // "architecture" (for example "Hopper").
-  map<string, string> attributes = 3;
-}
-```
-
-- metadata-collector already records the NVML device name of each GPU UUID, in both device plugin and DRA modes. It
-  adds the architecture, also from NVML.
-- The GPU health monitors add `model` and `architecture` to each `GPU_UUID` entity from this
-  metadata.
-- The Go and Python publishers carry the field. Monitors that do not set it continue to work.
-- A rule reads it as `event.entitiesImpacted.exists(e, e.attributes["architecture"] == "Hopper")`.
-
 ### The record on the event
 
 ```proto
@@ -483,7 +463,6 @@ Each phase is independent and compatible with earlier versions. Empty configurat
 2. node-drainer: the drain decision and its record. Then `ruleSets`, `drain-skipped`, and the deprecation of
    `customDrain.nodeSelector`. This phase requires phase 1.
 3. fault-remediation: `ruleSets`, the record, and `remediation-skipped`. This phase requires phase 1.
-4. Entity attributes and the monitors that set them.
 
 ## Changes for a fault in progress
 
@@ -641,6 +620,8 @@ main advantage.
 - Validation tests and thresholds for each group ([#1922](https://github.com/NVIDIA/NVSentinel/pull/1922)).
 - A change to the monitors that run on each node.
 - MIG instances in rules.
+- New device information in the health event, for example the GPU model or architecture. A different ADR adds it.
+  The rules of this ADR can read it when it is in the event.
 - A stop of a maintenance CR when a rule set change disables remediation.
 - A change to the rule set format or the behaviour of fault-quarantine. A later ADR moves it to the shared schema.
 
@@ -654,7 +635,6 @@ main advantage.
 - **Enum names in rules.** A rule compares `event.recommendedAction` with a number, not with a name such as
   `COMPONENT_RESET`. Proposed answer: keep the numbers in this ADR, so that existing fault-quarantine rules do not
   change. A later change to the shared CEL rule evaluators can add the names for all three components.
-- **Attribute sources outside GPUs.** NVSwitch and NIC entities do not have a model source at this time.
 
 ## References
 
