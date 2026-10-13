@@ -493,14 +493,8 @@ func (r *GPUResetReconciler) resetJobRunning(ctx context.Context, gr *v1alpha1.G
 		return false, fmt.Errorf("failed to get Job %s/%s: %w", gr.Status.JobRef.Namespace, gr.Status.JobRef.Name, err)
 	}
 
-	if job.Status.Succeeded > 0 || job.Status.Failed > 0 {
+	if job.Status.Succeeded > 0 || jobConditionTrue(job, batchv1.JobComplete) || jobConditionTrue(job, batchv1.JobFailed) {
 		return false, nil
-	}
-
-	for _, cond := range job.Status.Conditions {
-		if (cond.Type == batchv1.JobComplete || cond.Type == batchv1.JobFailed) && cond.Status == corev1.ConditionTrue {
-			return false, nil
-		}
 	}
 
 	if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
@@ -511,6 +505,18 @@ func (r *GPUResetReconciler) resetJobRunning(ctx context.Context, gr *v1alpha1.G
 	}
 
 	return true, nil
+}
+
+// jobConditionTrue reports whether the Job carries the given condition. Pod counts are not terminal: a failed Pod is
+// retried until backoffLimit, and the Failed condition is set only once every Pod of the Job has stopped.
+func jobConditionTrue(job *batchv1.Job, condType batchv1.JobConditionType) bool {
+	for _, cond := range job.Status.Conditions {
+		if cond.Type == condType && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+
+	return false
 }
 
 // isReady records that the GPUReset may proceed after the reconciler has
@@ -984,7 +990,7 @@ func (r *GPUResetReconciler) checkJobStatus(ctx context.Context, gr *v1alpha1.GP
 		return ctrl.Result{}, nil
 	}
 
-	if job.Status.Failed > 0 {
+	if jobConditionTrue(job, batchv1.JobFailed) {
 		log.Info("GPU reset job failed", "job", job.Name, "namespace", job.Namespace)
 		span.SetAttributes(
 			attribute.String("janitor.error.type", "reset_job_failed"),

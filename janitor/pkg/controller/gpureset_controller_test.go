@@ -115,6 +115,19 @@ func draOperandPodLabels() []map[string]string {
 	}
 }
 
+// markJobFailed sets the terminal Failed condition the way the Job controller does: the API server requires a
+// startTime and a FailureTarget condition before it accepts Failed=True.
+func markJobFailed(job *batchv1.Job) {
+	now := metav1.Now()
+	job.Status.StartTime = &now
+	job.Status.Failed = 1
+	for _, condType := range []batchv1.JobConditionType{batchv1.JobFailureTarget, batchv1.JobFailed} {
+		job.Status.Conditions = append(job.Status.Conditions, batchv1.JobCondition{
+			Type: condType, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded", LastTransitionTime: now,
+		})
+	}
+}
+
 var _ = Describe("GPUReset Controller", func() {
 	var reconciler *GPUResetReconciler
 	var mgrClient client.Client
@@ -1193,7 +1206,7 @@ var _ = Describe("GPUReset Controller", func() {
 			var createdJob batchv1.Job
 			jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
 			Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
-			createdJob.Status.Failed = 1
+			markJobFailed(&createdJob)
 			Expect(k8sClient.Status().Update(ctx, &createdJob)).To(Succeed())
 
 			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
@@ -1514,8 +1527,19 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(currentNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("false"))
 			}, "2s", "250ms").Should(Succeed())
 
-			By("Finishing the reset job")
+			By("Failing one pod: the job retries, so the finalizer must keep waiting")
 			var job batchv1.Job
+			Expect(k8sClient.Get(ctx, jobKey, &job)).To(Succeed())
+			job.Status.Failed = 1
+			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+			Consistently(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(controllerutil.ContainsFinalizer(&updatedReset, gpuResetFinalizer)).To(BeTrue())
+			}, "1s", "250ms").Should(Succeed())
+
+			By("Finishing the reset job")
 			Expect(k8sClient.Get(ctx, jobKey, &job)).To(Succeed())
 			job.Status.Succeeded = 1
 			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
@@ -2387,7 +2411,7 @@ var _ = Describe("GPUReset Controller", func() {
 			var createdJob batchv1.Job
 			jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
 			Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
-			createdJob.Status.Failed = 1
+			markJobFailed(&createdJob)
 			Expect(k8sClient.Status().Update(ctx, &createdJob)).To(Succeed())
 
 			By("Waiting for workflow to complete")
