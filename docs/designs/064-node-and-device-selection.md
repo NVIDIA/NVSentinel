@@ -77,10 +77,10 @@ rule set schema that both components use. The schema starts from the fault-quara
 1. **A shared rule set schema for node-drainer and fault-remediation.** A rule set has a common part (`name`,
    `enabled`, `priority`, and `match`) and one outcome key that is named for the component (`drain` or
    `remediation`). The common part, the CEL variables, the selection of the winner, and the result of an error are
-   the same in both components. The types and the evaluator are in `commons`.
+   the same in both components. An operator learns one format, and a rule set moves from one component to the
+   other with a change to the outcome only. The types and the evaluator are in `commons`.
 2. **Each component keeps its own configuration.** There is no shared profile and no shared definition of node
-   groups at this time. The schema is designed so that a later cluster-wide configuration can use the same rule sets
-   without a change ([Path to cluster-wide configuration](#path-to-cluster-wide-configuration)).
+   groups.
 3. **fault-quarantine:** no change. Its rule sets already select by node and by event. A later event on a quarantined
    node applies the taints and the cordon of the rule sets that it matches
    ([ADR-062](062-fault-quarantine-release-at-session-end.md)). A later ADR moves its rule sets to the shared schema.
@@ -176,8 +176,8 @@ A rule set that another rule set always hides has a count of zero.
 
 **Code.** The schema is in `commons/pkg/ruleset`:
 
-- The common part is a Go type with `toml` and `json` tags. Each component adds its outcome type to it. A later CRD
-  can use the same types, and the Helm chart can make a `values.schema.json` from them.
+- The common part is a Go type with `toml` and `json` tags. Each component adds its outcome type to it. The Helm
+  chart can make a `values.schema.json` from these types, and other NVSentinel code can use them.
 - The CEL rule evaluators for `HealthEvent` and `Node` move from `fault-quarantine/pkg/evaluator` to `commons`. The
   CEL environments and the conversion of the event and the Node do not change. Thus, a rule that works in
   fault-quarantine works in the shared schema.
@@ -186,29 +186,6 @@ A rule set that another rule set always hides has a count of zero.
   informer lister and the direct API read that it uses at cold start.
 - The rule set layer (`enabled`, `match`, the winner, and the errors) is new in `commons`. fault-quarantine keeps its
   own rule set layer until a later ADR.
-
-#### Path to cluster-wide configuration
-
-This subsection is not part of the decision. It shows why the schema has an outcome key.
-
-A later NVSentinel operator can define rule sets for the full cluster, for example in a CRD. The `spec` of such a rule
-set uses the types of this schema. One rule set can then have more than one outcome key:
-
-```yaml
-- name: vm-nodes
-  priority: 10
-  match: { ... }
-  drain: { method: Custom }
-  remediation: { action: REPLACE_VM }
-```
-
-The operator can divide each rule set by its outcome keys and write the `ruleSets` of each component. The components
-do not change. Each component continues to evaluate its rule sets at its own stage, with current data. This is the
-difference from the behaviour profiles of ADR-060, which selected the behaviour one time, when the event arrived.
-
-When fault-quarantine moves to the schema, its outcome key is `quarantine`, with the taint, label, and cordon fields.
-Its matches combine, as at this time, and do not select one winner. That ADR defines the combination for the
-`quarantine` key.
 
 ### fault-quarantine
 
@@ -237,6 +214,7 @@ differences, because each one changes the behaviour of an existing configuration
 | A rule set can have `all` and `any`. Each list is a separate evaluator, and the rule set applies if either one matches: `all` OR `any`. The metrics count each list separately. No shipped configuration uses `any` | A rule set has exactly one of `all` and `any` |
 | A rule set that fails does not match | An error stops the decision |
 | A `version` field on each rule set | No `version` field |
+| No outcome key | Outcome key `quarantine`, with the taint, label, and cordon fields. The matches combine, as at this time, and do not select one winner |
 
 ### node-drainer
 
@@ -490,12 +468,14 @@ stage already did.
   adds a second way to configure them.
 - **Small changes in the right place.** The gap is in fault-remediation. It already reads the Node immediately before
   it acts, so it can select with current labels at no cost.
-- **One schema for node-drainer and fault-remediation.** The two components use the same rule set fields, variables,
-  winner, and error result. An operator can copy a rule set from one component to the other and change only the
-  outcome. Both components can also select by event, which a label selector cannot do.
-- **Ready for a cluster-wide configuration.** The outcome is under a key named for the stage, so one rule set can
-  later carry the outcomes of more than one stage. A later operator can divide such rule sets into the configuration
-  of each component, without a change to the components.
+- **A simpler configuration for the operator.** node-drainer and fault-remediation use the same rule set fields,
+  variables, winner, and error result. An operator learns one format and one set of rules for priority and errors.
+  A rule set moves from one component to the other with a change to the outcome only. Both components can also
+  select by event, which a label selector cannot do.
+- **The outcome key shows the stage.** Each rule set states which stage it configures. A rule set that is in the
+  configuration of the wrong component fails validation at startup, with a clear message.
+- **Reusable types.** The schema is in `commons`, so other NVSentinel code can read and validate rule sets with the
+  same types.
 - **Tested code.** The CEL rule evaluators already run the quarantine and the validation rule sets. The rules use the
   same CEL as fault-quarantine.
 - **Scale.** No new cache for the full cluster. fault-remediation uses its existing Node read. node-drainer keeps
@@ -544,8 +524,7 @@ One shared profile, selected by ordered routes, that enables or disables each st
 ([#1952](https://github.com/NVIDIA/NVSentinel/pull/1952)).
 **Rejected** because: fault-quarantine and node-drainer can already select by node. A profile is a shared definition
 of node groups and their behaviour for all stages. The drain method, the external repair, and the action for each
-group still need changes in each component. This ADR adds those changes first, with a schema that a later shared
-configuration can use.
+group still need changes in each component.
 
 ### platform-connectors override rules
 
@@ -586,8 +565,9 @@ drain CR already exists.
 ### Outcome fields next to `match`
 
 Put `skip`, `method`, and `action` next to `match`, as fault-quarantine puts `taint`, `label`, and `cordon`.
-**Rejected** because: one rule set cannot then carry the outcomes of more than one stage. A later cluster-wide
-configuration would need a new schema, and the configuration of each component would change again.
+**Rejected** because: the fields of the common part and the fields of the stage are mixed. A rule set that is copied
+from one component to the other needs changes in more than one location. A rule set in the configuration of the wrong
+component is also harder to find, because its fields are not under one key that names the stage.
 
 ### Named selectors
 
@@ -608,7 +588,6 @@ main advantage.
 ### Non-goals
 
 - A shared definition of node groups across components, or named selectors.
-- A cluster-wide rule set configuration, or a CRD for rule sets.
 - Circuit breaker limits for each group. The circuit breaker continues to apply to the full cluster.
 - Validation tests and thresholds for each group ([#1922](https://github.com/NVIDIA/NVSentinel/pull/1922)).
 - A change to the monitors that run on each node.
