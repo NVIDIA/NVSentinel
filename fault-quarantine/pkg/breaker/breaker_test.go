@@ -1027,3 +1027,55 @@ func TestIsTripped_StandingPercentageNotReached_DoesNotTrip(t *testing.T) {
 	require.False(t, tripped, "no cordoned nodes should not reach the standing percentage")
 	require.Equal(t, StateClosed, b.CurrentState())
 }
+
+// breakerStateSeries returns every exported fault_quarantine_breaker_state series by its state label.
+func breakerStateSeries(t *testing.T) map[string]float64 {
+	t.Helper()
+
+	ch := make(chan prometheus.Metric, 8)
+	metrics.FaultQuarantineBreakerState.Collect(ch)
+	close(ch)
+
+	series := map[string]float64{}
+	for m := range ch {
+		pb := &dto.Metric{}
+		require.NoError(t, m.Write(pb))
+		series[pb.GetLabel()[0].GetValue()] = pb.GetGauge().GetValue()
+	}
+
+	return series
+}
+
+func TestBreakerStateGauge_ReportsRestoredState(t *testing.T) {
+	for _, restored := range []State{StateClosed, StateTripped} {
+		t.Run(string(restored), func(t *testing.T) {
+			ctx := context.Background()
+			metrics.FaultQuarantineBreakerState.Reset()
+
+			b := newTestBreaker(t, ctx, 10, 50, time.Second, restored)
+			assert.Equal(t, map[string]float64{string(restored): 1}, breakerStateSeries(t),
+				"the restored state is reported before any evaluation")
+
+			_, err := b.IsTripped(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]float64{string(restored): 1}, breakerStateSeries(t))
+		})
+	}
+}
+
+func TestBreakerStateGauge_FollowsTripAndForceState(t *testing.T) {
+	ctx := context.Background()
+	metrics.FaultQuarantineBreakerState.Reset()
+	b := newTestBreaker(t, ctx, 10, 50, time.Second, "")
+
+	for i := range 5 {
+		b.AddCordonEvent(fmt.Sprintf("node%d", i))
+	}
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.True(t, tripped)
+	assert.Equal(t, map[string]float64{string(StateTripped): 1}, breakerStateSeries(t))
+
+	require.NoError(t, b.ForceState(ctx, StateClosed))
+	assert.Equal(t, map[string]float64{string(StateClosed): 1}, breakerStateSeries(t))
+}
