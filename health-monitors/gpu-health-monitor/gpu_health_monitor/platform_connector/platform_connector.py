@@ -455,7 +455,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         now = time.time()
         if self._connectivity_failing_since is None or (
             self._connectivity_last_failure is not None
-            and now - self._connectivity_last_failure > CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
+            and failed_at - self._connectivity_last_failure > CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
         ):
             self._connectivity_failing_since = failed_at
             self._connectivity_window_persisted_at = None

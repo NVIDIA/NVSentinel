@@ -2690,6 +2690,18 @@ class TestPlatformConnectors(unittest.TestCase):
             assert "GpuDcgmConnectivityFailure" not in restarted._dcgm_state_strategies
             assert restarted._connectivity_failing_since == now - 30
 
+    def test_hang_starting_inside_the_gap_continues_the_window(self):
+        """The gap is measured to when the hang began, not to when the watchdog reported it."""
+        with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, first):
+            now = time.time()
+            self._write_window(first, since=now - 500, last=now - 290)
+
+            restarted = self._restart(first, connectivity_failure_window_seconds=240)
+            # Detected 310s after the last failure, but the hang began 45.6s earlier.
+            restarted._connectivity_last_failure -= 20
+            assert restarted.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is True
+            assert restarted._connectivity_failing_since == now - 500
+
     def test_stale_connectivity_window_is_not_resumed(self):
         """A window whose last failure is older than the gap limit starts over."""
         with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, first):
