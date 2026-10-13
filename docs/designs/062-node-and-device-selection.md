@@ -73,8 +73,8 @@ selection syntax that each component already uses.
 
 ## Decision
 
-1. **Each component keeps its own configuration and selection syntax.** There is no shared profile and no shared
-   package for group definitions.
+1. **Each component keeps its own configuration.** There is no shared profile and no shared definition of node
+   groups. fault-quarantine and fault-remediation use the same rule set format and the same evaluator.
 2. **fault-quarantine:** no new configuration. A later event on a quarantined node applies the taints and the cordon
    of the rule sets that it matches ([#1439](https://github.com/NVIDIA/NVSentinel/issues/1439)). This ADR requires that
    fix.
@@ -82,21 +82,27 @@ selection syntax that each component already uses.
    - Add `skipDrain.nodeSelector`. A node that matches is not drained. It stays in quarantine and is not remediated.
    - Select the drain method one time, when the drain for an event starts. Record the method and the scope on the
      event status.
-4. **fault-remediation:** add `maintenance.rules`. This is an ordered list of CEL rules on `node` and `event`.
-   - The first rule that matches selects a different action from `maintenance.actions`, or disables remediation.
-   - fault-remediation evaluates the rules immediately before it creates the CR, with the Node that it already reads.
-   - It records the rule and the action on the event status.
+4. **fault-remediation:** add `maintenance.ruleSets`, in the rule set format of fault-quarantine
+   ([ADR-003](003-rule-based-node-quarantine.md)).
+   - Each rule set has a `name`, a `priority`, and `match.any` or `match.all` of CEL `Node` and `HealthEvent` rules.
+     In place of the quarantine fields, it has an `action` from `maintenance.actions`, or `disabled: true`.
+   - Of the rule sets that match, the one with the highest `priority` wins. If two have the same priority, the first
+     in the configuration wins. This is the conflict rule that fault-quarantine uses for labels.
+   - The rule set evaluator moves from fault-quarantine to `commons`, and both components use it.
+   - fault-remediation evaluates the rule sets immediately before it creates the CR, with the Node that it already
+     reads.
+   - It records the rule set and the action on the event status.
    - A disabled remediation is recorded as `remediation-skipped`, not `remediation-failed`.
 5. **Health events identify the device model and architecture.** Each impacted entity can carry these as attributes.
    Rules in fault-quarantine and fault-remediation can then select a GPU model or a device type.
 
 | Case | Configuration |
 |---|---|
-| 1. Staged rollout | fault-remediation rule: `disabled` for nodes that are not in the wave |
-| 2. External repair | fault-remediation rule: an action entry for an `ExternalRemediationRequest` |
-| 3. Reset bare metal, replace VMs | fault-remediation rule: `COMPONENT_RESET` on VM nodes selects a `TerminateNode` entry |
+| 1. Staged rollout | fault-remediation rule set: `disabled` for nodes that are not in the wave |
+| 2. External repair | fault-remediation rule set: an action entry for an `ExternalRemediationRequest` |
+| 3. Reset bare metal, replace VMs | fault-remediation rule set: `COMPONENT_RESET` on VM nodes selects a `TerminateNode` entry |
 | 4. Slurm drain plugin | `customDrain.nodeSelector`, at this time |
-| 5. Device type or model | fault-remediation rule, or fault-quarantine rule set, on `event.componentClass` or entity attributes |
+| 5. Device type or model | fault-remediation or fault-quarantine rule set, on `event.componentClass` or entity attributes |
 | 6. Monitoring only | fault-quarantine rule sets whose `Node` rule excludes the group, at this time |
 | 6. Monitoring and quarantine | node-drainer `skipDrain.nodeSelector` |
 
@@ -115,7 +121,7 @@ The fix for [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439) is a prere
 - When an event recovers, fault-quarantine removes only the taints that no remaining event needs.
 
 **Monitoring only.** An operator excludes a group from quarantine with a `Node` rule, for example
-`!(node.labels["example.com/pool"] in ["legacy-a", "legacy-b"])`. Health events and node conditions continue for
+`!("example.com/pool" in node.metadata.labels && node.metadata.labels["example.com/pool"] in ["legacy-a", "legacy-b"])`. Health events and node conditions continue for
 these nodes. No later stage runs, because node-drainer starts only for a quarantined node.
 
 ### node-drainer
@@ -161,51 +167,95 @@ maintenance:
     COMPONENT_RESET: { kind: RebootNode, ... }       # unchanged
     REPLACE_VM: { kind: TerminateNode, ... }         # unchanged
     EXTERNAL_REPAIR: { kind: ExternalRemediationRequest, ... }
-  rules:                                             # ordered; the first match wins
+  ruleSets:                                          # the highest priority match wins
     - name: lpu-no-remediation
-      expression: 'event.componentClass == "LPU"'
+      priority: 100
       disabled: true
+      match:
+        all:
+          - kind: HealthEvent
+            expression: 'event.componentClass == "LPU"'
     - name: outside-rollout
-      expression: '!("example.com/remediation-wave" in node.labels) || node.labels["example.com/remediation-wave"] != "1"'
+      priority: 90
       disabled: true
+      match:
+        all:
+          - kind: Node
+            expression: >-
+              !("example.com/remediation-wave" in node.metadata.labels &&
+                node.metadata.labels["example.com/remediation-wave"] == "1")
     - name: vm-replace
-      expression: 'node.labels["example.com/platform"] == "vm" && event.recommendedAction == "COMPONENT_RESET"'
+      priority: 10
       action: REPLACE_VM
+      match:
+        all:
+          - kind: Node
+            expression: 'node.metadata.labels["example.com/platform"] == "vm"'
+          - kind: HealthEvent
+            expression: 'event.recommendedAction == 2'   # COMPONENT_RESET
     - name: partner-repair
-      expression: 'node.labels["example.com/repair"] == "partner"'
+      priority: 10
       action: EXTERNAL_REPAIR
+      match:
+        all:
+          - kind: Node
+            expression: 'node.metadata.labels["example.com/repair"] == "partner"'
 ```
 
-**Variables.** Each `expression` returns a boolean. It can use:
+**Format.** Each rule set uses the `RuleSetMeta` fields of fault-quarantine: `enabled`, `version`, `name`,
+`priority`, and `match`. fault-quarantine already uses this format for a second purpose, `validation.ruleSets`. That
+format replaces the quarantine fields with `tests`. The fault-remediation format replaces them with `action` or
+`disabled`.
 
-- `event`: the same event fields as the override rules of [ADR-021](021-health-event-property-overrides.md), and also
-  `entitiesImpacted` with the entity attributes.
-- `node`: `node.labels` from the Node that fault-remediation reads.
+**Variables.** The rules use the same variables as fault-quarantine rules:
+
+- A `HealthEvent` rule reads `event`, which has the fields of the health event, including `entitiesImpacted` with
+  the entity attributes. Enum fields, such as `recommendedAction`, are numbers, as they are in fault-quarantine.
+- A `Node` rule reads `node`, which is the full Node object. Labels are at `node.metadata.labels`.
+
+**The shared evaluator.** The rule set evaluator is in `fault-quarantine/pkg/evaluator` at this time. It imports the
+config and informer packages of fault-quarantine. The change moves it to `commons`, with these changes:
+
+- The `RuleSetMeta`, `Match`, and `Rule` types move with it.
+- A `Node` rule gets the Node from an interface, not from the fault-quarantine informer. fault-quarantine gives its
+  informer lister, and the direct API read that it uses at cold start. fault-remediation gives the Node that it has
+  already read for the event.
+- At this time, a `Node` rule fails at startup if there is no informer. After the change, a component that cannot
+  give a Node rejects `Node` rules at startup, with a clear message.
+
+The CEL environments, the conversion of the event and the Node, and the `any` and `all` semantics do not change. Thus,
+a rule that works in fault-quarantine works in fault-remediation.
 
 **Evaluation.** At this time, fault-remediation selects the action and then reads the Node for the owner reference of
-the CR. The change reads the Node first, then evaluates the rules, then selects the action. This does not add an API
-call. fault-remediation has no Node cache ([#1758](https://github.com/NVIDIA/NVSentinel/pull/1758)), so the labels
-are current.
+the CR. The change reads the Node first, then evaluates the rule sets, then selects the action. This does not add an
+API call. fault-remediation has no Node cache ([#1758](https://github.com/NVIDIA/NVSentinel/pull/1758)), so the
+labels are current.
+
+fault-remediation evaluates all enabled rule sets. Of the rule sets that match, the one with the highest `priority`
+wins. If two have the same priority, the first in the configuration wins.
 
 | Result | Action |
 |---|---|
-| A rule with `action` matches | fault-remediation uses that entry of `maintenance.actions` instead of the entry for the recommended action |
-| A rule with `disabled: true` matches | No CR. The node state is `remediation-skipped`. The attempt does not count against `maxRemediationAttempts` |
-| No rule matches | The action of the event, as at this time |
-| A rule cannot be evaluated | No CR. The node state is `remediation-failed`, with the rule name in the message. A metric counts the error for each rule |
+| The winning rule set has `action` | fault-remediation uses that entry of `maintenance.actions` instead of the entry for the recommended action |
+| The winning rule set has `disabled: true` | No CR. The node state is `remediation-skipped`. The attempt does not count against `maxRemediationAttempts` |
+| No rule set matches | The action of the event, as at this time |
+| A rule set cannot be evaluated | No CR. The node state is `remediation-failed`, with the rule set name in the message. A metric counts the error for each rule set |
 
-A rule that fails stops the evaluation. It does not fall through to the next rule, because a later rule or the
-default action can remediate a node that the failed rule excludes. A CEL map lookup of a missing label fails, so a
-rule must test for the key first, as `outside-rollout` does.
+A rule set that fails stops the decision, even if a different rule set matches. The failed rule set can be the one
+that excludes the node, so fault-remediation does not use the other results. This is different from fault-quarantine,
+where a rule set that fails does not match. In fault-quarantine, no match means no action. In fault-remediation, no
+match means the default action.
+
+A CEL map lookup of a missing label fails. A rule must test for the key first, as `outside-rollout` does.
 
 fault-remediation records the name of the entry that it used, not only the recommended action. It uses that name to
-find the CR and its `completeConditionType` later. Thus, a rule change does not lose a CR that is in progress.
+find the CR and its `completeConditionType` later. Thus, a rule set change does not lose a CR that is in progress.
 
 **Validation** occurs at startup and as a Helm `fail`:
 
-- Rule names are unique DNS-1123 labels.
+- Rule set names are unique DNS-1123 labels.
 - Each `expression` compiles and returns a boolean.
-- Each rule has exactly one of `action` and `disabled`.
+- Each rule set has exactly one of `action` and `disabled`.
 - Each `action` is a key of `maintenance.actions`.
 
 A new label value, `remediation-skipped`, joins the node state labels. It has the transition
@@ -241,7 +291,7 @@ message DrainDecision {
 }
 
 message RemediationDecision {
-  string rule = 1;    // rule that matched; empty when no rule matched
+  string ruleSet = 1; // rule set that won; empty when no rule set matched
   string action = 2;  // entry of maintenance.actions; empty when disabled
   bool disabled = 3;
 }
@@ -264,8 +314,9 @@ Each phase is independent and compatible with earlier versions. Empty configurat
 
 1. fault-quarantine: the fix for [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439).
 2. node-drainer: the drain decision and its record, then `skipDrain.nodeSelector`.
-3. fault-remediation: `maintenance.rules`, the record, and `remediation-skipped`.
-4. Entity attributes and the monitors that set them.
+3. The rule set evaluator moves to `commons`. fault-quarantine uses it with no change in behaviour.
+4. fault-remediation: `maintenance.ruleSets`, the record, and `remediation-skipped`.
+5. Entity attributes and the monitors that set them.
 
 ## Changes for a fault in progress
 
@@ -287,9 +338,11 @@ stage already did.
   adds a second way to configure them.
 - **Small changes in the right place.** The gap is in fault-remediation. It already reads the Node immediately before
   it acts, so it can select with current labels at no cost.
-- **Known syntax in each component.** fault-remediation uses CEL, as fault-quarantine rules and ADR-021 overrides do,
-  because a rule must combine node and event conditions. node-drainer keeps the label selector of
-  [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871).
+- **One rule syntax for quarantine and remediation.** fault-remediation must combine node and event conditions, as
+  fault-quarantine does. It uses the same rule set format, variables, and evaluator. An operator can copy a rule from
+  one component to the other, and the `priority` field has the same meaning in both. node-drainer keeps the label
+  selector of [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871).
+- **Tested code.** The evaluator already runs the quarantine and the validation rule sets.
 - **Scale.** No new cache for the full cluster. fault-remediation uses its existing Node read. node-drainer adds one
   selector to its informer.
 
@@ -304,15 +357,20 @@ stage already did.
 
 ### Negative
 
-- Each component has its own group definitions. A group that applies to more than one stage is written more than once,
-  in two syntaxes.
+- Each component has its own group definitions. A group that applies to more than one stage is written more than once.
+  fault-quarantine and fault-remediation use the same syntax, but node-drainer uses a label selector.
 - No single field shows the full behaviour for a node. The operator reads the cordon-reason label and the two
   records on the event.
-- The sequence of the remediation rules controls the result. A rule in the wrong position hides the rules after it.
+- A rule set with a high priority hides the rule sets with a lower priority that match the same events.
+- The evaluator move changes fault-quarantine code, although its behaviour does not change.
+- A rule set that fails has different results in the two components: no quarantine in fault-quarantine, and no
+  remediation in fault-remediation.
 
 ### Mitigations
 
-- A metric counts the matches for each remediation rule. A rule that another rule hides has a count of zero.
+- A metric counts the wins for each remediation rule set. A rule set that another rule set always hides has a count
+  of zero.
+- The existing fault-quarantine evaluator tests move with the evaluator and run in `commons`.
 - Document one example per case, with the configuration of each component that it needs.
 
 ## Alternatives Considered
@@ -332,6 +390,25 @@ label.
 **Rejected** because: the labels come from a cache that can be 10 minutes old. A rule that fails is skipped, so the
 event keeps the action that the rule excluded. The override changes the event for all stages and the node condition,
 not only remediation. It also cannot disable remediation, or select a custom action or an external repair.
+
+### An ordered list of CEL expressions in fault-remediation
+
+A new `maintenance.rules` list, with one `expression` for each rule, where the first rule that matches wins.
+**Rejected** because: it is a third CEL rule format, after the fault-quarantine rule sets and the ADR-021 overrides.
+The position of a rule in the list decides the result, and fault-quarantine uses `priority` for the same purpose.
+
+### Use the fault-quarantine decision in fault-remediation
+
+Add a remediation field to each quarantine rule set. fault-remediation reads which rule sets matched the event and
+does not evaluate rules itself.
+**Rejected** because:
+
+- The decision occurs at quarantine time, which can be hours before remediation. That is the same problem as a profile
+  that is fixed when the event arrives.
+- A group that needs a different action must also have its own quarantine rule set.
+- Events with `quarantineOverrides.force` skip the rule sets, so they have no record of a match. Until
+  [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439) is fixed, later events on a quarantined node also have no
+  record.
 
 ### `managed=false` or `STORE_ONLY` to disable remediation
 
@@ -358,7 +435,8 @@ Two syntaxes in one component are harder to read than one.
 - Validation tests and thresholds for each group ([#1922](https://github.com/NVIDIA/NVSentinel/pull/1922)).
 - A change to the monitors that run on each node.
 - MIG instances in rules.
-- A stop of a maintenance CR when a rule change disables remediation.
+- A stop of a maintenance CR when a rule set change disables remediation.
+- A change to the rule set format or the behaviour of fault-quarantine.
 
 ### Open questions
 
@@ -366,6 +444,9 @@ Two syntaxes in one component are harder to read than one.
   `skipDrain.nodeSelector`, as `quarantineOverrides.force` has priority over the rule sets.
 - **A `remediation-skipped` node after the event recovers.** Proposed answer: the label is removed when the
   quarantine ends.
+- **Enum names in rules.** A rule compares `event.recommendedAction` with a number, not with a name such as
+  `COMPONENT_RESET`. Proposed answer: keep the numbers in this ADR, so that existing fault-quarantine rules do not
+  change. A later change to the shared evaluator can add the names for both components.
 - **Attribute sources outside GPUs.** NVSwitch and NIC entities do not have a model source at this time.
 
 ## References
