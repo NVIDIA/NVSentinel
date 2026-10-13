@@ -394,6 +394,15 @@ func (r *GPUResetReconciler) reconcileDelete(ctx context.Context, gr *v1alpha1.G
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 
+		if running, err := r.resetJobRunning(ctx, gr); err != nil {
+			return ctrl.Result{}, err
+		} else if running {
+			log.V(1).Info("Waiting for the reset job to finish before restoring managed services", "job",
+				gr.Status.JobRef.Name, "namespace", gr.Status.JobRef.Namespace, "node", nodeName)
+
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
+
 		if len(r.managedApps(ctx, gr)) == 0 {
 			log.V(1).Info("No managed services were stopped, skipping service restoration", "manager",
 				managerName, "node", nodeName)
@@ -462,6 +471,46 @@ func (r *GPUResetReconciler) reconcileDelete(ctx context.Context, gr *v1alpha1.G
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// resetJobRunning reports whether the reset Job referenced by the GPUReset status is still running. Restoring the
+// managed services while `nvidia-smi --gpu-reset` is in flight would re-attach DCGM (and the DRA kubelet plugin) to
+// GPUs under reset, so deletion waits for the Job. Killing the Job would not help: the function-level reset runs in
+// the driver and does not stop with the pod. The wait is bounded by the GPUReset timeout for templates without an
+// activeDeadlineSeconds; after that the restoration proceeds and the overlap is logged.
+func (r *GPUResetReconciler) resetJobRunning(ctx context.Context, gr *v1alpha1.GPUReset) (bool, error) {
+	if gr.Status.JobRef == nil || meta.IsStatusConditionTrue(gr.Status.Conditions, string(v1alpha1.ResetJobCompleted)) {
+		return false, nil
+	}
+
+	job := &batchv1.Job{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: gr.Status.JobRef.Namespace, Name: gr.Status.JobRef.Name},
+		job); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("failed to get Job %s/%s: %w", gr.Status.JobRef.Namespace, gr.Status.JobRef.Name, err)
+	}
+
+	if job.Status.Succeeded > 0 || job.Status.Failed > 0 {
+		return false, nil
+	}
+
+	for _, cond := range job.Status.Conditions {
+		if (cond.Type == batchv1.JobComplete || cond.Type == batchv1.JobFailed) && cond.Status == corev1.ConditionTrue {
+			return false, nil
+		}
+	}
+
+	if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
+		log.FromContext(ctx).Error(nil, "Reset job still running past the GPUReset timeout; restoring managed "+
+			"services anyway", "job", job.Name, "namespace", job.Namespace, "timeout", r.Config.Timeout)
+
+		return false, nil
+	}
+
+	return true, nil
 }
 
 // isReady records that the GPUReset may proceed after the reconciler has
