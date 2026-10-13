@@ -143,7 +143,9 @@ ruleSets:
 - Each rule has a `kind` and a CEL `expression` that returns a boolean:
   - `kind: HealthEvent` reads `event`, which has the fields of the health event, including `entitiesImpacted` with the
     entity attributes. Enum fields, such as `recommendedAction`, are numbers, as they are in fault-quarantine.
-  - `kind: Node` reads `node`, which is the full Node object. Labels are at `node.metadata.labels`.
+  - `kind: Node` reads `node`. A `Node` rule can read only `node.metadata.name` and labels with a literal key, as
+    `node.metadata.labels["example.com/pool"]` or `"example.com/pool" in node.metadata.labels`. See
+    [Node rules read only named labels](#node-rules-read-only-named-labels).
 - A CEL map lookup of a missing label fails. A rule must test for the key first.
 
 **The outcome.** Each rule set has one outcome key. The key is the name of the stage that reads it. The outcome
@@ -167,12 +169,45 @@ The component records the rule set name and the error, and a metric counts the e
 
 - Rule set names are unique DNS-1123 labels.
 - Each `expression` compiles and returns a boolean.
+- Each `Node` rule reads only `node.metadata.name` and labels with a literal key.
 - `match` has exactly one of `all` and `any`, and that list has at least one rule.
 - Each rule set has exactly one outcome key, and the key is the key of the component.
 - The outcome has exactly one of `skip: true` and the selection field.
 
 **Metrics.** Each component counts the wins and the errors of each rule set, with the same metric names and labels.
 A rule set that another rule set always hides has a count of zero.
+
+#### Node rules read only named labels
+
+A component must know, at startup, which label keys its `Node` rules read. node-drainer keeps Nodes in an informer,
+and the informer keeps only the labels that the rules read. On a large cluster, this keeps the cache small. If a rule
+reads labels that the component cannot name at startup, the component must keep all labels of all nodes. Thus, one
+change to one rule can increase the memory of the component by a large amount, and nothing tells the operator why.
+
+To prevent this, startup validation finds the fields that each `Node` rule reads, with `commons/pkg/celfields`. The
+rule is accepted only if each field is one of these:
+
+- `node.metadata.name`.
+- `node.metadata.labels["<key>"]`, where `<key>` is a string literal.
+- `"<key>" in node.metadata.labels`, where `<key>` is a string literal.
+
+Startup fails for any other read, with the rule set name, the expression, and the field that is not permitted. For
+example:
+
+| Expression | Result |
+|---|---|
+| `"scheduler" in node.metadata.labels && node.metadata.labels["scheduler"] == "slurm"` | Accepted. Reads the `scheduler` label |
+| `node.metadata.labels.exists(k, k.startsWith("example.com/"))` | Rejected. Reads all labels |
+| `size(node.metadata.labels) > 0` | Rejected. Reads all labels |
+| `node.metadata.labels[node.metadata.name]` | Rejected. The key is not a literal |
+| `node.spec.unschedulable` | Rejected. Reads a field other than the name and labels |
+| `"example.com/team" in node.metadata.annotations` | Rejected. Reads an annotation |
+
+To select by a label prefix or by another field, the operator adds a label with a known key to the nodes, and the rule
+reads that label.
+
+fault-remediation has no Node cache, but it applies the same validation. Thus, a rule set that works in one component
+works in the other.
 
 **Code.** The schema is in `commons/pkg/ruleset`:
 
@@ -214,6 +249,7 @@ differences, because each one changes the behaviour of an existing configuration
 | A rule set can have `all` and `any`. Each list is a separate evaluator, and the rule set applies if either one matches: `all` OR `any`. The metrics count each list separately. No shipped configuration uses `any` | A rule set has exactly one of `all` and `any` |
 | A rule set that fails does not match | An error stops the decision |
 | A `version` field on each rule set | No `version` field |
+| A `Node` rule can read any field. If the keys cannot be found, the node cache keeps all labels and annotations | A `Node` rule reads only the name and labels with a literal key. Other reads fail at startup |
 | No outcome key | Outcome key `quarantine`, with the taint, label, and cordon fields. The matches combine, as at this time, and do not select one winner |
 
 ### node-drainer
@@ -283,10 +319,11 @@ The recorded scope also replaces the configuration that
 [#1960](https://github.com/NVIDIA/NVSentinel/pull/1960) copies into fault-quarantine to find out if a drain was
 partial.
 
-**Node cache.** The node informer keeps only the label keys that its selectors read
-(`node-drainer/pkg/informers/informers.go`). For the rule sets, node-drainer gets the keys from the CEL expressions
-with `commons/pkg/celfields`, as fault-quarantine does for its node cache. If the keys of an expression cannot be
-found, the informer keeps all labels. This is correct, but it uses more memory.
+**Node cache.** The node informer keeps the name, the quarantine annotation, and only the label keys that its
+selectors read (`node-drainer/pkg/informers/informers.go`). It does not keep the spec, the status, or other
+annotations. Startup validation gives node-drainer the label keys of each rule set
+([Node rules read only named labels](#node-rules-read-only-named-labels)), and the informer keeps those keys. A rule
+that needs a different field or all labels fails at startup. It does not change the size of the cache.
 
 **`podDrainPolicies` do not change.** They select pods, not nodes, and they apply inside the `Evict` method.
 
@@ -496,12 +533,14 @@ stage already did.
 
 - Each component has its own group definitions. A group that applies to more than one stage is written once in each
   component.
-- Until a later ADR, fault-quarantine rule sets differ from the shared schema in six ways (see
+- Until a later ADR, fault-quarantine rule sets differ from the shared schema in seven ways (see
   [Differences from the shared schema](#fault-quarantine)). An operator must know both forms.
 - `customDrain.nodeSelector` is deprecated soon after its release in v1.26.0. Operators who adopted it must migrate,
   and node-drainer supports two forms during the deprecation period. See
   [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector).
 - A simple node selection, such as `scheduler=slurm`, is longer as a CEL rule set than as a label selector.
+- A `Node` rule cannot select by a label prefix, by an annotation, or by a field of the spec or the status. The
+  operator must add a label with a known key to the nodes.
 - No single field shows the full behaviour for a node. The operator reads the cordon-reason label and the two
   records on the event.
 - A rule set with a high priority hides the rule sets with a lower priority that match the same events.
@@ -515,6 +554,8 @@ stage already did.
   a count of zero.
 - The existing fault-quarantine evaluator tests move with the CEL rule evaluators and run in `commons`.
 - Document one example per case, with the configuration of each component that it needs.
+- The startup error for a `Node` rule names the field that is not permitted. The documentation shows how to replace a
+  label prefix or an annotation with a label.
 
 ## Alternatives Considered
 
@@ -574,6 +615,14 @@ component is also harder to find, because its fields are not under one key that 
 Define each node group one time, with a name, and refer to the name from the rule sets of each component.
 **Deferred** because: it is a shared definition of node groups, which this ADR does not add. The `match` field can
 accept a reference to a named selector later, without a change to the outcome keys.
+
+### Keep all labels when a rule reads more than named labels
+
+Accept any `Node` rule. If the label keys of a rule cannot be found, the node-drainer informer keeps all labels, as
+fault-quarantine does at this time.
+**Rejected** because: one change to one rule can increase the memory of node-drainer from a small cache to all labels
+of all nodes. Only a log message shows the cause. Also, the node-drainer cache does not keep the spec, the status, or
+most annotations, so a rule that reads them gets a wrong result and does not fail.
 
 ### Keep label selectors in node-drainer
 
