@@ -74,37 +74,41 @@ selection syntax that each component already uses.
 ## Decision
 
 1. **Each component keeps its own configuration.** There is no shared profile and no shared definition of node
-   groups. fault-quarantine and fault-remediation use the same rule set format and the same evaluator.
+   groups. fault-quarantine, node-drainer, and fault-remediation use the same rule set format and the same evaluator.
 2. **fault-quarantine:** no change. Its rule sets already select by node and by event. A later event on a quarantined
    node applies the taints and the cordon of the rule sets that it matches
    ([ADR-062](062-fault-quarantine-release-at-session-end.md)).
-3. **node-drainer:**
-   - Add `skipDrain.nodeSelector`. A node that matches is not drained. It stays in quarantine and is not remediated.
-   - Select the drain method one time, when the drain for an event starts. Record the method and the scope on the
-     event status.
+3. **node-drainer:** add `ruleSets`, in the rule set format of fault-quarantine.
+   - Each rule set has a `method` in place of the quarantine fields: `Skip`, `Custom`, or `Evict`. A node with
+     `Skip` is not drained. It stays in quarantine and is not remediated.
+   - The highest `priority` match wins, as in fault-remediation. No match gives `Evict`.
+   - node-drainer selects the method one time, when the drain for an event starts. It records the rule set, the method,
+     and the scope on the event status.
+   - `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) is deprecated. It continues
+     to work as a `Custom` rule set with the lowest priority.
 4. **fault-remediation:** add `maintenance.ruleSets`, in the rule set format of fault-quarantine
    ([ADR-003](003-rule-based-node-quarantine.md)).
    - Each rule set has a `name`, a `priority`, and `match.any` or `match.all` of CEL `Node` and `HealthEvent` rules.
      In place of the quarantine fields, it has an `action` from `maintenance.actions`, or `disabled: true`.
    - Of the rule sets that match, the one with the highest `priority` wins. If two have the same priority, the first
      in the configuration wins. This is the conflict rule that fault-quarantine uses for labels.
-   - The rule set evaluator moves from fault-quarantine to `commons`, and both components use it.
+   - The rule set evaluator moves from fault-quarantine to `commons`, and all three components use it.
    - fault-remediation evaluates the rule sets immediately before it creates the CR, with the Node that it already
      reads.
    - It records the rule set and the action on the event status.
    - A disabled remediation is recorded as `remediation-skipped`, not `remediation-failed`.
 5. **Health events identify the device model and architecture.** Each impacted entity can carry these as attributes.
-   Rules in fault-quarantine and fault-remediation can then select a GPU model or a device type.
+   Rules in all three components can then select a GPU model or a device type.
 
 | Case | Configuration |
 |---|---|
 | 1. Staged rollout | fault-remediation rule set: `disabled` for nodes that are not in the wave |
 | 2. External repair | fault-remediation rule set: an action entry for an `ExternalRemediationRequest` |
 | 3. Reset bare metal, replace VMs | fault-remediation rule set: `COMPONENT_RESET` on VM nodes selects a `TerminateNode` entry |
-| 4. Slurm drain plugin | `customDrain.nodeSelector`, at this time |
-| 5. Device type or model | fault-remediation or fault-quarantine rule set, on `event.componentClass` or entity attributes |
+| 4. Slurm drain plugin | node-drainer rule set: `method: Custom` for Slurm nodes. `customDrain.nodeSelector` works at this time |
+| 5. Device type or model | A rule set in any component, on `event.componentClass` or entity attributes |
 | 6. Monitoring only | fault-quarantine rule sets whose `Node` rule excludes the group, at this time |
-| 6. Monitoring and quarantine | node-drainer `skipDrain.nodeSelector` |
+| 6. Monitoring and quarantine | node-drainer rule set: `method: Skip` |
 
 ## Implementation
 
@@ -126,26 +130,63 @@ these nodes. No later stage runs, because node-drainer starts only for a quarant
 ### node-drainer
 
 ```yaml
-skipDrain:
-  # Nodes that match are not drained. Same syntax as customDrain.nodeSelector.
-  # Empty: no node is skipped.
-  nodeSelector: "example.com/pool in (quarantine-only)"
+ruleSets:                                   # the highest priority match wins; no match: Evict
+  - name: quarantine-only
+    priority: 100
+    method: Skip
+    match:
+      all:
+        - kind: Node
+          expression: >-
+            "example.com/pool" in node.metadata.labels &&
+            node.metadata.labels["example.com/pool"] == "quarantine-only"
+  - name: lpu-no-drain
+    priority: 90
+    method: Skip
+    match:
+      all:
+        - kind: HealthEvent
+          expression: 'event.componentClass == "LPU"'
+  - name: slurm
+    priority: 10
+    method: Custom
+    match:
+      all:
+        - kind: Node
+          expression: >-
+            "scheduler" in node.metadata.labels && node.metadata.labels["scheduler"] == "slurm"
 customDrain:
   enabled: true
-  nodeSelector: "scheduler=slurm"
+  # Deprecated. Use a rule set with method: Custom.
+  # nodeSelector: "scheduler=slurm"
+  templateFileName: ...                     # the template and CR settings do not change
 ```
 
+**Format and variables.** The rule sets use the format, the variables, and the evaluator of fault-remediation. A
+`Node` rule reads the Node from the node informer of node-drainer, as fault-quarantine reads its informer. A
+`HealthEvent` rule reads the event, so a rule set can also select by fault type. A label selector cannot.
+
 **One decision for each event.** Before node-drainer evicts the first pod or creates the custom drain CR for an event,
-it selects the drain method with the node labels from its node informer:
+it selects the drain method:
 
 1. `drainOverrides` on the event apply first, as they do at this time.
-2. If the node matches `skipDrain.nodeSelector`, the method is `Skip`.
-3. If custom drain is enabled and the node matches `customDrain.nodeSelector`, the method is `Custom`.
+2. Of the rule sets that match, the one with the highest `priority` gives the method. If two have the same priority,
+   the first in the configuration wins.
+3. If `customDrain.nodeSelector` is set and matches, the method is `Custom`. This is the deprecated form, and it acts
+   as a rule set with a lower priority than all others.
 4. Otherwise, the method is `Evict`.
 
-node-drainer records the method and the drain scope (`Node`, or the entity for a partial drain) on the event status
-before it acts. Later passes for the same event read the record and do not check the selectors again. Thus, a label
-change during a drain does not change the method. A cold start reads the record.
+A rule set with `method: Custom` is valid only when `customDrain.enabled` is true. Startup validation and a Helm `fail`
+check this.
+
+node-drainer records the rule set, the method, and the drain scope (`Node`, or the entity for a partial drain) on the
+event status before it acts. Later passes for the same event read the record and do not evaluate the rule sets again.
+Thus, a label change during a drain does not change the method. A cold start reads the record.
+
+**A rule set that fails.** node-drainer does not drain and does not record a decision. It sets the node state
+`drain-failed`, with the rule set name in the message, and a metric counts the error. The next pass evaluates the rule
+sets again, so a label or configuration change can correct the failure. node-drainer does not use `Evict` as a
+fallback, because the failed rule set can be the one that selects `Skip` or `Custom` for the node.
 
 **Skip.** node-drainer records `userPodsEvictionStatus: Skipped` and the node state `drain-skipped`. `Skipped` is
 different from `AlreadyDrained`. fault-remediation starts only for `Succeeded` and `AlreadyDrained`, so it does not
@@ -155,8 +196,37 @@ The recorded scope also replaces the configuration that
 [#1960](https://github.com/NVIDIA/NVSentinel/pull/1960) copies into fault-quarantine to find out if a drain was
 partial.
 
-The node informer already keeps the label keys that `customDrain.nodeSelector` reads. It also keeps the keys of
-`skipDrain.nodeSelector`.
+**Node cache.** The node informer keeps only the label keys that its selectors read
+(`node-drainer/pkg/informers/informers.go`). For the rule sets, node-drainer gets the keys from the CEL expressions
+with `commons/pkg/celfields`, as fault-quarantine does for its node cache. If the keys of an expression cannot be
+found, the informer keeps all labels. This is correct, but it uses more memory.
+
+**`podDrainPolicies` do not change.** They select pods, not nodes, and they apply inside the `Evict` method.
+
+#### Deprecation of `customDrain.nodeSelector`
+
+`customDrain.nodeSelector` merged in [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871) on 2026-09-28 and is in
+releases since v1.26.0. This ADR deprecates it soon after its release. The costs are:
+
+- **Operators who adopted it must migrate.** The field continues to work, but the documentation, the Helm values,
+  and the examples for #1857 change to rule sets. An operator who reads the current documentation for v1.26.0 learns
+  a form that is deprecated in a later release.
+- **Two forms exist during the deprecation period.** node-drainer must support the label selector and the rule sets
+  together, with a defined order between them, and the tests must cover both.
+- **A more verbose configuration for the simple case.** `scheduler=slurm` becomes a rule set with a CEL expression
+  that must test for the key first.
+- **A visible change of direction.** Contributors to #1871 chose a label selector for this field. This ADR replaces
+  that choice soon after it merged.
+
+To limit these costs:
+
+- node-drainer converts `customDrain.nodeSelector` to a rule set at startup, with the name `custom-drain-node-selector`
+  and a priority lower than all configured rule sets. The selection, the record, and the metrics are the same for
+  both forms.
+- node-drainer logs a deprecation warning at startup when the field is set. The Helm chart prints a deprecation note.
+- If `ruleSets` contains a `Custom` rule set and `customDrain.nodeSelector` is also set, startup fails. One
+  configuration must not use both forms for the same selection.
+- The field is removed after at least two minor releases. The release notes give the equivalent rule set.
 
 ### fault-remediation
 
@@ -285,8 +355,9 @@ message Entity {
 
 ```proto
 message DrainDecision {
-  string method = 1;  // Evict | Custom | Skip
-  string scope = 2;   // Node, or the entity type of a partial drain
+  string ruleSet = 1; // rule set that won; empty when no rule set matched
+  string method = 2;  // Evict | Custom | Skip
+  string scope = 3;   // Node, or the entity type of a partial drain
 }
 
 message RemediationDecision {
@@ -311,9 +382,10 @@ it is accepted, these two records move to `NodeHealth.status.remediation`. The f
 
 Each phase is independent and compatible with earlier versions. Empty configuration gives the current behaviour.
 
-1. node-drainer: the drain decision and its record, then `skipDrain.nodeSelector`.
-2. The rule set evaluator moves to `commons`. fault-quarantine uses it with no change in behaviour.
-3. fault-remediation: `maintenance.ruleSets`, the record, and `remediation-skipped`.
+1. The rule set evaluator moves to `commons`. fault-quarantine uses it with no change in behaviour.
+2. node-drainer: the drain decision and its record. Then `ruleSets`, `drain-skipped`, and the deprecation of
+   `customDrain.nodeSelector`. This phase requires phase 1.
+3. fault-remediation: `maintenance.ruleSets`, the record, and `remediation-skipped`. This phase requires phase 1.
 4. Entity attributes and the monitors that set them.
 
 ## Changes for a fault in progress
@@ -336,37 +408,43 @@ stage already did.
   adds a second way to configure them.
 - **Small changes in the right place.** The gap is in fault-remediation. It already reads the Node immediately before
   it acts, so it can select with current labels at no cost.
-- **One rule syntax for quarantine and remediation.** fault-remediation must combine node and event conditions, as
-  fault-quarantine does. It uses the same rule set format, variables, and evaluator. An operator can copy a rule from
-  one component to the other, and the `priority` field has the same meaning in both. node-drainer keeps the label
-  selector of [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871).
+- **One rule syntax in all components that act on a fault.** fault-quarantine, node-drainer, and fault-remediation
+  use the same rule set format, variables, and evaluator. An operator can copy a rule from one component to another,
+  and `priority` selects the winner in the same way. node-drainer and fault-remediation can also select by event,
+  which a label selector cannot do.
 - **Tested code.** The evaluator already runs the quarantine and the validation rule sets.
-- **Scale.** No new cache for the full cluster. fault-remediation uses its existing Node read. node-drainer adds one
-  selector to its informer.
+- **Scale.** No new cache for the full cluster. fault-remediation uses its existing Node read. node-drainer keeps
+  its pruned informer, with the label keys that its rule sets read.
 
 ## Consequences
 
 ### Positive
 
 - Each component can be changed, released, and reviewed by itself.
-- Existing configuration continues to work. Operators add rules only where they need them.
+- Existing configuration continues to work, including `customDrain.nodeSelector` during its deprecation period.
+  Operators add rule sets only where they need them.
+- One rule syntax for all node and event selection.
 - "Off" is a separate result that the operator can see, for drain and for remediation.
 - The drain method no longer changes during a drain.
 
 ### Negative
 
-- Each component has its own group definitions. A group that applies to more than one stage is written more than once.
-  fault-quarantine and fault-remediation use the same syntax, but node-drainer uses a label selector.
+- Each component has its own group definitions. A group that applies to more than one stage is written once in each
+  component, in the same syntax.
+- `customDrain.nodeSelector` is deprecated soon after its release in v1.26.0. Operators who adopted it must migrate,
+  and node-drainer supports two forms during the deprecation period. See
+  [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector).
+- A simple node selection, such as `scheduler=slurm`, is longer as a CEL rule set than as a label selector.
 - No single field shows the full behaviour for a node. The operator reads the cordon-reason label and the two
   records on the event.
 - A rule set with a high priority hides the rule sets with a lower priority that match the same events.
 - The evaluator move changes fault-quarantine code, although its behaviour does not change.
-- A rule set that fails has different results in the two components: no quarantine in fault-quarantine, and no
-  remediation in fault-remediation.
+- A rule set that fails has a different result in each component: no quarantine in fault-quarantine, no drain in
+  node-drainer, and no remediation in fault-remediation.
 
 ### Mitigations
 
-- A metric counts the wins for each remediation rule set. A rule set that another rule set always hides has a count
+- A metric counts the wins for each drain and remediation rule set. A rule set that another rule set always hides has a count
   of zero.
 - The existing fault-quarantine evaluator tests move with the evaluator and run in `commons`.
 - Document one example per case, with the configuration of each component that it needs.
@@ -417,10 +495,13 @@ The behaviour at this time.
 **Rejected** because: a label change during a drain can send later passes to a different method, after a custom
 drain CR already exists.
 
-### A CEL expression for `skipDrain`
+### Keep label selectors in node-drainer
 
-**Rejected** because: node-drainer selects only by node, and `customDrain.nodeSelector` already uses a label selector.
-Two syntaxes in one component are harder to read than one.
+Add `skipDrain.nodeSelector` in the syntax of `customDrain.nodeSelector`, and keep both.
+**Rejected** because: node-drainer would then use a different syntax from the other two components, and it could not
+select by event. The label selector is simpler for one label, but a group that applies to drain and to remediation
+would be written in two syntaxes. This alternative avoids the deprecation of `customDrain.nodeSelector`, which is its
+main advantage.
 
 ## Notes
 
@@ -436,8 +517,9 @@ Two syntaxes in one component are harder to read than one.
 
 ### Open questions
 
-- **Event overrides and `skipDrain`.** Proposed answer: `drainOverrides.force` on the event has priority over
-  `skipDrain.nodeSelector`, as `quarantineOverrides.force` has priority over the rule sets.
+- **Event overrides and `Skip`.** Proposed answer: `drainOverrides.force` on the event has priority over a rule set
+  with `method: Skip`, as `quarantineOverrides.force` has priority over the quarantine rule sets.
+- **Duration of the deprecation period.** Proposed answer: two minor releases after the release that adds `ruleSets`.
 - **A `remediation-skipped` node after the event recovers.** Proposed answer: the label is removed when the
   quarantine ends.
 - **Enum names in rules.** A rule compares `event.recommendedAction` with a number, not with a name such as
