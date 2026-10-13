@@ -30,6 +30,7 @@ from typing import Optional
 from ctypes import pointer
 import copy
 import json
+import logging
 import pytest
 import time
 
@@ -2206,6 +2207,24 @@ class TestProbeWatchdog:
         # how many delivery attempts the event needs.
         probe_hangs_metric.labels.assert_called_once_with("dcgm_health_check")
         probe_hangs_metric.labels.return_value.inc.assert_called_once_with()
+
+    def test_retry_warning_is_logged_once_per_probe(self, caplog):
+        """A deferred publish is retried every interval without repeating the warning."""
+        hangs, on_hang = self._collector(succeed=False)
+        watchdog = dcgm.ProbeWatchdog(0.01, on_hang)
+
+        with caplog.at_level(logging.WARNING):
+            with watchdog.probe("dcgm_health_check"):
+                time.sleep(0.05)
+                for _ in range(3):
+                    assert watchdog.poll_once() is False
+            with watchdog.probe("dcgm_health_check"):
+                time.sleep(0.05)
+                assert watchdog.poll_once() is False
+
+        assert len(hangs) == 4
+        retries = [r for r in caplog.records if "not published yet; will retry" in r.getMessage()]
+        assert len(retries) == 2, "once per probe, re-armed by the next probe"
 
     def test_completed_probe_is_never_reported(self):
         hangs, on_hang = self._collector()

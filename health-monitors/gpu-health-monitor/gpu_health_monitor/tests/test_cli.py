@@ -176,6 +176,7 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     assert processor._connectivity_failure_escalation_threshold == (9 if custom_settings else 0)
     assert processor._connectivity_failure_threshold == (4 if custom_settings else 1)
     assert processor._connectivity_success_threshold == (2 if custom_settings else 1)
+    assert processor._connectivity_failure_window_seconds == (4 * 17 if custom_settings else 0)
 
 
 def _find_option(param_name: str) -> Parameter | None:
