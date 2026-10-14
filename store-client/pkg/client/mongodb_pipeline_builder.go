@@ -142,6 +142,38 @@ func (b *MongoDBPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipelin
 	)
 }
 
+// userPodsEvictionStatusField is the pod eviction status of a health event.
+const userPodsEvictionStatusField = "healtheventstatus.userpodsevictionstatus"
+
+// evictionStatusWritten matches an update that set the pod eviction status to one of
+// statuses. MongoDB reports a $set of the whole status under its own key. Amazon DocumentDB
+// reports only the fields whose value changed, and evaluates $objectToArray of
+// updatedFields to null, so the status is read with $getField under both keys.
+func evictionStatusWritten(statuses ...string) datastore.Element {
+	written := func(field string) datastore.Document {
+		return datastore.D(datastore.E("$getField", datastore.D(
+			datastore.E("field", field),
+			datastore.E("input", "$updateDescription.updatedFields"),
+		)))
+	}
+	statusOf := func(evictionStatus datastore.Document) datastore.Document {
+		return datastore.D(datastore.E("$getField", datastore.D(
+			datastore.E("field", "status"),
+			datastore.E("input", evictionStatus),
+		)))
+	}
+
+	matches := datastore.A()
+	for _, status := range statuses {
+		matches = append(matches,
+			datastore.D(datastore.E("$eq", datastore.A(statusOf(written(userPodsEvictionStatusField)), status))),
+			datastore.D(datastore.E("$eq", datastore.A(written(userPodsEvictionStatusField+".status"), status))),
+		)
+	}
+
+	return datastore.E("$expr", datastore.D(datastore.E("$or", matches)))
+}
+
 // BuildQuarantinedAndDrainedNodesPipeline creates a pipeline for remediation-ready nodes
 // This watches for insert/update events where both quarantine and eviction status indicate the
 // node is ready for reboot, or where the node has been unquarantined and needs cleanup, or where
@@ -158,24 +190,7 @@ func (b *MongoDBPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() datas
 						datastore.E(fieldOperationType, "update"),
 						datastore.E("$or", datastore.A(
 							datastore.D(
-								datastore.E("$expr", datastore.D(
-									datastore.E(opGT, datastore.A(
-										datastore.D(
-											datastore.E("$size", datastore.D(
-												datastore.E("$filter", datastore.D(
-													datastore.E("input", datastore.D(
-														datastore.E("$objectToArray", "$updateDescription.updatedFields"),
-													)),
-													datastore.E("as", "field"),
-													datastore.E("cond", datastore.D(
-														datastore.E("$eq", datastore.A("$$field.k", "healtheventstatus.userpodsevictionstatus")),
-													)),
-												)),
-											)),
-										),
-										0,
-									)),
-								)),
+								evictionStatusWritten(string(model.StatusSucceeded), string(model.AlreadyDrained)),
 								datastore.E("fullDocument.healtheventstatus.userpodsevictionstatus.status", datastore.D(
 									datastore.E(opIn, datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
 								)),
@@ -185,24 +200,7 @@ func (b *MongoDBPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() datas
 							),
 							// Watch for unquarantine events (for annotation cleanup)
 							datastore.D(
-								datastore.E("$expr", datastore.D(
-									datastore.E(opGT, datastore.A(
-										datastore.D(
-											datastore.E("$size", datastore.D(
-												datastore.E("$filter", datastore.D(
-													datastore.E("input", datastore.D(
-														datastore.E("$objectToArray", "$updateDescription.updatedFields"),
-													)),
-													datastore.E("as", "field"),
-													datastore.E("cond", datastore.D(
-														datastore.E("$eq", datastore.A("$$field.k", "healtheventstatus.userpodsevictionstatus")),
-													)),
-												)),
-											)),
-										),
-										0,
-									)),
-								)),
+								evictionStatusWritten(string(model.StatusSucceeded)),
 								datastore.E("fullDocument.healtheventstatus.nodequarantined", string(model.UnQuarantined)),
 								datastore.E("fullDocument.healtheventstatus.userpodsevictionstatus.status", string(model.StatusSucceeded)),
 							),
