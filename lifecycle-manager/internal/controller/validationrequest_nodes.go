@@ -35,6 +35,17 @@ import (
 
 const uncordonReasonValidationSucceeded = "ValidationSucceeded"
 
+const annotationQuarantineHealthEvent = "quarantineHealthEvent"
+
+type nodeQuarantinedError struct {
+	nodeName  string
+	retrySafe bool
+}
+
+func (e *nodeQuarantinedError) Error() string {
+	return fmt.Sprintf("node %q became quarantined before validation release", e.nodeName)
+}
+
 // validationStateLabelKey is a node label that mirrors the validation-session and
 // active-validation-request annotations
 const validationStateLabelKey = "nvsentinel.nvidia.com/validation-state"
@@ -199,12 +210,79 @@ func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Contex
 
 func (r *ValidationRequestReconciler) releaseNodesFromSuccessfulRequest(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest, supersedeTests []string) error {
+	// Check the whole request before releasing any node. The check inside each
+	// patch still protects against quarantine starting after this precheck.
+	retrySafe, err := r.checkNodesBeforeRelease(ctx, validationRequest)
+	if err != nil {
+		return err
+	}
+
 	for _, ns := range validationRequest.Spec.Nodes {
 		err := r.patchNodeWithRetry(ctx, ns.Name, func(node *corev1.Node) (bool, error) {
+			if _, quarantined := node.Annotations[annotationQuarantineHealthEvent]; quarantined {
+				return false, &nodeQuarantinedError{nodeName: ns.Name, retrySafe: retrySafe}
+			}
+
 			return releaseNodeFromSession(node, validationRequest.Name, supersedeTests, r.Config.Validation.Spec.SchedulingGate)
 		})
 		if err != nil {
 			return fmt.Errorf("release node %q from successful request: %w", ns.Name, err)
+		}
+
+		// A released node may already accept workloads. A later failure must not
+		// restart a batch that includes that node.
+		retrySafe = false
+	}
+
+	return nil
+}
+
+func (r *ValidationRequestReconciler) checkNodesBeforeRelease(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest) (bool, error) {
+	retrySafe := true
+
+	var quarantinedNode *nodeQuarantinedError
+
+	for _, ns := range validationRequest.Spec.Nodes {
+		var node corev1.Node
+		if err := r.APIReader.Get(ctx, client.ObjectKey{Name: ns.Name}, &node); err != nil {
+			if apierrors.IsNotFound(err) {
+				retrySafe = false
+
+				continue
+			}
+
+			return false, fmt.Errorf("check node %q before validation release: %w", ns.Name, err)
+		}
+
+		// This also detects a partial release from an earlier reconcile, whose
+		// status update may have failed or whose controller may have restarted.
+		if node.Annotations[annotationActiveValidationRequest] != validationRequest.Name {
+			retrySafe = false
+		}
+
+		if _, quarantined := node.Annotations[annotationQuarantineHealthEvent]; quarantined && quarantinedNode == nil {
+			quarantinedNode = &nodeQuarantinedError{nodeName: ns.Name}
+		}
+	}
+
+	if quarantinedNode != nil {
+		quarantinedNode.retrySafe = retrySafe
+
+		return false, quarantinedNode
+	}
+
+	return retrySafe, nil
+}
+
+func (r *ValidationRequestReconciler) releaseNodesFromDeletedRequest(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest) error {
+	for _, ns := range validationRequest.Spec.Nodes {
+		err := r.patchNodeWithRetry(ctx, ns.Name, func(node *corev1.Node) (bool, error) {
+			return releaseNodeFromSession(node, validationRequest.Name, nil, r.Config.Validation.Spec.SchedulingGate)
+		})
+		if err != nil {
+			return fmt.Errorf("remove deleted request %q from node %q: %w", validationRequest.Name, ns.Name, err)
 		}
 	}
 
@@ -243,7 +321,10 @@ func releaseNodeFromSession(node *corev1.Node, validationRequestName string, sup
 		changed = true
 	}
 
-	if sessionBecameEmpty && applySchedulingGateRelease(node, schedulingGate) {
+	// Deleting a request removes its session entry, but must not remove a new
+	// quarantine. Successful completion checks this condition before cleanup.
+	_, quarantined := node.Annotations[annotationQuarantineHealthEvent]
+	if sessionBecameEmpty && !quarantined && applySchedulingGateRelease(node, schedulingGate) {
 		changed = true
 	}
 
