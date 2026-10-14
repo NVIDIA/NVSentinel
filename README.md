@@ -273,6 +273,8 @@ Validated on NVIDIA Volta, Ampere, Hopper, Ada Lovelace and Blackwell architectu
 
 For more, including configuration options, external database setup, writing custom health checks, and operational runbooks, visit [docs.nvidia.com/nvsentinel](https://docs.nvidia.com/nvsentinel/).
 
+See [ADOPTERS.md](ADOPTERS.md) for organizations and projects that use or build on NVSentinel.
+
 ## Distribution
 
 NVSentinel is published exclusively through the channels below. There is no other official distribution — if you obtained NVSentinel elsewhere, treat it as untrusted.
