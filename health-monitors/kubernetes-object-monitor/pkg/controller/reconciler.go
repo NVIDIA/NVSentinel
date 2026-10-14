@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"strings"
+	"regexp"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -307,8 +307,31 @@ func (r *ResourceReconciler) isLatchedOnNode(
 	return exists
 }
 
+var conditionTypeLiteralPattern = regexp.MustCompile(
+	`\.type\s*==\s*["']([^"']+)["']|["']([^"']+)["']\s*==\s*[A-Za-z0-9_]+\.type`,
+)
+
 func hasOperatorClearedCondition(p *config.Policy, obj *unstructured.Unstructured) bool {
 	if p == nil || obj == nil {
+		return false
+	}
+
+	matches := conditionTypeLiteralPattern.FindAllStringSubmatch(p.Predicate.Expression, -1)
+	if len(matches) == 0 {
+		return false
+	}
+
+	required := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		condType := m[1]
+		if condType == "" {
+			condType = m[2]
+		}
+		if condType != "" {
+			required[condType] = false
+		}
+	}
+	if len(required) == 0 {
 		return false
 	}
 
@@ -327,15 +350,18 @@ func hasOperatorClearedCondition(p *config.Policy, obj *unstructured.Unstructure
 		condStatus, _ := condMap["status"].(string)
 		condReason, _ := condMap["reason"].(string)
 
-		if condType != "" &&
-			condStatus == "False" &&
-			condReason == "Cleared" &&
-			strings.Contains(p.Predicate.Expression, condType) {
-			return true
+		if _, tracked := required[condType]; tracked && condStatus == "False" && condReason == "Cleared" {
+			required[condType] = true
 		}
 	}
 
-	return false
+	for _, cleared := range required {
+		if !cleared {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (r *ResourceReconciler) handleUnhealthyTransition(
