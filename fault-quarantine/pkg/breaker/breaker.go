@@ -78,6 +78,10 @@ func NewSlidingWindowBreaker(ctx context.Context, cfg Config) (CircuitBreaker, e
 		}
 	}
 
+	// A restored trip returns from IsTripped before any evaluation, so report the
+	// state now or a latched breaker exports no series at all.
+	metrics.SetFaultQuarantineBreakerState(string(b.state))
+
 	return b, nil
 }
 
@@ -375,8 +379,6 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 			return true, fmt.Errorf("error forcing circuit breaker state to TRIPPED: %w", err)
 		}
 
-		metrics.SetFaultQuarantineBreakerState(string(StateTripped))
-
 		return true, nil
 	}
 
@@ -392,6 +394,8 @@ func (b *slidingWindowBreaker) ForceState(ctx context.Context, s State) error {
 	b.mu.Lock()
 	b.state = s
 	b.mu.Unlock()
+
+	metrics.SetFaultQuarantineBreakerState(string(s))
 
 	err := b.cfg.K8sClient.WriteCircuitBreakerState(
 		ctx, b.cfg.ConfigMapName, b.cfg.ConfigMapNamespace, s)
