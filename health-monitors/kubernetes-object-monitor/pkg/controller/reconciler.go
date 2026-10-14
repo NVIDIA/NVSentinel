@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strings"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -51,8 +52,9 @@ type ResourceReconciler struct {
 	policies      []config.Policy
 	gvk           schema.GroupVersionKind
 	// matchStates maps stateKey -> nodeName
-	matchStates   map[string]string
-	matchStatesMu sync.RWMutex
+	matchStates        map[string]string
+	unpersistedMatches map[string]bool
+	matchStatesMu      sync.RWMutex
 }
 
 func NewResourceReconciler(
@@ -64,13 +66,14 @@ func NewResourceReconciler(
 	gvk schema.GroupVersionKind,
 ) *ResourceReconciler {
 	return &ResourceReconciler{
-		Client:        c,
-		evaluator:     evaluator,
-		publisher:     pub,
-		annotationMgr: annotationMgr,
-		policies:      policies,
-		gvk:           gvk,
-		matchStates:   make(map[string]string),
+		Client:             c,
+		evaluator:          evaluator,
+		publisher:          pub,
+		annotationMgr:      annotationMgr,
+		policies:           policies,
+		gvk:                gvk,
+		matchStates:        make(map[string]string),
+		unpersistedMatches: make(map[string]bool),
 	}
 }
 
@@ -165,6 +168,7 @@ func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctr
 
 				r.matchStatesMu.Lock()
 				delete(r.matchStates, stateKey)
+				delete(r.unpersistedMatches, stateKey)
 				r.matchStatesMu.Unlock()
 
 				continue
@@ -193,6 +197,7 @@ func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctr
 
 			r.matchStatesMu.Lock()
 			delete(r.matchStates, stateKey)
+			delete(r.unpersistedMatches, stateKey)
 			r.matchStatesMu.Unlock()
 
 			if err := r.annotationMgr.RemoveMatch(ctx, nodeName, stateKey); err != nil {
@@ -244,10 +249,93 @@ func (r *ResourceReconciler) reconcilePolicy(
 	}
 
 	if !matched && wasMatched {
+		if p.Latch && r.isLatchedOnNode(ctx, p, obj, storedNodeName, stateKey) {
+			slog.Debug("Policy is latched; skipping healthy transition on predicate falling edge",
+				"policy", p.Name, "node", storedNodeName, "stateKey", stateKey)
+
+			return nil
+		}
+
 		return r.handleHealthyTransition(ctx, p, storedNodeName, stateKey, resourceInfo)
 	}
 
 	return nil
+}
+
+// isLatchedOnNode reports whether a latched policy should remain unhealthy on a
+// predicate falling edge. A latched policy stays unhealthy across process resets
+// (such as an NPD restart resetting SystemLogMonitor conditions to False) until
+// the resource is deleted, an operator explicitly clears the condition
+// (status: "False", reason: "Cleared"), or an operator removes stateKey from the
+// node's policy-matches annotation. If the initial AddMatch write failed or a
+// lookup fails, we fail safe and hold the latch.
+func (r *ResourceReconciler) isLatchedOnNode(
+	ctx context.Context,
+	p *config.Policy,
+	obj *unstructured.Unstructured,
+	nodeName string,
+	stateKey string,
+) bool {
+	if hasOperatorClearedCondition(p, obj) {
+		return false
+	}
+
+	r.matchStatesMu.RLock()
+	unpersisted := r.unpersistedMatches[stateKey]
+	r.matchStatesMu.RUnlock()
+
+	if unpersisted {
+		if err := r.annotationMgr.AddMatch(ctx, nodeName, stateKey, nodeName); err == nil {
+			r.matchStatesMu.Lock()
+			delete(r.unpersistedMatches, stateKey)
+			r.matchStatesMu.Unlock()
+		}
+
+		return true
+	}
+
+	matches, err := r.annotationMgr.GetMatches(ctx, nodeName)
+	if err != nil {
+		slog.Warn("Failed to check node annotation for latched policy; holding latch",
+			"node", nodeName, "stateKey", stateKey, "error", err)
+
+		return true
+	}
+
+	_, exists := matches[stateKey]
+
+	return exists
+}
+
+func hasOperatorClearedCondition(p *config.Policy, obj *unstructured.Unstructured) bool {
+	if p == nil || obj == nil {
+		return false
+	}
+
+	conditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil || !found {
+		return false
+	}
+
+	for _, item := range conditions {
+		condMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		condType, _ := condMap["type"].(string)
+		condStatus, _ := condMap["status"].(string)
+		condReason, _ := condMap["reason"].(string)
+
+		if condType != "" &&
+			condStatus == "False" &&
+			condReason == "Cleared" &&
+			strings.Contains(p.Predicate.Expression, condType) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (r *ResourceReconciler) handleUnhealthyTransition(
@@ -269,6 +357,14 @@ func (r *ResourceReconciler) handleUnhealthyTransition(
 
 	if err := r.annotationMgr.AddMatch(ctx, nodeName, stateKey, nodeName); err != nil {
 		slog.Error("Failed to persist match state to annotation", "node", nodeName, "stateKey", stateKey, "error", err)
+
+		r.matchStatesMu.Lock()
+		r.unpersistedMatches[stateKey] = true
+		r.matchStatesMu.Unlock()
+	} else {
+		r.matchStatesMu.Lock()
+		delete(r.unpersistedMatches, stateKey)
+		r.matchStatesMu.Unlock()
 	}
 
 	metrics.PolicyMatches.WithLabelValues(p.Name, nodeName, r.gvk.Kind).Inc()
@@ -309,6 +405,7 @@ func (r *ResourceReconciler) handleHealthyTransition(
 
 	r.matchStatesMu.Lock()
 	delete(r.matchStates, stateKey)
+	delete(r.unpersistedMatches, stateKey)
 	r.matchStatesMu.Unlock()
 
 	if err := r.annotationMgr.RemoveMatch(ctx, nodeName, stateKey); err != nil {

@@ -1183,3 +1183,143 @@ func updatePodPhase(t *testing.T, setup *testSetup, namespace, name string, phas
 		return updatedPod.Status.Phase == phase
 	}, time.Second, 50*time.Millisecond)
 }
+
+func npdXfsShutdownPolicy() config.Policy {
+	return config.Policy{
+		Name:    "NPDXfsShutdown",
+		Enabled: true,
+		Latch:   true,
+		Resource: config.ResourceSpec{
+			Group:   "",
+			Version: "v1",
+			Kind:    "Node",
+		},
+		Predicate: config.PredicateSpec{
+			Expression: `resource.status.conditions.exists(c, c.type == "XfsShutdown" && c.status != "False")`,
+		},
+		HealthEvent: config.HealthEventSpec{
+			ComponentClass:    "Node",
+			IsFatal:           true,
+			Message:           "NPD reported an XFS filesystem shutdown",
+			RecommendedAction: "REPLACE_VM",
+			ErrorCode:         []string{"NPD_XFS_SHUTDOWN"},
+		},
+	}
+}
+
+func updateNodeCustomCondition(
+	t *testing.T,
+	setup *testSetup,
+	name string,
+	condType v1.NodeConditionType,
+	status v1.ConditionStatus,
+	reason string,
+) {
+	t.Helper()
+
+	node := &v1.Node{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Name: name}, node))
+
+	node.Status.Conditions = []v1.NodeCondition{
+		{Type: v1.NodeReady, Status: v1.ConditionTrue},
+		{Type: condType, Status: status, Reason: reason},
+	}
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, node))
+
+	require.Eventually(t, func() bool {
+		updatedNode := &v1.Node{}
+		if err := setup.k8sClient.Get(setup.ctx, types.NamespacedName{Name: name}, updatedNode); err != nil {
+			return false
+		}
+		for _, cond := range updatedNode.Status.Conditions {
+			if cond.Type == condType && cond.Status == status && cond.Reason == reason {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 50*time.Millisecond)
+}
+
+func TestReconciler_LatchedPolicy_NPDRestartAndOperatorClear(t *testing.T) {
+	policies := []config.Policy{npdXfsShutdownPolicy()}
+	setup := setupTestWithPolicies(t, policies)
+	nodeName := "test-node-npd-latch"
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+
+	// 1. NPD SystemLogMonitor detects XFS shutdown and sets XfsShutdown=True.
+	updateNodeCustomCondition(t, setup, nodeName, "XfsShutdown", v1.ConditionTrue, "XfsHasShutdown")
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{Name: nodeName})
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Len(t, setup.publisher.publishedEvents, 1)
+	assert.False(t, setup.publisher.publishedEvents[0].isHealthy)
+	assert.Equal(t, "NPDXfsShutdown", setup.publisher.publishedEvents[0].policy.Name)
+
+	// 2. NPD restarts and SystemLogMonitor.initializeStatus() resets XfsShutdown to False.
+	// Because the policy is latched, KOM must NOT emit a healthy transition event.
+	setup.publisher.publishedEvents = nil
+	updateNodeCustomCondition(t, setup, nodeName, "XfsShutdown", v1.ConditionFalse, "XfsHasNotShutDown")
+
+	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{Name: nodeName})
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	require.Empty(t, setup.publisher.publishedEvents, "NPD restart condition reset to False must not trigger a healthy event")
+
+	// Verify the node annotation still retains the latched match state.
+	annMgr := annotations.NewManager(setup.k8sClient)
+	matches, err := annMgr.GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.Contains(t, matches, "NPDXfsShutdown/"+nodeName)
+
+	// 3. Verify that even if KOM itself restarts (cold start) while XfsShutdown is False,
+	// it reloads the latched match state and still does not publish a healthy transition.
+	coldStartReconciler := controller.NewResourceReconciler(
+		setup.k8sClient,
+		setup.evaluator,
+		setup.publisher,
+		annMgr,
+		policies,
+		schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"},
+	)
+	require.NoError(t, coldStartReconciler.LoadState(setup.ctx))
+
+	result, err = coldStartReconciler.Reconcile(setup.ctx, ctrl.Request{Name: nodeName})
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	require.Empty(t, setup.publisher.publishedEvents, "KOM cold start must preserve latched policy state when condition is False")
+
+	// 4. Operator validates recovery and clears the policy match annotation on the node.
+	// Next reconcile must now emit the healthy transition event.
+	require.NoError(t, annMgr.RemoveMatch(setup.ctx, nodeName, "NPDXfsShutdown/"+nodeName))
+
+	result, err = coldStartReconciler.Reconcile(setup.ctx, ctrl.Request{Name: nodeName})
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	require.Len(t, setup.publisher.publishedEvents, 1, "operator clearing match annotation should release the latch and publish healthy event")
+	assert.True(t, setup.publisher.publishedEvents[0].isHealthy)
+	assert.Equal(t, nodeName, setup.publisher.publishedEvents[0].nodeName)
+
+	// 5. Trigger XfsShutdown=True again, then verify an operator condition patch
+	// (status="False", reason="Cleared") also releases the latch and removes the annotation.
+	setup.publisher.publishedEvents = nil
+	updateNodeCustomCondition(t, setup, nodeName, "XfsShutdown", v1.ConditionTrue, "XfsHasShutdown")
+	_, err = coldStartReconciler.Reconcile(setup.ctx, ctrl.Request{Name: nodeName})
+	require.NoError(t, err)
+	require.Len(t, setup.publisher.publishedEvents, 1)
+	assert.False(t, setup.publisher.publishedEvents[0].isHealthy)
+
+	setup.publisher.publishedEvents = nil
+	updateNodeCustomCondition(t, setup, nodeName, "XfsShutdown", v1.ConditionFalse, "Cleared")
+	_, err = coldStartReconciler.Reconcile(setup.ctx, ctrl.Request{Name: nodeName})
+	require.NoError(t, err)
+	require.Len(t, setup.publisher.publishedEvents, 1, "operator patching condition with reason=Cleared must release latch and publish healthy event")
+	assert.True(t, setup.publisher.publishedEvents[0].isHealthy)
+
+	matches, err = annMgr.GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	assert.NotContains(t, matches, "NPDXfsShutdown/"+nodeName)
+}
+

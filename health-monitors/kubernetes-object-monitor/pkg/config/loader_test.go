@@ -215,3 +215,39 @@ errorCode = ["OPERATOR_POD_UNHEALTHY"]
 		})
 	}
 }
+
+func TestLoadLatchedPolicy(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	tomlConfig := `
+[[policies]]
+name = "NPDXfsShutdown"
+enabled = true
+latch = true
+
+[policies.resource]
+group = ""
+version = "v1"
+kind = "Node"
+
+[policies.predicate]
+expression = '''
+resource.status.conditions.exists(c,
+  c.type == "XfsShutdown" &&
+  c.status != "False")
+'''
+
+[policies.healthEvent]
+componentClass = "Node"
+isFatal = true
+message = "NPD reported an XFS filesystem shutdown"
+recommendedAction = "REPLACE_VM"
+errorCode = ["NPD_XFS_SHUTDOWN"]
+`
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlConfig), 0o600))
+
+	cfg, err := Load(configPath)
+	require.NoError(t, err)
+	require.Len(t, cfg.Policies, 1)
+	require.True(t, cfg.Policies[0].Latch)
+}
+

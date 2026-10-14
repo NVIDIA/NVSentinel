@@ -321,9 +321,13 @@ kubectl wait --for=create pod \
 ```
 
 A `False` condition after restart only shows that the NPD process reset its
-state; it does not prove recovery from a real failure. Restarting NPD can also
-cause KOM to observe a healthy transition and cancel active break-fix
-processing, so limit this procedure to the test node after validation.
+state; it does not prove recovery from a real failure. Because the built-in
+`SystemLogMonitor` policies in `values-npd-remediation.yaml` set `latch: true`,
+KOM holds the unhealthy state across an NPD restart until the node is replaced
+or an operator explicitly clears the condition (`status: "False"`,
+`reason: "Cleared"`) or removes the policy entry from the node's
+`nvsentinel.nvidia.com/k8s-object-monitor-policy-matches` annotation after
+validation.
 
 ---
 

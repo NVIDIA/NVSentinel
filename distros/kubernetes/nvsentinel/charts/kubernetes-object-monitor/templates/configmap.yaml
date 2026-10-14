@@ -26,6 +26,9 @@ data:
     [[policies]]
       name = {{ .name | quote }}
       enabled = {{ .enabled }}
+      {{- if .latch }}
+      latch = {{ .latch }}
+      {{- end }}
       
       [policies.resource]
         group = {{ .resource.group | quote }}
