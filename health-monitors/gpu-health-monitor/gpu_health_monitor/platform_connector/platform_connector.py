@@ -49,13 +49,13 @@ GPU_ONLY_FIELD_HEALTH_WATCHES = frozenset(
 # is already hung. Keep delivery bounded well inside the liveness restart budget.
 CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
 # A connectivity failure further than this from the previous one starts a new
-# unreachability window. It must exceed the gap a liveness restart leaves
-# between two hang reports.
-CONNECTIVITY_WINDOW_MAX_GAP_SECONDS = 300.0
-CONNECTIVITY_WINDOW_PERSIST_INTERVAL_SECONDS = 10.0
+# unreachability window. It must exceed the gap a liveness restart leaves between
+# two hang reports: the kubelet's restart backoff, capped at 300s, plus startup.
+DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS = 600.0
+DCGM_CONNECTIVITY_WINDOW_PERSIST_INTERVAL_SECONDS = 10.0
 # Remote probe hangs and connectivity failures share this check, so its state
 # record also carries the unreachability window.
-CONNECTIVITY_CHECK_NAME = "GpuDcgmConnectivityFailure"
+DCGM_CONNECTIVITY_CHECK_NAME = "GpuDcgmConnectivityFailure"
 # Socket path only: transport-level failures are worth another attempt. Every
 # other status is a deterministic verdict from platform-connector
 # (PERMISSION_DENIED, UNAUTHENTICATED, INVALID_ARGUMENT, ...) that will come
@@ -455,7 +455,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         now = time.time()
         if self._connectivity_failing_since is None or (
             self._connectivity_last_failure is not None
-            and failed_at - self._connectivity_last_failure > CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
+            and failed_at - self._connectivity_last_failure > DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
         ):
             self._connectivity_failing_since = failed_at
             self._connectivity_window_persisted_at = None
@@ -465,26 +465,27 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         # to be fresh enough for the restore gap check.
         if (
             self._connectivity_window_persisted_at is not None
-            and now - self._connectivity_window_persisted_at < CONNECTIVITY_WINDOW_PERSIST_INTERVAL_SECONDS
+            and now - self._connectivity_window_persisted_at < DCGM_CONNECTIVITY_WINDOW_PERSIST_INTERVAL_SECONDS
         ):
             return
-        self._connectivity_window_persisted_at = now
-        record = self._dcgm_state_records.setdefault(CONNECTIVITY_CHECK_NAME, {})
+        record = self._dcgm_state_records.setdefault(DCGM_CONNECTIVITY_CHECK_NAME, {})
         record["connectivity_window"] = {
             "since": self._connectivity_failing_since,
             "last": self._connectivity_last_failure,
         }
-        self._write_dcgm_state()
+        # Throttle only after a successful write, so a failed one is retried at once.
+        if self._write_dcgm_state():
+            self._connectivity_window_persisted_at = now
 
     def _restore_connectivity_window(self) -> None:
         """Resume an unreachability window left by a previous process, unless it went stale."""
-        record = self._dcgm_state_records.get(CONNECTIVITY_CHECK_NAME, {})
+        record = self._dcgm_state_records.get(DCGM_CONNECTIVITY_CHECK_NAME, {})
         window = record.get("connectivity_window")
         if not isinstance(window, dict):
             return
         if (
             self._connectivity_failure_window_seconds <= 0
-            or time.time() - window["last"] > CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
+            or time.time() - window["last"] > DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
         ):
             self._clear_connectivity_window()
             return
@@ -496,12 +497,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._connectivity_failing_since = None
         self._connectivity_last_failure = None
         self._connectivity_window_persisted_at = None
-        record = self._dcgm_state_records.get(CONNECTIVITY_CHECK_NAME)
+        record = self._dcgm_state_records.get(DCGM_CONNECTIVITY_CHECK_NAME)
         if record is None or "connectivity_window" not in record:
             return
         del record["connectivity_window"]
         if not record:
-            del self._dcgm_state_records[CONNECTIVITY_CHECK_NAME]
+            del self._dcgm_state_records[DCGM_CONNECTIVITY_CHECK_NAME]
         self._flush_dcgm_state()
 
     @_serialized_event_state

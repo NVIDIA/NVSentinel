@@ -2692,21 +2692,50 @@ class TestPlatformConnectors(unittest.TestCase):
 
     def test_hang_starting_inside_the_gap_continues_the_window(self):
         """The gap is measured to when the hang began, not to when the watchdog reported it."""
+        gap = platform_connector.DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
         with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, first):
             now = time.time()
-            self._write_window(first, since=now - 500, last=now - 290)
+            self._write_window(first, since=now - gap - 300, last=now - gap + 10)
 
             restarted = self._restart(first, connectivity_failure_window_seconds=240)
-            # Detected 310s after the last failure, but the hang began 45.6s earlier.
+            # Detected 10s past the gap, but the hang began 45.6s earlier.
             restarted._connectivity_last_failure -= 20
             assert restarted.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is True
-            assert restarted._connectivity_failing_since == now - 500
+            assert restarted._connectivity_failing_since == now - gap - 300
+
+    def test_window_survives_a_capped_restart_backoff(self):
+        """The kubelet's restart backoff caps at 300s; a restart after it plus startup still resumes."""
+        with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, first):
+            now = time.time()
+            self._write_window(first, since=now - 400, last=now - 330)
+
+            restarted = self._restart(first, connectivity_failure_window_seconds=240)
+            assert restarted._connectivity_failing_since == now - 400
+            assert restarted.dcgm_probe_unresponsive("dcgm_health_check", 45.6, "remote") is True
+
+    def test_failed_window_write_is_retried_without_throttling(self):
+        """A failed write must not start the persist interval, or a restart could lose the window."""
+        with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, processor):
+            write = processor._write_dcgm_state
+            attempts = []
+
+            def flaky_write() -> bool:
+                attempts.append(1)
+                return False if len(attempts) == 1 else write()
+
+            processor._write_dcgm_state = flaky_write
+            processor._note_connectivity_failure(time.time())
+            processor._note_connectivity_failure(time.time())
+
+            assert len(attempts) == 2
+            assert "connectivity_window" in self._dcgm_state(processor)["GpuDcgmConnectivityFailure"]
 
     def test_stale_connectivity_window_is_not_resumed(self):
         """A window whose last failure is older than the gap limit starts over."""
+        gap = platform_connector.DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
         with self._running_connector(connectivity_failure_window_seconds=240) as (servicer, first):
             now = time.time()
-            self._write_window(first, since=now - 1000, last=now - 400)
+            self._write_window(first, since=now - gap - 600, last=now - gap - 100)
 
             restarted = self._restart(first, connectivity_failure_window_seconds=240)
             assert restarted._connectivity_failing_since is None
