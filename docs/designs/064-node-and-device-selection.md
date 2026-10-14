@@ -67,9 +67,8 @@ Each component that acts on a fault already reads the node, and two of them can 
 
 Thus, case 4 and case 6 work at this time. The gap is mostly in fault-remediation, which has no selection.
 
-[ADR-060](https://github.com/NVIDIA/NVSentinel/pull/1952) proposed one shared behaviour profile that all three
-components read. This ADR replaces it. It adds the missing controls to node-drainer and fault-remediation, with one
-rule set schema that both components use. The schema starts from the fault-quarantine rule sets.
+This ADR adds the missing controls to node-drainer and fault-remediation, with one rule set schema that both
+components use. The schema starts from the fault-quarantine rule sets.
 
 ## Decision
 
@@ -80,9 +79,9 @@ rule set schema that both components use. The schema starts from the fault-quara
    other with a change to the outcome only. The types and the evaluator are in `commons`.
 2. **Each component keeps its own configuration.** There is no shared profile and no shared definition of node
    groups.
-3. **fault-quarantine:** no change. Its rule sets already select by node and by event. A later event on a quarantined
-   node applies the taints and the cordon of the rule sets that it matches
-   ([ADR-062](062-fault-quarantine-release-at-session-end.md)). A later ADR moves its rule sets to the shared schema.
+3. **fault-quarantine:** no change. Its rule sets already select by node and by event. The shared schema keeps their
+   `match` lists, rule kinds, and CEL variables, so the schema can also describe a quarantine outcome (see
+   [fault-quarantine](#fault-quarantine)).
 4. **node-drainer:** add `ruleSets` with the `drain` outcome.
    - The outcome is `skip: true` or a `method` (`Custom` or `Evict`). No match gives `Evict`.
    - node-drainer selects the method one time, when the drain for an event starts. It records the rule set, the
@@ -237,7 +236,7 @@ works in the other.
   informer lister. fault-remediation gives the Node that it has already read for the event. fault-quarantine gives its
   informer lister and the direct API read that it uses at cold start.
 - The rule set layer (`enabled`, `match`, the winner, and the errors) is new in `commons`. fault-quarantine keeps its
-  own rule set layer until a later ADR.
+  own rule set layer.
 
 ### fault-quarantine
 
@@ -255,8 +254,13 @@ when the last event of the session recovers, not when each event recovers.
 Health events and node conditions continue for these nodes. No later stage runs, because node-drainer starts only for
 a quarantined node.
 
-**Differences from the shared schema.** A later ADR moves fault-quarantine to the shared schema. It must resolve these
-differences, because each one changes the behaviour of an existing configuration:
+**Common parts.** The shared schema starts from the fault-quarantine rule sets. These parts are the same: `name`,
+`priority`, the `all` and `any` lists, the `HealthEvent` and `Node` rule kinds, the CEL environments, and the `event`
+and `node` variables. A `HealthEvent` rule, and a `Node` rule that reads only named labels, works in both with no change.
+The quarantine fields (`taint`, `label`, and `cordon`) fit under one outcome key, `quarantine`. Thus, the shared schema can describe fault-quarantine rule sets.
+
+**Differences from the shared schema.** Each difference changes the behaviour of an existing fault-quarantine
+configuration:
 
 | fault-quarantine at this time | Shared schema |
 |---|---|
@@ -554,7 +558,7 @@ the decisions of events that are in progress, so a restart does not change them.
 
 - Each component has its own group definitions. A group that applies to more than one stage is written once in each
   component.
-- Until a later ADR, fault-quarantine rule sets differ from the shared schema in seven ways (see
+- fault-quarantine rule sets differ from the shared schema in seven ways (see
   [Differences from the shared schema](#fault-quarantine)). An operator must know both forms.
 - `customDrain.nodeSelector` is deprecated soon after its release in v1.26.0. Operators who adopted it must migrate,
   and node-drainer supports two forms during the deprecation period. See
@@ -580,10 +584,9 @@ the decisions of events that are in progress, so a restart does not change them.
 
 ## Alternatives Considered
 
-### Behaviour profiles (ADR-060)
+### Behaviour profiles
 
-One shared profile, selected by ordered routes, that enables or disables each stage
-([#1952](https://github.com/NVIDIA/NVSentinel/pull/1952)).
+One shared profile, selected by ordered routes, that enables or disables each stage.
 **Rejected** because: fault-quarantine and node-drainer can already select by node. A profile is a shared definition
 of node groups and their behaviour for all stages. The drain method, the external repair, and the action for each
 group still need changes in each component.
@@ -665,7 +668,7 @@ main advantage.
 - New device information in the health event, for example the GPU model or architecture. A different ADR adds it.
   The rules of this ADR can read it when it is in the event.
 - A stop of a maintenance CR when a rule set change disables remediation.
-- A change to the rule set format or the behaviour of fault-quarantine. A later ADR moves it to the shared schema.
+- A change to the rule set format or the behaviour of fault-quarantine.
 
 ### Open questions
 
@@ -682,7 +685,6 @@ main advantage.
 ## References
 
 - [#1903](https://github.com/NVIDIA/NVSentinel/issues/1903), [#1904](https://github.com/NVIDIA/NVSentinel/issues/1904): heterogeneous cluster support (node and device dimensions)
-- [#1952](https://github.com/NVIDIA/NVSentinel/pull/1952): ADR-060 behaviour profiles
 - [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439), [#2021](https://github.com/NVIDIA/NVSentinel/pull/2021): later events on a quarantined node apply taints and cordon (fixed)
 - [#1857](https://github.com/NVIDIA/NVSentinel/issues/1857), [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871): custom drain for a subset of nodes
 - [#1960](https://github.com/NVIDIA/NVSentinel/pull/1960): validation after a full drain of a `COMPONENT_RESET` event
