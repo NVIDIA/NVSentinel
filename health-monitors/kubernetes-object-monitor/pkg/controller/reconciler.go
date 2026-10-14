@@ -316,22 +316,8 @@ func hasOperatorClearedCondition(p *config.Policy, obj *unstructured.Unstructure
 		return false
 	}
 
-	matches := conditionTypeLiteralPattern.FindAllStringSubmatch(p.Predicate.Expression, -1)
-	if len(matches) == 0 {
-		return false
-	}
-
-	required := make(map[string]bool, len(matches))
-	for _, m := range matches {
-		condType := m[1]
-		if condType == "" {
-			condType = m[2]
-		}
-		if condType != "" {
-			required[condType] = false
-		}
-	}
-	if len(required) == 0 {
+	condTypes := extractPolicyConditionTypes(p.Predicate.Expression)
+	if len(condTypes) == 0 {
 		return false
 	}
 
@@ -339,6 +325,43 @@ func hasOperatorClearedCondition(p *config.Policy, obj *unstructured.Unstructure
 	if err != nil || !found {
 		return false
 	}
+
+	clearedTypes := collectOperatorClearedTypes(conditions)
+	for _, condType := range condTypes {
+		if !clearedTypes[condType] {
+			return false
+		}
+	}
+
+	return true
+}
+
+func extractPolicyConditionTypes(expr string) []string {
+	matches := conditionTypeLiteralPattern.FindAllStringSubmatch(expr, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool, len(matches))
+	result := make([]string, 0, len(matches))
+
+	for _, match := range matches {
+		condType := match[1]
+		if condType == "" {
+			condType = match[2]
+		}
+
+		if condType != "" && !seen[condType] {
+			seen[condType] = true
+			result = append(result, condType)
+		}
+	}
+
+	return result
+}
+
+func collectOperatorClearedTypes(conditions []any) map[string]bool {
+	cleared := make(map[string]bool, len(conditions))
 
 	for _, item := range conditions {
 		condMap, ok := item.(map[string]any)
@@ -350,18 +373,12 @@ func hasOperatorClearedCondition(p *config.Policy, obj *unstructured.Unstructure
 		condStatus, _ := condMap["status"].(string)
 		condReason, _ := condMap["reason"].(string)
 
-		if _, tracked := required[condType]; tracked && condStatus == "False" && condReason == "Cleared" {
-			required[condType] = true
+		if condType != "" && condStatus == "False" && condReason == "Cleared" {
+			cleared[condType] = true
 		}
 	}
 
-	for _, cleared := range required {
-		if !cleared {
-			return false
-		}
-	}
-
-	return true
+	return cleared
 }
 
 func (r *ResourceReconciler) handleUnhealthyTransition(
