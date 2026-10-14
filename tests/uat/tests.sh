@@ -702,6 +702,9 @@ verify_validation_request() {
     log "ValidationRequest $vr_name for node $node succeeded"
 }
 
+# Test 1: injects XID 95 through DCGM on a GPU node and expects NVSentinel to
+# quarantine the node, reboot it and return it to service, then checks the
+# post-remediation ValidationRequest.
 test_gpu_monitoring_dcgm() {
     log "========================================="
     log "Test 1: GPU monitoring via DCGM"
@@ -756,6 +759,9 @@ skip_syslog_tests_in_dry_run() {
     fi
 }
 
+# Test 2: writes a non-fatal XID 13 and a fatal XID 79 to the kernel log of a
+# GPU node. Expects XID 13 to raise only a node event, and XID 79 to quarantine
+# the node, reboot it and return it to service. Skipped in dry-run.
 test_xid_monitoring_syslog() {
     log "======================================================"
     log "Test 2: XID monitoring via syslog"
