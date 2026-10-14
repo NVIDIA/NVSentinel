@@ -16,8 +16,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"cel.dev/cel-go/cel"
@@ -495,7 +497,7 @@ func (r *ValidationRequestReconciler) reconcileDelete(ctx context.Context,
 		}
 	}
 
-	if err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest, nil); err != nil {
+	if err := r.releaseNodesFromDeletedRequest(ctx, validationRequest); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -515,6 +517,11 @@ func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Cont
 		err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest,
 			resolveValidationRequestTests(validationRequest, r.Config))
 		if err != nil {
+			var quarantined *nodeQuarantinedError
+			if errors.As(err, &quarantined) {
+				return r.reconcileQuarantineBeforeRelease(ctx, validationRequest, quarantined)
+			}
+
 			return ctrl.Result{}, err
 		}
 	} else if err := r.releaseNodesFromFailedRequest(ctx, validationRequest); err != nil {
@@ -552,6 +559,49 @@ func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Cont
 	metrics.ValidationRequestsDurationSeconds.WithLabelValues(metricStatus).Observe(duration.Seconds())
 
 	return ctrl.Result{}, nil
+}
+
+// A late quarantine has the same retry policy as a readiness violation during
+// a running test. Keep the session until a fresh test succeeds or an operator
+// deletes the failed request; a result from before the fault cannot release it.
+func (r *ValidationRequestReconciler) reconcileQuarantineBeforeRelease(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest, quarantined *nodeQuarantinedError) (ctrl.Result, error) {
+	invalidated := false
+
+	for i := range validationRequest.Status.TestGroups {
+		group := &validationRequest.Status.TestGroups[i]
+		if group.Phase != v1alpha1.PhaseSucceeded || len(group.Attempts) == 0 ||
+			!slices.Contains(group.Nodes, quarantined.nodeName) {
+			continue
+		}
+
+		provider, ok := r.Config.Validation.Spec.Providers[group.Provider]
+		if !ok {
+			return ctrl.Result{}, fmt.Errorf("provider %q not found while invalidating validation", group.Provider)
+		}
+
+		attempt := &group.Attempts[len(group.Attempts)-1]
+		phase := newTestGroupPhaseAfterAttempt(len(group.Attempts), provider.Retries)
+
+		if !quarantined.retrySafe {
+			// Node release is not atomic across a batch. Do not run another test
+			// on members that may already have returned to service.
+			phase = v1alpha1.PhaseFailed
+		}
+
+		if err := r.finalizeTestGroupAttempt(ctx, validationRequest.Name, group, attempt, phase,
+			v1alpha1.PhaseFailed, v1alpha1.FailureReasonNodeReadinessViolation, []string{quarantined.nodeName}); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		invalidated = true
+	}
+
+	if !invalidated {
+		return ctrl.Result{}, quarantined
+	}
+
+	return r.reconcileRunning(ctx, validationRequest)
 }
 
 func (r *ValidationRequestReconciler) transitionValidationRequestToRunning(ctx context.Context,
