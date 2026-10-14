@@ -310,6 +310,40 @@ var _ = Describe("Validation release quarantine regression", func() {
 		Expect(node.Annotations).NotTo(HaveKey(annotationValidationSession))
 		Expect(node.Annotations).NotTo(HaveKey(annotationActiveValidationRequest))
 		expectReleaseRaceGate(nodeName)
+
+		// FQ preserves a gate that existed before its quarantine. If it does not
+		// create a replacement VR, deleting the last session requires operator
+		// recovery; clearing quarantine alone must not resurrect the deleted VR.
+		clearReleaseRaceQuarantine(nodeName)
+		_, err = fixture.reconciler.Reconcile(ctx, fixture.request)
+		Expect(err).NotTo(HaveOccurred())
+		expectReleaseRaceGate(nodeName)
+		Expect(getNode(ctx, nodeName).Labels).NotTo(HaveKey(validationStateLabelKey))
+
+		r, req := newValidationRequestTestSetup(ctx, "release-delete-replacement", validationRequestTestCase{
+			config: fixture.config,
+			spec:   v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+		})
+		fresh := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, maxReconcileIterations)
+		Expect(updateObjectStatusForAllTestGroups(ctx, &fresh, testSuccessCondType)).To(Succeed())
+		reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseSucceeded, maxReconcileIterations)
+		Expect(getNode(ctx, nodeName).Spec.Unschedulable).To(BeFalse())
+		Expect(getNode(ctx, nodeName).Spec.Taints).NotTo(ContainElement(releaseRaceGateTaint))
+	})
+
+	It("releases the last deleted request's gate when there is no quarantine", func() {
+		nodeName := "release-delete-healthy-node"
+		fixture := newReleaseRaceFixture("release-delete-healthy", 0, nodeName)
+		vr := fixture.running()
+		Expect(k8sClient.Delete(ctx, &vr)).To(Succeed())
+		_, err := fixture.reconciler.Reconcile(ctx, fixture.request)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, fixture.request.NamespacedName,
+			&v1alpha1.ValidationRequest{}))).To(BeTrue())
+		node := getNode(ctx, nodeName)
+		Expect(node.Spec.Unschedulable).To(BeFalse())
+		Expect(node.Spec.Taints).NotTo(ContainElement(releaseRaceGateTaint))
+		Expect(node.Annotations).NotTo(HaveKey(annotationValidationSession))
 	})
 
 	It("never retries a batch on an already released member after a later member is quarantined", func() {

@@ -33,6 +33,14 @@ Within NVSentinel, there are 2 clients that can be opted-in to create Validation
 
 An operator can also create a ValidationRequest manually or implement their own clients.
 
+### Quarantine During Validation
+
+Before releasing a node, the validation-controller checks the live Node for `quarantineHealthEvent`, including when a release patch is retried after a conflict. A new quarantine invalidates the successful results of affected test groups. Their attempts are marked `NodeReadinessViolation`, with the original test end time preserved; a warning log records that the result was invalidated before release. When retries remain, a fresh test is required after quarantine clears. Pending tests also check the live Node before starting, so a stale readiness cache cannot start a retry on a node already known to be quarantined.
+
+Release is not atomic across multiple nodes. A test group cannot retry if one of its members may already have returned to service or is no longer owned by this request. Independent groups are not blocked from retrying solely because another group's node was released or deleted.
+
+Deleting a ValidationRequest during quarantine removes its session entry but preserves the scheduling gate. If it was the last entry, the controller logs a warning: clearing quarantine does **not** guarantee release of the retained cordon or taints, because fault-quarantine preserves gates that existed before it took ownership. After remediation, an operator can create a new ValidationRequest to validate and release the node, or inspect the node and explicitly remove the remaining gate. Do not manually release a node while quarantine is active. This deletion case does not automatically transfer ownership of the gate between controllers.
+
 ## Configuration
 
 Enable validation through Helm values on the lifecycle-manager and fault-quarantine charts:
