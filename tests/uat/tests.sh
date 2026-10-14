@@ -270,22 +270,90 @@ recover_injected_dcgm() {
     UAT_DCGM_RECOVERED=true
 }
 
+# How the debug pod gets the NVIDIA driver (nvidia-smi, NVML):
+#   runtimeclass  runtimeClassName: nvidia; the toolkit runtime hook injects it
+#   nri           no nvidia RuntimeClass (GPU Operator NRI plugin mode deletes
+#                 it); the pod requests the management CDI device by annotation
+# Decided by whether RuntimeClass "nvidia" exists, which is what admission
+# checks. The exact name matters: RKE2 ships an unrelated "nvidia-experimental"
+# RuntimeClass that survives. UAT_GPU_RUNTIME_MODE=runtimeclass|nri forces a
+# mode; unset or "auto" detects.
+# Sets: GPU_RUNTIME_MODE
+discover_gpu_runtime_mode() {
+    local mode=${UAT_GPU_RUNTIME_MODE:-auto}
+    local found
+
+    if [[ "$mode" == "auto" ]]; then
+        # --ignore-not-found: exit 0 with empty output when absent, non-zero
+        # only for real errors (auth, RBAC, connectivity).
+        if ! found=$(kubectl get runtimeclass nvidia -o name --ignore-not-found); then
+            error "Could not read RuntimeClass nvidia to determine the GPU runtime mode"
+        fi
+        if [[ -n "$found" ]]; then
+            mode=runtimeclass
+        else
+            mode=nri
+        fi
+    fi
+
+    case "$mode" in
+        runtimeclass|nri) ;;
+        *) error "UAT_GPU_RUNTIME_MODE must be runtimeclass, nri or auto (got '$mode')" ;;
+    esac
+
+    GPU_RUNTIME_MODE=$mode
+    log "GPU runtime mode: $GPU_RUNTIME_MODE"
+}
+
 # Privileged helper pod for node-level test operations (/dev/kmsg writes,
-# nvidia-smi queries) on the given node, from nvsentinel-debug-pod-template.yaml.
+# nvidia-smi queries) on the given node, from nvsentinel-debug-pod-template.yaml
+# or its -nri variant depending on GPU_RUNTIME_MODE.
 # Sets: NODE_NS, NODE_POD
 create_node_debug_pod() {
     local node=$1
+    local template
+
+    if [[ -z "${GPU_RUNTIME_MODE:-}" ]]; then
+        discover_gpu_runtime_mode
+    fi
+
+    template="${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml"
+    if [[ "$GPU_RUNTIME_MODE" == "nri" ]]; then
+        template="${SCRIPT_DIR}/nvsentinel-debug-pod-template-nri.yaml"
+    fi
 
     NODE_NS=nvsentinel
 
-    NODE_POD=$(sed -e "s|NODE_NAME|$node|" \
-        "${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml" \
+    NODE_POD=$(sed -e "s|NODE_NAME|$node|" "$template" \
         | kubectl create -f - -o jsonpath='{.metadata.name}')
 
     if ! kubectl wait --for=condition=Ready pod -n "$NODE_NS" "$NODE_POD" --timeout=120s >/dev/null; then
         error "Debug pod $NODE_NS/$NODE_POD did not become Ready on node $node"
     fi
     log "Node debug pod running: $NODE_NS/$NODE_POD"
+}
+
+# Call before a test depends on nvidia-smi in the debug pod. In nri mode the
+# pod starts without a driver when the toolkit's NRI plugin skips the
+# management device (namespace outside its allowlist, logged only on the
+# toolkit pod) or when there is no NRI plugin at all (GPUCluster/DRA mode,
+# CRI-O without CDI), so say which.
+require_debug_pod_nvidia_smi() {
+    local nri_enabled
+
+    if kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c 'command -v nvidia-smi' >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ "$GPU_RUNTIME_MODE" != "nri" ]]; then
+        error "nvidia-smi is not available in $NODE_NS/$NODE_POD"
+    fi
+
+    nri_enabled=$(kubectl get daemonset -A -l app=nvidia-container-toolkit-daemonset \
+        -o jsonpath='{.items[*].spec.template.spec.containers[?(@.name=="nvidia-container-toolkit-ctr")].env[?(@.name=="ENABLE_NRI_PLUGIN")].value}' 2>/dev/null || true)
+    if [[ "$nri_enabled" == "true" ]]; then
+        error "nvidia-smi was not injected into $NODE_NS/$NODE_POD: add '$NODE_NS' to NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES on the nvidia-container-toolkit DaemonSet (GPU Operator toolkit.env)"
+    fi
+    error "nvidia-smi is not available in $NODE_NS/$NODE_POD: no RuntimeClass nvidia and no Container Toolkit NRI plugin on this cluster, so the debug pod has no way to get the driver"
 }
 
 delete_node_debug_pod() {
@@ -783,6 +851,7 @@ test_xid_monitoring_syslog_gpu_reset() {
     log "Original boot ID: $initial_boot_id"
 
     create_node_debug_pod "$gpu_node"
+    require_debug_pod_nvidia_smi
 
     log "Fetching GPU UUID and PCI from nvidia-smi on $NODE_NS/$NODE_POD"
 
