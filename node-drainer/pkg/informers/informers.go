@@ -173,6 +173,11 @@ func drainEligiblePodCacheObject(pod *v1.Pod, podLabelKeys ...string) *v1.Pod {
 	ownerReferences := make([]metav1.OwnerReference, len(pod.OwnerReferences))
 	for idx, owner := range pod.OwnerReferences {
 		ownerReferences[idx] = metav1.OwnerReference{Kind: owner.Kind}
+
+		// Pod drain policies match ownerKinds against the controller reference only.
+		if owner.Controller != nil {
+			ownerReferences[idx].Controller = new(*owner.Controller)
+		}
 	}
 
 	var deletionTimestamp *metav1.Time

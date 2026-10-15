@@ -21,22 +21,26 @@ import (
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
 // PodDrainPolicy selects the drain mode for matching pods.
 // Policies are evaluated in order; the first match wins.
+// OwnerKinds matches the kind of the pod's controller owner reference.
 type PodDrainPolicy struct {
 	Name        string    `toml:"name"`
 	Namespace   string    `toml:"namespace"`
 	PodSelector string    `toml:"podSelector"`
+	OwnerKinds  []string  `toml:"ownerKinds"`
 	Mode        EvictMode `toml:"mode"`
 }
 
 type compiledPodDrainPolicy struct {
-	namespace string
-	selector  labels.Selector
-	mode      EvictMode
+	namespace  string
+	selector   labels.Selector
+	ownerKinds map[string]bool
+	mode       EvictMode
 }
 
 // PodPolicyMatcher is immutable after construction and can be shared by drain workers.
@@ -82,8 +86,9 @@ func CompilePodDrainPolicies(policies []PodDrainPolicy) (*PodPolicyMatcher, erro
 	return matcher, nil
 }
 
-// compilePodDrainPolicy validates the mode and namespace glob and parses the pod selector.
-// An omitted namespace matches all namespaces.
+// compilePodDrainPolicy validates the mode and namespace glob, parses the pod selector and
+// collects the owner kinds. An omitted namespace matches all namespaces. A policy needs a
+// podSelector, ownerKinds or both, so that no policy selects every pod by accident.
 func compilePodDrainPolicy(policy PodDrainPolicy) (compiledPodDrainPolicy, error) {
 	switch policy.Mode {
 	case ModeImmediateEvict, ModeAllowCompletion, ModeDeleteAfterTimeout:
@@ -100,8 +105,19 @@ func compilePodDrainPolicy(policy PodDrainPolicy) (compiledPodDrainPolicy, error
 		return compiledPodDrainPolicy{}, fmt.Errorf("invalid namespace pattern: %w", err)
 	}
 
+	ownerKinds, err := compileOwnerKinds(policy.OwnerKinds)
+	if err != nil {
+		return compiledPodDrainPolicy{}, err
+	}
+
 	if strings.TrimSpace(policy.PodSelector) == "" {
-		return compiledPodDrainPolicy{}, fmt.Errorf("podSelector must not be empty")
+		if ownerKinds == nil {
+			return compiledPodDrainPolicy{}, fmt.Errorf("podSelector and ownerKinds must not both be empty")
+		}
+
+		return compiledPodDrainPolicy{
+			namespace: namespace, selector: labels.Everything(), ownerKinds: ownerKinds, mode: policy.Mode,
+		}, nil
 	}
 
 	selector, err := labels.Parse(policy.PodSelector)
@@ -109,7 +125,29 @@ func compilePodDrainPolicy(policy PodDrainPolicy) (compiledPodDrainPolicy, error
 		return compiledPodDrainPolicy{}, fmt.Errorf("invalid podSelector: %w", err)
 	}
 
-	return compiledPodDrainPolicy{namespace: namespace, selector: selector, mode: policy.Mode}, nil
+	return compiledPodDrainPolicy{
+		namespace: namespace, selector: selector, ownerKinds: ownerKinds, mode: policy.Mode,
+	}, nil
+}
+
+// compileOwnerKinds returns the set of owner kinds, or nil when the policy does not match on owners.
+// Kinds are compared exactly, as Kubernetes stores them in owner references (e.g. "StatefulSet").
+func compileOwnerKinds(kinds []string) (map[string]bool, error) {
+	if len(kinds) == 0 {
+		return nil, nil
+	}
+
+	ownerKinds := make(map[string]bool, len(kinds))
+
+	for index, kind := range kinds {
+		if kind == "" || strings.TrimSpace(kind) != kind {
+			return nil, fmt.Errorf("ownerKinds[%d]: invalid kind %q", index, kind)
+		}
+
+		ownerKinds[kind] = true
+	}
+
+	return ownerKinds, nil
 }
 
 // LabelKeys lists the only pod labels the informer needs to retain.
@@ -121,10 +159,22 @@ func (m *PodPolicyMatcher) LabelKeys() []string {
 func (m *PodPolicyMatcher) Match(pod *v1.Pod) (EvictMode, bool) {
 	for _, policy := range m.policies {
 		namespaceMatches, _ := filepath.Match(policy.namespace, pod.Namespace)
-		if namespaceMatches && policy.selector.Matches(labels.Set(pod.Labels)) {
+		if namespaceMatches && policy.selector.Matches(labels.Set(pod.Labels)) && policy.matchesOwner(pod) {
 			return policy.mode, true
 		}
 	}
 
 	return "", false
+}
+
+// matchesOwner reports whether the pod's controller has one of the policy's owner kinds.
+// Pods without a controller, such as bare pods, never match a policy that sets ownerKinds.
+func (p compiledPodDrainPolicy) matchesOwner(pod *v1.Pod) bool {
+	if p.ownerKinds == nil {
+		return true
+	}
+
+	controller := metav1.GetControllerOfNoCopy(pod)
+
+	return controller != nil && p.ownerKinds[controller.Kind]
 }
