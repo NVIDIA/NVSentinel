@@ -378,6 +378,7 @@ Use `global.dryRun: true` to test without cordoning nodes (see [Dry Run Mode](./
 
 In dry run, fault-quarantine records what it would have done without cordoning, tainting or labelling:
 
+- An event that matches no ruleset is skipped, as it is with dry run off: no annotation, no datastore status and no dry-run count. Earlier versions recorded every unhealthy event in dry run.
 - The quarantine annotations are written as usual, plus `quarantineHealthEventDryRun: "True"`. They are kept across restarts and when something else cordons or uncordons the node.
 - `fault_quarantine_dry_run_actions_total{action="quarantine|unquarantine"}` counts these decisions. The quarantine metrics (`fault_quarantine_cordons_applied_total` and the rest) count only applied actions.
 - Logs read `Would cordon node (dry run)` and `Would uncordon node (dry run)`.
