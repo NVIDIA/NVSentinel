@@ -295,7 +295,7 @@ cat /sys/class/infiniband/mlx5_0/ports/1/phys_state
      - Observational state has been discarded; outstanding card/device FATAL latches remain pending (see [Link Counter Detection, Section 6.5](./046-link-counter-detection.md#65-boot-id-handling))
      - Healthy ports (`ACTIVE/LinkUp`): Emit **healthy event** (`IsHealthy=true`) — this clears any stale FATAL conditions on the platform from the previous boot (the node may have had NICs replaced, cables reseated, etc.)
      - Unhealthy ports on **anomalous cards** (active-port count below the role group's decisive mode, group of ≥2 cards — see Section 4.3): Emit **fatal event** — peer comparison provides positive evidence the port is supposed to be up
-     - Unhealthy ports on **all other cards** — cards at/above their role mode, **singleton role groups**, and groups with a **tied or zero mode**: Log and **suppress** the event. A port that has never been observed healthy carries no evidence it should be up: an uncabled second port or an intentionally-disabled/unprovisioned port (e.g., the unused Aux frontend port on OCI `BM.GPU.H100.8`, left as a singleton after its Prime twin is excluded as the default-route NIC) is numerically indistinguishable from a failure. Without peer evidence the monitor keeps the state local and does not publish an external `HealthEvent`
+     - Unhealthy ports on **all other cards** — cards at/above their role mode, **singleton role groups**, and groups with a **tied mode or no active cards**: Log and **suppress** the event. A port that has never been observed healthy carries no evidence it should be up: an uncabled second port or an intentionally-disabled/unprovisioned port (e.g., the unused Aux frontend port on OCI `BM.GPU.H100.8`, left as a singleton after its Prime twin is excluded as the default-route NIC) is numerically indistinguishable from a failure. Without peer evidence the monitor keeps the state local and does not publish an external `HealthEvent`
    - **First poll with no persisted state (fresh node, corrupt/missing state file)**:
      - Same behavior as the reboot case above
    - **First poll with persisted previous state (pod restart, same boot)**:
@@ -539,8 +539,8 @@ NICs are grouped by **role** (Compute or Storage, from Section 4.2), then within
 1. Group NICs by **physical card** (PCI `bus:device` address — e.g., `0000:47:00` groups `0000:47:00.0` and `0000:47:00.1`)
 2. **Exempt cards with a management-classified sibling function**: if any function of a card was classified Management (e.g., it carries the default route), the whole card is frontend plumbing and is removed from peer comparison. Its active member is the excluded management NIC itself, so counting only the monitored remainder would misread an intentionally-uncabled sibling function as a failure. Exempt cards keep per-port runtime transition detection; an outstanding card-anomaly latch on a newly-exempt card is cleared with a card-healthy event so no downstream FATAL is orphaned. (VF siblings do **not** exempt a card — they are filtered by discovery before classification and carry no frontend signal.)
 3. Count active (`ACTIVE` + `LinkUp`) ports per card
-4. Calculate the **decisive mode** (most common active-port-count) within the role group. A group is **indecisive** — and skipped — when it has fewer than 2 cards (nothing to compare against), when the mode is 0 (every card down — no meaningful pattern), or when the top frequency is **tied** between two distinct counts (no majority; an intentionally-idle card, such as the Aux half of a Prime/Aux frontend pair, is numerically indistinguishable from a failed one)
-5. Any card with fewer active ports than its role's decisive mode → **FATAL event** (card-level), and its unhealthy ports keep their fatal severity on the first poll
+4. Calculate the **decisive mode** (most common active-port-count) within the role group. A group is **indecisive** — and skipped — when it has fewer than 2 cards (nothing to compare against), or when the top frequency is **tied** between two distinct counts (no majority; an intentionally-idle card, such as the Aux half of a Prime/Aux frontend pair, is numerically indistinguishable from a failed one). If zero is the decisive mode and some cards have active ports, calculate a second decisive mode among only those active cards; if that positive mode is tied, skip the group rather than guess. A group where every card has zero active ports remains indecisive.
+5. Any card with fewer active ports than the applicable positive mode → **FATAL event** (card-level), and its unhealthy ports keep their fatal severity on the first poll
 
 **Anomaly membership is the single source of "peer evidence" on the first poll**: a first-poll unhealthy port is fatal **only** when its card is in the anomaly set. Ports on cards at/above the mode, in singleton groups, or in indecisive groups are logged and **suppressed** — without peers there is no evidence the port is supposed to be up, and a false external event is worse than a local diagnostic log (consistent with the fail-safe direction in Section 4.1.2).
 
@@ -555,7 +555,11 @@ For all monitored PF NICs:
   For each role group (Compute, Storage):
     If group has < 2 cards: skip (no peers — no evidence either way)
     Calculate mode_active = most common active-port-count in this group
-    If mode_active == 0 or the top frequency is tied: skip (indecisive)
+    If the top frequency is tied: skip (indecisive)
+    If mode_active == 0:
+      If every card has 0 active ports: skip (indecisive)
+      Calculate mode_active from cards with > 0 active ports
+      If that top frequency is tied: skip (indecisive)
     For each card in this group:
       If card_active_count < mode_active:
         Mark card ANOMALOUS
@@ -715,7 +719,7 @@ On the **first complete poll cycle after startup with no persisted observational
 
 1. Group all monitored PF NICs by physical card (PCI `bus:device`), within each role group (Section 4.2)
 2. Count active (`ACTIVE/LinkUp`) ports per card
-3. Calculate the **decisive mode** (most common active-port-count) per role group; groups with fewer than 2 cards, a zero mode, or a tied top frequency are indecisive and skipped (Section 4.3.2)
+3. Calculate the **decisive mode** (most common active-port-count) per role group; groups with fewer than 2 cards or a tied top frequency are indecisive and skipped. If zero is the decisive mode, use the mode among active cards; skip only when all cards are inactive or that active-card mode is tied (Section 4.3.2)
 4. Any card with fewer active ports than its role group's decisive mode → **FATAL event**; unhealthy ports on all other cards are logged and suppressed (no external `HealthEvent`)
 
 This startup homogeneity check requires no persisted state and works immediately as a fallback. It detects missing ports by comparing against **peer NICs on the same node** rather than against a static expected count.
@@ -1127,7 +1131,7 @@ The key question: **"Will the workload fail because of this?"**
 |------------------------------------------------------|----------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **phys_state = LinkErrorRecovery**                   | **RecommendedAction_NONE** | HCA firmware actively retrying; first-poll card-level homogeneity can still emit a separate fatal anomaly when the card is below its peers                                                    |
 | **phys_state = Polling**                             | **RecommendedAction_NONE** | Transient link training; first-poll card-level homogeneity can still emit a separate fatal anomaly when the card is below its peers                                                           |
-| **First-poll DOWN without peer evidence**            | N/A — no external event    | Never-seen-healthy port on a card in a singleton role group, an indecisive (tied/zero-mode) group, or at/above its role mode — indistinguishable from an uncabled or unprovisioned-by-design port (e.g., OCI H100 Aux frontend port) |
+| **First-poll DOWN without peer evidence**            | N/A — no external event    | Never-seen-healthy port on a card in a singleton role group, an indecisive (tied/all-zero) group, or at/above its role mode — indistinguishable from an uncabled or unprovisioned-by-design port (e.g., OCI H100 Aux frontend port) |
 
 ### Fatal Counters (IsFatal = true)
 
