@@ -30,6 +30,8 @@ navigation:
         path: tutorials/requesting-node-maintenance.md
       - page: Integrating External Remediation
         path: tutorials/integrating-external-remediation.md
+      - page: Deploying on SUSE Linux Enterprise and RKE2
+        path: tutorials/deploying-on-suse-rke2.md
 
   - section: Architecture
     contents:
