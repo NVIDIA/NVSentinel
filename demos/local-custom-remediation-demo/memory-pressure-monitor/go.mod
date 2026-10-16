@@ -1,6 +1,6 @@
 module github.com/nvidia/nvsentinel/demos/local-custom-remediation-demo/memory-pressure-monitor
 
-go 1.27.0
+go 1.27.2
 
 require (
 	github.com/nvidia/nvsentinel/data-models v0.0.0
@@ -10,10 +10,10 @@ require (
 
 require (
 	github.com/yandex/protoc-gen-crd v1.1.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
+	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941 // indirect
 )
 
 replace github.com/nvidia/nvsentinel/data-models => ../../../data-models
