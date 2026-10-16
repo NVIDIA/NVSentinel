@@ -250,7 +250,7 @@ customDrain:
 
 **One decision for each event.** Before node-drainer evicts the first pod or creates the custom drain CR for an event, it selects the drain method:
 
-1. `drainOverrides` on the event apply first, as they do at this time.
+1. `drainOverrides.skip` on the event applies first, as it does at this time. node-drainer marks the drain `AlreadyDrained` and does not evaluate the rule sets, so remediation continues. An override on one event is more specific than a rule set. `drainOverrides.force` does not select skip or the method. It applies on the `Evict` path, as it does at this time.
 2. The winning rule set gives `skip` or the method.
 3. If no rule set matches and `customDrain.nodeSelector` matches, the method is `Custom`. This is the deprecated form.
 4. Otherwise, the method is `Evict`.
@@ -258,6 +258,8 @@ customDrain:
 node-drainer records the rule set, the method, and the drain scope (`Node`, or the entity for a partial drain) on the event status before it acts. Later passes for the same event read the record and do not evaluate the rule sets again. Thus, a label change during a drain does not change the method. A cold start reads the record.
 
 **An error.** node-drainer does not drain and does not record a decision. It sets the node state `drain-failed`, with the rule set name in the message. The next pass evaluates the rule sets again, so a label or configuration change can correct the failure.
+
+**No Node.** If the informer cannot return the Node, node-drainer does not evaluate the rule sets and does not set a node state. It waits and tries again, as it does for `customDrain.nodeSelector` at this time. The `custom-drain-node-selector` rule set behaves the same way.
 
 **Skip.** node-drainer records `userPodsEvictionStatus: Skipped` and the node state `drain-skipped`. `Skipped` is different from `AlreadyDrained`. fault-remediation starts only for `Succeeded` and `AlreadyDrained`, so it does not start for this event. The node stays in quarantine until the event recovers or the operator cancels it. For a fault that does not recover by itself, this is until the operator acts. A gauge counts the nodes in `drain-skipped` and `remediation-skipped`, so that the operator can alert on nodes that stay in these states.
 
@@ -278,7 +280,7 @@ The recorded scope also replaces the configuration that [#1960](https://github.c
 
 To limit these costs:
 
-- node-drainer converts `customDrain.nodeSelector` to a rule set at startup, with the name `custom-drain-node-selector`, the outcome `drain: { method: Custom }`, and a priority lower than all configured rule sets. The selection, the record, and the metrics are the same for both forms.
+- node-drainer converts `customDrain.nodeSelector` to a rule set at startup when `customDrain.enabled` is true, with the name `custom-drain-node-selector`, the outcome `drain: { method: Custom }`, and a priority lower than all configured rule sets. When `customDrain.enabled` is false, node-drainer ignores the selector, as it does at this time. The selection, the record, and the metrics are the same for both forms.
 - node-drainer logs a deprecation warning at startup when the field is set. The Helm chart prints a deprecation note.
 - If `ruleSets` contains a rule set with `method: Custom` and `customDrain.nodeSelector` is also set, startup fails. One configuration must not use both forms for the same selection.
 - The field is removed after at least two minor releases. The release notes give the equivalent rule set.
@@ -513,7 +515,7 @@ Add `skipDrain.nodeSelector` in the syntax of `customDrain.nodeSelector`, and ke
 
 ### Open questions
 
-- **Event overrides and `skip`.** `drainOverrides.skip` on the event marks the drain `AlreadyDrained`, so remediation continues. `drainOverrides.force` evicts all pods immediately; it changes how node-drainer evicts, not whether it drains. Which override has priority over a rule set with `drain: { skip: true }`? Also, the name `skip` has a different effect on remediation in `drainOverrides.skip` (remediation continues) and in the `drain` outcome (no remediation).
+- **The name `skip`.** `drainOverrides.skip` on the event and `skip: true` in the `drain` outcome both skip the drain, but they have a different effect on remediation. With `drainOverrides.skip`, remediation continues. With the `drain` outcome, remediation does not start. Should the outcome use a different name?
 - **Duration of the deprecation period.** Proposed answer: two minor releases after the release that adds `ruleSets`.
 - **Enum names in rules.** A rule compares `event.recommendedAction` with a number, not with a name such as `COMPONENT_RESET`. Proposed answer: keep the numbers in this ADR, so that existing fault-quarantine rules do not change. A later change to the shared CEL rule evaluators can add the names for all three components.
 
