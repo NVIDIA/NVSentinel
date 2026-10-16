@@ -188,12 +188,6 @@ config: |
                 "this.healthevent.errorcode.0",
                 "45"
               ]
-            },
-            {
-              "$ne": [
-                "this.healthevent.errorcode.0",
-                "45"
-              ]
             }
           ]
         }
