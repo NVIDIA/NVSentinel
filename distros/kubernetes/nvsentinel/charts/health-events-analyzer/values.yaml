@@ -1950,7 +1950,7 @@ config: |
               {
                 "$in": [
                   "this.healthevent.checkname",
-                  ["InfiniBandDegradationCheck", "EthernetDegradationCheck"]
+                  ["InfiniBandDegradationCheck", "EthernetDegradationCheck", "EFADegradationCheck"]
                 ]
               }
             ]
@@ -1962,7 +1962,7 @@ config: |
       {
         "$match": {
           "healthevent.agent": "nic-health-monitor",
-          "healthevent.checkname": {"$in": ["InfiniBandDegradationCheck", "EthernetDegradationCheck"]},
+          "healthevent.checkname": {"$in": ["InfiniBandDegradationCheck", "EthernetDegradationCheck", "EFADegradationCheck"]},
           "healthevent.isfatal": false,
           "healthevent.ishealthy": false,
           "healthevent.nodename": "this.healthevent.nodename"
