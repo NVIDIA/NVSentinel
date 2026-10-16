@@ -156,13 +156,15 @@ type ChangeStreamWatcher struct {
 	closeMu                   sync.RWMutex // Protects changeStream from concurrent Next/Close
 	resumeTokenUpdateTimeout  time.Duration
 	resumeTokenUpdateInterval time.Duration
-	// Store database and collection for monitoring queries
+	// Store database and collection for monitoring queries, and for reopening the stream
 	database   string
 	collection string
-	// mongoConfig and pipeline are retained so the stream can be reopened after a
-	// runtime failure without reconstructing the watcher.
-	mongoConfig MongoDBConfig
-	pipeline    mongo.Pipeline
+	// The rest of what reopening needs. NOT the whole MongoDBConfig: that carries the URI,
+	// i.e. credentials, and retaining it on a long-lived watcher is what CodeQL flagged on
+	// #2040. These two plus database/collection are everything openChangeStream reads.
+	changeStreamRetryDeadlineSeconds int
+	changeStreamRetryIntervalSeconds int
+	pipeline                         mongo.Pipeline
 	// reopen, reopenInterval and reopenBudget are the seam recoverStream is tested through.
 	// All three are nil/zero on a watcher built as a bare struct literal, which tests do, so
 	// recoveryPolicy resolves the defaults rather than requiring them of the constructor.
@@ -251,18 +253,19 @@ func NewChangeStreamWatcher(
 	}
 
 	watcher := &ChangeStreamWatcher{
-		client:                    client,
-		changeStream:              cs,
-		eventChannel:              make(chan Event),
-		resumeTokenCol:            tokenColl,
-		clientName:                tokenConfig.ClientName,
-		resumeTokenUpdateTimeout:  totalTimeout,
-		resumeTokenUpdateInterval: interval,
-		database:                  mongoConfig.Database,
-		collection:                mongoConfig.Collection,
-		mongoConfig:               mongoConfig,
-		pipeline:                  pipeline,
-		done:                      make(chan struct{}),
+		client:                           client,
+		changeStream:                     cs,
+		eventChannel:                     make(chan Event),
+		resumeTokenCol:                   tokenColl,
+		clientName:                       tokenConfig.ClientName,
+		resumeTokenUpdateTimeout:         totalTimeout,
+		resumeTokenUpdateInterval:        interval,
+		database:                         mongoConfig.Database,
+		collection:                       mongoConfig.Collection,
+		changeStreamRetryDeadlineSeconds: mongoConfig.ChangeStreamRetryDeadlineSeconds,
+		changeStreamRetryIntervalSeconds: mongoConfig.ChangeStreamRetryIntervalSeconds,
+		pipeline:                         pipeline,
+		done:                             make(chan struct{}),
 	}
 
 	return watcher, nil
@@ -693,10 +696,16 @@ func (w *ChangeStreamWatcher) recoveryPolicy() (func(context.Context, bool) erro
 // is visible. The budget is wall-clock rather than a number of attempts because what it has
 // to cover is an outage of a certain duration, not a certain number of failures.
 //
-// What bounds a single attempt is openChangeStream's own design: it retries SecondaryPreferred
-// until ChangeStreamRetryDeadlineSeconds, then falls back to Primary, then recovers from a
-// resume token the oplog has rolled past. So the worst case here is the budget plus one such
-// pass, not the budget alone.
+// What sizes a single attempt is server selection, not the retry deadline (#2040 review).
+// serverSelectionTimeout is TotalPingTimeoutSeconds, 300s by default, so in a partition where
+// no member is selectable the first SecondaryPreferred Watch blocks for 300s — already past
+// ChangeStreamRetryDeadlineSeconds — and the Primary fallback blocks for another 300s. One
+// pass is therefore about ten minutes, and recovery gives up after the first attempt rather
+// than after several. Still bounded, which is what #2020 needed, but the bound is the budget
+// plus one pass of that size, not the budget alone.
+//
+// For the case the budget was sized for — a replica-set roll — a secondary stays selectable,
+// each Watch returns quickly, and the five minutes behaves as intended.
 //
 // DO NOT tighten that by giving the attempt a context deadline. It looks like the obvious fix
 // and it breaks the fallback: the driver treats any context carrying a deadline as a CSOT
@@ -792,7 +801,7 @@ func (w *ChangeStreamWatcher) reopenChangeStream(ctx context.Context, tokenDisca
 		}
 	}
 
-	cs, err := openChangeStream(ctx, w.client, w.mongoConfig, w.pipeline, opts, hasResumeToken,
+	cs, err := openChangeStream(ctx, w.client, w.reopenConfig(), w.pipeline, opts, hasResumeToken,
 		w.resumeTokenCol, w.clientName)
 	if err != nil {
 		return fmt.Errorf("failed to reopen change stream: %w", err)
@@ -801,6 +810,18 @@ func (w *ChangeStreamWatcher) reopenChangeStream(ctx context.Context, tokenDisca
 	w.swapChangeStream(ctx, cs)
 
 	return nil
+}
+
+// reopenConfig assembles the subset of MongoDBConfig that reopening reads. Keeping only these
+// four fields, rather than the config as a whole, is what keeps the URI off a long-lived
+// struct (#2040 review).
+func (w *ChangeStreamWatcher) reopenConfig() MongoDBConfig {
+	return MongoDBConfig{
+		Database:                         w.database,
+		Collection:                       w.collection,
+		ChangeStreamRetryDeadlineSeconds: w.changeStreamRetryDeadlineSeconds,
+		ChangeStreamRetryIntervalSeconds: w.changeStreamRetryIntervalSeconds,
+	}
 }
 
 // swapChangeStream installs the replacement cursor and releases the one it replaces.
