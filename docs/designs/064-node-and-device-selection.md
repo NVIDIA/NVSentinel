@@ -55,7 +55,7 @@ Each component that acts on a fault already reads the node, and two of them can 
 | Stage | Control for each node at this time | Limitation |
 |---|---|---|
 | platform-connectors | `managed=false` changes events to `STORE_ONLY`. Override rules ([ADR-021](021-health-event-property-overrides.md)) can change `recommendedAction` | `STORE_ONLY` also stops node conditions. Override rules read node labels from a cache that can be 10 minutes old, skip a rule that fails, and change the event for all later stages |
-| fault-quarantine | CEL `Node` and `HealthEvent` rules in each rule set ([ADR-003](003-rule-based-node-quarantine.md)) | None. A later event on a quarantined node also applies its taints and cordon, which are released when the session ends ([ADR-062](062-fault-quarantine-release-at-session-end.md)) |
+| fault-quarantine | CEL `Node` and `HealthEvent` rules in each rule set ([ADR-003](003-rule-based-node-quarantine.md)) | None |
 | node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) and `podDrainPolicies` ([pod label drain policies ADR](055-pod-drain-policies.md)) | Cannot skip the drain for a group. Checks the selector again on each pass, so a label change during a drain can change the drain method. Records the method only in a log |
 | fault-remediation | None | One map from action to CR applies to the full cluster. An action that is not in the map is recorded as `remediation-failed` |
 
