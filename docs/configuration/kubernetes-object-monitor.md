@@ -110,6 +110,9 @@ Unique identifier for the policy used in logs and metrics.
 #### enabled
 Enables or disables the policy. Disabled policies are not compiled or evaluated.
 
+#### latch
+Optional boolean (default `false`). When `true`, suppresses the automatic healthy transition when `predicate.expression` stops matching, keeping the policy match latched until the watched resource is deleted (for example by `REPLACE_VM`) or an operator removes the policy's entry from the node's `nvsentinel.nvidia.com/k8s-object-monitor-policy-matches` annotation. Use `latch: true` for passive log-based conditions that have no recovery probe and reset to `False` on monitor restart, such as the NPD `SystemLogMonitor` policies in `values-npd-remediation.yaml`.
+
 #### resource
 Specifies the Kubernetes resource type to monitor.
 

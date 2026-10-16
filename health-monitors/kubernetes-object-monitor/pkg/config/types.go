@@ -18,8 +18,15 @@ type Config struct {
 }
 
 type Policy struct {
-	Name            string           `toml:"name"`
-	Enabled         bool             `toml:"enabled"`
+	Name    string `toml:"name"`
+	Enabled bool   `toml:"enabled"`
+	// Latch suppresses the automatic healthy transition when the predicate
+	// stops matching, keeping the policy match active until the resource is
+	// deleted or an operator removes the policy match entry from the node's
+	// nvsentinel.nvidia.com/k8s-object-monitor-policy-matches annotation.
+	// Use this for source conditions that have no recovery probe (such as
+	// NPD SystemLogMonitor conditions, which reset to False on NPD restart).
+	Latch           bool             `toml:"latch,omitempty"`
 	Resource        ResourceSpec     `toml:"resource"`
 	Predicate       PredicateSpec    `toml:"predicate"`
 	NodeAssociation *AssociationSpec `toml:"nodeAssociation,omitempty"`
