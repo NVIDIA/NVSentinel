@@ -545,12 +545,67 @@ wait_for_dry_run_remediation_decision() {
     error "Timeout waiting for fault-remediation to record a remediation state on node $node: in dry-run it creates no custom resource, but must still label the node"
 }
 
+REBOOTNODE_RESOURCE="rebootnodes.janitor.dgxc.nvidia.com"
+
+# Janitor is optional (global.janitor.enabled). Without its RebootNode CRD the
+# boot ID is the only sign of a reboot.
+rebootnode_crd_installed() {
+    local resources
+    resources=$(kubectl api-resources --api-group=janitor.dgxc.nvidia.com -o name 2>/dev/null) || return 1
+    grep -qx "$REBOOTNODE_RESOURCE" <<<"$resources"
+}
+
+# Prints the RebootNode for $node, created at or after $since_ts, whose reboot
+# signal failed. The janitor sets SignalSent=False with completionTime when the
+# CSP rejects the reboot (for example, no permission to reset the instance) and
+# does not retry, so the node will never reboot.
+get_failed_rebootnode() {
+    local node=$1
+    local since_ts=$2
+
+    kubectl get "$REBOOTNODE_RESOURCE" -o json 2>/dev/null | jq -r --arg node "$node" --argjson since "$since_ts" '
+        [.items[]
+            | select(.spec.nodeName == $node and (.metadata.creationTimestamp | fromdateiso8601) >= $since)
+            | . as $rn | (.status.conditions // [])[]
+            | select(.type == "SignalSent" and .status == "False")
+            | "RebootNode \($rn.metadata.name) reports SignalSent=False (reason: \(.reason)): \(.message)"]
+        | first // empty' || true
+}
+
+# Logs the conditions and completionTime of each RebootNode for $node created
+# at or after $since_ts, or that there is none.
+log_node_rebootnodes() {
+    local node=$1
+    local since_ts=$2
+    local summary
+
+    summary=$(kubectl get "$REBOOTNODE_RESOURCE" -o json 2>/dev/null | jq -r --arg node "$node" --argjson since "$since_ts" '
+        [.items[] | select(.spec.nodeName == $node and (.metadata.creationTimestamp | fromdateiso8601) >= $since)]
+        | if length == 0 then
+            "No RebootNode was created for node \($node) since the test started"
+          else
+            .[] | ("RebootNode \(.metadata.name): created=\(.metadata.creationTimestamp) completionTime=\(.status.completionTime // "none")",
+                   ((.status.conditions // [])[] | "  \(.type)=\(.status) reason=\(.reason // "") message=\(.message // "")"))
+          end') || summary="Failed to read RebootNodes for node $node"
+
+    local line
+    while IFS= read -r line; do
+        log "$line"
+    done <<<"$summary"
+}
+
+# wait_for_boot_id_change NODE ORIGINAL_BOOT_ID [TEST_START_TS]
+# With TEST_START_TS, also watches the node's RebootNode and fails as soon as
+# its reboot signal fails, instead of waiting UAT_REBOOT_TIMEOUT for a reboot
+# that will not come.
 wait_for_boot_id_change() {
     local node=$1
     local original_boot_id=$2
+    local test_start_ts=${3:-}
     local timeout=${UAT_REBOOT_TIMEOUT:-600}
     local elapsed=0
     local boot_id_changed=false
+    local watch_rebootnodes=false
 
     if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
         wait_for_dry_run_remediation_decision "$node" "$timeout"
@@ -562,6 +617,11 @@ wait_for_boot_id_change() {
 
     log "Waiting for node $node to reboot (boot ID to change)..."
     log "Original boot ID: $original_boot_id"
+
+    if [[ -n "$test_start_ts" ]] && rebootnode_crd_installed; then
+        watch_rebootnodes=true
+        log "Watching RebootNodes for node $node: a failed reboot signal fails the test"
+    fi
 
     while [[ $elapsed -lt $timeout ]]; do
         local current_boot_id
@@ -579,6 +639,15 @@ wait_for_boot_id_change() {
             break
         fi
 
+        if [[ "$watch_rebootnodes" == "true" ]]; then
+            local failed_rebootnode
+            failed_rebootnode=$(get_failed_rebootnode "$node" "$test_start_ts")
+            if [[ -n "$failed_rebootnode" ]]; then
+                log_node_rebootnodes "$node" "$test_start_ts"
+                error "Node $node will not reboot: $failed_rebootnode"
+            fi
+        fi
+
         sleep 5
         elapsed=$((elapsed + 5))
     done
@@ -586,6 +655,9 @@ wait_for_boot_id_change() {
     if [[ "$boot_id_changed" != "true" ]]; then
         local final_boot_id
         final_boot_id=$(get_boot_id "$node" || echo "FAILED_TO_GET")
+        if [[ "$watch_rebootnodes" == "true" ]]; then
+            log_node_rebootnodes "$node" "$test_start_ts"
+        fi
         error "Timeout waiting for node $node to reboot. Current boot ID: '$final_boot_id', Original: '$original_boot_id'"
     fi
 
@@ -698,6 +770,9 @@ verify_validation_request() {
     log "ValidationRequest $vr_name for node $node succeeded"
 }
 
+# Test 1: injects XID 95 through DCGM on a GPU node and expects NVSentinel to
+# quarantine the node, reboot it and return it to service, then checks the
+# post-remediation ValidationRequest.
 test_gpu_monitoring_dcgm() {
     log "========================================="
     log "Test 1: GPU monitoring via DCGM"
@@ -734,7 +809,7 @@ test_gpu_monitoring_dcgm() {
     wait_for_node_quarantine "$gpu_node"
 
     log "Waiting for node to reboot and recover..."
-    wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+    wait_for_boot_id_change "$gpu_node" "$original_boot_id" "$current_ts"
     recover_injected_dcgm "$gpu_node"
     reset_dry_run_node_state "$gpu_node"
 
@@ -752,6 +827,9 @@ skip_syslog_tests_in_dry_run() {
     fi
 }
 
+# Test 2: writes a non-fatal XID 13 and a fatal XID 79 to the kernel log of a
+# GPU node. Expects XID 13 to raise only a node event, and XID 79 to quarantine
+# the node, reboot it and return it to service. Skipped in dry-run.
 test_xid_monitoring_syslog() {
     log "======================================================"
     log "Test 2: XID monitoring via syslog"
@@ -812,7 +890,7 @@ test_xid_monitoring_syslog() {
     wait_for_node_quarantine "$gpu_node"
 
     log "Waiting for node to reboot and recover..."
-    wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+    wait_for_boot_id_change "$gpu_node" "$original_boot_id" "$current_ts"
 
     verify_validation_request "$gpu_node" "$current_ts"
 

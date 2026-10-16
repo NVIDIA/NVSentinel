@@ -115,6 +115,7 @@ type ResetJobConfig struct {
 	RuntimeClassName   string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
 	HostDriverRootPath string               `mapstructure:"hostDriverRootPath" json:"hostDriverRootPath"`
 	DriverRoot         string               `mapstructure:"driverRoot" json:"driverRoot"`
+	DriverBinPath      string               `mapstructure:"driverBinPath" json:"driverBinPath"`
 	WriteSysLogEvent   *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
 	UploadURL          string               `mapstructure:"uploadURL" json:"uploadURL"`
 }
@@ -187,6 +188,10 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 			resetJobConfig.DriverRoot, resetJobConfig.RuntimeClassName, *resetJobConfig.WriteSysLogEvent,
 			resetJobConfig.UploadURL)
 		if err != nil {
+			return nil, err
+		}
+
+		if err := applyDriverBinPath(jobTemplate, resetJobConfig.DriverBinPath); err != nil {
 			return nil, err
 		}
 

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -40,6 +41,7 @@ const (
 	WriteSyslogEventEnvVar    = "WRITE_SYSLOG_EVENT"
 	NodeNameEnvVar            = "NODE_NAME"
 	UploadURLBaseEnvVar       = "UPLOAD_URL_BASE"
+	DriverBinPathEnvVar       = "DRIVER_BIN_PATH"
 	// ContainerDriverRoot is the driverRoot that makes the reset command chroot into the reset
 	// container itself instead of into the mounted driver filesystem.
 	ContainerDriverRoot = "/"
@@ -342,4 +344,25 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	}
 
 	return job, nil
+}
+
+// applyDriverBinPath passes driverBinPath to the reset container. It is a path inside driverRoot
+// that the reset command searches for the driver binaries, for drivers installed outside the
+// default PATH. An empty value adds nothing, so the Job is unchanged.
+func applyDriverBinPath(job *batchv1.JobTemplateSpec, driverBinPath string) error {
+	if driverBinPath == "" {
+		return nil
+	}
+
+	// Reject at janitor startup, as for driverRoot. The value is joined into PATH, so a relative
+	// path or a ":" would add an unintended search entry.
+	if !filepath.IsAbs(driverBinPath) || filepath.Clean(driverBinPath) != driverBinPath ||
+		strings.Contains(driverBinPath, ":") {
+		return fmt.Errorf("resetJob.driverBinPath %q must be an absolute, clean path without ':'", driverBinPath)
+	}
+
+	container := &job.Spec.Template.Spec.Containers[0]
+	container.Env = append(container.Env, corev1.EnvVar{Name: DriverBinPathEnvVar, Value: driverBinPath})
+
+	return nil
 }

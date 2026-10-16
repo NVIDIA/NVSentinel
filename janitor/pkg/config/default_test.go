@@ -143,3 +143,63 @@ func TestGetDefaultGPUResetJobTemplate_InvalidDriverRoot_ReturnsError(t *testing
 		})
 	}
 }
+
+func TestApplyDriverBinPath_SetsEnvOnlyWhenConfigured(t *testing.T) {
+	tests := []struct {
+		name          string
+		driverBinPath string
+	}{
+		{name: "unset path leaves the Job unchanged"},
+		{name: "host-installed GKE driver", driverBinPath: "/home/kubernetes/bin/nvidia/bin"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			template, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+				ResourceRequirements{}, "/", DriverRootMountPath, "", true, "")
+			require.NoError(t, err)
+
+			envCountBefore := len(template.Spec.Template.Spec.Containers[0].Env)
+
+			require.NoError(t, applyDriverBinPath(template, test.driverBinPath))
+
+			env := template.Spec.Template.Spec.Containers[0].Env
+			envVar := findEnvVar(env, DriverBinPathEnvVar)
+
+			if test.driverBinPath == "" {
+				assert.Nil(t, envVar)
+				assert.Len(t, env, envCountBefore)
+
+				return
+			}
+
+			require.NotNil(t, envVar)
+			assert.Equal(t, test.driverBinPath, envVar.Value)
+			assert.Len(t, env, envCountBefore+1)
+		})
+	}
+}
+
+func TestApplyDriverBinPath_InvalidPath_ReturnsError(t *testing.T) {
+	tests := []struct {
+		name          string
+		driverBinPath string
+	}{
+		{name: "relative path", driverBinPath: "home/kubernetes/bin/nvidia/bin"},
+		{name: "trailing slash", driverBinPath: "/opt/nvidia/bin/"},
+		{name: "parent traversal", driverBinPath: "/opt/../nvidia/bin"},
+		{name: "colon", driverBinPath: "/opt/nvidia/bin:/usr/bin"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			template, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+				ResourceRequirements{}, "/", DriverRootMountPath, "", true, "")
+			require.NoError(t, err)
+
+			err = applyDriverBinPath(template, test.driverBinPath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "resetJob.driverBinPath")
+		})
+	}
+}

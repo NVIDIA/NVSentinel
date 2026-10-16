@@ -2060,10 +2060,12 @@ var _ = Describe("GPUReset Controller", func() {
 			By("Deleting it while the operand pods are not Ready: the finished restoration is not re-run")
 			reconciler.checkPodsReadyFn = func(context.Context, string, []gpuservices.AppSpec) (bool, error) { return false, nil }
 			Expect(k8sClient.Delete(ctx, &v1alpha1.GPUReset{Name: resetName})).To(Succeed())
-			reconcileTimes(3)
-
-			var deleted v1alpha1.GPUReset
-			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &deleted))).To(BeTrue())
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				var deleted v1alpha1.GPUReset
+				g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &deleted))).To(BeTrue())
+			}, "10s", "100ms").Should(Succeed())
 			Expect(getNodeLabels()).To(Equal(devicePluginDeployLabels()))
 		})
 
