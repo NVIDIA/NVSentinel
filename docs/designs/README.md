@@ -73,3 +73,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 058 | [Authentication — Host-Native Metadata Collector (proposed)](058-metadata-collector-host-authentication.md) |
 | 059 | [Health Events Analyzer — Operator Recovery of Derived Conditions (proposed)](059-derived-condition-recovery.md) |
 | 062 | [Fault Quarantine — Release Quarantine Actions Only at Session End (proposed)](062-fault-quarantine-release-at-session-end.md) |
+| 063 | [Kubernetes-Native Remediation Without a Database (proposed)](063-nodehealth-remediation-without-a-database.md) |
