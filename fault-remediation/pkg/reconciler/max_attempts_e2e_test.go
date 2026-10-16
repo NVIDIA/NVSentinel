@@ -16,6 +16,10 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +159,95 @@ func TestLogCollectorRequeuesDoNotConsumeAttemptBudget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, state.EquivalenceGroups["restart"].AttemptCount)
 	assert.Empty(t, currentCR(ctx, t, r, nodeName))
+}
+
+// useLogCollectorNamespace points the log collector at a copy of the test Job manifest in its own
+// namespace. envtest runs no namespace controller, so a deleted namespace stays Terminating and
+// cannot be reused by another test.
+func useLogCollectorNamespace(ctx context.Context, t *testing.T, namespace string) {
+	t.Helper()
+
+	manifest, err := os.ReadFile("../remediation/templates/log-collector-job.yaml")
+	require.NoError(t, err)
+
+	manifestPath := filepath.Join(t.TempDir(), "log-collector-job.yaml")
+	require.NoError(t, os.WriteFile(manifestPath,
+		[]byte(strings.Replace(string(manifest), "namespace: test", "namespace: "+namespace, 1)), 0o600))
+	t.Setenv(remediation.LogCollectorManifestPathEnv, manifestPath)
+
+	_, err = testClient.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, testClient.CoreV1().Namespaces().Delete(context.Background(), namespace,
+			metav1.DeleteOptions{}))
+	})
+}
+
+// TestRunLogCollectorAndRemediate_GroupAtCap_SkipsLogCollector covers a capped group that keeps
+// receiving events while its fault persists. Each event must give up before the log collector
+// runs: no remediation follows, so a collector Job per event is pure cost.
+func TestRunLogCollectorAndRemediate_GroupAtCap_SkipsLogCollector(t *testing.T) {
+	tests := []struct {
+		name             string
+		priorAttempts    int
+		wantJobs         int
+		wantStateLabel   statemanager.NVSentinelStateLabelValue
+		wantAttemptCount int
+	}{
+		{
+			name:             "below cap launches the log collector",
+			priorAttempts:    0,
+			wantJobs:         1,
+			wantStateLabel:   statemanager.DrainSucceededLabelValue,
+			wantAttemptCount: 0,
+		},
+		{
+			name:             "at cap gives up without a log collector",
+			priorAttempts:    1,
+			wantJobs:         0,
+			wantStateLabel:   statemanager.RemediationFailedLabelValue,
+			wantAttemptCount: 1,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			nodeName := fmt.Sprintf("capped-log-collector-%d", i)
+			namespace := fmt.Sprintf("capped-log-collector-%d", i)
+			useLogCollectorNamespace(ctx, t, namespace)
+
+			r, _, _ := newCappedReconciler(t, 1, true)
+			prepareQuarantinedNode(ctx, t, r, nodeName)
+			t.Cleanup(func() {
+				require.NoError(t, testClient.CoreV1().Nodes().Delete(context.Background(), nodeName,
+					metav1.DeleteOptions{}))
+			})
+
+			for range tt.priorAttempts {
+				_, err := r.annotationManager.RecordRemediationAttempt(ctx, nodeName, "restart")
+				require.NoError(t, err)
+			}
+
+			require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, "capped-log-collector-event"))
+
+			jobs, err := testClient.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: "dgxc.nvidia.com/node-name=" + nodeName,
+			})
+			require.NoError(t, err)
+			assert.Len(t, jobs.Items, tt.wantJobs)
+
+			assert.Equal(t, string(tt.wantStateLabel), nodeStateLabel(ctx, t, nodeName))
+			assert.Empty(t, currentCR(ctx, t, r, nodeName), "no CR is created in either case")
+
+			state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAttemptCount, state.EquivalenceGroups["restart"].AttemptCount,
+				"neither a running collector nor a capped event counts as an attempt")
+		})
+	}
 }
 
 var rebootNodeGVR = schema.GroupVersionResource{
