@@ -15,6 +15,7 @@
 import dataclasses
 from collections.abc import Callable
 from functools import wraps
+import json
 import logging as log
 import os
 from typing import Any
@@ -30,6 +31,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
 from . import direct_publisher as direct_publisher_mod
 from . import metrics
+import time
 from time import monotonic, sleep
 
 import dcgm_fields
@@ -46,6 +48,14 @@ GPU_ONLY_FIELD_HEALTH_WATCHES = frozenset(
 # Critical events are emitted while the DCGM loop is about to enter cleanup or
 # is already hung. Keep delivery bounded well inside the liveness restart budget.
 CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
+# A connectivity failure further than this from the previous one starts a new
+# unreachability window. It must exceed the gap a liveness restart leaves between
+# two hang reports: the kubelet's restart backoff, capped at 300s, plus startup.
+DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS = 600.0
+DCGM_CONNECTIVITY_WINDOW_PERSIST_INTERVAL_SECONDS = 10.0
+# Remote probe hangs and connectivity failures share this check, so its state
+# record also carries the unreachability window.
+DCGM_CONNECTIVITY_CHECK_NAME = "GpuDcgmConnectivityFailure"
 # Socket path only: transport-level failures are worth another attempt. Every
 # other status is a deterministic verdict from platform-connector
 # (PERMISSION_DENIED, UNAUTHENTICATED, INVALID_ARGUMENT, ...) that will come
@@ -106,6 +116,7 @@ def _serialized_critical_event(method: Callable[..., bool]) -> Callable[..., boo
 @dataclasses.dataclass
 class EntityCacheEntry:
     active_errors: set[str] = dataclasses.field(default_factory=set)
+    error_strategies: dict[str, platformconnector_pb2.ProcessingStrategy] = dataclasses.field(default_factory=dict)
 
     @property
     def is_healthy(self) -> bool:
@@ -125,6 +136,9 @@ class PlatformConnectorConfig:
     token_path: str | None = None
     connectivity_failure_threshold: int = 1
     connectivity_success_threshold: int = 1
+    # How long DCGM must stay unreachable before a remote probe hang is
+    # published, measured across liveness restarts. 0 publishes at once.
+    connectivity_failure_window_seconds: float = 0.0
 
 
 class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
@@ -146,7 +160,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._component_class = "GPU"
         self.dcgm_errors_info_dict = config.dcgm_errors_info_dict
         self.state_file_path = config.state_file_path
-        self._dcgm_unresponsive_state_path = f"{config.state_file_path}.dcgm-unresponsive"
+        self._dcgm_state_path = f"{config.state_file_path}.dcgm-state"
+        self._legacy_dcgm_state_paths = (
+            f"{config.state_file_path}.dcgm-unresponsive",
+            f"{config.state_file_path}.dcgm-connectivity-failure",
+        )
         self.node_bootid_path = "/proc/sys/kernel/random/boot_id"
         self.old_bootid = self.read_old_system_bootid_from_state_file()
         self.entity_cache: dict[str, EntityCacheEntry] = {}
@@ -160,12 +178,19 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._consecutive_connectivity_failures = 0
         self._consecutive_connectivity_successes = 0
         self._connectivity_escalated = False
+        self._connectivity_failure_window_seconds = config.connectivity_failure_window_seconds
+        # Wall-clock bounds of the current unreachability window, persisted so a
+        # liveness restart during a hang does not restart the debounce.
+        self._connectivity_failing_since: float | None = None
+        self._connectivity_last_failure: float | None = None
+        self._connectivity_window_persisted_at: float | None = None
         metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
         metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
-        # Strategy used for the active local-managed probe-hang event. Restored
-        # from the marker so a clear after a liveness restart still matches the
-        # unhealthy event even if Helm config changed in between.
-        self._dcgm_unresponsive_strategy: platformconnector_pb2.ProcessingStrategy | None = None
+        # Persisted strategies are keyed by check because embedded probe hangs
+        # and connectivity failures can be active at the same time. Both live
+        # in one state file so recovery can match each event after a restart.
+        self._dcgm_state_records: dict[str, dict[str, str | list[str] | dict[str, str] | dict[str, float]]] = {}
+        self._dcgm_state_strategies: dict[str, platformconnector_pb2.ProcessingStrategy] = {}
         self._restore_dcgm_unresponsive_state()
         # Direct mode: when HEALTH_PUBLISH_TARGET is set, publishes go over
         # the network to the deployment platform connector, one batch at a
@@ -222,83 +247,272 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
         Only the connectivity and unresponsive checks call this. Both always
         send isFatal=True, so their series always carry is_fatal="true".
-        strategy must be the one the unhealthy event was sent with.
+        Use the strategy recorded for each error code; older cache entries use the
+        check-level strategy passed by the caller.
         """
         entry = self.entity_cache.get(key)
         for code in sorted(entry.active_errors) if entry else []:
+            code_strategy = entry.error_strategies.get(code, strategy)
             metrics.dcgm_health_active_events.labels(
                 event_type=check_name,
                 gpu_id="",
                 error_code=code,
                 is_fatal="true",
-                processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(strategy),
+                processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(code_strategy),
             ).set(0)
 
-    def _persist_dcgm_unresponsive_state(self, processing_strategy: platformconnector_pb2.ProcessingStrategy) -> None:
-        """Remember a delivered local-managed probe hang across liveness restarts.
+    def _persist_dcgm_unresponsive_state(
+        self,
+        processing_strategy: platformconnector_pb2.ProcessingStrategy,
+        check_name: str = "GpuDcgmUnresponsive",
+        error_code: str = "DCGM_PROBE_HANG",
+    ) -> None:
+        """Remember a delivered DCGM fault across liveness restarts."""
+        self._dcgm_state_strategies[check_name] = processing_strategy
+        records = self._dcgm_state_records.setdefault(check_name, {})
+        error_codes = records.get("error_codes", [])
+        if not isinstance(error_codes, list):
+            error_codes = []
+        records["error_codes"] = sorted(set(error_codes) | {error_code})
+        error_strategies = records.get("error_strategies", {})
+        if not isinstance(error_strategies, dict):
+            error_strategies = {}
+        previous_strategy = records.get("strategy")
+        if len(records["error_codes"]) > 1 and isinstance(previous_strategy, str):
+            for previous_code in error_codes:
+                error_strategies.setdefault(previous_code, previous_strategy)
+        if len(records["error_codes"]) > 1 or error_strategies:
+            error_strategies[error_code] = platformconnector_pb2.ProcessingStrategy.Name(processing_strategy)
+            records["error_strategies"] = error_strategies
+        records["strategy"] = platformconnector_pb2.ProcessingStrategy.Name(processing_strategy)
+        self._write_dcgm_state()
 
-        Format is two lines: error code, then the ProcessingStrategy name used
-        for the unhealthy event. The strategy must be restored for the clear
-        path so fault-quarantine still matches the pair after a config change.
-        The marker is written to a sibling temporary file and renamed so a
-        restart mid-write cannot leave the strategy line missing.
-        """
-        tmp_path = f"{self._dcgm_unresponsive_state_path}.tmp"
+    def _write_dcgm_state(self) -> bool:
+        tmp_path = f"{self._dcgm_state_path}.tmp"
         try:
-            strategy_name = platformconnector_pb2.ProcessingStrategy.Name(processing_strategy)
             with open(tmp_path, "w") as state_file:
-                state_file.write(f"DCGM_PROBE_HANG\n{strategy_name}\n")
-            os.replace(tmp_path, self._dcgm_unresponsive_state_path)
-            self._dcgm_unresponsive_strategy = processing_strategy
+                json.dump(self._dcgm_state_records, state_file, sort_keys=True)
+                state_file.write("\n")
+            os.replace(tmp_path, self._dcgm_state_path)
         except OSError as e:
-            log.error("Failed to persist unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
+            log.error("Failed to persist DCGM state at %s: %s", self._dcgm_state_path, e)
+            try:
+                os.remove(tmp_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            return False
+        return True
+
+    def _read_legacy_dcgm_state(self, state_path: str) -> tuple[str, str, str | None] | None:
+        try:
+            with open(state_path, "r") as state_file:
+                lines = [line.strip() for line in state_file.read().splitlines() if line.strip()]
+        except OSError as e:
+            log.error("Failed to read DCGM state at %s: %s", state_path, e)
+            return None
+        if not lines:
+            return None
+        check_name = lines[2] if len(lines) >= 3 else "GpuDcgmUnresponsive"
+        if len(lines) < 3 and state_path == self._legacy_dcgm_state_paths[1]:
+            check_name = "GpuDcgmConnectivityFailure"
+        strategy_name = lines[1] if len(lines) >= 2 else None
+        return check_name, lines[0], strategy_name
 
     def _restore_dcgm_unresponsive_state(self) -> None:
-        """Rebuild cache and gauge from a marker left by a previous process."""
-        if not os.path.exists(self._dcgm_unresponsive_state_path):
-            return
+        """Restore active DCGM checks and migrate earlier per-check markers."""
+        if os.path.exists(self._dcgm_state_path):
+            try:
+                with open(self._dcgm_state_path, "r") as state_file:
+                    loaded = json.load(state_file)
+                if isinstance(loaded, dict):
+                    for check_name, records in loaded.items():
+                        if isinstance(check_name, str) and isinstance(records, dict):
+                            self._dcgm_state_records[check_name] = {
+                                key: value
+                                for key, value in records.items()
+                                if key == "strategy"
+                                and isinstance(value, str)
+                                or key == "error_codes"
+                                and isinstance(value, list)
+                                and all(isinstance(code, str) for code in value)
+                                or key == "error_strategies"
+                                and isinstance(value, dict)
+                                and all(isinstance(code, str) and isinstance(name, str) for code, name in value.items())
+                                or key == "connectivity_window"
+                                and isinstance(value, dict)
+                                and all(
+                                    isinstance(value.get(bound), (int, float))
+                                    and not isinstance(value.get(bound), bool)
+                                    for bound in ("since", "last")
+                                )
+                            }
+            except (OSError, json.JSONDecodeError) as e:
+                log.error("Failed to read DCGM state at %s: %s", self._dcgm_state_path, e)
 
-        strategy = self._effective_strategy("GpuDcgmUnresponsive")
-        try:
-            with open(self._dcgm_unresponsive_state_path, "r") as state_file:
-                lines = [line.strip() for line in state_file.read().splitlines() if line.strip()]
-            if len(lines) >= 2:
+        found_legacy_state = False
+        for legacy_path in self._legacy_dcgm_state_paths:
+            if not os.path.exists(legacy_path):
+                continue
+            record = self._read_legacy_dcgm_state(legacy_path)
+            if record is None:
+                continue
+            check_name, error_code, strategy_name = record
+            migrated = self._dcgm_state_records.setdefault(check_name, {})
+            error_codes = migrated.get("error_codes", [])
+            if not isinstance(error_codes, list):
+                error_codes = []
+            migrated["error_codes"] = sorted(set(error_codes) | {error_code})
+            if strategy_name is not None:
+                migrated.setdefault("strategy", strategy_name)
+            found_legacy_state = True
+
+        for check_name, record in self._dcgm_state_records.items():
+            strategy_name = record.get("strategy")
+            strategy = self._effective_strategy(check_name)
+            if isinstance(strategy_name, str):
                 try:
-                    strategy = platformconnector_pb2.ProcessingStrategy.Value(lines[1])
+                    strategy = platformconnector_pb2.ProcessingStrategy.Value(strategy_name)
                 except ValueError:
                     log.warning(
                         "Unknown processing strategy %r in %s; falling back to current config",
-                        lines[1],
-                        self._dcgm_unresponsive_state_path,
+                        strategy_name,
+                        self._dcgm_state_path,
                     )
-        except OSError as e:
-            log.error("Failed to read unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
+            error_codes = record.get("error_codes", [])
+            if not isinstance(error_codes, list):
+                error_codes = []
+            if not error_codes:
+                # Only a connectivity window: nothing was published.
+                continue
+            error_strategies = record.get("error_strategies", {})
+            if not isinstance(error_strategies, dict):
+                error_strategies = {}
+            for error_code in error_codes:
+                key = self._build_cache_key(check_name, "DCGM", "ALL")
+                entry = self.entity_cache.get(key)
+                active_errors = entry.active_errors if entry is not None else set()
+                active_strategies = dict(entry.error_strategies) if entry is not None else {}
+                strategy_name_for_code = error_strategies.get(error_code, strategy_name)
+                strategy_for_code = strategy
+                if isinstance(strategy_name_for_code, str):
+                    try:
+                        strategy_for_code = platformconnector_pb2.ProcessingStrategy.Value(strategy_name_for_code)
+                    except ValueError:
+                        log.warning(
+                            "Unknown processing strategy %r for %s in %s; using check strategy",
+                            strategy_name_for_code,
+                            error_code,
+                            self._dcgm_state_path,
+                        )
+                active_strategies[error_code] = strategy_for_code
+                self.entity_cache[key] = EntityCacheEntry(
+                    active_errors=active_errors | {error_code},
+                    error_strategies=active_strategies,
+                )
+                metrics.dcgm_health_active_events.labels(
+                    event_type=check_name,
+                    gpu_id="",
+                    error_code=error_code,
+                    is_fatal="true",
+                    processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(strategy_for_code),
+                ).set(1)
+            self._dcgm_state_strategies[check_name] = strategy
 
-        key = self._build_cache_key("GpuDcgmUnresponsive", "DCGM", "ALL")
-        self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_PROBE_HANG"})
-        self._dcgm_unresponsive_strategy = strategy
-        metrics.dcgm_health_active_events.labels(
-            event_type="GpuDcgmUnresponsive",
-            gpu_id="",
-            error_code="DCGM_PROBE_HANG",
-            is_fatal="true",
-            processing_strategy=platformconnector_pb2.ProcessingStrategy.Name(strategy),
-        ).set(1)
+        self._restore_connectivity_window()
 
-    def _clear_dcgm_unresponsive_state(self) -> None:
+        if found_legacy_state and self._write_dcgm_state():
+            for legacy_path in self._legacy_dcgm_state_paths:
+                try:
+                    os.remove(legacy_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    log.error("Failed to remove legacy DCGM state at %s: %s", legacy_path, e)
+
+    def _clear_dcgm_unresponsive_state(self, check_name: str = "GpuDcgmUnresponsive") -> None:
+        self._dcgm_state_strategies.pop(check_name, None)
+        self._dcgm_state_records.pop(check_name, None)
+        self._flush_dcgm_state()
+
+    def _flush_dcgm_state(self) -> None:
+        """Write the remaining records, or remove the file once none are left."""
+        if self._dcgm_state_records:
+            self._write_dcgm_state()
+            return
         try:
-            os.remove(self._dcgm_unresponsive_state_path)
+            os.remove(self._dcgm_state_path)
         except FileNotFoundError:
             pass
         except OSError as e:
-            log.error("Failed to remove unresponsive-DCGM state at %s: %s", self._dcgm_unresponsive_state_path, e)
-        self._dcgm_unresponsive_strategy = None
+            log.error("Failed to remove DCGM state at %s: %s", self._dcgm_state_path, e)
+
+    def _note_connectivity_failure(self, failed_at: float) -> None:
+        """Extend the unreachability window with a failure observed at failed_at."""
+        if self._connectivity_failure_window_seconds <= 0:
+            return
+        now = time.time()
+        if self._connectivity_failing_since is None or (
+            self._connectivity_last_failure is not None
+            and failed_at - self._connectivity_last_failure > DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
+        ):
+            self._connectivity_failing_since = failed_at
+            self._connectivity_window_persisted_at = None
+        self._connectivity_last_failure = now
+
+        # The watchdog retries every second during a hang; the record only needs
+        # to be fresh enough for the restore gap check.
+        if (
+            self._connectivity_window_persisted_at is not None
+            and now - self._connectivity_window_persisted_at < DCGM_CONNECTIVITY_WINDOW_PERSIST_INTERVAL_SECONDS
+        ):
+            return
+        record = self._dcgm_state_records.setdefault(DCGM_CONNECTIVITY_CHECK_NAME, {})
+        record["connectivity_window"] = {
+            "since": self._connectivity_failing_since,
+            "last": self._connectivity_last_failure,
+        }
+        # Throttle only after a successful write, so a failed one is retried at once.
+        if self._write_dcgm_state():
+            self._connectivity_window_persisted_at = now
+
+    def _restore_connectivity_window(self) -> None:
+        """Resume an unreachability window left by a previous process, unless it went stale."""
+        record = self._dcgm_state_records.get(DCGM_CONNECTIVITY_CHECK_NAME, {})
+        window = record.get("connectivity_window")
+        if not isinstance(window, dict):
+            return
+        if (
+            self._connectivity_failure_window_seconds <= 0
+            or time.time() - window["last"] > DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
+        ):
+            self._clear_connectivity_window()
+            return
+        self._connectivity_failing_since = float(window["since"])
+        self._connectivity_last_failure = float(window["last"])
+        log.info("Resumed DCGM connectivity window: unreachable since %.0f", self._connectivity_failing_since)
+
+    def _clear_connectivity_window(self) -> None:
+        self._connectivity_failing_since = None
+        self._connectivity_last_failure = None
+        self._connectivity_window_persisted_at = None
+        record = self._dcgm_state_records.get(DCGM_CONNECTIVITY_CHECK_NAME)
+        if record is None or "connectivity_window" not in record:
+            return
+        del record["connectivity_window"]
+        if not record:
+            del self._dcgm_state_records[DCGM_CONNECTIVITY_CHECK_NAME]
+        self._flush_dcgm_state()
 
     @_serialized_event_state
     def clear_dcgm_connectivity_failure(self, timestamp: Timestamp) -> None:
         """Clear DCGM connectivity failure events if connectivity has been restored."""
         health_events = []
         check_name = "GpuDcgmConnectivityFailure"
+
+        if self._connectivity_failing_since is not None:
+            self._clear_connectivity_window()
 
         self._consecutive_connectivity_failures = 0
         metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
@@ -346,7 +560,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 recommendedAction=platformconnector_pb2.NONE,
                 nodeName=self._node_name,
                 metadata=event_metadata,
-                processingStrategy=self._processing_strategy,
+                processingStrategy=self._dcgm_state_strategies.get(check_name, self._processing_strategy),
             )
             health_events.append(health_event)
 
@@ -358,6 +572,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 ):
                     self._clear_active_event_metric(check_name, key, self._processing_strategy)
                     self.entity_cache[key] = EntityCacheEntry()
+                    self._clear_dcgm_unresponsive_state(check_name)
                     self._consecutive_connectivity_successes = 0
                     self._connectivity_escalated = False
                     metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
@@ -394,11 +609,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
             # Prefer the strategy captured with the unhealthy event so a Helm
             # change between liveness restarts cannot break the clear pair.
-            clear_strategy = (
-                self._dcgm_unresponsive_strategy
-                if self._dcgm_unresponsive_strategy is not None
-                else self._effective_strategy(check_name)
-            )
+            clear_strategy = self._dcgm_state_strategies.get(check_name, self._effective_strategy(check_name))
             health_event = platformconnector_pb2.HealthEvent(
                 version=self._version,
                 agent=self._agent,
@@ -425,7 +636,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 ):
                     self._clear_active_event_metric(check_name, key, clear_strategy)
                     self.entity_cache[key] = EntityCacheEntry()
-                    self._clear_dcgm_unresponsive_state()
+                    self._clear_dcgm_unresponsive_state(check_name)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
             except Exception as e:
                 log.error(f"Exception while sending DCGM responsive events: {e}")
@@ -969,6 +1180,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         """
         self._consecutive_connectivity_failures += 1
         self._consecutive_connectivity_successes = 0
+        self._note_connectivity_failure(time.time())
         metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(
             self._consecutive_connectivity_failures
         )
@@ -1001,8 +1213,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 and self._consecutive_connectivity_failures >= self._connectivity_failure_escalation_threshold
             )
             newly_escalated = escalate and not self._connectivity_escalated
+            upgrades_observe_only = (
+                self._dcgm_state_strategies.get(check_name) == platformconnector_pb2.STORE_ONLY
+                and self._processing_strategy != platformconnector_pb2.STORE_ONLY
+            )
 
-            if entry is None or entry.is_healthy or newly_escalated:
+            if entry is None or entry.is_healthy or newly_escalated or upgrades_observe_only:
                 message = "Failed to connect to DCGM for health check"
                 recommended_action = platformconnector_pb2.CONTACT_SUPPORT
                 if escalate:
@@ -1044,9 +1260,22 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
-                    self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_CONNECTIVITY_ERROR"})
+                    latched_errors = entry.active_errors if entry is not None else set()
+                    error_strategies = dict(entry.error_strategies) if entry is not None else {}
+                    error_strategies["DCGM_CONNECTIVITY_ERROR"] = self._processing_strategy
+                    self.entity_cache[key] = EntityCacheEntry(
+                        active_errors=latched_errors | {"DCGM_CONNECTIVITY_ERROR"},
+                        error_strategies=error_strategies,
+                    )
                     if escalate:
                         self._connectivity_escalated = True
+                    # Persist every delivered connectivity fault, including
+                    # when no probe-hang marker existed before this event.
+                    self._persist_dcgm_unresponsive_state(
+                        self._processing_strategy,
+                        check_name,
+                        error_code="DCGM_CONNECTIVITY_ERROR",
+                    )
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
                         event_type=check_name,
@@ -1090,12 +1319,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             recommended_action = (
                 platformconnector_pb2.RESTART_BM if local_managed else platformconnector_pb2.CONTACT_SUPPORT
             )
-            processing_strategy = self._effective_strategy(check_name) if local_managed else self._processing_strategy
+            # Remote probe hangs use the same condition as ordinary connectivity
+            # failures, but only the hang consults probeStoreOnly. Do not apply
+            # this override to dcgm_connectivity_failed().
+            processing_strategy = self._effective_strategy("GpuDcgmUnresponsive")
 
-            log.error(
-                f"DCGM probe {operation} unresponsive for {elapsed_seconds:.1f}s, "
-                f"sending {check_name} health event (mode={dcgm_mode})"
-            )
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             health_events = []
@@ -1109,6 +1337,25 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 # Already recorded for this episode.
                 return True
 
+            if not local_managed and self._connectivity_failure_window_seconds > 0:
+                # A hung call has no later cycle to count, and liveness restarts the
+                # process before a long deadline elapses, so debounce on how long DCGM
+                # has been unreachable, persisted across restarts. False makes the
+                # watchdog check again until the window is long enough.
+                self._note_connectivity_failure(time.time() - elapsed_seconds)
+                unreachable_for = time.time() - self._connectivity_failing_since
+                if unreachable_for < self._connectivity_failure_window_seconds:
+                    log.debug(
+                        "DCGM unreachable for %.0fs of the %.0fs required; deferring the probe-hang event",
+                        unreachable_for,
+                        self._connectivity_failure_window_seconds,
+                    )
+                    return False
+
+            log.error(
+                f"DCGM probe {operation} unresponsive for {elapsed_seconds:.1f}s, "
+                f"sending {check_name} health event (mode={dcgm_mode})"
+            )
             event_metadata = {"probe_operation": operation, "dcgm_mode": dcgm_mode}
             chassis_serial = self._metadata_reader.get_chassis_serial()
             if chassis_serial:
@@ -1149,9 +1396,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     health_events,
                     delivery_timeout_seconds=CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS,
                 ):
-                    self.entity_cache[key] = EntityCacheEntry(active_errors={error_code})
-                    if local_managed:
-                        self._persist_dcgm_unresponsive_state(processing_strategy)
+                    self.entity_cache[key] = EntityCacheEntry(
+                        active_errors={error_code},
+                        error_strategies={error_code: processing_strategy},
+                    )
+                    self._persist_dcgm_unresponsive_state(processing_strategy, check_name)
                     log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
                     metrics.dcgm_health_active_events.labels(
                         event_type=check_name,

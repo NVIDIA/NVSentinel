@@ -270,22 +270,90 @@ recover_injected_dcgm() {
     UAT_DCGM_RECOVERED=true
 }
 
+# How the debug pod gets the NVIDIA driver (nvidia-smi, NVML):
+#   runtimeclass  runtimeClassName: nvidia; the toolkit runtime hook injects it
+#   nri           no nvidia RuntimeClass (GPU Operator NRI plugin mode deletes
+#                 it); the pod requests the management CDI device by annotation
+# Decided by whether RuntimeClass "nvidia" exists, which is what admission
+# checks. The exact name matters: RKE2 ships an unrelated "nvidia-experimental"
+# RuntimeClass that survives. UAT_GPU_RUNTIME_MODE=runtimeclass|nri forces a
+# mode; unset or "auto" detects.
+# Sets: GPU_RUNTIME_MODE
+discover_gpu_runtime_mode() {
+    local mode=${UAT_GPU_RUNTIME_MODE:-auto}
+    local found
+
+    if [[ "$mode" == "auto" ]]; then
+        # --ignore-not-found: exit 0 with empty output when absent, non-zero
+        # only for real errors (auth, RBAC, connectivity).
+        if ! found=$(kubectl get runtimeclass nvidia -o name --ignore-not-found); then
+            error "Could not read RuntimeClass nvidia to determine the GPU runtime mode"
+        fi
+        if [[ -n "$found" ]]; then
+            mode=runtimeclass
+        else
+            mode=nri
+        fi
+    fi
+
+    case "$mode" in
+        runtimeclass|nri) ;;
+        *) error "UAT_GPU_RUNTIME_MODE must be runtimeclass, nri or auto (got '$mode')" ;;
+    esac
+
+    GPU_RUNTIME_MODE=$mode
+    log "GPU runtime mode: $GPU_RUNTIME_MODE"
+}
+
 # Privileged helper pod for node-level test operations (/dev/kmsg writes,
-# nvidia-smi queries) on the given node, from nvsentinel-debug-pod-template.yaml.
+# nvidia-smi queries) on the given node, from nvsentinel-debug-pod-template.yaml
+# or its -nri variant depending on GPU_RUNTIME_MODE.
 # Sets: NODE_NS, NODE_POD
 create_node_debug_pod() {
     local node=$1
+    local template
+
+    if [[ -z "${GPU_RUNTIME_MODE:-}" ]]; then
+        discover_gpu_runtime_mode
+    fi
+
+    template="${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml"
+    if [[ "$GPU_RUNTIME_MODE" == "nri" ]]; then
+        template="${SCRIPT_DIR}/nvsentinel-debug-pod-template-nri.yaml"
+    fi
 
     NODE_NS=nvsentinel
 
-    NODE_POD=$(sed -e "s|NODE_NAME|$node|" \
-        "${SCRIPT_DIR}/nvsentinel-debug-pod-template.yaml" \
+    NODE_POD=$(sed -e "s|NODE_NAME|$node|" "$template" \
         | kubectl create -f - -o jsonpath='{.metadata.name}')
 
     if ! kubectl wait --for=condition=Ready pod -n "$NODE_NS" "$NODE_POD" --timeout=120s >/dev/null; then
         error "Debug pod $NODE_NS/$NODE_POD did not become Ready on node $node"
     fi
     log "Node debug pod running: $NODE_NS/$NODE_POD"
+}
+
+# Call before a test depends on nvidia-smi in the debug pod. In nri mode the
+# pod starts without a driver when the toolkit's NRI plugin skips the
+# management device (namespace outside its allowlist, logged only on the
+# toolkit pod) or when there is no NRI plugin at all (GPUCluster/DRA mode,
+# CRI-O without CDI), so say which.
+require_debug_pod_nvidia_smi() {
+    local nri_enabled
+
+    if kubectl exec -n "$NODE_NS" "$NODE_POD" -- sh -c 'command -v nvidia-smi' >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ "$GPU_RUNTIME_MODE" != "nri" ]]; then
+        error "nvidia-smi is not available in $NODE_NS/$NODE_POD"
+    fi
+
+    nri_enabled=$(kubectl get daemonset -A -l app=nvidia-container-toolkit-daemonset \
+        -o jsonpath='{.items[*].spec.template.spec.containers[?(@.name=="nvidia-container-toolkit-ctr")].env[?(@.name=="ENABLE_NRI_PLUGIN")].value}' 2>/dev/null || true)
+    if [[ "$nri_enabled" == "true" ]]; then
+        error "nvidia-smi was not injected into $NODE_NS/$NODE_POD: add '$NODE_NS' to NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES on the nvidia-container-toolkit DaemonSet (GPU Operator toolkit.env)"
+    fi
+    error "nvidia-smi is not available in $NODE_NS/$NODE_POD: no RuntimeClass nvidia and no Container Toolkit NRI plugin on this cluster, so the debug pod has no way to get the driver"
 }
 
 delete_node_debug_pod() {
@@ -477,12 +545,67 @@ wait_for_dry_run_remediation_decision() {
     error "Timeout waiting for fault-remediation to record a remediation state on node $node: in dry-run it creates no custom resource, but must still label the node"
 }
 
+REBOOTNODE_RESOURCE="rebootnodes.janitor.dgxc.nvidia.com"
+
+# Janitor is optional (global.janitor.enabled). Without its RebootNode CRD the
+# boot ID is the only sign of a reboot.
+rebootnode_crd_installed() {
+    local resources
+    resources=$(kubectl api-resources --api-group=janitor.dgxc.nvidia.com -o name 2>/dev/null) || return 1
+    grep -qx "$REBOOTNODE_RESOURCE" <<<"$resources"
+}
+
+# Prints the RebootNode for $node, created at or after $since_ts, whose reboot
+# signal failed. The janitor sets SignalSent=False with completionTime when the
+# CSP rejects the reboot (for example, no permission to reset the instance) and
+# does not retry, so the node will never reboot.
+get_failed_rebootnode() {
+    local node=$1
+    local since_ts=$2
+
+    kubectl get "$REBOOTNODE_RESOURCE" -o json 2>/dev/null | jq -r --arg node "$node" --argjson since "$since_ts" '
+        [.items[]
+            | select(.spec.nodeName == $node and (.metadata.creationTimestamp | fromdateiso8601) >= $since)
+            | . as $rn | (.status.conditions // [])[]
+            | select(.type == "SignalSent" and .status == "False")
+            | "RebootNode \($rn.metadata.name) reports SignalSent=False (reason: \(.reason)): \(.message)"]
+        | first // empty' || true
+}
+
+# Logs the conditions and completionTime of each RebootNode for $node created
+# at or after $since_ts, or that there is none.
+log_node_rebootnodes() {
+    local node=$1
+    local since_ts=$2
+    local summary
+
+    summary=$(kubectl get "$REBOOTNODE_RESOURCE" -o json 2>/dev/null | jq -r --arg node "$node" --argjson since "$since_ts" '
+        [.items[] | select(.spec.nodeName == $node and (.metadata.creationTimestamp | fromdateiso8601) >= $since)]
+        | if length == 0 then
+            "No RebootNode was created for node \($node) since the test started"
+          else
+            .[] | ("RebootNode \(.metadata.name): created=\(.metadata.creationTimestamp) completionTime=\(.status.completionTime // "none")",
+                   ((.status.conditions // [])[] | "  \(.type)=\(.status) reason=\(.reason // "") message=\(.message // "")"))
+          end') || summary="Failed to read RebootNodes for node $node"
+
+    local line
+    while IFS= read -r line; do
+        log "$line"
+    done <<<"$summary"
+}
+
+# wait_for_boot_id_change NODE ORIGINAL_BOOT_ID [TEST_START_TS]
+# With TEST_START_TS, also watches the node's RebootNode and fails as soon as
+# its reboot signal fails, instead of waiting UAT_REBOOT_TIMEOUT for a reboot
+# that will not come.
 wait_for_boot_id_change() {
     local node=$1
     local original_boot_id=$2
+    local test_start_ts=${3:-}
     local timeout=${UAT_REBOOT_TIMEOUT:-600}
     local elapsed=0
     local boot_id_changed=false
+    local watch_rebootnodes=false
 
     if [[ "${NVSENTINEL_DRY_RUN:-false}" == "true" ]]; then
         wait_for_dry_run_remediation_decision "$node" "$timeout"
@@ -494,6 +617,11 @@ wait_for_boot_id_change() {
 
     log "Waiting for node $node to reboot (boot ID to change)..."
     log "Original boot ID: $original_boot_id"
+
+    if [[ -n "$test_start_ts" ]] && rebootnode_crd_installed; then
+        watch_rebootnodes=true
+        log "Watching RebootNodes for node $node: a failed reboot signal fails the test"
+    fi
 
     while [[ $elapsed -lt $timeout ]]; do
         local current_boot_id
@@ -511,6 +639,15 @@ wait_for_boot_id_change() {
             break
         fi
 
+        if [[ "$watch_rebootnodes" == "true" ]]; then
+            local failed_rebootnode
+            failed_rebootnode=$(get_failed_rebootnode "$node" "$test_start_ts")
+            if [[ -n "$failed_rebootnode" ]]; then
+                log_node_rebootnodes "$node" "$test_start_ts"
+                error "Node $node will not reboot: $failed_rebootnode"
+            fi
+        fi
+
         sleep 5
         elapsed=$((elapsed + 5))
     done
@@ -518,6 +655,9 @@ wait_for_boot_id_change() {
     if [[ "$boot_id_changed" != "true" ]]; then
         local final_boot_id
         final_boot_id=$(get_boot_id "$node" || echo "FAILED_TO_GET")
+        if [[ "$watch_rebootnodes" == "true" ]]; then
+            log_node_rebootnodes "$node" "$test_start_ts"
+        fi
         error "Timeout waiting for node $node to reboot. Current boot ID: '$final_boot_id', Original: '$original_boot_id'"
     fi
 
@@ -630,6 +770,9 @@ verify_validation_request() {
     log "ValidationRequest $vr_name for node $node succeeded"
 }
 
+# Test 1: injects XID 95 through DCGM on a GPU node and expects NVSentinel to
+# quarantine the node, reboot it and return it to service, then checks the
+# post-remediation ValidationRequest.
 test_gpu_monitoring_dcgm() {
     log "========================================="
     log "Test 1: GPU monitoring via DCGM"
@@ -666,7 +809,7 @@ test_gpu_monitoring_dcgm() {
     wait_for_node_quarantine "$gpu_node"
 
     log "Waiting for node to reboot and recover..."
-    wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+    wait_for_boot_id_change "$gpu_node" "$original_boot_id" "$current_ts"
     recover_injected_dcgm "$gpu_node"
     reset_dry_run_node_state "$gpu_node"
 
@@ -684,6 +827,9 @@ skip_syslog_tests_in_dry_run() {
     fi
 }
 
+# Test 2: writes a non-fatal XID 13 and a fatal XID 79 to the kernel log of a
+# GPU node. Expects XID 13 to raise only a node event, and XID 79 to quarantine
+# the node, reboot it and return it to service. Skipped in dry-run.
 test_xid_monitoring_syslog() {
     log "======================================================"
     log "Test 2: XID monitoring via syslog"
@@ -744,7 +890,7 @@ test_xid_monitoring_syslog() {
     wait_for_node_quarantine "$gpu_node"
 
     log "Waiting for node to reboot and recover..."
-    wait_for_boot_id_change "$gpu_node" "$original_boot_id"
+    wait_for_boot_id_change "$gpu_node" "$original_boot_id" "$current_ts"
 
     verify_validation_request "$gpu_node" "$current_ts"
 
@@ -783,6 +929,7 @@ test_xid_monitoring_syslog_gpu_reset() {
     log "Original boot ID: $initial_boot_id"
 
     create_node_debug_pod "$gpu_node"
+    require_debug_pod_nvidia_smi
 
     log "Fetching GPU UUID and PCI from nvidia-smi on $NODE_NS/$NODE_POD"
 

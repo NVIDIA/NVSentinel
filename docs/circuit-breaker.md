@@ -147,12 +147,14 @@ metadata:
 NVSentinel exposes metrics for monitoring and alerting:
 
 ```
-# Current circuit breaker state (1 = TRIPPED, 0 = CLOSED)
+# Current circuit breaker state: one series, labelled with the current state, at 1
 fault_quarantine_breaker_state{state="TRIPPED"}
 
 # Percentage of cluster currently cordoned (useful for dashboards)
 fault_quarantine_breaker_utilization
 ```
+
+`fault_quarantine_breaker_state` exports only the current state, so while the breaker is `CLOSED` the `state="TRIPPED"` series is absent rather than 0. Alert on `fault_quarantine_breaker_state{state="TRIPPED"} == 1`. In dry run the breaker is never evaluated, so the series reports the state stored in the ConfigMap.
 
 These metrics can be used to:
 - Create Grafana dashboards showing circuit breaker status

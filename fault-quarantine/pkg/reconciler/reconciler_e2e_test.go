@@ -8441,3 +8441,86 @@ func TestE2E_ManualUntaintAnnotationCleanup(t *testing.T) {
 			node.Annotations[common.QuarantinedNodeIsUntaintedManuallyAnnotationKey] == ""
 	}, eventuallyTimeout, eventuallyPollInterval, "Manual untaint annotation should be removed, FQ annotations added with taint applied")
 }
+
+// TestE2E_ReplacedGPUsUncordonNode: a node whose GPUs were replaced (same slots, new UUIDs) is uncordoned.
+func TestE2E_ReplacedGPUsUncordonNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-replaced-gpu-" + generateShortTestID()
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-nvlink",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuNvlinkWatch' && event.isFatal == true"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-nvlink", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	slot := func(i int, uuid string) []*protos.Entity {
+		return []*protos.Entity{
+			{EntityType: "GPU", EntityValue: fmt.Sprint(i)},
+			{EntityType: "PCI", EntityValue: fmt.Sprintf("0000:0%d:00", 4+i)},
+			{EntityType: "GPU_UUID", EntityValue: uuid},
+		}
+	}
+
+	t.Log("Quarantine with faults on 4 GPUs, one at a time")
+	for i := 0; i < 4; i++ {
+		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+			generateTestID(), nodeName, "GpuNvlinkWatch", false, true,
+			slot(i, fmt.Sprintf("GPU-old%d", i)), model.StatusInProgress,
+		)}
+
+		tracked := 3 * (i + 1)
+		require.Eventually(t, func() bool {
+			node, _ := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			var m healthEventsAnnotation.HealthEventsAnnotationMap
+			if err := json.Unmarshal([]byte(node.Annotations[common.QuarantineHealthEventAnnotationKey]), &m); err != nil {
+				return false
+			}
+
+			return node.Spec.Unschedulable && m.Count() == tracked
+		}, eventuallyTimeout, eventuallyPollInterval, "GPU %d should be tracked", i)
+	}
+
+	t.Log("Replace the GPUs: same index and PCI address, new UUIDs")
+	for i := 0; i < 4; i++ {
+		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+			generateTestID(), nodeName, "GpuNvlinkWatch", true, false,
+			slot(i, fmt.Sprintf("GPU-new%d", i)), model.StatusInProgress,
+		)}
+
+		remaining := 12 - 3*(i+1)
+		require.Eventually(t, func() bool {
+			node, _ := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			if remaining == 0 {
+				return !node.Spec.Unschedulable && node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+			}
+
+			var m healthEventsAnnotation.HealthEventsAnnotationMap
+			if err := json.Unmarshal([]byte(node.Annotations[common.QuarantineHealthEventAnnotationKey]), &m); err != nil {
+				return false
+			}
+
+			return m.Count() == remaining
+		}, eventuallyTimeout, eventuallyPollInterval, "GPU %d: old UUID keys should be cleared", i)
+	}
+}
