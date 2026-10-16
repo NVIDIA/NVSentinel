@@ -423,6 +423,45 @@ func TestIBState_FirstPollDownBelowModeStaysFatal(t *testing.T) {
 	assert.True(t, cardFatal, "below-mode card must also raise the homogeneity fatal")
 }
 
+func TestEthState_FirstPollMajorityZeroCardsStillReportsCardAnomalies(t *testing.T) {
+	node := newStubNode()
+	topo := make(map[string][]string, 10)
+	cards := make([]string, 10)
+	for i := 0; i < 10; i++ {
+		device := fmt.Sprintf("mlx5_%d", i)
+		card := fmt.Sprintf("0000:%02x:00", i)
+		cards[i] = card
+		state, physState := "DOWN", "Disabled"
+		if i >= 7 {
+			state, physState = "ACTIVE", "LinkUp"
+		}
+		node.addIB(device, &stubDevice{
+			pciAddress: card + ".0",
+			numaNode:   0,
+			ports: map[int]stubPort{
+				1: {state: state, physState: physState, linkLayer: "Ethernet"},
+			},
+		})
+		topo[device] = []string{"PIX"}
+	}
+
+	reader := node.reader()
+	classifier := buildClassifier(t, reader, []string{"0000:0f:00.0"}, topo)
+	check := NewEthernetStateCheck("node1", reader, &config.Config{},
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
+
+	events, err := check.Run()
+	require.NoError(t, err)
+	for i := 0; i < 7; i++ {
+		cardEvts := cardEvents(events, cards[i])
+		require.Len(t, cardEvts, 1, "zero-active card %s must produce a card anomaly", cards[i])
+		assert.True(t, cardEvts[0].IsFatal)
+	}
+	for i := 7; i < 10; i++ {
+		assert.Empty(t, cardEvents(events, cards[i]), "active peer %s must not be anomalous", cards[i])
+	}
+}
+
 func TestIBState_HealthyToUnhealthyBoundaryEmitsEvent(t *testing.T) {
 	node := newStubNode().addIB("mlx5_0", &stubDevice{
 		pciAddress: "0000:47:00.0",
