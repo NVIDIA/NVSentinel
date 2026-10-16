@@ -218,6 +218,8 @@ Attempts are counted, not retries: `1` allows one attempt and no retry, and `3` 
 
 When a node reaches the cap, fault-remediation sets its state label to `remediation-failed` and stops, leaving the node for an operator. This ends the remediation loop that a node repeats when remediation never fixes the underlying fault. The counter resets when the node leaves quarantine.
 
+After the cap, the health monitors can send more events for the same fault. Fault-remediation closes each of these events before the log collector starts, so a capped node gets no more log-collector Jobs.
+
 Set a cap on any cluster where an unattended loop is worse than an unremediated node. Leave it at `0` only if an operator watches the `remediation-failed` state by other means.
 
 ## Update Retry Configuration
