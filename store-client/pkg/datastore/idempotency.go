@@ -41,8 +41,8 @@ var (
 	ErrIndexMissing = errors.New("idempotency index missing")
 
 	// ErrIndexBuilding indicates the index exists but another session is still
-	// building it (reported by the MongoDB verification; on PostgreSQL the
-	// table setup checks the build progress itself). It wraps
+	// building it (reported by the MongoDB verification; on PostgreSQL an
+	// unfinished build verifies as ErrIndexMismatch). It wraps
 	// ErrIndexMismatch, because the index does not enforce anything yet: a
 	// verifying platform connector refuses writes until the build completes.
 	ErrIndexBuilding = fmt.Errorf("%w: build in progress", ErrIndexMismatch)
