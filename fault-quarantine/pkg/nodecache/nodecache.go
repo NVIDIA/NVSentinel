@@ -34,8 +34,8 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/ext"
+	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/ext"
 	v1 "k8s.io/api/core/v1"
 	toolscache "k8s.io/client-go/tools/cache"
 

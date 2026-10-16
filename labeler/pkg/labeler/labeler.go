@@ -33,7 +33,6 @@ import (
 	resourceinformers "k8s.io/client-go/informers/resource/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
-	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 
 	listersv1 "k8s.io/client-go/listers/core/v1"
 
@@ -419,9 +418,9 @@ func (l *Labeler) getEventHandlers() cache.ResourceEventHandlerFuncs {
 				return
 			}
 
-			oldReady := podutil.IsPodReady(oldPod)
+			oldReady := isPodReady(oldPod)
 
-			newReady := podutil.IsPodReady(newPod)
+			newReady := isPodReady(newPod)
 			if oldReady == newReady {
 				slog.Debug("Pod readiness unchanged", "pod", newPod.Name, "ready", newReady)
 				return
@@ -723,11 +722,24 @@ func isTargetPod(podObj any, requireReady bool, excludePod *v1.Pod) (bool, *v1.P
 		return false, nil
 	}
 
-	if requireReady && !podutil.IsPodReady(pod) {
+	if requireReady && !isPodReady(pod) {
 		return false, nil
 	}
 
 	return true, pod
+}
+
+// isPodReady reports whether the pod's Ready condition is True. It matches
+// IsPodReady from k8s.io/kubernetes/pkg/api/v1/pod. That package is not
+// imported, because it replaces the client-go feature gates when it loads.
+func isPodReady(pod *v1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == v1.PodReady {
+			return condition.Status == v1.ConditionTrue
+		}
+	}
+
+	return false
 }
 
 // resolveDriverInstalledLabelValue returns the driver-installed label value for
