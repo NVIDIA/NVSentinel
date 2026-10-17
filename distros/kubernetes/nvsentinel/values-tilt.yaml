@@ -490,7 +490,7 @@ health-events-analyzer:
             "$and": [
               {"$eq": ["this.healthevent.checkname", "SysLogsXIDError"]},
               {
-                "$not": [{"$in": ["this.healthevent.errorcode.0", ["31", "45"]}]
+                "$not": [{"$in": ["this.healthevent.errorcode.0", ["31", "45"]]}]
                   
   
                 
