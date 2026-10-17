@@ -493,7 +493,7 @@ health-events-analyzer:
                 "$not": [{"$in": ["this.healthevent.errorcode.0", ["31", "45"]}]
                   
   
-                ]
+                
               }
             ]
           }
