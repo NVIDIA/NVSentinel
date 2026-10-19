@@ -144,7 +144,7 @@ config: |
   description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
   recommended_action = "CONTACT_SUPPORT"
   evaluate_rule = {{ .Values.enableRepeatedXIDErrorOnSameGPURule }}
-  when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || event.errorCode[0] != '31')"
+  when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45'))"
   stage = [
     '''
     {
@@ -181,6 +181,12 @@ config: |
               "$ne": [
                 "this.healthevent.errorcode.0",
                 "31"
+              ]
+            },
+            {
+              "$ne": [
+                "this.healthevent.errorcode.0",
+                "45"
               ]
             }
           ]
