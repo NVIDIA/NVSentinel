@@ -222,6 +222,45 @@ var _ = Describe("Validation release group retries", func() {
 		Expect(getNode(ctx, nodeB).Spec.Unschedulable).To(BeFalse())
 	})
 
+	It("keeps a node gated when it is quarantined after its own group succeeded but before the request completes", func() {
+		nodeA, nodeB := "release-window-a", "release-window-b"
+		// With a retry left, the invalidated group would wait for the quarantine to clear
+		// and run again; without one the request completes and must release nothing.
+		fixture := newReleaseRaceFixture("release-window", 0, nodeA, nodeB)
+		testCfg := fixture.config.Validation.Spec.Tests["basic"]
+		testCfg.SupportsBatchingNodes = false
+		fixture.config.Validation.Spec.Tests["basic"] = testCfg
+
+		vr := fixture.running()
+		Expect(vr.Status.TestGroups).To(HaveLen(2))
+
+		groupA := releaseGroupForNode(vr, nodeA)
+		Expect(updateObjectStatus(ctx, groupA.Attempts[0].ObjectName, testSuccessCondType)).To(Succeed())
+		vr = fixture.reconcile()
+		Expect(vr.Status.Phase).To(Equal(v1alpha1.PhaseRunning))
+		Expect(releaseGroupForNode(vr, nodeA).Phase).To(Equal(v1alpha1.PhaseSucceeded))
+		Expect(releaseGroupForNode(vr, nodeB).Phase).To(Equal(v1alpha1.PhaseRunning))
+
+		// Node B's test is still running, so no release patch is in flight when the quarantine starts.
+		Expect(setReleaseRaceQuarantine(ctx, nodeA, releaseRaceEvent)).To(Succeed())
+
+		groupB := releaseGroupForNode(vr, nodeB)
+		Expect(updateObjectStatus(ctx, groupB.Attempts[0].ObjectName, testSuccessCondType)).To(Succeed())
+		vr = reconcileUntilPhase(ctx, fixture.reconciler, fixture.request, v1alpha1.PhaseFailed, maxReconcileIterations)
+
+		expectReleaseRaceGate(nodeA)
+		expectReleaseRaceGate(nodeB)
+		Expect(vr.Status.Phase).To(Equal(v1alpha1.PhaseFailed))
+		groupA = releaseGroupForNode(vr, nodeA)
+		Expect(groupA.Phase).To(Equal(v1alpha1.PhaseFailed))
+		Expect(groupA.Attempts).To(HaveLen(1))
+		Expect(groupA.Attempts[0].Phase).To(Equal(v1alpha1.PhaseFailed))
+		Expect(groupA.Attempts[0].FailureReason).To(Equal(v1alpha1.FailureReasonNodeReadinessViolation))
+		Expect(groupA.Attempts[0].FailedNodes).To(ConsistOf(nodeA))
+		Expect(releaseGroupForNode(vr, nodeB).Phase).To(Equal(v1alpha1.PhaseSucceeded))
+		checkNodeValidationState(ctx, vr.Name, []string{nodeA, nodeB}, v1alpha1.PhaseFailed)
+	})
+
 	It("does not treat a deleted batch member as released when quarantine starts during another member's patch", func() {
 		nodeA, nodeB := "release-late-delete-a", "release-late-delete-b"
 		fixture := newReleaseRaceFixture("release-late-delete", 1, nodeA, nodeB)
