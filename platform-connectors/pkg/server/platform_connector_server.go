@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/golang/protobuf/ptypes/empty"
@@ -44,10 +45,13 @@ const (
 )
 
 var (
-	healthEventsReceived = promauto.NewCounter(prometheus.CounterOpts{
+	healthEventsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "platform_connector_health_events_received_total",
-		Help: "The total number of health events that the platform connector has received",
-	})
+		Help: "The total number of health events that the platform connector has received, " +
+			"by processing strategy and event health. The labels let consumers separate " +
+			"analyzer-relevant traffic (unhealthy, EXECUTE_REMEDIATION or STORE_AND_ANALYSE) " +
+			"from STORE_ONLY and recovery events, e.g. for analyzer-stall alerting.",
+	}, []string{"processing_strategy", "healthy"})
 
 	requestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "platform_connector_request_duration_seconds",
@@ -136,10 +140,20 @@ func (p *PlatformConnectorServer) handle(ctx context.Context, he *pb.HealthEvent
 	)
 
 	slog.DebugContext(ctx, "Health events received", "events", he)
-	healthEventsReceived.Add(float64(eventCount))
 
 	if err := ApplyEventDefaultsAndValidate(he.GetEvents()); err != nil {
 		return outcomeRejected, err
+	}
+
+	// Counted after defaulting so processing_strategy reflects the stored value
+	// (UNSPECIFIED has already been defaulted to EXECUTE_REMEDIATION). Rejected
+	// batches are no longer counted; they are visible via requestDuration's
+	// rejected outcome.
+	for _, event := range he.GetEvents() {
+		healthEventsReceived.WithLabelValues(
+			event.GetProcessingStrategy().String(),
+			strconv.FormatBool(event.GetIsHealthy()),
+		).Inc()
 	}
 
 	if p.Pipeline != nil {
