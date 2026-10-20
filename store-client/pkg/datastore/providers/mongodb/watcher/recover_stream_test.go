@@ -206,3 +206,34 @@ func TestHandleChangeStreamError_RecoverableError_KeepsStoredToken(t *testing.T)
 	require.False(t, w.handleChangeStreamError(errors.New("server selection error")),
 		"a transient failure must not report the stored token as discarded")
 }
+
+// Reopening reads four values out of MongoDBConfig, so reopenConfig assembles those four
+// rather than the watcher retaining the config whole — a #2040 review decision, because the
+// config carries the connection URI and a watcher lives as long as the process.
+//
+// Nothing in the code preserves that. Returning w.mongoConfig would be the obvious
+// simplification and would silently put credentials back on long-lived state, so this asserts
+// the absence: anyone making that change has to delete an assertion saying why not.
+func TestReopenConfig_CarriesNoCredentials(t *testing.T) {
+	w := &ChangeStreamWatcher{
+		database:                         "health",
+		collection:                       "events",
+		changeStreamRetryDeadlineSeconds: 45,
+		changeStreamRetryIntervalSeconds: 4,
+	}
+
+	cfg := w.reopenConfig()
+
+	require.Equal(t, "health", cfg.Database)
+	require.Equal(t, "events", cfg.Collection)
+	require.Equal(t, 45, cfg.ChangeStreamRetryDeadlineSeconds)
+	require.Equal(t, 4, cfg.ChangeStreamRetryIntervalSeconds)
+
+	require.Empty(t, cfg.URI, "the reopen path must not carry the connection URI")
+	require.Empty(t, cfg.AppName)
+	require.Empty(t, cfg.ClientTLSCertConfig.CaCertPath)
+	require.Empty(t, cfg.ClientTLSCertConfig.TlsCertPath)
+	require.Empty(t, cfg.ClientTLSCertConfig.TlsKeyPath)
+	require.Nil(t, cfg.CertWatcher)
+	require.Zero(t, cfg.MaxPoolSize)
+}

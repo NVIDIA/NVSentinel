@@ -22,5 +22,6 @@ import "regexp"
 // detecting and parsing XID errors. If the XID format changes, this is the
 // single source of truth that needs to be updated.
 var XIDPattern = regexp.MustCompile(
-	`NVRM: Xid \(PCI:([0-9a-fA-F:.]+)\): (\d+)(?:, pid=(\d+))?(?:, name=([^,]+))?(?:, Ch ([0-9a-fA-F]+))?`,
+	`NVRM: Xid \(PCI:([0-9a-fA-F:.]+)(?: GPU-I:\d+)?(?: GPU-CI:\d+)?\): (\d+)` +
+		`(?:, pid=(\d+))?(?:, name=([^,]+))?(?:, Ch ([0-9a-fA-F]+))?`,
 )

@@ -26,13 +26,17 @@ import (
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
+	"github.com/nvidia/nvsentinel/preflight/pkg/gang/discoverer"
+	gangtypes "github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func buildAdmissionReview(pod *corev1.Pod, uid types.UID, namespace string) []byte {
@@ -475,4 +479,68 @@ func TestHandleMutate(t *testing.T) {
 
 		assert.False(t, called)
 	})
+}
+
+// TestHandleMutate_WorkloadRefGang covers the K8s 1.35 path end to end in the
+// webhook. spec.workloadRef has no corev1.Pod field in this client, so the
+// request carries raw pod JSON, and the pod is not in the API server yet.
+func TestHandleMutate_WorkloadRefGang(t *testing.T) {
+	workload := &unstructured.Unstructured{}
+	workload.SetGroupVersionKind(discoverer.WorkloadGVK)
+	workload.SetNamespace("team-a")
+	workload.SetName("train")
+	workload.SetUID("train-uid")
+	c := fake.NewClientBuilder().WithObjects(workload).Build()
+
+	var mu sync.Mutex
+	var registrations []GangRegistration
+	handler := NewHandler(handlerGangConfig(), gang.NewResolver(discoverer.NewWorkloadRefDiscoverer(c), nil), nil,
+		func(_ context.Context, reg GangRegistration) {
+			mu.Lock()
+			defer mu.Unlock()
+			registrations = append(registrations, reg)
+		}, nil)
+
+	raw, err := json.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata":   map[string]any{"generateName": "worker-"},
+		"spec": map[string]any{
+			"workloadRef": map[string]any{"name": "train", "podGroup": "workers", "podGroupReplicaKey": "replica-0"},
+			"containers": []any{map[string]any{
+				"name":      "train",
+				"image":     "train:latest",
+				"resources": map[string]any{"limits": map[string]any{"nvidia.com/gpu": "8"}},
+			}},
+		},
+	})
+	require.NoError(t, err)
+	body, err := json.Marshal(admissionv1.AdmissionReview{
+		APIVersion: "admission.k8s.io/v1",
+		Kind:       "AdmissionReview",
+		Request: &admissionv1.AdmissionRequest{
+			UID:       "uid-workload",
+			Namespace: "team-a",
+			Object:    runtime.RawExtension{Raw: raw},
+		},
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	handler.HandleMutate(rec, httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body)))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var review admissionv1.AdmissionReview
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &review))
+	require.NotNil(t, review.Response)
+	require.True(t, review.Response.Allowed)
+	assert.Contains(t, string(review.Response.Patch), gangtypes.GangConfigVolumeName)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, registrations, 1)
+	assert.Equal(t, "kubernetes-team-a-train-workers-replica-0", registrations[0].GangID)
+	require.NotNil(t, registrations[0].OwnerReference)
+	assert.Equal(t, "Workload", registrations[0].OwnerReference.Kind)
+	assert.Equal(t, types.UID("train-uid"), registrations[0].OwnerReference.UID)
 }

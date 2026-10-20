@@ -62,7 +62,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # We compile nccl-tests from source to get deterministic binary paths and
 # ensure version compatibility with the bundled NCCL.
 # =============================================================================
-FROM nvcr.io/nvidia/pytorch:26.08-py3@sha256:3becd068f49bd2ad38f90db5f9a4803019a76933a24e63d821376c44e7a9200a AS runtime
+FROM nvcr.io/nvidia/pytorch:26.09-py3@sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6 AS runtime
 
 ARG NCCL_TESTS_VERSION
 

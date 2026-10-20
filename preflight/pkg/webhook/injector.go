@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -163,6 +164,12 @@ func (i *Injector) gangContextForPod(ctx context.Context, pod *corev1.Pod) *Gang
 		return nil
 	}
 
+	if admissionDiscoverer, ok := discoverer.(types.AdmissionGangDiscoverer); ok {
+		if admitted := admittedPodFrom(ctx, pod.Namespace); admitted != nil {
+			return admissionGangContext(ctx, pod, admitted, admissionDiscoverer, discoverer.Name())
+		}
+	}
+
 	if !discoverer.CanHandle(pod) {
 		slog.Debug("Pod not handled by gang discoverer",
 			"pod", pod.Name,
@@ -177,23 +184,57 @@ func (i *Injector) gangContextForPod(ctx context.Context, pod *corev1.Pod) *Gang
 		return nil
 	}
 
-	gangCtx := &GangContext{
-		GangID:        gangID,
-		ConfigMapName: gang.ConfigMapName(gangID),
-	}
+	var ownerReference *metav1.OwnerReference
 
 	if ownerResolver, ok := discoverer.(types.GangOwnerResolver); ok {
-		ownerReference, err := ownerResolver.OwnerReference(ctx, pod)
+		var err error
+
+		ownerReference, err = ownerResolver.OwnerReference(ctx, pod)
 		if err != nil {
-			slog.Warn("Failed to resolve gang owner reference",
-				"pod", pod.Name,
-				"namespace", pod.Namespace,
-				"gangID", gangID,
-				"discoverer", discoverer.Name(),
-				"error", err)
-		} else {
-			gangCtx.OwnerReference = ownerReference
+			logOwnerReferenceError(pod, gangID, discoverer.Name(), err)
 		}
+	}
+
+	return newGangContext(pod, gangID, ownerReference, discoverer.Name())
+}
+
+// admissionGangContext resolves the gang from the pod JSON in the admission
+// request. See types.AdmissionGangDiscoverer for why the decoded Pod is not
+// enough.
+func admissionGangContext(
+	ctx context.Context,
+	pod *corev1.Pod,
+	admitted *unstructured.Unstructured,
+	discoverer types.AdmissionGangDiscoverer,
+	discovererName string,
+) *GangContext {
+	gangID, ownerReference, err := discoverer.AdmissionGang(ctx, admitted)
+	if gangID == "" {
+		slog.Debug("Pod not handled by gang discoverer",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"discoverer", discovererName)
+
+		return nil
+	}
+
+	if err != nil {
+		logOwnerReferenceError(pod, gangID, discovererName, err)
+	}
+
+	return newGangContext(pod, gangID, ownerReference, discovererName)
+}
+
+func newGangContext(
+	pod *corev1.Pod,
+	gangID string,
+	ownerReference *metav1.OwnerReference,
+	discovererName string,
+) *GangContext {
+	gangCtx := &GangContext{
+		GangID:         gangID,
+		ConfigMapName:  gang.ConfigMapName(gangID),
+		OwnerReference: ownerReference,
 	}
 
 	slog.Info("Pod is part of a gang",
@@ -201,9 +242,18 @@ func (i *Injector) gangContextForPod(ctx context.Context, pod *corev1.Pod) *Gang
 		"namespace", pod.Namespace,
 		"gangID", gangID,
 		"configMap", gangCtx.ConfigMapName,
-		"discoverer", discoverer.Name())
+		"discoverer", discovererName)
 
 	return gangCtx
+}
+
+func logOwnerReferenceError(pod *corev1.Pod, gangID, discovererName string, err error) {
+	slog.Warn("Failed to resolve gang owner reference",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"gangID", gangID,
+		"discoverer", discovererName,
+		"error", err)
 }
 
 func (i *Injector) InjectInitContainers(ctx context.Context, pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
