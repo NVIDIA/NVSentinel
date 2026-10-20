@@ -199,7 +199,12 @@ func (r *K8sConnector) conditionTestFailedAsConflict(
 	}
 
 	node, getErr := r.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-	if getErr != nil || equality.Semantic.DeepEqual(node.Status.Conditions, read) {
+	if getErr != nil {
+		// The read's error, not the 422, decides whether the write is retried.
+		return fmt.Errorf("re-reading node after rejected conditions patch (%v): %w", err, getErr)
+	}
+
+	if equality.Semantic.DeepEqual(node.Status.Conditions, read) {
 		return err
 	}
 
