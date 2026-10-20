@@ -16,6 +16,7 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"testing/synctest"
@@ -327,8 +328,12 @@ func TestFetchAndProcessHealthMetric_ClientGoRetryExhaustion_PersistsRecovery(t 
 
 	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}})
 	recoveryFailures := 0
-	client.Fake.PrependReactor("update", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		updatedNode := action.(k8stesting.UpdateAction).GetObject().(*corev1.Node)
+	client.Fake.PrependReactor("*", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updatedNode, written := writtenNode(t, action)
+		if !written {
+			return false, nil, nil
+		}
+
 		condition, _, found := findNodeCondition(updatedNode, conditionType)
 		if found && condition.Status == corev1.ConditionFalse && recoveryFailures < clientretry.DefaultRetry.Steps {
 			recoveryFailures++
@@ -396,4 +401,33 @@ func TestFetchAndProcessHealthMetric_ClientGoRetryExhaustion_PersistsRecovery(t 
 	}
 
 	require.Equal(t, clientretry.DefaultRetry.Steps, recoveryFailures)
+}
+
+// writtenNode returns the node a fake client action writes: the object of an
+// update, or the conditions a JSON patch of the status sets.
+func writtenNode(t *testing.T, action k8stesting.Action) (*corev1.Node, bool) {
+	t.Helper()
+
+	switch a := action.(type) {
+	case k8stesting.UpdateAction:
+		return a.GetObject().(*corev1.Node), true
+	case k8stesting.PatchAction:
+		var ops []struct {
+			Op    string          `json:"op"`
+			Path  string          `json:"path"`
+			Value json.RawMessage `json:"value"`
+		}
+		require.NoError(t, json.Unmarshal(a.GetPatch(), &ops))
+
+		node := &corev1.Node{}
+		for _, op := range ops {
+			if op.Op == "add" && op.Path == "/status/conditions" {
+				require.NoError(t, json.Unmarshal(op.Value, &node.Status.Conditions))
+			}
+		}
+
+		return node, true
+	default:
+		return nil, false
+	}
 }
