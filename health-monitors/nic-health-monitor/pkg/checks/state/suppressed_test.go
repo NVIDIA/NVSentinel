@@ -211,3 +211,103 @@ func TestEthState_SuppressedPort_ReportedFatalAfterDelay(t *testing.T) {
 	clock.Advance(time.Minute)
 	assert.Empty(t, runPoll(t, check))
 }
+
+func newSuppressedLayerCheck(
+	t *testing.T, layer string, reportAfter time.Duration, mgr *statefile.Manager, start time.Time,
+) (checks.TransactionalCheck, *stubNode, *fakeClock) {
+	t.Helper()
+
+	physical := checks.IBPhysPolling
+	if layer == ethLinkLayer {
+		physical = checks.IBPhysDisabled
+	}
+
+	node := newStubNode().addIB("mlx5_0", &stubDevice{
+		pciAddress: "0000:03:00.0", numaNode: 0,
+		ports: map[int]stubPort{1: {state: checks.IBStateDown, physState: physical, linkLayer: layer}},
+	})
+	reader := node.reader()
+	classifier := buildClassifier(t, reader, []string{"0000:0f:00.0"}, map[string][]string{"mlx5_0": {"PIX"}})
+	cfg := &config.Config{StateCheck: config.StateCheckConfig{ReportSuppressedAfter: reportAfter}}
+	clock := &fakeClock{now: start}
+
+	if layer == ibLinkLayer {
+		check := NewInfiniBandStateCheck("suppressed-restart", reader, cfg,
+			classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+		check.now = clock.Now
+
+		return check, node, clock
+	}
+
+	check := NewEthernetStateCheck("suppressed-restart", reader, cfg,
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+	check.now = clock.Now
+
+	return check, node, clock
+}
+
+func TestState_SuppressedPort_DisabledAfterRestart_StaysSilent(t *testing.T) {
+	for _, layer := range []string{ibLinkLayer, ethLinkLayer} {
+		t.Run(layer, func(t *testing.T) {
+			mgr := freshStateManager(t)
+			check, _, _ := newSuppressedLayerCheck(t, layer, testReportAfter, mgr, suppressedStart)
+			require.Empty(t, runPoll(t, check))
+
+			restarted, _, clock := newSuppressedLayerCheck(t, layer, 0, reloadManager(t, mgr),
+				suppressedStart.Add(time.Minute))
+			assert.Empty(t, runPoll(t, restarted), "disabling the option must silence persisted timers")
+
+			clock.Advance(24 * time.Hour)
+			assert.Empty(t, runPoll(t, restarted), "disabled reporting must stay off after the old deadline")
+		})
+	}
+}
+
+func TestState_SuppressedPort_EscalatedBeforeDelay_NotReportedAgain(t *testing.T) {
+	for _, layer := range []string{ibLinkLayer, ethLinkLayer} {
+		for _, discard := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/discard=%t", layer, discard), func(t *testing.T) {
+				mgr := freshStateManager(t)
+				check, node, clock := newSuppressedLayerCheck(t, layer, testReportAfter, mgr, suppressedStart)
+				require.Empty(t, runPoll(t, check))
+
+				if layer == ethLinkLayer {
+					// DOWN was suppressed, then the port retrained without becoming healthy.
+					node.ib["mlx5_0"].ports[1] = stubPort{
+						state: "INIT", physState: checks.IBPhysLinkUp, linkLayer: layer,
+					}
+					clock.Advance(time.Minute)
+					require.Empty(t, runPoll(t, check))
+				}
+
+				node.ib["mlx5_0"].ports[1] = stubPort{
+					state: checks.IBStateDown, physState: checks.IBPhysDisabled, linkLayer: layer,
+				}
+				clock.Advance(time.Minute)
+				events, err := check.Prepare()
+				require.NoError(t, err)
+				require.Len(t, events, 1)
+				require.True(t, events[0].IsFatal)
+
+				if discard {
+					check.Discard()
+					retry := runPoll(t, check)
+					require.Len(t, retry, 1, "a discarded escalation must still be retried")
+					assert.True(t, retry[0].IsFatal)
+				} else {
+					check.Commit()
+				}
+
+				// Restore the fatal snapshot when rebuilding the sysfs fixture.
+				restarted, restartedNode, restartedClock := newSuppressedLayerCheck(t, layer, testReportAfter,
+					reloadManager(t, mgr), clock.Now().Add(time.Minute))
+				restartedNode.ib["mlx5_0"].ports[1] = node.ib["mlx5_0"].ports[1]
+				restartedClock.Advance(testReportAfter)
+				assert.Empty(t, runPoll(t, restarted), "the suppression timer must stay cleared after restart")
+
+				clock.Advance(testReportAfter)
+				assert.Empty(t, runPoll(t, check), "escalation already reported this port")
+			})
+		}
+	}
+}

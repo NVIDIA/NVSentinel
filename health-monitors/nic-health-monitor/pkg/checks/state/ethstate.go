@@ -377,6 +377,10 @@ func (c *EthernetStateCheck) portTransitionEvents(
 
 	for _, pi := range st.allPorts {
 		if evt := c.evaluatePortTransition(pi, firstPoll, baselineRun, anomalousCards, st.portCard); evt != nil {
+			if !evt.IsHealthy {
+				c.forgetSuppressedPort(pi.key)
+			}
+
 			events = append(events, evt)
 		}
 	}

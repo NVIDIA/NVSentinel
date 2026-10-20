@@ -412,6 +412,10 @@ func (c *InfiniBandStateCheck) portTransitionEvents(
 			continue
 		}
 
+		if !evt.IsHealthy {
+			c.forgetSuppressedPort(key)
+		}
+
 		events = append(events, evt)
 	}
 

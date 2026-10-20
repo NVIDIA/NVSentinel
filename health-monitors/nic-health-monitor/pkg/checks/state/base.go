@@ -322,6 +322,10 @@ func (b *baseStateCheck) recordSuppressedPort(key string) {
 // stayed unhealthy for stateCheck.suppressedPortReportAfter. The caller calls
 // forgetSuppressedPort once it reports the port.
 func (b *baseStateCheck) suppressedPortDue(key string, current portSnapshot) bool {
+	if b.cfg.StateCheck.ReportSuppressedAfter <= 0 {
+		return false
+	}
+
 	since, ok := b.suppressedSince[key]
 	if !ok || portIsHealthy(current) {
 		return false
