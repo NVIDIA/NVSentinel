@@ -134,7 +134,7 @@ ruleSets:
 |---|---|
 | `drain` | Any two rule sets that match. The outcome is one choice |
 | `remediation` | Any two rule sets that match. The outcome is one choice |
-| fault-quarantine (for reference, not part of this schema) | Two rule sets that match and set the same taint or label key. The other fields combine |
+| fault-quarantine (for reference, not part of this schema) | Two rule sets that match and set the same taint key and value, or the same label key. The other fields combine |
 
 **One winner.** The `drain` and `remediation` outcomes are each one choice, so one rule set applies. The component evaluates all enabled rule sets. Of the rule sets that match, the one with the highest `priority` wins. If two have the same priority, the first in the configuration wins. Only the outcome of the winner applies.
 
