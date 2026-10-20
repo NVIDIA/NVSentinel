@@ -119,6 +119,22 @@ nic-health-monitor:
 
 The hold-down applies only to port state. The `link_downed` counter (InfiniBandDegradationCheck) is fatal on any increase and stays latched until the counter resets or the host reboots, so a blip that bumps it still produces a fatal event. If you see blips there, you can disable that counter (see [Disable a noisy counter](#disable-a-noisy-counter)).
 
+## Reporting Ports Suppressed on the First Poll
+
+On the first poll, an unhealthy port is reported only with peer evidence that it should be up: its card has fewer active ports than the decisive mode of its role group. Without that evidence (a singleton group, a tie, or every card down) the port is suppressed, because it may be uncabled or disabled by design. A suppressed port that never comes up is otherwise never reported. A node with half its compute links down from boot gives a tie and stays silent.
+
+`suppressedPortReportAfter` reports such a port once it has stayed unhealthy that long:
+
+```yaml
+nic-health-monitor:
+  suppressedPortReportAfter: "10m"
+```
+
+- **Off by default.** `"0s"` keeps suppressing the port. Leave it off if some ports are down by design, or exclude those devices with `nicExclusionRegex`.
+- **Usual severity.** The port is reported with the severity a runtime transition to that state would have.
+- **Ports still training at boot are not reported.** A port that comes up before the delay is dropped.
+- **Survives restarts.** The suppression time is kept in the state file, so a pod restart does not restart the wait. A reboot or discovery-scope change resets it, and the next first poll decides again.
+
 ## Poll Stall Detection
 
 Reports when the monitor itself cannot observe NIC state. If a state or counter poll has been in flight for `pollStallDeadline`, the monitor publishes an unhealthy, non-fatal `NICPollStallCheck` event (recommended action `NONE`). Once no poll is stalled it publishes the healthy event. No check runs while a publish is waiting for the deployment platform connector, so a connector outage is not reported as a NIC stall. For the same condition as a metric, use `time() - nic_health_monitor_poll_cycle_last_completed_timestamp_seconds`. A stall event that fails to publish is retried until delivered, even if the poll has completed in the meantime, so the episode is still recorded. The first poll to complete after the monitor starts also publishes a healthy event, which closes a stall left open when the liveness probe restarted the container.

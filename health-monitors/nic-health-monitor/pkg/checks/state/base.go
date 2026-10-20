@@ -121,6 +121,13 @@ type baseStateCheck struct {
 	portHeldSince map[string]time.Time
 	now           func() time.Time
 
+	// suppressedSince records when the first-poll peer-evidence gate
+	// suppressed each still-unhealthy port, so stateCheck.
+	// suppressedPortReportAfter can report it once it has stayed unhealthy
+	// that long. Transactional like the latches, and persisted with the
+	// port snapshots so a restart does not restart the wait.
+	suppressedSince map[string]time.Time
+
 	pending *statePollCommit
 
 	strategy linkLayerStrategy
@@ -135,6 +142,7 @@ type statePollCommit struct {
 	disappearedLatch     map[string]bool
 	disappearedPortLatch map[string]statefile.DisappearedPortFlag
 	deviceMissCounts     map[string]int
+	suppressedSince      map[string]time.Time
 	linkLayer            string
 
 	// baselineRan records that this poll performed the baseline
@@ -189,12 +197,18 @@ func (b *baseStateCheck) seedFromPersistedState() {
 	}
 
 	b.previousPorts = make(map[string]portSnapshot, len(persisted))
+	b.suppressedSince = make(map[string]time.Time)
+
 	for k, v := range persisted {
 		b.previousPorts[k] = portSnapshot{
 			Device:        v.Device,
 			Port:          v.Port,
 			State:         v.State,
 			PhysicalState: v.PhysicalState,
+		}
+
+		if !v.SuppressedSince.IsZero() {
+			b.suppressedSince[k] = v.SuppressedSince
 		}
 	}
 
@@ -284,6 +298,59 @@ func (b *baseStateCheck) holdPort(
 	// Once due, the entry stays until the unhealthy state is committed, so a
 	// discarded poll reports it again next time.
 	return prev, now.Sub(since) < holdDown
+}
+
+// recordSuppressedPort notes the first time the first-poll peer-evidence gate
+// suppressed a port. Off when stateCheck.suppressedPortReportAfter is zero.
+func (b *baseStateCheck) recordSuppressedPort(key string) {
+	if b.cfg.StateCheck.ReportSuppressedAfter <= 0 {
+		return
+	}
+
+	if b.suppressedSince == nil {
+		b.suppressedSince = make(map[string]time.Time)
+	}
+
+	if _, ok := b.suppressedSince[key]; !ok {
+		// Round(0) drops the monotonic reading and UTC matches what the
+		// state file loads, so the persisted value compares equal.
+		b.suppressedSince[key] = b.now().Round(0).UTC()
+	}
+}
+
+// suppressedPortDue reports whether a port suppressed on the first poll has
+// stayed unhealthy for stateCheck.suppressedPortReportAfter. The caller calls
+// forgetSuppressedPort once it reports the port.
+func (b *baseStateCheck) suppressedPortDue(key string, current portSnapshot) bool {
+	since, ok := b.suppressedSince[key]
+	if !ok || portIsHealthy(current) {
+		return false
+	}
+
+	if b.now().Sub(since) < b.cfg.StateCheck.ReportSuppressedAfter {
+		return false
+	}
+
+	slog.Info("Reporting first-poll-suppressed port: still unhealthy",
+		"check", b.strategy.checkName(), "device", current.Device, "port", current.Port,
+		"state", current.State, "physState", current.PhysicalState,
+		"unhealthyFor", b.now().Sub(since).Round(time.Second))
+
+	return true
+}
+
+func (b *baseStateCheck) forgetSuppressedPort(key string) {
+	delete(b.suppressedSince, key)
+}
+
+// pruneSuppressedPorts forgets ports that came up or are no longer present.
+// A port that came up is handled by the usual transitions from then on.
+func (b *baseStateCheck) pruneSuppressedPorts(currentPorts map[string]portSnapshot) {
+	for key := range b.suppressedSince {
+		if current, ok := currentPorts[key]; !ok || portIsHealthy(current) {
+			delete(b.suppressedSince, key)
+		}
+	}
 }
 
 // portIsHealthy reports whether a port snapshot is fully operational.
@@ -937,11 +1004,12 @@ func (b *baseStateCheck) persistState(
 	snapshots := make(map[string]statefile.PortStateSnapshot, len(currentPorts))
 	for k, v := range currentPorts {
 		snapshots[k] = statefile.PortStateSnapshot{
-			Device:        v.Device,
-			Port:          v.Port,
-			State:         v.State,
-			PhysicalState: v.PhysicalState,
-			LinkLayer:     linkLayer,
+			Device:          v.Device,
+			Port:            v.Port,
+			State:           v.State,
+			PhysicalState:   v.PhysicalState,
+			LinkLayer:       linkLayer,
+			SuppressedSince: b.suppressedSince[k],
 		}
 	}
 

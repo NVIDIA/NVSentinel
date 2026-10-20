@@ -138,6 +138,12 @@ type PortStateSnapshot struct {
 	State         string `json:"state"`
 	PhysicalState string `json:"physical_state"`
 	LinkLayer     string `json:"link_layer,omitempty"`
+
+	// SuppressedSince is when the first-poll peer-evidence gate suppressed
+	// this still-unhealthy port, so stateCheck.suppressedPortReportAfter can
+	// report it across pod restarts. It is discarded with the port state on
+	// a reboot or scope change, where the next first poll decides again.
+	SuppressedSince time.Time `json:"suppressed_since,omitzero"`
 }
 
 // AnomalousCardFlag marks one latched card-homogeneity anomaly. The

@@ -198,10 +198,12 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	committedDisappeared := c.disappearedLatch
 	committedPortLatch := c.disappearedPortLatch
 	committedMisses := c.deviceMissCounts
+	committedSuppressed := c.suppressedSince
 	c.anomalousLatch = maps.Clone(committedAnomalous)
 	c.disappearedLatch = maps.Clone(committedDisappeared)
 	c.disappearedPortLatch = maps.Clone(committedPortLatch)
 	c.deviceMissCounts = maps.Clone(committedMisses)
+	c.suppressedSince = maps.Clone(committedSuppressed)
 
 	c.collectDevicesAndPorts(result.Devices, st)
 	c.retainUnreadableDevices(
@@ -215,6 +217,7 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	}
 
 	events := c.buildEventsForPoll(st, firstPoll, baselineRun)
+	c.pruneSuppressedPorts(st.currentPorts)
 	c.logDiscoverySummaryIfChanged(st)
 
 	if firstPoll {
@@ -228,6 +231,7 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 		disappearedLatch:     c.disappearedLatch,
 		disappearedPortLatch: c.disappearedPortLatch,
 		deviceMissCounts:     c.deviceMissCounts,
+		suppressedSince:      c.suppressedSince,
 		linkLayer:            ethLinkLayer,
 		baselineRan:          baselineRun,
 	}
@@ -236,6 +240,7 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.disappearedLatch = committedDisappeared
 	c.disappearedPortLatch = committedPortLatch
 	c.deviceMissCounts = committedMisses
+	c.suppressedSince = committedSuppressed
 
 	return events, nil
 }
@@ -254,6 +259,7 @@ func (c *EthernetStateCheck) Commit() {
 	c.disappearedLatch = pending.disappearedLatch
 	c.disappearedPortLatch = pending.disappearedPortLatch
 	c.deviceMissCounts = pending.deviceMissCounts
+	c.suppressedSince = pending.suppressedSince
 
 	if pending.baselineRan {
 		c.emitHealthyBaselines = false
@@ -441,6 +447,16 @@ func (c *EthernetStateCheck) escalationEvent(
 	pi ethPortInfo, prev portSnapshot, isHealthy, firstPoll bool,
 	anomalousCards map[string]topology.CardAnomaly, portCard map[string]string,
 ) *pb.HealthEvent {
+	// A port the first poll suppressed stays unhealthy without a transition,
+	// so suppressedPortReportAfter reports it from here.
+	if !isHealthy && !firstPoll && c.suppressedPortDue(pi.key, pi.snap) {
+		if evt := c.unhealthyEvent(pi, prev, false, anomalousCards, portCard); evt != nil {
+			c.forgetSuppressedPort(pi.key)
+
+			return evt
+		}
+	}
+
 	if !isHealthy && ethernetPortIsFatal(pi.snap) && !ethernetPortIsFatal(prev) {
 		return c.unhealthyEvent(pi, prev, firstPoll, anomalousCards, portCard)
 	}
@@ -513,6 +529,7 @@ func (c *EthernetStateCheck) unhealthyEvent(
 			slog.Info("Suppressing first-poll unhealthy RoCE port: no peer evidence of failure",
 				"device", pi.snap.Device, "port", pi.snap.Port, "card", card,
 				"state", pi.snap.State, "physState", pi.snap.PhysicalState)
+			c.recordSuppressedPort(pi.key)
 
 			return nil
 		}

@@ -212,10 +212,12 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	committedDisappeared := c.disappearedLatch
 	committedPortLatch := c.disappearedPortLatch
 	committedMisses := c.deviceMissCounts
+	committedSuppressed := c.suppressedSince
 	c.anomalousLatch = maps.Clone(committedAnomalous)
 	c.disappearedLatch = maps.Clone(committedDisappeared)
 	c.disappearedPortLatch = maps.Clone(committedPortLatch)
 	c.deviceMissCounts = maps.Clone(committedMisses)
+	c.suppressedSince = maps.Clone(committedSuppressed)
 
 	c.collectDevicesAndPorts(result.Devices, st)
 	c.retainUnreadableDevices(
@@ -224,6 +226,7 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.applyPortHoldDown(st.currentPorts, st.cardActive, st.portCard, result.UnreadableDevices)
 
 	events := c.buildEventsForPoll(st, firstPoll, baselineRun)
+	c.pruneSuppressedPorts(st.currentPorts)
 	c.logDiscoverySummaryIfChanged(st)
 
 	c.pending = &statePollCommit{
@@ -233,6 +236,7 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 		disappearedLatch:     c.disappearedLatch,
 		disappearedPortLatch: c.disappearedPortLatch,
 		deviceMissCounts:     c.deviceMissCounts,
+		suppressedSince:      c.suppressedSince,
 		linkLayer:            ibLinkLayer,
 		baselineRan:          baselineRun,
 	}
@@ -241,6 +245,7 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.disappearedLatch = committedDisappeared
 	c.disappearedPortLatch = committedPortLatch
 	c.deviceMissCounts = committedMisses
+	c.suppressedSince = committedSuppressed
 
 	return events, nil
 }
@@ -259,6 +264,7 @@ func (c *InfiniBandStateCheck) Commit() {
 	c.disappearedLatch = pending.disappearedLatch
 	c.disappearedPortLatch = pending.disappearedPortLatch
 	c.deviceMissCounts = pending.deviceMissCounts
+	c.suppressedSince = pending.suppressedSince
 
 	if pending.baselineRan {
 		c.emitHealthyBaselines = false
@@ -389,6 +395,15 @@ func (c *InfiniBandStateCheck) portTransitionEvents(
 		// through the same peer-evidence gate.
 		if !st.portOverride[key] &&
 			c.shouldSuppressFirstPollWithoutPeerEvidence(firstPoll || baselineRun, current, port, card, anomalousCards) {
+			c.recordSuppressedPort(key)
+
+			continue
+		}
+
+		if !firstPoll && !baselineRun && c.suppressedPortDue(key, current) {
+			c.forgetSuppressedPort(key)
+			events = append(events, c.unhealthyPortEvent(current))
+
 			continue
 		}
 
