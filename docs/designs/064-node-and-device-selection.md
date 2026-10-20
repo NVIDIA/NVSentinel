@@ -67,7 +67,7 @@ This ADR adds the missing controls to node-drainer and fault-remediation, with o
 
 1. **A shared rule set schema for node-drainer and fault-remediation.** A rule set has a common part (`name`, `enabled`, `priority`, and `match`) and one outcome key that is named for the component (`drain` or `remediation`). The common part, the CEL variables, the selection of the winner, and the result of an error are the same in both components. An operator learns one format, and a rule set moves from one component to the other with a change to the outcome only. The types and the evaluator are in `commons`.
 2. **Each component keeps its own configuration.** There is no shared profile and no shared definition of node groups.
-3. **fault-quarantine:** no change. Its rule sets already select by node and by event. The shared schema keeps their `match` lists, rule kinds, and CEL variables, so the schema can also describe a quarantine outcome (see [fault-quarantine](#fault-quarantine)).
+3. **fault-quarantine:** no change. Its rule sets already select by node and by event. The shared schema is based on its rule sets and its node cache, but this ADR does not change its configuration or its behaviour (see [fault-quarantine](#fault-quarantine)).
 4. **node-drainer:** add `ruleSets` with the `drain` outcome.
    - The outcome is `skip: true` or a `method` (`Custom` or `Evict`). No match gives `Evict`.
    - node-drainer selects the method one time, when the drain for an event starts. It records the rule set, the method, and the scope on the event status.
@@ -118,7 +118,7 @@ ruleSets:
 - A condition that needs `all` and `any` together is written as CEL in one rule, or as more than one rule set. In one rule, `&&` and `||` combine conditions of the same kind. An `any` across kinds, for example "the node is in the legacy pool, or the event is from an LPU", can be two rule sets with the same outcome.
 - Each rule has a `kind` and a CEL `expression` that returns a boolean:
   - `kind: HealthEvent` reads `event`, which has all fields of the health event, including `componentClass` and `entitiesImpacted`. The evaluator converts each field of the event, so a field that is added to the event later is available with no change to the schema. Enum fields, such as `recommendedAction`, are numbers, as they are in fault-quarantine.
-  - `kind: Node` reads `node`. A `Node` rule can read only `node.metadata.name` and labels with a literal key, as `node.metadata.labels["example.com/pool"]` or `"example.com/pool" in node.metadata.labels`. See [Node rules read only named labels](#node-rules-read-only-named-labels).
+  - `kind: Node` reads `node`, the Node object. In node-drainer, the fields that the rules read decide what the node cache keeps. See [Node fields and the node cache](#node-fields-and-the-node-cache).
 - A CEL map lookup of a missing label fails. A rule must test for the key first.
 
 **The outcome.** Each rule set has one outcome key. The key is the name of the stage that reads it. The outcome has `skip: true`, or the field that selects the behaviour of the stage. A component accepts only its own outcome key, and startup fails for a different key.
@@ -144,39 +144,42 @@ Startup validation cannot find all errors. For example, a rule that reads a labe
 The component checks all of the items above again at startup, and also checks the CEL, which Helm cannot do. Startup fails for an error:
 
 - Each `expression` compiles and returns a boolean.
-- Each `Node` rule reads only `node.metadata.name` and labels with a literal key.
 
 The component also logs a warning at startup, but continues, for:
 
 - Two enabled rule sets with the same `priority`. The sequence in the configuration then selects the winner.
 - A rule that reads `node.metadata.labels["<key>"]` but does not test `"<key>" in node.metadata.labels`. The rule fails at runtime on each node that does not have the label.
+- In node-drainer, a `Node` rule that makes the node cache keep all labels and annotations ([Node fields and the node cache](#node-fields-and-the-node-cache)).
 
 **Metrics.** Each component counts the wins and the errors of each rule set, with the same metric names and labels. A rule set that another rule set always hides has a count of zero. The rule set name is a metric label. The number of rule sets in the configuration limits its cardinality, not the number of nodes or events.
 
-#### Node rules read only named labels
+#### Node fields and the node cache
 
-A component must know, at startup, which label keys its `Node` rules read. node-drainer keeps Nodes in an informer, and the informer keeps only the labels that the rules read. On a large cluster, this keeps the cache small. If a rule reads labels that the component cannot name at startup, the component must keep all labels of all nodes. Thus, one change to one rule can increase the memory of the component by a large amount, and nothing tells the operator why.
+node-drainer keeps Nodes in an informer. The informer prunes each Node to what the `Node` rules read, in the same way as the fault-quarantine node cache (`fault-quarantine/pkg/nodecache`). At startup, the component finds the fields that each `Node` rule reads, with `commons/pkg/celfields`. The informer keeps:
 
-To prevent this, startup validation finds the fields that each `Node` rule reads, with `commons/pkg/celfields`. The rule is accepted only if each field is one of these:
+- The spec and the identity metadata, such as the name.
+- The labels and the annotations whose keys the rules name with a string literal, as `node.metadata.labels["<key>"]` or `"<key>" in node.metadata.labels`.
+- The keys that node-drainer reads for its own use, such as the quarantine annotation.
 
-- `node.metadata.name`.
-- `node.metadata.labels["<key>"]`, where `<key>` is a string literal.
-- `"<key>" in node.metadata.labels`, where `<key>` is a string literal.
+The informer does not keep the status. A rule that reads the status gets an empty status, as in fault-quarantine.
 
-Startup fails for any other read, with the rule set name, the expression, and the field that is not permitted. For example:
+If the component cannot name the keys that a rule reads, the informer keeps all labels and all annotations of each node. For example:
 
-| Expression | Result |
+| Expression | The informer keeps |
 |---|---|
-| `"scheduler" in node.metadata.labels && node.metadata.labels["scheduler"] == "slurm"` | Accepted. Reads the `scheduler` label |
-| `node.metadata.labels.exists(k, k.startsWith("example.com/"))` | Rejected. Reads all labels |
-| `size(node.metadata.labels) > 0` | Rejected. Reads all labels |
-| `node.metadata.labels[node.metadata.name]` | Rejected. The key is not a literal |
-| `node.spec.unschedulable` | Rejected. Reads a field other than the name and labels |
-| `"example.com/team" in node.metadata.annotations` | Rejected. Reads an annotation |
+| `"scheduler" in node.metadata.labels && node.metadata.labels["scheduler"] == "slurm"` | The `scheduler` label |
+| `"example.com/team" in node.metadata.annotations` | The `example.com/team` annotation |
+| `node.spec.unschedulable` | No more. The spec is always kept |
+| `node.metadata.labels.exists(k, k.startsWith("example.com/"))` | All labels and all annotations |
+| `size(node.metadata.labels) > 0` | All labels and all annotations |
+| `node.metadata.labels[node.metadata.name]` | All labels and all annotations. The key is not a literal |
 
-To select by a label prefix or by another field, the operator adds a label with a known key to the nodes, and the rule reads that label.
+**The cost of keeping all labels.** A node can have about a hundred labels and a dozen annotations, and on a large cluster these maps are most of the size of the cache. Thus, one change to one rule can increase the memory of node-drainer from a few keys for each node to all labels and annotations of all nodes, and the configuration does not show it. To make the cause visible:
 
-fault-remediation has no Node cache, but it applies the same validation. Thus, a rule set that works in one component works in the other.
+- At startup, node-drainer logs a warning for each rule that makes the cache keep all labels and annotations, with the rule set name and the expression.
+- The documentation describes this cost, lists the forms of rule that keep the cache small, and shows how to replace a label prefix with a label that has a known key.
+
+fault-remediation has no Node cache. It reads the full Node from the API server for each event, so a `Node` rule can read any field, and the rules do not change the memory of fault-remediation.
 
 **Code.** The schema is in `commons/pkg/ruleset`:
 
@@ -187,26 +190,25 @@ fault-remediation has no Node cache, but it applies the same validation. Thus, a
 
 ### fault-quarantine
 
-The configuration does not change in this ADR. The rule sets already select by node labels and by event fields. All rule sets that match apply, and `priority` resolves label conflicts. The cordon-reason label lists the rule sets that matched.
+This ADR does not change fault-quarantine. Its rule sets and its node cache are the basis of the shared schema. This section describes what the shared schema takes from fault-quarantine and where it differs. The differences are not changes to fault-quarantine, and this ADR does not implement them.
 
-[ADR-062](062-fault-quarantine-release-at-session-end.md) fixed the case of a later event on a quarantined node ([#1439](https://github.com/NVIDIA/NVSentinel/issues/1439), [#2021](https://github.com/NVIDIA/NVSentinel/pull/2021)). fault-quarantine now applies the taints and the cordon of each rule set that a later event matches. It releases them when the last event of the session recovers, not when each event recovers.
+At this time, the fault-quarantine rule sets select by node labels and by event fields. All rule sets that match apply, and `priority` resolves conflicts between their taints and labels. The cordon-reason label lists the rule sets that matched.
 
 **Monitoring only.** An operator excludes a group from quarantine with a `Node` rule, for example `!("example.com/pool" in node.metadata.labels && node.metadata.labels["example.com/pool"] in ["legacy-a", "legacy-b"])`. Health events and node conditions continue for these nodes. No later stage runs, because node-drainer starts only for a quarantined node.
 
-**Common parts.** The shared schema starts from the fault-quarantine rule sets. These parts are the same: `name`, `priority`, the `all` and `any` lists, the `HealthEvent` and `Node` rule kinds, the CEL environments, and the `event` and `node` variables. A `HealthEvent` rule, and a `Node` rule that reads only named labels, works in both with no change. The quarantine fields (`taint`, `label`, and `cordon`) fit under one outcome key, `quarantine`. Thus, the shared schema can describe fault-quarantine rule sets.
+**What the shared schema takes from fault-quarantine.** The `name` and `match` fields, the `HealthEvent` and `Node` rule kinds, the CEL environments, the `event` and `node` variables, and the pruning of the node cache. A rule that works in fault-quarantine works in the shared schema with no change.
 
-**Differences from the shared schema.** Each difference changes the behaviour of an existing fault-quarantine configuration:
+**Where the shared schema differs.**
 
-| fault-quarantine at this time | Shared schema |
+| fault-quarantine | Shared schema |
 |---|---|
 | Key `rule-sets` in TOML, `ruleSets` in Helm values | Key `ruleSets` in TOML and in Helm values |
 | `enabled` is false when it is not set | `enabled` is true when it is not set |
-| `taint`, `label`, and `cordon` are next to `match` | The outcome is under one key (`quarantine`) |
-| A rule set can have `all` and `any`. Each list is a separate evaluator, and the rule set applies if either one matches: `all` OR `any`. The metrics count each list separately. No shipped configuration uses `any` | A rule set has exactly one of `all` and `any` |
+| `taint`, `label`, and `cordon` are next to `match` | The outcome is under one key that names the stage |
+| A rule set can have `all` and `any`, and it applies if either one matches | A rule set has exactly one of `all` and `any` |
 | A rule set that fails does not match | An error stops the decision |
 | A `version` field on each rule set | No `version` field |
-| A `Node` rule can read any field. If the keys cannot be found, the node cache keeps all labels and annotations | A `Node` rule reads only the name and labels with a literal key. Other reads fail at startup |
-| No outcome key | Outcome key `quarantine`, with the taint, label, and cordon fields. The matches combine, as at this time, and do not select one winner |
+| All rule sets that match apply. `priority` resolves conflicts between their taints and labels | `priority` selects the one rule set that applies |
 
 ### node-drainer
 
@@ -265,7 +267,7 @@ node-drainer records the rule set, the method, and the drain scope (`Node`, or t
 
 The recorded scope also replaces the configuration that [#1960](https://github.com/NVIDIA/NVSentinel/pull/1960) copies into fault-quarantine to find out if a drain was partial.
 
-**Node cache.** The node informer keeps the name, the quarantine annotation, and only the label keys that its selectors read (`node-drainer/pkg/informers/informers.go`). It does not keep the spec, the status, or other annotations. Startup validation gives node-drainer the label keys of each rule set ([Node rules read only named labels](#node-rules-read-only-named-labels)), and the informer keeps those keys. A rule that needs a different field or all labels fails at startup. It does not change the size of the cache.
+**Node cache.** At this time, the node informer keeps the name, the quarantine annotation, and only the label keys that `customDrain.nodeSelector` reads (`node-drainer/pkg/informers/informers.go`). It does not keep the spec, the status, or other annotations. With rule sets, the informer keeps the fields that are described in [Node fields and the node cache](#node-fields-and-the-node-cache). It also keeps the spec, as the fault-quarantine node cache does.
 
 **`podDrainPolicies` do not change.** They select pods, not nodes, and they apply inside the `Evict` method.
 
@@ -312,7 +314,7 @@ ruleSets:
               node.metadata.labels["example.com/remediation-wave"] == "1")
     remediation:
       skip: true
-  - name: vm-replace
+  - name: vm-replace          # see "Partial drains" below
     priority: 10
     match:
       all:
@@ -348,6 +350,10 @@ ruleSets:
 | A rule set cannot be evaluated | No CR. The node state is `remediation-failed`, with the rule set name in the message |
 
 fault-remediation records the name of the entry that it used, not only the recommended action. It uses that name to find the CR and its `completeConditionType` later. Thus, a rule set change does not lose a CR that is in progress.
+
+**Partial drains.** With `partialDrainEnabled`, node-drainer drains only the pods that use the failed GPU for a `COMPONENT_RESET` event. If a rule set changes that event to an action on the full node, as `vm-replace` does, fault-remediation terminates or reboots a node whose other pods were not drained. The node-drainer Helm values already describe this risk for a `COMPONENT_RESET` entry that reboots the node. Rule sets make it easier to hit, because the action can change for each group of nodes.
+
+This ADR does not add a check. The documentation of rule sets describes the risk, next to the examples that change the action. The drain scope in the [record on the event](#the-record-on-the-event) gives fault-remediation the information for a later check.
 
 ### Node state labels
 
@@ -423,7 +429,7 @@ A rule set change is a configuration change. As at this time, the component read
 - **The outcome key shows the stage.** Each rule set states which stage it configures. A rule set that is in the configuration of the wrong component fails validation at startup, with a clear message.
 - **Reusable types.** The schema is in `commons`, so other NVSentinel code can read and validate rule sets with the same types.
 - **Tested code.** The CEL rule evaluators already run the quarantine and the validation rule sets. The rules use the same CEL as fault-quarantine.
-- **Scale.** No new cache for the full cluster. fault-remediation uses its existing Node read. node-drainer keeps its pruned informer, with the label keys that its rule sets read.
+- **Scale.** No new cache for the full cluster. fault-remediation uses its existing Node read. node-drainer keeps its pruned informer, and prunes it in the same way as fault-quarantine.
 
 ## Consequences
 
@@ -438,10 +444,11 @@ A rule set change is a configuration change. As at this time, the component read
 ### Negative
 
 - Each component has its own group definitions. A group that applies to more than one stage is written once in each component.
-- fault-quarantine rule sets differ from the shared schema in seven ways (see [Differences from the shared schema](#fault-quarantine)). An operator must know both forms.
+- fault-quarantine rule sets differ from the shared schema in seven ways (see [fault-quarantine](#fault-quarantine)). An operator must know both forms.
 - `customDrain.nodeSelector` is deprecated soon after its release in v1.26.0. Operators who adopted it must migrate, and node-drainer supports two forms during the deprecation period. See [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector).
 - A simple node selection, such as `scheduler=slurm`, is longer as a CEL rule set than as a label selector.
-- A `Node` rule cannot select by a label prefix, by an annotation, or by a field of the spec or the status. The operator must add a label with a known key to the nodes.
+- In node-drainer, a `Node` rule that reads labels by a prefix or by a computed key makes the node cache keep all labels and annotations of all nodes. Only a startup warning shows it, as in fault-quarantine.
+- A fault-remediation rule set can change a `COMPONENT_RESET` event after a partial drain to an action on the full node. The pods that were not drained then stop without a drain.
 - No single field shows the full behaviour for a node. The operator reads the cordon-reason label and the two records on the event.
 - A rule set with a high priority hides the rule sets with a lower priority that match the same events.
 - The move of the CEL rule evaluators changes fault-quarantine code, although its behaviour does not change.
@@ -452,7 +459,8 @@ A rule set change is a configuration change. As at this time, the component read
 - A metric counts the wins for each drain and remediation rule set. A rule set that another rule set always hides has a count of zero.
 - The existing fault-quarantine evaluator tests move with the CEL rule evaluators and run in `commons`.
 - Document one example per case, with the configuration of each component that it needs.
-- The startup error for a `Node` rule names the field that is not permitted. The documentation shows how to replace a label prefix or an annotation with a label.
+- The startup warning for a `Node` rule names the rule set and the expression. The documentation describes the memory cost and shows how to replace a label prefix with a label that has a known key.
+- The documentation describes the risk of an action on the full node after a partial drain. The drain scope in the record on the event makes a later check possible.
 
 ## Alternatives Considered
 
@@ -492,9 +500,9 @@ Put `skip`, `method`, and `action` next to `match`, as fault-quarantine puts `ta
 
 Define each node group one time, with a name, and refer to the name from the rule sets of each component. **Deferred** because: it is a shared definition of node groups, which this ADR does not add. The `match` field can accept a reference to a named selector later, without a change to the outcome keys.
 
-### Keep all labels when a rule reads more than named labels
+### Fail at startup when a rule reads more than named labels
 
-Accept any `Node` rule. If the label keys of a rule cannot be found, the node-drainer informer keeps all labels, as fault-quarantine does at this time. **Rejected** because: one change to one rule can increase the memory of node-drainer from a small cache to all labels of all nodes. Only a log message shows the cause. Also, the node-drainer cache does not keep the spec, the status, or most annotations, so a rule that reads them gets a wrong result and does not fail.
+Accept a `Node` rule only if it reads the name and labels with a literal key, so that the node-drainer cache can never keep all labels. **Rejected** because: fault-quarantine and kubernetes-object-monitor accept any rule. When they cannot name what a rule reads, fault-quarantine keeps all labels and annotations, and kubernetes-object-monitor keeps the whole object. A different behaviour in node-drainer adds a difference between components and limits the rules that an operator can write. The memory cost is documented and shown with a startup warning instead.
 
 ### Keep label selectors in node-drainer
 
@@ -511,6 +519,7 @@ Add `skipDrain.nodeSelector` in the syntax of `customDrain.nodeSelector`, and ke
 - MIG instances in rules.
 - New device information in the health event, for example the GPU model or architecture. A different ADR adds it. The rules of this ADR can read it when it is in the event.
 - A stop of a maintenance CR when a rule set change disables remediation.
+- A check that prevents an action on the full node after a partial drain.
 - A change to the rule set format or the behaviour of fault-quarantine.
 
 ### Open questions
@@ -522,13 +531,11 @@ Add `skipDrain.nodeSelector` in the syntax of `customDrain.nodeSelector`, and ke
 ## References
 
 - [#1903](https://github.com/NVIDIA/NVSentinel/issues/1903), [#1904](https://github.com/NVIDIA/NVSentinel/issues/1904): heterogeneous cluster support (node and device dimensions)
-- [#1439](https://github.com/NVIDIA/NVSentinel/issues/1439), [#2021](https://github.com/NVIDIA/NVSentinel/pull/2021): later events on a quarantined node apply taints and cordon (fixed)
 - [#1857](https://github.com/NVIDIA/NVSentinel/issues/1857), [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871): custom drain for a subset of nodes
 - [#1960](https://github.com/NVIDIA/NVSentinel/pull/1960): validation after a full drain of a `COMPONENT_RESET` event
 - [#1950](https://github.com/NVIDIA/NVSentinel/issues/1950), [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015): remediation pipeline without a database (ADR-063)
 - [#1758](https://github.com/NVIDIA/NVSentinel/pull/1758): removal of the Node cache from fault-remediation
 - [ADR-003](003-rule-based-node-quarantine.md): rule-based node quarantine (CEL rules)
-- [ADR-062](062-fault-quarantine-release-at-session-end.md): fault-quarantine release at session end
 - [ADR-021](021-health-event-property-overrides.md): health event property overrides
 - [ADR-036](036-custom-remediation-actions.md): custom remediation actions
 - [ADR-040](040-external-remediation-request.md): external remediation request
