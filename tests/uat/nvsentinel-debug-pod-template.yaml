@@ -29,7 +29,9 @@ spec:
     - name: nvsentinel-debug
       # Same base image as the syslog-health-monitor runtime stage. nvidia-smi
       # is injected by the NVIDIA container toolkit (runtimeClassName +
-      # privileged + NVIDIA_VISIBLE_DEVICES, see ADR-044).
+      # privileged + NVIDIA_VISIBLE_DEVICES, see ADR-044). Keep in sync with
+      # nvsentinel-debug-pod-template-nri.yaml, the variant tests.sh uses
+      # when there is no nvidia RuntimeClass.
       image: public.ecr.aws/docker/library/debian:trixie-slim
       command: ["sleep", "3600"]
       securityContext:

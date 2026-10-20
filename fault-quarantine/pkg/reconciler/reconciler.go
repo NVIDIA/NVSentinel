@@ -749,8 +749,8 @@ func (r *Reconciler) handleEvent(
 
 	isNodeQuarantined := len(taintsToBeApplied) > 0 || len(labelsToBeApplied) > 0 || isCordoned.Load()
 
-	// In dry-run mode, always apply annotations for observability even if no actions would be taken
-	if !isNodeQuarantined && !r.config.DryRun {
+	// Dry run skips the same events as a live run, so it records only quarantines that would happen.
+	if !isNodeQuarantined {
 		span.SetAttributes(
 			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
 			attribute.String("fault_quarantine.skip.reason", "No quarantine actions required"),

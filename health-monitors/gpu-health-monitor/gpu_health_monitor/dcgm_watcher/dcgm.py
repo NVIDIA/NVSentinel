@@ -164,6 +164,7 @@ class ProbeWatchdog:
         self._started_at = 0.0
         self._detected = False
         self._reported = False
+        self._retry_logged = False
 
     @contextlib.contextmanager
     def probe(self, operation: str) -> Iterator[None]:
@@ -173,6 +174,7 @@ class ProbeWatchdog:
             self._started_at = time.monotonic()
             self._detected = False
             self._reported = False
+            self._retry_logged = False
         try:
             yield
         finally:
@@ -204,10 +206,13 @@ class ProbeWatchdog:
             # unhealthy event is committed.
             delivered = self._on_hang(operation, elapsed)
             if delivered is False:
-                log.warning(
-                    f"DCGM probe {operation} unresponsive for {elapsed:.1f}s but "
-                    "the health event was not published; will retry"
-                )
+                # Once per probe: a deferred or failing publish is retried every interval.
+                if not self._retry_logged:
+                    self._retry_logged = True
+                    log.warning(
+                        f"DCGM probe {operation} unresponsive for {elapsed:.1f}s but "
+                        "the health event was not published yet; will retry"
+                    )
                 return False
 
             self._reported = True

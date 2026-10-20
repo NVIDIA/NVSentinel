@@ -51,6 +51,32 @@ const fieldClientName = "clientName"
 // threshold without making the loop chatty.
 const changeStreamMaxAwaitTime = 1 * time.Second
 
+// changeStreamReopenInterval is the pause between reopen attempts after a runtime failure.
+// Each attempt is itself bounded by openChangeStream's own retry deadline, so this only
+// paces the outer loop.
+const changeStreamReopenInterval = 5 * time.Second
+
+// changeStreamReopenBudget bounds the whole recovery window, not a single attempt.
+//
+// Sized to absorb a replica-set roll: a 3-member rolling restart was measured at about two
+// minutes end to end on a 287-node cluster (#2030), so five minutes covers that with margin
+// while still being short enough that a persistent failure becomes a restart promptly.
+//
+// Deliberately a constant rather than a MongoDBConfig field. Making it tunable means a method
+// on the TimeoutConfig interface, which every implementer would have to grow - including a
+// mock in another module - plus the prefixed/legacy env pair its siblings carry. Nobody has
+// asked to tune it, and a config field nothing can set is worse than no field. If a fleet
+// with slower rolls needs it, follow ChangeStreamRetryDeadlineSeconds end to end.
+const changeStreamReopenBudget = 5 * time.Minute
+
+// changeStreamCloseTimeout bounds the best-effort close of a change stream being replaced.
+//
+// Short on purpose: that close runs while swapChangeStream holds the write lock, so it is also
+// how long MarkProcessed can be made to wait. The cursor being closed belongs to a stream that
+// just failed, so the server is usually unreachable and a longer wait buys nothing - the point
+// is to release server-side resources when it is cheap, not to insist on it.
+const changeStreamCloseTimeout = 3 * time.Second
+
 // errChangeStreamClosed reports a server-closed cursor, which TryNext signals as "no event
 // and no error". Treated as an error so the stream is reopened rather than spun on.
 var errChangeStreamClosed = errors.New("change stream cursor closed by server")
@@ -62,6 +88,18 @@ var resumeTokenRecoveries = promauto.NewCounterVec(
 			"causing the change stream to restart from the current position.",
 	},
 	[]string{"client", "phase"},
+)
+
+// changeStreamReopens counts attempts to reopen the change stream after a runtime
+// failure. A steadily climbing failure count is a watcher that is retrying and not
+// getting through; any success at all is a disconnect that used to end the stream
+// permanently.
+var changeStreamReopens = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "change_stream_reopens_total",
+		Help: "Total number of attempts to reopen a change stream after a runtime failure.",
+	},
+	[]string{"client", "result"},
 )
 
 // Event represents a database-agnostic event that abstracts away provider-specific types
@@ -118,9 +156,21 @@ type ChangeStreamWatcher struct {
 	closeMu                   sync.RWMutex // Protects changeStream from concurrent Next/Close
 	resumeTokenUpdateTimeout  time.Duration
 	resumeTokenUpdateInterval time.Duration
-	// Store database and collection for monitoring queries
+	// Store database and collection for monitoring queries, and for reopening the stream
 	database   string
 	collection string
+	// The rest of what reopening needs. NOT the whole MongoDBConfig: that carries the URI,
+	// i.e. credentials, and retaining it on a long-lived watcher is what CodeQL flagged on
+	// #2040. These two plus database/collection are everything openChangeStream reads.
+	changeStreamRetryDeadlineSeconds int
+	changeStreamRetryIntervalSeconds int
+	pipeline                         mongo.Pipeline
+	// reopen, reopenInterval and reopenBudget are the seam recoverStream is tested through.
+	// All three are nil/zero on a watcher built as a bare struct literal, which tests do, so
+	// recoveryPolicy resolves the defaults rather than requiring them of the constructor.
+	reopen         func(context.Context, bool) error
+	reopenInterval time.Duration
+	reopenBudget   time.Duration
 	// closeOnce ensures eventChannel is closed only once
 	closeOnce sync.Once
 	// done signals when the event loop goroutine has exited
@@ -189,32 +239,9 @@ func NewChangeStreamWatcher(
 	tokenCollOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc).SetReadPreference(rp)
 	tokenColl := client.Database(tokenConfig.TokenDatabase).Collection(tokenConfig.TokenCollection, tokenCollOpts)
 
-	// Change stream options. MaxAwaitTime is set explicitly rather than left to the server
-	// default: with TryNext in the event loop it is what bounds how long an idle poll blocks,
-	// and therefore the resolution of the caught-up timestamp behind change_stream_lag_seconds.
-	opts := options.ChangeStream().
-		SetFullDocument(options.UpdateLookup).
-		SetMaxAwaitTime(changeStreamMaxAwaitTime)
-
-	var storedToken TokenDoc
-
-	hasResumeToken := false
-
-	// Check if the resume token exists
-	err = tokenColl.FindOne(ctx, bson.M{fieldClientName: tokenConfig.ClientName}).Decode(&storedToken)
-	if err == nil {
-		if len(storedToken.ResumeToken) > 0 {
-			slog.Info("ResumeToken found", "token", storedToken.ResumeToken)
-			opts.SetResumeAfter(storedToken.ResumeToken)
-
-			hasResumeToken = true
-		} else {
-			slog.Info("No valid resume token found, starting stream from the beginning..")
-		}
-	} else if !errors.Is(err, mongo.ErrNoDocuments) {
-		// if no document was found, it is a normal case if it's the first time the client is connecting
-		return nil, fmt.Errorf("error retrieving resume token from DB %s and collection %s: %w",
-			tokenConfig.TokenDatabase, tokenConfig.TokenCollection, err)
+	opts, hasResumeToken, err := changeStreamOptions(ctx, tokenColl, tokenConfig.ClientName)
+	if err != nil {
+		return nil, err
 	}
 
 	// Open the change stream with appropriate read preference based on resume token presence.
@@ -226,16 +253,19 @@ func NewChangeStreamWatcher(
 	}
 
 	watcher := &ChangeStreamWatcher{
-		client:                    client,
-		changeStream:              cs,
-		eventChannel:              make(chan Event),
-		resumeTokenCol:            tokenColl,
-		clientName:                tokenConfig.ClientName,
-		resumeTokenUpdateTimeout:  totalTimeout,
-		resumeTokenUpdateInterval: interval,
-		database:                  mongoConfig.Database,
-		collection:                mongoConfig.Collection,
-		done:                      make(chan struct{}),
+		client:                           client,
+		changeStream:                     cs,
+		eventChannel:                     make(chan Event),
+		resumeTokenCol:                   tokenColl,
+		clientName:                       tokenConfig.ClientName,
+		resumeTokenUpdateTimeout:         totalTimeout,
+		resumeTokenUpdateInterval:        interval,
+		database:                         mongoConfig.Database,
+		collection:                       mongoConfig.Collection,
+		changeStreamRetryDeadlineSeconds: mongoConfig.ChangeStreamRetryDeadlineSeconds,
+		changeStreamRetryIntervalSeconds: mongoConfig.ChangeStreamRetryIntervalSeconds,
+		pipeline:                         pipeline,
+		done:                             make(chan struct{}),
 	}
 
 	return watcher, nil
@@ -255,6 +285,47 @@ func validatePingConfig(config MongoDBConfig) error {
 	}
 
 	return nil
+}
+
+// changeStreamOptions builds the change-stream options for this client, resuming from the
+// stored token when one is present. Shared by the constructor and by the reopen path so a
+// reopened stream resumes from the same checkpoint a fresh process would.
+//
+// MaxAwaitTime is set explicitly rather than left to the server default: with TryNext in the
+// event loop it is what bounds how long an idle poll blocks, and therefore the resolution of
+// the caught-up timestamp behind change_stream_lag_seconds.
+func changeStreamOptions(
+	ctx context.Context,
+	tokenColl *mongo.Collection,
+	clientName string,
+) (*options.ChangeStreamOptionsBuilder, bool, error) {
+	opts := options.ChangeStream().
+		SetFullDocument(options.UpdateLookup).
+		SetMaxAwaitTime(changeStreamMaxAwaitTime)
+
+	var storedToken TokenDoc
+
+	err := tokenColl.FindOne(ctx, bson.M{fieldClientName: clientName}).Decode(&storedToken)
+	if err != nil {
+		// No document is the normal case the first time a client connects.
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return opts, false, nil
+		}
+
+		return nil, false, fmt.Errorf("error retrieving resume token from DB %s and collection %s: %w",
+			tokenColl.Database().Name(), tokenColl.Name(), err)
+	}
+
+	if len(storedToken.ResumeToken) == 0 {
+		slog.Info("No valid resume token found, starting stream from the beginning..")
+
+		return opts, false, nil
+	}
+
+	slog.Info("ResumeToken found", "token", storedToken.ResumeToken)
+	opts.SetResumeAfter(storedToken.ResumeToken)
+
+	return opts, true, nil
 }
 
 // openChangeStream opens a change stream with the appropriate read preference based on whether
@@ -492,9 +563,11 @@ func (w *ChangeStreamWatcher) eventLoop(ctx context.Context) {
 			case stepEvent:
 				w.processNextEvent(ctx)
 			case stepFailed:
-				w.handleChangeStreamError(stepErr)
+				tokenDiscarded := w.handleChangeStreamError(stepErr)
 
-				return
+				if !w.recoverStream(ctx, tokenDiscarded) {
+					return
+				}
 			case stepCaughtUp:
 				w.lag.RecordCaughtUp(time.Now())
 			}
@@ -502,6 +575,12 @@ func (w *ChangeStreamWatcher) eventLoop(ctx context.Context) {
 	}
 }
 
+// processNextEvent decodes the event TryNext has already made current.
+//
+// It reads w.changeStream without closeMu on purpose: it runs only on the event-loop
+// goroutine, which is also the only goroutine that replaces that pointer (via recoverStream)
+// and the one Close waits for before touching it. Anything reading the cursor from another
+// goroutine must go through resumeToken instead.
 func (w *ChangeStreamWatcher) processNextEvent(ctx context.Context) {
 	var event bson.M
 
@@ -549,16 +628,24 @@ func clusterTimeOf(event bson.M) time.Time {
 	return time.Unix(int64(ts.T), 0).UTC()
 }
 
-func (w *ChangeStreamWatcher) handleChangeStreamError(csErr error) {
+// handleChangeStreamError logs the failure and reports whether it discarded the stored
+// resume token. Callers need that answer: a discarded token means the next open is meant to
+// start fresh, so the recovery path must not quietly resume from the position the server just
+// rejected.
+func (w *ChangeStreamWatcher) handleChangeStreamError(csErr error) bool {
 	if isUnrecoverableResumeTokenError(csErr) {
 		slog.Warn("Change stream failed due to unrecoverable resume token error, "+
 			"deleting token so next restart recovers automatically",
 			"client", w.clientName, "error", csErr)
 
 		w.deleteStaleResumeToken()
-	} else {
-		slog.Error("Failed to watch change stream", "client", w.clientName, "error", csErr)
+
+		return true
 	}
+
+	slog.Error("Failed to watch change stream", "client", w.clientName, "error", csErr)
+
+	return false
 }
 
 func (w *ChangeStreamWatcher) deleteStaleResumeToken() {
@@ -574,16 +661,228 @@ func (w *ChangeStreamWatcher) deleteStaleResumeToken() {
 	}
 }
 
+// recoveryPolicy resolves how recovery behaves for this watcher. The three seam fields are
+// unset on a watcher built as a bare struct literal, which tests do, so the defaults are
+// resolved here rather than required of the constructor.
+func (w *ChangeStreamWatcher) recoveryPolicy() (func(context.Context, bool) error, time.Duration, time.Duration) {
+	reopen := w.reopen
+	if reopen == nil {
+		reopen = w.reopenChangeStream
+	}
+
+	interval := w.reopenInterval
+	if interval <= 0 {
+		interval = changeStreamReopenInterval
+	}
+
+	budget := w.reopenBudget
+	if budget <= 0 {
+		budget = changeStreamReopenBudget
+	}
+
+	return reopen, interval, budget
+}
+
+// recoverStream reopens the change stream after a runtime failure, and reports whether the
+// event loop may continue. It returns false when the context is done, or when the recovery
+// budget is spent — at which point the loop exits, the event channel closes, and the process
+// is expected to terminate so the pod restarts and resumes from the stored token.
+//
+// Bounded rather than indefinite, deliberately. Retrying forever would reinstate the property
+// this whole change exists to remove: a process that stays Ready while it consumes nothing,
+// only now spinning in a retry loop instead of a dead one, with nothing in restartCount to
+// show for it. A bounded window absorbs the transient case it is meant to absorb — a
+// replica-set roll, a brief partition — and converts a persistent failure into a restart that
+// is visible. The budget is wall-clock rather than a number of attempts because what it has
+// to cover is an outage of a certain duration, not a certain number of failures.
+//
+// What sizes a single attempt is server selection, not the retry deadline (#2040 review).
+// serverSelectionTimeout is TotalPingTimeoutSeconds, 300s by default, so in a partition where
+// no member is selectable the first SecondaryPreferred Watch blocks for 300s — already past
+// ChangeStreamRetryDeadlineSeconds — and the Primary fallback blocks for another 300s. One
+// pass is therefore about ten minutes, and recovery gives up after the first attempt rather
+// than after several. Still bounded, which is what #2020 needed, but the bound is the budget
+// plus one pass of that size, not the budget alone.
+//
+// For the case the budget was sized for — a replica-set roll — a secondary stays selectable,
+// each Watch returns quickly, and the five minutes behaves as intended.
+//
+// DO NOT tighten that by giving the attempt a context deadline. It looks like the obvious fix
+// and it breaks the fallback: the driver treats any context carrying a deadline as a CSOT
+// timeout context and switches retries to an unlimited budget
+// (x/mongo/driver/operation.go, "If context is a Timeout context, automatically set retries to
+// unlimited"). A secondary returning a retryable aggregate error would then be retried inside
+// the driver until that deadline, openChangeStreamWithRetry would never regain control, and
+// the Primary fallback — the thing that exists for exactly that failure — would never run.
+// Tried on #2040 and reverted.
+func (w *ChangeStreamWatcher) recoverStream(ctx context.Context, tokenDiscarded bool) bool {
+	reopen, interval, budget := w.recoveryPolicy()
+	deadline := time.Now().Add(budget)
+
+	for attempt := 1; ; attempt++ {
+		if ctx.Err() != nil {
+			return false
+		}
+
+		err := reopen(ctx, tokenDiscarded)
+		if err == nil {
+			changeStreamReopens.WithLabelValues(w.clientName, "success").Inc()
+			slog.Info("Change stream reopened after failure, resuming",
+				"client", w.clientName, "attempt", attempt)
+
+			return true
+		}
+
+		changeStreamReopens.WithLabelValues(w.clientName, "failure").Inc()
+
+		if ctx.Err() != nil {
+			return false
+		}
+
+		if !time.Now().Add(interval).Before(deadline) {
+			changeStreamReopens.WithLabelValues(w.clientName, "exhausted").Inc()
+			slog.Error("Giving up on reopening the change stream, the recovery budget is spent",
+				"client", w.clientName, "attempts", attempt,
+				"budgetSeconds", budget.Seconds(), "error", err)
+
+			return false
+		}
+
+		slog.Warn("Failed to reopen change stream, will retry",
+			"client", w.clientName, "attempt", attempt,
+			"retryIntervalSeconds", interval.Seconds(),
+			"budgetRemainingSeconds", time.Until(deadline).Seconds(), "error", err)
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(interval):
+		}
+	}
+}
+
+// reopenChangeStream opens a replacement change stream and swaps it in, resuming from the
+// furthest position it can establish so events written during the outage are not skipped.
+//
+// tokenDiscarded says the stored token was just deleted as unrecoverable, which disables the
+// in-memory fallback below.
+func (w *ChangeStreamWatcher) reopenChangeStream(ctx context.Context, tokenDiscarded bool) error {
+	opts, hasResumeToken, err := changeStreamOptions(ctx, w.resumeTokenCol, w.clientName)
+	if err != nil {
+		return err
+	}
+
+	// The stored token tracks what the CONSUMER has checkpointed, so it can be absent while
+	// the stream itself had read plenty - a watcher that failed before its first MarkProcessed
+	// is the clear case. Reopening with no token at all starts at the current oplog position,
+	// which silently drops everything written between the failure and the reopen: the same
+	// class of loss this change exists to prevent, in a narrower window.
+	//
+	// The failed cursor still carries the position it reached, so prefer that over starting
+	// fresh. Cloned because the driver's bson.Raw aliases a pooled buffer.
+	//
+	// Skipped when the stored token was just discarded as unrecoverable: that path starts
+	// fresh deliberately, and the in-memory token is the position the server rejected.
+	//
+	// tokenDiscarded reflects the failure that entered recovery, not anything a retry did
+	// since. If an attempt's own openChangeStream deletes a stale token internally and then
+	// fails, the next attempt can offer the rejected in-memory token once more - at which
+	// point openChangeStream's stale-token recovery catches it and starts fresh. The cost is
+	// one wasted attempt out of the budget, not a skipped event, so this is left as the
+	// simpler invariant rather than threading per-attempt state through.
+	if !hasResumeToken && !tokenDiscarded {
+		if token := w.resumeToken(); len(token) > 0 {
+			opts.SetResumeAfter(bson.Raw(append([]byte(nil), token...)))
+
+			hasResumeToken = true
+
+			slog.Info("No stored checkpoint; resuming from the failed stream's own position",
+				"client", w.clientName)
+		}
+	}
+
+	cs, err := openChangeStream(ctx, w.client, w.reopenConfig(), w.pipeline, opts, hasResumeToken,
+		w.resumeTokenCol, w.clientName)
+	if err != nil {
+		return fmt.Errorf("failed to reopen change stream: %w", err)
+	}
+
+	w.swapChangeStream(ctx, cs)
+
+	return nil
+}
+
+// reopenConfig assembles the subset of MongoDBConfig that reopening reads. Keeping only these
+// four fields, rather than the config as a whole, is what keeps the URI off a long-lived
+// struct (#2040 review).
+func (w *ChangeStreamWatcher) reopenConfig() MongoDBConfig {
+	return MongoDBConfig{
+		Database:                         w.database,
+		Collection:                       w.collection,
+		ChangeStreamRetryDeadlineSeconds: w.changeStreamRetryDeadlineSeconds,
+		ChangeStreamRetryIntervalSeconds: w.changeStreamRetryIntervalSeconds,
+	}
+}
+
+// swapChangeStream installs the replacement cursor and releases the one it replaces.
+//
+// The close happens inside the write lock, not after it. The driver does not permit
+// concurrent use of a ChangeStream, and MarkProcessed reads the current cursor's resume token
+// from the processor goroutine - with the close outside the lock, a reader could be inside
+// ResumeToken() on the very cursor being closed. Holding the lock across the close is what
+// makes "nobody is in a method on this cursor" true at that moment.
+//
+// Closing is best effort otherwise: the stream that just failed is usually unreachable, and
+// failing to release it must not fail the recovery.
+func (w *ChangeStreamWatcher) swapChangeStream(ctx context.Context, cs *mongo.ChangeStream) {
+	w.closeMu.Lock()
+	defer w.closeMu.Unlock()
+
+	previous := w.changeStream
+	w.changeStream = cs
+
+	if previous == nil {
+		return
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), changeStreamCloseTimeout)
+	defer cancel()
+
+	if closeErr := previous.Close(closeCtx); closeErr != nil {
+		slog.Debug("Failed to close the change stream being replaced",
+			"client", w.clientName, "error", closeErr)
+	}
+}
+
+// resumeToken reports the current cursor's resume token, read while holding the lock that
+// guards the cursor.
+//
+// Both the field and the object need that lock, which is why this returns the token rather
+// than the stream: the event loop replaces the pointer on reopen and closes the cursor it
+// replaced, so handing out the pointer and calling ResumeToken() on it after the lock is
+// released would race with that close. The driver does not permit concurrent use of a
+// ChangeStream.
+func (w *ChangeStreamWatcher) resumeToken() bson.Raw {
+	w.closeMu.RLock()
+	defer w.closeMu.RUnlock()
+
+	if w.changeStream == nil {
+		return nil
+	}
+
+	return w.changeStream.ResumeToken()
+}
+
 func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
 	// Use the change stream resume token if the passed token is empty
 	// This handles the common case where callers pass empty byte slices
 	var resumeTokenToStore any
 
 	if len(token) == 0 {
-		// Get the current resume token from the change stream
-		// Note: ResumeToken() is thread-safe for reads - no lock needed
-		// This prevents deadlock with the sender goroutine which may be blocked in Next()
-		currentResumeToken := w.changeStream.ResumeToken()
+		// Read under the cursor's own lock; see resumeToken. Shared with the event loop's
+		// read lock around TryNext, so it cannot deadlock against a sender blocked in the
+		// driver, and it waits at most changeStreamCloseTimeout if a reopen is swapping.
+		currentResumeToken := w.resumeToken()
 
 		if currentResumeToken == nil {
 			slog.Warn("No resume token available from change stream", "client", w.clientName)

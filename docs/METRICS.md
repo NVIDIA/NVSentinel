@@ -408,6 +408,7 @@ explicitly; the others use the default registry.
 | `change_stream_lag_seconds` | Gauge | `client` | Seconds since this consumer last had evidence it was caught up with its own change stream, from either an empty batch or the server-side timestamp of the last event it read. Absent until one of those has been observed |
 | `change_stream_lag_known` | Gauge | `client` | 1 once `change_stream_lag_seconds` can be computed for this consumer, 0 before then |
 | `change_stream_resume_token_recoveries_total` | Counter | `client`, `phase` | Times a stale or invalid resume token was deleted, restarting the stream from the current position |
+| `change_stream_reopens_total` | Counter | `client`, `result` | Attempts to reopen the stream after a runtime failure. `success` is a disconnect that would previously have ended the stream permanently; `failure` is one attempt that did not get through; `exhausted` is the recovery budget running out, after which the watcher stops and the process is expected to exit so the pod restarts — pair it with `kube_pod_container_status_restarts_total` |
 
 Lag is measured against the consumer's **own filtered stream**, so a module whose pipeline
 admits nothing still reports zero lag while it is caught up. See

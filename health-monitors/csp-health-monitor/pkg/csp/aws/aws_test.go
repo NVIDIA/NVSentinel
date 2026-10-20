@@ -17,6 +17,8 @@ package aws
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -165,6 +167,50 @@ func createTestClient(t *testing.T) (*AWSClient, *MockAWSHealthClient, kubernete
 	}
 
 	return client, mockAWSClient, testK8sClient
+}
+
+func TestNewHealthAPIClient_EndpointOverride_SendsAWSJSON11(t *testing.T) {
+	type capturedRequest struct {
+		method, path, target, contentType string
+	}
+
+	captured := make(chan capturedRequest, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case captured <- capturedRequest{
+			method:      r.Method,
+			path:        r.URL.Path,
+			target:      r.Header.Get("X-Amz-Target"),
+			contentType: r.Header.Get("Content-Type"),
+		}:
+		default:
+		}
+
+		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
+
+		if _, err := w.Write([]byte(`{"events":[]}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	awsSDKConfig := aws.Config{
+		Region: testRegion,
+		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+			return aws.Credentials{AccessKeyID: "AKIDEXAMPLE", SecretAccessKey: "fake-secret"}, nil
+		}),
+	}
+
+	client := newHealthAPIClient(awsSDKConfig, server.URL+"/aws/health")
+	_, err := client.DescribeEvents(t.Context(), &health.DescribeEventsInput{})
+	require.NoError(t, err)
+
+	got := <-captured
+	assert.Equal(t, http.MethodPost, got.method)
+	assert.Equal(t, "/aws/health", got.path)
+	assert.Equal(t, "AWSHealth_20160804.DescribeEvents", got.target)
+	assert.Equal(t, "application/x-amz-json-1.1", got.contentType)
 }
 
 func TestHandleMaintenanceEvents(t *testing.T) {
