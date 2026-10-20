@@ -65,7 +65,7 @@ This ADR adds the missing controls to node-drainer and fault-remediation, with o
 
 ## Decision
 
-1. **A shared rule set schema for node-drainer and fault-remediation.** A rule set has a common part (`name`, `enabled`, `priority`, and `match`) and one outcome key that is named for the component (`drain` or `remediation`). The common part, the CEL variables, the selection of the winner, and the result of an error are the same in both components. An operator learns one format, and a rule set moves from one component to the other with a change to the outcome only. The types and the evaluator are in `commons`.
+1. **A shared rule set schema for node-drainer and fault-remediation.** A rule set has a common part (`name`, `enabled`, `priority`, and `match`) and one outcome key that is named for the component (`drain` or `remediation`). The common part, the CEL variables, the meaning of `priority`, and the result of an error are the same in both components. An operator learns one format, and a rule set moves from one component to the other with a change to the outcome only. The types and the evaluator are in `commons`.
 2. **Each component keeps its own configuration.** There is no shared profile and no shared definition of node groups.
 3. **fault-quarantine:** no change. Its rule sets already select by node and by event. The shared schema is based on its rule sets and its node cache, but this ADR does not change its configuration or its behaviour (see [fault-quarantine](#fault-quarantine)).
 4. **node-drainer:** add `ruleSets` with the `drain` outcome.
@@ -98,7 +98,7 @@ node-drainer and fault-remediation use one rule set schema. Both components read
 ruleSets:
   - name: vm-nodes              # required. Unique DNS-1123 label in the component
     enabled: true               # optional. Default: true
-    priority: 10                # optional. Default: 0. The highest priority match wins
+    priority: 10                # optional. Default: 0. The highest priority wins a conflict
     match:                      # required. Exactly one of all or any
       all:                      # every rule must match. With any: at least one rule must match
         - kind: Node
@@ -128,7 +128,15 @@ ruleSets:
 | `drain` | node-drainer | No drain. Node state `drain-skipped` | `method`: `Custom` or `Evict` | `Evict` |
 | `remediation` | fault-remediation | No CR. Node state `remediation-skipped` | `action`: an entry of `maintenance.actions` | The action of the event |
 
-**One winner.** The component evaluates all enabled rule sets. Of the rule sets that match, the one with the highest `priority` wins. If two have the same priority, the first in the configuration wins. Only the outcome of the winner applies.
+**Priority.** When the outcomes of two rule sets that match are in conflict, the rule set with the higher `priority` applies. If the priorities are equal, the first in the configuration applies. Each outcome defines what a conflict is:
+
+| Outcome | A conflict is |
+|---|---|
+| `drain` | Any two rule sets that match. The outcome is one choice |
+| `remediation` | Any two rule sets that match. The outcome is one choice |
+| fault-quarantine (for reference, not part of this schema) | Two rule sets that match and set the same taint or label key. The other fields combine |
+
+**One winner.** The `drain` and `remediation` outcomes are each one choice, so one rule set applies. The component evaluates all enabled rule sets. Of the rule sets that match, the one with the highest `priority` wins. If two have the same priority, the first in the configuration wins. Only the outcome of the winner applies.
 
 **An error stops the decision.** If a rule set cannot be evaluated, the component does not use the result of the other rule sets, and it does not use the default. The failed rule set can be the one that selects `skip` for the node. The component records the rule set name and the error, and a metric counts the error for each rule set.
 
@@ -196,7 +204,7 @@ At this time, the fault-quarantine rule sets select by node labels and by event 
 
 **Monitoring only.** An operator excludes a group from quarantine with a `Node` rule, for example `!("example.com/pool" in node.metadata.labels && node.metadata.labels["example.com/pool"] in ["legacy-a", "legacy-b"])`. Health events and node conditions continue for these nodes. No later stage runs, because node-drainer starts only for a quarantined node.
 
-**What the shared schema takes from fault-quarantine.** The `name` and `match` fields, the `HealthEvent` and `Node` rule kinds, the CEL environments, the `event` and `node` variables, and the pruning of the node cache. A rule that works in fault-quarantine works in the shared schema with no change.
+**What the shared schema takes from fault-quarantine.** The `name` and `match` fields, the meaning of `priority` (the higher priority wins a conflict), the `HealthEvent` and `Node` rule kinds, the CEL environments, the `event` and `node` variables, and the pruning of the node cache. A rule that works in fault-quarantine works in the shared schema with no change.
 
 **Where the shared schema differs.**
 
@@ -208,7 +216,7 @@ At this time, the fault-quarantine rule sets select by node labels and by event 
 | A rule set can have `all` and `any`, and it applies if either one matches | A rule set has exactly one of `all` and `any` |
 | A rule set that fails does not match | An error stops the decision |
 | A `version` field on each rule set | No `version` field |
-| All rule sets that match apply. `priority` resolves conflicts between their taints and labels | `priority` selects the one rule set that applies |
+| A conflict at equal priority: for a label, the last rule set in the configuration wins. For a taint effect, the first rule set that the evaluation finishes wins, and the rule sets are evaluated concurrently | A conflict at equal priority: the first rule set in the configuration wins |
 
 ### node-drainer
 
