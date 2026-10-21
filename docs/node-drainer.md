@@ -29,7 +29,7 @@ The Node Drainer watches the datastore for quarantined nodes and safely evacuate
 
 1. Receives quarantined node events from the datastore
 2. Determines if a full drain or a partial drain needs to be executed
-3. Determines eviction mode from namespace configuration or pod label policies
+3. Determines eviction mode from namespace configuration or pod policies (labels or owner kind)
 4. Evicts pods using Kubernetes Eviction API (respects PodDisruptionBudgets)
 5. Monitors progress and handles stuck or slow-terminating pods
 6. Updates status when complete
@@ -86,7 +86,7 @@ The module supports three eviction modes for different workload types:
 - **Not Ready Timeout**: Minutes before considering a pod stuck
 - **Drain GPU Pods**: When enabled, only drains pods requesting GPU resources; CPU-only workloads remain on the node
 - **User Namespaces**: Define eviction mode per namespace pattern (supports `*` wildcard)
-- **Pod Drain Policies**: Select eviction modes by pod labels; mutually exclusive with `userNamespaces`
+- **Pod Drain Policies**: Select eviction modes by pod labels or owner kind; mutually exclusive with `userNamespaces`
 - **Partial Drain**: Enable or disable partial drain functionality
 
 ## Key Features
@@ -115,15 +115,16 @@ node-drainer:
       mode: Immediate
 ```
 
-The first matching policy wins. Each policy requires a unique name, a non-empty Kubernetes
-label selector and an eviction mode. The optional `namespace` glob restricts where it applies.
+The first matching policy wins. Each policy requires a unique name, a Kubernetes label
+selector, a list of controller `ownerKinds` or both, and an eviction mode. The optional
+`namespace` glob restricts where it applies.
 Pods that match no policy are outside the drain scope and do not block completion, so selectors
 must cover every workload that should be drained. System namespace and DaemonSet exclusions,
 GPU-only filtering and partial GPU drain scope still apply. Force drain changes selected pods
 to `Immediate` without including unmatched pods. Custom drain cannot be combined with policies.
 
 See [Pod Drain Policies configuration](configuration/node-drainer.md#pod-drain-policies)
-for selector syntax, label updates and timeout behavior.
+for selector syntax, owner kinds, label updates and timeout behavior.
 
 ### Graceful Eviction
 - Uses Kubernetes Eviction API
