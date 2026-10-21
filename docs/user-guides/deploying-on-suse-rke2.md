@@ -7,11 +7,11 @@ This guide covers the settings to check when installing NVSentinel on SUSE Linux
 RKE2 documents two GPU Operator setups ([RKE2 GPU Operator docs](https://docs.rke2.io/add-ons/gpu_operators)):
 
 - **Default (non-NRI)**: GPU Operator creates the `nvidia` RuntimeClass. metadata-collector's default `runtimeClassName: nvidia` works.
-- **NRI plugin mode** (`cdi.nriPluginEnabled: true`): there is no `nvidia` RuntimeClass. Set `metadata-collector.nriPlugin.enabled: true` (proposed in #1949) and add the NVSentinel namespace to the toolkit's `NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES`. See [GPU Operator NRI plugin mode](../configuration/metadata-collector.md#gpu-operator-nri-plugin-mode).
+- **NRI plugin mode** (`cdi.nriPluginEnabled: true`): there is no `nvidia` RuntimeClass. Set `metadata-collector.nriPlugin.enabled: true` and add the NVSentinel namespace to the toolkit's `NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES`. See [GPU Operator NRI plugin mode](../configuration/metadata-collector.md#gpu-operator-nri-plugin-mode).
 
 ## SELinux
 
-SUSE Linux Enterprise Server 16 enables SELinux in enforcing mode by default, and RKE2's RPM install enables RKE2 SELinux support (`rke2-selinux`, `RKE2_SELINUX=true`). On those nodes, set (proposed in #1953):
+SUSE Linux Enterprise Server 16 enables SELinux in enforcing mode by default, and RKE2's RPM install enables RKE2 SELinux support (`rke2-selinux`, `RKE2_SELINUX=true`). On those nodes, set:
 
 ```yaml
 global:
@@ -22,9 +22,12 @@ global:
 Without it, platform-connectors cannot create `/var/run/nvsentinel.sock`, so no monitor can publish health events, and nic-health-monitor's init container cannot read its state directory. To check a node:
 
 ```bash
-sestatus | grep "Current mode"          # enforcing?
-ps -eZ | grep -E ' (rke2|containerd)$'  # container_runtime_t means RKE2 SELinux support is active
+sestatus | grep "Current mode"                # enforcing?
+grep selinux /etc/rancher/rke2/config.yaml    # selinux: true (or RKE2_SELINUX=true in the service environment)
+ps -eZ | grep platform-connectors             # container_t means the pod is confined
 ```
+
+Set `spc_t` only when all three checks apply: it disables SELinux confinement for these pods.
 
 Nodes with SELinux disabled need nothing; the setting is ignored there.
 
@@ -41,7 +44,22 @@ Otherwise, no GPU-node DaemonSet schedules.
 
 ## DCGM
 
-GPU Operator on RKE2 often runs dcgm-exporter without the standalone hostengine (`dcgm.enabled: false`). In that case either enable the hostengine in GPU Operator, or use gpu-health-monitor `embedded-mode`:
+gpu-health-monitor needs a DCGM hostengine on each GPU node. GPU Operator on RKE2 often runs dcgm-exporter without the standalone hostengine (`dcgm.enabled: false`), so choose one of the following options.
+
+### Option 1: Standalone DCGM from GPU Operator (recommended)
+
+Enable the standalone hostengine in the GPU Operator values:
+
+```yaml
+dcgm:
+  enabled: true
+```
+
+GPU Operator then deploys the `nvidia-dcgm` DaemonSet and Service. NVSentinel's default `operator-service` mode connects to `nvidia-dcgm.gpu-operator.svc:5555`, and labeler derives the `nvsentinel.dgxc.nvidia.com/dcgm.version` node label from the DCGM pod image, so no NVSentinel settings are needed. If GPU Operator runs in a namespace other than `gpu-operator`, set `global.dcgm.service.endpoint` to match. See [GPU Health Monitor configuration](../configuration/gpu-health-monitor.md).
+
+### Option 2: Embedded hostengine
+
+If you cannot enable the standalone hostengine, use gpu-health-monitor `embedded-mode`, which runs the hostengine in-process:
 
 ```yaml
 global:
@@ -71,4 +89,4 @@ Both datastore images, `bitnamilegacy/postgresql:16.4` and `percona/percona-serv
 
 ## Host diagnostics
 
-`sos` and `supportconfig` are both installed on SUSE Linux Enterprise Server 16. Log-collector currently runs `sos` only on GCP and AWS. On-prem host diagnostics, including `supportconfig` and Rancher support bundles, are proposed in #1955.
+`sos` and `supportconfig` are both installed on SUSE Linux Enterprise Server 16. Log-collector currently runs `sos` only on GCP and AWS, so collect host diagnostics on other nodes manually, for example with `supportconfig`.

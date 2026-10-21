@@ -14,6 +14,11 @@ navigation:
       - page: Integrations
         path: INTEGRATIONS.md
 
+  - section: User Guides
+    contents:
+      - page: Deploying on SUSE Linux Enterprise and RKE2
+        path: user-guides/deploying-on-suse-rke2.md
+
   - section: Tutorials
     contents:
       - page: Integrating Node Problem Detector
@@ -30,8 +35,6 @@ navigation:
         path: tutorials/requesting-node-maintenance.md
       - page: Integrating External Remediation
         path: tutorials/integrating-external-remediation.md
-      - page: Deploying on SUSE Linux Enterprise and RKE2
-        path: tutorials/deploying-on-suse-rke2.md
 
   - section: Architecture
     contents:
