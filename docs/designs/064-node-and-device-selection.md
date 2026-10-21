@@ -52,12 +52,12 @@ Many clusters contain different types of nodes and devices. Examples are bare-me
 
 Each component that acts on a fault already reads the node, and two of them can already select by node:
 
-| Stage | Control for each node at this time | Limitation |
+| Stage | Control for each node at this time | Limitation that this ADR addresses |
 |---|---|---|
-| platform-connectors | `managed=false` changes events to `STORE_ONLY`. Override rules ([ADR-021](021-health-event-property-overrides.md)) can change `recommendedAction` | `STORE_ONLY` also stops node conditions. Override rules read node labels from a cache that can be 10 minutes old, skip a rule that fails, and change the event for all later stages |
+| platform-connectors | `managed=false` changes events to `STORE_ONLY`. Override rules ([ADR-021](021-health-event-property-overrides.md)) can change `recommendedAction` | None |
 | fault-quarantine | CEL `Node` and `HealthEvent` rules in each rule set ([ADR-003](003-rule-based-node-quarantine.md)) | None |
-| node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) and `podDrainPolicies` ([pod label drain policies ADR](055-pod-drain-policies.md)) | Cannot skip the drain for a group. `userNamespaces` and `podDrainPolicies` apply to the full cluster. Checks the selector again on each pass, so a label change during a drain can change the drain method. Records the method only in a log |
-| fault-remediation | None | One map from action to CR applies to the full cluster. An action that is not in the map is recorded as `remediation-failed` |
+| node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) and `podDrainPolicies` ([pod label drain policies ADR](055-pod-drain-policies.md)) | Cannot skip the drain for a group of nodes. `podDrainPolicies` can leave pods out of the drain, but the drain still completes and remediation starts. `userNamespaces` and `podDrainPolicies` apply to the full cluster. Checks the selector again on each pass, so a label change during a drain can change the drain method. Records the method only in a log |
+| fault-remediation | None | Cannot skip remediation or select a different action for a group of nodes |
 
 Thus, case 4 and case 6 work at this time. The gap is mostly in fault-remediation, which has no selection.
 
@@ -159,7 +159,7 @@ The component also logs a warning at startup, but continues, for:
 
 - Two enabled rule sets with the same `priority`. The sequence in the configuration then selects the winner.
 - A rule that reads `node.metadata.labels["<key>"]` but does not test `"<key>" in node.metadata.labels`. The rule fails at runtime on each node that does not have the label.
-- In node-drainer, a `Node` rule that makes the node cache keep all labels and annotations ([Node fields and the node cache](#node-fields-and-the-node-cache)).
+- In node-drainer, a `Node` rule that makes the node cache keep all labels ([Node fields and the node cache](#node-fields-and-the-node-cache)).
 
 **Metrics.** Each component counts the wins and the errors of each rule set, with the same metric names and labels. A rule set that another rule set always hides has a count of zero. The rule set name is a metric label. The number of rule sets in the configuration limits its cardinality, not the number of nodes or events.
 
@@ -173,20 +173,20 @@ node-drainer keeps Nodes in an informer. The informer prunes each Node to what t
 
 The informer does not keep the status. A rule that reads the status gets an empty status, as in fault-quarantine.
 
-If the component cannot name the keys that a rule reads, the informer keeps all labels and all annotations of each node. For example:
+If the component cannot name the label keys that a rule reads, the informer keeps all labels of each node. For example:
 
 | Expression | The informer keeps |
 |---|---|
 | `"scheduler" in node.metadata.labels && node.metadata.labels["scheduler"] == "slurm"` | The `scheduler` label |
 | `"example.com/team" in node.metadata.annotations` | The `example.com/team` annotation |
 | `node.spec.unschedulable` | No more. The spec is always kept |
-| `node.metadata.labels.exists(k, k.startsWith("example.com/"))` | All labels and all annotations |
-| `size(node.metadata.labels) > 0` | All labels and all annotations |
-| `node.metadata.labels[node.metadata.name]` | All labels and all annotations. The key is not a literal |
+| `node.metadata.labels.exists(k, k.startsWith("example.com/"))` | All labels |
+| `size(node.metadata.labels) > 0` | All labels |
+| `node.metadata.labels[node.metadata.name]` | All labels. The key is not a literal |
 
-**The cost of keeping all labels.** A node can have about a hundred labels and a dozen annotations, and on a large cluster these maps are most of the size of the cache. Thus, one change to one rule can increase the memory of node-drainer from a few keys for each node to all labels and annotations of all nodes, and the configuration does not show it. To make the cause visible:
+**The cost of keeping all labels.** A node can have about a hundred labels, and on a large cluster the labels are most of the size of the cache. Thus, one change to one rule can increase the memory of node-drainer from a few label keys for each node to all labels of all nodes, and the configuration does not show it. To make the cause visible:
 
-- At startup, node-drainer logs a warning for each rule that makes the cache keep all labels and annotations, with the rule set name and the expression.
+- At startup, node-drainer logs a warning for each rule that makes the cache keep all labels, with the rule set name and the expression.
 - The documentation describes this cost, lists the forms of rule that keep the cache small, and shows how to replace a label prefix with a label that has a known key.
 
 fault-remediation has no Node cache. It reads the full Node from the API server for each event, so a `Node` rule can read any field, and the rules do not change the memory of fault-remediation.
@@ -536,7 +536,7 @@ A rule set change is a configuration change. As at this time, the component read
 - fault-quarantine rule sets differ from the shared schema in seven ways (see [fault-quarantine](#fault-quarantine)). An operator must know both forms.
 - `customDrain.nodeSelector` is deprecated soon after its release in v1.26.0. Operators who adopted it must migrate, and node-drainer supports two forms during the deprecation period. See [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector).
 - A simple node selection, such as `scheduler=slurm`, is longer as a CEL rule set than as a label selector.
-- In node-drainer, a `Node` rule that reads labels by a prefix or by a computed key makes the node cache keep all labels and annotations of all nodes. Only a startup warning shows it, as in fault-quarantine.
+- In node-drainer, a `Node` rule that reads labels by a prefix or by a computed key makes the node cache keep all labels of all nodes. Only a startup warning shows it, as in fault-quarantine.
 - A fault-remediation rule set can change a `COMPONENT_RESET` event after a partial drain to an action on the full node. The pods that were not drained then stop without a drain.
 - Pod policies can be in the top-level configuration and in each `BuiltIn` rule set. The operator must find the winning rule set to know which policies apply to a node.
 - No single field shows the full behaviour for a node. The operator reads the cordon-reason label and the two records on the event.
@@ -608,7 +608,7 @@ Define each node group one time, with a name, and refer to the name from the rul
 
 ### Fail at startup when a rule reads more than named labels
 
-Accept a `Node` rule only if it reads the name and labels with a literal key, so that the node-drainer cache can never keep all labels. **Rejected** because: fault-quarantine and kubernetes-object-monitor accept any rule. When they cannot name what a rule reads, fault-quarantine keeps all labels and annotations, and kubernetes-object-monitor keeps the whole object. A different behaviour in node-drainer adds a difference between components and limits the rules that an operator can write. The memory cost is documented and shown with a startup warning instead.
+Accept a `Node` rule only if it reads the name and labels with a literal key, so that the node-drainer cache can never keep all labels. **Rejected** because: fault-quarantine and kubernetes-object-monitor accept any rule. When they cannot name what a rule reads, fault-quarantine keeps all labels, and kubernetes-object-monitor keeps the whole object. A different behaviour in node-drainer adds a difference between components and limits the rules that an operator can write. The memory cost is documented and shown with a startup warning instead.
 
 ### Keep label selectors in node-drainer
 
