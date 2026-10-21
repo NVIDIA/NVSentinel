@@ -18,6 +18,7 @@ import (
 	"context"
 	"log/slog"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -82,8 +83,17 @@ func (c *CRStatusChecker) GetCRState(ctx context.Context, actionName string, crN
 	key := client.ObjectKey{Name: crName, Namespace: resource.Namespace}
 
 	if err := c.client.Get(ctx, key, obj); err != nil {
-		slog.WarnContext(ctx, "Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
-		return CRStateNotFound
+		if apierrors.IsNotFound(err) {
+			slog.InfoContext(ctx, "CR not found, allowing create", "crName", crName, "gvk", gvk.String())
+			return CRStateNotFound
+		}
+
+		// A failed read says nothing about the CR. Reporting it as missing would drop the recorded CR and create a
+		// second one for the node while the first may still be running, so the event waits and is retried instead.
+		slog.WarnContext(ctx, "Failed to get CR, treating it as in progress", "crName", crName, "gvk", gvk.String(),
+			"error", err)
+
+		return CRStateInProgress
 	}
 
 	return c.checkCondition(obj, resource)
