@@ -251,7 +251,7 @@ For production code, copy the retry/backoff reporter from `preflight-checks/nccl
 ## 3. Containerize
 
 ```dockerfile
-FROM public.ecr.aws/docker/library/golang:1.27.2-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.3-trixie AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -415,7 +415,7 @@ Implementation:
   recommendedAction=CONTACT_SUPPORT, errorCode NVIDIA_SMI_ERROR or NO_GPUS_VISIBLE; on success
   isHealthy=true, isFatal=false, recommendedAction=NONE.
 - Multi-stage Dockerfile (build context = demo-preflight-check directory):
-  builder public.ecr.aws/docker/library/golang:1.27.2-trixie, runtime
+  builder public.ecr.aws/docker/library/golang:1.27.3-trixie, runtime
   nvcr.io/nvidia/cuda:12.8.1-base-ubuntu24.04 (needs nvidia-smi), ENTRYPOINT the built binary.
 - Build/push example (NGC):
     docker login nvcr.io   # Username: $oauthtoken, Password: <NGC API key>
