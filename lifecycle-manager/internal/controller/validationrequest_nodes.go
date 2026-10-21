@@ -143,52 +143,95 @@ func parseSessionAnnotation(sessionAnnotation string) ([]sessionEntry, error) {
 	return entries, nil
 }
 
+// ownedRegistrationRetryInterval requeues a request whose session registration
+// was refused. Such a request is not in the node session yet, so Node watch
+// events do not reach it.
+const ownedRegistrationRetryInterval = 30 * time.Second
+
 func (r *ValidationRequestReconciler) addToSessionAndCheckEligibility(ctx context.Context, ns v1alpha1.NodeSpec,
 	validationRequest *v1alpha1.ValidationRequest, criteria []v1alpha1.CriteriaSpec,
-	resolvedTests []string) (exists bool, ready bool, err error) {
+	resolvedTests []string) (exists bool, ready bool, retry bool, err error) {
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: ns.Name}, &node); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, false, nil
+			return false, false, false, nil
 		}
 
-		return false, false, fmt.Errorf("get node %q: %w", ns.Name, err)
+		return false, false, false, fmt.Errorf("get node %q: %w", ns.Name, err)
 	}
 
 	if r.onlyOwnedCordon() {
-		if refusal := ownedRegistrationRefusal(&node, validationRequest); refusal != "" {
+		refusal, found, err := r.ownedRegistrationRefusal(ctx, &node, validationRequest)
+		if err != nil {
+			return false, false, false, err
+		}
+
+		if !found {
+			return false, false, false, nil
+		}
+
+		if refusal != "" {
 			slog.InfoContext(ctx, "Validation request cannot join the node session yet",
 				"validationRequest", validationRequest.Name, "node", ns.Name, "reason", refusal)
 
-			return true, false, nil
+			return true, false, true, nil
 		}
 	}
 
 	if err := r.updateValidationSession(ctx, ns.Name, validationRequest, resolvedTests); err != nil {
-		return true, false, fmt.Errorf("ensure session on node %q: %w", ns.Name, err)
+		return true, false, false, fmt.Errorf("ensure session on node %q: %w", ns.Name, err)
 	}
 
+	ready, err = r.nodeReadyForValidation(ctx, &node, validationRequest, criteria)
+
+	return true, ready, false, err
+}
+
+func (r *ValidationRequestReconciler) nodeReadyForValidation(ctx context.Context, node *corev1.Node,
+	validationRequest *v1alpha1.ValidationRequest, criteria []v1alpha1.CriteriaSpec) (bool, error) {
 	activeValidationRequest := node.Annotations[annotationActiveValidationRequest]
 	if len(activeValidationRequest) != 0 && activeValidationRequest != validationRequest.Name {
-		slog.InfoContext(ctx, "Node claimed by another validation request, waiting", "node", ns.Name,
+		slog.InfoContext(ctx, "Node claimed by another validation request, waiting", "node", node.Name,
 			"activeValidationRequest", activeValidationRequest)
 
-		return true, false, nil
+		return false, nil
 	}
 
-	failedCriteria, err := evaluateCriteria(ctx, r.Client, &node, criteria, r.ReadinessPrograms,
+	failedCriteria, err := evaluateCriteria(ctx, r.Client, node, criteria, r.ReadinessPrograms,
 		r.ResourceSliceWatch.Enabled)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to check node readiness", "node", ns.Name, "error", err)
-		return true, false, fmt.Errorf("failed to check node readiness: %w", err)
+		slog.ErrorContext(ctx, "Failed to check node readiness", "node", node.Name, "error", err)
+		return false, fmt.Errorf("failed to check node readiness: %w", err)
 	}
 
 	if len(failedCriteria) != 0 {
-		slog.InfoContext(ctx, "Node not ready, waiting", "node", ns.Name, "criterion", failedCriteria)
-		return true, false, nil
+		slog.InfoContext(ctx, "Node not ready, waiting", "node", node.Name, "criterion", failedCriteria)
+		return false, nil
 	}
 
-	return true, true, nil
+	return true, nil
+}
+
+// ownedRegistrationRefusal decides registration on the cached Node and, when
+// that refuses, on the live Node: the cache may not show the producer's
+// handoff yet. found is false when the Node no longer exists.
+func (r *ValidationRequestReconciler) ownedRegistrationRefusal(ctx context.Context, cached *corev1.Node,
+	validationRequest *v1alpha1.ValidationRequest) (refusal string, found bool, err error) {
+	refusal = ownedRegistrationRefusal(cached, validationRequest)
+	if refusal == "" {
+		return "", true, nil
+	}
+
+	var live corev1.Node
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: cached.Name}, &live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", false, nil
+		}
+
+		return "", false, fmt.Errorf("get node %q: %w", cached.Name, err)
+	}
+
+	return ownedRegistrationRefusal(&live, validationRequest), true, nil
 }
 
 func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Context, nodeName string,

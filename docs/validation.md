@@ -47,7 +47,7 @@ Set `lifecycle-manager.config.schedulingGate.cordon.onlyOwned: true` to preserve
 
 Lifecycle manager persists the Node UID, request UID, and ownership decision in the node's validation session. A decision to preserve cordon remains until the session ends, including across controller restarts and overlapping requests. Final release requires matching identities, successful tests, proven ownership, and no current quarantine. Missing or conflicting ownership retains the cordon, and lifecycle manager logs the reason.
 
-Fault quarantine records a claim for one continuous cordon in `nvsentinel.nvidia.com/cordon-claim`. A new fault during validation inherits this claim when an active quarantine, handoff, or owned session proves continuity. Requests and session entries carry the claim ID. A detached claim grants no release rights. The last successful validation removes the claim with the scheduling gate.
+Fault quarantine records a claim for one continuous cordon in `nvsentinel.nvidia.com/cordon-claim`. A new fault during validation inherits this claim when an active quarantine, handoff, or owned session proves continuity, including a fault whose rules only taint the node. Requests and session entries carry the claim ID. A detached claim grants no release rights. The last successful validation removes the claim with the scheduling gate.
 
 Enable `fault-quarantine.validation.persistHandoff` with this policy. Fault quarantine retains the validation source until lifecycle manager registers the matching request. Registration and removal of the matching source use one version-protected Node update. A pending handoff blocks an older request from releasing the node.
 

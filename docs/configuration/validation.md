@@ -154,7 +154,7 @@ kubectl get nodes -o json |
     has("nvsentinel.nvidia.com/cordon-claim")) | .metadata.name'
 ```
 
-An old session without Node and request UIDs remains protected. A request name alone cannot prove object identity. Enabling strict ownership does not assign ownership to such sessions.
+An old session without Node and request UIDs remains protected. A request name alone cannot prove object identity. Enabling strict ownership does not assign ownership to such sessions. A ValidationRequest that the previous fault-quarantine created is adopted when the upgraded controller retries the same hand-off, so an upgrade between request creation and quarantine cleanup does not leave the node quarantined.
 
 The request check includes requests whose phase has not been initialized. Historical completed requests can remain once their Node associations are cleared; failed requests can still have retained sessions that need resolution.
 

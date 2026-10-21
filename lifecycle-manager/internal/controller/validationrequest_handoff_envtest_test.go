@@ -71,6 +71,37 @@ func (w *handoffStatusConflictWriter) Update(ctx context.Context, object client.
 	return nil
 }
 
+// staleNodeClient serves Node reads as a lagging informer cache would: every
+// Node it returns is stripped by strip before the caller sees it.
+type staleNodeClient struct {
+	client.Client
+	strip func(*corev1.Node)
+}
+
+func (c *staleNodeClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object,
+	opts ...client.GetOption) error {
+	if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if node, ok := obj.(*corev1.Node); ok {
+		c.strip(node)
+	}
+	return nil
+}
+
+// deleteFailingClient fails Delete for the objects fail selects.
+type deleteFailingClient struct {
+	client.Client
+	fail func(client.Object) error
+}
+
+func (c *deleteFailingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if err := c.fail(obj); err != nil {
+		return err
+	}
+	return c.Client.Delete(ctx, obj, opts...)
+}
+
 func setHandoffSource(ctx context.Context, nodeName, source string) error {
 	node := getNode(ctx, nodeName)
 	if node.Annotations == nil {
@@ -324,6 +355,80 @@ var _ = Describe("Validation persistent handoff", func() {
 		Expect(node.Spec.Unschedulable).To(BeTrue())
 		Expect(node.Annotations[annotationQuarantineValidationHealthEvent]).To(Equal(handoffSource))
 		Expect(node.Annotations).NotTo(HaveKey(annotationValidationSession))
+	})
+
+	It("registers a persisted handoff that the cached Node does not show yet", func() {
+		nodeName := "handoff-stale-cache"
+		r, req, _ := ownedRequestSetup("vr-handoff-stale-cache", nodeName, cordonOwned, true, true)
+		vr := setRequestHandoffHash(req, handoffSource)
+		Expect(setHandoffSource(ctx, nodeName, handoffSource)).To(Succeed())
+		// The cached client lags behind the live Node and never shows the handoff source.
+		r.Client = &staleNodeClient{Client: k8sClient, strip: func(node *corev1.Node) {
+			delete(node.Annotations, annotationQuarantineValidationHealthEvent)
+		}}
+		vr = reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 10)
+		node := getNode(ctx, nodeName)
+		Expect(node.Annotations).NotTo(HaveKey(annotationQuarantineValidationHealthEvent))
+		entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(entries).To(HaveLen(1))
+		Expect(entries[0].RequestUID).To(Equal(vr.UID))
+	})
+
+	It("requeues a request whose handoff source is not on the Node yet", func() {
+		nodeName := "handoff-not-yet"
+		r, req, _ := ownedRequestSetup("vr-handoff-not-yet", nodeName, cordonOwned, true, true)
+		setRequestHandoffHash(req, handoffSource)
+		// The first reconcile only initializes the request to Pending.
+		reconcileForIterations(ctx, r, req, 1)
+		result, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+		Expect(getNode(ctx, nodeName).Annotations).NotTo(HaveKey(annotationValidationSession))
+		Expect(setHandoffSource(ctx, nodeName, handoffSource)).To(Succeed())
+		reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 10)
+		Expect(getNode(ctx, nodeName).Annotations).NotTo(HaveKey(annotationQuarantineValidationHealthEvent))
+	})
+
+	It("cleans up a succeeded group's provider resource when the request fails", func() {
+		nodeA, nodeB := "cleanup-failed-a", "cleanup-failed-b"
+		fixture := newReleaseRaceFixture("vr-cleanup-failed", 0, nodeA, nodeB)
+		testCfg := fixture.config.Validation.Spec.Tests["basic"]
+		testCfg.SupportsBatchingNodes = false
+		fixture.config.Validation.Spec.Tests["basic"] = testCfg
+
+		vr := fixture.running()
+		Expect(vr.Status.TestGroups).To(HaveLen(2))
+		groupA := releaseGroupForNode(vr, nodeA)
+		objectA := groupA.Attempts[0].ObjectName
+		Expect(updateObjectStatus(ctx, objectA, testSuccessCondType)).To(Succeed())
+
+		// The provider resource delete fails once after the success was persisted.
+		failed := false
+		fixture.reconciler.Client = &deleteFailingClient{Client: fixture.client, fail: func(obj client.Object) error {
+			if !failed && obj.GetName() == objectA {
+				failed = true
+				return errors.New("transient delete failure")
+			}
+			return nil
+		}}
+		_, err := fixture.reconciler.Reconcile(ctx, fixture.request)
+		Expect(err).To(HaveOccurred())
+		Expect(failed).To(BeTrue())
+		fixture.reconciler.Client = fixture.client
+
+		vr = fixture.reconcile()
+		Expect(releaseGroupForNode(vr, nodeA).Phase).To(Equal(v1alpha1.PhaseSucceeded))
+		provider := &unstructured.Unstructured{}
+		provider.SetGroupVersionKind(testJobGVK)
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: objectA}, provider)).To(Succeed())
+
+		groupB := releaseGroupForNode(vr, nodeB)
+		Expect(updateObjectStatus(ctx, groupB.Attempts[0].ObjectName, testFailedCondType)).To(Succeed())
+		vr = reconcileUntilPhase(ctx, fixture.reconciler, fixture.request, v1alpha1.PhaseFailed, maxReconcileIterations)
+		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: objectA}, provider)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"the succeeded group's resource must be cleaned up when the request fails")
 	})
 
 	It("consumes opt-in producer handoffs even when ownership enforcement is disabled", func() {

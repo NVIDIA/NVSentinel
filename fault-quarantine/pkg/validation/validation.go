@@ -364,9 +364,18 @@ func applyCordonClaim(node *corev1.Node, annotations map[string]string) {
 		annotations[cordonownership.RequestClaimIDAnnotationKey] = claim.ID
 	}
 
-	if _, present := node.Annotations[cordonownership.AnnotationKey]; present && ownership == common.CordonOwnershipOwned {
-		if _, inherited := cordonownership.Inheritable(node); !inherited {
+	if _, present := node.Annotations[cordonownership.AnnotationKey]; present {
+		_, inherited := cordonownership.Inheritable(node)
+		_, cordonRecorded := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+		_, dryRun := node.Annotations[common.QuarantineHealthEventDryRunAnnotationKey]
+
+		switch {
+		case ownership == common.CordonOwnershipOwned && !inherited:
 			ownership = common.CordonOwnershipUnknown
+		case !cordonRecorded && !dryRun && inherited:
+			// A session that only tainted the node leaves the continuous cordon to
+			// the active claim, so its request inherits that ownership.
+			ownership = common.CordonOwnershipOwned
 		}
 	}
 

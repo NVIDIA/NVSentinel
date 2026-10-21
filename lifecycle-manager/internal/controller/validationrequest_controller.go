@@ -302,13 +302,16 @@ func (r *ValidationRequestReconciler) reconcilePending(ctx context.Context,
 	criteria := r.Config.Validation.Spec.ReadinessCriteria
 	resolvedTests := resolveValidationRequestTests(validationRequest, r.Config)
 
-	existingNodes, deletedNodes, allReady, err := r.classifyPendingNodes(ctx, validationRequest, criteria, resolvedTests)
+	existingNodes, deletedNodes, allReady, retryAfter, err := r.classifyPendingNodes(ctx, validationRequest, criteria,
+		resolvedTests)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	if !allReady {
-		return ctrl.Result{}, nil
+		// A refused session registration is not driven by a Node watch event, so
+		// the request is requeued until the node state allows it to register.
+		return ctrl.Result{RequeueAfter: retryAfter}, nil
 	}
 
 	// If every node has been deleted, mark the request as successful
@@ -344,14 +347,19 @@ func (r *ValidationRequestReconciler) reconcilePending(ctx context.Context,
 
 func (r *ValidationRequestReconciler) classifyPendingNodes(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest, criteria []v1alpha1.CriteriaSpec, resolvedTests []string) (
-	existingNodes map[string]bool, deletedNodes []string, allReady bool, err error) {
+	existingNodes map[string]bool, deletedNodes []string, allReady bool, retryAfter time.Duration, err error) {
 	existingNodes = make(map[string]bool, len(validationRequest.Spec.Nodes))
 	allReady = true
 
 	for _, ns := range validationRequest.Spec.Nodes {
-		exists, ready, err := r.addToSessionAndCheckEligibility(ctx, ns, validationRequest, criteria, resolvedTests)
+		exists, ready, retry, err := r.addToSessionAndCheckEligibility(ctx, ns, validationRequest, criteria,
+			resolvedTests)
 		if err != nil {
-			return nil, nil, false, err
+			return nil, nil, false, 0, err
+		}
+
+		if retry {
+			retryAfter = ownedRegistrationRetryInterval
 		}
 
 		switch {
@@ -367,7 +375,7 @@ func (r *ValidationRequestReconciler) classifyPendingNodes(ctx context.Context,
 		}
 	}
 
-	return existingNodes, deletedNodes, allReady, nil
+	return existingNodes, deletedNodes, allReady, retryAfter, nil
 }
 
 /*
@@ -497,6 +505,10 @@ func (r *ValidationRequestReconciler) reconcileDelete(ctx context.Context,
 		}
 	}
 
+	if err := r.cleanupSucceededTestGroups(ctx, validationRequest); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if err := r.releaseNodesFromDeletedRequest(ctx, validationRequest); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -513,11 +525,11 @@ func (r *ValidationRequestReconciler) reconcileDelete(ctx context.Context,
 func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest, phase v1alpha1.Phase,
 	skippedNodes, skippedTests []string) (ctrl.Result, error) {
-	if phase == v1alpha1.PhaseSucceeded {
-		if err := r.cleanupSucceededTestGroups(ctx, validationRequest); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.cleanupSucceededTestGroups(ctx, validationRequest); err != nil {
+		return ctrl.Result{}, err
+	}
 
+	if phase == v1alpha1.PhaseSucceeded {
 		err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest,
 			resolveValidationRequestTests(validationRequest, r.Config))
 		if err != nil {
@@ -575,6 +587,9 @@ func (r *ValidationRequestReconciler) reconcileBlockedRelease(ctx context.Contex
 	return ctrl.Result{}, releaseErr
 }
 
+// cleanupSucceededTestGroups retries the provider resource deletion of groups
+// whose success was persisted before the deletion failed. It runs whenever the
+// request completes or is deleted, so a failed request cannot leak the resource.
 func (r *ValidationRequestReconciler) cleanupSucceededTestGroups(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest) error {
 	for i := range validationRequest.Status.TestGroups {
@@ -798,7 +813,9 @@ func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Conte
 		"testGroup", currentTestGroup.Name, "phase", attemptPhase, "failureReason", attemptFailureReason,
 		"failedNodes", failedNodes)
 
-	if attemptPhase == v1alpha1.PhaseSucceeded || wasSuccessful {
+	// A group result that the release depends on is persisted before its provider
+	// resource is deleted, so a restart between the two steps cannot lose it.
+	if newGroupPhase == v1alpha1.PhaseSucceeded || wasSuccessful {
 		if err := r.Status().Update(ctx, validationRequest); err != nil {
 			return fmt.Errorf("persist test group %q result: %w", currentTestGroup.Name, err)
 		}

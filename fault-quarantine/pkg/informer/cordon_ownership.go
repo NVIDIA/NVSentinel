@@ -198,15 +198,24 @@ func validateExistingValidationRequest(existing, desired *unstructured.Unstructu
 	return nil
 }
 
-func sameValidationHandoff(left, right *unstructured.Unstructured) bool {
+func sameValidationHandoff(existing, desired *unstructured.Unstructured) bool {
+	// A request from a producer without ownership support keeps its legacy
+	// semantics. A retry after an upgrade adopts it when it targets the same
+	// node and tests, instead of leaving the node quarantined.
+	if _, ownershipAware := existing.GetAnnotations()[common.ValidationCordonOwnershipAnnotationKey]; !ownershipAware {
+		_, claimed := existing.GetAnnotations()[cordonownership.RequestClaimIDAnnotationKey]
+
+		return !claimed && reflect.DeepEqual(existing.Object["spec"], desired.Object["spec"])
+	}
+
 	for _, key := range []string{common.ValidationCordonOwnershipAnnotationKey, common.ValidationSourceHashAnnotationKey,
 		cordonownership.RequestClaimIDAnnotationKey} {
-		if left.GetAnnotations()[key] != right.GetAnnotations()[key] {
+		if existing.GetAnnotations()[key] != desired.GetAnnotations()[key] {
 			return false
 		}
 	}
 
-	return reflect.DeepEqual(left.Object["spec"], right.Object["spec"])
+	return reflect.DeepEqual(existing.Object["spec"], desired.Object["spec"])
 }
 
 func validationNodeOwner(obj *unstructured.Unstructured) (metav1.OwnerReference, error) {

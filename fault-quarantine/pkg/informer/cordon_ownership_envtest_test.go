@@ -225,7 +225,12 @@ func TestValidationRequestAlreadyExists_RequiresSameHandoff(t *testing.T) {
 		{"different-ownership", func(v *unstructured.Unstructured) {
 			v.SetAnnotations(map[string]string{common.ValidationCordonOwnershipAnnotationKey: common.CordonOwnershipPreExisting})
 		}, true},
-		{"missing-ownership", func(v *unstructured.Unstructured) { v.SetAnnotations(nil) }, true},
+		// A request created by a producer without ownership support is adopted on retry.
+		{"legacy-request", func(v *unstructured.Unstructured) { v.SetAnnotations(nil) }, false},
+		{"legacy-different-tests", func(v *unstructured.Unstructured) {
+			v.SetAnnotations(nil)
+			v.Object["spec"].(map[string]any)["tests"] = []any{"other"}
+		}, true},
 		{"different-source", func(v *unstructured.Unstructured) {
 			annotations := v.GetAnnotations()
 			annotations[common.ValidationSourceHashAnnotationKey] = "another-quarantine-source"

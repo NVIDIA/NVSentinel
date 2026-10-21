@@ -75,6 +75,10 @@ spec:
 		{"claim-preserved", map[string]string{common.QuarantineHealthEventIsCordonedAnnotationKey: "True"}, common.CordonOwnershipUnknown, "preserved"},
 		{"claim-manual", map[string]string{common.QuarantineHealthEventIsCordonedAnnotationKey: "True", common.QuarantineHealthEventCordonPreExistingAnnotationKey: "True"}, common.CordonOwnershipPreExisting, "preserved"},
 		{"claim-invalid", map[string]string{common.QuarantineHealthEventIsCordonedAnnotationKey: "True"}, common.CordonOwnershipUnknown, "invalid"},
+		// A taint-only session during an owned continuous cordon inherits the claim.
+		{"claim-taint-only", map[string]string{}, common.CordonOwnershipOwned, "owned"},
+		{"claim-taint-only-dry-run", map[string]string{common.QuarantineHealthEventDryRunAnnotationKey: "True"}, common.CordonOwnershipUnknown, "owned"},
+		{"claim-taint-only-preserved", map[string]string{}, common.CordonOwnershipUnknown, "preserved"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
