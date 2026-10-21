@@ -18,13 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
+	"strings"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
@@ -74,21 +75,62 @@ func NewResourceReconciler(
 	}
 }
 
-// LoadState reloads persisted policy match state from node annotations.
-func (r *ResourceReconciler) LoadState(ctx context.Context) error {
-	allMatches, err := r.annotationMgr.LoadAllMatches(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to load match state: %w", err)
-	}
-
+// RestoreState restores the match state that an earlier run saved in node annotations.
+// It keeps only the matches of the enabled policies of this reconciler, and returns one
+// event for each of them. The caller sends the events to the controller, so that each
+// restored resource is reconciled once after the cache syncs. A resource that was
+// deleted while the monitor was stopped produces no delete event, and this reconcile is
+// what publishes its healthy event.
+func (r *ResourceReconciler) RestoreState(allMatches map[string]string) []event.GenericEvent {
 	r.matchStatesMu.Lock()
 	defer r.matchStatesMu.Unlock()
 
-	maps.Copy(r.matchStates, allMatches)
+	var events []event.GenericEvent
 
-	slog.Info("Loaded policy match state from annotations", "gvk", r.gvk.String(), "matches", len(allMatches))
+	for stateKey, nodeName := range allMatches {
+		obj, ok := r.objectForStateKey(stateKey)
+		if !ok {
+			continue
+		}
 
-	return nil
+		r.matchStates[stateKey] = nodeName
+
+		events = append(events, event.GenericEvent{Object: obj})
+	}
+
+	slog.Info("Restored policy match state from annotations", "gvk", r.gvk.String(), "matches", len(events))
+
+	return events
+}
+
+// objectForStateKey reverses getStateKey for the enabled policies of this reconciler.
+// It returns an object that holds only the GVK, the namespace and the name.
+func (r *ResourceReconciler) objectForStateKey(stateKey string) (*unstructured.Unstructured, bool) {
+	for i := range r.policies {
+		p := &r.policies[i]
+		if !p.Enabled {
+			continue
+		}
+
+		objectKey, ok := strings.CutPrefix(stateKey, p.Name+"/")
+		if !ok {
+			continue
+		}
+
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(r.gvk)
+
+		if namespace, name, namespaced := strings.Cut(objectKey, "/"); namespaced {
+			obj.SetNamespace(namespace)
+			obj.SetName(name)
+		} else {
+			obj.SetName(objectKey)
+		}
+
+		return obj, true
+	}
+
+	return nil, false
 }
 
 func (r *ResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

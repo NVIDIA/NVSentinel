@@ -43,7 +43,12 @@ data:
     [[podDrainPolicies]]
     name = {{ .name | quote }}
     namespace = {{ .namespace | default "*" | quote }}
-    podSelector = {{ .podSelector | quote }}
+    {{- with .podSelector }}
+    podSelector = {{ . | quote }}
+    {{- end }}
+    {{- with .ownerKinds }}
+    ownerKinds = [{{ range $index, $kind := . }}{{ if $index }}, {{ end }}{{ $kind | quote }}{{ end }}]
+    {{- end }}
     mode = {{ .mode | quote }}
     {{- end }}
 

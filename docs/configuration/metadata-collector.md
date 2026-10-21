@@ -16,6 +16,15 @@ global:
     enabled: true
 ```
 
+### Logging
+
+Sets the verbosity level for metadata-collector logs.
+
+```yaml
+metadata-collector:
+  logLevel: info  # Options: debug, info, warn, error
+```
+
 ### Resources
 
 Defines CPU and memory resource requests and limits for the metadata-collector init container.

@@ -15,6 +15,9 @@
 
 replicaCount: 1
 
+# Log level for the lifecycle-manager (debug, info, warn or error). Defaults to info; any other value falls back to info.
+logLevel: info
+
 image:
   repository: ghcr.io/nvidia/nvsentinel/lifecycle-manager
   pullPolicy: IfNotPresent

@@ -655,6 +655,7 @@ The events, and what Fault Quarantine does with them, are the same on both paths
 | Gang coordination (timeouts, topology, mounts) | `preflight.gangCoordination` |
 | Namespace selector for the webhook | `preflight.namespaceSelector` |
 | Pod-level selector for the webhook | `preflight.objectSelector` |
+| Webhook log level (`debug`, `info`, `warn`, `error`) | `preflight.logLevel` |
 
 ## Webhook
 
