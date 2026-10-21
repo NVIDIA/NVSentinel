@@ -1,6 +1,6 @@
 module github.com/nvidia/nvsentinel/tests/scale-tests/cmd/fqm-scale-test
 
-go 1.27.2
+go 1.27.3
 
 require (
 	k8s.io/api v0.37.1
