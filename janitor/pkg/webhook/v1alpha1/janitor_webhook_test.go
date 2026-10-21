@@ -563,6 +563,35 @@ var _ = Describe("Janitor Webhook", func() {
 			_, err := gpuResetVal.ValidateUpdate(ctx, obj, obj2)
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("Should accept GPUReset updates when the selector is omitted", func() {
+			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
+				Name: "test-gpu-reset",
+				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
+					NodeName: "test-node",
+				},
+			}
+			obj2 := obj.DeepCopy()
+			obj2.Finalizers = []string{"janitor.dgxc.nvidia.com/finalizer"}
+			_, err := gpuResetVal.ValidateUpdate(ctx, obj, obj2)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Should reject GPUReset updates that add GPUs to an omitted selector", func() {
+			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
+				Name: "test-gpu-reset",
+				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
+					NodeName: "test-node",
+				},
+			}
+			obj2 := obj.DeepCopy()
+			obj2.Spec.Selector = &janitordgxcnvidiacomv1alpha1.GPUSelector{
+				UUIDs: []string{"test-uuid"},
+			}
+			_, err := gpuResetVal.ValidateUpdate(ctx, obj, obj2)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("uuids cannot be changed after creation"))
+		})
 	})
 
 	Context("When controller is disabled", func() {
