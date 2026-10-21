@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -48,12 +49,12 @@ func podPolicyTestConfig() config.TomlConfig {
 	}
 }
 
-// createPolicyPod creates a running API pod with optional GPU metadata for drain-scope tests.
+// createPolicyPod creates a running API pod with optional GPU metadata and owners for drain-scope tests.
 func createPolicyPod(t *testing.T, setup *testSetup, namespace, name, node string,
-	labels map[string]string, gpu string) *v1.Pod {
+	labels map[string]string, gpu string, owners ...metav1.OwnerReference) *v1.Pod {
 	t.Helper()
 	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels, OwnerReferences: owners},
 		Spec:       v1.PodSpec{NodeName: node, Containers: []v1.Container{{Name: "worker", Image: "busybox"}}},
 	}
 	if gpu != "" {
@@ -192,6 +193,49 @@ func TestProcessEventGeneric_PodPoliciesForcePartialDrain_EvictsOnlyAffectedGPU(
 	finishPolicyPodDeletion(t, setup, "affected")
 	requirePolicyPodRunning(t, setup, "workloads", "healthy-gpu")
 	requirePolicyPodRunning(t, setup, "workloads", "cpu-only")
+}
+
+// controllerOwner returns a controller owner reference. envtest runs no garbage
+// collector, so the owner object does not need to exist.
+func controllerOwner(apiVersion, kind, name string) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion: apiVersion, Kind: kind, Name: name, UID: types.UID(name + "-uid"), Controller: new(true),
+	}
+}
+
+// TestProcessEventGeneric_PodPoliciesOwnerKinds_EvictsOnlySelectedOwners
+// checks that the informer cache keeps enough owner data for ownerKinds policies to select pods.
+func TestProcessEventGeneric_PodPoliciesOwnerKinds_EvictsOnlySelectedOwners(t *testing.T) {
+	cfg := podPolicyTestConfig()
+	cfg.PodDrainPolicies = []config.PodDrainPolicy{
+		{Name: "statefulsets", Namespace: "workloads", OwnerKinds: []string{"StatefulSet"}, Mode: config.ModeImmediateEvict},
+	}
+	setup := setupConfiguredTest(t, cfg, false)
+	const node = "owner-policy-node"
+	createNode(setup.ctx, t, setup.client, node)
+	waitForNodeInInformer(t, setup.informersInstance, node)
+	createNamespace(setup.ctx, t, setup.client, "workloads")
+	createPolicyPod(t, setup, "workloads", "stateful", node, nil, "", controllerOwner("apps/v1", "StatefulSet", "db"))
+	createPolicyPod(t, setup, "workloads", "replicated", node, nil, "", controllerOwner("apps/v1", "ReplicaSet", "web"))
+	createPolicyPod(t, setup, "workloads", "bare", node, nil, "")
+	require.Eventually(t, func() bool {
+		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode(setup.ctx, "workloads", node, nil)
+		return err == nil && len(pods) == 3
+	}, 10*time.Second, 50*time.Millisecond)
+
+	opts := healthEventOptions{nodeName: node, nodeQuarantined: model.Quarantined}
+	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, opts)
+	require.ErrorContains(t, err, "immediate eviction")
+	finishPolicyPodDeletion(t, setup, "stateful")
+	requirePolicyPodRunning(t, setup, "workloads", "replicated")
+	requirePolicyPodRunning(t, setup, "workloads", "bare")
+
+	require.Eventually(t, func() bool {
+		return processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, opts) == nil
+	}, 10*time.Second, 50*time.Millisecond)
+	assertNodeLabel(t, setup.client, setup.ctx, node, statemanager.DrainSucceededLabelValue)
+	requirePolicyPodRunning(t, setup, "workloads", "replicated")
+	requirePolicyPodRunning(t, setup, "workloads", "bare")
 }
 
 // TestProcessEventGeneric_PodPoliciesDryRun_PreservesPods

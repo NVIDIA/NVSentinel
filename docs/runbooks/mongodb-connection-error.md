@@ -20,6 +20,10 @@ MongoDB connection failure can occur due to the following reasons:
 ### 3. **Storage Class Is Missing**
    - PersistentVolumeClaims (PVCs) use StorageClass to dynamically provision volume. Without a valid StorageClass, PVCs cannot bind to storage and MongoDB pods cannot start without bounded PVCs
 
+### 4. **Open-File Limit Too Low**
+   - The node gives containers a soft open-file limit below 64000, for example 1024
+   - mongod runs out of file descriptors when the number of client connections grows with the cluster, and crashes
+
 ## Quick Diagnosis
 
 Run these commands to identify the issue:
@@ -48,6 +52,7 @@ kubectl -n nvsentinel logs -l app.kubernetes.io/name=mongodb --tail=100
 # - Initialization errors: "waiting for initialization", "replica set"
 # - Storage errors: "WiredTiger", "disk space", "I/O error"
 # - Memory errors: "out of memory", "OOM"
+# - Open-file limit errors: "Too many open files", "Soft rlimits for open file descriptors too low"
 
 # 4. Check PVC status
 kubectl -n nvsentinel get pvc | grep mongodb
@@ -201,3 +206,111 @@ kubectl -n nvsentinel get pvc -l app.kubernetes.io/name=mongodb -o jsonpath='{.i
 kubectl get storageclass
 # If required storage class doesn't exists then upgrade the cluster with correctly configured storage class
 ```
+
+### Issue 4: Open-File Limit Too Low
+
+mongod uses one file descriptor for each client connection. Each platform-connectors pod has its own connection pool, so the number of connections grows with the number of nodes. If the node gives containers a low soft open-file limit, mongod runs out of file descriptors and crashes. This usually happens after the cluster grows, for example from 50 to 500 nodes.
+
+**Symptoms:**
+
+- MongoDB pods are in `CrashLoopBackOff`. In [issue #1555](https://github.com/NVIDIA/NVSentinel/issues/1555), mongod exited with code 139.
+- MongoDB does not become ready. With Bitnami, the `mongodb` StatefulSet shows fewer than 3 ready replicas. In issue #1555 it showed `0/3`, and because of the `OrderedReady` policy, the last replica did not start. With the Percona Operator, `kubectl -n nvsentinel get perconaservermongodb` does not show `ready`.
+- fault-quarantine, node-drainer and fault-remediation crash with `ReplicaSetNoPrimary` or `connection refused`.
+
+**Diagnosis:**
+
+```bash
+# Step 1: Look for open-file limit errors in the log of the crashed container
+# Bitnami
+kubectl -n nvsentinel logs mongodb-0 -c mongodb --previous | grep -i -E "too many open files|soft rlimits"
+# Percona Operator
+kubectl -n nvsentinel logs mongodb-rs0-0 -c mongod --previous | grep -i -E "too many open files|soft rlimits"
+# "Soft rlimits for open file descriptors too low" shows the soft limit in "currentValue"
+
+# Step 2: Check the exit code of the last crash
+# Bitnami
+kubectl -n nvsentinel get pod mongodb-0 -o jsonpath='{.status.containerStatuses[?(@.name=="mongodb")].lastState.terminated.exitCode}'
+# Percona Operator
+kubectl -n nvsentinel get pod mongodb-rs0-0 -o jsonpath='{.status.containerStatuses[?(@.name=="mongod")].lastState.terminated.exitCode}'
+
+# Step 3: Find the nodes that run MongoDB
+# Bitnami
+kubectl -n nvsentinel get pods -l app.kubernetes.io/name=mongodb -o wide
+# Percona Operator
+kubectl -n nvsentinel get pods -l app.kubernetes.io/component=mongod -o wide
+
+# Step 4: On each of those nodes, check the limit that the container runtime gives to containers
+systemctl show containerd --property=LimitNOFILESoft --property=LimitNOFILE
+# LimitNOFILESoft below 64000 (for example 1024) confirms this issue
+```
+
+If a MongoDB pod is running, you can also read the limit of mongod directly:
+
+```bash
+# Bitnami
+kubectl -n nvsentinel exec mongodb-0 -c mongodb -- bash -c 'grep "Max open files" /proc/$(pgrep -x mongod)/limits'
+# Percona Operator
+kubectl -n nvsentinel exec mongodb-rs0-0 -c mongod -- bash -c 'grep "Max open files" /proc/$(pgrep -x mongod)/limits'
+```
+
+**Solution:**
+
+```bash
+# Step 1: On every node that can run MongoDB, raise the limit of the container runtime
+sudo mkdir -p /etc/systemd/system/containerd.service.d
+printf '[Service]\nLimitNOFILE=1048576\n' | sudo tee /etc/systemd/system/containerd.service.d/limit-nofile.conf
+sudo systemctl daemon-reload
+sudo systemctl restart containerd
+# For nodes built with kubernetes-sigs/image-builder, also rebuild the image with
+# containerd_enable_limit_no_file: true, so that new nodes get the limit
+
+# Step 2: Delete the MongoDB pods, so that they are created again. The new limit applies only to pods that are
+# created after the change. A container that restarts in an existing pod keeps the old limit.
+# If all MongoDB pods are crashing, there is no primary to keep, so delete them all:
+# Bitnami
+kubectl -n nvsentinel delete pod -l app.kubernetes.io/name=mongodb
+# Percona Operator
+kubectl -n nvsentinel delete pod -l app.kubernetes.io/component=mongod
+
+# If some MongoDB pods are still running, keep the majority of the replica set:
+#   1. First delete the crashing pods, one at a time, lowest number first. With the OrderedReady policy
+#      (the Bitnami default), the StatefulSet does not create a pod again while a pod with a lower number
+#      is not ready. If you delete a running pod first, it does not come back, and the replica set can
+#      lose its majority.
+#   2. Then delete the running pods, one at a time, highest number first.
+# For each pod, wait until its replacement exists and is ready before you do the next pod.
+# The replacement can take a few seconds to appear, so wait for it to exist first (kubectl 1.31 or later).
+# Example for one pod. Bitnami (pods mongodb-0, mongodb-1, mongodb-2):
+kubectl -n nvsentinel delete pod mongodb-2
+kubectl -n nvsentinel wait --for=create pod/mongodb-2 --timeout=10m
+kubectl -n nvsentinel wait --for=condition=Ready pod/mongodb-2 --timeout=10m
+# Percona Operator (pods mongodb-rs0-0, mongodb-rs0-1, mongodb-rs0-2):
+kubectl -n nvsentinel delete pod mongodb-rs0-2
+kubectl -n nvsentinel wait --for=create pod/mongodb-rs0-2 --timeout=10m
+kubectl -n nvsentinel wait --for=condition=Ready pod/mongodb-rs0-2 --timeout=10m
+
+# Step 3: Verify the limit on every replica
+# Bitnami
+for pod in $(kubectl -n nvsentinel get pods -l app.kubernetes.io/name=mongodb -o name); do
+  echo "$pod"
+  kubectl -n nvsentinel exec "$pod" -c mongodb -- bash -c 'grep "Max open files" /proc/$(pgrep -x mongod)/limits'
+done
+# Percona Operator
+for pod in $(kubectl -n nvsentinel get pods -l app.kubernetes.io/component=mongod -o name); do
+  echo "$pod"
+  kubectl -n nvsentinel exec "$pod" -c mongod -- bash -c 'grep "Max open files" /proc/$(pgrep -x mongod)/limits'
+done
+# Each pod must print a line. The soft limit (first number) must be at least 64000.
+
+# Step 4: Verify that MongoDB is ready
+# Bitnami: READY must show 3/3
+kubectl -n nvsentinel get statefulset mongodb
+# Percona Operator: STATUS must show ready
+kubectl -n nvsentinel get perconaservermongodb
+```
+
+If a MongoDB pod moves to a node that you did not change, it fails again. Change every node that can run MongoDB, or keep MongoDB on nodes that you changed. See [Node Placement](../configuration/mongodb-store.md#node-placement) for Bitnami and [Pod placement (Percona)](../configuration/mongodb-store.md#pod-placement-percona) for the Percona Operator.
+
+fault-quarantine, node-drainer and fault-remediation reconnect when the replica set has a primary. If MongoDB was down for a long time, see [Stale Events](stale-events.md).
+
+To find this problem before mongod fails, monitor the connection capacity of mongod. See [Open-file limit](../configuration/mongodb-store.md#open-file-limit-node-prerequisite).
