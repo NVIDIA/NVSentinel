@@ -75,11 +75,13 @@ func TestPublish_UsesProxyFromEnvironment(t *testing.T) {
 		Data:        map[string]any{},
 	}
 
+	before := proxiedSinkRequests.Load()
+
 	if err := sink.Publish(context.Background(), event); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	if got := proxiedSinkRequests.Load(); got != 1 {
+	if got := proxiedSinkRequests.Load() - before; got != 1 {
 		t.Errorf("proxy received %d requests for %s, want 1", got, proxiedSinkHost)
 	}
 }

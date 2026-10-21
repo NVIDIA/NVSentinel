@@ -56,6 +56,8 @@ func TestMain(m *testing.M) {
 func TestGetToken_UsesProxyFromEnvironment(t *testing.T) {
 	provider := NewTokenProvider("http://"+proxiedTokenHost+"/token", "test-client", "test-secret", "test-scope", false)
 
+	before := proxiedTokenRequests.Load()
+
 	token, err := provider.GetToken(context.Background())
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
@@ -65,7 +67,7 @@ func TestGetToken_UsesProxyFromEnvironment(t *testing.T) {
 		t.Errorf("GetToken() = %v, want proxied-token", token)
 	}
 
-	if got := proxiedTokenRequests.Load(); got != 1 {
+	if got := proxiedTokenRequests.Load() - before; got != 1 {
 		t.Errorf("proxy received %d requests for %s, want 1", got, proxiedTokenHost)
 	}
 }
