@@ -261,6 +261,48 @@ var _ = Describe("Validation release group retries", func() {
 		checkNodeValidationState(ctx, vr.Name, []string{nodeA, nodeB}, v1alpha1.PhaseFailed)
 	})
 
+	It("does not restart a group whose remaining tests were all skipped when a member is quarantined before release", func() {
+		nodeA, nodeB := "release-skipped-a", "release-skipped-b"
+		fixture := newReleaseRaceFixture("release-skipped", 1, nodeA, nodeB)
+		testCfg := fixture.config.Validation.Spec.Tests["basic"]
+		testCfg.MinimumNodesPerBatch = 2
+		testCfg.BatchFailurePolicy = v1alpha1.BatchFailurePolicyIgnore
+		fixture.config.Validation.Spec.Tests["basic"] = testCfg
+
+		vr := fixture.running()
+		Expect(vr.Status.TestGroups).To(HaveLen(1))
+		Expect(vr.Status.TestGroups[0].Nodes).To(ConsistOf(nodeA, nodeB))
+
+		// B is quarantined while the batch runs, then A is deleted. The group drops
+		// below its batch minimum, every test is skipped, and the group succeeds
+		// vacuously while B still blocks the release.
+		Expect(setReleaseRaceQuarantine(ctx, nodeB, releaseRaceEvent)).To(Succeed())
+		deletedNode := getNode(ctx, nodeA)
+		Expect(k8sClient.Delete(ctx, &deletedNode)).To(Succeed())
+
+		// The release is blocked, so the controller waits instead of turning the
+		// vacuously succeeded group back into a pending attempt with no tests.
+		result, err := fixture.reconciler.Reconcile(ctx, fixture.request)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+		vr = reconcileForIterations(ctx, fixture.reconciler, fixture.request, 2)
+		Expect(vr.Status.Phase).To(Equal(v1alpha1.PhaseRunning))
+		Expect(vr.Status.TestGroups[0].Attempts).To(HaveLen(1),
+			"a group with no tests left must not start an empty attempt")
+		expectReleaseRaceGate(nodeB)
+
+		clearReleaseRaceQuarantine(nodeB)
+		vr = reconcileUntilPhase(ctx, fixture.reconciler, fixture.request, v1alpha1.PhaseSucceeded, maxReconcileIterations)
+		Expect(vr.Status.TestGroups[0].Phase).To(Equal(v1alpha1.PhaseSucceeded))
+		Expect(vr.Status.TestGroups[0].Tests).To(BeEmpty())
+		Expect(vr.Status.TestGroups[0].Attempts).To(HaveLen(1))
+		Expect(vr.Status.Skipped).NotTo(BeNil())
+		Expect(vr.Status.Skipped.Nodes).To(ContainElement(nodeA))
+		Expect(vr.Status.Skipped.Tests).To(ContainElement("basic"))
+		Expect(getNode(ctx, nodeB).Spec.Unschedulable).To(BeFalse())
+	})
+
 	It("does not treat a deleted batch member as released when quarantine starts during another member's patch", func() {
 		nodeA, nodeB := "release-late-delete-a", "release-late-delete-b"
 		fixture := newReleaseRaceFixture("release-late-delete", 1, nodeA, nodeB)
