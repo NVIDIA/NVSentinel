@@ -574,6 +574,13 @@ func (r *ValidationRequestReconciler) reconcileQuarantineBeforeRelease(ctx conte
 			continue
 		}
 
+		// Every remaining test of this group was skipped when it dropped below its
+		// batch minimum. There is no result to invalidate and nothing to run again,
+		// so the release simply waits for the quarantine to clear.
+		if len(group.Tests) == 0 {
+			continue
+		}
+
 		failedNodes := slices.DeleteFunc(slices.Clone(quarantined.nodeNames), func(n string) bool {
 			return !slices.Contains(group.Nodes, n)
 		})
