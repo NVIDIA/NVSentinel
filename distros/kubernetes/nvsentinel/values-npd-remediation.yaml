@@ -68,9 +68,13 @@ kubernetes-object-monitor:
           skip: true
 
     # Detects when NPD reports that XFS forcibly shut down a filesystem after a
-    # serious filesystem or storage error.
+    # serious filesystem or storage error. SystemLogMonitor rules have no
+    # recovery probe and reset to False on NPD restart, so latch keeps the
+    # unhealthy state until the node is replaced or the match annotation is
+    # cleared.
     - name: NPDXfsShutdown
       enabled: true
+      latch: true
       resource:
         group: ""
         version: v1
@@ -90,8 +94,10 @@ kubernetes-object-monitor:
 
     # Detects an NPD-reported fatal UEFI CPER indicating an uncorrectable
     # platform hardware failure, such as a CPU, memory, or PCIe failure.
+    # Latched across NPD restarts because SystemLogMonitor has no recovery probe.
     - name: NPDCperHardwareErrorFatal
       enabled: true
+      latch: true
       resource:
         group: ""
         version: v1
@@ -110,9 +116,11 @@ kubernetes-object-monitor:
           - NPD_CPER_HARDWARE_ERROR_FATAL
 
     # Detects when NPD reports that a filesystem was remounted read-only,
-    # preventing writes.
+    # preventing writes. Latched across NPD restarts because SystemLogMonitor
+    # has no recovery probe.
     - name: NPDReadonlyFilesystem
       enabled: true
+      latch: true
       resource:
         group: ""
         version: v1
