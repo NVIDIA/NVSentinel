@@ -208,7 +208,13 @@ global:
     type: spc_t
 ```
 
-To check a node, run `sestatus` and `ps -eZ | grep containerd`: `container_runtime_t` means the runtime applies labels.
+To check whether a node needs this setting:
+
+1. Run `sestatus` and confirm that SELinux is `enforcing`.
+2. Confirm that the runtime applies SELinux labels to containers. On RKE2, check for `selinux: true` in `/etc/rancher/rke2/config.yaml` or `RKE2_SELINUX=true` in the service environment.
+3. Check the process label of a running workload pod, for example with `ps -eZ | grep platform-connectors`. A `container_t` label means the pod is confined and needs `spc_t` to access the shared host paths.
+
+Set `spc_t` only when all three checks apply: it disables SELinux confinement for these pods.
 
 ### Tracing
 
