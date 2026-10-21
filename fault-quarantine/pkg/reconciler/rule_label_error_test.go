@@ -48,8 +48,8 @@ func (s *stubRuleSetEvaluator) GetName() string    { return s.name }
 func (s *stubRuleSetEvaluator) GetVersion() string { return "1" }
 func (s *stubRuleSetEvaluator) GetPriority() int   { return 0 }
 
-// TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator verifies that later evaluators still apply labels.
-func TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator(t *testing.T) {
+// TestApplyRuleActionsForEvent_EvaluationError_ContinuesToNextEvaluator verifies that later evaluators still apply labels.
+func TestApplyRuleActionsForEvent_EvaluationError_ContinuesToNextEvaluator(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
@@ -74,7 +74,7 @@ func TestApplyRuleLabelsForEvent_EvaluationError_ContinuesToNextEvaluator(t *tes
 		&stubRuleSetEvaluator{name: "high", result: common.RuleEvaluationSuccess},
 	}
 
-	err := r.applyRuleLabelsForEvent(ctx, &protos.HealthEvent{NodeName: nodeName}, evaluators, rulesets)
+	err := r.applyRuleActionsForEvent(ctx, &protos.HealthEvent{NodeName: nodeName}, evaluators, rulesets)
 	require.EqualError(t, err, "evaluation failed")
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})

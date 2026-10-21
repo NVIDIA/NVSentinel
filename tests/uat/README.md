@@ -122,6 +122,40 @@ For NVSentinel:
 |----------|---------|-------------|
 | `DELETE_CLUSTER_ON_EXIT` | `false` | Delete cluster after tests complete |
 
+### Optional - GPU Runtime Mode
+
+The syslog tests run a privileged debug pod on the selected GPU node to write
+to `/dev/kmsg` and query `nvidia-smi`. How that pod asks for the NVIDIA driver
+is decided by whether the `nvidia` RuntimeClass exists, which is what admission
+checks:
+
+- RuntimeClass `nvidia` present (`runtimeclass` mode): the pod sets
+  `runtimeClassName: nvidia` and the Container Toolkit runtime hook injects the
+  driver.
+- RuntimeClass `nvidia` absent (`nri` mode): the pod omits `runtimeClassName`
+  and requests the management CDI device with the
+  `nvidia.cdi.k8s.io/container.nvsentinel-debug: management.nvidia.com/gpu=all`
+  annotation. This is the GPU Operator NRI plugin mode
+  (`cdi.nriPluginEnabled=true`), where the operator creates no `nvidia`
+  RuntimeClass and deletes an existing one.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `UAT_GPU_RUNTIME_MODE` | `auto` | `auto` decides from the RuntimeClass as above; `runtimeclass` or `nri` forces a mode. |
+
+In `nri` mode the toolkit's NRI plugin only injects management devices for pods
+in the GPU Operator namespace or in the `NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES`
+environment variable of the `nvidia-container-toolkit` DaemonSet (GPU Operator
+`toolkit.env`). Add `nvsentinel` to that list, or the pod starts without a
+driver and `test_xid_monitoring_syslog_gpu_reset` fails on its `nvidia-smi`
+check with a message naming this variable. This is the same prerequisite as
+`metadata-collector.nriPlugin.enabled`; see
+[GPU Operator NRI plugin mode](../../docs/configuration/metadata-collector.md#gpu-operator-nri-plugin-mode)
+in the metadata-collector configuration. `test_xid_monitoring_syslog` only
+writes to `/dev/kmsg` and needs no driver. Clusters with neither the
+RuntimeClass nor an NRI plugin (GPUCluster/DRA mode, CRI-O without CDI) have no
+way to give the debug pod a driver; the `nvidia-smi` check reports that too.
+
 ## Test Scenarios
 
 ### Test 1: GPU Monitoring via DCGM

@@ -199,6 +199,10 @@ func (p *Publisher) CloseOrWarn() {
 	}
 }
 
+// AcknowledgesStorage reports whether successful Publish calls confirm durable
+// storage. Socket-mode acceptance alone does not provide that guarantee.
+func (p *Publisher) AcknowledgesStorage() bool { return p.direct != nil }
+
 // WaitingOnServer reports whether a batch is pending in direct mode: a caller
 // blocked in Publish is then waiting for the deployment platform connector,
 // not hung, and a monitor's liveness check can stay green while this is true.

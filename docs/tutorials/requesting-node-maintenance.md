@@ -324,6 +324,7 @@ Error from server (Forbidden): error when creating "STDIN": admission webhook "v
 | `spec.healthEvent.version is required` | Set `version: 1`. |
 | `spec.healthEvent.isHealthy must be false for an opening event` | Set `isHealthy: false`. |
 | `spec.startTime must be in the future` | Set a time in the future, or remove `startTime`. |
+| `node "<node-name>" already has an open MaintenanceRequest "<name>"; delete it before creating another` | A node can have only one open MaintenanceRequest. Wait for the open MaintenanceRequest to finish and delete it, then create the new one. |
 | `spec.healthEvent is immutable after creation`, or `spec.healthEvent.<field> is immutable after creation` | Delete the MaintenanceRequest, then create a new one. |
 
 > **Note:** When you delete the MaintenanceRequest, NVSentinel uncordons the node. Pods can start on the node before you create the new MaintenanceRequest.
@@ -335,13 +336,14 @@ Read the reason and the message of the condition:
 ```bash
 kubectl get maintenancerequest "maintenance-${NODE}" \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status} reason={.reason} message={.message}{"\n"}{end}'
-# Expected when another operation holds the node:
-# HealthEventEmitted=False reason=Blocked message=Node <node-name> is locked by another maintenance operation.
+# Expected when a janitor operation holds the node:
+# HealthEventEmitted=False reason=Blocked message=Node <node-name> is locked by another maintenance operation (RebootNode/<name>).
 ```
 
 | Reason | Meaning | Fix |
 | --- | --- | --- |
-| `Blocked` | Another operation holds the lock on the node. Examples are a second MaintenanceRequest or a janitor reboot on the same node. lifecycle-manager tries again every 30 seconds. | Wait for the other operation to complete, or delete the second MaintenanceRequest. |
+| `Blocked` | A janitor operation, such as a reboot, holds the lock on the node. Or a MaintenanceRequest for the node is being deleted and has not yet released the node. lifecycle-manager tries again every 30 seconds. | Wait for the other operation to complete. |
+| `Rejected` | The node already has an open MaintenanceRequest. lifecycle-manager does not send the health event and does not try again. | Delete this MaintenanceRequest. Create it again after the open MaintenanceRequest is deleted. |
 | `EmitFailed` | lifecycle-manager could not publish the health event to platform-connector. lifecycle-manager tries again. | Make sure that platform-connector runs on the same node as lifecycle-manager. |
 
 lifecycle-manager sends the health event through a socket on its own node. Compare the `NODE` column of the two pods:

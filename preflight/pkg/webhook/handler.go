@@ -27,6 +27,8 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // GangRegistration is sent to the controller to register a pod with its gang.
@@ -58,18 +60,20 @@ type Handler struct {
 }
 
 // NewHandler builds a Handler from the preflight config, the namespace-aware
-// gang discoverer resolver, the callback invoked to register a pod with its
-// gang after admission, and the callback that copies the platform connector CA
-// bundle into the pod's namespace (nil when the checks publish to the socket
-// or do not verify the server).
+// gang discoverer resolver, the reader used for DRA GPU detection, the
+// callback invoked to register a pod with its gang after admission, and the
+// callback that copies the platform connector CA bundle into the pod's
+// namespace (nil when the checks publish to the socket or do not verify the
+// server).
 func NewHandler(
 	cfg *config.Config,
 	resolver *gang.DiscovererResolver,
+	draReader client.Reader,
 	onGangRegister GangRegistrationFunc,
 	ensureCA EnsureCAFunc,
 ) *Handler {
 	return &Handler{
-		injector:       NewInjector(cfg, resolver),
+		injector:       NewInjector(cfg, resolver, draReader),
 		onGangRegister: onGangRegister,
 		ensureCA:       ensureCA,
 	}
@@ -143,7 +147,7 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 		pod.Namespace = req.Namespace
 	}
 
-	patch, gangCtx, err := h.injector.InjectInitContainers(ctx, &pod)
+	patch, gangCtx, err := h.injector.InjectInitContainers(withAdmittedPod(ctx, req.Object.Raw), &pod)
 	if err != nil {
 		slog.Error("Failed to inject init containers", "error", err)
 
@@ -224,4 +228,35 @@ func (h *Handler) registerGang(ctx context.Context, pod *corev1.Pod, gangCtx *Ga
 		OwnerReference: gangCtx.OwnerReference,
 		CheckNames:     gangCtx.CheckNames,
 	})
+}
+
+type admittedPodKey struct{}
+
+// withAdmittedPod keeps the pod JSON from the admission request in ctx.
+// Decoding into corev1.Pod drops fields that this client version does not
+// define, such as spec.workloadRef from Kubernetes 1.35.
+func withAdmittedPod(ctx context.Context, raw []byte) context.Context {
+	return context.WithValue(ctx, admittedPodKey{}, raw)
+}
+
+// admittedPodFrom decodes the raw pod that withAdmittedPod stored. It returns
+// nil when ctx has no pod or the pod cannot be decoded.
+func admittedPodFrom(ctx context.Context, namespace string) *unstructured.Unstructured {
+	raw, ok := ctx.Value(admittedPodKey{}).([]byte)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+
+	object := map[string]any{}
+	if err := json.Unmarshal(raw, &object); err != nil {
+		slog.Warn("Failed to decode admitted pod for gang discovery", "error", err)
+		return nil
+	}
+
+	pod := &unstructured.Unstructured{Object: object}
+	if pod.GetNamespace() == "" {
+		pod.SetNamespace(namespace)
+	}
+
+	return pod
 }

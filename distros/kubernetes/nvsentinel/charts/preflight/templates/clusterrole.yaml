@@ -96,3 +96,20 @@ rules:
 {{- end }}
 
 {{- end }}
+---
+# Read access to DRA claims, so the webhook can tell whether a pod gets its
+# GPUs through DRA. Get only: the webhook reads single objects on admission and
+# keeps no informer or cache. It reads claims only for pods that have
+# spec.resourceClaims, so a cluster without DRA never uses this role. Kept
+# outside the condition above, so it does not depend on gang coordination or
+# the CA copy.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "preflight.fullname" . }}-dra
+  labels:
+    {{- include "preflight.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["resource.k8s.io"]
+    resources: ["resourceclaims", "resourceclaimtemplates"]
+    verbs: ["get"]

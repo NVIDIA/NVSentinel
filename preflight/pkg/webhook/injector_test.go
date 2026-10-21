@@ -474,7 +474,7 @@ func TestInjectInitContainers(t *testing.T) {
 			if tt.discoverer != nil {
 				resolver = gang.NewResolver(tt.discoverer, nil)
 			}
-			injector := NewInjector(tt.cfg, resolver)
+			injector := NewInjector(tt.cfg, resolver, nil)
 
 			patches, gangCtx, err := injector.InjectInitContainers(context.Background(), tt.pod)
 			if tt.expectError {
@@ -513,7 +513,7 @@ func TestInjectInitContainers(t *testing.T) {
 func TestBuildInitContainers(t *testing.T) {
 	t.Run("resources mirrored to init containers", func(t *testing.T) {
 		cfg := testConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuEFAPod()
 
 		maxResources := corev1.ResourceList{
@@ -533,7 +533,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("CPU and memory floor applied when not set", func(t *testing.T) {
 		cfg := testConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 
 		containers := injector.buildInitContainers(pod, corev1.ResourceList{
@@ -558,7 +558,7 @@ func TestBuildInitContainers(t *testing.T) {
 					},
 				}},
 		}
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
@@ -571,7 +571,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("common env injected", func(t *testing.T) {
 		cfg := testConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
@@ -585,7 +585,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("gang env not injected without context", func(t *testing.T) {
 		cfg := testGangConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
 			"nvidia.com/gpu": resource.MustParse("8"),
@@ -600,7 +600,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("gang env injected with context", func(t *testing.T) {
 		cfg := testGangConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		gangCtx := &GangContext{GangID: "test-gang", ConfigMapName: "preflight-test-gang"}
 		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
@@ -620,7 +620,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user NCCL env inherited", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.Containers[0].Env = []corev1.EnvVar{
@@ -638,7 +638,7 @@ func TestBuildInitContainers(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
 		cfg.InitContainers[0].InheritUserEnv = new(false)
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.Containers[0].Env = []corev1.EnvVar{
@@ -661,7 +661,7 @@ func TestBuildInitContainers(t *testing.T) {
 				Image: "dcgm:latest",
 				Env:   []corev1.EnvVar{{Name: "NCCL_DEBUG", Value: "WARN"}}},
 		}
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.Containers[0].Env = []corev1.EnvVar{
@@ -678,7 +678,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("user volume mounts inherited", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.VolumeMountPatterns = []string{"nvtcpxo-*"}
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
@@ -696,7 +696,7 @@ func TestBuildInitContainers(t *testing.T) {
 		cfg := testConfig()
 		cfg.VolumeMountPatterns = []string{"nvtcpxo-*"}
 		cfg.InitContainers[0].InheritUserVolumeMounts = new(false)
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
@@ -712,7 +712,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("DRA claims mirrored when enabled", func(t *testing.T) {
 		cfg := testGangConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.ResourceClaims = []corev1.PodResourceClaim{
@@ -733,7 +733,7 @@ func TestBuildInitContainers(t *testing.T) {
 	t.Run("DRA claims not mirrored when disabled", func(t *testing.T) {
 		cfg := testGangConfig()
 		cfg.GangCoordination.MirrorResourceClaims = new(false)
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.ResourceClaims = []corev1.PodResourceClaim{
@@ -750,7 +750,7 @@ func TestBuildInitContainers(t *testing.T) {
 
 	t.Run("DRA claims not mirrored without gang context", func(t *testing.T) {
 		cfg := testGangConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 
 		pod := gpuPod()
 		pod.Spec.ResourceClaims = []corev1.PodResourceClaim{
@@ -808,7 +808,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("no annotation uses defaultEnabled", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 
 		selected, err := injector.selectInitContainers(pod)
@@ -820,7 +820,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("annotation selects subset", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
 			PreflightChecksAnnotation: "preflight-dcgm-diag",
@@ -834,7 +834,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("annotation overrides defaultEnabled false", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
 			PreflightChecksAnnotation: "preflight-nccl-allreduce",
@@ -848,7 +848,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("empty annotation disables all checks", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
 			PreflightChecksAnnotation: "",
@@ -861,7 +861,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("unknown check name rejects admission", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
 			PreflightChecksAnnotation: "preflight-dcgm-diag,bogus-check",
@@ -875,7 +875,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("annotation order controls injection order", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 		// Reverse of chart order — should inject in annotation order.
 		pod.Annotations = map[string]string{
@@ -891,7 +891,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("comma-only annotation disables all checks", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
 			PreflightChecksAnnotation: " , , ",
@@ -904,7 +904,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("annotation with spaces and trailing commas", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
 			PreflightChecksAnnotation: " , preflight-dcgm-diag , preflight-nccl-loopback , ",
@@ -917,7 +917,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("annotation with duplicates returns error", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
 			PreflightChecksAnnotation: "preflight-dcgm-diag,preflight-dcgm-diag",
@@ -931,7 +931,7 @@ func TestSelectInitContainers(t *testing.T) {
 
 	t.Run("unknown check name lists configured checks in error", func(t *testing.T) {
 		cfg := multiConfig()
-		injector := NewInjector(cfg, nil)
+		injector := NewInjector(cfg, nil, nil)
 		pod := gpuPod()
 		pod.Annotations = map[string]string{
 			PreflightChecksAnnotation: "typo-check",
@@ -1083,7 +1083,7 @@ func healthPublishInsecureConfig() *config.Config {
 func injectedContainers(t *testing.T, cfg *config.Config, pod *corev1.Pod) ([]corev1.Container, []PatchOperation) {
 	t.Helper()
 
-	patches, _, err := NewInjector(cfg, nil).InjectInitContainers(context.Background(), pod)
+	patches, _, err := NewInjector(cfg, nil, nil).InjectInitContainers(context.Background(), pod)
 	require.NoError(t, err)
 
 	p := findPatchByPath(patches, "/spec/initContainers")
@@ -1339,7 +1339,7 @@ func TestValidateHealthPublishCAVolume(t *testing.T) {
 			{Name: HealthPublishCAConfigMapName, EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		}
 
-		_, _, err := NewInjector(healthPublishConfig(), nil).InjectInitContainers(context.Background(), pod)
+		_, _, err := NewInjector(healthPublishConfig(), nil, nil).InjectInitContainers(context.Background(), pod)
 		require.Error(t, err)
 	})
 
@@ -1739,7 +1739,7 @@ func TestInjectInitContainers_NamespaceScopedDiscovery_SelectsNamespaceDiscovere
 	resolver := gang.NewResolver(defaultDisc, map[string]gang.GangDiscoverer{
 		"team-a": volcanoDisc,
 	})
-	injector := NewInjector(cfg, resolver)
+	injector := NewInjector(cfg, resolver, nil)
 
 	tests := []struct {
 		name         string

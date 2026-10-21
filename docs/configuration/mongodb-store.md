@@ -232,6 +232,60 @@ mongodb-store:
       size: "100Gi"
 ```
 
+### Open-file limit (node prerequisite)
+
+The nodes that run MongoDB must give containers a soft open-file limit (`RLIMIT_NOFILE`) of at least 64000. This applies to Bitnami and to the Percona Operator. The chart does not set this limit. The container gets it from the container runtime on the node.
+
+mongod uses one file descriptor for each client connection, and it accepts connections only up to about 80 percent of its soft limit. The number of connections grows with the cluster, because each platform-connectors pod has its own connection pool. If mongod runs out of file descriptors, it crashes, and every module that reads the datastore stops. This happens when the number of connections gets near the limit. That number goes up when the cluster grows, when more pods connect, or when connection pools get larger. A cluster can therefore run correctly for a long time before it fails.
+
+64000 is the MongoDB minimum. Each platform-connectors pod opens about 3 connections, so each node adds about 3 connections. A soft limit of 64000 lets mongod accept about 51000 connections, which is enough for about 17000 nodes. For clusters above about 15000 nodes, use a higher limit, such as the `1048576` in the drop-in below.
+
+With the [deployment platform connector](platform-connectors.md#deployment-platform-connector), the number of connections from platform connectors stays fixed and does not grow with the number of nodes, after you also set `platformConnector.daemonset.enabled: false`. While the DaemonSet runs, each of its pods opens its own connections, also when no publisher sends events to it. The node still needs a soft limit of at least 64000, because mongod also uses file descriptors for its data files.
+
+Many node images already set a high limit. Some do not. For example, Ubuntu images built with `kubernetes-sigs/image-builder` with default settings give containers a soft limit of 1024. image-builder installs the containerd `LimitNOFILE` drop-in only on Flatcar and Azure Linux. On other images, build with `containerd_enable_limit_no_file: true`.
+
+On other nodes, set `LimitNOFILE` in a systemd drop-in for the container runtime:
+
+```ini
+# /etc/systemd/system/containerd.service.d/limit-nofile.conf
+[Service]
+LimitNOFILE=1048576
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart containerd
+```
+
+The new limit applies only to pods that are created after the change. A container that restarts in an existing pod keeps the old limit. After you change the nodes, delete the MongoDB pods one at a time, so that each pod is created again.
+
+To check the limits that mongod runs with:
+
+```bash
+# Bitnami
+kubectl exec -n nvsentinel mongodb-0 -c mongodb -- bash -c 'grep "Max open files" /proc/$(pgrep -x mongod)/limits'
+
+# Percona Operator
+kubectl exec -n nvsentinel mongodb-rs0-0 -c mongod -- bash -c 'grep "Max open files" /proc/$(pgrep -x mongod)/limits'
+```
+
+The first number is the soft limit. mongod also logs `Soft rlimits for open file descriptors too low` at startup when the soft limit is below its recommended minimum.
+
+To find the problem before mongod fails, monitor `mongodb_ss_connections` from the [metrics exporter](#metrics-exporter). `conn_type="available"` is the number of connections that mongod can still accept. With a soft limit of 1024, `available` plus `current` is about 819. This alert fires when less than 20 percent of the connection capacity is free:
+
+```promql
+mongodb_ss_connections{conn_type="available"}
+  / ignoring(conn_type)
+(
+  mongodb_ss_connections{conn_type="available"}
+  + ignoring(conn_type)
+  mongodb_ss_connections{conn_type="current"}
+)
+< 0.2
+```
+
+If mongod already fails, see [MongoDB Connection Error](../runbooks/mongodb-connection-error.md#issue-4-open-file-limit-too-low).
+
 ### Oplog size
 
 `oplogSizeMB` (default `990`, MongoDB's minimum) is the replica-set oplog size in megabytes. Helm does **not** compute this from the PVC. `990` is Mongo's floor, not a 24-hour window.

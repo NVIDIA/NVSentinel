@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -69,10 +70,15 @@ const (
 )
 
 // checkPodsTerminatedFn is a function signature used for checking if managed service pods have terminated.
-type checkPodsTerminatedFn func(ctx context.Context, nodeName string) (bool, error)
+type checkPodsTerminatedFn func(ctx context.Context, nodeName string, apps []gpuservices.AppSpec) (bool, error)
 
 // checkPodsReadyFn is a function signature used for checking if managed service pods are ready after restoration.
-type checkPodsReadyFn func(ctx context.Context, nodeName string) (bool, error)
+type checkPodsReadyFn func(ctx context.Context, nodeName string, apps []gpuservices.AppSpec) (bool, error)
+
+// runningAppsFn is a function signature used for finding the managed services that have a pod on a node.
+type runningAppsFn func(
+	ctx context.Context, nodeName string, apps []gpuservices.AppSpec,
+) ([]gpuservices.AppSpec, error)
 
 // GPUResetReconciler reconciles a GPUReset object
 type GPUResetReconciler struct {
@@ -89,6 +95,9 @@ type GPUResetReconciler struct {
 	checkPodsTerminatedFn checkPodsTerminatedFn
 	// checkPodsReadyFn is a function pointer for checking pod readiness status, allowing for mocking in tests.
 	checkPodsReadyFn checkPodsReadyFn
+	// runningAppsFn is a function pointer for finding the managed services that run on a node, allowing for mocking
+	// in tests.
+	runningAppsFn runningAppsFn
 	// NodeLock provides node-level locking across Janitor controllers
 	NodeLock      distributedlock.NodeLock
 	LockNamespace string
@@ -124,8 +133,12 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	reconcileDelete := !gpuReset.DeletionTimestamp.IsZero()
 	completedReconciling := gpuReset.Status.CompletionTime != nil
+	// A reset that failed after stopping services still owes the node its labels: only the janitor writes them
+	// back. Keep the lock and the restoration going until they are written; held labels are waited on, never
+	// overwritten.
+	restorePending := restorationPending(&gpuReset)
 
-	if !completedReconciling || reconcileDelete {
+	if !completedReconciling || reconcileDelete || restorePending {
 		// Start or retrieve the long-lived session span that covers the entire GPU reset lifecycle.
 		// Per-reconcile spans are created as children of this session span.
 		sessionCtx, _ := r.startResetSessionIfNeeded(ctx, crKey, traceID, spanID)
@@ -173,7 +186,16 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return result, err
 		}
 
-		result, err := r.reconcileHelper(ctx, &gpuReset)
+		var (
+			result ctrl.Result
+			err    error
+		)
+
+		if completedReconciling {
+			result, err = r.restoreServices(ctx, &gpuReset)
+		} else {
+			result, err = r.reconcileHelper(ctx, &gpuReset)
+		}
 		// We will always re-queue the object and check if Unlock is needed on the next reconcile rather than
 		// re-fetch the object or require reconcileHelper to specify it completed reconciling. If the controller
 		// forces a re-queue by returning an error or setting a RequeueAfter, we will respect that re-queue behavior,
@@ -242,6 +264,12 @@ func (r *GPUResetReconciler) reconcileHelper(ctx context.Context, gr *v1alpha1.G
 		return r.isReady(ctx, gr)
 	}
 
+	if recorded, err := r.ensureManagedServicesRecord(ctx, gr); err != nil {
+		return ctrl.Result{}, err
+	} else if recorded {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+
 	if !meta.IsStatusConditionTrue(gr.Status.Conditions, string(v1alpha1.ServicesTornDown)) {
 		return r.tearDownServices(ctx, gr)
 	}
@@ -286,6 +314,7 @@ func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Set concrete implementations for checking pod status, which can be overridden in tests.
 	r.checkPodsTerminatedFn = r.checkPodsTerminated
 	r.checkPodsReadyFn = r.checkPodsReady
+	r.runningAppsFn = r.runningApps
 
 	// Initialize NodeLock for distributed locking across maintenance operations
 	r.NodeLock = distributedlock.NewNodeLock(
@@ -359,8 +388,14 @@ func (r *GPUResetReconciler) reconcileDelete(ctx context.Context, gr *v1alpha1.G
 	managerName := r.serviceManager.Name
 
 	if controllerutil.ContainsFinalizer(gr, gpuResetFinalizer) {
-		if len(r.serviceManager.Spec.Apps) == 0 {
-			log.V(1).Info("GPU services manager has no apps specified, skipping service restoration", "manager",
+		if recorded, err := r.ensureManagedServicesRecord(ctx, gr); err != nil {
+			return ctrl.Result{}, err
+		} else if recorded {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+
+		if len(r.managedApps(ctx, gr)) == 0 {
+			log.V(1).Info("No managed services were stopped, skipping service restoration", "manager",
 				managerName, "node", nodeName)
 			controllerutil.RemoveFinalizer(gr, gpuResetFinalizer)
 
@@ -391,6 +426,10 @@ func (r *GPUResetReconciler) reconcileDelete(ctx context.Context, gr *v1alpha1.G
 
 				return ctrl.Result{}, err
 			}
+
+			// The status write above leaves gr stale; the finalizer removal below updates the object, so let the
+			// next reconcile continue from a fresh read.
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 
 		if res, err := r.restoreServices(ctx, gr); err != nil || res.RequeueAfter > 0 {
@@ -464,12 +503,7 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 
 	currentCond := meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.ServicesTornDown))
 	if currentCond == nil {
-		if err := r.updateCondition(ctx, gr, v1alpha1.ServicesTornDown, metav1.ConditionFalse,
-			v1alpha1.ReasonTearingDownServices, fmt.Sprintf("Removing %s managed services", managerName)); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		return ctrl.Result{}, nil
+		return r.startTearDown(ctx, gr)
 	}
 
 	teardownTimeout := r.serviceManager.Spec.TeardownTimeout
@@ -512,8 +546,18 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 	nodeToUpdate := node.DeepCopy()
 	nodeUpdated := false
 
+	apps := r.managedApps(ctx, gr)
+
+	// The teardown timeout above bounds this wait.
+	if held := heldLabels(apps, node.Labels); len(held) > 0 {
+		log.Info("Waiting for node labels held by another controller before disabling managed services",
+			"node", node.Name, "manager", managerName, "nodeLabels", held, "recheck_after", 3*time.Second)
+
+		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+	}
+
 	// Set node labels to disable managed services
-	for _, app := range r.serviceManager.Spec.Apps {
+	for _, app := range apps {
 		if value, exists := nodeToUpdate.Labels[app.NodeLabel]; !exists || value != app.DisabledValue {
 			log.V(1).Info("Setting node label to disable managed services", "node", node.Name, "manager", managerName,
 				"label", app.NodeLabel, "value", app.DisabledValue)
@@ -528,7 +572,16 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 	}
 
 	if nodeUpdated {
-		if err := r.Patch(ctx, nodeToUpdate, client.MergeFrom(node)); err != nil {
+		// The optimistic lock makes the patch fail if the node changed after the held-label check above, so a
+		// label another controller took in the meantime is never overwritten. The next reconcile re-reads the node.
+		patch := client.MergeFromWithOptions(node, client.MergeFromWithOptimisticLock{})
+		if err := r.Patch(ctx, nodeToUpdate, patch); err != nil {
+			if apierrors.IsConflict(err) {
+				log.Info("Node changed since it was read, retrying", "node", node.Name)
+
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+
 			span.SetAttributes(
 				attribute.String("janitor.error.type", "node_update_failed"),
 				attribute.String("janitor.error.message", err.Error()),
@@ -545,7 +598,7 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 	}
 
 	// Wait for pods to terminate
-	podsAreGone, err := r.checkPodsTerminatedFn(ctx, gr.Spec.NodeName)
+	podsAreGone, err := r.checkPodsTerminatedFn(ctx, gr.Spec.NodeName, apps)
 	if err != nil {
 		span.SetAttributes(
 			attribute.String("janitor.error.type", "pod_termination_check_failed"),
@@ -577,6 +630,205 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 	log.Info("Teardown of managed service pods complete", "node", gr.Spec.NodeName, "manager", managerName)
 
 	return ctrl.Result{}, nil
+}
+
+// startTearDown finds the managed services that have a pod on the node and records them in the status, in the
+// same status update that starts the teardown. Only these services are stopped and later restored. The node labels
+// of other services do not change. When no managed service pod runs on the node, the teardown is skipped.
+func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPUReset) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+	managerName := r.serviceManager.Name
+
+	grWithServices := gr.DeepCopy()
+
+	if grWithServices.Status.ManagedServices == nil {
+		// A missing node has no pods. Check the node first, so that the reset fails instead of skipping the teardown.
+		node, err := r.getNode(ctx, gr.Spec.NodeName)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return r.reconcileTerminalFailure(ctx, gr, v1alpha1.NodeNotFound,
+					"Target node for GPU reset was not found")
+			}
+
+			return ctrl.Result{}, fmt.Errorf("failed to get node %s for service teardown: %w", gr.Spec.NodeName, err)
+		}
+
+		running, err := r.runningAppsFn(ctx, gr.Spec.NodeName, r.serviceManager.Spec.Apps)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to find %s managed services on node %s: %w",
+				managerName, gr.Spec.NodeName, err)
+		}
+
+		if res, wait, err := r.waitForHeldLabels(ctx, gr, node.Labels, "the teardown",
+			v1alpha1.ReasonServiceTeardownTimeoutExceeded); wait {
+			return res, err
+		}
+
+		nodeLabels := make([]string, 0, len(running))
+		for _, app := range running {
+			nodeLabels = append(nodeLabels, app.NodeLabel)
+		}
+
+		grWithServices.Status.ManagedServices = &v1alpha1.ManagedServicesStatus{NodeLabels: nodeLabels}
+
+		log.Info("Found managed services on node", "node", gr.Spec.NodeName, "manager", managerName,
+			"nodeLabels", nodeLabels)
+	}
+
+	if len(r.managedApps(ctx, grWithServices)) == 0 {
+		return ctrl.Result{}, r.updateCondition(ctx, grWithServices, v1alpha1.ServicesTornDown, metav1.ConditionTrue,
+			v1alpha1.ReasonSkipped, "No managed service pods run on the node")
+	}
+
+	return ctrl.Result{}, r.updateCondition(ctx, grWithServices, v1alpha1.ServicesTornDown, metav1.ConditionFalse,
+		v1alpha1.ReasonTearingDownServices, fmt.Sprintf("Removing %s managed services", managerName))
+}
+
+// managedApps returns the managed services that the controller stops and restores for the GPUReset: the ones
+// recorded in the status when the teardown started. The record is authoritative for the rest of the reset. A
+// GPUReset without a record has stopped nothing yet; ensureManagedServicesRecord fills in the record for a
+// GPUReset torn down by a janitor version that kept none before any of this function's callers run.
+func (r *GPUResetReconciler) managedApps(ctx context.Context, gr *v1alpha1.GPUReset) []gpuservices.AppSpec {
+	if gr.Status.ManagedServices == nil {
+		return nil
+	}
+
+	configured := r.serviceManager.Spec.Apps
+	recorded := sets.New(gr.Status.ManagedServices.NodeLabels...)
+	apps := make([]gpuservices.AppSpec, 0, recorded.Len())
+
+	for _, app := range configured {
+		if recorded.Has(app.NodeLabel) {
+			apps = append(apps, app)
+			recorded.Delete(app.NodeLabel)
+		}
+	}
+
+	if recorded.Len() > 0 {
+		slog.WarnContext(ctx, "GPUReset records managed services that are not configured; ignoring them",
+			"gpureset", gr.Name, "node", gr.Spec.NodeName, "nodeLabels", sets.List(recorded))
+	}
+
+	return apps
+}
+
+// waitForHeldLabels requeues while any configured operand label is held by another controller, bounded by the
+// GPUReset timeout. Every configured operand is checked, not only the ones with a pod on the node: a driver upgrade
+// holds the labels of all operands and removes their pods, and the reset must not run against a driver that is
+// being reloaded. wait is true when the caller must return res and err.
+func (r *GPUResetReconciler) waitForHeldLabels(
+	ctx context.Context,
+	gr *v1alpha1.GPUReset,
+	nodeLabels map[string]string,
+	step string,
+	reason v1alpha1.GPUResetReason,
+) (ctrl.Result, bool, error) {
+	log := log.FromContext(ctx)
+
+	held := heldLabels(r.serviceManager.Spec.Apps, nodeLabels)
+	if len(held) == 0 {
+		return ctrl.Result{}, false, nil
+	}
+
+	if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
+		res, err := r.reconcileTerminalFailure(ctx, gr, reason,
+			fmt.Sprintf("Node labels %v stayed held by another controller for the GPUReset timeout", held))
+
+		return res, true, err
+	}
+
+	log.Info("Waiting for node labels held by another controller before "+step, "node",
+		gr.Spec.NodeName, "manager", r.serviceManager.Name, "nodeLabels", held, "recheck_after", 3*time.Second)
+
+	return ctrl.Result{RequeueAfter: 3 * time.Second}, true, nil
+}
+
+// restorationPending reports whether managed services were stopped and their restoration has not ended: the
+// record holds labels and the ServicesRestored condition is absent or still in progress.
+func restorationPending(gr *v1alpha1.GPUReset) bool {
+	if gr.Status.ManagedServices == nil || len(gr.Status.ManagedServices.NodeLabels) == 0 {
+		return false
+	}
+
+	cond := meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.ServicesRestored))
+
+	return cond == nil || (cond.Status != metav1.ConditionTrue && cond.Reason == string(v1alpha1.ReasonRestoringServices))
+}
+
+// heldLabels returns the node labels of the apps that hold a value the janitor does not own: neither the enabled
+// nor the disabled value. The GPU Operator upgrade controller sets paused-for-driver-upgrade on them during a driver
+// upgrade. An absent label is not held.
+func heldLabels(apps []gpuservices.AppSpec, nodeLabels map[string]string) []string {
+	var held []string
+
+	for _, app := range apps {
+		if value, ok := nodeLabels[app.NodeLabel]; ok && value != app.EnabledValue && value != app.DisabledValue {
+			held = append(held, app.NodeLabel)
+		}
+	}
+
+	return held
+}
+
+// ensureManagedServicesRecord gives a GPUReset that a janitor version without the record tore down the record it
+// is missing, once, so that every later step works from a stable set exactly like a GPUReset started by this
+// version. It returns true when it wrote the record; the caller requeues and lets the next reconcile proceed.
+//
+// The set is taken from the node at the moment this version first sees the GPUReset. If the teardown has not
+// finished yet (the older janitor set the condition but may not have patched the node), the operand pods are
+// still there and the normal pod-based detection applies. If the teardown has finished, the pods are gone and
+// the node labels are the evidence: every configured service whose label holds its disabled value was stopped.
+// Reading the labels on every pass instead would not be stable, because the restore flips them back.
+func (r *GPUResetReconciler) ensureManagedServicesRecord(ctx context.Context, gr *v1alpha1.GPUReset) (bool, error) {
+	if gr.Status.ManagedServices != nil {
+		return false, nil
+	}
+
+	tornDown := meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.ServicesTornDown))
+	if tornDown == nil {
+		return false, nil
+	}
+
+	log := log.FromContext(ctx)
+	configured := r.serviceManager.Spec.Apps
+	nodeLabels := make([]string, 0, len(configured))
+
+	node, err := r.getNode(ctx, gr.Spec.NodeName)
+
+	switch {
+	case apierrors.IsNotFound(err):
+		// Node is gone: nothing can be restored on it, record an empty set.
+	case err != nil:
+		return false, fmt.Errorf("failed to get node %s to record its managed services: %w", gr.Spec.NodeName, err)
+	case tornDown.Status != metav1.ConditionTrue:
+		running, err := r.runningAppsFn(ctx, gr.Spec.NodeName, configured)
+		if err != nil {
+			return false, fmt.Errorf("failed to find %s managed services on node %s: %w",
+				r.serviceManager.Name, gr.Spec.NodeName, err)
+		}
+
+		for _, app := range running {
+			nodeLabels = append(nodeLabels, app.NodeLabel)
+		}
+	default:
+		for _, app := range configured {
+			if value, ok := node.Labels[app.NodeLabel]; ok && value == app.DisabledValue {
+				nodeLabels = append(nodeLabels, app.NodeLabel)
+			}
+		}
+	}
+
+	updatedGR := gr.DeepCopy()
+	updatedGR.Status.ManagedServices = &v1alpha1.ManagedServicesStatus{NodeLabels: nodeLabels}
+
+	if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {
+		return false, fmt.Errorf("failed to record managed services for GPUReset %s: %w", gr.Name, err)
+	}
+
+	log.Info("Recorded the managed services of a GPUReset that was torn down without a record",
+		"node", gr.Spec.NodeName, "manager", r.serviceManager.Name, "nodeLabels", nodeLabels)
+
+	return true, nil
 }
 
 // createJob ensures the GPU reset Job is claimed in the status. It first sets
@@ -735,9 +987,11 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		nodeExists = false
 	}
 
-	if len(r.serviceManager.Spec.Apps) == 0 || !nodeExists {
-		if len(r.serviceManager.Spec.Apps) == 0 {
-			log.V(1).Info("GPU services manager has no apps specified, skipping service restoration", "manager",
+	apps := r.managedApps(ctx, gr)
+
+	if len(apps) == 0 || !nodeExists {
+		if len(apps) == 0 {
+			log.V(1).Info("No managed services were stopped, skipping service restoration", "manager",
 				managerName, "node", nodeName)
 		}
 
@@ -760,6 +1014,15 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 			return ctrl.Result{}, err
 		}
 
+		// Restoration has only started. Callers, in particular the deletion finalizer, treat a result
+		// without RequeueAfter as "restoration complete", so ask for a requeue like every other
+		// in-progress return of this function.
+		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
+	}
+
+	// Only the deletion finalizer reaches this point with a finished restoration. There is nothing left to do,
+	// and the pods must not be waited for again.
+	if currentCond.Status == metav1.ConditionTrue {
 		return ctrl.Result{}, nil
 	}
 
@@ -770,7 +1033,13 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		timeSinceInProgress = time.Since(currentCond.LastTransitionTime.Time)
 	}
 
-	if timeSinceInProgress > restoreTimeout {
+	// Once the reset has failed, the restoration is no longer bounded: the labels must still go back, and a
+	// label held by another controller is waited on. The pods are not waited for any more.
+	// After the early return above, a completed GPUReset reaching this point is a failed reset whose restoration
+	// is unfinished; the phase cannot be used, it reads Terminating during deletion.
+	failed := gr.Status.CompletionTime != nil
+
+	if timeSinceInProgress > restoreTimeout && !failed {
 		log.Error(nil, "Managed service restoration timeout exceeded", "manager", managerName, "timeout", restoreTimeout)
 
 		span.SetAttributes(
@@ -779,15 +1048,38 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		)
 		tracing.RecordError(span, errors.New("restore timeout exceeded"))
 
-		return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonRestoreTimeoutExceeded,
-			fmt.Sprintf("failed to restore %s managed services within the timeout period", managerName))
+		if res, err := r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonRestoreTimeoutExceeded,
+			fmt.Sprintf("failed to restore %s managed services within the timeout period", managerName)); err != nil {
+			return res, err
+		}
+
+		// The labels are still owed. The next reconcile continues the restoration without the timeout.
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+
+	// The restore timeout above bounds this wait. After the failure, one more GPUReset timeout bounds it: a label
+	// that is never released must not hold the node lock forever, so the janitor gives up on it, leaves it as it
+	// is, and still restores the labels it owns.
+	held := heldLabels(apps, node.Labels)
+	givenUp := len(held) > 0 && failed && time.Since(gr.Status.CompletionTime.Time) > r.Config.Timeout
+
+	if len(held) > 0 && !givenUp {
+		log.Info("Waiting for node labels held by another controller before re-enabling managed services",
+			"node", node.Name, "manager", managerName, "nodeLabels", held, "recheck_after", 3*time.Second)
+
+		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 	}
 
 	nodeToUpdate := node.DeepCopy()
 	nodeUpdated := false
+	heldSet := sets.New(held...)
 
 	// Set node labels back to enabled value to restore services
-	for _, app := range r.serviceManager.Spec.Apps {
+	for _, app := range apps {
+		if heldSet.Has(app.NodeLabel) {
+			continue
+		}
+
 		if value, exists := nodeToUpdate.Labels[app.NodeLabel]; !exists || value != app.EnabledValue {
 			log.V(1).Info("Setting node label to enable managed service", "node", node.Name, "manager", managerName,
 				"label", app.NodeLabel, "value", app.EnabledValue)
@@ -802,7 +1094,16 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 	}
 
 	if nodeUpdated {
-		if err := r.Patch(ctx, nodeToUpdate, client.MergeFrom(node)); err != nil {
+		// The optimistic lock makes the patch fail if the node changed after the held-label check above, so a
+		// label another controller took in the meantime is never overwritten. The next reconcile re-reads the node.
+		patch := client.MergeFromWithOptions(node, client.MergeFromWithOptimisticLock{})
+		if err := r.Patch(ctx, nodeToUpdate, patch); err != nil {
+			if apierrors.IsConflict(err) {
+				log.Info("Node changed since it was read, retrying", "node", node.Name)
+
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+
 			span.SetAttributes(
 				attribute.String("janitor.error.type", "node_update_failed"),
 				attribute.String("janitor.error.message", err.Error()),
@@ -818,8 +1119,38 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 
+	if givenUp {
+		log.Error(nil, "Giving up on node labels held by another controller; they were not restored",
+			"node", node.Name, "manager", managerName, "nodeLabels", held)
+
+		if err := r.updateCondition(ctx, gr, v1alpha1.ServicesRestored, metav1.ConditionFalse,
+			v1alpha1.ReasonRestoreTimeoutExceeded, fmt.Sprintf("Node labels %v are held by another controller "+
+				"and were not restored", held)); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	if failed {
+		// The labels are back. Record it under the reason the reset failed with, so the condition ends the pending
+		// restoration without claiming the pods are Ready.
+		reason := v1alpha1.ReasonRestoreTimeoutExceeded
+		if complete := meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.Complete)); complete != nil {
+			reason = v1alpha1.GPUResetReason(complete.Reason)
+		}
+
+		if err := r.updateCondition(ctx, gr, v1alpha1.ServicesRestored, metav1.ConditionFalse, reason,
+			fmt.Sprintf("%s managed service node labels restored after the reset failed; pods not waited for",
+				managerName)); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
 	// Wait for pods to become ready
-	podsReady, err := r.checkPodsReadyFn(ctx, node.Name)
+	podsReady, err := r.checkPodsReadyFn(ctx, node.Name, apps)
 	if err != nil {
 		span.SetAttributes(
 			attribute.String("janitor.error.type", "pod_readiness_check_failed"),
@@ -949,11 +1280,26 @@ func (r *GPUResetReconciler) getOrCreateJob(ctx context.Context, gr *v1alpha1.GP
 
 	// Job NOT found. Create it.
 
-	// Drift check: verify managed service pods are NOT running
 	nodeName := gr.Spec.NodeName
 	managerName := r.serviceManager.Name
 
-	podsAreGone, err := r.checkPodsTerminatedFn(ctx, nodeName)
+	// A driver upgrade that started after the teardown holds the labels of the operands the reset did not stop.
+	// The reset must not run against a driver that is being reloaded.
+	node, err := r.getNode(ctx, nodeName)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get node %s before creating the reset job: %w", nodeName, err)
+	}
+
+	if res, wait, err := r.waitForHeldLabels(ctx, gr, node.Labels, "creating the reset job",
+		v1alpha1.ReasonResetJobCreationFailed); wait {
+		return res, err
+	}
+
+	// Drift check: verify managed service pods are NOT running
+
+	apps := r.managedApps(ctx, gr)
+
+	podsAreGone, err := r.checkPodsTerminatedFn(ctx, nodeName, apps)
 	if err != nil {
 		span.SetAttributes(
 			attribute.String("janitor.error.type", "check_terminated_pods_error"),
@@ -1126,37 +1472,26 @@ func (r *GPUResetReconciler) newGpuResetJob(ctx context.Context, gr *v1alpha1.GP
 	return job, nil
 }
 
-// checkPodsTerminated verifies that all pods belonging to the managed services
+// checkPodsTerminated verifies that all pods belonging to the given managed services
 // have been successfully terminated on the target node.
-func (r *GPUResetReconciler) checkPodsTerminated(ctx context.Context, nodeName string) (bool, error) {
+func (r *GPUResetReconciler) checkPodsTerminated(
+	ctx context.Context,
+	nodeName string,
+	apps []gpuservices.AppSpec,
+) (bool, error) {
 	log := log.FromContext(ctx)
-
-	if len(r.serviceManager.Spec.Apps) == 0 {
-		return true, nil
-	}
-
 	managerName := r.serviceManager.Name
 
-	for _, app := range r.serviceManager.Spec.Apps {
-		finalSelectorMap := make(map[string]string)
-		maps.Copy(finalSelectorMap, r.serviceManager.Spec.ManagerSelector)
-		maps.Copy(finalSelectorMap, app.AppSelector)
-
-		listOptions := []client.ListOption{
-			client.InNamespace(r.serviceManager.Spec.Namespace),
-			client.MatchingLabels(finalSelectorMap),
-			client.MatchingFields{"spec.nodeName": nodeName},
-		}
-
-		pods := &corev1.PodList{}
-		if err := r.List(ctx, pods, listOptions...); err != nil {
+	for _, app := range apps {
+		pods, selector, err := r.listAppPods(ctx, nodeName, app)
+		if err != nil {
 			return false, fmt.Errorf("failed to list %s pods for termination check for node %s: %w",
 				managerName, nodeName, err)
 		}
 
 		if len(pods.Items) > 0 {
 			log.V(1).Info("Managed service pod still running on node", "node", nodeName, "manager", managerName,
-				"count", len(pods.Items), "selector", finalSelectorMap)
+				"count", len(pods.Items), "selector", selector)
 
 			return false, nil
 		}
@@ -1165,37 +1500,26 @@ func (r *GPUResetReconciler) checkPodsTerminated(ctx context.Context, nodeName s
 	return true, nil
 }
 
-// checkPodsReady verifies that all pods belonging to the managed services
+// checkPodsReady verifies that all pods belonging to the given managed services
 // have been successfully re-deployed and are in a Ready state on the target node.
-func (r *GPUResetReconciler) checkPodsReady(ctx context.Context, nodeName string) (bool, error) {
+func (r *GPUResetReconciler) checkPodsReady(
+	ctx context.Context,
+	nodeName string,
+	apps []gpuservices.AppSpec,
+) (bool, error) {
 	log := log.FromContext(ctx)
-
-	if len(r.serviceManager.Spec.Apps) == 0 {
-		return true, nil
-	}
-
 	managerName := r.serviceManager.Name
 
-	for _, app := range r.serviceManager.Spec.Apps {
-		finalSelectorMap := make(map[string]string)
-		maps.Copy(finalSelectorMap, r.serviceManager.Spec.ManagerSelector)
-		maps.Copy(finalSelectorMap, app.AppSelector)
-
-		listOptions := []client.ListOption{
-			client.InNamespace(r.serviceManager.Spec.Namespace),
-			client.MatchingLabels(finalSelectorMap),
-			client.MatchingFields{"spec.nodeName": nodeName},
-		}
-
-		pods := &corev1.PodList{}
-		if err := r.List(ctx, pods, listOptions...); err != nil {
+	for _, app := range apps {
+		pods, selector, err := r.listAppPods(ctx, nodeName, app)
+		if err != nil {
 			return false, fmt.Errorf("failed to list %s managed service pods for ready check for node %s: %w",
 				managerName, nodeName, err)
 		}
 
 		if len(pods.Items) == 0 {
 			log.V(1).Info("Waiting for managed service pod to be created", "node", nodeName, "manager", managerName,
-				"selector", finalSelectorMap)
+				"selector", selector)
 
 			return false, nil
 		}
@@ -1221,6 +1545,51 @@ func (r *GPUResetReconciler) checkPodsReady(ctx context.Context, nodeName string
 	}
 
 	return true, nil
+}
+
+// runningApps returns the managed services that have at least one pod on the target node, in any phase.
+func (r *GPUResetReconciler) runningApps(
+	ctx context.Context,
+	nodeName string,
+	apps []gpuservices.AppSpec,
+) ([]gpuservices.AppSpec, error) {
+	running := make([]gpuservices.AppSpec, 0, len(apps))
+
+	for _, app := range apps {
+		pods, _, err := r.listAppPods(ctx, nodeName, app)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list %s managed service pods for node %s: %w",
+				r.serviceManager.Name, nodeName, err)
+		}
+
+		if len(pods.Items) > 0 {
+			running = append(running, app)
+		}
+	}
+
+	return running, nil
+}
+
+// listAppPods lists the pods of one managed service on the target node. It also returns the label selector it used.
+func (r *GPUResetReconciler) listAppPods(
+	ctx context.Context,
+	nodeName string,
+	app gpuservices.AppSpec,
+) (*corev1.PodList, map[string]string, error) {
+	selector := make(map[string]string)
+	maps.Copy(selector, r.serviceManager.Spec.ManagerSelector)
+	maps.Copy(selector, app.AppSelector)
+
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods,
+		client.InNamespace(r.serviceManager.Spec.Namespace),
+		client.MatchingLabels(selector),
+		client.MatchingFields{"spec.nodeName": nodeName},
+	); err != nil {
+		return nil, selector, fmt.Errorf("failed to list pods with selector %v: %w", selector, err)
+	}
+
+	return pods, selector, nil
 }
 
 // reconcileTerminalFailure updates the GPUReset status to a terminal failed state

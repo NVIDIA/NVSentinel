@@ -28,6 +28,9 @@ data:
     [charDeviceCheck]
     issm = {{ .Values.charDeviceCheck.issm | quote }}
 
+    [stateCheck]
+    portStateHoldDown = {{ .Values.portStateHoldDown | quote }}
+
     [counterDetection]
     enabled = {{ .Values.counterDetection.enabled }}
     {{- range .Values.counterDetection.counters }}

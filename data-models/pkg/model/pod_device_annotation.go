@@ -16,6 +16,11 @@ package model
 
 const (
 	PodDeviceAnnotationName = "dgxc.nvidia.com/devices"
+
+	// GPUDRADriverName is the name of the NVIDIA DRA driver for GPUs. The driver also gives this name to its
+	// DeviceClass for full GPUs, in deployments/helm/dra-driver-nvidia-gpu/templates/deviceclass-gpu.yaml of
+	// https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/tree/495bf4c59b9423080aa1fe2163955f44a495012c
+	GPUDRADriverName = "gpu.nvidia.com"
 )
 
 var (
@@ -24,7 +29,7 @@ var (
 			"nvidia.com/gpu",
 			"nvidia.com/pgpu",
 			// DRA driver name used for GPUs allocated through ResourceClaims (GPU Operator GPUCluster mode).
-			"gpu.nvidia.com",
+			GPUDRADriverName,
 		},
 	}
 )

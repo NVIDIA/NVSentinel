@@ -78,7 +78,9 @@ dcgmConnectivity:
   runtimeDebounce:
     # Example: failureThreshold: 4 and successThreshold: 2 publishes failure
     # after four failed cycles and recovery after two successful cycles.
-    # Consecutive failed cycles required to publish an unhealthy event.
+    # Consecutive failed cycles required to publish an unhealthy event. A remote-mode
+    # probe hang waits for failureThreshold * pollIntervalSeconds of unreachability,
+    # measured across liveness restarts.
     failureThreshold: 1
     # Consecutive successful cycles required to clear a published failure.
     successThreshold: 1
@@ -90,6 +92,11 @@ dcgmFieldsMonitoring:
   # Dry-run for GpuThermalMarginWatch. When true, this check's
   # events are emitted with processingStrategy=STORE_ONLY
   gpuTempLimitStoreOnly: true
+  # Consecutive polls with the margin below the slowdown T.Limit before the GPU is
+  # failed. The margin is sampled once per poll and swings by tens of degrees within
+  # seconds under load, so one sample past the threshold is usually a transient.
+  # 1 fails on first observation.
+  gpuTempLimitMinConsecutivePolls: 3
   # Enable GpuPowerBrakeWatch: fails a GPU whose clocks-event-reasons mask has the
   # HW power brake bit (0x80) set, i.e. the power delivery path is forcing clocks
   # down. DCGM's POWER health watch does not report this; its dominant code
@@ -114,12 +121,16 @@ dcgmHealthCheck:
   # dcgmerrorsmapping.csv and tracks load rather than a fault. Each throttle code is
   # listed twice because DCGM_FR_CLOCK_THROTTLE_* is a deprecated alias of
   # DCGM_FR_CLOCKS_EVENT_* with the same number and either name can be
-  # reported. Set to [] to report all codes.
+  # reported. DCGM 4.7.0 removed the NVLink BER checks
+  # (DCGM_FR_NVLINK_*_BER_THRESHOLD) because they failed healthy GPUs; only
+  # older hostengines still report them. Set to [] to report all codes.
   suppressedErrorCodes:
     - DCGM_FR_CLOCK_THROTTLE_POWER
     - DCGM_FR_CLOCKS_EVENT_POWER
     - DCGM_FR_CLOCK_THROTTLE_THERMAL
     - DCGM_FR_CLOCKS_EVENT_THERMAL
+    - DCGM_FR_NVLINK_EFFECTIVE_BER_THRESHOLD
+    - DCGM_FR_NVLINK_SYMBOL_BER_THRESHOLD
   # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
   # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only when the
   # endpoint is node-local and repeated unreachability is known to represent a

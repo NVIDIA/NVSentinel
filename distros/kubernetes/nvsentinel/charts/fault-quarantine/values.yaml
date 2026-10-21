@@ -81,6 +81,15 @@ circuitBreaker:
   # total, so a rate that stays under the threshold still cordons a whole fleet
   # given enough windows. This is the only bound that caps that.
   maxCordonedNodes: 0
+  # Percentage form of maxCordonedNodes: trip when this share of the GPU fleet is held
+  # quarantined at once. 0 disables it. When both are set the lower one binds, exactly as
+  # percentage and maxNodes pair above.
+  #
+  # Prefer this when the blast radius you care about is a share of the fleet rather than a
+  # number of machines, since an absolute count silently changes meaning when the fleet is
+  # resized: maxCordonedNodes: 3 is a quarter of a 12 node cluster, and 19% once it grows
+  # to 16.
+  maxCordonedPercentage: 0
   # Time window for the sliding window circuit breaker
   # The circuit breaker counts cordon events within this time window
   # Example: "5m" means if 50% of GPU nodes are cordoned within any 5-minute window, the circuit breaker trips
@@ -269,13 +278,20 @@ ruleSets:
       shouldCordon: true
 
 # The validation section configures post-remediation validation from the fault-quarantine
-# module. If enabled, fault-quarantine will preserve the scheduling gate on a given node
-# when an unquarantine event occurs, and it will create the given validation resource
-# for the requested tests. The list of test is derived from the unhealthy events which
+# module. If enabled, fault-quarantine will create the given validation resource for the
+# requested tests when an unquarantine event occurs. When it creates one, it preserves the
+# scheduling gate on the node (the cordon and the taints it applied), so every taint a
+# ruleSet above applies must be listed in lifecycle-manager config.schedulingGate.taints
+# with remove set to true. The list of test is derived from the unhealthy events which
 # occurred during the quarantine session and these tests are derived from the ruleSets
 # section below.
 validation:
   enabled: false
+  # Whether node-drainer drains COMPONENT_RESET events partially. Must match
+  # node-drainer.partialDrainEnabled. While true, a COMPONENT_RESET event's drain never counts as a
+  # full drain, so it never triggers validation on its own. Set global.partialDrainEnabled to
+  # override both values at once.
+  partialDrainEnabled: false
   apiGroup: "nvsentinel.nvidia.com"
   version: "v1alpha1"
   kind: "ValidationRequest"

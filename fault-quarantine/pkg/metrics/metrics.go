@@ -143,6 +143,15 @@ var (
 			Help: "Total number of cordons removed from nodes.",
 		},
 	)
+	// DryRunActions counts what dry run would have done. The quarantine metrics above
+	// count only actions actually applied.
+	DryRunActions = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_dry_run_actions_total",
+			Help: "Total number of quarantine and unquarantine actions skipped by dry run.",
+		},
+		[]string{"action"},
+	)
 
 	// Ruleset Evaluation Metrics
 	RulesetEvaluations = promauto.NewCounterVec(
@@ -243,6 +252,18 @@ var (
 		},
 	)
 )
+
+const (
+	DryRunActionQuarantine   = "quarantine"
+	DryRunActionUnquarantine = "unquarantine"
+)
+
+// Present at zero from startup, so absence means the exporter is down rather than
+// that dry run has not acted yet.
+func init() {
+	DryRunActions.WithLabelValues(DryRunActionQuarantine)
+	DryRunActions.WithLabelValues(DryRunActionUnquarantine)
+}
 
 func SetFaultQuarantineBreakerUtilization(utilization float64) {
 	FaultQuarantineBreakerUtilization.Set(utilization)

@@ -23,6 +23,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,6 +31,9 @@ import (
 
 const (
 	AnnotationKey = "nvsentinel.nvidia.com/k8s-object-monitor-policy-matches"
+
+	// loadPageSize is the number of nodes in each page of the startup load.
+	loadPageSize = 500
 )
 
 type PolicyMatchState map[string]string
@@ -85,12 +89,46 @@ func (m *Manager) GetMatches(ctx context.Context, nodeName string) (PolicyMatchS
 		return make(PolicyMatchState), fmt.Errorf("failed to get node: %w", err)
 	}
 
-	if node.Annotations == nil {
-		return make(PolicyMatchState), nil
-	}
+	return parseMatches(node.Annotations[AnnotationKey])
+}
 
-	annotationStr, exists := node.Annotations[AnnotationKey]
-	if !exists || annotationStr == "" {
+// LoadAllMatches reads the match state from the annotations of every node. It runs at
+// startup, before the manager cache starts, so reader must not be the cached client.
+// It lists only node metadata, one page at a time, so that the load stays small on
+// large clusters.
+func (m *Manager) LoadAllMatches(ctx context.Context, reader client.Reader) (map[string]string, error) {
+	allMatches := make(map[string]string)
+	continueToken := ""
+
+	for {
+		nodeList := &metav1.PartialObjectMetadataList{}
+		nodeList.SetGroupVersionKind(v1.SchemeGroupVersion.WithKind("NodeList"))
+
+		if err := reader.List(ctx, nodeList, client.Limit(loadPageSize), client.Continue(continueToken)); err != nil {
+			return nil, fmt.Errorf("failed to list nodes: %w", err)
+		}
+
+		for i := range nodeList.Items {
+			node := &nodeList.Items[i]
+
+			matches, err := parseMatches(node.Annotations[AnnotationKey])
+			if err != nil {
+				slog.Warn("Failed to load matches from node", "node", node.Name, "error", err)
+				continue
+			}
+
+			maps.Copy(allMatches, matches)
+		}
+
+		continueToken = nodeList.GetContinue()
+		if continueToken == "" {
+			return allMatches, nil
+		}
+	}
+}
+
+func parseMatches(annotationStr string) (PolicyMatchState, error) {
+	if annotationStr == "" {
 		return make(PolicyMatchState), nil
 	}
 
@@ -100,27 +138,6 @@ func (m *Manager) GetMatches(ctx context.Context, nodeName string) (PolicyMatchS
 	}
 
 	return state, nil
-}
-
-func (m *Manager) LoadAllMatches(ctx context.Context) (map[string]string, error) {
-	nodeList := &v1.NodeList{}
-	if err := m.client.List(ctx, nodeList); err != nil {
-		return nil, fmt.Errorf("failed to list nodes: %w", err)
-	}
-
-	allMatches := make(map[string]string)
-
-	for _, node := range nodeList.Items {
-		matches, err := m.GetMatches(ctx, node.Name)
-		if err != nil {
-			slog.Warn("Failed to load matches from node", "node", node.Name, "error", err)
-			continue
-		}
-
-		maps.Copy(allMatches, matches)
-	}
-
-	return allMatches, nil
 }
 
 func (m *Manager) updateAnnotation(ctx context.Context,

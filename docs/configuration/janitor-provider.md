@@ -16,6 +16,15 @@ global:
     enabled: true
 ```
 
+### Logging
+
+Sets the verbosity level for janitor-provider logs.
+
+```yaml
+janitor-provider:
+  logLevel: info  # Options: debug, info, warn, error
+```
+
 ### Replica Count
 
 ```yaml

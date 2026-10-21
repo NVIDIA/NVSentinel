@@ -264,7 +264,9 @@ func loadDefaultConfig() *DataStoreConfig {
 
 // loadDatastoreConfigFromYAMLFile loads configuration from a YAML file
 func loadDatastoreConfigFromYAMLFile(yamlPath string) (*DataStoreConfig, error) {
-	data, err := os.ReadFile(filepath.Clean(yamlPath))
+	// G703: yamlPath comes from the DATASTORE_YAML_PATH env var that the operator
+	// sets on the pod, not from health-event or user input.
+	data, err := os.ReadFile(filepath.Clean(yamlPath)) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("failed to read datastore config file %s: %w", yamlPath, err)
 	}

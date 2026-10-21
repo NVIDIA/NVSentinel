@@ -27,6 +27,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -34,6 +36,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -175,8 +178,13 @@ func setupControllers(
 		validation = cfg.Validation
 	}
 
+	nodeClaim := distributedlock.NewNodeLock(
+		mgr.GetClient(), mgr.GetScheme(), namespace, nil,
+		distributedlock.WithLeaseName(controller.ClaimLeaseName),
+	)
+
 	if err := webhookv1alpha1.SetupWebhookWithManager(
-		mgr, validation, enableValidationController, enableMaintenanceController,
+		mgr, validation, enableValidationController, enableMaintenanceController, nodeClaim,
 	); err != nil {
 		return fmt.Errorf("failed to set up webhook: %w", err)
 	}
@@ -195,6 +203,7 @@ func setupControllers(
 			NodeLock: distributedlock.NewNodeLock(
 				mgr.GetClient(), mgr.GetScheme(), namespace, nil,
 			),
+			NodeClaim: nodeClaim,
 		}).SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("failed to create MaintenanceRequest controller: %w", err)
 		}
@@ -213,31 +222,47 @@ func setupValidationController(
 		return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
 	}
 
+	nodeReconciler, err := newNodeValidationReconciler(mgr, cfg, validation)
+	if err != nil {
+		return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
+	}
+
+	if reconciler.ResourceSliceWatch.Enabled || (nodeReconciler != nil && nodeReconciler.ResourceSliceWatch.Enabled) {
+		if err := controller.SetupResourceSliceIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+			return fmt.Errorf("failed to set up ResourceSlice index: %w", err)
+		}
+	}
+
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to create ValidationRequest controller: %w", err)
 	}
 
-	if validation.Spec.NewNodeValidation != nil {
-		if err := setupNodeValidationController(mgr, cfg); err != nil {
-			return err
+	if nodeReconciler != nil {
+		if err := nodeReconciler.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed to create NodeValidation controller: %w", err)
 		}
 	}
 
 	return nil
 }
 
-func setupNodeValidationController(mgr ctrl.Manager, cfg *config.Config) error {
-	nodeReconciler, err := controller.NewNodeValidationReconciler(mgr.GetClient(), mgr.GetAPIReader(),
-		mgr.GetScheme(), cfg)
+func newNodeValidationReconciler(
+	mgr ctrl.Manager,
+	cfg *config.Config,
+	validation *v1alpha1.ValidationConfiguration,
+) (*controller.NodeValidationReconciler, error) {
+	if validation.Spec.NewNodeValidation == nil {
+		return nil, nil
+	}
+
+	reconciler, err := controller.NewNodeValidationReconciler(
+		mgr.GetClient(), mgr.GetAPIReader(), mgr.GetScheme(), cfg,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
+		return nil, fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
 	}
 
-	if err := nodeReconciler.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to create NodeValidation controller: %w", err)
-	}
-
-	return nil
+	return reconciler, nil
 }
 
 // closePublisher closes the publisher's connection on shutdown; nil when the
@@ -380,7 +405,18 @@ func run() error {
 		LeaseDuration:          &leaseDuration,
 		RenewDeadline:          &renewDeadline,
 		RetryPeriod:            &retryPeriod,
-		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{namespace: {}},
+			// Readiness CEL can read any ResourceSlice spec or metadata field, so only managedFields is dropped.
+			ByObject: map[client.Object]cache.ByObject{
+				&resourcev1.ResourceSlice{}: {Transform: cache.TransformStripManagedFields()},
+			},
+		},
+		// Node lock leases are created and deleted within one reconcile; a
+		// cached read can miss a lease just created and leave it held.
+		Client: client.Options{Cache: &client.CacheOptions{
+			DisableFor: []client.Object{&coordinationv1.Lease{}},
+		}},
 	})
 	if err != nil {
 		slog.Error("Failed to start manager", "error", err)

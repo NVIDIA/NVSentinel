@@ -59,7 +59,7 @@ func (i *nodeSelectorInformers) CheckIfAllPodsAreEvictedInImmediateMode(context.
 }
 
 // FindEvictablePodsInNamespaceAndNode reports the native path's node as already empty.
-func (i *nodeSelectorInformers) FindEvictablePodsInNamespaceAndNode(string, string, *protos.Entity,
+func (i *nodeSelectorInformers) FindEvictablePodsInNamespaceAndNode(context.Context, string, string, *protos.Entity,
 	...informers.PodFilter) ([]*v1.Pod, error) {
 	return nil, nil
 }

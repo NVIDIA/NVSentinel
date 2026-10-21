@@ -403,7 +403,7 @@ func (he *HealthEventsAnnotationMap) GetEvent(
 
 func (he *HealthEventsAnnotationMap) findFirstMatch(event *protos.HealthEvent) (*protos.HealthEvent, bool) {
 	for storedKey, storedEvent := range he.Events {
-		if keyMatchesEvent(storedKey, event) {
+		if keyMatchesEvent(storedKey, storedEvent, event) {
 			return storedEvent, true
 		}
 	}
@@ -412,8 +412,9 @@ func (he *HealthEventsAnnotationMap) findFirstMatch(event *protos.HealthEvent) (
 }
 
 // keyMatchesEvent: identifying fields must equal; entity matches if listed
-// (or any when none listed); ErrorCode uses the asymmetric rule on GetEvent.
-func keyMatchesEvent(storedKey HealthEventKey, event *protos.HealthEvent) bool {
+// (or any when none listed, or via replacedGPUMatches); ErrorCode uses the
+// asymmetric rule on GetEvent.
+func keyMatchesEvent(storedKey HealthEventKey, storedEvent, event *protos.HealthEvent) bool {
 	if storedKey.Agent != event.Agent ||
 		storedKey.ComponentClass != event.ComponentClass ||
 		storedKey.CheckName != event.CheckName ||
@@ -422,7 +423,7 @@ func keyMatchesEvent(storedKey HealthEventKey, event *protos.HealthEvent) bool {
 		return false
 	}
 
-	if len(event.EntitiesImpacted) > 0 && !entityInEvent(storedKey, event) {
+	if !entityMatches(storedKey, storedEvent, event) {
 		return false
 	}
 
@@ -433,6 +434,13 @@ func keyMatchesEvent(storedKey HealthEventKey, event *protos.HealthEvent) bool {
 	return true
 }
 
+// entityMatches: any entity matches when the event lists none.
+func entityMatches(storedKey HealthEventKey, storedEvent, event *protos.HealthEvent) bool {
+	return len(event.EntitiesImpacted) == 0 ||
+		entityInEvent(storedKey, event) ||
+		replacedGPUMatches(storedKey, storedEvent, event)
+}
+
 func entityInEvent(key HealthEventKey, event *protos.HealthEvent) bool {
 	for _, e := range event.EntitiesImpacted {
 		if e.EntityType == key.EntityType && e.EntityValue == key.EntityValue {
@@ -441,6 +449,44 @@ func entityInEvent(key HealthEventKey, event *protos.HealthEvent) bool {
 	}
 
 	return false
+}
+
+// replacedGPUMatches: a healthy GPU event also clears a GPU_UUID key when it
+// covers every GPU and PCI entity of the stored fault, since a replaced GPU
+// keeps its slot but gets a new UUID.
+func replacedGPUMatches(storedKey HealthEventKey, storedEvent, event *protos.HealthEvent) bool {
+	if !event.IsHealthy || event.ComponentClass != "GPU" || storedKey.EntityType != "GPU_UUID" {
+		return false
+	}
+
+	slot := gpuSlotEntities(storedEvent)
+	if len(slot) == 0 {
+		return false
+	}
+
+	for _, stored := range slot {
+		if !slices.ContainsFunc(event.EntitiesImpacted, func(e *protos.Entity) bool {
+			return e.EntityType == stored.EntityType && e.EntityValue == stored.EntityValue
+		}) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// gpuSlotEntities returns the GPU index and PCI entities, which stay the same
+// when a GPU is replaced.
+func gpuSlotEntities(event *protos.HealthEvent) []*protos.Entity {
+	var slot []*protos.Entity
+
+	for _, e := range event.EntitiesImpacted {
+		if e.EntityType == "GPU" || e.EntityType == "PCI" {
+			slot = append(slot, e)
+		}
+	}
+
+	return slot
 }
 
 func errorCodeMatches(stored string, incoming []string) bool {
@@ -468,8 +514,8 @@ func (he *HealthEventsAnnotationMap) getEventByCheck(
 // HasMatchingEntities checks if the event has any entities that match stored events
 // (using the same matching rules as GetEvent).
 func (he *HealthEventsAnnotationMap) HasMatchingEntities(event *protos.HealthEvent) bool {
-	for storedKey := range he.Events {
-		if keyMatchesEvent(storedKey, event) {
+	for storedKey, storedEvent := range he.Events {
+		if keyMatchesEvent(storedKey, storedEvent, event) {
 			return true
 		}
 	}
@@ -511,8 +557,8 @@ func (he *HealthEventsAnnotationMap) RemoveEventFiltered(
 
 	keysToRemove := make([]HealthEventKey, 0)
 
-	for storedKey := range he.Events {
-		if keyMatchesEvent(storedKey, event) && (keep == nil || keep(storedKey)) {
+	for storedKey, storedEvent := range he.Events {
+		if keyMatchesEvent(storedKey, storedEvent, event) && (keep == nil || keep(storedKey)) {
 			keysToRemove = append(keysToRemove, storedKey)
 		}
 	}

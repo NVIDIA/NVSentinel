@@ -25,7 +25,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/health"
+	"github.com/aws/aws-sdk-go-v2/service/health/schemas"
 	"github.com/aws/aws-sdk-go-v2/service/health/types"
+	"github.com/aws/smithy-go/transport/http/protocol/awsjson"
 	"github.com/hashicorp/go-multierror"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -112,6 +114,20 @@ type AWSClient struct {
 	nodeInformer   *NodeInformer
 }
 
+// newHealthAPIClient creates the AWS Health client with the AWS JSON 1.1 protocol.
+// From service/health v1.50.0 the SDK sends Smithy RPC v2 CBOR by default. AWS Health
+// accepts both protocols. The pin keeps the wire format that this monitor has always
+// used, and the CSP API mock in the E2E tests serves only AWS JSON 1.1.
+func newHealthAPIClient(awsSDKConfig aws.Config, endpointOverride string) *health.Client {
+	return health.NewFromConfig(awsSDKConfig, func(o *health.Options) {
+		o.Protocol = awsjson.New11(schemas.AWSHealth_20160804)
+
+		if endpointOverride != "" {
+			o.BaseEndpoint = aws.String(endpointOverride)
+		}
+	})
+}
+
 func NewClient(
 	ctx context.Context,
 	cfg config.AWSConfig,
@@ -127,17 +143,11 @@ func NewClient(
 			cfg.Region, err)
 	}
 
-	var healthAPIClient healthClientInterface
-
 	if cfg.EndpointOverride != "" {
 		slog.Info("AWS Client: Using endpoint override", "endpoint", cfg.EndpointOverride)
-
-		healthAPIClient = health.NewFromConfig(awsSDKConfig, func(o *health.Options) {
-			o.BaseEndpoint = aws.String(cfg.EndpointOverride)
-		})
-	} else {
-		healthAPIClient = health.NewFromConfig(awsSDKConfig)
 	}
+
+	healthAPIClient := newHealthAPIClient(awsSDKConfig, cfg.EndpointOverride)
 
 	slog.Info("Successfully initialized AWS Health client", "region", cfg.Region)
 

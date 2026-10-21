@@ -921,9 +921,12 @@ func restartReconciler(t *testing.T, setup *testSetup) *testSetup {
 		gvk,
 	)
 
-	if err := reconciler.LoadState(setup.ctx); err != nil {
+	allMatches, err := annotationMgr.LoadAllMatches(setup.ctx, setup.k8sClient)
+	if err != nil {
 		t.Fatalf("Failed to load state after restart: %v", err)
 	}
+
+	reconciler.RestoreState(allMatches)
 
 	return &testSetup{
 		ctx:        setup.ctx,
@@ -959,9 +962,12 @@ func restartReconcilerWithCRD(t *testing.T, setup *testSetup, policies []config.
 		gvk,
 	)
 
-	if err := reconciler.LoadState(setup.ctx); err != nil {
+	allMatches, err := annotationMgr.LoadAllMatches(setup.ctx, setup.k8sClient)
+	if err != nil {
 		t.Fatalf("Failed to load state after restart: %v", err)
 	}
+
+	reconciler.RestoreState(allMatches)
 
 	return &testSetup{
 		ctx:        setup.ctx,
@@ -1182,4 +1188,58 @@ func updatePodPhase(t *testing.T, setup *testSetup, namespace, name string, phas
 		}
 		return updatedPod.Status.Phase == phase
 	}, time.Second, 50*time.Millisecond)
+}
+
+func TestRestoreState_SavedMatches_QueuesOnlyMatchesOfEnabledPolicies(t *testing.T) {
+	podGVK := schema.GroupVersionKind{Version: "v1", Kind: "Pod"}
+	policies := []config.Policy{
+		{Name: "pod-health", Enabled: true},
+		{Name: "pod-disabled", Enabled: false},
+	}
+
+	tests := []struct {
+		name      string
+		matches   map[string]string
+		wantQueue []types.NamespacedName
+	}{
+		{
+			name:      "namespaced object",
+			matches:   map[string]string{"pod-health/gpu-operator/operator-0": "node-a"},
+			wantQueue: []types.NamespacedName{{Namespace: "gpu-operator", Name: "operator-0"}},
+		},
+		{
+			name:      "cluster-scoped object",
+			matches:   map[string]string{"pod-health/node-a": "node-a"},
+			wantQueue: []types.NamespacedName{{Name: "node-a"}},
+		},
+		{
+			name:    "disabled policy",
+			matches: map[string]string{"pod-disabled/gpu-operator/operator-0": "node-a"},
+		},
+		{
+			name:    "policy of another reconciler",
+			matches: map[string]string{"node-not-ready/node-a": "node-a"},
+		},
+		{
+			name:    "policy name is only a prefix of the key's policy",
+			matches: map[string]string{"pod-health-extra/gpu-operator/operator-0": "node-a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := controller.NewResourceReconciler(nil, nil, nil, nil, policies, podGVK)
+
+			events := reconciler.RestoreState(tt.matches)
+
+			queued := make([]types.NamespacedName, 0, len(events))
+
+			for _, e := range events {
+				require.Equal(t, podGVK, e.Object.GetObjectKind().GroupVersionKind())
+				queued = append(queued, types.NamespacedName{Namespace: e.Object.GetNamespace(), Name: e.Object.GetName()})
+			}
+
+			assert.ElementsMatch(t, tt.wantQueue, queued)
+		})
+	}
 }
