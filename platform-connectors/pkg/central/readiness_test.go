@@ -258,8 +258,8 @@ func TestInterceptorChain_AsWired(t *testing.T) {
 
 	got := recorder.lastBatch()
 	require.Len(t, got.Events, 2)
-	require.Equal(t, "pod-uid-1#batch-1#0", got.Events[0].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
-	require.Equal(t, "pod-uid-1#batch-1#1", got.Events[1].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
+	require.Equal(t, "batch-1#pod-uid-1#0", got.Events[0].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
+	require.Equal(t, "batch-1#pod-uid-1#1", got.Events[1].Metadata[datastore.HealthEventIdempotencyKeyMetadataField])
 	require.Equal(t, "node-a", got.Events[1].NodeName, "a blank node name is pinned to the token's node")
 }
 

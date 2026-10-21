@@ -16,20 +16,37 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/celevent"
-	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+type RecoveryScope string
+
+const (
+	RecoveryScopeNode   RecoveryScope = "node"
+	RecoveryScopeEntity RecoveryScope = "entity"
+)
+
+type RecoveryMapping struct {
+	AnnotationKey string        `toml:"annotation_key"`
+	Scope         RecoveryScope `toml:"scope"`
+	EntityTypes   []string      `toml:"entity_types"`
+}
+
 type HealthEventsAnalyzerRule struct {
-	Name              string   `toml:"name"`
-	Description       string   `toml:"description"`
-	Stage             []string `toml:"stage"`
-	RecommendedAction string   `toml:"recommended_action"`
-	Message           string   `toml:"message"`
-	EvaluateRule      bool     `toml:"evaluate_rule"`
+	Recovery          *RecoveryMapping `toml:"recovery"`
+	Name              string           `toml:"name"`
+	Description       string           `toml:"description"`
+	Stage             []string         `toml:"stage"`
+	RecommendedAction string           `toml:"recommended_action"`
+	Message           string           `toml:"message"`
+	EvaluateRule      bool             `toml:"evaluate_rule"`
 	// Optional: override the module-level processing strategy for events published by this rule.
 	ProcessingStrategy string `toml:"processing_strategy"`
 	// Optional: a CEL expression over the incoming health event. The analyzer runs the rule's
@@ -100,14 +117,98 @@ func (c *TomlConfig) Compile() error {
 }
 
 func LoadTomlConfig(path string) (*TomlConfig, error) {
-	var config TomlConfig
-	if err := configmanager.LoadTOMLConfig(path, &config); err != nil {
+	var cfg TomlConfig
+
+	metadata, err := toml.DecodeFile(path, &cfg)
+	if err != nil {
 		return nil, fmt.Errorf("failed to decode TOML config from %s: %w", path, err)
 	}
 
-	if err := config.Compile(); err != nil {
+	for _, key := range metadata.Undecoded() {
+		slog.Warn("Ignoring unknown analyzer configuration key", "key", key.String(), "path", path)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	if err := cfg.Compile(); err != nil {
 		return nil, fmt.Errorf("invalid rule in TOML config %s: %w", path, err)
 	}
 
-	return &config, nil
+	return &cfg, nil
+}
+
+func (c *TomlConfig) HasAnnotationRecovery() bool {
+	if c == nil {
+		return false
+	}
+
+	for _, rule := range c.Rules {
+		if rule.EvaluateRule && rule.Recovery != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Validate checks the recovery contract. CEL expressions are compiled separately;
+// stages and processing strategies remain validated at evaluation/publication time.
+func (c *TomlConfig) Validate() error {
+	keys := make(map[string]string)
+
+	for _, rule := range c.Rules {
+		if rule.Recovery == nil {
+			continue
+		}
+
+		if err := rule.Recovery.validate(); err != nil {
+			return fmt.Errorf("rule %q: %w", rule.Name, err)
+		}
+
+		key := rule.Recovery.AnnotationKey
+		if previous, exists := keys[key]; exists {
+			return fmt.Errorf("rules %q and %q share recovery.annotation_key %q", previous, rule.Name, key)
+		}
+
+		keys[key] = rule.Name
+	}
+
+	return nil
+}
+
+func (r *RecoveryMapping) validate() error {
+	r.AnnotationKey = strings.TrimSpace(r.AnnotationKey)
+	if !strings.Contains(r.AnnotationKey, "/") || len(validation.IsQualifiedName(r.AnnotationKey)) != 0 {
+		return fmt.Errorf("recovery.annotation_key must be a qualified Kubernetes annotation key")
+	}
+
+	switch r.Scope {
+	case RecoveryScopeNode:
+		if len(r.EntityTypes) != 0 {
+			return fmt.Errorf("node recovery must not configure entity_types")
+		}
+	case RecoveryScopeEntity:
+		if len(r.EntityTypes) == 0 {
+			return fmt.Errorf("entity recovery requires entity_types")
+		}
+	default:
+		return fmt.Errorf("recovery.scope must be node or entity")
+	}
+
+	return validateEntityTypes(r.EntityTypes)
+}
+
+func validateEntityTypes(entityTypes []string) error {
+	seen := make(map[string]bool)
+	for _, entityType := range entityTypes {
+		if strings.TrimSpace(entityType) == "" || seen[entityType] {
+			return fmt.Errorf("recovery.entity_types must be non-empty and unique")
+		}
+
+		seen[entityType] = true
+	}
+
+	return nil
 }

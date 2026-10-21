@@ -132,6 +132,8 @@ platformConnector:
 
 Leave it empty to disable the behavior. The value must match the key and value that `commons/pkg/managed` defines, so change it only together with that constant. Only the exact value opts a node out; any other value, including an absent label or a typo, leaves the node managed normally. Label a node to hand it to another owner — a hardware team working on it, or an external remediation system — without disabling NVSentinel for the rest of the fleet.
 
+A new label takes effect within the metadata cache time, once the connector can read the node. Removing the label takes effect on the node's next event: the connector reads an opted-out node again for each event. If that read fails, the node stays opted out.
+
 > **Important:** `MetadataAugmentor` enforces this gate, so removing the transformer from `transformers` while `skipNodeLabel` is still set stops the gate from applying. The connector logs a warning at startup and keeps remediating opted-out nodes.
 
 ### Example

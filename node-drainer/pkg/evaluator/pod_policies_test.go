@@ -56,7 +56,7 @@ func (i *policyInformers) CheckIfObservedPodsAreEvictedInImmediateMode(_ context
 }
 
 // FindEvictablePodsInNamespaceAndNode counts cache reads and can inject updates between observations.
-func (i *policyInformers) FindEvictablePodsInNamespaceAndNode(namespace, _ string,
+func (i *policyInformers) FindEvictablePodsInNamespaceAndNode(_ context.Context, namespace, _ string,
 	_ *protos.Entity, filters ...informers.PodFilter) ([]*v1.Pod, error) {
 	i.listCalls[namespace]++
 	if i.beforeList != nil {

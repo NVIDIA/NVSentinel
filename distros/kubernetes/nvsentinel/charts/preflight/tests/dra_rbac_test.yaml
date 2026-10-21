@@ -1,0 +1,93 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: DRA GPU detection RBAC
+templates:
+  - templates/clusterrole.yaml
+  - templates/clusterrolebinding.yaml
+# The umbrella chart sets this; the subchart has no default and the configmap
+# refuses to render without a boolean.
+set:
+  global.platformConnectorAuth.enabled: false
+tests:
+  # DRA GPU detection is always on, so its RBAC renders with the defaults.
+  - it: grants get-only access to DRA claims by default
+    template: templates/clusterrole.yaml
+    documentSelector:
+      path: metadata.name
+      value: preflight-dra
+    asserts:
+      - isKind:
+          of: ClusterRole
+      - equal:
+          path: rules
+          value:
+            - apiGroups: ["resource.k8s.io"]
+              resources: ["resourceclaims", "resourceclaimtemplates"]
+              verbs: ["get"]
+
+  - it: binds the DRA ClusterRole to the preflight ServiceAccount by default
+    template: templates/clusterrolebinding.yaml
+    documentSelector:
+      path: metadata.name
+      value: preflight-dra
+    asserts:
+      - isKind:
+          of: ClusterRoleBinding
+      - equal:
+          path: roleRef.name
+          value: preflight-dra
+      - equal:
+          path: subjects[0].namespace
+          value: NAMESPACE
+
+  # Gang coordination off and no CA copy: the main preflight ClusterRole and
+  # binding do not render, so the DRA ones must render on their own.
+  - it: renders the DRA RBAC without gang coordination
+    set:
+      gangCoordination.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: templates/clusterrole.yaml
+      - equal:
+          path: metadata.name
+          value: preflight-dra
+        template: templates/clusterrole.yaml
+      - hasDocuments:
+          count: 1
+        template: templates/clusterrolebinding.yaml
+      - equal:
+          path: roleRef.name
+          value: preflight-dra
+        template: templates/clusterrolebinding.yaml
+
+  # global.gpuDraEnabled belongs to the metadata-collector. Preflight detects
+  # DRA GPU pods from their claims and does not read it.
+  - it: renders the DRA RBAC when global.gpuDraEnabled is false
+    set:
+      global.gpuDraEnabled: false
+    asserts:
+      - isKind:
+          of: ClusterRole
+        template: templates/clusterrole.yaml
+        documentSelector:
+          path: metadata.name
+          value: preflight-dra
+      - isKind:
+          of: ClusterRoleBinding
+        template: templates/clusterrolebinding.yaml
+        documentSelector:
+          path: metadata.name
+          value: preflight-dra

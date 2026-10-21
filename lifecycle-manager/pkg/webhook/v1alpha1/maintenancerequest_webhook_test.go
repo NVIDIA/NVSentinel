@@ -16,6 +16,7 @@ package v1alpha1
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -23,6 +24,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -110,6 +118,100 @@ func TestValidateCreate_IsHealthyTrue_Rejects(t *testing.T) {
 	_, err := v.ValidateCreate(context.Background(), mr)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "isHealthy must be false")
+}
+
+func TestValidateCreate_OpenRequestOnNode_Rejects(t *testing.T) {
+	t.Parallel()
+
+	open := validMR()
+	open.Name = "open-mr"
+	open.UID = "open-uid"
+
+	v := &MaintenanceRequestValidator{
+		Enabled:   true,
+		Client:    newMRClient(t, open),
+		NodeClaim: &stubClaim{holder: mrOwnerRef(open)},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), validMR())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `node "node-1" already has an open MaintenanceRequest "open-mr"`)
+}
+
+func TestValidateCreate_ClaimNotADuplicate_Allows(t *testing.T) {
+	t.Parallel()
+
+	deleting := validMR()
+	deleting.Name = "deleting-mr"
+	deleting.UID = "deleting-uid"
+	deleting.Finalizers = []string{"test-finalizer"}
+	deleting.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+
+	otherNode := validMR()
+	otherNode.Name = "other-node-mr"
+	otherNode.UID = "other-node-uid"
+	otherNode.Spec.HealthEvent.NodeName = "mr-claim.node-1"
+
+	recreated := validMR()
+	recreated.Name = "recreated-mr"
+	recreated.UID = "current-uid"
+
+	tests := []struct {
+		name  string
+		claim *stubClaim
+	}{
+		{
+			name: "no claim on the node",
+			claim: &stubClaim{err: apierrors.NewNotFound(
+				schema.GroupResource{Resource: "leases"}, "mr-claim.node-1")},
+		},
+		{
+			name:  "claim cannot be read (fail open)",
+			claim: &stubClaim{err: errors.New("apiserver unavailable")},
+		},
+		{
+			name: "claim held by another kind",
+			claim: &stubClaim{holder: &metav1.OwnerReference{
+				Kind: "RebootNode", Name: "reboot", UID: "reboot-uid",
+			}},
+		},
+		{
+			name:  "claim holder is being deleted",
+			claim: &stubClaim{holder: mrOwnerRef(deleting)},
+		},
+		{
+			name:  "claim holder targets a different node",
+			claim: &stubClaim{holder: mrOwnerRef(otherNode)},
+		},
+		{
+			name: "claim holder was recreated under the same name",
+			claim: &stubClaim{holder: &metav1.OwnerReference{
+				Kind: managed.MRKind, Name: recreated.Name, UID: "previous-uid",
+			}},
+		},
+		{
+			name: "claim holder no longer exists",
+			claim: &stubClaim{holder: &metav1.OwnerReference{
+				Kind: managed.MRKind, Name: "gone-mr", UID: "gone-uid",
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			v := &MaintenanceRequestValidator{
+				Enabled:   true,
+				Client:    newMRClient(t, deleting, otherNode, recreated),
+				NodeClaim: tt.claim,
+			}
+
+			warnings, err := v.ValidateCreate(context.Background(), validMR())
+			assert.NoError(t, err)
+			assert.Nil(t, warnings)
+		})
+	}
 }
 
 func TestValidateUpdate_NilSpec_Rejects(t *testing.T) {
@@ -470,6 +572,47 @@ func TestValidateDelete_AlwaysAllowed(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Nil(t, warnings)
 }
+
+// newMRClient returns a client that knows MaintenanceRequests and Nodes, with
+// node-1 present so the node existence check passes. The builder writes to the
+// objects it is given, so it gets copies that parallel tests do not share.
+func newMRClient(t *testing.T, mrs ...*v1alpha1.MaintenanceRequest) client.Client {
+	t.Helper()
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(testScheme))
+	require.NoError(t, v1alpha1.AddMRToScheme(testScheme))
+
+	objs := []client.Object{&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}}}
+	for _, mr := range mrs {
+		objs = append(objs, mr.DeepCopy())
+	}
+
+	return fake.NewClientBuilder().WithScheme(testScheme).WithObjects(objs...).Build()
+}
+
+func mrOwnerRef(mr *v1alpha1.MaintenanceRequest) *metav1.OwnerReference {
+	return &metav1.OwnerReference{
+		APIVersion: v1alpha1.MRGroupVersion.String(),
+		Kind:       managed.MRKind,
+		Name:       mr.Name,
+		UID:        mr.UID,
+	}
+}
+
+// stubClaim is a NodeLock whose only behaviour is reporting a fixed holder.
+type stubClaim struct {
+	holder *metav1.OwnerReference
+	err    error
+}
+
+func (s *stubClaim) LockNode(context.Context, client.Object, string) bool { return false }
+
+func (s *stubClaim) GetHolder(context.Context, string) (*metav1.OwnerReference, error) {
+	return s.holder, s.err
+}
+
+func (s *stubClaim) CheckUnlock(context.Context, client.Object, string) bool { return false }
 
 func validMR() *v1alpha1.MaintenanceRequest {
 	return &v1alpha1.MaintenanceRequest{

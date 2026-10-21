@@ -90,7 +90,7 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     if custom_settings:
         config_text += (
             "[dcgmfieldsmonitoring]\n"
-            "gputemplimitmonitoringenabled=true\ngputemplimitstoreonly=true\n"
+            "gputemplimitmonitoringenabled=true\ngputemplimitstoreonly=true\ngputemplimitminconsecutivepolls=5\n"
             "gpupowerbrakemonitoringenabled=true\ngpupowerbrakeminconsecutivepolls=4\n"
             "[dcgmhealthcheck]\nImexMonitoringEnabled=true\n"
             "SuppressedErrorCodes=DCGM_FR_CONTAINED_ERROR\n"
@@ -148,6 +148,7 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     assert watcher._dcgm_k8s_service_enabled is custom_settings
     assert watcher._metadata_reader._path == str(metadata_file)
     assert watcher._thermal_margin_enabled is custom_settings
+    assert watcher._thermal_margin_min_consecutive_polls == (5 if custom_settings else 1)
     assert watcher._power_brake_enabled is custom_settings
     assert watcher._power_brake_min_consecutive_polls == (4 if custom_settings else 1)
     assert watcher._imex_monitoring_enabled is custom_settings
@@ -175,6 +176,7 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     assert processor._connectivity_failure_escalation_threshold == (9 if custom_settings else 0)
     assert processor._connectivity_failure_threshold == (4 if custom_settings else 1)
     assert processor._connectivity_success_threshold == (2 if custom_settings else 1)
+    assert processor._connectivity_failure_window_seconds == (4 * 17 if custom_settings else 0)
 
 
 def _find_option(param_name: str) -> Parameter | None:

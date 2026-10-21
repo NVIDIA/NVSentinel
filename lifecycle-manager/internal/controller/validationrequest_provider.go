@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"path/filepath"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -301,6 +302,14 @@ func attemptObjectName(vrName, grpName string, attemptNumber int) string {
 }
 
 func hashTruncate(base string, maxBase int) string {
+	return hashTruncateTrimmed(base, maxBase, "")
+}
+
+// hashTruncateTrimmed is hashTruncate that also strips any trailing cutset
+// characters from the kept prefix, for name formats where a separator directly
+// before the "-<hash>" suffix is invalid. An empty cutset must keep the output
+// identical to hashTruncate: existing ValidationRequest object names depend on it.
+func hashTruncateTrimmed(base string, maxBase int, cutset string) string {
 	if len(base) <= maxBase {
 		return base
 	}
@@ -313,7 +322,7 @@ func hashTruncate(base string, maxBase int) string {
 		return hash[:maxBase]
 	}
 
-	return fmt.Sprintf("%s-%s", base[:maxBase-len(hash)-1], hash)
+	return fmt.Sprintf("%s-%s", strings.TrimRight(base[:maxBase-len(hash)-1], cutset), hash)
 }
 
 func providerGVK(p v1alpha1.ProviderConfig) schema.GroupVersionKind {

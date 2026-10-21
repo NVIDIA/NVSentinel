@@ -211,16 +211,16 @@ func TestListPodResourcesWithDRA(t *testing.T) {
 	draDevices := map[string]map[string][]deviceInfo{
 		"dra-pod": {
 			"container-1": {
-				{driverName: draGPUDriverName, resourceName: "node-a", id: "gpu-1"},
-				{driverName: draGPUDriverName, resourceName: "node-a", id: "gpu-0"},
-				{driverName: draGPUDriverName, resourceName: "node-a", id: "gpu-1"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-1"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-0"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-1"},
 				{driverName: "other.example.com", resourceName: "node-a", id: "gpu-0"},
 				{resourceName: "nvidia.com/gpu", id: "GPU-plugin"},
 			},
 		},
 		"unresolved-pod": {
 			"container-2": {
-				{driverName: draGPUDriverName, resourceName: "node-a", id: "gpu-9"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-9"},
 			},
 		},
 	}
@@ -231,8 +231,8 @@ func TestListPodResourcesWithDRA(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, map[string]*model.DeviceAnnotation{
 		"default/dra-pod": {Devices: map[string][]string{
-			draGPUDriverName: {"GPU-a0", "GPU-a1"},
-			"nvidia.com/gpu": {"GPU-plugin"},
+			model.GPUDRADriverName: {"GPU-a0", "GPU-a1"},
+			"nvidia.com/gpu":       {"GPU-plugin"},
 		}},
 		// unresolved-pod is absent until its device name resolves.
 	}, devicesPerPod)

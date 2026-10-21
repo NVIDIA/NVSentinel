@@ -751,7 +751,7 @@ func TestDrainScopeFor_VaryingEventShapes_ReturnsEntityAndMatchingScope(t *testi
 			}
 
 			if tc.enabled {
-				entity, _ := drain.PartialDrainEntity(tc.event)
+				entity, _ := drain.PartialDrainEntity(tc.event, true)
 				assertEntity(t, entity)
 			}
 
@@ -767,22 +767,18 @@ func TestDrainScopeFor_VaryingEventShapes_ReturnsEntityAndMatchingScope(t *testi
 
 // The evaluator still treats "eligible but no usable entity" as an error, so a misconfigured
 // COMPONENT_RESET event fails loudly rather than silently draining the whole node.
-func TestShouldExecutePartialDrain_NoUsableEntity_ReturnsError(t *testing.T) {
-	e := &NodeDrainEvaluator{config: config.TomlConfig{PartialDrainEnabled: true}}
-
-	entity, err := e.shouldExecutePartialDrain(
+func TestPartialDrainEntity_NoUsableEntity_ReturnsError(t *testing.T) {
+	entity, err := drain.PartialDrainEntity(
 		healthEvent(protos.RecommendedAction_COMPONENT_RESET,
-			&protos.Entity{EntityType: "NIC", EntityValue: "eth0"}))
+			&protos.Entity{EntityType: "NIC", EntityValue: "eth0"}), true)
 
 	require.Error(t, err)
 	assert.Nil(t, entity)
 }
 
-func TestShouldExecutePartialDrain_UsableGPUEntity_ReturnsEntity(t *testing.T) {
-	e := &NodeDrainEvaluator{config: config.TomlConfig{PartialDrainEnabled: true}}
-
-	entity, err := e.shouldExecutePartialDrain(
-		healthEvent(protos.RecommendedAction_COMPONENT_RESET, gpuEntity("GPU-abc")))
+func TestPartialDrainEntity_UsableGPUEntity_ReturnsEntity(t *testing.T) {
+	entity, err := drain.PartialDrainEntity(
+		healthEvent(protos.RecommendedAction_COMPONENT_RESET, gpuEntity("GPU-abc")), true)
 
 	require.NoError(t, err)
 	require.NotNil(t, entity)
@@ -790,11 +786,9 @@ func TestShouldExecutePartialDrain_UsableGPUEntity_ReturnsEntity(t *testing.T) {
 }
 
 // A non-candidate event returns no entity and no error, so full drain proceeds normally.
-func TestShouldExecutePartialDrain_PartialDrainDisabled_ReturnsNilWithoutError(t *testing.T) {
-	e := &NodeDrainEvaluator{config: config.TomlConfig{PartialDrainEnabled: false}}
-
-	entity, err := e.shouldExecutePartialDrain(
-		healthEvent(protos.RecommendedAction_COMPONENT_RESET, gpuEntity("GPU-abc")))
+func TestPartialDrainEntity_PartialDrainDisabled_ReturnsNilWithoutError(t *testing.T) {
+	entity, err := drain.PartialDrainEntity(
+		healthEvent(protos.RecommendedAction_COMPONENT_RESET, gpuEntity("GPU-abc")), false)
 
 	require.NoError(t, err)
 	assert.Nil(t, entity)

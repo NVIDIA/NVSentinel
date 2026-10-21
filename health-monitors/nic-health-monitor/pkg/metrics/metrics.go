@@ -23,8 +23,10 @@ import (
 
 // Label names shared across the metrics declared below.
 const (
-	labelNode  = "node"
-	labelCheck = "check"
+	labelNode   = "node"
+	labelCheck  = "check"
+	labelDevice = "device"
+	labelPort   = "port"
 )
 
 var (
@@ -47,18 +49,33 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{labelNode, "category"})
 
+	// PollCycleLastCompletedTimestamp is initialized at monitor startup and then
+	// advanced whenever each poll category completes. Its age therefore remains
+	// observable even when the first or a later sysfs read is blocked.
+	PollCycleLastCompletedTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "nic_health_monitor_poll_cycle_last_completed_timestamp_seconds",
+		Help: "Unix timestamp of monitor startup or the last completed poll cycle",
+	}, []string{labelNode, "category"})
+
 	// StateCheckErrors counts per-device state-check error events (port
 	// DOWN, device disappeared, etc.).
 	StateCheckErrors = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "nic_health_monitor_state_check_errors_total",
 		Help: "Total number of state check error events",
-	}, []string{labelNode, labelCheck, "device", "port"})
+	}, []string{labelNode, labelCheck, labelDevice, labelPort})
+
+	// PortStateBlips counts ports that turned unhealthy and recovered before
+	// the port-state hold-down reported them.
+	PortStateBlips = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nic_health_monitor_port_state_blips_total",
+		Help: "Ports that turned unhealthy and recovered before the port-state hold-down reported them",
+	}, []string{labelNode, labelCheck, labelDevice, labelPort})
 
 	// CounterThresholdBreaches counts counter threshold breaches.
 	CounterThresholdBreaches = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "nic_health_monitor_counter_threshold_breaches_total",
 		Help: "Total number of counter threshold breaches detected",
-	}, []string{labelNode, "counter", "device", "port", "is_fatal"})
+	}, []string{labelNode, "counter", labelDevice, labelPort, "is_fatal"})
 
 	// FirstPollDeferred counts polls a check skipped before its first
 	// complete evaluation because discovery reported unreadable devices.

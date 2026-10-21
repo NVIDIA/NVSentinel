@@ -66,3 +66,19 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "userNamespaces and podDrainPolicies are mutually exclusive; set userNamespaces: [] when using podDrainPolicies"
+
+  - it: renders owner kinds and omits an unset pod selector
+    set:
+      userNamespaces: []
+      podDrainPolicies:
+        - name: stateful
+          ownerKinds: [StatefulSet, Job]
+          mode: AllowCompletion
+        - name: labelled-replicasets
+          podSelector: 'app=worker'
+          ownerKinds: [ReplicaSet]
+          mode: Immediate
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '(?s)\[\[podDrainPolicies\]\]\s+name = "stateful"\s+namespace = "\*"\s+ownerKinds = \["StatefulSet", "Job"\]\s+mode = "AllowCompletion"\s+\[\[podDrainPolicies\]\]\s+name = "labelled-replicasets"\s+namespace = "\*"\s+podSelector = "app=worker"\s+ownerKinds = \["ReplicaSet"\]\s+mode = "Immediate"'

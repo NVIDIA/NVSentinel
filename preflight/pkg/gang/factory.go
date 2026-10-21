@@ -63,8 +63,8 @@ func NewDiscovererFromConfig(
 ) (GangDiscoverer, error) {
 	switch detectDiscoveryType(cfg) {
 	case discoveryTypeKubernetes:
-		if err := validateGVK(restMapper, discoverer.PodGroupGVK); err == nil {
-			return discoverer.NewKubernetesDiscoverer(c), nil
+		if gvk, err := resolveNativePodGroupGVK(restMapper); err == nil {
+			return discoverer.NewKubernetesDiscoverer(c, gvk), nil
 		}
 
 		if err := validateGVK(restMapper, discoverer.WorkloadGVK); err == nil {
@@ -160,6 +160,23 @@ func resolveGVK(restMapper meta.RESTMapper, gvr schema.GroupVersionResource) (sc
 		"kind", gvk.Kind)
 
 	return gvk, nil
+}
+
+// resolveNativePodGroupGVK returns the K8s native PodGroup version that the
+// cluster prefers. The PodGroup fields that preflight reads are the same in
+// every served version, so preflight does not pin one.
+func resolveNativePodGroupGVK(restMapper meta.RESTMapper) (schema.GroupVersionKind, error) {
+	mapping, err := restMapper.RESTMapping(discoverer.PodGroupGroupKind)
+	if err != nil {
+		return schema.GroupVersionKind{}, fmt.Errorf("resource %q not found: %w", discoverer.PodGroupGroupKind, err)
+	}
+
+	slog.Info("Resolved native PodGroup version",
+		"group", mapping.GroupVersionKind.Group,
+		"version", mapping.GroupVersionKind.Version,
+		"kind", mapping.GroupVersionKind.Kind)
+
+	return mapping.GroupVersionKind, nil
 }
 
 // validateGVK checks if the specified GVK exists in the cluster.

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,10 +50,107 @@ func TestBuild_GPUResetEnabled_ScopesPodCache(t *testing.T) {
 	require.Contains(t, podCache.Namespaces, "gpu-operator")
 	assert.Equal(
 		t,
-		"app.kubernetes.io/managed-by=gpu-operator",
+		"app in (gpu-feature-discovery,nvidia-dcgm,nvidia-dcgm-dra,nvidia-dcgm-exporter,"+
+			"nvidia-dcgm-exporter-dra,nvidia-device-plugin-daemonset)",
 		podCache.Namespaces["gpu-operator"].LabelSelector.String(),
 	)
 	assert.NotNil(t, podCache.Transform)
+}
+
+func TestBuild_RegistryManagers_PodCacheKeepsEveryAppPod(t *testing.T) {
+	for name, spec := range gpuservices.Registry {
+		t.Run(name, func(t *testing.T) {
+			options, err := Build(&config.Config{
+				GPUReset: config.GPUResetControllerConfig{
+					Enabled:        true,
+					ServiceManager: gpuservices.Manager{Name: name},
+				},
+			})
+			require.NoError(t, err)
+
+			podCache := cacheForObject(t, options, &corev1.Pod{})
+			require.Contains(t, podCache.Namespaces, spec.Namespace)
+
+			selector := podCache.Namespaces[spec.Namespace].LabelSelector
+
+			for _, app := range spec.Apps {
+				podLabels := labels.Merge(spec.ManagerSelector, app.AppSelector)
+				assert.True(t, selector.Matches(labels.Set(podLabels)), "cache must keep pods of app %v", app.AppSelector)
+			}
+
+			assert.False(t, selector.Matches(labels.Set{"app": "unrelated"}), "cache must drop unrelated pods")
+		})
+	}
+}
+
+func TestBuild_CustomServiceManager_PodCacheSelector(t *testing.T) {
+	testCases := []struct {
+		name             string
+		spec             gpuservices.ManagerSpec
+		expectedSelector string
+	}{
+		{
+			name: "manager selector and shared app key",
+			spec: gpuservices.ManagerSpec{
+				ManagerSelector: map[string]string{"app.kubernetes.io/managed-by": "tilt"},
+				Namespace:       "gpu-operator",
+				Apps: []gpuservices.AppSpec{
+					{AppSelector: map[string]string{"app": "nvidia-dcgm"}, NodeLabel: "nvidia.com/gpu.deploy.dcgm"},
+				},
+			},
+			expectedSelector: "app in (nvidia-dcgm),app.kubernetes.io/managed-by=tilt",
+		},
+		{
+			name: "app selectors with different keys keep the manager selector only",
+			spec: gpuservices.ManagerSpec{
+				ManagerSelector: map[string]string{"app.kubernetes.io/managed-by": "custom"},
+				Namespace:       "custom-ns",
+				Apps: []gpuservices.AppSpec{
+					{AppSelector: map[string]string{"app": "one"}, NodeLabel: "custom.com/one"},
+					{AppSelector: map[string]string{"name": "two"}, NodeLabel: "custom.com/two"},
+				},
+			},
+			expectedSelector: "app.kubernetes.io/managed-by=custom",
+		},
+		{
+			name: "every key of one app selector is shared",
+			spec: gpuservices.ManagerSpec{
+				ManagerSelector: map[string]string{"app.kubernetes.io/managed-by": "custom"},
+				Namespace:       "custom-ns",
+				Apps: []gpuservices.AppSpec{
+					{AppSelector: map[string]string{"app": "one", "tier": "gpu"}, NodeLabel: "custom.com/one"},
+				},
+			},
+			expectedSelector: "app in (one),app.kubernetes.io/managed-by=custom,tier in (gpu)",
+		},
+		{
+			name: "only keys that every app selector uses are shared",
+			spec: gpuservices.ManagerSpec{
+				Namespace: "custom-ns",
+				Apps: []gpuservices.AppSpec{
+					{AppSelector: map[string]string{"app": "one", "tier": "gpu"}, NodeLabel: "custom.com/one"},
+					{AppSelector: map[string]string{"app": "two"}, NodeLabel: "custom.com/two"},
+				},
+			},
+			expectedSelector: "app in (one,two)",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			options, err := Build(&config.Config{
+				GPUReset: config.GPUResetControllerConfig{
+					Enabled:        true,
+					ServiceManager: gpuservices.Manager{Name: "custom", Spec: tc.spec},
+				},
+			})
+			require.NoError(t, err)
+
+			podCache := cacheForObject(t, options, &corev1.Pod{})
+			require.Contains(t, podCache.Namespaces, tc.spec.Namespace)
+			assert.Equal(t, tc.expectedSelector, podCache.Namespaces[tc.spec.Namespace].LabelSelector.String())
+		})
+	}
 }
 
 func TestBuild_GPUResetDisabled_DoesNotConfigurePodCache(t *testing.T) {

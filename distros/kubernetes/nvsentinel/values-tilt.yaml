@@ -277,6 +277,7 @@ fault-quarantine:
 
   validation:
     enabled: true
+    partialDrainEnabled: true
 
   affinity:
     podAntiAffinity:
@@ -388,6 +389,9 @@ node-drainer:
 
 
 health-events-analyzer:
+  # The MongoDB annotation recovery E2E test supplies its rule at runtime.
+  nodeRecovery:
+    enabled: true
   logLevel: debug
 
   ruleConcurrency: 8
@@ -452,7 +456,7 @@ health-events-analyzer:
     description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
-    when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || event.errorCode[0] != '31')"
+    when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45'))"
     stage = [
       '''
       {
@@ -486,10 +490,7 @@ health-events-analyzer:
             "$and": [
               {"$eq": ["this.healthevent.checkname", "SysLogsXIDError"]},
               {
-                "$ne": [
-                  "this.healthevent.errorcode.0",
-                  "31"
-                ]
+              "$not": [{"$in": ["this.healthevent.errorcode.0", ["31", "45"]]}]
               }
             ]
           }

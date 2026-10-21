@@ -2,7 +2,7 @@
 
 ## Overview
 
-`GpuThermalMarginWatch` monitors each GPU's live thermal margin (DCGM field 153, `DCGM_FI_DEV_GPU_TEMP_LIMIT`) against the per-SKU hardware-slowdown T.Limit offset published by the metadata-collector (NVML field 194, `FI_DEV_TEMPERATURE_SLOWDOWN_TLIMIT`). When a GPU's margin drops below its slowdown threshold, the GPU is at or past the temperature at which the hardware engages thermal slowdown, the fatal event for GpuThermalMarginWatch occurs. The feature is described in [ADR-042: GPU Thermal Margin](../designs/042-gpu-temp-limit-field-monitoring.md).
+`GpuThermalMarginWatch` monitors each GPU's live thermal margin (DCGM field 153, `DCGM_FI_DEV_GPU_TEMP_LIMIT`) against the per-SKU hardware-slowdown T.Limit offset published by the metadata-collector (NVML field 194, `FI_DEV_TEMPERATURE_SLOWDOWN_TLIMIT`). When a GPU's margin stays below its slowdown threshold for `gpuTempLimitMinConsecutivePolls` consecutive polls (3 by default), the GPU has been at or past the temperature at which the hardware engages thermal slowdown, and the fatal event for GpuThermalMarginWatch occurs. The feature is described in [ADR-042: GPU Thermal Margin](../designs/042-gpu-temp-limit-field-monitoring.md).
 
 **Key points:**
 
@@ -124,5 +124,6 @@ The condition clears automatically once the live margin returns to at or above t
 The check is configured through the `gpu-health-monitor` Helm chart, which renders the `[dcgmfieldsmonitoring]` section of `config.ini`:
 
 - Enable the check: Helm value `dcgmFieldsMonitoring.gpuTempLimitMonitoringEnabled` renders `gputemplimitmonitoringenabled`.
+- Consecutive polls required to fail: Helm value `dcgmFieldsMonitoring.gpuTempLimitMinConsecutivePolls` renders `gputemplimitminconsecutivepolls`.
 
 The per-GPU threshold (`slowdown_tlimit_c`) is not a Helm value. It is collected at runtime by the metadata-collector and written to `/var/lib/nvsentinel/gpu_metadata.json`.

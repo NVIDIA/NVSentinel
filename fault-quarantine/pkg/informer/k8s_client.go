@@ -341,6 +341,12 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 	updateFn := func(node *v1.Node) error {
 		alreadyQuarantined = hasNonEmptyQuarantineHealthEvent(node)
 
+		// A live quarantine is real, so a dry-run marker left on the node (for example
+		// after a rollback to a version that does not know it) must not survive it.
+		if !c.DryRunMode {
+			delete(node.Annotations, common.QuarantineHealthEventDryRunAnnotationKey)
+		}
+
 		if len(taints) > 0 {
 			if err := c.applyTaints(ctx, node, taints, nodename); err != nil {
 				return fmt.Errorf("failed to apply taints to node %s: %w", nodename, err)
@@ -458,11 +464,14 @@ func (c *FaultQuarantineClient) handleCordon(ctx context.Context, node *v1.Node,
 
 		slog.InfoContext(ctx, "Node is cordoned manually; applying FQM taints/annotations", "node", nodename)
 	} else {
+		if c.DryRunMode {
+			slog.InfoContext(ctx, "Would cordon node (dry run)", "node", nodename)
+			return
+		}
+
 		slog.InfoContext(ctx, "Cordoning node", "node", nodename)
 
-		if !c.DryRunMode {
-			node.Spec.Unschedulable = true
-		}
+		node.Spec.Unschedulable = true
 	}
 }
 
@@ -802,9 +811,11 @@ func (c *FaultQuarantineClient) removeTaints(
 func (c *FaultQuarantineClient) handleUncordon(
 	ctx context.Context, node *v1.Node, labels map[string]string, nodename string,
 ) {
-	slog.InfoContext(ctx, "Uncordoning node", "node", nodename)
+	if c.DryRunMode {
+		slog.InfoContext(ctx, "Would uncordon node (dry run)", "node", nodename)
+	} else {
+		slog.InfoContext(ctx, "Uncordoning node", "node", nodename)
 
-	if !c.DryRunMode {
 		node.Spec.Unschedulable = false
 	}
 

@@ -57,11 +57,14 @@ func clientIdempotencyKey(md metadata.MD) (string, error) {
 }
 
 // stampIdempotencyKeys writes the server-derived per-event key
-// podUID#clientKey#eventIndex into each event's metadata, always overwriting
+// clientKey#podUID#eventIndex into each event's metadata, always overwriting
 // any inbound value: the stored key is scoped to the authenticated caller, so
-// an incoming value is never trusted.
+// an incoming value is never trusted. The client key leads because publishers
+// mint it as a time-ordered UUIDv7, which gives the datastore's unique index a
+// single append point; podUID first would scatter inserts across one range
+// per publisher.
 func stampIdempotencyKeys(he *pb.HealthEvents, podUID, clientKey string) {
-	batchKey := podUID + "#" + clientKey
+	batchKey := clientKey + "#" + podUID
 
 	for i, ev := range he.GetEvents() {
 		if ev.Metadata == nil {

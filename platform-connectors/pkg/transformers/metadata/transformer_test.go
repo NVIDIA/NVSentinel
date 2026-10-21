@@ -16,6 +16,7 @@ package metadata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -1039,6 +1040,98 @@ func TestTransform_CancelledCallerFailsOpenAtOnce(t *testing.T) {
 	require.NoError(t, augmentor.Transform(gone, event))
 	require.Less(t, time.Since(start), time.Second)
 	require.Empty(t, event.Metadata)
+}
+
+// TestTransform_RemovedSkipLabelIsHonoredAtOnce: a node handed back to
+// NVSentinel is remediated on its next event, although its cached metadata
+// still opts it out and has not expired.
+func TestTransform_RemovedSkipLabelIsHonoredAtOnce(t *testing.T) {
+	ctx := context.Background()
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name:   "opted-back-in",
+		Labels: map[string]string{"nvsentinel.dgxc.nvidia.com/managed": "false"},
+	}}
+
+	createTestNode(t, node)
+	t.Cleanup(func() { deleteTestNode(t, node.Name) })
+
+	augmentor := createTestAugmentor(t, &Config{
+		CacheSize:     10,
+		CacheTTL:      time.Hour,
+		SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
+	})
+
+	gated := &pb.HealthEvent{NodeName: node.Name, ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION}
+	require.NoError(t, augmentor.Transform(ctx, gated))
+	require.Equal(t, pb.ProcessingStrategy_STORE_ONLY, gated.ProcessingStrategy, "an opted-out node is gated")
+
+	current, err := testClient.CoreV1().Nodes().Get(ctx, node.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	delete(current.Labels, "nvsentinel.dgxc.nvidia.com/managed")
+
+	_, err = testClient.CoreV1().Nodes().Update(ctx, current, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	event := &pb.HealthEvent{NodeName: node.Name, ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION}
+	require.NoError(t, augmentor.Transform(ctx, event))
+	require.Equal(t, pb.ProcessingStrategy_EXECUTE_REMEDIATION, event.ProcessingStrategy,
+		"the label is gone, so the event is remediated before the cached entry expires")
+}
+
+// TestTransform_CachedOptOutHoldsWhenTheReadFails: when the read of an
+// opted-out node fails, the event stays gated on the cached opt-out instead
+// of failing open, so an API server outage never hands the node back to
+// remediation.
+func TestTransform_CachedOptOutHoldsWhenTheReadFails(t *testing.T) {
+	ctx := context.Background()
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name:   "opted-out-read-fails",
+		Labels: map[string]string{"nvsentinel.dgxc.nvidia.com/managed": "false"},
+	}}
+
+	createTestNode(t, node)
+	t.Cleanup(func() { deleteTestNode(t, node.Name) })
+
+	var (
+		failReads   atomic.Bool
+		failedReads atomic.Int32
+	)
+
+	restCfg := rest.CopyConfig(testEnv.Config)
+	restCfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if failReads.Load() && strings.HasSuffix(req.URL.Path, "/nodes/"+node.Name) {
+				failedReads.Add(1)
+
+				return nil, errors.New("api server unavailable")
+			}
+
+			return rt.RoundTrip(req)
+		})
+	})
+
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	require.NoError(t, err)
+
+	augmentor, err := New(ctx, &Config{
+		CacheSize:     10,
+		CacheTTL:      time.Hour,
+		SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
+	}, clientset)
+	require.NoError(t, err)
+
+	gated := &pb.HealthEvent{NodeName: node.Name, ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION}
+	require.NoError(t, augmentor.Transform(ctx, gated))
+	require.Equal(t, pb.ProcessingStrategy_STORE_ONLY, gated.ProcessingStrategy, "an opted-out node is gated")
+
+	failReads.Store(true)
+
+	event := &pb.HealthEvent{NodeName: node.Name, ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION}
+	require.NoError(t, augmentor.Transform(ctx, event))
+	require.Positive(t, failedReads.Load(), "the event read the opted-out node again")
+	require.Equal(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy,
+		"a failed read keeps the node opted out")
 }
 
 // TestGetOrFetchMetadata_CancelledCallerStartsNoReads: once the caller's

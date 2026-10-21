@@ -29,6 +29,13 @@
 #       DRIVER_ROOT=/run/nvidia/driver ./gpu_reset.sh
 #       DRIVER_ROOT=/run/nvidia/driver NVIDIA_GPU_RESETS="GPU-123,GPU-456" ./gpu_reset.sh
 #
+#   Mode 3: Host-installed driver whose binaries are outside the default PATH (NVIDIA_VISIBLE_DEVICES=void):
+#     Requires HostPath volumes:
+#       - From / to /run/nvidia/driver
+#       - From /sys to /run/nvidia/driver/sys
+#     DRIVER_BIN_PATH is a path inside DRIVER_ROOT. For example, on GKE:
+#       DRIVER_ROOT=/run/nvidia/driver DRIVER_BIN_PATH=/home/kubernetes/bin/nvidia/bin ./gpu_reset.sh
+#
 # NOTES:
 #   - Requires root
 #   - Supports x86_64 and aarch64
@@ -36,6 +43,9 @@
 set -eou pipefail
 
 DRIVER_ROOT="${DRIVER_ROOT:-/}"
+# Optional directory inside DRIVER_ROOT that holds the driver binaries, for drivers installed
+# outside the default PATH.
+DRIVER_BIN_PATH="${DRIVER_BIN_PATH:-}"
 NODE_NAME="${NODE_NAME:-unknown-node}"
 START_TIME=$(date +%s.%N)
 BUG_REPORT_TIMESTAMP="${BUG_REPORT_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
@@ -47,8 +57,20 @@ log() {
   printf "(%s) %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
+# chroot looks up the command with PATH after it changes root, so DRIVER_BIN_PATH is resolved
+# inside DRIVER_ROOT.
+run_in_driver_root() {
+  local search_path="$PATH"
+
+  if [ -n "$DRIVER_BIN_PATH" ]; then
+    search_path="${DRIVER_BIN_PATH}:${search_path}"
+  fi
+
+  PATH="$search_path" chroot "$DRIVER_ROOT" "$@"
+}
+
 nvidia_smi_helper() {
-  chroot "$DRIVER_ROOT" nvidia-smi "$@"
+  run_in_driver_root nvidia-smi "$@"
 }
 
 prepend_driver_root() {
@@ -60,7 +82,7 @@ prepend_driver_root() {
 }
 
 nvidia_bug_report_helper() {
-  chroot "$DRIVER_ROOT" nvidia-bug-report.sh "$@"
+  run_in_driver_root nvidia-bug-report.sh "$@"
 }
 
 collect_and_upload_nvidia_bug_report() {
@@ -111,7 +133,7 @@ collect_and_upload_nvidia_bug_report() {
   fi
 }
 
-log "INFO: Using DRIVER_ROOT=$DRIVER_ROOT"
+log "INFO: Using DRIVER_ROOT=$DRIVER_ROOT DRIVER_BIN_PATH=$DRIVER_BIN_PATH"
 log "INFO: Testing nvidia-smi invocation: chroot $DRIVER_ROOT nvidia-smi --version"
 nvidia_smi_helper --version
 

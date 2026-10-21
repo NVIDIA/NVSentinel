@@ -29,6 +29,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -40,6 +41,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
@@ -116,8 +118,25 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			NodeLock: distributedlock.NewNodeLock(
 				k8sClient, scheme.Scheme, lockNamespace, nil,
 			),
+			NodeClaim: distributedlock.NewNodeLock(
+				k8sClient, scheme.Scheme, lockNamespace, nil,
+				distributedlock.WithLeaseName(ClaimLeaseName),
+			),
 		}
 	})
+
+	// getLease reads a lease directly; err is NotFound when it is absent.
+	getLease := func(name string) (*coordinationv1.Lease, error) {
+		var lease coordinationv1.Lease
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: lockNamespace}, &lease)
+
+		return &lease, err
+	}
+
+	cleanupLeases := func(nodeName string) {
+		deleteLease(ctx, nodeName, lockNamespace)
+		deleteLease(ctx, ClaimLeaseName(nodeName), lockNamespace)
+	}
 
 	Context("Reconcile entry point", func() {
 		It("returns no error when MR does not exist", func() {
@@ -188,6 +207,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				}).
 				Build()
 			r.NodeLock = &stubNodeLock{lockResult: true}
+			r.NodeClaim = &stubNodeLock{lockResult: true}
 
 			result, err := r.handleCreateOrUpdate(ctx, slog.Default(), mr)
 			Expect(err).NotTo(HaveOccurred())
@@ -208,6 +228,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 			DeferCleanup(func() {
 				removeFinalizer(ctx, mr.Name)
+				cleanupLeases("node-init-fin")
 			})
 
 			result, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
@@ -281,13 +302,14 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(fc.calls.Load()).To(BeZero())
 		})
 
-		It("is a no-op when HealthEventEmitted is already True",
+		It("does not re-emit when HealthEventEmitted is already True",
 			func() {
 				mr := newTestMR("mr-already-emitted", "node-emitted")
 				mr.Finalizers = []string{mrFinalizerName}
 				Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 				DeferCleanup(func() {
 					removeFinalizer(ctx, mr.Name)
+					cleanupLeases("node-emitted")
 				})
 
 				var fetched v1alpha1.MaintenanceRequest
@@ -309,7 +331,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				Expect(fc.calls.Load()).To(BeZero())
 			})
 
-		It("locks node and emits event on happy path", func() {
+		It("claims node, emits event, and releases the janitor lock on happy path", func() {
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{Name: "node-happy"},
 			}
@@ -322,7 +344,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 			DeferCleanup(func() {
 				removeFinalizer(ctx, mr.Name)
-				deleteLease(ctx, "node-happy", lockNamespace)
+				cleanupLeases("node-happy")
 			})
 
 			result, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
@@ -350,14 +372,191 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(publishedEvent.Metadata).To(HaveKeyWithValue(
 				"maintenanceRequestUID", string(updated.UID)))
 
-			// Verify a lease was created for the node
-			var lease coordinationv1.Lease
-			Expect(k8sClient.Get(ctx,
-				types.NamespacedName{
-					Name: "node-happy", Namespace: lockNamespace,
-				}, &lease)).To(Succeed())
-			Expect(lease.OwnerReferences).To(HaveLen(1))
-			Expect(lease.OwnerReferences[0].Name).To(Equal(mr.Name))
+			claim, err := getLease(ClaimLeaseName("node-happy"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(claim.OwnerReferences).To(HaveLen(1))
+			Expect(claim.OwnerReferences[0].Name).To(Equal(mr.Name))
+			Expect(claim.OwnerReferences[0].UID).To(Equal(updated.UID))
+
+			_, err = getLease("node-happy")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+				"the janitor node lock must be released after emitting")
+		})
+
+		It("lets the janitor job triggered by its event lock the node", func() {
+			mr := newTestMR("mr-janitor-handoff", "node-janitor-handoff")
+			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
+			DeferCleanup(func() {
+				removeFinalizer(ctx, mr.Name)
+				cleanupLeases("node-janitor-handoff")
+			})
+
+			_, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fc.calls.Load()).To(Equal(int64(1)))
+
+			rebootJob := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+				Name: "reboot-job", Namespace: lockNamespace, UID: "reboot-job-uid",
+			}}
+			Expect(r.NodeLock.LockNode(ctx, rebootJob, "node-janitor-handoff")).To(BeTrue(),
+				"an open MaintenanceRequest must not block the janitor job it triggered")
+
+			_, err = r.Reconcile(ctx, reconcileRequest(mr.Name))
+			Expect(err).NotTo(HaveOccurred())
+
+			lock, err := getLease("node-janitor-handoff")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lock.OwnerReferences[0].UID).To(Equal(rebootJob.UID),
+				"a later reconcile of the MaintenanceRequest must leave the janitor lock alone")
+			Expect(fc.calls.Load()).To(Equal(int64(1)))
+		})
+
+		It("releases a janitor lock left by an older version and takes the claim", func() {
+			mr := newTestMR("mr-legacy-lock", "node-legacy-lock")
+			mr.Finalizers = []string{mrFinalizerName}
+			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
+			DeferCleanup(func() {
+				removeFinalizer(ctx, mr.Name)
+				cleanupLeases("node-legacy-lock")
+			})
+
+			var fetched v1alpha1.MaintenanceRequest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mr.Name}, &fetched)).To(Succeed())
+			r.setCondition(&fetched, conditionHealthEventEmitted, "True", reasonEmitted, "emitted by older version")
+			Expect(k8sClient.Status().Update(ctx, &fetched)).To(Succeed())
+			Expect(r.NodeLock.LockNode(ctx, &fetched, "node-legacy-lock")).To(BeTrue())
+
+			result, err := r.Reconcile(ctx, reconcileRequest(mr.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+			Expect(fc.calls.Load()).To(BeZero())
+
+			_, err = getLease("node-legacy-lock")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			claim, err := getLease(ClaimLeaseName("node-legacy-lock"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(claim.OwnerReferences[0].UID).To(Equal(fetched.UID))
+		})
+
+		It("keeps an older version's janitor lock when another request took the claim first", func() {
+			older := newTestMR("mr-legacy-open", "node-legacy-queue")
+			older.Finalizers = []string{mrFinalizerName}
+			Expect(k8sClient.Create(ctx, older)).To(Succeed())
+			DeferCleanup(func() {
+				removeFinalizer(ctx, older.Name)
+				cleanupLeases("node-legacy-queue")
+			})
+
+			var emitted v1alpha1.MaintenanceRequest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: older.Name}, &emitted)).To(Succeed())
+			r.setCondition(&emitted, conditionHealthEventEmitted, "True", reasonEmitted, "emitted by older version")
+			Expect(k8sClient.Status().Update(ctx, &emitted)).To(Succeed())
+			Expect(r.NodeLock.LockNode(ctx, &emitted, "node-legacy-queue")).To(BeTrue())
+
+			// A request that was queued behind it reconciles first after the
+			// upgrade and takes the claim, then waits on the janitor lock.
+			queued := newTestMR("mr-legacy-queued", "node-legacy-queue")
+			Expect(k8sClient.Create(ctx, queued)).To(Succeed())
+			DeferCleanup(func() { removeFinalizer(ctx, queued.Name) })
+
+			result, err := r.Reconcile(ctx, reconcileRequest(queued.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+
+			result, err = r.Reconcile(ctx, reconcileRequest(older.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+
+			lock, err := getLease("node-legacy-queue")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lock.OwnerReferences[0].UID).To(Equal(emitted.UID))
+
+			_, err = r.Reconcile(ctx, reconcileRequest(queued.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fc.calls.Load()).To(BeZero(),
+				"the queued request must not emit while the older request is open")
+		})
+
+		It("rejects a second MaintenanceRequest for the same node and never retries it", func() {
+			first := newTestMR("mr-first-open", "node-duplicate")
+			Expect(k8sClient.Create(ctx, first)).To(Succeed())
+			DeferCleanup(func() {
+				removeFinalizer(ctx, first.Name)
+				cleanupLeases("node-duplicate")
+			})
+
+			_, err := r.Reconcile(ctx, reconcileRequest(first.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fc.calls.Load()).To(Equal(int64(1)))
+
+			second := newTestMR("mr-second-open", "node-duplicate")
+			Expect(k8sClient.Create(ctx, second)).To(Succeed())
+			DeferCleanup(func() {
+				removeFinalizer(ctx, second.Name)
+			})
+
+			for range 2 {
+				result, err := r.Reconcile(ctx, reconcileRequest(second.Name))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(reconcile.Result{}), "a rejected request must not be requeued")
+			}
+
+			Expect(fc.calls.Load()).To(Equal(int64(1)), "a rejected request must not emit an event")
+
+			var updated v1alpha1.MaintenanceRequest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: second.Name}, &updated)).To(Succeed())
+			cond := findCondition(&updated, conditionHealthEventEmitted)
+			Expect(cond.Status).To(Equal("False"))
+			Expect(cond.Reason).To(Equal(reasonRejected))
+			Expect(cond.Message).To(ContainSubstring(first.Name))
+
+			_, err = getLease("node-duplicate")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "a rejected request must not take the janitor lock")
+		})
+
+		It("waits instead of rejecting while the claim holder is being deleted", func() {
+			first := newTestMR("mr-leaving", "node-handover")
+			Expect(k8sClient.Create(ctx, first)).To(Succeed())
+			DeferCleanup(func() {
+				removeFinalizer(ctx, first.Name)
+				cleanupLeases("node-handover")
+			})
+
+			_, err := r.Reconcile(ctx, reconcileRequest(first.Name))
+			Expect(err).NotTo(HaveOccurred())
+
+			var leaving v1alpha1.MaintenanceRequest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: first.Name}, &leaving)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &leaving)).To(Succeed())
+
+			second := newTestMR("mr-arriving", "node-handover")
+			Expect(k8sClient.Create(ctx, second)).To(Succeed())
+			DeferCleanup(func() {
+				removeFinalizer(ctx, second.Name)
+			})
+
+			result, err := r.Reconcile(ctx, reconcileRequest(second.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+			Expect(fc.calls.Load()).To(Equal(int64(1)))
+
+			var waiting v1alpha1.MaintenanceRequest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: second.Name}, &waiting)).To(Succeed())
+			Expect(findCondition(&waiting, conditionHealthEventEmitted).Reason).To(Equal(reasonBlocked))
+
+			// The first request finishes its cleanup and releases the claim.
+			_, err = r.Reconcile(ctx, reconcileRequest(first.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fc.calls.Load()).To(Equal(int64(2)))
+
+			result, err = r.Reconcile(ctx, reconcileRequest(second.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+			Expect(fc.calls.Load()).To(Equal(int64(3)))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: second.Name}, &waiting)).To(Succeed())
+			Expect(isConditionTrue(&waiting, conditionHealthEventEmitted)).To(BeTrue())
 		})
 
 		It("blocks when node is locked by another operation",
@@ -397,6 +596,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 				DeferCleanup(func() {
 					removeFinalizer(ctx, mr.Name)
+					deleteLease(ctx, ClaimLeaseName("node-blocked"), lockNamespace)
 				})
 
 				result, err := r.Reconcile(
@@ -410,9 +610,14 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				Expect(k8sClient.Get(ctx,
 					types.NamespacedName{Name: mr.Name},
 					&updated)).To(Succeed())
-				Expect(findCondition(
-					&updated, conditionHealthEventEmitted,
-				).Reason).To(Equal(reasonBlocked))
+				cond := findCondition(&updated, conditionHealthEventEmitted)
+				Expect(cond.Reason).To(Equal(reasonBlocked))
+				Expect(cond.Message).To(ContainSubstring("RebootNode/other-reboot"))
+
+				lock, err := getLease("node-blocked")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(lock.OwnerReferences[0].UID).To(Equal(types.UID("other-uid-123")),
+					"a blocked request must leave the janitor job's lock alone")
 			})
 
 		It("retries when publisher fails", func() {
@@ -424,7 +629,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 			DeferCleanup(func() {
 				_ = k8sClient.Delete(ctx, node)
-				deleteLease(ctx, "node-pub-fail", lockNamespace)
+				cleanupLeases("node-pub-fail")
 			})
 
 			fc.responseFn = func(_ int) error {
@@ -449,6 +654,10 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(findCondition(
 				&updated, conditionHealthEventEmitted,
 			).Reason).To(Equal(reasonEmitFailed))
+
+			_, err = getLease("node-pub-fail")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+				"a failed emit must not keep janitor jobs off the node while it retries")
 		})
 
 		It("proceeds when target node does not exist", func() {
@@ -457,7 +666,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 			DeferCleanup(func() {
 				removeFinalizer(ctx, mr.Name)
-				deleteLease(ctx, "nonexistent-node", lockNamespace)
+				cleanupLeases("nonexistent-node")
 			})
 
 			result, err := r.Reconcile(
@@ -532,7 +741,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				Expect(fc.calls.Load()).To(BeZero())
 			})
 
-		It("emits clearing event, releases lease, "+
+		It("emits clearing event, releases both leases, "+
 			"and removes finalizer", func() {
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
@@ -542,6 +751,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 			DeferCleanup(func() {
 				_ = k8sClient.Delete(ctx, node)
+				cleanupLeases("node-full-del")
 			})
 
 			mr := newTestMR("mr-full-del", "node-full-del")
@@ -550,11 +760,14 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			_, _ = r.Reconcile(ctx, reconcileRequest(mr.Name))
 			Expect(fc.calls.Load()).To(Equal(int64(1)))
 
-			// Trigger deletion
 			var fetched v1alpha1.MaintenanceRequest
 			Expect(k8sClient.Get(ctx,
 				types.NamespacedName{Name: mr.Name},
 				&fetched)).To(Succeed())
+
+			// Simulate an interrupted emit that left the janitor lock held.
+			Expect(r.NodeLock.LockNode(ctx, &fetched, "node-full-del")).To(BeTrue())
+
 			Expect(k8sClient.Delete(ctx, &fetched)).To(Succeed())
 
 			// Reconcile deletion
@@ -569,13 +782,50 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(clearingEvent.Metadata).To(HaveKeyWithValue(
 				"maintenanceRequestUID", string(fetched.UID)))
 
-			// Lease should be deleted after successful unlock
-			var lease coordinationv1.Lease
-			err = k8sClient.Get(ctx,
-				types.NamespacedName{
-					Name: "node-full-del", Namespace: lockNamespace,
-				}, &lease)
-			Expect(err).To(HaveOccurred())
+			_, err = getLease("node-full-del")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the janitor node lock must be released")
+
+			_, err = getLease(ClaimLeaseName("node-full-del"))
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the claim must be released")
+
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: mr.Name}, &fetched)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the finalizer must be removed")
+		})
+
+		It("removes a rejected request without touching the open request's claim", func() {
+			first := newTestMR("mr-del-first", "node-del-rejected")
+			Expect(k8sClient.Create(ctx, first)).To(Succeed())
+			DeferCleanup(func() {
+				removeFinalizer(ctx, first.Name)
+				cleanupLeases("node-del-rejected")
+			})
+
+			_, err := r.Reconcile(ctx, reconcileRequest(first.Name))
+			Expect(err).NotTo(HaveOccurred())
+
+			second := newTestMR("mr-del-second", "node-del-rejected")
+			Expect(k8sClient.Create(ctx, second)).To(Succeed())
+
+			_, err = r.Reconcile(ctx, reconcileRequest(second.Name))
+			Expect(err).NotTo(HaveOccurred())
+
+			var rejected v1alpha1.MaintenanceRequest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: second.Name}, &rejected)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &rejected)).To(Succeed())
+
+			result, err := r.Reconcile(ctx, reconcileRequest(second.Name))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+			Expect(fc.calls.Load()).To(Equal(int64(1)), "a rejected request has nothing to clear")
+
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: second.Name}, &rejected)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			var open v1alpha1.MaintenanceRequest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: first.Name}, &open)).To(Succeed())
+			claim, err := getLease(ClaimLeaseName("node-del-rejected"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(claim.OwnerReferences[0].UID).To(Equal(open.UID))
 		})
 
 		It("skips clearing event when opening event was never emitted",
@@ -619,7 +869,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				Expect(fc.calls.Load()).To(BeZero())
 			})
 
-		It("retries clearing while keeping node locked", func() {
+		It("retries clearing while keeping the node claimed", func() {
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "node-clear-fail",
@@ -628,6 +878,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 			DeferCleanup(func() {
 				_ = k8sClient.Delete(ctx, node)
+				cleanupLeases("node-clear-fail")
 			})
 
 			mr := newTestMR("mr-clear-fail", "node-clear-fail")
@@ -636,12 +887,8 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			_, _ = r.Reconcile(ctx, reconcileRequest(mr.Name))
 			Expect(fc.calls.Load()).To(Equal(int64(1)))
 
-			// Verify the lease was created
-			var lease coordinationv1.Lease
-			Expect(k8sClient.Get(ctx,
-				types.NamespacedName{
-					Name: "node-clear-fail", Namespace: lockNamespace,
-				}, &lease)).To(Succeed())
+			_, err := getLease(ClaimLeaseName("node-clear-fail"))
+			Expect(err).NotTo(HaveOccurred())
 
 			// Fail on the clearing event
 			fc.responseFn = func(call int) error {
@@ -658,7 +905,7 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				&fetched)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &fetched)).To(Succeed())
 
-			_, err := r.Reconcile(
+			_, err = r.Reconcile(
 				ctx, reconcileRequest(mr.Name))
 			Expect(err).To(HaveOccurred())
 
@@ -670,13 +917,10 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(controllerutil.ContainsFinalizer(
 				&updated, mrFinalizerName)).To(BeTrue())
 
-			// Lease should still exist — node stays locked while
-			// clearing is retrying (unlike the old annotation
-			// approach, the lock prevents other operations).
-			Expect(k8sClient.Get(ctx,
-				types.NamespacedName{
-					Name: "node-clear-fail", Namespace: lockNamespace,
-				}, &lease)).To(Succeed())
+			// The claim stays while clearing retries, so no other
+			// MaintenanceRequest can open on the node before it clears.
+			_, err = getLease(ClaimLeaseName("node-clear-fail"))
+			Expect(err).NotTo(HaveOccurred())
 
 			// Allow clearing to succeed and reconcile again
 			fc.responseFn = nil
@@ -684,6 +928,9 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 				ctx, reconcileRequest(mr.Name))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
+
+			_, err = getLease(ClaimLeaseName("node-clear-fail"))
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 
 		It("handles deletion with nil spec gracefully", func() {
@@ -709,8 +956,8 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 		})
 	})
 
-	Context("NodeLock re-acquire", func() {
-		It("re-acquires lock when already held by self", func() {
+	Context("NodeClaim re-acquire", func() {
+		It("keeps its own claim across reconciles", func() {
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "node-self-claim",
@@ -725,29 +972,124 @@ var _ = Describe("MaintenanceRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
 			DeferCleanup(func() {
 				removeFinalizer(ctx, mr.Name)
-				deleteLease(ctx, "node-self-claim", lockNamespace)
+				cleanupLeases("node-self-claim")
 			})
 
-			// First reconcile: acquires lock + emits
-			result, err := r.Reconcile(
-				ctx, reconcileRequest(mr.Name))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{}))
+			for range 2 {
+				result, err := r.Reconcile(
+					ctx, reconcileRequest(mr.Name))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(reconcile.Result{}))
+			}
+
 			Expect(fc.calls.Load()).To(Equal(int64(1)))
 
-			// Verify lease exists with correct owner
-			var lease coordinationv1.Lease
-			Expect(k8sClient.Get(ctx,
-				types.NamespacedName{
-					Name: "node-self-claim", Namespace: lockNamespace,
-				}, &lease)).To(Succeed())
+			claim, err := getLease(ClaimLeaseName("node-self-claim"))
+			Expect(err).NotTo(HaveOccurred())
 
 			var updated v1alpha1.MaintenanceRequest
 			Expect(k8sClient.Get(ctx,
 				types.NamespacedName{Name: mr.Name},
 				&updated)).To(Succeed())
-			Expect(lease.OwnerReferences[0].UID).To(
+			Expect(claim.OwnerReferences[0].UID).To(
 				Equal(updated.UID))
+		})
+	})
+
+	Context("ActiveClaimHolder", func() {
+		claimOwnedBy := func(nodeName string, owner metav1.OwnerReference) {
+			lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{
+				Name:            ClaimLeaseName(nodeName),
+				Namespace:       lockNamespace,
+				OwnerReferences: []metav1.OwnerReference{owner},
+			}}
+			Expect(k8sClient.Create(ctx, lease)).To(Succeed())
+			DeferCleanup(func() { cleanupLeases(nodeName) })
+		}
+
+		mrOwner := func(mr *v1alpha1.MaintenanceRequest) metav1.OwnerReference {
+			return metav1.OwnerReference{
+				APIVersion: v1alpha1.MRGroupVersion.String(),
+				Kind:       managed.MRKind,
+				Name:       mr.Name,
+				UID:        mr.UID,
+			}
+		}
+
+		createMR := func(name, nodeName string) *v1alpha1.MaintenanceRequest {
+			mr := newTestMR(name, nodeName)
+			Expect(k8sClient.Create(ctx, mr)).To(Succeed())
+			DeferCleanup(func() { removeFinalizer(ctx, name) })
+
+			return mr
+		}
+
+		It("reports no holder when the node has no claim", func() {
+			mr := newTestMR("mr-holder-none", "node-holder-none")
+
+			_, active, err := ActiveClaimHolder(ctx, k8sClient, r.NodeClaim, mr, "node-holder-none")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(active).To(BeFalse())
+		})
+
+		It("does not treat the request itself as a duplicate", func() {
+			mr := createMR("mr-holder-self", "node-holder-self")
+			claimOwnedBy("node-holder-self", mrOwner(mr))
+
+			_, active, err := ActiveClaimHolder(ctx, k8sClient, r.NodeClaim, mr, "node-holder-self")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(active).To(BeFalse())
+		})
+
+		It("does not treat an owner of another kind as a duplicate", func() {
+			mr := newTestMR("mr-holder-kind", "node-holder-kind")
+			claimOwnedBy("node-holder-kind", metav1.OwnerReference{
+				APIVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+				Kind:       "RebootNode",
+				Name:       "mr-holder-kind-reboot",
+				UID:        "reboot-uid",
+			})
+
+			_, active, err := ActiveClaimHolder(ctx, k8sClient, r.NodeClaim, mr, "node-holder-kind")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(active).To(BeFalse())
+		})
+
+		It("does not treat a holder that no longer exists as a duplicate", func() {
+			mr := newTestMR("mr-holder-gone", "node-holder-gone")
+			claimOwnedBy("node-holder-gone", metav1.OwnerReference{
+				APIVersion: v1alpha1.MRGroupVersion.String(),
+				Kind:       managed.MRKind,
+				Name:       "mr-already-deleted",
+				UID:        "deleted-uid",
+			})
+
+			_, active, err := ActiveClaimHolder(ctx, k8sClient, r.NodeClaim, mr, "node-holder-gone")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(active).To(BeFalse())
+		})
+
+		It("does not treat a holder for a different node as a duplicate", func() {
+			// The janitor lock of a node literally named "mr-claim.x" shares
+			// the claim name of node "x".
+			other := createMR("mr-holder-other-node", "mr-claim.node-holder-collide")
+			mr := newTestMR("mr-holder-collide", "node-holder-collide")
+			claimOwnedBy("node-holder-collide", mrOwner(other))
+
+			_, active, err := ActiveClaimHolder(ctx, k8sClient, r.NodeClaim, mr, "node-holder-collide")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(active).To(BeFalse())
+		})
+
+		It("reports an open request for the same node as a duplicate", func() {
+			open := createMR("mr-holder-open", "node-holder-open")
+			mr := newTestMR("mr-holder-new", "node-holder-open")
+			claimOwnedBy("node-holder-open", mrOwner(open))
+
+			holder, active, err := ActiveClaimHolder(ctx, k8sClient, r.NodeClaim, mr, "node-holder-open")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(active).To(BeTrue())
+			Expect(holder.Name).To(Equal(open.Name))
 		})
 	})
 

@@ -26,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -33,6 +35,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/condition"
 	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
+	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
@@ -44,14 +47,22 @@ const (
 	reasonEmitted               = "Emitted"
 	reasonEmitFailed            = "EmitFailed"
 	reasonBlocked               = "Blocked"
+	reasonRejected              = "Rejected"
+
+	claimLeasePrefix = "mr-claim."
 )
 
 // MaintenanceRequestReconciler reconciles MaintenanceRequest objects.
+//
+// NodeLock is the janitor node lock, shared with every janitor controller.
+// NodeClaim allows one open MaintenanceRequest per node; build it with
+// distributedlock.WithLeaseName(ClaimLeaseName).
 type MaintenanceRequestReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	Publisher *healthpub.Publisher
 	NodeLock  distributedlock.NodeLock
+	NodeClaim distributedlock.NodeLock
 }
 
 // SetupWithManager registers the reconciler with the manager.
@@ -117,28 +128,185 @@ func (r *MaintenanceRequestReconciler) handleCreateOrUpdate(
 	}
 
 	if isConditionTrue(mr, conditionHealthEventEmitted) {
+		return r.handleEmitted(ctx, log, mr, nodeName)
+	}
+
+	if hasConditionReason(mr, conditionHealthEventEmitted, reasonRejected) {
 		return ctrl.Result{}, nil
 	}
 
 	return r.claimAndEmit(ctx, log, mr, nodeName)
 }
 
-func (r *MaintenanceRequestReconciler) claimAndEmit(
+// handleEmitted leaves an emitted request holding only its claim. A request
+// emitted by an older version still holds the janitor node lock and has no
+// claim, which blocks the janitor job that its own event triggers.
+func (r *MaintenanceRequestReconciler) handleEmitted(
 	ctx context.Context, log *slog.Logger,
 	mr *v1alpha1.MaintenanceRequest, nodeName string,
 ) (ctrl.Result, error) {
-	locked := r.NodeLock.LockNode(ctx, mr, nodeName)
-	if !locked {
-		r.setCondition(mr, conditionHealthEventEmitted, "False", reasonBlocked,
-			fmt.Sprintf("Node %s is locked by another maintenance operation.", nodeName))
-
-		if statusErr := r.Status().Update(ctx, mr); statusErr != nil {
-			log.Error("Failed to update blocked status", "error", statusErr)
-		}
+	if !r.NodeClaim.LockNode(ctx, mr, nodeName) {
+		// Another request can take the claim first only while requests from an
+		// older version are open. Keeping the janitor lock makes that request
+		// wait for this one, as the older version did.
+		log.Warn("Emitted MaintenanceRequest does not hold the node claim; keeping the node lock",
+			"node", nodeName)
 
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	if r.NodeLock.CheckUnlock(ctx, mr, nodeName) {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// claimAndEmit sends the opening event. The claim is kept until deletion so
+// that a node has at most one open MaintenanceRequest. The janitor node lock is
+// held only around the emit, so the event cannot start maintenance while a
+// janitor job runs; it must be released afterwards because the janitor job
+// that this event triggers needs the same lock.
+func (r *MaintenanceRequestReconciler) claimAndEmit(
+	ctx context.Context, log *slog.Logger,
+	mr *v1alpha1.MaintenanceRequest, nodeName string,
+) (ctrl.Result, error) {
+	if !r.NodeClaim.LockNode(ctx, mr, nodeName) {
+		return r.handleClaimContention(ctx, log, mr, nodeName)
+	}
+
+	if !r.NodeLock.LockNode(ctx, mr, nodeName) {
+		return r.setBlocked(ctx, log, mr, fmt.Sprintf(
+			"Node %s is locked by another maintenance operation%s.",
+			nodeName, r.lockHolderDescription(ctx, nodeName)))
+	}
+
+	emitErr := r.emitAndPersist(ctx, log, mr)
+	retryUnlock := r.NodeLock.CheckUnlock(ctx, mr, nodeName)
+
+	if emitErr != nil {
+		return ctrl.Result{}, emitErr
+	}
+
+	log.Info("Successfully emitted opening health event", "node", nodeName)
+
+	if retryUnlock {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// handleClaimContention rejects mr when another open MaintenanceRequest holds
+// the node's claim. Any other holder means the claim is about to be released,
+// so mr waits instead.
+func (r *MaintenanceRequestReconciler) handleClaimContention(
+	ctx context.Context, log *slog.Logger,
+	mr *v1alpha1.MaintenanceRequest, nodeName string,
+) (ctrl.Result, error) {
+	// The holder is read from the cache that delivered mr's own event, so a
+	// holder deleted before mr was created is already seen as being deleted.
+	holder, active, err := ActiveClaimHolder(ctx, r.Client, r.NodeClaim, mr, nodeName)
+	if err != nil {
+		log.Warn("Unable to inspect node claim holder; will retry", "node", nodeName, "error", err)
+	}
+
+	if !active {
+		return r.setBlocked(ctx, log, mr, fmt.Sprintf(
+			"Waiting for the MaintenanceRequest claim on node %s to be released.", nodeName))
+	}
+
+	log.Info("Rejecting MaintenanceRequest: node already has an open MaintenanceRequest",
+		"node", nodeName, "holder", holder.Name)
+
+	r.setCondition(mr, conditionHealthEventEmitted, "False", reasonRejected, fmt.Sprintf(
+		"Node %s already has an open MaintenanceRequest %s. This request will not be retried; delete it.",
+		nodeName, holder.Name))
+
+	if err := r.Status().Update(ctx, mr); err != nil {
+		return ctrl.Result{}, fmt.Errorf("persist rejected status: %w", err)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// ActiveClaimHolder reports whether the claim on nodeName is held by another
+// open MaintenanceRequest for the same node, which makes mr a duplicate. Every
+// other holder (mr itself, a request that is being deleted or is gone, or an
+// owner of another kind) is not a duplicate. A missing claim is not an error.
+func ActiveClaimHolder(
+	ctx context.Context, reader client.Reader, claim distributedlock.NodeLock,
+	mr *v1alpha1.MaintenanceRequest, nodeName string,
+) (*v1alpha1.MaintenanceRequest, bool, error) {
+	owner, err := claim.GetHolder(ctx, nodeName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, false, nil
+		}
+
+		return nil, false, fmt.Errorf("inspect node claim: %w", err)
+	}
+
+	if owner.Kind != managed.MRKind || owner.UID == mr.UID {
+		return nil, false, nil
+	}
+
+	var holder v1alpha1.MaintenanceRequest
+	if err := reader.Get(ctx, client.ObjectKey{Name: owner.Name}, &holder); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, false, nil
+		}
+
+		return nil, false, fmt.Errorf("get claim holder %q: %w", owner.Name, err)
+	}
+
+	if !isOpenRequestFor(&holder, owner.UID, nodeName) {
+		return nil, false, nil
+	}
+
+	return &holder, true, nil
+}
+
+// isOpenRequestFor reports whether holder is the claim owner itself, rather
+// than a recreated request with the same name, is not being deleted, and
+// targets nodeName.
+func isOpenRequestFor(holder *v1alpha1.MaintenanceRequest, ownerUID types.UID, nodeName string) bool {
+	if holder.UID != ownerUID || holder.DeletionTimestamp != nil {
+		return false
+	}
+
+	return holder.Spec != nil && holder.Spec.HealthEvent != nil && holder.Spec.HealthEvent.NodeName == nodeName
+}
+
+func (r *MaintenanceRequestReconciler) setBlocked(
+	ctx context.Context, log *slog.Logger,
+	mr *v1alpha1.MaintenanceRequest, message string,
+) (ctrl.Result, error) {
+	log.Info("MaintenanceRequest blocked; will retry", "reason", message)
+
+	r.setCondition(mr, conditionHealthEventEmitted, "False", reasonBlocked, message)
+
+	if statusErr := r.Status().Update(ctx, mr); statusErr != nil {
+		log.Error("Failed to update blocked status", "error", statusErr)
+	}
+
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// lockHolderDescription names the janitor node lock holder for the Blocked
+// message, or returns "" when the holder cannot be read.
+func (r *MaintenanceRequestReconciler) lockHolderDescription(ctx context.Context, nodeName string) string {
+	holder, err := r.NodeLock.GetHolder(ctx, nodeName)
+	if err != nil || holder == nil {
+		return ""
+	}
+
+	return fmt.Sprintf(" (%s/%s)", holder.Kind, holder.Name)
+}
+
+func (r *MaintenanceRequestReconciler) emitAndPersist(
+	ctx context.Context, log *slog.Logger, mr *v1alpha1.MaintenanceRequest,
+) error {
 	if err := r.emitOpeningEvent(ctx, log, mr); err != nil {
 		r.setCondition(mr, conditionHealthEventEmitted, "False", reasonEmitFailed,
 			fmt.Sprintf("Failed to emit health event: %v", err))
@@ -147,16 +315,10 @@ func (r *MaintenanceRequestReconciler) claimAndEmit(
 			log.Error("Failed to update status after emit failure", "error", statusErr)
 		}
 
-		return ctrl.Result{}, err
+		return err
 	}
 
-	if err := r.persistEmittedCondition(ctx, mr); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	log.Info("Successfully emitted opening health event", "node", nodeName)
-
-	return ctrl.Result{}, nil
+	return r.persistEmittedCondition(ctx, mr)
 }
 
 func (r *MaintenanceRequestReconciler) persistEmittedCondition(
@@ -173,11 +335,11 @@ func (r *MaintenanceRequestReconciler) persistEmittedCondition(
 // Every step is idempotent so a crash at any point produces a clean
 // retry:
 //   - emitClearingEvent fires first (only if the opening event was
-//     previously emitted). The node lock is held during this step so
-//     no other maintenance operation can start on the node.
-//   - CheckUnlock releases the lease after the clearing event succeeds.
-//     If the MR is force-deleted, K8s GC cleans up the lease via the
-//     owner reference.
+//     previously emitted). The claim is held during this step so no
+//     other MaintenanceRequest can open on the node before it clears.
+//   - CheckUnlock releases the janitor node lock, in case an interrupted
+//     emit left it held, and then the claim. If the MR is force-deleted,
+//     K8s GC cleans up both leases via their owner references.
 //   - The finalizer is removed only after all cleanup succeeds.
 func (r *MaintenanceRequestReconciler) handleDeletion(
 	ctx context.Context, log *slog.Logger, mr *v1alpha1.MaintenanceRequest,
@@ -203,10 +365,9 @@ func (r *MaintenanceRequestReconciler) handleDeletion(
 			log.Info("Successfully emitted clearing health event", "node", nodeName)
 		}
 
-		// Release the node lock after the clearing event succeeds.
 		// CheckUnlock is idempotent: if the lease was already deleted
 		// (e.g. by K8s GC via the owner reference), it returns false.
-		if retryUnlock := r.NodeLock.CheckUnlock(ctx, mr, nodeName); retryUnlock {
+		if r.NodeLock.CheckUnlock(ctx, mr, nodeName) || r.NodeClaim.CheckUnlock(ctx, mr, nodeName) {
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 	}
@@ -319,4 +480,22 @@ func isConditionTrue(mr *v1alpha1.MaintenanceRequest, condType string) bool {
 	return meta.IsStatusConditionTrue(
 		condition.ToMetav1Slice(mr.Status.Conditions), condType,
 	)
+}
+
+func hasConditionReason(mr *v1alpha1.MaintenanceRequest, condType, reason string) bool {
+	if mr.Status == nil {
+		return false
+	}
+
+	cond := meta.FindStatusCondition(condition.ToMetav1Slice(mr.Status.Conditions), condType)
+
+	return cond != nil && cond.Reason == reason
+}
+
+// ClaimLeaseName returns the name of the lease that holds a node's
+// MaintenanceRequest claim. It must differ from the janitor node lock, which
+// is named after the node. A name too long for a lease keeps its readable
+// start and ends in a hash of the full name.
+func ClaimLeaseName(nodeName string) string {
+	return hashTruncateTrimmed(claimLeasePrefix+nodeName, validation.DNS1123SubdomainMaxLength, ".-")
 }

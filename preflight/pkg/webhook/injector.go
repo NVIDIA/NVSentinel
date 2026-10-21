@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,6 +29,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var supportedHostPathTypes = map[string]corev1.HostPathType{
@@ -83,15 +86,19 @@ type PatchOperation struct {
 type Injector struct {
 	cfg      *config.Config
 	resolver *gang.DiscovererResolver
+	// draReader reads ResourceClaims and ResourceClaimTemplates to detect
+	// pods that get their GPUs through DRA. Nil turns DRA detection off.
+	draReader client.Reader
 }
 
-// NewInjector constructs an Injector from the preflight config and the
+// NewInjector constructs an Injector from the preflight config, the
 // namespace-aware gang discoverer resolver used to resolve a pod's gang
-// discoverer at injection time.
-func NewInjector(cfg *config.Config, resolver *gang.DiscovererResolver) *Injector {
+// discoverer at injection time, and the reader used for DRA GPU detection.
+func NewInjector(cfg *config.Config, resolver *gang.DiscovererResolver, draReader client.Reader) *Injector {
 	return &Injector{
-		cfg:      cfg,
-		resolver: resolver,
+		cfg:       cfg,
+		resolver:  resolver,
+		draReader: draReader,
 	}
 }
 
@@ -157,6 +164,12 @@ func (i *Injector) gangContextForPod(ctx context.Context, pod *corev1.Pod) *Gang
 		return nil
 	}
 
+	if admissionDiscoverer, ok := discoverer.(types.AdmissionGangDiscoverer); ok {
+		if admitted := admittedPodFrom(ctx, pod.Namespace); admitted != nil {
+			return admissionGangContext(ctx, pod, admitted, admissionDiscoverer, discoverer.Name())
+		}
+	}
+
 	if !discoverer.CanHandle(pod) {
 		slog.Debug("Pod not handled by gang discoverer",
 			"pod", pod.Name,
@@ -171,23 +184,57 @@ func (i *Injector) gangContextForPod(ctx context.Context, pod *corev1.Pod) *Gang
 		return nil
 	}
 
-	gangCtx := &GangContext{
-		GangID:        gangID,
-		ConfigMapName: gang.ConfigMapName(gangID),
-	}
+	var ownerReference *metav1.OwnerReference
 
 	if ownerResolver, ok := discoverer.(types.GangOwnerResolver); ok {
-		ownerReference, err := ownerResolver.OwnerReference(ctx, pod)
+		var err error
+
+		ownerReference, err = ownerResolver.OwnerReference(ctx, pod)
 		if err != nil {
-			slog.Warn("Failed to resolve gang owner reference",
-				"pod", pod.Name,
-				"namespace", pod.Namespace,
-				"gangID", gangID,
-				"discoverer", discoverer.Name(),
-				"error", err)
-		} else {
-			gangCtx.OwnerReference = ownerReference
+			logOwnerReferenceError(pod, gangID, discoverer.Name(), err)
 		}
+	}
+
+	return newGangContext(pod, gangID, ownerReference, discoverer.Name())
+}
+
+// admissionGangContext resolves the gang from the pod JSON in the admission
+// request. See types.AdmissionGangDiscoverer for why the decoded Pod is not
+// enough.
+func admissionGangContext(
+	ctx context.Context,
+	pod *corev1.Pod,
+	admitted *unstructured.Unstructured,
+	discoverer types.AdmissionGangDiscoverer,
+	discovererName string,
+) *GangContext {
+	gangID, ownerReference, err := discoverer.AdmissionGang(ctx, admitted)
+	if gangID == "" {
+		slog.Debug("Pod not handled by gang discoverer",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"discoverer", discovererName)
+
+		return nil
+	}
+
+	if err != nil {
+		logOwnerReferenceError(pod, gangID, discovererName, err)
+	}
+
+	return newGangContext(pod, gangID, ownerReference, discovererName)
+}
+
+func newGangContext(
+	pod *corev1.Pod,
+	gangID string,
+	ownerReference *metav1.OwnerReference,
+	discovererName string,
+) *GangContext {
+	gangCtx := &GangContext{
+		GangID:         gangID,
+		ConfigMapName:  gang.ConfigMapName(gangID),
+		OwnerReference: ownerReference,
 	}
 
 	slog.Info("Pod is part of a gang",
@@ -195,14 +242,23 @@ func (i *Injector) gangContextForPod(ctx context.Context, pod *corev1.Pod) *Gang
 		"namespace", pod.Namespace,
 		"gangID", gangID,
 		"configMap", gangCtx.ConfigMapName,
-		"discoverer", discoverer.Name())
+		"discoverer", discovererName)
 
 	return gangCtx
 }
 
+func logOwnerReferenceError(pod *corev1.Pod, gangID, discovererName string, err error) {
+	slog.Warn("Failed to resolve gang owner reference",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"gangID", gangID,
+		"discoverer", discovererName,
+		"error", err)
+}
+
 func (i *Injector) InjectInitContainers(ctx context.Context, pod *corev1.Pod) ([]PatchOperation, *GangContext, error) {
-	maxResources := i.findMaxResources(pod)
-	if len(maxResources) == 0 {
+	maxResources, draGPU, isGPUPod := i.gpuPodResources(ctx, pod)
+	if !isGPUPod {
 		slog.Debug("Pod does not request GPU/network resources, skipping injection")
 		return nil, nil, nil
 	}
@@ -226,6 +282,14 @@ func (i *Injector) InjectInitContainers(ctx context.Context, pod *corev1.Pod) ([
 	}
 
 	initContainers := i.buildInitContainers(pod, maxResources, gangCtx, selected)
+
+	// The checks see the pod's DRA GPUs only through its claims, so a DRA GPU
+	// pod always gets them, whatever the gang mirroring setting says.
+	if draGPU {
+		for idx := range initContainers {
+			mirrorResourceClaims(&initContainers[idx], pod.Spec.ResourceClaims)
+		}
+	}
 
 	// Compute check names for gang validation.
 	if gangCtx != nil {
@@ -281,9 +345,41 @@ func (i *Injector) patchInitContainers(pod *corev1.Pod, initContainers []corev1.
 	return patches
 }
 
+// gpuPodResources decides whether the pod is a GPU pod and returns the
+// resources the checks copy from it. The device plugin path is checked first
+// and makes no API calls. draGPU is true when the pod gets its GPUs only
+// through DRA resource claims.
+func (i *Injector) gpuPodResources(
+	ctx context.Context,
+	pod *corev1.Pod,
+) (maxResources corev1.ResourceList, draGPU bool, isGPUPod bool) {
+	if resources := i.findMaxResources(pod); len(resources) > 0 {
+		return resources, false, true
+	}
+
+	if !i.requestsDRAGPU(ctx, pod) {
+		return nil, false, false
+	}
+
+	// A DRA GPU pod still gets the network extended resources it requests.
+	return i.collectMaxResources(pod), true, true
+}
+
 // findMaxResources scans all containers and returns the maximum quantity
 // for each GPU and network resource. Returns empty map if no GPU resources found.
 func (i *Injector) findMaxResources(pod *corev1.Pod) corev1.ResourceList {
+	maxResources := i.collectMaxResources(pod)
+
+	if !i.hasGPUResources(maxResources) {
+		return nil
+	}
+
+	return maxResources
+}
+
+// collectMaxResources scans all containers and returns the maximum quantity
+// for each GPU and network extended resource they request.
+func (i *Injector) collectMaxResources(pod *corev1.Pod) corev1.ResourceList {
 	maxResources := make(corev1.ResourceList)
 
 	allResourceNames := append([]string{}, i.cfg.GPUResourceNames...)
@@ -296,10 +392,6 @@ func (i *Injector) findMaxResources(pod *corev1.Pod) corev1.ResourceList {
 			i.updateMax(maxResources, resName, container.Resources.Limits[resName])
 			i.updateMax(maxResources, resName, container.Resources.Requests[resName])
 		}
-	}
-
-	if !i.hasGPUResources(maxResources) {
-		return nil
 	}
 
 	return maxResources
@@ -502,15 +594,28 @@ func (i *Injector) injectGangMounts(
 	i.appendExtraHostPathMounts(container)
 	i.appendExtraVolumeMounts(container)
 
-	// Mirror all pod-level DRA resource claims to init containers.
-	// This ensures init containers get the same device access as main
-	// containers: GPUs, RDMA NICs, IMEX channels (GB200 MNNVL), etc.
 	if mirrorClaims {
-		for _, podClaim := range podResourceClaims {
-			container.Resources.Claims = append(container.Resources.Claims, corev1.ResourceClaim{
-				Name: podClaim.Name,
-			})
+		mirrorResourceClaims(container, podResourceClaims)
+	}
+}
+
+// mirrorResourceClaims adds every pod-level DRA resource claim to the
+// container's resources.claims. This ensures init containers get the same
+// device access as main containers: GPUs, RDMA NICs, IMEX channels (GB200
+// MNNVL), etc. A claim the container already has is skipped, because the API
+// server rejects a pod that lists a claim twice.
+func mirrorResourceClaims(container *corev1.Container, podResourceClaims []corev1.PodResourceClaim) {
+	for _, podClaim := range podResourceClaims {
+		hasClaim := slices.ContainsFunc(container.Resources.Claims, func(c corev1.ResourceClaim) bool {
+			return c.Name == podClaim.Name
+		})
+		if hasClaim {
+			continue
 		}
+
+		container.Resources.Claims = append(container.Resources.Claims, corev1.ResourceClaim{
+			Name: podClaim.Name,
+		})
 	}
 }
 

@@ -241,7 +241,8 @@ func TestTransformedPodsSupportAllGangDiscoverers(t *testing.T) {
 	})
 
 	t.Run("native schedulingGroup", func(t *testing.T) {
-		podGroup := newUnstructuredObject(discoverer.PodGroupGVK, "team-a", "training")
+		nativePodGroupGVK := discoverer.PodGroupGroupKind.WithVersion("v1beta1")
+		podGroup := newUnstructuredObject(nativePodGroupGVK, "team-a", "training")
 		require.NoError(t, unstructured.SetNestedField(
 			podGroup.Object, int64(2), "spec", "schedulingPolicy", "gang", "minCount"))
 		pods := []runtime.Object{podGroup}
@@ -252,7 +253,8 @@ func TestTransformedPodsSupportAllGangDiscoverers(t *testing.T) {
 			pods = append(pods, mustTransformTypedPod(t, pod))
 		}
 
-		d := discoverer.NewKubernetesDiscoverer(fake.NewClientBuilder().WithRuntimeObjects(pods...).Build())
+		d := discoverer.NewKubernetesDiscoverer(
+			fake.NewClientBuilder().WithRuntimeObjects(pods...).Build(), nativePodGroupGVK)
 		request := pods[1].(*corev1.Pod)
 		info, err := d.DiscoverPeers(context.Background(), request)
 		require.NoError(t, err)

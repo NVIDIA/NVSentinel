@@ -54,6 +54,15 @@ var (
 		[]string{"entity_value"},
 	)
 
+	recoveryEventsPublishedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "recovery_events_published_total",
+			Help: "Total number of recovery health events accepted by the platform connector, " +
+				"including republishes awaiting storage.",
+		},
+		[]string{labelRuleName, labelNodeName},
+	)
+
 	ruleMatchedTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "rule_matched_total",

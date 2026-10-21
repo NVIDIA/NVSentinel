@@ -30,9 +30,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/lifecycle-manager/internal/controller"
 )
 
 var mrLog = slog.With("webhook", "maintenancerequest")
@@ -79,8 +81,9 @@ func (*MaintenanceRequestDefaulter) Default(
 // MaintenanceRequestValidator validates MaintenanceRequest objects.
 // +kubebuilder:object:generate=false
 type MaintenanceRequestValidator struct {
-	Enabled bool
-	Client  client.Client
+	Enabled   bool
+	Client    client.Client
+	NodeClaim distributedlock.NodeLock
 }
 
 func (v *MaintenanceRequestValidator) ValidateCreate(ctx context.Context,
@@ -115,6 +118,10 @@ func (v *MaintenanceRequestValidator) ValidateCreate(ctx context.Context,
 
 	if !isStartTimeInFuture(obj.Spec.StartTime) {
 		return nil, fmt.Errorf("spec.startTime must be in the future")
+	}
+
+	if err := v.checkNoOpenRequest(ctx, obj, he.NodeName); err != nil {
+		return nil, err
 	}
 
 	return nil, nil
@@ -175,6 +182,32 @@ func (v *MaintenanceRequestValidator) checkNodeExists(ctx context.Context, nodeN
 
 		mrLog.Error("Failed to look up node; allowing request to avoid blocking on transient errors",
 			"error", err, "node", nodeName)
+	}
+
+	return nil
+}
+
+// checkNoOpenRequest rejects a second open MaintenanceRequest for a node. It
+// fails open: the controller's claim is the authoritative guard and rejects a
+// duplicate that gets past this check.
+func (v *MaintenanceRequestValidator) checkNoOpenRequest(
+	ctx context.Context, obj *v1alpha1.MaintenanceRequest, nodeName string,
+) error {
+	if v.Client == nil || v.NodeClaim == nil {
+		return nil
+	}
+
+	holder, active, err := controller.ActiveClaimHolder(ctx, v.Client, v.NodeClaim, obj, nodeName)
+	if err != nil {
+		mrLog.Error("Failed to look up node claim; allowing request to avoid blocking on transient errors",
+			"error", err, "node", nodeName)
+
+		return nil
+	}
+
+	if active {
+		return fmt.Errorf("node %q already has an open MaintenanceRequest %q; delete it before creating another",
+			nodeName, holder.Name)
 	}
 
 	return nil

@@ -230,6 +230,10 @@ type GangCoordinationConfig struct {
 	// containers' resources.claims. This ensures init containers get the
 	// same device access as the main containers (GPUs, RDMA, IMEX channels).
 	// Defaults to true when gang coordination is enabled.
+	// It applies to gang members that get their GPUs from the device plugin.
+	// A pod whose claims request a gpu.nvidia.com device (a DRA GPU pod)
+	// always gets its claims mirrored, because the checks cannot see its GPUs
+	// without them.
 	// See ADR-026 §DRA Integration.
 	MirrorResourceClaims *bool `yaml:"mirrorResourceClaims,omitempty"`
 }

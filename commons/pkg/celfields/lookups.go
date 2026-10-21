@@ -15,7 +15,7 @@
 package celfields
 
 import (
-	"github.com/google/cel-go/cel"
+	"cel.dev/cel-go/cel"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
