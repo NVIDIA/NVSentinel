@@ -673,3 +673,60 @@ gpuResetController:
 	require.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 }
+
+func TestLoadConfig_GPUResetHostInstalledDriverBinPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+global:
+  timeout: 30m
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
+
+gpuResetController:
+  enabled: true
+  resetJob:
+    hostDriverRootPath: "/"
+    driverBinPath: "/home/kubernetes/bin/nvidia/bin"
+    imageConfig:
+      image: "alpine:latest"
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	config, err := LoadConfig(configPath, testNamespace)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+		ResourceRequirements{}, "/", DriverRootMountPath, "", true, "")
+	require.NoError(t, err)
+	require.NoError(t, applyDriverBinPath(expectedJobTemplate, "/home/kubernetes/bin/nvidia/bin"))
+	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
+
+	env := config.GPUReset.ResolvedJobTemplate.Spec.Template.Spec.Containers[0].Env
+	assert.Contains(t, env, corev1.EnvVar{Name: DriverBinPathEnvVar, Value: "/home/kubernetes/bin/nvidia/bin"})
+}
+
+func TestLoadConfig_GPUResetInvalidDriverBinPath_ReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+gpuResetController:
+  enabled: true
+  resetJob:
+    driverBinPath: "home/kubernetes/bin/nvidia/bin"
+    imageConfig:
+      image: "alpine:latest"
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	config, err := LoadConfig(configPath, testNamespace)
+	require.Error(t, err)
+	assert.Nil(t, config)
+	assert.Contains(t, err.Error(), "resetJob.driverBinPath")
+}

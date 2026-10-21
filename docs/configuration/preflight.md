@@ -270,11 +270,18 @@ Two discovery mechanisms are supported:
 
 ### Native Kubernetes: schedulingGroup / workloadRef
 
-The default when `gangDiscovery` is left empty (`{}`). Preflight first uses the Kubernetes 1.36 native PodGroup API when available, then falls back to the Kubernetes 1.35 native Workload API. Neither exists before Kubernetes 1.35, and preflight validates the discoverer at startup, so on an earlier cluster the pod fails to start — see [Single-node and single-GPU clusters](#single-node-and-single-gpu-clusters).
+The default when `gangDiscovery` is left empty (`{}`). Preflight first uses the native PodGroup API (Kubernetes 1.36 and later) when available, then falls back to the Kubernetes 1.35 native Workload API. Neither exists before Kubernetes 1.35, and preflight validates the discoverer at startup, so on an earlier cluster the pod fails to start — see [Single-node and single-GPU clusters](#single-node-and-single-gpu-clusters).
 
-> The `PodGroup` resource (`scheduling.k8s.io/v1alpha2`) and `spec.schedulingGroup` are alpha in Kubernetes 1.36 and disabled by default. Enable the `GenericWorkload` feature gate on the API server and scheduler to use this path.
+Preflight uses the PodGroup version that the cluster prefers, so you do not configure a version:
 
-In Kubernetes 1.36, each pod links to a `PodGroup` resource via `spec.schedulingGroup`:
+| Kubernetes | PodGroup API | Maturity |
+|---|---|---|
+| 1.36 | `scheduling.k8s.io/v1alpha2` | Alpha |
+| 1.37 | `scheduling.k8s.io/v1beta1` | Beta |
+
+> The `PodGroup` resource and `spec.schedulingGroup` are disabled by default in both versions. Enable the `GenericWorkload` feature gate on the API server and scheduler to use this path. On Kubernetes 1.37, also enable the API version on the API server with `--runtime-config=scheduling.k8s.io/v1beta1=true`.
+
+In Kubernetes 1.36 and later, each pod links to a `PodGroup` resource via `spec.schedulingGroup`:
 
 ```yaml
 spec:
@@ -285,7 +292,7 @@ spec:
 The PodGroup object contains a gang policy with `minCount`:
 
 ```yaml
-apiVersion: scheduling.k8s.io/v1alpha2
+apiVersion: scheduling.k8s.io/v1beta1  # v1alpha2 on Kubernetes 1.36
 kind: PodGroup
 metadata:
   name: training-workers
@@ -324,7 +331,7 @@ spec:
 No `gangDiscovery` configuration is needed for this fallback path either.
 
 The default chart RBAC grants read access to both native resources:
-`scheduling.k8s.io/podgroups` for Kubernetes 1.36 and
+`scheduling.k8s.io/podgroups` for Kubernetes 1.36 and later, and
 `scheduling.k8s.io/workloads` for Kubernetes 1.35.
 
 ### PodGroup-based schedulers (Volcano, Run:ai / OSMO, and similar)

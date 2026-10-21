@@ -16,6 +16,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -42,6 +43,8 @@ import (
 )
 
 // No retry constants needed - EventProcessor no longer retries internally
+
+var errEventProcessingStopped = errors.New("event processing stopped unexpectedly")
 
 const (
 	// agentName identifies this component in health events it publishes, and is
@@ -183,8 +186,23 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	slog.InfoContext(ctx, "Starting health events analyzer with unified event processor...")
 
-	// Start the event processor
-	return r.runProcessors(ctx)
+	return r.processUntilCancelled(ctx)
+}
+
+// processUntilCancelled treats any return before ctx is done as fatal. The processor
+// returns nil when its change stream closes on an error, which otherwise leaves the pod
+// Ready and processing nothing. Exiting restarts it from the stored resume token.
+func (r *Reconciler) processUntilCancelled(ctx context.Context) error {
+	err := r.runProcessors(ctx)
+	if ctx.Err() != nil {
+		return err
+	}
+
+	if err == nil {
+		return errEventProcessingStopped
+	}
+
+	return fmt.Errorf("%w: %w", errEventProcessingStopped, err)
 }
 
 // processHealthEvent handles individual health events and implements the EventHandler interface

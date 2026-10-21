@@ -303,10 +303,12 @@ Specifies the object type to evaluate in the CEL expression. Valid values: `Heal
 CEL (Common Expression Language) expression that evaluates to true or false. For `HealthEvent` kind, access fields via the `event` variable. For `Node` kind, access `node.metadata` and `node.spec`; `node.status` is not cached or available.
 
 #### cordon
-Specifies whether to mark the node as unschedulable when the rule matches.
+Specifies whether to mark the node as unschedulable when the rule matches. A later health event that matches this rule set on a node that is already quarantined also cordons the node. If someone else already cordoned the node, fault-quarantine records the cordon as pre-existing and does not uncordon the node when the session ends.
 
 #### taint
-Optional Kubernetes taint to apply. Taints can prevent pod scheduling or evict existing pods based on the effect.
+Optional Kubernetes taint to apply. Taints can prevent pod scheduling or evict existing pods based on the effect. A later health event that matches this rule set on a node that is already quarantined also applies its taint. If the session already applied a taint with the same key and effect, fault-quarantine keeps that taint unchanged. If the node already has the taint from another source, fault-quarantine records it as pre-existing and does not remove it. If the node has a taint with the same key and effect but a different value, fault-quarantine does not apply the rule taint, so that it does not overwrite the other value.
+
+Fault-quarantine removes the taints and the cordon that it applied when every health event in the session has recovered. It does not remove them earlier, when only some of the events recover.
 
 #### label
 Optional Kubernetes label to apply for the lifetime of the quarantine session. If the key already exists, fault-quarantine overwrites its value. The label, priority, and configuration order are recorded in the `quarantineHealthEventAppliedLabels` node annotation so later events use the same conflict policy. The label is removed after every health event tracked in `quarantineHealthEvent` has recovered. Manual uncordon, manual untaint, and stale-state cleanup remove the tracking annotation but preserve the label itself, mirroring the existing applied-taint behavior. In dry-run mode, the intended label is recorded in annotations for observability, but Kubernetes Node labels are not added, overwritten, or removed.
@@ -376,6 +378,7 @@ Use `global.dryRun: true` to test without cordoning nodes (see [Dry Run Mode](./
 
 In dry run, fault-quarantine records what it would have done without cordoning, tainting or labelling:
 
+- An event that matches no ruleset is skipped, as it is with dry run off: no annotation, no datastore status and no dry-run count. Earlier versions recorded every unhealthy event in dry run.
 - The quarantine annotations are written as usual, plus `quarantineHealthEventDryRun: "True"`. They are kept across restarts and when something else cordons or uncordons the node.
 - `fault_quarantine_dry_run_actions_total{action="quarantine|unquarantine"}` counts these decisions. The quarantine metrics (`fault_quarantine_cordons_applied_total` and the rest) count only applied actions.
 - Logs read `Would cordon node (dry run)` and `Would uncordon node (dry run)`.

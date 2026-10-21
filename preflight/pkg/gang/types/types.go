@@ -20,6 +20,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // GangConfigVolumeName is the volume name injected by the webhook for gang coordination.
@@ -81,4 +82,16 @@ type GangDiscoverer interface {
 // the Kubernetes owner object for a gang without doing full peer discovery.
 type GangOwnerResolver interface {
 	OwnerReference(ctx context.Context, pod *corev1.Pod) (*metav1.OwnerReference, error)
+}
+
+// AdmissionGangDiscoverer is optionally implemented by discoverers that need a
+// pod field that the corev1.Pod Go type in this client version does not have,
+// such as spec.workloadRef from Kubernetes 1.35. Decoding into corev1.Pod
+// drops that field, and the pod is not in the API server yet during admission.
+// So the webhook passes the pod JSON from the admission request instead.
+type AdmissionGangDiscoverer interface {
+	// AdmissionGang returns the gang ID and owner reference for the admitted
+	// pod. It returns an empty gang ID when the pod does not belong to a gang.
+	// The owner reference is nil when the owner cannot be resolved.
+	AdmissionGang(ctx context.Context, pod *unstructured.Unstructured) (string, *metav1.OwnerReference, error)
 }

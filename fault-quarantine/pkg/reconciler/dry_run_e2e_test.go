@@ -424,3 +424,49 @@ func TestE2E_LiveQuarantineRemovesLeftoverDryRunMarker(t *testing.T) {
 	assert.True(t, n.Spec.Unschedulable)
 	assert.NotEmpty(t, n.Annotations[common.QuarantineHealthEventAnnotationKey], "the real quarantine record should survive a restart")
 }
+
+// Dry run must skip an event no ruleset matches, as a live run does. Recording it would
+// report a quarantine that enforcement would never apply.
+func TestE2E_DryRunSkipsEventMatchingNoRuleset(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := newDryRunTestNode(ctx, t, "e2e-dryrun-nomatch-")
+
+	// A missing status reads the same before and after the worker reaches the event.
+	processed := make(chan string, 1)
+
+	_, watcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig: dryRunRules(true, false),
+		DryRun:     true,
+		OnEventProcessed: func(eventID string) {
+			select {
+			case processed <- eventID:
+			default:
+			}
+		},
+	})
+
+	dryRunBefore := counterValue(t, metrics.DryRunActions.WithLabelValues(metrics.DryRunActionQuarantine))
+
+	// Unhealthy, but not the GpuXidError that dryRunRules matches.
+	id := generateTestID()
+	watcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(id, nodeName, "GpuPowerWatch", false, false,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress)}
+
+	select {
+	case got := <-processed:
+		require.Equal(t, id, got, "the worker finished an event this test did not send")
+	case <-time.After(statusCheckTimeout):
+		require.FailNow(t, "the worker never finished the unmatched event")
+	}
+
+	assert.Nil(t, getStatus(id), "an unmatched event must not be recorded as quarantined")
+	assert.Equal(t, dryRunBefore, counterValue(t, metrics.DryRunActions.WithLabelValues(metrics.DryRunActionQuarantine)),
+		"an unmatched event is not a dry-run action")
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.NotContains(t, node.Annotations, common.QuarantineHealthEventAnnotationKey)
+	assert.NotContains(t, node.Annotations, common.QuarantineHealthEventDryRunAnnotationKey)
+}

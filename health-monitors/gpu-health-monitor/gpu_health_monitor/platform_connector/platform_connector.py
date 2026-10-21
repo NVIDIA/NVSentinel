@@ -31,6 +31,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
 from . import direct_publisher as direct_publisher_mod
 from . import metrics
+import time
 from time import monotonic, sleep
 
 import dcgm_fields
@@ -47,6 +48,14 @@ GPU_ONLY_FIELD_HEALTH_WATCHES = frozenset(
 # Critical events are emitted while the DCGM loop is about to enter cleanup or
 # is already hung. Keep delivery bounded well inside the liveness restart budget.
 CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 15.0
+# A connectivity failure further than this from the previous one starts a new
+# unreachability window. It must exceed the gap a liveness restart leaves between
+# two hang reports: the kubelet's restart backoff, capped at 300s, plus startup.
+DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS = 600.0
+DCGM_CONNECTIVITY_WINDOW_PERSIST_INTERVAL_SECONDS = 10.0
+# Remote probe hangs and connectivity failures share this check, so its state
+# record also carries the unreachability window.
+DCGM_CONNECTIVITY_CHECK_NAME = "GpuDcgmConnectivityFailure"
 # Socket path only: transport-level failures are worth another attempt. Every
 # other status is a deterministic verdict from platform-connector
 # (PERMISSION_DENIED, UNAUTHENTICATED, INVALID_ARGUMENT, ...) that will come
@@ -127,6 +136,9 @@ class PlatformConnectorConfig:
     token_path: str | None = None
     connectivity_failure_threshold: int = 1
     connectivity_success_threshold: int = 1
+    # How long DCGM must stay unreachable before a remote probe hang is
+    # published, measured across liveness restarts. 0 publishes at once.
+    connectivity_failure_window_seconds: float = 0.0
 
 
 class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
@@ -166,12 +178,18 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._consecutive_connectivity_failures = 0
         self._consecutive_connectivity_successes = 0
         self._connectivity_escalated = False
+        self._connectivity_failure_window_seconds = config.connectivity_failure_window_seconds
+        # Wall-clock bounds of the current unreachability window, persisted so a
+        # liveness restart during a hang does not restart the debounce.
+        self._connectivity_failing_since: float | None = None
+        self._connectivity_last_failure: float | None = None
+        self._connectivity_window_persisted_at: float | None = None
         metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
         metrics.dcgm_connectivity_consecutive_observations.labels(result="success").set(0)
         # Persisted strategies are keyed by check because embedded probe hangs
         # and connectivity failures can be active at the same time. Both live
         # in one state file so recovery can match each event after a restart.
-        self._dcgm_state_records: dict[str, dict[str, str | list[str] | dict[str, str]]] = {}
+        self._dcgm_state_records: dict[str, dict[str, str | list[str] | dict[str, str] | dict[str, float]]] = {}
         self._dcgm_state_strategies: dict[str, platformconnector_pb2.ProcessingStrategy] = {}
         self._restore_dcgm_unresponsive_state()
         # Direct mode: when HEALTH_PUBLISH_TARGET is set, publishes go over
@@ -322,6 +340,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                 or key == "error_strategies"
                                 and isinstance(value, dict)
                                 and all(isinstance(code, str) and isinstance(name, str) for code, name in value.items())
+                                or key == "connectivity_window"
+                                and isinstance(value, dict)
+                                and all(
+                                    isinstance(value.get(bound), (int, float))
+                                    and not isinstance(value.get(bound), bool)
+                                    for bound in ("since", "last")
+                                )
                             }
             except (OSError, json.JSONDecodeError) as e:
                 log.error("Failed to read DCGM state at %s: %s", self._dcgm_state_path, e)
@@ -358,6 +383,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             error_codes = record.get("error_codes", [])
             if not isinstance(error_codes, list):
                 error_codes = []
+            if not error_codes:
+                # Only a connectivity window: nothing was published.
+                continue
             error_strategies = record.get("error_strategies", {})
             if not isinstance(error_strategies, dict):
                 error_strategies = {}
@@ -392,6 +420,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 ).set(1)
             self._dcgm_state_strategies[check_name] = strategy
 
+        self._restore_connectivity_window()
+
         if found_legacy_state and self._write_dcgm_state():
             for legacy_path in self._legacy_dcgm_state_paths:
                 try:
@@ -404,6 +434,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def _clear_dcgm_unresponsive_state(self, check_name: str = "GpuDcgmUnresponsive") -> None:
         self._dcgm_state_strategies.pop(check_name, None)
         self._dcgm_state_records.pop(check_name, None)
+        self._flush_dcgm_state()
+
+    def _flush_dcgm_state(self) -> None:
+        """Write the remaining records, or remove the file once none are left."""
         if self._dcgm_state_records:
             self._write_dcgm_state()
             return
@@ -414,11 +448,71 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         except OSError as e:
             log.error("Failed to remove DCGM state at %s: %s", self._dcgm_state_path, e)
 
+    def _note_connectivity_failure(self, failed_at: float) -> None:
+        """Extend the unreachability window with a failure observed at failed_at."""
+        if self._connectivity_failure_window_seconds <= 0:
+            return
+        now = time.time()
+        if self._connectivity_failing_since is None or (
+            self._connectivity_last_failure is not None
+            and failed_at - self._connectivity_last_failure > DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
+        ):
+            self._connectivity_failing_since = failed_at
+            self._connectivity_window_persisted_at = None
+        self._connectivity_last_failure = now
+
+        # The watchdog retries every second during a hang; the record only needs
+        # to be fresh enough for the restore gap check.
+        if (
+            self._connectivity_window_persisted_at is not None
+            and now - self._connectivity_window_persisted_at < DCGM_CONNECTIVITY_WINDOW_PERSIST_INTERVAL_SECONDS
+        ):
+            return
+        record = self._dcgm_state_records.setdefault(DCGM_CONNECTIVITY_CHECK_NAME, {})
+        record["connectivity_window"] = {
+            "since": self._connectivity_failing_since,
+            "last": self._connectivity_last_failure,
+        }
+        # Throttle only after a successful write, so a failed one is retried at once.
+        if self._write_dcgm_state():
+            self._connectivity_window_persisted_at = now
+
+    def _restore_connectivity_window(self) -> None:
+        """Resume an unreachability window left by a previous process, unless it went stale."""
+        record = self._dcgm_state_records.get(DCGM_CONNECTIVITY_CHECK_NAME, {})
+        window = record.get("connectivity_window")
+        if not isinstance(window, dict):
+            return
+        if (
+            self._connectivity_failure_window_seconds <= 0
+            or time.time() - window["last"] > DCGM_CONNECTIVITY_WINDOW_MAX_GAP_SECONDS
+        ):
+            self._clear_connectivity_window()
+            return
+        self._connectivity_failing_since = float(window["since"])
+        self._connectivity_last_failure = float(window["last"])
+        log.info("Resumed DCGM connectivity window: unreachable since %.0f", self._connectivity_failing_since)
+
+    def _clear_connectivity_window(self) -> None:
+        self._connectivity_failing_since = None
+        self._connectivity_last_failure = None
+        self._connectivity_window_persisted_at = None
+        record = self._dcgm_state_records.get(DCGM_CONNECTIVITY_CHECK_NAME)
+        if record is None or "connectivity_window" not in record:
+            return
+        del record["connectivity_window"]
+        if not record:
+            del self._dcgm_state_records[DCGM_CONNECTIVITY_CHECK_NAME]
+        self._flush_dcgm_state()
+
     @_serialized_event_state
     def clear_dcgm_connectivity_failure(self, timestamp: Timestamp) -> None:
         """Clear DCGM connectivity failure events if connectivity has been restored."""
         health_events = []
         check_name = "GpuDcgmConnectivityFailure"
+
+        if self._connectivity_failing_since is not None:
+            self._clear_connectivity_window()
 
         self._consecutive_connectivity_failures = 0
         metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(0)
@@ -1086,6 +1180,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         """
         self._consecutive_connectivity_failures += 1
         self._consecutive_connectivity_successes = 0
+        self._note_connectivity_failure(time.time())
         metrics.dcgm_connectivity_consecutive_observations.labels(result="failure").set(
             self._consecutive_connectivity_failures
         )
@@ -1229,10 +1324,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             # this override to dcgm_connectivity_failed().
             processing_strategy = self._effective_strategy("GpuDcgmUnresponsive")
 
-            log.error(
-                f"DCGM probe {operation} unresponsive for {elapsed_seconds:.1f}s, "
-                f"sending {check_name} health event (mode={dcgm_mode})"
-            )
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             health_events = []
@@ -1246,6 +1337,25 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 # Already recorded for this episode.
                 return True
 
+            if not local_managed and self._connectivity_failure_window_seconds > 0:
+                # A hung call has no later cycle to count, and liveness restarts the
+                # process before a long deadline elapses, so debounce on how long DCGM
+                # has been unreachable, persisted across restarts. False makes the
+                # watchdog check again until the window is long enough.
+                self._note_connectivity_failure(time.time() - elapsed_seconds)
+                unreachable_for = time.time() - self._connectivity_failing_since
+                if unreachable_for < self._connectivity_failure_window_seconds:
+                    log.debug(
+                        "DCGM unreachable for %.0fs of the %.0fs required; deferring the probe-hang event",
+                        unreachable_for,
+                        self._connectivity_failure_window_seconds,
+                    )
+                    return False
+
+            log.error(
+                f"DCGM probe {operation} unresponsive for {elapsed_seconds:.1f}s, "
+                f"sending {check_name} health event (mode={dcgm_mode})"
+            )
             event_metadata = {"probe_operation": operation, "dcgm_mode": dcgm_mode}
             chassis_serial = self._metadata_reader.get_chassis_serial()
             if chassis_serial:
