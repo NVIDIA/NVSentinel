@@ -58,6 +58,10 @@ config:
   schedulingGate:
     cordon:
       remove: true
+      # Release only cordons with proven NVSentinel ownership. Pre-existing cordons remain.
+      # Enable after legacy requests, sessions, quarantines, and pending handoffs finish.
+      # Requires an ownership-aware fault-quarantine producer and persistent handoff.
+      onlyOwned: false
       labelPrefix: "k8saas.nvidia.com/"
     # We do not need to explicitly add the node.kubernetes.io/unschedulable taint here
     # since a toleration for this taint is always added in test provider templates which

@@ -28,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/cordonownership"
 	"github.com/nvidia/nvsentinel/commons/pkg/drain"
 	"github.com/nvidia/nvsentinel/commons/pkg/templates"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -53,6 +54,7 @@ type ValidationClient struct {
 	resourceGVR      schema.GroupVersionResource
 
 	partialDrainEnabled bool
+	persistHandoff      bool
 }
 
 type templateData struct {
@@ -104,6 +106,7 @@ func NewValidationClient(cfg config.TomlConfig, k8sClient *informer.FaultQuarant
 		resourceTemplate:          validationTemplate,
 		resourceGVR:               gvr,
 		partialDrainEnabled:       cfg.Validation.PartialDrainEnabled,
+		persistHandoff:            cfg.Validation.PersistHandoff,
 	}, nil
 }
 
@@ -276,7 +279,7 @@ func (c *ValidationClient) FetchValidationTestsFromQuarantineSession(ctx context
 }
 
 func (c *ValidationClient) CreateValidationRequest(ctx context.Context, node *corev1.Node, tests []string, sessionID,
-	traceID, spanID string) error {
+	traceID, spanID, source string) error {
 	data := templateData{
 		NodeName:  node.Name,
 		SessionID: sessionID,
@@ -291,6 +294,25 @@ func (c *ValidationClient) CreateValidationRequest(ctx context.Context, node *co
 	}
 
 	templates.SetNodeOwnerRef(validationObject, node)
+
+	annotations := validationObject.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+
+	applyCordonClaim(node, annotations)
+
+	if c.persistHandoff {
+		if source == "" || node.Annotations[common.QuarantineValidationHealthEventAnnotationKey] != source {
+			return fmt.Errorf("validation source changed while preparing request for node %s", node.Name)
+		}
+
+		annotations[common.ValidationSourceHashAnnotationKey] = fmt.Sprintf("%x", sha256.Sum256([]byte(source)))
+	} else {
+		delete(annotations, common.ValidationSourceHashAnnotationKey)
+	}
+
+	validationObject.SetAnnotations(annotations)
 
 	return c.k8sClient.CreateValidationRequestResource(ctx, c.resourceGVR, validationObject)
 }
@@ -329,4 +351,24 @@ func (c *ValidationClient) getTestsForHealthEvent(ctx context.Context, event *pr
 func sessionID(eventIDs []string) string {
 	sum := sha256.Sum256([]byte(strings.Join(eventIDs, ",")))
 	return hex.EncodeToString(sum[:])[:12]
+}
+
+// Legacy requests retain their ownership check; a claim-bearing request must be
+// tied to the active continuous cordon, never to a template or detached claim.
+func applyCordonClaim(node *corev1.Node, annotations map[string]string) {
+	ownership := common.CordonOwnership(node.Annotations)
+
+	delete(annotations, cordonownership.RequestClaimIDAnnotationKey)
+
+	if claim, valid := cordonownership.Read(node); valid {
+		annotations[cordonownership.RequestClaimIDAnnotationKey] = claim.ID
+	}
+
+	if _, present := node.Annotations[cordonownership.AnnotationKey]; present && ownership == common.CordonOwnershipOwned {
+		if _, inherited := cordonownership.Inheritable(node); !inherited {
+			ownership = common.CordonOwnershipUnknown
+		}
+	}
+
+	annotations[common.ValidationCordonOwnershipAnnotationKey] = ownership
 }

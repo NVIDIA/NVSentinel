@@ -1925,11 +1925,14 @@ func TestE2E_ValidationRequestCreatedWhenEventDrained(t *testing.T) {
 
 func TestE2E_ValidationRequestCreationKeepsTaints(t *testing.T) {
 	tests := []struct {
-		name    string
-		drained bool
+		name           string
+		drained        bool
+		persistHandoff bool
 	}{
 		{name: "ValidationRequest created keeps taints", drained: true},
 		{name: "ValidationRequest skipped removes taints", drained: false},
+		{name: "Persisted handoff keeps source until registered", drained: true, persistHandoff: true},
+		{name: "Skipped persisted handoff removes source", drained: false, persistHandoff: true},
 	}
 
 	for _, tc := range tests {
@@ -1957,6 +1960,7 @@ func TestE2E_ValidationRequestCreationKeepsTaints(t *testing.T) {
 					Tests: []string{"dcgm-diag-test"},
 				},
 			})
+			validation.PersistHandoff = tc.persistHandoff
 
 			tomlConfig := config.TomlConfig{
 				LabelPrefix: "k8s.nvidia.com/",
@@ -1999,6 +2003,11 @@ func TestE2E_ValidationRequestCreationKeepsTaints(t *testing.T) {
 			require.NoError(t, err)
 			assert.False(t, node.Spec.Unschedulable)
 			assert.Empty(t, node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey])
+			if tc.persistHandoff && tc.drained {
+				assert.NotEmpty(t, node.Annotations[common.QuarantineValidationHealthEventAnnotationKey])
+			} else {
+				assert.NotContains(t, node.Annotations, common.QuarantineValidationHealthEventAnnotationKey)
+			}
 
 			if tc.drained {
 				assert.Len(t, listValidationRequestTests(ctx, t, nodeName), 1)

@@ -72,4 +72,5 @@ Each record states one decision: the context that forced it, what was decided, w
 | 056 | [Performance — Concurrent Node-Partitioned Event Processing](056-concurrent-node-partitioned-event-processing.md) |
 | 058 | [Authentication — Host-Native Metadata Collector (proposed)](058-metadata-collector-host-authentication.md) |
 | 059 | [Health Events Analyzer — Operator Recovery of Derived Conditions (proposed)](059-derived-condition-recovery.md) |
+| 060 | [Validation — Preserve Cordon Ownership Through Post-Remediation Validation (proposed)](060-validation-cordon-ownership.md) |
 | 062 | [Fault Quarantine — Release Quarantine Actions Only at Session End (proposed)](062-fault-quarantine-release-at-session-end.md) |

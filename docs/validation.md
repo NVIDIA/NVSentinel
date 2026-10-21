@@ -24,7 +24,7 @@ Clients can create a ValidationRequest to specify that a given set of validation
 4. Creating the resource for each test group, ensuring that no groups which overlap in node membership are executed concurrently.
 5. Monitoring that test resources run to completion and ensuring nodes remain healthy during the execution of the test.
 6. Running all test groups to completion, retrying a failed group before marking it terminal. The ValidationRequest is marked as succeeded only if all test groups complete successfully.
-7. Removing the ValidationRequest from each targeted node's validation-session. If this is the last ValidationRequest tracked in the session, the configured scheduling gate is removed from the node.
+7. Removing the ValidationRequest from each targeted node's validation-session. The last request releases the configured scheduling gate when the release checks pass.
 
 Within NVSentinel, there are 2 clients that can be opted-in to create ValidationRequests.
 
@@ -40,6 +40,22 @@ Before releasing a node, the validation-controller checks the live Node for `qua
 Release is not atomic across multiple nodes. A test group cannot retry if one of its members may already have returned to service or is no longer owned by this request. Independent groups are not blocked from retrying solely because another group's node was released or deleted.
 
 Deleting a ValidationRequest during quarantine removes its session entry but preserves the scheduling gate. If it was the last entry, the controller logs a warning: clearing quarantine does **not** guarantee release of the retained cordon or taints, because fault-quarantine preserves gates that existed before it took ownership. After remediation, an operator can create a new ValidationRequest to validate and release the node, or inspect the node and explicitly remove the remaining gate. Do not manually release a node while quarantine is active. This deletion case does not automatically transfer ownership of the gate between controllers.
+
+### Preserve Existing Cordons
+
+Set `lifecycle-manager.config.schedulingGate.cordon.onlyOwned: true` to preserve cordons that existed before GPU repair. Fault quarantine passes its ownership decision in the `nvsentinel.nvidia.com/cordon-ownership` request annotation, with a Node owner reference.
+
+Lifecycle manager persists the Node UID, request UID, and ownership decision in the node's validation session. A decision to preserve cordon remains until the session ends, including across controller restarts and overlapping requests. Final release requires matching identities, successful tests, proven ownership, and no current quarantine. Missing or conflicting ownership retains the cordon, and lifecycle manager logs the reason.
+
+Fault quarantine records a claim for one continuous cordon in `nvsentinel.nvidia.com/cordon-claim`. A new fault during validation inherits this claim when an active quarantine, handoff, or owned session proves continuity. Requests and session entries carry the claim ID. A detached claim grants no release rights. The last successful validation removes the claim with the scheduling gate.
+
+Enable `fault-quarantine.validation.persistHandoff` with this policy. Fault quarantine retains the validation source until lifecycle manager registers the matching request. Registration and removal of the matching source use one version-protected Node update. A pending handoff blocks an older request from releasing the node.
+
+Upgrade lifecycle manager before the claim-producing fault quarantine controller. Enable strict ownership after old requests, sessions, quarantines, and pending handoffs finish. Complete active claims and handoffs before reverting either controller. The [configuration reference](configuration/validation.md#enabling-strict-cordon-ownership) lists the checks.
+
+Ownership gates only the cordon. The configured validation taints are lifted when the session ends, exactly as with the default policy, so no NVSentinel taint remains on a node that an operator holds. Deleting a request clears its association and never releases the cordon. Other trusted owned requests retain permission to release after successful validation. Manual, unknown, or preserved associations keep their preservation decision in the remaining session and claim. Deleting the last request without a pending successor retires its claim and retains the cordon. New-node requests and older producers without ownership information also retain the cordon. Operators can review a logged retained cordon and uncordon the node explicitly.
+
+The default value is false and preserves the original ownership policy. Fault quarantine retains cordon and validation taints while a claim has an associated validation session. This applies even with `onlyOwned: false` or `persistHandoff: false`. Lifecycle manager completes the release after validation. Deploy the updated lifecycle manager before expanding repair to previously cordoned nodes. Both lifecycle manager and fault quarantine must support the ownership handoff for automatic release.
 
 ## Configuration
 

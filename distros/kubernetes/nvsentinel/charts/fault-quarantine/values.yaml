@@ -287,6 +287,9 @@ ruleSets:
 # section below.
 validation:
   enabled: false
+  # Keep the validation source on the Node until lifecycle-manager registers the
+  # matching request. Requires lifecycle-manager support for persisted handoffs.
+  persistHandoff: false
   # Whether node-drainer drains COMPONENT_RESET events partially. Must match
   # node-drainer.partialDrainEnabled. While true, a COMPONENT_RESET event's drain never counts as a
   # full drain, so it never triggers validation on its own. Set global.partialDrainEnabled to

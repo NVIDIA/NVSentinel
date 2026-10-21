@@ -924,10 +924,10 @@ func TestUnTaintAndUnCordonNode_NonExistentNode(t *testing.T) {
 	}
 }
 
-// TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp verifies that a cached Node
-// requires one PATCH for a change and no API request once the desired state is present.
-func TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
-	node := &v1.Node{Name: "node-1", ResourceVersion: "1"}
+// Quarantine decisions read the live Node even when the informer has a cached version.
+// A no-op still checks ownership, but does not write.
+func TestQuarantineNode_LiveOwnershipReadSkipsNoOpPatch(t *testing.T) {
+	node := &v1.Node{Name: "node-1", UID: "node-1-uid", ResourceVersion: "1"}
 	clientset := fake.NewSimpleClientset(node.DeepCopy())
 	client := &FaultQuarantineClient{
 		Clientset:    clientset,
@@ -946,12 +946,13 @@ func TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
 	require.NoError(t, err)
 
 	actions := clientset.Actions()
-	require.Len(t, actions, 1)
-	patchAction, ok := actions[0].(k8stesting.PatchAction)
+	require.Len(t, actions, 2)
+	assert.Equal(t, "get", actions[0].GetVerb())
+	patchAction, ok := actions[1].(k8stesting.PatchAction)
 	require.True(t, ok)
 	assert.Equal(t, types.MergePatchType, patchAction.GetPatchType())
 	assert.JSONEq(t,
-		`{"metadata":{"resourceVersion":"1"},"spec":{"unschedulable":true}}`,
+		`{"metadata":{"resourceVersion":"1","uid":"node-1-uid"},"spec":{"unschedulable":true}}`,
 		string(patchAction.GetPatch()),
 	)
 
@@ -970,7 +971,8 @@ func TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
 		nil,
 	)
 	require.NoError(t, err)
-	assert.Empty(t, clientset.Actions())
+	require.Len(t, clientset.Actions(), 1)
+	assert.Equal(t, "get", clientset.Actions()[0].GetVerb())
 }
 
 // TestUpdateNode_ConcurrentTaintUpdate_RetriesFromLiveNode verifies that a stale

@@ -39,6 +39,7 @@ import (
 
 	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/cordonownership"
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
@@ -125,11 +126,20 @@ func (c *FaultQuarantineClient) CreateValidationRequestResource(ctx context.Cont
 	}
 
 	_, err := c.DynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if err == nil {
+		return nil
+	}
+
+	if !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("failed to create ValidationRequest %s: %w", obj.GetName(), err)
 	}
 
-	return nil
+	existing, err := c.DynamicClient.Resource(gvr).Get(ctx, obj.GetName(), metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get existing ValidationRequest %s: %w", obj.GetName(), err)
+	}
+
+	return validateExistingValidationRequest(existing, obj)
 }
 
 func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Context,
@@ -341,11 +351,12 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 	updateFn := func(node *v1.Node) error {
 		alreadyQuarantined = hasNonEmptyQuarantineHealthEvent(node)
 
-		// A live quarantine is real, so a dry-run marker left on the node (for example
-		// after a rollback to a version that does not know it) must not survive it.
-		if !c.DryRunMode {
-			delete(node.Annotations, common.QuarantineHealthEventDryRunAnnotationKey)
+		cordonAnnotations, err := c.annotationsWithCordonOwnership(node, annotations, isCordon, alreadyQuarantined)
+		if err != nil {
+			return err
 		}
+
+		c.clearDryRunAnnotations(node, isCordon)
 
 		if len(taints) > 0 {
 			if err := c.applyTaints(ctx, node, taints, nodename); err != nil {
@@ -357,8 +368,8 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 			c.handleCordon(ctx, node, nodename)
 		}
 
-		if len(annotations) > 0 {
-			if err := c.applyAnnotations(ctx, node, annotations, nodename); err != nil {
+		if len(cordonAnnotations) > 0 {
+			if err := c.applyAnnotations(ctx, node, cordonAnnotations, nodename); err != nil {
 				return err
 			}
 		}
@@ -375,7 +386,7 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 		return nil
 	}
 
-	err := c.UpdateNode(ctx, nodename, updateFn)
+	err := c.updateNodeOwnership(ctx, nodename, updateFn)
 
 	return alreadyQuarantined, err
 }
@@ -726,21 +737,27 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 	labels map[string]string,
 ) error {
 	updateFn := func(node *v1.Node) error {
+		_, claimPresent := node.Annotations[cordonownership.AnnotationKey]
+		_, ownsClaim := cordonownership.Inheritable(node)
+		ownsClaim = ownsClaim && common.CordonOwnership(node.Annotations) == common.CordonOwnershipOwned
+		retireClaim := removeQuarantineAnnotations(node, annotationKeys)
+
+		if claimPresent {
+			// A successor validation retains the same cordon until its last association ends.
+			if !retireClaim || cordonownership.HasAssociations(node) {
+				c.removeLabels(ctx, node, labelsWithoutCordonAudit(labelsToRemove), nodename)
+				return nil
+			}
+
+			cordonownership.Delete(node)
+		}
+
 		if len(taints) > 0 {
 			c.removeTaints(ctx, node, taints, nodename)
 		}
 
-		if shouldUncordon {
+		if shouldUncordon && (!claimPresent || ownsClaim) {
 			c.handleUncordon(ctx, node, labels, nodename)
-		}
-
-		if len(annotationKeys) > 0 {
-			// Dry-run quarantine writes annotations for observability, so cleanup must
-			// remove them as well while the spec and label guards prevent real actions.
-			for _, annotationKey := range annotationKeys {
-				slog.InfoContext(ctx, "Removing annotation key from node", "key", annotationKey, "node", nodename)
-				delete(node.Annotations, annotationKey)
-			}
 		}
 
 		c.removeLabels(ctx, node, labelsToRemove, nodename)
@@ -748,7 +765,7 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 		return nil
 	}
 
-	return c.UpdateNode(ctx, nodename, updateFn)
+	return c.updateNodeOwnership(ctx, nodename, updateFn)
 }
 
 func (c *FaultQuarantineClient) removeLabels(
@@ -871,10 +888,10 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 			c.removeLabels(ctx, node, conditionalLabels.Keys, nodename)
 		}
 
-		return nil
+		return c.finishManualCordonClaim(node)
 	}
 
-	return c.UpdateNode(ctx, nodename, updateFn)
+	return c.updateNodeOwnership(ctx, nodename, updateFn)
 }
 
 // HandleManualUntaintCleanup atomically removes FQ annotations/taints/labels and adds manual untaint annotation
@@ -893,10 +910,10 @@ func (c *FaultQuarantineClient) HandleManualUntaintCleanup(
 
 		c.removeLabels(ctx, node, labelsToRemove, nodename)
 
-		return nil
+		return c.finishManualCordonClaim(node)
 	}
 
-	return c.UpdateNode(ctx, nodename, updateFn)
+	return c.updateNodeOwnership(ctx, nodename, updateFn)
 }
 
 func (c *FaultQuarantineClient) removeNodeTaints(ctx context.Context, node *v1.Node, taintsToRemove []config.Taint) {
