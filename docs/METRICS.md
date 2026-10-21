@@ -13,6 +13,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 - [Health Monitors](#health-monitors)
   - [Health Event Publisher](#health-event-publisher)
   - [GPU Health Monitor](#gpu-health-monitor)
+  - [NIC Health Monitor](#nic-health-monitor)
   - [Syslog Health Monitor](#syslog-health-monitor)
   - [CSP Health Monitor](#csp-health-monitor)
 - [Change Stream Metrics](#change-stream-metrics)
@@ -287,7 +288,7 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `health_events_direct_publish_succeed`            | Counter   | -                                  | Batches the deployment platform connector acknowledged (direct mode)                          |
 | `health_events_direct_publish_dropped`            | Counter   | `reason`                           | Direct-mode batches given up on; the same reasons as the Go publisher's `dropped_total`                   |
 | `health_events_direct_publish_retries`            | Counter   | -                                  | Direct-mode send attempts that failed and were retried                                                    |
-| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `error_code` | Total number of active GPU health events at any given time |
+| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `error_code`, `is_fatal`, `processing_strategy` | Total number of active GPU health events at any given time. `is_fatal` is `true` or `false`, the same as the `isFatal` that gpu-health-monitor sends (`recommendedAction` is not `NONE`). Use it to exclude informational events from alerts. The value comes from the gpu-health-monitor error-code mapping. `processing_strategy` is the processing strategy that gpu-health-monitor sends with the event, for example `EXECUTE_REMEDIATION` or `STORE_ONLY`. The global `processingStrategy` sets it, and a per-check setting can change it to `STORE_ONLY`, for example for `GpuThermalMarginWatch`, `GpuPowerBrakeWatch` and `GpuDcgmUnresponsive`. When the value is `STORE_ONLY`, no NVSentinel module acts on the event. When the value is `EXECUTE_REMEDIATION`, gpu-health-monitor requests action, but platform-connectors can still change the strategy. For example, it sets `STORE_ONLY` for a node with the `nvsentinel.dgxc.nvidia.com/managed=false` label. Like `is_fatal`, this label shows what gpu-health-monitor sends, not the final decision. |
 | `dcgm_health_active_switch_events`                | Gauge     | `event_type`, `switch_id`, `error_code` | Total number of active NVSwitch health events at any given time. Separate from `dcgm_health_active_events` because switch and GPU ids are distinct sequences that both start at 0 |
 | `dcgm_api_latency`                                | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
 | `dcgm_reconcile_time`                             | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
@@ -298,6 +299,14 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `dcgm_api_failures`                               | Counter   | `error_name`                       | Number of DCGM API errors                                                                                 |
 | `dcgm_health_check_unknown_system_skipped`        | Counter   | -                                  | Number of DCGM health check incidents skipped due to unrecognized system value                            |
 | `dcgm_probe_hangs`                                | Counter   | `operation_name`                   | Number of DCGM probes that exceeded the watchdog deadline without returning                                |
+
+---
+
+### NIC Health Monitor
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `nic_health_monitor_poll_cycle_last_completed_timestamp_seconds` | Gauge | `node`, `category` | Unix timestamp initialized at monitor startup and advanced after each completed poll cycle (`state` or `counter`). Use `time() - metric` to measure how long the category has gone without completing a poll, including a stall in the first poll. |
 
 ---
 
@@ -399,6 +408,7 @@ explicitly; the others use the default registry.
 | `change_stream_lag_seconds` | Gauge | `client` | Seconds since this consumer last had evidence it was caught up with its own change stream, from either an empty batch or the server-side timestamp of the last event it read. Absent until one of those has been observed |
 | `change_stream_lag_known` | Gauge | `client` | 1 once `change_stream_lag_seconds` can be computed for this consumer, 0 before then |
 | `change_stream_resume_token_recoveries_total` | Counter | `client`, `phase` | Times a stale or invalid resume token was deleted, restarting the stream from the current position |
+| `change_stream_reopens_total` | Counter | `client`, `result` | Attempts to reopen the stream after a runtime failure. `success` is a disconnect that would previously have ended the stream permanently; `failure` is one attempt that did not get through; `exhausted` is the recovery budget running out, after which the watcher stops and the process is expected to exit so the pod restarts — pair it with `kube_pod_container_status_restarts_total` |
 
 Lag is measured against the consumer's **own filtered stream**, so a module whose pipeline
 admits nothing still reports zero lag while it is caught up. See

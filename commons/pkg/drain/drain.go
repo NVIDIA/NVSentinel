@@ -46,20 +46,22 @@ drains targeting the same partialDrainEntity. If the current event has no partia
 - The list of HealthEvents are sourced from the quarantineValidationHealthEvent annotation which persists unhealthy
 events from the quarantine session that require post-remediation validation even if they recover and are removed from
 the related quarantineHealthEvent annotation.
-- We will always pass no currentPartialEntity, and getPartialDrainEntity is PartialDrainEntity (below), so an event
-only counts as proof of a full drain if it did not itself qualify for a partial drain — an event that would have
-qualified for a partial drain never proves the rest of the node was evicted.
+- We will always pass no currentPartialEntity, so an event only counts as proof of a full drain if it was not itself
+partially drained — a partially drained event never proves the rest of the node was evicted.
+
+In both contexts, partialDrainEnabled must be the caller's partialDrainEnabled setting. When it is false, no event is
+treated as partially drained.
 */
 func IsNodeDrained(ctx context.Context, healthEventStore datastore.HealthEventStore, nodeName string,
 	events []*protos.HealthEvent, excludeEventID string, currentPartialEntity *protos.Entity,
-	getPartialDrainEntity func(*protos.HealthEvent) (*protos.Entity, error)) (bool, error) {
+	partialDrainEnabled bool) (bool, error) {
 	for _, event := range events {
 		if event == nil || len(event.Id) == 0 || event.Id == excludeEventID {
 			continue
 		}
 
 		provesDrained, err := didDrainCompleteForEvent(ctx, healthEventStore, nodeName, event.Id, currentPartialEntity,
-			getPartialDrainEntity)
+			partialDrainEnabled)
 		if err != nil {
 			return false, err
 		}
@@ -73,14 +75,13 @@ func IsNodeDrained(ctx context.Context, healthEventStore datastore.HealthEventSt
 }
 
 func didDrainCompleteForEvent(ctx context.Context, healthEventStore datastore.HealthEventStore, nodeName,
-	eventID string, currentPartialEntity *protos.Entity,
-	getPartialDrainEntity func(*protos.HealthEvent) (*protos.Entity, error)) (bool, error) {
+	eventID string, currentPartialEntity *protos.Entity, partialDrainEnabled bool) (bool, error) {
 	status, healthEvent, err := getHealthEventFromId(ctx, healthEventStore, nodeName, eventID)
 	if err != nil {
 		return false, fmt.Errorf("looking up health event %s for node %s: %w", eventID, nodeName, err)
 	}
 
-	entity, err := getPartialDrainEntity(healthEvent)
+	entity, err := PartialDrainEntity(healthEvent, partialDrainEnabled)
 	if err != nil {
 		return false, fmt.Errorf("evaluating partial drain entity for health event %s on node %s: %w",
 			eventID, nodeName, err)
@@ -130,11 +131,16 @@ func getHealthEventFromId(ctx context.Context, healthEventStore datastore.Health
 /*
 PartialDrainEntity returns the entity the given HealthEvent's drain is scoped to (a partial
 drain) or nil if it requires a full drain. Recall that a given HealthEvent qualifies
-for a partial drain only if its RecommendedAction is COMPONENT_RESET, and it has a supported
-impacted entity.
+for a partial drain only if partial drain is enabled (the partialDrainEnabled value in the
+node-drainer Helm chart), its RecommendedAction is COMPONENT_RESET, and it has a supported
+impacted entity, which is configured in pod_device_annotation.go.
+
+If partial drain is enabled and the recommended action is COMPONENT_RESET but the given HealthEvent
+does not include a supported entity for partial drain, we will return an error. In all other cases,
+we will proceed with a full drain.
 */
-func PartialDrainEntity(healthEvent *protos.HealthEvent) (*protos.Entity, error) {
-	if healthEvent.RecommendedAction != protos.RecommendedAction_COMPONENT_RESET {
+func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled bool) (*protos.Entity, error) {
+	if !partialDrainEnabled || healthEvent.RecommendedAction != protos.RecommendedAction_COMPONENT_RESET {
 		return nil, nil
 	}
 

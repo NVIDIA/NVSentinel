@@ -366,10 +366,19 @@ func (c MetadataCarrier) Keys() []string {
 	return keys
 }
 
-// newIdempotencyKey mints the per-batch idempotency key: a random UUID (36
-// chars, within the server's ^[A-Za-z0-9._:-]{1,128}$ format; the Python
-// client uses the same UUID without dashes). Generated once per batch and
-// reused verbatim on every retry.
+// newIdempotencyKey mints the per-batch idempotency key: a UUIDv7 (36 chars,
+// within the server's ^[A-Za-z0-9._:-]{1,128}$ format; the Python clients use
+// the same UUIDv7 without dashes). Generated once per batch and reused
+// verbatim on every retry. A v7 key starts with a millisecond timestamp, so
+// keys minted later sort later and the unique index in the datastore appends
+// new entries instead of scattering them.
 func newIdempotencyKey() string {
-	return uuid.NewString()
+	key, err := uuid.NewV7()
+	if err != nil {
+		// NewV7 only fails when the random source does; a random key is still
+		// unique, it only gives up the append-only insert position.
+		return uuid.NewString()
+	}
+
+	return key.String()
 }

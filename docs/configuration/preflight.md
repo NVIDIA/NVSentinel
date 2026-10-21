@@ -270,11 +270,18 @@ Two discovery mechanisms are supported:
 
 ### Native Kubernetes: schedulingGroup / workloadRef
 
-The default when `gangDiscovery` is left empty (`{}`). Preflight first uses the Kubernetes 1.36 native PodGroup API when available, then falls back to the Kubernetes 1.35 native Workload API. Neither exists before Kubernetes 1.35, and preflight validates the discoverer at startup, so on an earlier cluster the pod fails to start — see [Single-node and single-GPU clusters](#single-node-and-single-gpu-clusters).
+The default when `gangDiscovery` is left empty (`{}`). Preflight first uses the native PodGroup API (Kubernetes 1.36 and later) when available, then falls back to the Kubernetes 1.35 native Workload API. Neither exists before Kubernetes 1.35, and preflight validates the discoverer at startup, so on an earlier cluster the pod fails to start — see [Single-node and single-GPU clusters](#single-node-and-single-gpu-clusters).
 
-> The `PodGroup` resource (`scheduling.k8s.io/v1alpha2`) and `spec.schedulingGroup` are alpha in Kubernetes 1.36 and disabled by default. Enable the `GenericWorkload` feature gate on the API server and scheduler to use this path.
+Preflight uses the PodGroup version that the cluster prefers, so you do not configure a version:
 
-In Kubernetes 1.36, each pod links to a `PodGroup` resource via `spec.schedulingGroup`:
+| Kubernetes | PodGroup API | Maturity |
+|---|---|---|
+| 1.36 | `scheduling.k8s.io/v1alpha2` | Alpha |
+| 1.37 | `scheduling.k8s.io/v1beta1` | Beta |
+
+> The `PodGroup` resource and `spec.schedulingGroup` are disabled by default in both versions. Enable the `GenericWorkload` feature gate on the API server and scheduler to use this path. On Kubernetes 1.37, also enable the API version on the API server with `--runtime-config=scheduling.k8s.io/v1beta1=true`.
+
+In Kubernetes 1.36 and later, each pod links to a `PodGroup` resource via `spec.schedulingGroup`:
 
 ```yaml
 spec:
@@ -285,7 +292,7 @@ spec:
 The PodGroup object contains a gang policy with `minCount`:
 
 ```yaml
-apiVersion: scheduling.k8s.io/v1alpha2
+apiVersion: scheduling.k8s.io/v1beta1  # v1alpha2 on Kubernetes 1.36
 kind: PodGroup
 metadata:
   name: training-workers
@@ -324,7 +331,7 @@ spec:
 No `gangDiscovery` configuration is needed for this fallback path either.
 
 The default chart RBAC grants read access to both native resources:
-`scheduling.k8s.io/podgroups` for Kubernetes 1.36 and
+`scheduling.k8s.io/podgroups` for Kubernetes 1.36 and later, and
 `scheduling.k8s.io/workloads` for Kubernetes 1.35.
 
 ### PodGroup-based schedulers (Volcano, Run:ai / OSMO, and similar)
@@ -570,7 +577,47 @@ gangCoordination:
   # mirrorResourceClaims: true  # Mirror DRA claims to init containers (default true)
 ```
 
-For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integration](../designs/026-preflight-checks.md) and `mirrorResourceClaims` above.
+For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integration](../designs/026-preflight-checks.md) and `mirrorResourceClaims` above. A DRA GPU pod always gets its claims mirrored, whatever `mirrorResourceClaims` says. See [DRA GPU pods](#dra-gpu-pods).
+
+## DRA GPU pods
+
+A pod that gets its GPUs through Dynamic Resource Allocation (DRA) has no GPU resource from `gpuResourceNames` (for example `nvidia.com/gpu`). The webhook finds these pods from their resource claims and injects the checks into them too. This applies when GPUs are allocated through DRA, for example with the GPU Operator in GPUCluster mode or with the standalone NVIDIA DRA driver for GPUs.
+
+The detection is always on and has no configuration value. Preflight does not read `global.gpuDraEnabled`. On a cluster without DRA, no pod has `spec.resourceClaims`, so the webhook makes no extra API calls.
+
+### How the webhook detects a DRA GPU pod
+
+For a pod with no GPU resource request, the webhook reads each entry in `spec.resourceClaims`. It reads the ResourceClaimTemplate or the ResourceClaim that the entry names. The pod is a DRA GPU pod when one device request matches these rules:
+
+| Device request | Counts as a GPU request |
+|----------------|-------------------------|
+| `exactly` with `deviceClassName: gpu.nvidia.com` | Yes |
+| `exactly` with `adminAccess: true` | No. Admin access is for monitoring, and other pods can use the same devices |
+| `firstAvailable` where every subrequest uses `gpu.nvidia.com` | Yes |
+| `firstAvailable` where one or more subrequests use another class | No. The scheduler can pick the non-GPU device |
+| Any request for another class | No |
+
+One GPU request is enough. The webhook then injects the checks and copies all of the pod's resource claims into each check, including NIC and IMEX claims. The NCCL checks need the NIC and IMEX devices to test the network. The webhook adds each claim one time only.
+
+A pod that requests a GPU resource from `gpuResourceNames` does not go through this detection. The webhook makes no API calls for it, and its behaviour does not change.
+
+### Failures
+
+The webhook does not reject a pod because of DRA detection. If it cannot read a claim or a template, it counts that entry as non-GPU and continues. If no entry is a GPU request, the webhook admits the pod without the checks. It never injects the checks without the pod's claims, because a check without GPU access reports the node as unhealthy.
+
+| Condition | Result | Log level |
+|-----------|--------|-----------|
+| Claim or template does not exist | Entry counts as non-GPU | Warn |
+| RBAC error, API error, or `resource.k8s.io/v1` not served | Entry counts as non-GPU | Error |
+| All reads for the pod take more than 3 seconds | Remaining entries count as non-GPU | Error |
+
+An Error log means the webhook counts that entry as non-GPU. The pod still gets the checks if another entry is a GPU request. An RBAC or API error usually affects every claim, so DRA GPU pods then do not get the checks. Look for `Failed to read DRA claim, treating it as non-GPU` in the preflight logs.
+
+### RBAC and API load
+
+The chart always creates the ClusterRole `preflight-dra` and binds it to the preflight ServiceAccount. It gives `get` access to `resourceclaims` and `resourceclaimtemplates` in the `resource.k8s.io` API group, in all namespaces. It gives no `list` or `watch` access. It does not depend on gang coordination. On a cluster without DRA, the role exists but the webhook does not use it.
+
+The webhook reads claims directly from the API server, with no cache. This keeps preflight memory usage the same on large clusters. Each DRA pod admission costs one `get` for each entry in `spec.resourceClaims`, until the webhook finds a GPU request.
 
 ## Publishing to the deployment platform connector
 
@@ -608,6 +655,7 @@ The events, and what Fault Quarantine does with them, are the same on both paths
 | Gang coordination (timeouts, topology, mounts) | `preflight.gangCoordination` |
 | Namespace selector for the webhook | `preflight.namespaceSelector` |
 | Pod-level selector for the webhook | `preflight.objectSelector` |
+| Webhook log level (`debug`, `info`, `warn`, `error`) | `preflight.logLevel` |
 
 ## Webhook
 

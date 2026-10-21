@@ -68,7 +68,7 @@ func queryPrometheus(ctx context.Context, query string) (model.Value, error) {
 
 	promClient := v1prometheus.NewAPI(client)
 
-	result, warnings, err := promClient.Query(ctx, query, time.Now())
+	result, warnings, _, err := promClient.Query(ctx, query, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("failed to query prometheus: %w", err)
 	}

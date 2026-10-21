@@ -47,6 +47,27 @@ func TestExcludedPodTransform_PodPolicyLabels_PreservesOnlyRequiredKeys(t *testi
 	require.Empty(t, obj.(*v1.Pod).Spec.NodeName, "excluded pods must stay out of node indexes")
 }
 
+// TestExcludedPodTransform_OwnerReferences_PreservesControllerFlag
+// keeps the controller flag that ownerKinds policies match on, without aliasing the API object.
+func TestExcludedPodTransform_OwnerReferences_PreservesControllerFlag(t *testing.T) {
+	pod := richDrainEligiblePod("workload", "worker", "node-a")
+	pod.OwnerReferences = []metav1.OwnerReference{
+		{APIVersion: "v1", Kind: "ConfigMap", Name: "settings", UID: "settings-uid"},
+		{APIVersion: "apps/v1", Kind: "StatefulSet", Name: "db", UID: "db-uid", Controller: new(true)},
+	}
+	obj, err := excludedPodTransform(regexp.MustCompile(`^kube-system$`))(pod)
+	require.NoError(t, err)
+	cached := obj.(*v1.Pod)
+	require.Equal(t, []metav1.OwnerReference{
+		{Kind: "ConfigMap"},
+		{Kind: "StatefulSet", Controller: new(true)},
+	}, cached.OwnerReferences)
+	require.Equal(t, "StatefulSet", metav1.GetControllerOfNoCopy(cached).Kind)
+
+	*cached.OwnerReferences[1].Controller = false
+	require.True(t, *pod.OwnerReferences[1].Controller, "cache must not alias the API object's owner references")
+}
+
 // Exercise the API server's preconditions, including the eviction subresource.
 // A fake client would not prove that Kubernetes protects a newly selected pod.
 func TestSendEvictionRequestForPodAndForceDeletePods_StaleObservation_RejectsActions(t *testing.T) {

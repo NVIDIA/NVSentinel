@@ -1,0 +1,134 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: module log level
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+templates:
+  - charts/janitor-provider/templates/deployment.yaml
+  - charts/event-exporter/templates/deployment.yaml
+  - charts/event-exporter/templates/configmap.yaml
+  - charts/lifecycle-manager/templates/deployment.yaml
+  - charts/lifecycle-manager/templates/configmap.yaml
+  - charts/lifecycle-manager/templates/configmap-templates.yaml
+  - charts/metadata-collector/templates/daemonset.yaml
+  - charts/preflight/templates/deployment.yaml
+  - charts/preflight/templates/configmap.yaml
+set:
+  global.janitorProvider.enabled: true
+  global.eventExporter.enabled: true
+  global.lifecycleManager.enabled: true
+  global.metadataCollector.enabled: true
+  global.preflight.enabled: true
+tests:
+  - it: sets janitor-provider LOG_LEVEL to info by default
+    template: charts/janitor-provider/templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: info
+
+  - it: passes janitor-provider.logLevel to LOG_LEVEL
+    template: charts/janitor-provider/templates/deployment.yaml
+    set:
+      janitor-provider.logLevel: debug
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: debug
+
+  - it: sets event-exporter LOG_LEVEL to info by default
+    template: charts/event-exporter/templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: info
+
+  - it: passes event-exporter.logLevel to LOG_LEVEL
+    template: charts/event-exporter/templates/deployment.yaml
+    set:
+      event-exporter.logLevel: debug
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: debug
+
+  - it: sets lifecycle-manager LOG_LEVEL to info by default
+    template: charts/lifecycle-manager/templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: info
+
+  - it: passes lifecycle-manager.logLevel to LOG_LEVEL
+    template: charts/lifecycle-manager/templates/deployment.yaml
+    set:
+      lifecycle-manager.logLevel: debug
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: debug
+
+  - it: sets metadata-collector LOG_LEVEL to info by default
+    template: charts/metadata-collector/templates/daemonset.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: info
+
+  - it: passes metadata-collector.logLevel to LOG_LEVEL
+    template: charts/metadata-collector/templates/daemonset.yaml
+    set:
+      metadata-collector.logLevel: debug
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: debug
+
+  - it: sets preflight LOG_LEVEL to info by default
+    template: charts/preflight/templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: info
+
+  - it: passes preflight.logLevel to LOG_LEVEL
+    template: charts/preflight/templates/deployment.yaml
+    set:
+      preflight.logLevel: debug
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+            value: debug

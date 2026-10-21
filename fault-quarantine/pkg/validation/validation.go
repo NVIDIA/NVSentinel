@@ -51,6 +51,8 @@ type ValidationClient struct {
 
 	resourceTemplate *template.Template
 	resourceGVR      schema.GroupVersionResource
+
+	partialDrainEnabled bool
 }
 
 type templateData struct {
@@ -101,6 +103,7 @@ func NewValidationClient(cfg config.TomlConfig, k8sClient *informer.FaultQuarant
 		healthEventStore:          healthEventStore,
 		resourceTemplate:          validationTemplate,
 		resourceGVR:               gvr,
+		partialDrainEnabled:       cfg.Validation.PartialDrainEnabled,
 	}, nil
 }
 
@@ -254,7 +257,8 @@ func (c *ValidationClient) FetchValidationTestsFromQuarantineSession(ctx context
 		}
 	}
 
-	isDrained, err := drain.IsNodeDrained(ctx, c.healthEventStore, nodeName, events, "", nil, drain.PartialDrainEntity)
+	isDrained, err := drain.IsNodeDrained(ctx, c.healthEventStore, nodeName, events, "", nil,
+		c.partialDrainEnabled)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to look up drain status for node %s: %w", nodeName, err)
 	}

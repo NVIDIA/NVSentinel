@@ -15,10 +15,25 @@
 package controller
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	sigsyaml "sigs.k8s.io/yaml"
+
+	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
 )
 
 func TestGroupNameAndAttemptObjectName(t *testing.T) {
@@ -104,3 +119,101 @@ func TestGroupNameAndAttemptObjectName(t *testing.T) {
 		})
 	}
 }
+
+var chartValuesPath = filepath.Join("..", "..", "..",
+	"distros", "kubernetes", "nvsentinel", "charts", "lifecycle-manager", "values.yaml")
+
+// loadChartConfig loads the lifecycle-manager chart's default config through config.LoadConfig, the same
+// path the controller uses at startup. The chart's config keys map one-to-one onto ValidationConfigurationSpec
+// (see templates/configmap.yaml), and its templates are written to a temporary templateMountPath.
+func loadChartConfig() *config.Config {
+	data, err := os.ReadFile(chartValuesPath)
+	Expect(err).NotTo(HaveOccurred())
+
+	var values struct {
+		Config struct {
+			v1alpha1.ValidationConfigurationSpec `json:",inline"`
+			Templates                            map[string]string `json:"templates"`
+		} `json:"config"`
+	}
+	Expect(sigsyaml.Unmarshal(data, &values)).To(Succeed())
+
+	templateDir := GinkgoT().TempDir()
+	for name, content := range values.Config.Templates {
+		Expect(os.WriteFile(filepath.Join(templateDir, name), []byte(content), 0o600)).To(Succeed())
+	}
+
+	spec := values.Config.ValidationConfigurationSpec
+	spec.TemplateMountPath = templateDir
+
+	validationConfig, err := sigsyaml.Marshal(&v1alpha1.ValidationConfiguration{
+		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.GroupVersion.String(), Kind: "ValidationConfiguration"},
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec:       spec,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	configPath := filepath.Join(templateDir, "config.yaml")
+	Expect(os.WriteFile(configPath, validationConfig, 0o600)).To(Succeed())
+
+	cfg, err := config.LoadConfig(configPath)
+	Expect(err).NotTo(HaveOccurred())
+
+	return cfg
+}
+
+func toleratesTaint(tolerations []corev1.Toleration, taint corev1.Taint) bool {
+	for i := range tolerations {
+		if tolerations[i].ToleratesTaint(logr.Discard(), &taint, false) {
+			return true
+		}
+	}
+
+	return false
+}
+
+var _ = Describe("chart k8s-job-template.yaml", func() {
+	It("renders a Job that the API server accepts and that tolerates every NoExecute taint", func(ctx SpecContext) {
+		cfg := loadChartConfig()
+		r, err := NewValidationRequestReconciler(k8sClient, k8sClient, scheme.Scheme, cfg, testNamespace)
+		Expect(err).NotTo(HaveOccurred())
+
+		vr := &v1alpha1.ValidationRequest{ObjectMeta: metav1.ObjectMeta{Name: "vr-chart-template"}}
+		group := &v1alpha1.TestGroupStatus{
+			Name:     "dcgm-diag-test-1",
+			Provider: "k8s-job-provider",
+			Tests:    []string{"dcgm-diag-test"},
+			Nodes:    []string{"node-chart-template"},
+		}
+
+		u, err := r.renderTestGroupObject(vr, group, "vr-chart-template-dcgm-diag-test-1")
+		Expect(err).NotTo(HaveOccurred())
+
+		job := &batchv1.Job{}
+		Expect(runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, job)).To(Succeed())
+
+		// A dry-run create runs API server validation, which rejects an invalid toleration such as an empty key
+		// with an operator other than Exists.
+		Expect(k8sClient.Create(ctx, job, client.DryRunAll)).To(Succeed())
+
+		tolerations := job.Spec.Template.Spec.Tolerations
+
+		By("tolerating NoExecute taints that are not configured anywhere")
+		for _, taint := range []corev1.Taint{
+			{Key: "example.com/bringup", Value: "in-progress", Effect: corev1.TaintEffectNoExecute},
+			{Key: "example.com/maintenance", Effect: corev1.TaintEffectNoExecute},
+		} {
+			Expect(toleratesTaint(tolerations, taint)).To(BeTrue(), "taint %s=%s:%s", taint.Key, taint.Value, taint.Effect)
+		}
+
+		By("still tolerating the cordon taint")
+		Expect(toleratesTaint(tolerations, corev1.Taint{
+			Key: corev1.TaintNodeUnschedulable, Effect: corev1.TaintEffectNoSchedule,
+		})).To(BeTrue())
+
+		By("not widening the wildcard to other effects")
+		Expect(toleratesTaint(tolerations, corev1.Taint{
+			Key: "example.com/bringup", Value: "in-progress", Effect: corev1.TaintEffectNoSchedule,
+		})).To(BeFalse())
+	})
+})

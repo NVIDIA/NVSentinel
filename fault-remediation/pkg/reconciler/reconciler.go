@@ -1228,6 +1228,64 @@ func (r *FaultRemediationReconciler) tryStopAtMaxAttempts(
 		return ctrl.Result{}, nil, false
 	}
 
+	res, err := r.giveUpAtMaxAttempts(ctx, nodeName, effectiveEquivalenceGroup, attemptCount, maxAttempts,
+		eventWithToken, watcherInstance, healthEventStore)
+
+	return res, err, true
+}
+
+// tryStopIfAlreadyCapped returns (result, err, true) when the equivalence group spent its attempt
+// budget before this event arrived. It reads the counter without recording an attempt, so the
+// caller can give up before launching a log collector: a capped event never reaches
+// performRemediation, so collecting logs for it only adds one Job per event for as long as the
+// fault keeps firing.
+//
+// A failed read falls through (false) rather than failing the event: tryStopAtMaxAttempts records
+// the attempt after log collection and enforces the cap on its own, so the worst case is the
+// collector run this check exists to avoid.
+func (r *FaultRemediationReconciler) tryStopIfAlreadyCapped(
+	ctx context.Context,
+	nodeName string,
+	effectiveEquivalenceGroup string,
+	maxAttempts int,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+) (ctrl.Result, error, bool) {
+	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to read remediation state before log collection; "+
+			"the attempt cap is still enforced after collection",
+			"node", nodeName,
+			"group", effectiveEquivalenceGroup,
+			"error", err)
+
+		return ctrl.Result{}, nil, false
+	}
+
+	attemptCount := state.EquivalenceGroups[effectiveEquivalenceGroup].AttemptCount
+	if attemptCount < maxAttempts {
+		return ctrl.Result{}, nil, false
+	}
+
+	res, err := r.giveUpAtMaxAttempts(ctx, nodeName, effectiveEquivalenceGroup, attemptCount, maxAttempts,
+		eventWithToken, watcherInstance, healthEventStore)
+
+	return res, err, true
+}
+
+// giveUpAtMaxAttempts labels the node remediation-failed and finalizes the event without creating
+// a CR, for an equivalence group that has spent its attempt budget.
+func (r *FaultRemediationReconciler) giveUpAtMaxAttempts(
+	ctx context.Context,
+	nodeName string,
+	effectiveEquivalenceGroup string,
+	attemptCount int,
+	maxAttempts int,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+) (ctrl.Result, error) {
 	slog.WarnContext(ctx, "Maximum remediation attempts reached for equivalence group, giving up",
 		"node", nodeName,
 		"group", effectiveEquivalenceGroup,
@@ -1247,13 +1305,11 @@ func (r *FaultRemediationReconciler) tryStopAtMaxAttempts(
 			"error", err)
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 
-		return ctrl.Result{}, fmt.Errorf("failed to label node %s as remediation-failed: %w", nodeName, err), true
+		return ctrl.Result{}, fmt.Errorf("failed to label node %s as remediation-failed: %w", nodeName, err)
 	}
 
-	res, err := r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance,
+	return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance,
 		nodeName, false)
-
-	return res, err, true
 }
 
 // handleEventCoveredByExistingCR routes a shouldCreate=false decision: an event behind a
@@ -1530,6 +1586,18 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 ) (ctrl.Result, error) {
 	span := tracing.SpanFromContext(ctx)
 
+	// Give up before log collection when the group is already capped; see tryStopIfAlreadyCapped.
+	maxAttempts := r.Config.RemediationClient.GetConfig().MaxRemediationAttempts
+	if maxAttempts > 0 {
+		result, err, done := r.tryStopIfAlreadyCapped(ctx, nodeName, groupConfig.EffectiveEquivalenceGroup,
+			maxAttempts, eventWithToken, watcherInstance, healthEventStore)
+		if done {
+			span.SetAttributes(attribute.String("fault_remediation.status", "max_attempts_reached"))
+
+			return result, err
+		}
+	}
+
 	result, err := r.runLogCollector(ctx, healthEvent, healthEventWithStatus.ID)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("error running log collector: %w", err)
@@ -1541,7 +1609,6 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 
 	// Count the attempt only after log collection completes. The collector requeues this event
 	// while its Job is running, and those polling passes are not remediation attempts.
-	maxAttempts := r.Config.RemediationClient.GetConfig().MaxRemediationAttempts
 	if maxAttempts > 0 {
 		result, err, done := r.tryStopAtMaxAttempts(ctx, nodeName, groupConfig.EffectiveEquivalenceGroup,
 			maxAttempts, eventWithToken, watcherInstance, healthEventStore)

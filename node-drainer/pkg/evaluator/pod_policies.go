@@ -40,7 +40,7 @@ func (e *NodeDrainEvaluator) evaluatePodPolicyActions(ctx context.Context,
 
 	force := healthEvent.HealthEvent.GetDrainOverrides().GetForce()
 
-	podsByMode, err := e.listPodsByMode(allNamespaces, nodeName, partialDrainEntity, force)
+	podsByMode, err := e.listPodsByMode(ctx, allNamespaces, nodeName, partialDrainEntity, force)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,8 @@ func (e *NodeDrainEvaluator) evaluatePodPolicyActions(ctx context.Context,
 	// Refresh it before completing the drain, including after force deletion.
 	selected := e.podModeFilter("", force)
 	for _, namespace := range allNamespaces {
-		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity, selected)
+		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, partialDrainEntity,
+			selected)
 		if err != nil {
 			return nil, fmt.Errorf("check remaining selected pods: %w", err)
 		}
@@ -91,12 +92,12 @@ func (e *NodeDrainEvaluator) evaluatePodPolicyActions(ctx context.Context,
 }
 
 // listPodsByMode groups one observation of each namespace by its first matching policy.
-func (e *NodeDrainEvaluator) listPodsByMode(namespaces []string, nodeName string,
+func (e *NodeDrainEvaluator) listPodsByMode(ctx context.Context, namespaces []string, nodeName string,
 	partialDrainEntity *protos.Entity, force bool) (map[config.EvictMode][]*v1.Pod, error) {
 	podsByMode := make(map[config.EvictMode][]*v1.Pod)
 
 	for _, namespace := range namespaces {
-		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName,
+		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName,
 			partialDrainEntity, e.podModeFilter("", force))
 		if err != nil {
 			return nil, fmt.Errorf("list pods for drain policies in namespace %q: %w", namespace, err)

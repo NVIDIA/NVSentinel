@@ -37,8 +37,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
@@ -135,7 +138,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		return nil, fmt.Errorf("failed to create policy evaluator: %w", err)
 	}
 
-	if err := registerControllers(mgr, evaluator, pub, cfg.Policies,
+	if err := registerControllers(ctx, mgr, evaluator, pub, cfg.Policies,
 		params.MaxConcurrentReconciles); err != nil {
 		pub.Close()
 		return nil, fmt.Errorf("failed to register controllers: %w", err)
@@ -364,24 +367,32 @@ func setupHealthChecks(mgr ctrl.Manager) error {
 }
 
 func registerControllers(
+	ctx context.Context,
 	mgr ctrl.Manager,
 	evaluator *policy.Evaluator,
-	pub *publisher.Publisher,
+	pub controller.HealthEventPublisher,
 	policies []config.Policy,
 	maxConcurrentReconciles int,
 ) error {
 	annotationMgr := annotations.NewManager(mgr.GetClient())
+
+	// The manager cache has not started yet, so the saved match state is read through
+	// the API reader. Without this state, a resource that recovers or is deleted while
+	// the monitor is stopped never gets a healthy event, and its node stays cordoned.
+	allMatches, err := annotationMgr.LoadAllMatches(ctx, mgr.GetAPIReader())
+	if err != nil {
+		return fmt.Errorf("failed to load policy match state from node annotations: %w", err)
+	}
+
 	gvkPolicies := groupPoliciesByGVK(policies)
 
 	for gvk, policies := range gvkPolicies {
 		reconciler := controller.NewResourceReconciler(mgr.GetClient(), evaluator, pub, annotationMgr, policies, gvk)
-
-		if err := reconciler.LoadState(context.Background()); err != nil {
-			slog.Warn("Failed to load state for controller, starting fresh", "gvk", gvk.String(), "error", err)
-		}
+		restored := restoredEventSource(reconciler.RestoreState(allMatches))
 
 		if err := ctrl.NewControllerManagedBy(mgr).
 			For(newUnstructuredForGVK(gvk)).
+			WatchesRawSource(source.Channel(restored, &handler.EnqueueRequestForObject{})).
 			WithOptions(ctrlcontroller.Options{
 				MaxConcurrentReconciles: maxConcurrentReconciles,
 			}).
@@ -393,6 +404,20 @@ func registerControllers(
 	}
 
 	return nil
+}
+
+// restoredEventSource returns a closed channel that holds the events. The channel
+// source of the controller reads the events and then stops.
+func restoredEventSource(events []event.GenericEvent) <-chan event.GenericEvent {
+	ch := make(chan event.GenericEvent, len(events))
+
+	for _, e := range events {
+		ch <- e
+	}
+
+	close(ch)
+
+	return ch
 }
 
 func dialPlatformConnectorSocket(socket, tokenPath string) (*grpc.ClientConn, error) {

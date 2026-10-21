@@ -70,6 +70,68 @@ mode = "DeleteAfterTimeout"
 	}
 }
 
+// ownedBy returns a single owner reference of the given kind.
+func ownedBy(kind string, controller bool) []metav1.OwnerReference {
+	return []metav1.OwnerReference{{Kind: kind, Name: "owner", Controller: new(controller)}}
+}
+
+// TestPodPolicyMatcherMatch_OwnerKinds_SelectsByControllerKind
+// checks owner-kind matching on its own, combined with a selector, and for pods without a controller.
+func TestPodPolicyMatcherMatch_OwnerKinds_SelectsByControllerKind(t *testing.T) {
+	cfg, err := LoadTomlConfigFromString(`
+[[podDrainPolicies]]
+name = "checkpointing-statefulsets"
+podSelector = "checkpoint"
+ownerKinds = ["StatefulSet"]
+mode = "AllowCompletion"
+[[podDrainPolicies]]
+name = "training-controllers"
+namespace = "train-*"
+ownerKinds = ["StatefulSet", "Job"]
+mode = "DeleteAfterTimeout"
+[[podDrainPolicies]]
+name = "replicasets"
+ownerKinds = ["ReplicaSet"]
+mode = "Immediate"
+`)
+	require.NoError(t, err)
+	matcher, err := CompilePodDrainPolicies(cfg.PodDrainPolicies)
+	require.NoError(t, err)
+	require.Equal(t, []string{"checkpoint"}, matcher.LabelKeys())
+
+	checkpoint := map[string]string{"checkpoint": "yes"}
+	tests := []struct {
+		name      string
+		namespace string
+		labels    map[string]string
+		owners    []metav1.OwnerReference
+		mode      EvictMode
+		matched   bool
+	}{
+		{"selector and owner kind match", "other", checkpoint, ownedBy("StatefulSet", true), ModeAllowCompletion, true},
+		{"owner kind alone matches", "train-a", nil, ownedBy("StatefulSet", true), ModeDeleteAfterTimeout, true},
+		{"any listed kind matches", "train-a", nil, ownedBy("Job", true), ModeDeleteAfterTimeout, true},
+		{"namespace restriction", "other", nil, ownedBy("Job", true), "", false},
+		{"selector does not widen owner kinds", "train-a", checkpoint, ownedBy("ReplicaSet", true),
+			ModeImmediateEvict, true},
+		{"kind is case sensitive", "train-a", nil, ownedBy("statefulset", true), "", false},
+		{"non-controller owner is ignored", "train-a", checkpoint, ownedBy("StatefulSet", false), "", false},
+		{"controller among several owners", "train-a", nil,
+			append(ownedBy("StatefulSet", false), ownedBy("ReplicaSet", true)...), ModeImmediateEvict, true},
+		{"bare pod stays outside scope", "train-a", checkpoint, nil, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Namespace: tt.namespace, Labels: tt.labels, OwnerReferences: tt.owners,
+			}}
+			mode, matched := matcher.Match(pod)
+			require.Equal(t, tt.matched, matched)
+			require.Equal(t, tt.mode, mode)
+		})
+	}
+}
+
 // TestLoadTomlConfigFromString_InvalidPodPolicies_ReturnsValidationError
 // rejects malformed or conflicting policies at startup.
 func TestLoadTomlConfigFromString_InvalidPodPolicies_ReturnsValidationError(t *testing.T) {
@@ -85,6 +147,8 @@ mode = "Immediate"
 		"empty selector":        strings.Replace(valid, "app=worker", " ", 1),
 		"invalid selector":      strings.Replace(valid, "app=worker", "app in (", 1),
 		"invalid mode":          strings.Replace(valid, "Immediate", "DeleteEverything", 1),
+		"empty owner kind":      strings.Replace(valid, `podSelector = "app=worker"`, `ownerKinds = [""]`, 1),
+		"padded owner kind":     strings.Replace(valid, `podSelector = "app=worker"`, `ownerKinds = [" Job"]`, 1),
 		"invalid namespace":     valid + "namespace = \"[\"\n",
 		"custom drain conflict": valid + "[customDrain]\nenabled = true\n",
 		"namespace conflict":    valid + "[[userNamespaces]]\nname = \"*\"\nmode = \"AllowCompletion\"\n",

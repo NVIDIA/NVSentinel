@@ -106,6 +106,17 @@ type Config struct {
 	// the only one that caps that.
 	TripMaxCordonedNodes int
 
+	// TripMaxCordonedPercentage is the percentage form of TripMaxCordonedNodes: the breaker
+	// trips when this share of the GPU fleet is quarantined by NVSentinel at once. Zero
+	// disables it, and it is off by default.
+	//
+	// Pairs with TripMaxCordonedNodes exactly as TripPercentage pairs with TripMaxNodes:
+	// when both are set the lower one binds, so growing the fleet cannot silently raise the
+	// effective limit. Prefer this form when the blast radius you care about is a share of
+	// the fleet rather than a number of machines, since an absolute count silently changes
+	// meaning as the fleet is resized.
+	TripMaxCordonedPercentage float64
+
 	// K8sClient provides operations for node counts and ConfigMap state persistence
 	K8sClient K8sClientOperations
 
@@ -128,6 +139,24 @@ type Config struct {
 	MaxRetryDelay time.Duration
 }
 
+// validatePercentageBound rejects percentage values that would misbehave inside
+// resolveThreshold rather than failing loudly. NaN passes every comparison there and survives
+// as int(NaN), which is 0, leaving the breaker tripped from startup with no cordons at all.
+// Infinities are caught by the fleet-size comparison, but rejecting them here is explicit
+// rather than lucky. A negative value is ignored by resolveThreshold, so it silently does
+// nothing rather than what it looks like.
+func validatePercentageBound(name string, percentage float64) error {
+	if math.IsNaN(percentage) || math.IsInf(percentage, 0) {
+		return fmt.Errorf("circuit breaker %s must be a finite number, got %v", name, percentage)
+	}
+
+	if percentage < 0 {
+		return fmt.Errorf("circuit breaker %s must not be negative, got %v", name, percentage)
+	}
+
+	return nil
+}
+
 // validateBounds rejects a configuration that cannot act as a limit. It lives here rather
 // than in the initializer so every caller is covered, including tests that build a Config
 // directly.
@@ -136,15 +165,12 @@ type Config struct {
 // breaker would trip on its first evaluation with no cordons at all. A negative value is
 // ignored by tripThreshold, so it silently does nothing rather than what it looks like.
 func (c Config) validateBounds() error {
-	// NaN passes every comparison below and survives into tripThreshold as int(NaN), which
-	// is 0, leaving the breaker tripped from startup with no cordons at all. Infinities are
-	// caught by the fleet-size clamp, but rejecting them here is explicit rather than lucky.
-	if math.IsNaN(c.TripPercentage) || math.IsInf(c.TripPercentage, 0) {
-		return fmt.Errorf("circuit breaker percentage must be a finite number, got %v", c.TripPercentage)
+	if err := validatePercentageBound("percentage", c.TripPercentage); err != nil {
+		return err
 	}
 
-	if c.TripPercentage < 0 {
-		return fmt.Errorf("circuit breaker percentage must not be negative, got %v", c.TripPercentage)
+	if err := validatePercentageBound("maxCordonedPercentage", c.TripMaxCordonedPercentage); err != nil {
+		return err
 	}
 
 	if c.TripMaxNodes < 0 {
@@ -155,9 +181,11 @@ func (c Config) validateBounds() error {
 		return fmt.Errorf("circuit breaker maxCordonedNodes must not be negative, got %d", c.TripMaxCordonedNodes)
 	}
 
-	if c.TripPercentage == 0 && c.TripMaxNodes == 0 && c.TripMaxCordonedNodes == 0 {
+	if c.TripPercentage == 0 && c.TripMaxNodes == 0 &&
+		c.TripMaxCordonedNodes == 0 && c.TripMaxCordonedPercentage == 0 {
 		return errors.New(
-			"circuit breaker requires percentage, maxNodes or maxCordonedNodes to be set to a positive value")
+			"circuit breaker requires percentage, maxNodes, maxCordonedNodes or maxCordonedPercentage " +
+				"to be set to a positive value")
 	}
 
 	return nil

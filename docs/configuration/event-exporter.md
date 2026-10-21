@@ -18,6 +18,15 @@ global:
 
 > Note: This module depends on the datastore being enabled. Therefore, ensure the datastore is also enabled.
 
+### Logging
+
+Sets the verbosity level for event-exporter logs.
+
+```yaml
+event-exporter:
+  logLevel: info  # Options: debug, info, warn, error
+```
+
 ### Resources
 
 Defines CPU and memory resource requests and limits for the event-exporter pod.

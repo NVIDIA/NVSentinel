@@ -36,7 +36,7 @@ janitor:
 
 ### Logging
 
-Sets the verbosity level for janitor logs. Inherited from `global.logLevel` when not overridden.
+Sets the verbosity level for janitor logs.
 
 ```yaml
 janitor:
@@ -236,6 +236,7 @@ janitor:
           runtimeClassName: "nvidia"
           hostDriverRootPath: "/run/nvidia/driver"
           driverRoot: "/run/nvidia/driver"
+          driverBinPath: ""
           image:
             repository: ghcr.io/nvidia/nvsentinel/gpu-reset
             tag: ""
@@ -248,16 +249,49 @@ janitor:
               memory: "128Mi"
 ```
 
-Handles `GPUReset` CRs. Before issuing the GPU reset, the controller pauses the deployment or DaemonSet named by `serviceManager.name` to prevent the GPU Operator from interfering with the reset sequence.
+Handles `GPUReset` CRs. Before issuing the GPU reset, the controller removes the GPU Operator operands that hold device handles from the node by setting their `nvidia.com/gpu.deploy.*` node labels to `false`, waits for the pods to leave, runs the reset Job, then sets the labels back to `true` and waits for the pods to be Ready.
 
 ### serviceManager.name
-Name of the Kubernetes Deployment or DaemonSet to pause during GPU reset. Set to the GPU Operator deployment name in your cluster.
+Name of the built-in GPU services manager. Use `gpu-operator` for the NVIDIA GPU Operator.
+
+#### GPU Operator modes
+
+The `gpu-operator` service manager supports both GPU Operator modes: device plugin and DRA. You do not set the mode. The controller finds the GPU Operator operands that run on each node.
+
+Each managed operand has a deploy node label. To stop an operand on the node, the controller sets its label to `false`. After the reset, the controller sets the label back to `true` and waits until the operand pods are ready.
+
+| GPU Operator mode | Pod labels | Node label |
+|---|---|---|
+| device plugin | `app=nvidia-device-plugin-daemonset`, `app.kubernetes.io/managed-by=gpu-operator` | `nvidia.com/gpu.deploy.device-plugin` |
+| device plugin | `app=nvidia-dcgm`, `app.kubernetes.io/managed-by=gpu-operator` | `nvidia.com/gpu.deploy.dcgm` |
+| device plugin | `app=nvidia-dcgm-exporter`, `app.kubernetes.io/managed-by=gpu-operator` | `nvidia.com/gpu.deploy.dcgm-exporter` |
+| device plugin | `app=gpu-feature-discovery`, `app.kubernetes.io/managed-by=gpu-operator` | `nvidia.com/gpu.deploy.gpu-feature-discovery` |
+| DRA | `app=nvidia-dcgm-dra` | `nvidia.com/gpu.deploy.dcgm-dra` |
+| DRA | `app=nvidia-dcgm-exporter-dra` | `nvidia.com/gpu.deploy.dcgm-exporter-dra` |
+
+When the teardown starts, the controller lists the pods of each operand on the node. A pod in any phase counts. The controller stops only the operands that have a pod on the node. It records their node labels in the GPUReset status, in `status.managedServices.nodeLabels`. The restore and the GPUReset finalizer use this record. The controller does not change the node labels of the other operands.
+
+The controller changes a node label only when it holds the enabled or the disabled value. A label that is absent is not held: the teardown sets it to the disabled value and the restore to the enabled value. Another controller can hold a label at a different value. For example, the GPU Operator upgrade controller sets `nvidia.com/gpu.deploy.dcgm=paused-for-driver-upgrade` during a driver upgrade. The controller then waits and retries. Before the teardown starts, it checks the labels of every operand of the service manager, also the operands that have no pod on the node, because a driver upgrade removes the operand pods. This wait is bounded by the `gpuReset.timeout` value. The same check runs before the controller creates the reset Job. During the teardown, the wait is bounded by the service manager `teardownTimeout`, and during the restore by `restoreTimeout`. When the wait times out, the GPUReset fails with the reason `ServiceTeardownTimeoutExceeded`, `ResetJobCreationFailed` or `RestoreTimeoutExceeded`. A GPUReset that fails after it stopped services, for example on the restore timeout or on a held label before the reset Job, keeps the node lock and keeps restoring the node labels, without waiting for the pods, for one more `gpuReset.timeout`. Only the controller writes those labels back; the GPU Operator does not touch a label that holds the disabled value. A label that stays held for that long is left as it is, the other labels are restored, the `ServicesRestored` condition names the held one, and the lock is released. Deletion waits in the same way.
+
+When no operand pod runs on the node, the controller skips the teardown and the restore. The `ServicesTornDown` and `ServicesRestored` conditions then have the reason `Skipped`.
+
+A GPUReset that an earlier janitor version started has no record. For such a GPUReset, the controller treats every operand whose node label currently holds its disabled value as stopped, and restores those.
+
+Before the controller creates the reset Job, it makes sure that no pod of a stopped operand runs on the node.
+
+The janitor Pod cache holds only the pods in the service manager namespace that have one of the `app` labels of the service manager.
+
+The controller finds the operands only one time, when the teardown starts. An operand pod that is not on the node at that time is not stopped. For example, a DaemonSet rolling update can remove the pod for a short time. The pod can then start again during the reset and keep the GPU open, and the reset fails.
+
+#### Values per GPU Operator mode
+
+The built-in `gpu-operator` service manager and the `/run/nvidia/driver` driver paths work unchanged on ClusterPolicy and `GPUCluster` (DRA) clusters. The one value that differs is `resetJob.runtimeClassName`, which must be `""` together with `global.gpuDraEnabled: true`. Set `serviceManager.spec` only for a GPU services manager other than the GPU Operator, or to stop a GPU Operator operand that the built-in entry does not cover, as in the [host-installed driver example](#example-host-installed-driver-on-gke). The spec replaces the built-in entry completely, including its mode detection, so list every operand to stop.
 
 ### resetJob.writeSysLogEvent
 When `true`, the reset job writes a kernel syslog message on reset completion. Useful for correlating reset events with node-level logs.
 
 ### resetJob.runtimeClassName
-NVIDIA RuntimeClass name used by the GPU reset Job. Must match a RuntimeClass installed in the cluster.
+RuntimeClass name for the GPU reset Job. Defaults to `nvidia`. GPU Operator `GPUCluster` (DRA) mode creates no `nvidia` RuntimeClass, so with `global.gpuDraEnabled: true` this value must be `""`; the chart refuses to render otherwise. The Job is privileged and reaches the driver through `resetJob.hostDriverRootPath`, so it does not need a RuntimeClass in either mode; on ClusterPolicy clusters the default is kept for compatibility. Also set it to `""` on a ClusterPolicy cluster that has no `nvidia` RuntimeClass, for example with the GPU Operator NRI plugin enabled.
 
 ### resetJob.hostDriverRootPath
 Host path containing the NVIDIA driver filesystem. The reset Job mounts it at `resetJob.driverRoot` inside the reset container.
@@ -272,6 +306,62 @@ Keep the default `/run/nvidia/driver`. The GPU Operator driver container bind-mo
 Set `driverRoot` to `/` when the driver root holds only driver files and not a complete filesystem. A chroot into a partial driver root fails before `nvidia-smi` starts. With `/`, the chroot is a no-op and the reset command uses the `nvidia-smi` in the reset container image. The Job then does not mount `hostDriverRootPath`, and it mounts the host `/sys` at `/sys`.
 
 The value must be an absolute, clean path. The janitor rejects any other value at startup.
+
+### resetJob.driverBinPath
+Directory inside `resetJob.driverRoot` that holds `nvidia-smi` and `nvidia-bug-report.sh`. The reset command adds it to the front of `PATH` for every command it runs in the chroot. Leave it empty when these files are on the default `PATH`, for example with the GPU Operator driver container.
+
+The value is empty by default. A value that is set must be an absolute, clean path without `:`. The janitor rejects any other value at startup.
+
+#### Example: host-installed driver on GKE
+
+The GKE driver installer on Container-Optimized OS (COS) nodes puts the driver in `/home/kubernetes/bin/nvidia` on the host, and no GPU Operator driver container publishes `/run/nvidia/driver`. The GPU Operator then runs with `driver.enabled: false` and its container toolkit installed in the same directory.
+
+This setup needs three changes:
+
+- Chroot into the host root, and point the reset command at the driver binaries with `driverBinPath`. The installer adds `/home/kubernetes/bin/nvidia/lib64` to the host's dynamic loader configuration, so the chroot finds the driver libraries without further settings.
+- Stop the GPU Operator container toolkit during the reset. In this setup, the toolkit process keeps every GPU device open, and the reset fails with `In use by another client`. The built-in `gpu-operator` entry does not stop the toolkit, so set `serviceManager.spec` with the device plugin mode operands and the toolkit.
+- Set `runtimeClassName` to `""`. When the toolkit stops, it removes the `nvidia` runtime from containerd, so a reset Job that requests that RuntimeClass cannot start.
+
+```yaml
+janitor:
+  config:
+    controllers:
+      gpuReset:
+        serviceManager:
+          name: "gpu-operator"
+          spec:
+            namespace: "gpu-operator"
+            teardownTimeout: "5m"
+            restoreTimeout: "10m"
+            apps:
+              - appSelector: {app: "nvidia-device-plugin-daemonset", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.device-plugin"
+                enabledValue: "true"
+                disabledValue: "false"
+              - appSelector: {app: "nvidia-dcgm", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.dcgm"
+                enabledValue: "true"
+                disabledValue: "false"
+              - appSelector: {app: "nvidia-dcgm-exporter", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.dcgm-exporter"
+                enabledValue: "true"
+                disabledValue: "false"
+              - appSelector: {app: "gpu-feature-discovery", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.gpu-feature-discovery"
+                enabledValue: "true"
+                disabledValue: "false"
+              - appSelector: {app: "nvidia-container-toolkit-daemonset", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.container-toolkit"
+                enabledValue: "true"
+                disabledValue: "false"
+        resetJob:
+          runtimeClassName: ""
+          hostDriverRootPath: "/"
+          driverRoot: "/run/nvidia/driver"
+          driverBinPath: "/home/kubernetes/bin/nvidia/bin"
+```
+
+The reset fails while any process holds the GPU open. If another GPU client runs on the node, for example a DRA kubelet plugin, add its operand to the spec as well.
 
 ### resetJob.image
 Container image for the GPU reset Job. Leave `tag` empty to use the chart default.

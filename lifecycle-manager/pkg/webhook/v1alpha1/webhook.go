@@ -24,6 +24,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
 
@@ -31,7 +32,7 @@ var webhookLog = logf.Log.WithName("validationrequest-webhook")
 
 func SetupWebhookWithManager(
 	mgr ctrl.Manager, cfg *v1alpha1.ValidationConfiguration,
-	validationEnabled, maintenanceEnabled bool,
+	validationEnabled, maintenanceEnabled bool, nodeClaim distributedlock.NodeLock,
 ) error {
 	uncachedClient, err := client.New(mgr.GetConfig(), client.Options{
 		Scheme: mgr.GetScheme(),
@@ -53,8 +54,9 @@ func SetupWebhookWithManager(
 	}
 
 	mrValidator := &MaintenanceRequestValidator{
-		Enabled: maintenanceEnabled,
-		Client:  uncachedClient,
+		Enabled:   maintenanceEnabled,
+		Client:    uncachedClient,
+		NodeClaim: nodeClaim,
 	}
 
 	if err := ctrl.NewWebhookManagedBy(mgr, &v1alpha1.MaintenanceRequest{}).

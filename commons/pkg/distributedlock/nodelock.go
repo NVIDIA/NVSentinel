@@ -67,12 +67,32 @@ type NodeLock interface {
 
 // NewNodeLock creates a new NodeLock instance. scheme is used to resolve
 // the GVK of maintenance objects for owner references. metrics may be nil.
-func NewNodeLock(c client.Client, scheme *runtime.Scheme, namespace string, metrics LockMetrics) NodeLock {
-	return &nodeLock{
+func NewNodeLock(
+	c client.Client, scheme *runtime.Scheme, namespace string, metrics LockMetrics, opts ...Option,
+) NodeLock {
+	lock := &nodeLock{
 		Client:    c,
 		scheme:    scheme,
 		namespace: namespace,
 		metrics:   metrics,
+	}
+
+	for _, opt := range opts {
+		opt(lock)
+	}
+
+	return lock
+}
+
+// Option configures optional NodeLock behaviour.
+type Option func(*nodeLock)
+
+// WithLeaseName derives the lock lease name from the node name. Without it the
+// lease is named after the node, which is the lock every janitor controller
+// shares; a lock that must not contend with those uses a distinct name.
+func WithLeaseName(leaseName func(nodeName string) string) Option {
+	return func(lock *nodeLock) {
+		lock.leaseName = leaseName
 	}
 }
 
@@ -81,6 +101,7 @@ type nodeLock struct {
 	scheme    *runtime.Scheme
 	namespace string
 	metrics   LockMetrics
+	leaseName func(nodeName string) string
 }
 
 func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Object, nodeName string) bool {
@@ -186,7 +207,7 @@ func (lock *nodeLock) CheckUnlock(ctx context.Context,
 
 		err = lock.Delete(ctx, lease)
 		if err != nil {
-			return lock.handleNotFoundError(err, nodeName, nodeName)
+			return lock.handleNotFoundError(err, nodeLockName, nodeName)
 		}
 
 		slog.InfoContext(ctx, "Node lock successfully released for maintenance resource",
@@ -202,8 +223,9 @@ func (lock *nodeLock) CheckUnlock(ctx context.Context,
 func (lock *nodeLock) getNodeLockLease(
 	ctx context.Context, nodeName string,
 ) (string, *coordinationv1.Lease, error) {
+	leaseName := lock.leaseNameFor(nodeName)
 	nodeLockNamespaceName := types.NamespacedName{
-		Name:      nodeName,
+		Name:      leaseName,
 		Namespace: lock.namespace,
 	}
 
@@ -211,17 +233,25 @@ func (lock *nodeLock) getNodeLockLease(
 
 	err := lock.Get(ctx, nodeLockNamespaceName, &lease)
 	if err != nil {
-		return nodeName, nil, err
+		return leaseName, nil, err
 	}
 
 	ownerReferences := lease.GetOwnerReferences()
 	if len(ownerReferences) != 1 {
-		return "", nil, fmt.Errorf(
+		return leaseName, nil, fmt.Errorf(
 			"found an unexpected number of owner references on lock %s: %d",
-			nodeName, len(ownerReferences))
+			leaseName, len(ownerReferences))
 	}
 
-	return nodeName, &lease, err
+	return leaseName, &lease, err
+}
+
+func (lock *nodeLock) leaseNameFor(nodeName string) string {
+	if lock.leaseName == nil {
+		return nodeName
+	}
+
+	return lock.leaseName(nodeName)
 }
 
 // resolveGVK extracts the API version and kind from a maintenance object.

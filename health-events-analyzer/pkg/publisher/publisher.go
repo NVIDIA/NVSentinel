@@ -112,8 +112,22 @@ func (p *PublisherConfig) Close() {
 // stamps its own generated timestamp, and sends the resulting event to the
 // platform-connector with retries.
 func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent,
+	action protos.RecommendedAction, ruleName, message string, rule *config.HealthEventsAnalyzerRule) error {
+	_, err := p.publish(ctx, event, action, ruleName, message, rule, false)
+	return err
+}
+
+func (p *PublisherConfig) PublishRecovery(ctx context.Context, event *protos.HealthEvent,
+	rule config.HealthEventsAnalyzerRule) (*protos.HealthEvent, error) {
+	return p.publish(ctx, event, protos.RecommendedAction_NONE, rule.Name,
+		"Operator verified recovery", &rule, true)
+}
+
+func (p *PublisherConfig) AcknowledgesStorage() bool { return p.pub.AcknowledgesStorage() }
+
+func (p *PublisherConfig) publish(ctx context.Context, event *protos.HealthEvent,
 	recommendedAction protos.RecommendedAction, ruleName string, message string,
-	rule *config.HealthEventsAnalyzerRule) error {
+	rule *config.HealthEventsAnalyzerRule, healthy bool) (*protos.HealthEvent, error) {
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.publish")
 	defer span.End()
 
@@ -134,7 +148,14 @@ func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent
 	newEvent.Agent = agentName
 	newEvent.CheckName = ruleName
 	newEvent.RecommendedAction = recommendedAction
-	newEvent.IsHealthy = false
+
+	newEvent.IsHealthy = healthy
+	if healthy {
+		newEvent.ErrorCode = nil
+		newEvent.QuarantineOverrides = nil
+		newEvent.CustomRecommendedAction = ""
+	}
+
 	newEvent.Message = message
 
 	// The clone inherits the triggering event's timestamp, which dates the derived event to
@@ -162,7 +183,7 @@ func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent
 			)
 			tracing.RecordError(span, fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy))
 
-			return fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy)
+			return nil, fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy)
 		}
 
 		newEvent.ProcessingStrategy = protos.ProcessingStrategy(value)
@@ -179,5 +200,9 @@ func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent
 		Events:  []*protos.HealthEvent{newEvent},
 	}
 
-	return p.sendHealthEventWithRetry(ctx, req)
+	if err := p.sendHealthEventWithRetry(ctx, req); err != nil {
+		return nil, fmt.Errorf("publish health event for rule %q: %w", ruleName, err)
+	}
+
+	return newEvent, nil
 }

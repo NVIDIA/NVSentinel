@@ -2665,3 +2665,51 @@ func requireCachedLabelAbsent(t *testing.T, l *Labeler, nodeName, key string) {
 		return !exists
 	}, 10*time.Second, 10*time.Millisecond, "cache never dropped %s", key)
 }
+
+func TestIsPodReady(t *testing.T) {
+	tests := []struct {
+		name       string
+		conditions []corev1.PodCondition
+		want       bool
+	}{
+		{name: "no conditions is not ready", want: false},
+		{
+			name:       "ready condition true is ready",
+			conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+			want:       true,
+		},
+		{
+			name:       "ready condition false is not ready",
+			conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+			want:       false,
+		},
+		{
+			name:       "ready condition unknown is not ready",
+			conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionUnknown}},
+			want:       false,
+		},
+		{
+			name: "other true conditions without ready is not ready",
+			conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+				{Type: corev1.ContainersReady, Status: corev1.ConditionTrue},
+			},
+			want: false,
+		},
+		{
+			name: "ready condition true after other conditions is ready",
+			conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &corev1.Pod{Status: corev1.PodStatus{Conditions: tt.conditions}}
+			assert.Equal(t, tt.want, isPodReady(pod))
+		})
+	}
+}

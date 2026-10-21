@@ -178,16 +178,35 @@ func (a *Augmentor) Name() string {
 }
 
 // getOrFetchMetadata serves a node's metadata from the cache and reads it
-// from the API on a miss. Concurrent misses for the same node share one read;
-// misses for different nodes proceed independently. The shared read does not
-// die with the caller that happened to start it: it runs detached from that
-// caller's cancellation, bounded by the lookup timeout, and each waiter leaves
-// on its own context instead.
+// from the API on a miss. A cached entry that opts the node out is read again
+// on every event: once the skip label is removed, the node's faults must be
+// remediated at once, not stored STORE_ONLY until the entry expires. If that
+// read fails, the cached opt-out holds, so a failing API server cannot hand
+// an opted-out node back to remediation.
 func (a *Augmentor) getOrFetchMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
-	if metadata, found := a.cache.Get(nodeName); found {
-		return metadata, nil
+	cached, found := a.cache.Get(nodeName)
+	if found && !cached.SkipMatched {
+		return cached, nil
 	}
 
+	metadata, err := a.readMetadata(ctx, nodeName)
+	if err != nil && found {
+		slog.WarnContext(ctx, "Node metadata read failed, keeping the node's cached opt-out",
+			"node", nodeName, "error", err)
+
+		return cached, nil
+	}
+
+	return metadata, err
+}
+
+// readMetadata reads a node's metadata from the API and caches it. Concurrent
+// reads for the same node share one request; reads for different nodes
+// proceed independently. The shared read does not die with the caller that
+// happened to start it: it runs detached from that caller's cancellation,
+// bounded by the lookup timeout, and each waiter leaves on its own context
+// instead.
+func (a *Augmentor) readMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
 	// A caller that is already gone must not start a read it will not wait
 	// for: a cancelled batch would otherwise fan out one detached read per
 	// remaining node.
@@ -196,7 +215,7 @@ func (a *Augmentor) getOrFetchMetadata(ctx context.Context, nodeName string) (*N
 	}
 
 	results := a.fetches.DoChan(nodeName, func() (any, error) {
-		if metadata, found := a.cache.Get(nodeName); found {
+		if metadata, found := a.cache.Get(nodeName); found && !metadata.SkipMatched {
 			return metadata, nil
 		}
 

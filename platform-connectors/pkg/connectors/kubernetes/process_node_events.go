@@ -291,7 +291,12 @@ func (r *K8sConnector) aggregateEventMessages(messages []string, events []*proto
 		case !event.IsHealthy:
 			messages = r.addMessageIfNotExist(messages, event)
 		case len(event.EntitiesImpacted) > 0:
-			messages = r.removeImpactedEntitiesMessagesScoped(messages, recoveryEntities(event), event.ErrorCode)
+			entities := recoveryEntities(event)
+			messages = r.removeImpactedEntitiesMessagesScoped(messages, entities, event.ErrorCode)
+
+			if strings.EqualFold(event.ComponentClass, "GPU") {
+				messages = removeLegacyGPUMessages(messages, entities, event.ErrorCode)
+			}
 		default: // healthy event with no impacted entities — full recovery, clear all messages
 			messages = []string{}
 		}
@@ -552,6 +557,71 @@ func (r *K8sConnector) removeImpactedEntitiesMessagesScoped(
 	}
 
 	return newMessages
+}
+
+// removeLegacyGPUMessages removes GPU faults recorded before messages carried a
+// PCI token, keeping messages that do not match errorCodes.
+func removeLegacyGPUMessages(messages []string, entities []*protos.Entity, errorCodes []string) []string {
+	var kept []string
+
+	for _, msg := range messages {
+		if !legacyGPUMessageMatches(msg, entities) || !messageMatchesAnyErrorCode(msg, errorCodes) {
+			kept = append(kept, msg)
+		}
+	}
+
+	return kept
+}
+
+// legacyGPUMessageMatches reports whether msg is a complete entry written before
+// PCI tokens existed whose identity starts with the recovered GPU and names
+// every other non-PCI entity.
+func legacyGPUMessageMatches(msg string, entities []*protos.Entity) bool {
+	tokens, ok := legacyIdentityTokens(msg)
+	if !ok {
+		return false
+	}
+
+	hasGPU := false
+
+	for _, entity := range entities {
+		token := entity.EntityType + ":" + entity.EntityValue
+
+		switch entity.EntityType {
+		case "PCI": // absence checked by legacyIdentityTokens
+		case "GPU":
+			if tokens[0] != token {
+				return false
+			}
+
+			hasGPU = true
+		default:
+			if !slices.Contains(tokens, token) {
+				return false
+			}
+		}
+	}
+
+	return hasGPU
+}
+
+// legacyIdentityTokens returns the non-ErrorCode identity tokens of msg when it
+// is a complete entry without a PCI token. Truncated entries do not qualify.
+func legacyIdentityTokens(msg string) ([]string, bool) {
+	raIdx := strings.LastIndex(msg, recommendedActionMarker)
+	if raIdx < 0 {
+		return nil, false
+	}
+
+	identity, diagnostic := splitIdentityAndDiagnostic(msg[:raIdx])
+	tokens := slices.DeleteFunc(strings.Fields(identity), func(token string) bool {
+		return strings.HasPrefix(token, "ErrorCode:")
+	})
+	hasPCI := slices.ContainsFunc(tokens, func(token string) bool {
+		return strings.HasPrefix(token, "PCI:")
+	})
+
+	return tokens, len(tokens) > 0 && !hasPCI && !strings.HasPrefix(diagnostic, "PCI:")
 }
 
 // messageMatchesAnyErrorCode reports whether msg carries one of errorCodes.

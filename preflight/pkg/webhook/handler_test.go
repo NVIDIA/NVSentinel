@@ -26,13 +26,17 @@ import (
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
+	"github.com/nvidia/nvsentinel/preflight/pkg/gang/discoverer"
+	gangtypes "github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func buildAdmissionReview(pod *corev1.Pod, uid types.UID, namespace string) []byte {
@@ -79,7 +83,7 @@ func handlerGangConfig() *config.Config {
 // gang registration callback, and error responses for invalid input.
 func TestHandleMutate(t *testing.T) {
 	t.Run("valid GPU pod returns patch", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -111,7 +115,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("valid non-GPU pod returns allowed without patch", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -135,7 +139,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("invalid body returns 400", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader([]byte("not-json")))
 		rec := httptest.NewRecorder()
@@ -146,7 +150,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("invalid pod JSON returns not allowed", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		// Build the outer JSON manually so that object.raw contains invalid JSON
 		// without json.Marshal rejecting it.
@@ -180,7 +184,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("nil request returns allowed", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		review := admissionv1.AdmissionReview{
 			APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview",
@@ -201,7 +205,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("response UID matches request", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -231,7 +235,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, gang.NewResolver(disc, nil), func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, gang.NewResolver(disc, nil), nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
@@ -273,7 +277,7 @@ func TestHandleMutate(t *testing.T) {
 			"team-a": overrideDisc,
 		})
 
-		handler := NewHandler(handlerGangConfig(), resolver, func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(handlerGangConfig(), resolver, nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
@@ -312,7 +316,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-default-pg1"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, gang.NewResolver(disc, nil), func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, gang.NewResolver(disc, nil), nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			called = true
@@ -352,7 +356,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, gang.NewResolver(disc, nil), func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, gang.NewResolver(disc, nil), nil, func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
@@ -392,7 +396,7 @@ func TestHandleMutate(t *testing.T) {
 		cfg.HealthPublishTarget = "platform-connector-deployment.nvsentinel.svc.cluster.local:50051"
 		cfg.HealthPublishCAFile = "/etc/nvsentinel/platform-connector-deployment-ca/ca.crt"
 
-		handler := NewHandler(cfg, nil, nil, func(_ context.Context, namespace string) {
+		handler := NewHandler(cfg, nil, nil, nil, func(_ context.Context, namespace string) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = append(captured, namespace)
@@ -430,7 +434,7 @@ func TestHandleMutate(t *testing.T) {
 
 	t.Run("EnsureCA callback not invoked for a non GPU pod", func(t *testing.T) {
 		called := false
-		handler := NewHandler(handlerConfig(), nil, nil, func(_ context.Context, _ string) {
+		handler := NewHandler(handlerConfig(), nil, nil, nil, func(_ context.Context, _ string) {
 			called = true
 		})
 
@@ -452,7 +456,7 @@ func TestHandleMutate(t *testing.T) {
 
 	t.Run("gang registration not called without gang", func(t *testing.T) {
 		called := false
-		handler := NewHandler(handlerConfig(), nil, func(_ context.Context, _ GangRegistration) {
+		handler := NewHandler(handlerConfig(), nil, nil, func(_ context.Context, _ GangRegistration) {
 			called = true
 		}, nil)
 
@@ -475,4 +479,68 @@ func TestHandleMutate(t *testing.T) {
 
 		assert.False(t, called)
 	})
+}
+
+// TestHandleMutate_WorkloadRefGang covers the K8s 1.35 path end to end in the
+// webhook. spec.workloadRef has no corev1.Pod field in this client, so the
+// request carries raw pod JSON, and the pod is not in the API server yet.
+func TestHandleMutate_WorkloadRefGang(t *testing.T) {
+	workload := &unstructured.Unstructured{}
+	workload.SetGroupVersionKind(discoverer.WorkloadGVK)
+	workload.SetNamespace("team-a")
+	workload.SetName("train")
+	workload.SetUID("train-uid")
+	c := fake.NewClientBuilder().WithObjects(workload).Build()
+
+	var mu sync.Mutex
+	var registrations []GangRegistration
+	handler := NewHandler(handlerGangConfig(), gang.NewResolver(discoverer.NewWorkloadRefDiscoverer(c), nil), nil,
+		func(_ context.Context, reg GangRegistration) {
+			mu.Lock()
+			defer mu.Unlock()
+			registrations = append(registrations, reg)
+		}, nil)
+
+	raw, err := json.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata":   map[string]any{"generateName": "worker-"},
+		"spec": map[string]any{
+			"workloadRef": map[string]any{"name": "train", "podGroup": "workers", "podGroupReplicaKey": "replica-0"},
+			"containers": []any{map[string]any{
+				"name":      "train",
+				"image":     "train:latest",
+				"resources": map[string]any{"limits": map[string]any{"nvidia.com/gpu": "8"}},
+			}},
+		},
+	})
+	require.NoError(t, err)
+	body, err := json.Marshal(admissionv1.AdmissionReview{
+		APIVersion: "admission.k8s.io/v1",
+		Kind:       "AdmissionReview",
+		Request: &admissionv1.AdmissionRequest{
+			UID:       "uid-workload",
+			Namespace: "team-a",
+			Object:    runtime.RawExtension{Raw: raw},
+		},
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	handler.HandleMutate(rec, httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body)))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var review admissionv1.AdmissionReview
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &review))
+	require.NotNil(t, review.Response)
+	require.True(t, review.Response.Allowed)
+	assert.Contains(t, string(review.Response.Patch), gangtypes.GangConfigVolumeName)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, registrations, 1)
+	assert.Equal(t, "kubernetes-team-a-train-workers-replica-0", registrations[0].GangID)
+	require.NotNil(t, registrations[0].OwnerReference)
+	assert.Equal(t, "Workload", registrations[0].OwnerReference.Kind)
+	assert.Equal(t, types.UID("train-uid"), registrations[0].OwnerReference.UID)
 }

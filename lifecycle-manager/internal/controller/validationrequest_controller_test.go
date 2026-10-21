@@ -27,6 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -548,6 +549,22 @@ func patchNodeLabel(ctx context.Context, nodeName, key, value string) error {
 	return k8sClient.Patch(ctx, &node, patch)
 }
 
+func createGPUResourceSlice(ctx context.Context, name, nodeName string) {
+	resourceSlice := &resourcev1.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: resourcev1.ResourceSliceSpec{
+			Driver:   "gpu.nvidia.com",
+			NodeName: &nodeName,
+			Pool:     resourcev1.ResourcePool{Name: nodeName, ResourceSliceCount: 1},
+			Devices:  []resourcev1.Device{{Name: "gpu-0"}},
+		},
+	}
+	Expect(k8sClient.Create(ctx, resourceSlice)).To(Succeed())
+	DeferCleanup(func() {
+		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, resourceSlice))).To(Succeed())
+	})
+}
+
 func getNode(ctx context.Context, nodeName string) corev1.Node {
 	var node corev1.Node
 	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &node)).To(Succeed())
@@ -816,6 +833,30 @@ var _ = Describe("ValidationRequest Controller", func() {
 
 			// Re-add the label to pass readiness and transition to running
 			Expect(patchNodeLabel(ctx, nodeName, "ready", "true")).To(Succeed())
+			vr = reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 5)
+			Expect(vr.Status.Phase).To(Equal(v1alpha1.PhaseRunning))
+		})
+
+		It("stays pending until a GPU ResourceSlice is published for the node in GPUCluster (DRA) mode", func() {
+			vrName, nodeName, otherNodeName := "vr-"+suffix, "node-"+suffix, "other-node-"+suffix
+			cfg := defaultTestConfig()
+			cfg.Validation.Spec.ReadinessCriteria = gpuAllocatableCriteria
+			r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+				config:    cfg,
+				nodeNames: []string{nodeName},
+				spec:      v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+			})
+
+			// No nvidia.com/gpu allocatable and no ResourceSlices
+			vr := reconcileForIterations(ctx, r, req, 2)
+			Expect(vr.Status.Phase).To(Equal(v1alpha1.PhasePending))
+
+			// A GPU ResourceSlice on a different node must not unblock this node
+			createGPUResourceSlice(ctx, "slice-"+otherNodeName, otherNodeName)
+			vr = reconcileForIterations(ctx, r, req, 2)
+			Expect(vr.Status.Phase).To(Equal(v1alpha1.PhasePending))
+
+			createGPUResourceSlice(ctx, "slice-"+nodeName, nodeName)
 			vr = reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 5)
 			Expect(vr.Status.Phase).To(Equal(v1alpha1.PhaseRunning))
 		})
