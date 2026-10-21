@@ -20,6 +20,15 @@ global:
     enabled: true
 ```
 
+## Logging
+
+Sets the verbosity level for lifecycle-manager logs.
+
+```yaml
+lifecycle-manager:
+  logLevel: info  # Options: debug, info, warn, error
+```
+
 ---
 
 ## MaintenanceRequest Controller

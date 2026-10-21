@@ -86,6 +86,8 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
+            - name: LOG_LEVEL
+              value: "{{ .Values.logLevel }}"
             {{- if .Values.kubeletHost }}
             - name: KUBELET_HOST
               {{- toYaml .Values.kubeletHost | nindent 14 }}
