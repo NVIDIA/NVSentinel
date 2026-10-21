@@ -229,7 +229,7 @@ The poll period is 30 seconds, so the default rides out five minutes of failures
 
 ## Disabling the Pod Mapper
 
-The pod device mapper writes the `dgxc.nvidia.com/devices` annotation on GPU pods. Partial drains in the node-drainer need that annotation. Disable the mapper only where the kubelet cannot map pods to devices, for example on a vcluster, where the kubelet and the PodResources socket report host pod names that the collector cannot match to the pods it sees.
+The pod device mapper writes the `dgxc.nvidia.com/devices` annotation on GPU pods. Partial drains in the node-drainer need that annotation. Disable the mapper only where it cannot work, for example when the pods that the kubelet reports are not the pods that the collector sees through the Kubernetes API.
 
 ```yaml
 metadata-collector:
@@ -277,7 +277,7 @@ Without an explicit kubelet kubeconfig, the transport rereads the projected Serv
 
 ### Startup and failure handling
 
-Hardware inventory and pod-to-GPU mapping remain enabled. PodResources socket handling is unchanged. The kubelet socket must exist and be accessible when the mapper starts.
+Hardware inventory remains enabled. Pod-to-GPU mapping remains enabled unless `--pod-mapper-enabled=false` turns it off, see [Disabling the Pod Mapper](#disabling-the-pod-mapper). PodResources socket handling is unchanged. When the mapper is enabled, the kubelet socket must exist and be accessible when the mapper starts.
 
 The existing 30-second poll period and `--pod-mapper-max-consecutive-failures` limit remain unchanged. The default limit is 10 failed polls. Persistent authentication, authorization, or socket failures remain errors; the collector does not report them as successful mapping.
 

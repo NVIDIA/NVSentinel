@@ -64,7 +64,7 @@ var (
 
 	podMapperEnabled = flag.Bool("pod-mapper-enabled", true,
 		"Run the pod device mapper after writing the metadata file. Partial drains need the device annotations "+
-			"it writes; disable it only where the kubelet cannot map pods to devices, for example on a vcluster.")
+			"it writes; disable it only where the mapper cannot work.")
 
 	maxConsecutivePodMapperFailures = flag.Int("pod-mapper-max-consecutive-failures",
 		defaultMaxConsecutivePodMapperFailures,
