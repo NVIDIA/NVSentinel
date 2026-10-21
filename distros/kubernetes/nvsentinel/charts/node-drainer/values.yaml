@@ -89,11 +89,16 @@ userNamespaces:
 # Set userNamespaces: [] above when enabling policies.
 # The first matching policy wins; unmatched pods are outside the drain scope.
 # podSelector uses Kubernetes label selector syntax; namespace is an optional glob.
+# ownerKinds lists controller kinds as they appear in pod owner references (e.g. StatefulSet,
+# ReplicaSet, Job). Each policy needs podSelector, ownerKinds or both; with both, a pod must match both.
 podDrainPolicies: []
 #  - name: replaceable-workers
 #    namespace: training-*
 #    podSelector: "example.com/drain-mode=immediate"
 #    mode: Immediate
+#  - name: stateful-workloads
+#    ownerKinds: ["StatefulSet"]
+#    mode: AllowCompletion
 
 # If enabled, the node-drainer will only drain pods which are leveraging the GPU_UUID impacted entity in
 # COMPONENT_RESET HealthEvents. If disabled, the node-drainer will drain all eligible pods

@@ -14,6 +14,9 @@
 
 replicaCount: 1
 
+# Log level for the janitor-provider (debug, info, warn or error). Defaults to info; any other value falls back to info.
+logLevel: info
+
 # Image configuration
 image:
   repository: ghcr.io/nvidia/nvsentinel/janitor-provider
