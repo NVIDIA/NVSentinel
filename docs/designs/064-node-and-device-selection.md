@@ -56,8 +56,8 @@ Each component that acts on a fault already reads the node, and two of them can 
 |---|---|---|
 | platform-connectors | `managed=false` changes events to `STORE_ONLY`. Override rules ([ADR-021](021-health-event-property-overrides.md)) can change `recommendedAction` | None |
 | fault-quarantine | CEL `Node` and `HealthEvent` rules in each rule set ([ADR-003](003-rule-based-node-quarantine.md)) | None |
-| node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) and `podDrainPolicies` ([pod label drain policies ADR](055-pod-drain-policies.md)) | Cannot skip the drain for a group of nodes. `podDrainPolicies` can leave pods out of the drain, but the drain still completes and remediation starts. `userNamespaces` and `podDrainPolicies` apply to the full cluster. Checks the selector again on each pass, so a label change during a drain can change the drain method. Records the method only in a log |
-| fault-remediation | None | Cannot skip remediation or select a different action for a group of nodes |
+| node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) and `podDrainPolicies` ([pod label drain policies ADR](055-pod-drain-policies.md)) | Cannot stop a group of nodes before the drain. `podDrainPolicies` can leave pods out of the drain, but the drain still completes and remediation starts. `userNamespaces` and `podDrainPolicies` apply to the full cluster. Checks the selector again on each pass, so a label change during a drain can change the drain method. Records the method only in a log |
+| fault-remediation | None | Cannot stop remediation or select a different action for a group of nodes |
 
 Thus, case 4 and the monitoring-only form of case 6 work at this time. The gap is mostly in fault-remediation, which has no selection.
 
@@ -69,26 +69,26 @@ This ADR adds the missing controls to node-drainer and fault-remediation, with o
 2. **Each component keeps its own configuration.** There is no shared profile and no shared definition of node groups.
 3. **fault-quarantine:** no change. Its rule sets already select by node and by event. The shared schema is based on its rule sets and its node cache, but this ADR does not change its configuration or its behaviour (see [fault-quarantine](#fault-quarantine)).
 4. **node-drainer:** add `ruleSets` with the `drain` outcome.
-   - The outcome is `skip: true` or a `method`. `BuiltIn` is the eviction by node-drainer. `Custom` is the custom drain CR.
+   - The outcome is `stop: true` or a `method`. `BuiltIn` is the eviction by node-drainer. `Custom` is the custom drain CR.
    - A `BuiltIn` outcome can set its own `userNamespaces` or `podDrainPolicies`. They replace the top-level list for the nodes that the rule set matches. The top-level lists are the default, and they are not deprecated.
    - No match gives the current behaviour: `Custom` when `customDrain.enabled` is true without a `nodeSelector` and no rule set selects `Custom`, and `BuiltIn` with the top-level lists otherwise.
    - node-drainer selects the method one time, when the drain for an event starts. It records the rule set, the method, and the scope on the event status.
    - `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) is deprecated. It continues to work as a `Custom` rule set with the lowest priority.
 5. **fault-remediation:** add `ruleSets` with the `remediation` outcome.
-   - The outcome is `skip: true` or an `action` from `maintenance.actions`. No match gives the action of the event.
+   - The outcome is `stop: true` or an `action` from `maintenance.actions`. No match gives the action of the event.
    - fault-remediation evaluates the rule sets one time for each event, before the log collector and the CR. The selected entry replaces the action of the event in each later step, including the equivalence group and `maxRemediationAttempts`. It records the rule set and the action on the event status.
-   - A skipped remediation is recorded as `remediation-skipped`, not `remediation-failed`.
+   - A stopped remediation is recorded as `remediation-stopped`, not `remediation-failed`.
 6. **Device selection reads the health event.** A `HealthEvent` rule can read each field of the event. Device information that a later change adds to the event is available to the rules with no change to this ADR. Changes that add device information to the event are not part of this ADR.
 
 | Case | Configuration |
 |---|---|
-| 1. Staged rollout | fault-remediation rule set: `remediation: { skip: true }` for nodes that are not in the wave |
+| 1. Staged rollout | fault-remediation rule set: `remediation: { stop: true }` for nodes that are not in the wave |
 | 2. External repair | fault-remediation rule set: an action entry for an `ExternalRemediationRequest` |
 | 3. Reset bare metal, replace VMs | fault-remediation rule set: `COMPONENT_RESET` on VM nodes selects a `TerminateNode` entry |
 | 4. Slurm drain plugin | node-drainer rule set: `drain: { method: Custom }` for Slurm nodes. `customDrain.nodeSelector` works at this time |
 | 5. Device type or model | A rule set on `event.componentClass`, `event.entitiesImpacted`, or other device fields of the event, in any of the three components |
 | 6. Monitoring only | fault-quarantine rule sets whose `Node` rule excludes the group, at this time |
-| 6. Monitoring and quarantine | node-drainer rule set: `drain: { skip: true }` |
+| 6. Monitoring and quarantine | node-drainer rule set: `drain: { stop: true }` |
 
 ## Implementation
 
@@ -110,7 +110,7 @@ ruleSets:
         - kind: HealthEvent
           expression: 'event.componentClass == "GPU"'
     <outcome>:                  # exactly one outcome key: drain or remediation
-      skip: true                # or the field of the component: method or action
+      stop: true                # or the field of the component: method or action
 ```
 
 **The common part.** `name`, `enabled`, `priority`, and `match` have the same meaning in each component:
@@ -123,12 +123,12 @@ ruleSets:
   - `kind: Node` reads `node`, the Node object. In node-drainer, the fields that the rules read decide what the node cache keeps. See [Node fields and the node cache](#node-fields-and-the-node-cache).
 - A CEL map lookup of a missing label fails. A rule must test for the key first.
 
-**The outcome.** Each rule set has one outcome key. The key is the name of the stage that reads it. The outcome has `skip: true`, or the field that selects the behaviour of the stage. A component accepts only its own outcome key, and startup fails for a different key.
+**The outcome.** Each rule set has one outcome key. The key is the name of the stage that reads it. The outcome has `stop: true`, or the field that selects the behaviour of the stage. A component accepts only its own outcome key, and startup fails for a different key.
 
-| Key | Component | `skip: true` | Selection field | No match |
+| Key | Component | `stop: true` | Selection field | No match |
 |---|---|---|---|---|
-| `drain` | node-drainer | No drain. Node state `drain-skipped` | `method`: `BuiltIn` or `Custom`. `BuiltIn` can also set `userNamespaces` or `podDrainPolicies` | `BuiltIn` with the top-level lists. `Custom` when `customDrain.enabled` is true without a `nodeSelector`, and no rule set selects `Custom` |
-| `remediation` | fault-remediation | No CR. Node state `remediation-skipped` | `action`: an entry of `maintenance.actions` | The action of the event |
+| `drain` | node-drainer | No drain. Node state `drain-stopped` | `method`: `BuiltIn` or `Custom`. `BuiltIn` can also set `userNamespaces` or `podDrainPolicies` | `BuiltIn` with the top-level lists. `Custom` when `customDrain.enabled` is true without a `nodeSelector`, and no rule set selects `Custom` |
+| `remediation` | fault-remediation | No CR. Node state `remediation-stopped` | `action`: an entry of `maintenance.actions` | The action of the event |
 
 **Priority.** When the outcomes of two rule sets that match are in conflict, the rule set with the higher `priority` applies. If the priorities are equal, the first in the configuration applies. Each outcome defines what a conflict is:
 
@@ -140,7 +140,7 @@ ruleSets:
 
 **One winner.** The `drain` and `remediation` outcomes are each one choice, so one rule set applies. The component evaluates the enabled rule sets in order of `priority`, the highest first, and in the sequence of the configuration for equal priorities. The first rule set that matches wins, and the component does not evaluate the rule sets after it. Only the outcome of the winner applies.
 
-**An error stops the decision.** If a rule set before the winner cannot be evaluated, the component does not use the result of the other rule sets, and it does not use the default. The failed rule set could have won, for example with `skip` for the node. A rule set after the winner is not evaluated, so it cannot stop the decision. Thus, a rule set with an error stops only the decisions in which no rule set with a higher priority matches. The component logs the rule set name and the error, and a metric counts the error for each rule set.
+**An error stops the decision.** If a rule set before the winner cannot be evaluated, the component does not use the result of the other rule sets, and it does not use the default. The failed rule set could have won, for example with `stop` for the node. A rule set after the winner is not evaluated, so it cannot stop the decision. Thus, a rule set with an error stops only the decisions in which no rule set with a higher priority matches. The component logs the rule set name and the error, and a metric counts the error for each rule set.
 
 Startup validation cannot find all errors. For example, a rule that reads a label without a test for the key fails on each node that does not have the label. The component tries the decision again with its existing requeue backoff, and the metric shows the error on each attempt.
 
@@ -149,7 +149,7 @@ Startup validation cannot find all errors. For example, a rule that reads a labe
 - Rule set names are unique DNS-1123 labels.
 - `match` has exactly one of `all` and `any`, and that list has at least one rule.
 - Each rule set has exactly one outcome key, and the key is the key of the component.
-- The outcome has exactly one of `skip: true` and the selection field.
+- The outcome has exactly one of `stop: true` and the selection field.
 
 The component checks all of the items above again at startup, and also checks the CEL, which Helm cannot do. Startup fails for an error:
 
@@ -233,7 +233,7 @@ ruleSets:
             "example.com/pool" in node.metadata.labels &&
             node.metadata.labels["example.com/pool"] == "quarantine-only"
     drain:
-      skip: true
+      stop: true
   - name: lpu-no-drain
     priority: 90
     match:
@@ -241,7 +241,7 @@ ruleSets:
         - kind: HealthEvent
           expression: 'event.componentClass == "LPU"'
     drain:
-      skip: true
+      stop: true
   - name: slurm
     priority: 10
     match:
@@ -276,8 +276,8 @@ customDrain:
 
 | Node or event | Winner | Drain |
 |---|---|---|
-| `example.com/pool=quarantine-only` | `quarantine-only` | Skip |
-| An LPU event on any node | `lpu-no-drain` | Skip |
+| `example.com/pool=quarantine-only` | `quarantine-only` | Stop |
+| An LPU event on any node | `lpu-no-drain` | Stop |
 | `scheduler=slurm` | `slurm` | Custom drain CR |
 | `example.com/pool=inference` | `inference-fast` | Eviction by node-drainer, `*` in `Immediate` mode |
 | Other nodes | None | Eviction by node-drainer, with the top-level `userNamespaces` |
@@ -288,8 +288,8 @@ customDrain:
 
 **One decision for each event.** Before node-drainer evicts the first pod or creates the custom drain CR for an event, it selects the drain method:
 
-1. `drainOverrides.skip` on the event applies first, as it does at this time. node-drainer marks the drain `AlreadyDrained` and does not evaluate the rule sets, so remediation continues. An override on one event is more specific than a rule set. `drainOverrides.force` does not select skip or the method. It applies on the `BuiltIn` path, as it does at this time.
-2. The winning rule set gives `skip` or the method. For `BuiltIn`, the pod policies are those of the rule set, or the top-level lists if the rule set has none.
+1. `drainOverrides.skip` on the event applies first, as it does at this time. node-drainer marks the drain `AlreadyDrained` and does not evaluate the rule sets, so remediation continues. This is different from `stop: true`, which also stops remediation. An override on one event is more specific than a rule set. `drainOverrides.force` does not select `stop` or the method. It applies on the `BuiltIn` path, as it does at this time.
+2. The winning rule set gives `stop` or the method. For `BuiltIn`, the pod policies are those of the rule set, or the top-level lists if the rule set has none.
 3. If no rule set matches and `customDrain.nodeSelector` matches, the method is `Custom`. This is the deprecated form.
 4. If no rule set matches, `customDrain.enabled` is true, `customDrain.nodeSelector` is empty, and no enabled rule set selects `Custom`, the method is `Custom`. All nodes use the custom drain at this time with this configuration, and this does not change. When a rule set selects `Custom`, the rule sets scope the custom drain, as `customDrain.nodeSelector` does at this time.
 5. Otherwise, the method is `BuiltIn` with the top-level lists.
@@ -298,11 +298,11 @@ node-drainer records the rule set, the method, and the drain scope (`Node`, or t
 
 The record does not copy the pod policies. A later pass reads the policies of the recorded rule set from the configuration. Thus, a configuration change during a drain changes the policies that apply to the pods that remain, as a change to the top-level lists does at this time. If the recorded rule set is no longer in the configuration, node-drainer uses the top-level lists, logs a warning, and increments a metric. It does not evaluate the rule sets again, so the method does not change.
 
-**An error.** node-drainer does not drain and does not record a decision. It sets the node state `drain-failed`, with the rule set name in the message. The next pass evaluates the rule sets again, so a label or configuration change can correct the failure.
+**An error.** node-drainer does not drain, does not record a decision, and does not change the node state. It logs the rule set name and the error, increments the metric, and tries again with backoff, as it does at this time when it cannot evaluate an event. The next pass evaluates the rule sets again, so a label or configuration change can correct the failure.
 
 **No Node.** If the informer cannot return the Node, node-drainer does not evaluate the rule sets and does not set a node state. It waits and tries again, as it does for `customDrain.nodeSelector` at this time. The `custom-drain-node-selector` rule set behaves the same way.
 
-**Skip.** node-drainer records `userPodsEvictionStatus: Skipped`, a new value, and the node state `drain-skipped` (see [Node state labels](#node-state-labels)). `Skipped` is different from `AlreadyDrained`. fault-remediation starts only for `Succeeded` and `AlreadyDrained`, so it does not start for this event. The node stays in quarantine until the event recovers or the operator cancels it. For a fault that does not recover by itself, this is until the operator acts. A gauge counts the nodes in `drain-skipped` and `remediation-skipped`, so that the operator can alert on nodes that stay in these states.
+**Stop.** node-drainer records `userPodsEvictionStatus: Stopped`, a new value, and the node state `drain-stopped` (see [Node state labels](#node-state-labels)). `Stopped` is different from `AlreadyDrained`. fault-remediation starts only for `Succeeded` and `AlreadyDrained`, so it does not start for this event. The node stays in quarantine until the event recovers or the operator cancels it. For a fault that does not recover by itself, this is until the operator acts. A gauge counts the nodes in `drain-stopped` and `remediation-stopped`, so that the operator can alert on nodes that stay in these states.
 
 At this time, fault-quarantine finds out if a drain was partial from a copy of `partialDrainEnabled` ([#1960](https://github.com/NVIDIA/NVSentinel/pull/1960)). The recorded scope makes it possible to remove that copy later. This ADR does not change it.
 
@@ -334,7 +334,7 @@ drain:
 **Validation.** The Helm chart and startup validation fail for:
 
 - A `drain` outcome with both `userNamespaces` and `podDrainPolicies`.
-- `userNamespaces` or `podDrainPolicies` with `method: Custom` or `skip: true`. These outcomes do not evict, so the list has no effect.
+- `userNamespaces` or `podDrainPolicies` with `method: Custom` or `stop: true`. These outcomes do not evict, so the list has no effect.
 - A `method` other than `BuiltIn` and `Custom`.
 - An eviction mode that does not exist.
 
@@ -391,7 +391,7 @@ ruleSets:
         - kind: HealthEvent
           expression: 'event.componentClass == "LPU"'
     remediation:
-      skip: true
+      stop: true
   - name: outside-rollout
     priority: 90
     match:
@@ -401,7 +401,7 @@ ruleSets:
             !("example.com/remediation-wave" in node.metadata.labels &&
               node.metadata.labels["example.com/remediation-wave"] == "1")
     remediation:
-      skip: true
+      stop: true
   - name: vm-replace          # see "Partial drains" below
     priority: 10
     match:
@@ -435,11 +435,11 @@ With rule sets, fault-remediation reads the Node and evaluates the rule sets fir
 | Result | Action |
 |---|---|
 | The winner has `action` | fault-remediation uses that entry of `maintenance.actions` instead of the entry for the recommended action, in each step |
-| The winner has `skip: true` | No log collector and no CR. The node state is `remediation-skipped`. The event does not count against `maxRemediationAttempts` |
+| The winner has `stop: true` | The log collector runs, as for other events. No CR. The node state is `remediation-stopped`. The event does not count against `maxRemediationAttempts` |
 | No rule set matches | The action of the event, as at this time. An action that has no entry is recorded as `remediation-failed`, as at this time |
 | A rule set cannot be evaluated | No CR. The node state is `remediation-failed`. fault-remediation tries again with backoff, as it does at this time when it cannot create a CR. The event does not count against `maxRemediationAttempts` |
 
-Thus, a rule set can select an entry, or `skip`, for an event whose action has no entry in `maintenance.actions`.
+Thus, a rule set can select an entry, or `stop`, for an event whose action has no entry in `maintenance.actions`.
 
 fault-remediation records the decision before the log collector runs. Later passes for the same event read the record and do not evaluate the rule sets again. The record has the name of the entry, not only the recommended action. fault-remediation uses that name to find the CR and its `completeConditionType`, and the equivalence group of the entry. Thus, a rule set change does not lose a CR that is in progress. When fault-remediation computes the node label again from the remaining active failures, it also reads the record of each event.
 
@@ -449,35 +449,35 @@ This ADR does not add a check. The documentation of rule sets describes the risk
 
 ### Node state labels
 
-Two new values join the node state labels: `drain-skipped` and `remediation-skipped`. A quarantine session can have more than one event, and each event has its own decision. Thus, the state label can move between a skipped state and the other states:
+Two new values join the node state labels: `drain-stopped` and `remediation-stopped`. A quarantine session can have more than one event, and each event has its own decision. Thus, the state label can move between a stopped state and the other states:
 
 | From | New expected transitions | Example |
 |---|---|---|
-| `quarantined` | `drain-skipped` | The first event matches a rule set with `drain: { skip: true }` |
-| `drain-skipped` | `draining`, `drain-succeeded` | A later event in the session does not match a skip rule set, and node-drainer drains the node, or marks it `AlreadyDrained` |
-| `drain-succeeded` | `remediation-skipped` | The event matches a rule set with `remediation: { skip: true }` |
-| `remediation-skipped` | `remediating`, `remediation-succeeded`, `remediation-failed` | A later event in the session is remediated |
-| `remediating`, `remediation-succeeded`, `remediation-failed` | `remediation-skipped` | fault-remediation computes the label again from the remaining active failures, and all of them are skipped |
+| `quarantined` | `drain-stopped` | The first event matches a rule set with `drain: { stop: true }` |
+| `drain-stopped` | `draining`, `drain-succeeded` | A later event in the session does not match a `stop` rule set, and node-drainer drains the node, or marks it `AlreadyDrained` |
+| `drain-succeeded` | `remediation-stopped` | The event matches a rule set with `remediation: { stop: true }` |
+| `remediation-stopped` | `remediating`, `remediation-succeeded`, `remediation-failed` | A later event in the session is remediated |
+| `remediating`, `remediation-succeeded`, `remediation-failed` | `remediation-stopped` | fault-remediation computes the label again from the remaining active failures, and all of them are stopped |
 
-fault-remediation includes `remediation-skipped` when it computes the node label from the active failures. The label shows the state of the node. The record on each event shows the decision for that event.
+fault-remediation includes `remediation-stopped` when it computes the node label from the active failures. The label shows the state of the node. The record on each event shows the decision for that event.
 
-node-drainer sets `drain-skipped` only when the node state is `quarantined` or `drain-skipped`. If another event of the session has already moved the node to a later state, node-drainer records the skip on the event and does not change the label.
+node-drainer sets `drain-stopped` only when the node state is `quarantined` or `drain-stopped`. If another event of the session has already moved the node to a later state, node-drainer records the stop on the event and does not change the label.
 
-When the quarantine session ends, the existing removal of the state label removes `drain-skipped` and `remediation-skipped`, as it removes the other values. The removal accepts any state, so it needs no change.
+When the quarantine session ends, the existing removal of the state label removes `drain-stopped` and `remediation-stopped`, as it removes the other values. The removal accepts any state, so it needs no change.
 
 ### The record on the event
 
 ```proto
 message DrainDecision {
   string ruleSet = 1; // rule set that won; empty when no rule set matched
-  string method = 2;  // BuiltIn | Custom | Skip
+  string method = 2;  // BuiltIn | Custom | Stop
   string scope = 3;   // Node, or the entity type of a partial drain
 }
 
 message RemediationDecision {
   string ruleSet = 1; // rule set that won; empty when no rule set matched
-  string action = 2;  // entry of maintenance.actions; empty when skipped
-  bool skipped = 3;
+  string action = 2;  // entry of maintenance.actions; empty when stopped
+  bool stopped = 3;
 }
 
 message HealthEventStatus {
@@ -498,8 +498,8 @@ The records are new fields of `HealthEventStatus` (fields 1 to 7 are in use at t
 Each phase is compatible with earlier versions. Phases 2 and 3 require phase 1, but not each other. Empty configuration gives the current behaviour.
 
 1. The shared rule set schema in `commons/pkg/ruleset`. The CEL rule evaluators move to `commons`. fault-quarantine uses them with no change in behaviour.
-2. node-drainer: the drain decision and its record. Then `ruleSets`, the pod policies for each rule set, `drain-skipped`, and the deprecation of `customDrain.nodeSelector`.
-3. fault-remediation: `ruleSets`, the record, and `remediation-skipped`.
+2. node-drainer: the drain decision and its record. Then `ruleSets`, the pod policies for each rule set, `drain-stopped`, and the deprecation of `customDrain.nodeSelector`.
+3. fault-remediation: `ruleSets`, the record, and `remediation-stopped`.
 
 ## Changes for a fault in progress
 
@@ -593,6 +593,10 @@ The behaviour at this time. **Rejected** because: a label change during a drain 
 
 **Rejected** because: `Evict` and `Custom` look like opposites, but a custom drain can also evict pods. The difference is who drains the node, which `BuiltIn` and `Custom` show.
 
+### `skip` as the name of the outcome
+
+**Rejected** because: `drainOverrides.skip` on the event also skips the drain, but remediation continues. The outcome stops the pipeline at its stage, and the node stays in quarantine. `stop` shows this difference, and it has the same meaning in the `drain` and the `remediation` outcomes.
+
 ### An eviction mode in the drain outcome
 
 `drain: { method: BuiltIn, mode: Immediate }`, one mode for all pods on the node. **Rejected** because: it removes the selection by namespace and by pod label, and it is not clear how it combines with `podDrainPolicies`. A full list in the rule set uses the existing format and validation.
@@ -607,7 +611,7 @@ Add a node or event match to each pod policy. **Rejected** because: it adds a se
 
 ### Outcome fields next to `match`
 
-Put `skip`, `method`, and `action` next to `match`, as fault-quarantine puts `taint`, `label`, and `cordon`. **Rejected** because: the fields of the common part and the fields of the stage are mixed. A rule set that is copied from one component to the other needs changes in more than one location. A rule set in the configuration of the wrong component is also harder to find, because its fields are not under one key that names the stage.
+Put `stop`, `method`, and `action` next to `match`, as fault-quarantine puts `taint`, `label`, and `cordon`. **Rejected** because: the fields of the common part and the fields of the stage are mixed. A rule set that is copied from one component to the other needs changes in more than one location. A rule set in the configuration of the wrong component is also harder to find, because its fields are not under one key that names the stage.
 
 ### Named selectors
 
@@ -619,7 +623,7 @@ Accept a `Node` rule only if it reads the name and labels with a literal key, so
 
 ### Keep label selectors in node-drainer
 
-Add `skipDrain.nodeSelector` in the syntax of `customDrain.nodeSelector`, and keep both. **Rejected** because: node-drainer would then use a different syntax from the other two components, and it could not select by event. The label selector is simpler for one label, but a group that applies to drain and to remediation would be written in two syntaxes. This alternative avoids the deprecation of `customDrain.nodeSelector`, which is its main advantage.
+Add `stopDrain.nodeSelector` in the syntax of `customDrain.nodeSelector`, and keep both. **Rejected** because: node-drainer would then use a different syntax from the other two components, and it could not select by event. The label selector is simpler for one label, but a group that applies to drain and to remediation would be written in two syntaxes. This alternative avoids the deprecation of `customDrain.nodeSelector`, which is its main advantage.
 
 ## Notes
 
@@ -637,7 +641,6 @@ Add `skipDrain.nodeSelector` in the syntax of `customDrain.nodeSelector`, and ke
 
 ### Open questions
 
-- **The name `skip`.** `drainOverrides.skip` on the event and `skip: true` in the `drain` outcome both skip the drain, but they have a different effect on remediation. With `drainOverrides.skip`, remediation continues. With the `drain` outcome, remediation does not start. Should the outcome use a different name?
 - **Duration of the deprecation period.** Proposed answer: two minor releases after the release that adds `ruleSets`.
 - **Enum names in rules.** A rule compares `event.recommendedAction` with a number, not with a name such as `COMPONENT_RESET`. Proposed answer: keep the numbers in this ADR, so that existing fault-quarantine rules do not change. A later change to the shared CEL rule evaluators can add the names for all three components.
 
