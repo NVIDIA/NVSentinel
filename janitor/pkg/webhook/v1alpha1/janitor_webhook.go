@@ -348,8 +348,8 @@ func (v *gpuResetValidator) ValidateUpdate(ctx context.Context,
 		return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
 	}
 
-	if err := v.validateNodeAndGPUs(oldObj.Spec.NodeName, nodeName, oldObj.Spec.Selector.UUIDs,
-		newObj.Spec.Selector.UUIDs); err != nil {
+	if err := v.validateNodeAndGPUs(oldObj.Spec.NodeName, nodeName, selectorUUIDs(oldObj.Spec.Selector),
+		selectorUUIDs(newObj.Spec.Selector)); err != nil {
 		return nil, err
 	}
 
@@ -358,6 +358,15 @@ func (v *gpuResetValidator) ValidateUpdate(ctx context.Context,
 	// handler for GPUReset CRs already allows the initial delete request to succeed if the corresponding node
 	// is deleted.
 	return v.validateNodeForUpdate(ctx, controllerTypeGPUReset, objName, nodeName, true)
+}
+
+// selectorUUIDs returns the UUIDs of an optional selector. An omitted selector resets all GPUs on the node.
+func selectorUUIDs(selector *janitordgxcnvidiacomv1alpha1.GPUSelector) []string {
+	if selector == nil {
+		return nil
+	}
+
+	return selector.UUIDs
 }
 
 func (v *gpuResetValidator) ValidateDelete(_ context.Context,
