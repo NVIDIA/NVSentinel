@@ -41,12 +41,12 @@ build_tools:
 
 # Go Development Tools
 go_tools:
-  golangci_lint: 'v2.14.0'
+  golangci_lint: 'v2.15.0'
   gotestsum: 'v1.13.0'
-  gocover_cobertura: 'v1.4.0'
-  setup_envtest: 'v0.0.0-20260119123727-a2de7e94d2dd'
-  goimports: 'v0.30.0'
-  crane: 'v0.20.2'
+  gocover_cobertura: 'v1.5.0'
+  setup_envtest: 'v0.25.2'
+  goimports: 'v0.52.0'
+  crane: 'v0.22.1'
   controller_gen: 'v0.19.0'
 
 # Protocol Buffers / gRPC
@@ -63,12 +63,12 @@ protobuf:
 linting:
   shellcheck: 'v0.11.0'
   addlicense: 'v1.2.0'
-  black: '26.3.1'
+  black: '26.10.1'
 
 # Container Tools
 container_tools:
   docker_buildx: 'latest'
-  ko: 'v0.18.0'
+  ko: 'v0.19.1'
   cosign: 'v3.1.4'
 
 # Testing & E2E Tools
@@ -83,7 +83,7 @@ testing_tools:
 
 # Cluster Dependencies
 cluster:
-  prometheus_operator: '78.5.0'
-  gpu_operator: 'v26.7.1'
-  cert_manager: '1.21.1'
-  policy_controller: '0.10.5'  # Sigstore Policy Controller Helm chart version
+  prometheus_operator: '92.11.0'
+  gpu_operator: 'v26.7.2'
+  cert_manager: '1.21.2'
+  policy_controller: '0.10.8'  # Sigstore Policy Controller Helm chart version
