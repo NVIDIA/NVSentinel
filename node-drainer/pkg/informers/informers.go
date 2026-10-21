@@ -490,7 +490,8 @@ func (i *Informers) filterPodsUsingEntity(ctx context.Context, pods []*v1.Pod, p
 			}
 
 			if isPodRequestingDevices {
-				return nil, fmt.Errorf("pod %s is requesting devices but is missing device annotation", pod.Name)
+				return nil, fmt.Errorf("pod %s is requesting devices but is missing device annotation; "+
+					"partial drains need the metadata-collector pod device mapper (podMapper.enabled)", pod.Name)
 			}
 
 			continue

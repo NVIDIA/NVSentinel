@@ -227,6 +227,18 @@ metadata-collector:
 
 The poll period is 30 seconds, so the default rides out five minutes of failures — long enough to outlast a credential rotation or a kubelet restart, short enough to fail loudly when the collector is genuinely broken. The minimum is `1`, which exits on the first failed poll. This value sets the `--pod-mapper-max-consecutive-failures` flag described in [Startup and failure handling](#startup-and-failure-handling).
 
+## Disabling the Pod Mapper
+
+The pod device mapper writes the `dgxc.nvidia.com/devices` annotation on GPU pods. Partial drains in the node-drainer need that annotation. Disable the mapper only where the kubelet cannot map pods to devices, for example on a vcluster, where the kubelet and the PodResources socket report host pod names that the collector cannot match to the pods it sees.
+
+```yaml
+metadata-collector:
+  podMapper:
+    enabled: false
+```
+
+With the mapper disabled, the collector still writes the GPU metadata file and then keeps running without polling the kubelet. Pods get no device annotations, so keep `node-drainer.partialDrainEnabled` set to `false`: a partial drain fails for a GPU pod without the annotation. Full drains still detect GPU pods from their container limits and DRA claims. This value sets the `--pod-mapper-enabled` flag.
+
 ## Host-native authentication
 
 Use two explicit kubeconfigs when the collector runs outside a pod:
