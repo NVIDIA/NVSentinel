@@ -31,7 +31,7 @@
 
 # Language Versions
 languages:
-  go: '1.27.2'
+  go: '1.27.3'
   python: '3.13'
 
 # Build & Package Management
@@ -69,16 +69,17 @@ linting:
 container_tools:
   docker_buildx: 'latest'
   ko: 'v0.18.0'
+  cosign: 'v3.1.4'
 
 # Testing & E2E Tools
 testing_tools:
-  kind: '0.30.0'
-  helm: 'v3.19.2'
-  helm_unittest: 'v1.0.3'
+  kind: '0.33.0'
+  helm: 'v3.22.1'
+  helm_unittest: 'v1.2.1'
   kwok: 'v0.8.0'
   kwok_chart: '0.3.0'  # KWOK Helm chart version (different from app version); tilt/Tiltfile pins this
-  ctlptl: '0.8.43'
-  tilt: '0.35.2'
+  ctlptl: '0.9.6'
+  tilt: '0.37.8'
 
 # Cluster Dependencies
 cluster:

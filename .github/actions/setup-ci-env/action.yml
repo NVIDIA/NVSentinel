@@ -87,9 +87,12 @@ runs:
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
       with:
         path: ~/.local/share/helm/plugins
-        key: ${{ runner.os }}-helm-plugins-${{ hashFiles('.github/actions/setup-ci-env/action.yml') }}
+        # The plugin version is part of both keys: `helm plugin install` below
+        # fails on an already-installed plugin and the step ignores that, so a
+        # restored cache from an older version would silently win over a bump.
+        key: ${{ runner.os }}-helm-plugins-${{ steps.versions.outputs.helm_unittest_version }}-${{ hashFiles('.github/actions/setup-ci-env/action.yml') }}
         restore-keys: |
-          ${{ runner.os }}-helm-plugins-
+          ${{ runner.os }}-helm-plugins-${{ steps.versions.outputs.helm_unittest_version }}-
 
     - name: Install Helm Push plugin
       shell: bash

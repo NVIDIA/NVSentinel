@@ -38,7 +38,7 @@ main() {
     # every project on this Docker daemon and can delete images and volumes that
     # have nothing to do with the demo. Name the one image instead.
     log "The KIND node image stays cached for the next run. To reclaim that disk too:"
-    log "  docker image rm kindest/node:v1.34.0"
+    log "  docker image rm kindest/node:v1.37.0"
     log "To run the demo again: ./demo.sh"
 }
 
