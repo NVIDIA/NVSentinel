@@ -10,7 +10,7 @@ When fault-remediation takes a supported action on a node, it starts a log-colle
 - optionally, GPU Operator must-gather (cluster-scoped, off by default);
 - a host report (`sos report`), but **only** inside the GCP and AWS detection branches of `log-collector/entrypoint.sh`.
 
-On-prem and other-cloud nodes therefore get no host report. This is true even on distributions that install host diagnostic tools by default: SUSE Linux Enterprise Server 16 ships both `sos` and `supportconfig` (supportutils). SUSE support works from `supportconfig` archives for the OS, and from Rancher support bundles (`rancher/support-bundle-kit`) for Kubernetes objects, pod logs and node bundles. Neither of those is in the current artifact set.
+On-prem and other-cloud nodes therefore get no host report. This is true even on distributions that install host diagnostic tools by default: SUSE Linux Enterprise Server 16 ships both `sos` and `supportconfig` (supportutils). SUSE support works from `supportconfig` archives for the OS, which are not in the current artifact set.
 
 Measured on an idle SLES 16 node (arm64, 80 cores, btrfs root):
 
@@ -31,7 +31,7 @@ Options considered:
 
 ## Decision
 
-Add an opt-in, cloud-independent host-diagnostics step to log-collector. It auto-detects `supportconfig` or `sos` and has a `minimal` (default) and a `full` profile. Separately, add an opt-in, rate-limited Rancher support bundle collection modelled on GPU Operator must-gather. Both default off; the GCP/AWS SOS behaviour is unchanged.
+Add an opt-in, cloud-independent host-diagnostics step to log-collector. It runs the diagnostic tool already installed on the host, auto-detects `supportconfig` or `sos`, and has a `minimal` (default) and a `full` profile. It defaults off; the GCP/AWS SOS behaviour is unchanged.
 
 ## Implementation
 
@@ -42,22 +42,20 @@ Add an opt-in, cloud-independent host-diagnostics step to log-collector. It auto
       enabled: false
       tool: auto        # auto | supportconfig | sos
       profile: minimal  # minimal | full
+      scrub: false      # remove sensitive data before upload
       extraArgs: []
-    rancherSupportBundle:
-      enabled: false
-      image: rancher/support-bundle-kit:<pinned>
-      minInterval: 30m
   ```
 - `log-collector/entrypoint.sh`: a new step after `nvidia-bug-report`, outside the cloud branches, running via the existing `chroot /host`:
+  - The step runs the host's own binaries. NVSentinel ships no diagnostic tool, image, or sidecar container. Auto-detection checks for the tools inside `/host`. If neither tool is installed, the step logs a warning and is skipped, and the Job continues.
   - `supportconfig`
     - minimal: `-Q -m -k -c -q -R <dir>`
     - full: `-Q -k -c -q -R <dir>`
     - artifact: `scc_*.txz` plus its `.md5`
   - `sos`: `sos report --batch --tmp-dir=<dir>` (the existing invocation without `--all-logs` for minimal), artifact `sosreport-*.tar.*`
   - It writes to a unique per-run directory, not a shared `/var/tmp`, and removes it after upload. That avoids the time-window glob the cloud branches use.
+  - `scrub: true` maps to `supportconfig -j` or `sos report --clean`. `supportconfig -j` requires the `supportutils-scrub` package, version 1.2 or later, on the host. The step checks for the scrubber before it starts. If scrubbing is requested and the scrubber is missing or fails, the step fails and uploads nothing, so an unscrubbed archive is never presented as scrubbed.
   - `extraArgs` are appended verbatim.
 - If the GCP or AWS branch already produced a SOS report in the same run, host diagnostics are skipped, so a node never gets two host reports.
-- Rancher support bundle: created once per `minInterval`, cluster-wide, using a dedicated ServiceAccount with read-only cluster access. The log-collector waits for the manager to finish and uploads the zip. Not rendered at all when disabled.
 - Timeout: `profile: full` documents that `logCollector.timeout` must be raised (≥ 20m suggested), and the chart warns in NOTES when `full` is used with the default 10m. *Open question for maintainers:* auto-raise instead?
 - Tests: entrypoint mock mode gains mock `supportconfig`/`sos`; helm-unittest covers env wiring and the defaults-off render; the defaults render byte-identically.
 
@@ -66,7 +64,7 @@ Add an opt-in, cloud-independent host-diagnostics step to log-collector. It auto
 - Keeps distribution knowledge in one detection function rather than per-vendor branches (option 1), and stays meaningful on any distribution that ships `sos`.
 - The `minimal` profile fits the existing 10-minute budget, measured at 17 s. A full report is still one setting away when support asks for it.
 - `-k` stops `supportconfig` from loading kernel modules on the node being diagnosed. `-c` skips update-server checks that stall on air-gapped nodes.
-- Rancher support bundles cover what host reports cannot (Kubernetes objects and pod logs across the cluster). Must-gather already set the precedent for optional, cluster-scoped collection.
+- Using the host's own tool keeps the report identical to what the distribution's support team expects, and adds no image to build, scan, or keep in step with the host.
 
 ## Consequences
 
@@ -76,13 +74,12 @@ Add an opt-in, cloud-independent host-diagnostics step to log-collector. It auto
 
 ### Negative
 - Host reports can contain sensitive data (configuration, logs).
-- The Rancher bundle adds an optional external image and cluster-wide read permissions.
+- The report depends on the tool version installed on each host.
 - `full` profiles exceed the default timeout.
 
 ### Mitigations
 - Everything is off by default. Artifacts go to the existing in-cluster file server with its existing access controls.
-- `supportconfig -j` (scrub) can be passed through `extraArgs`.
-- The bundle's RBAC is only rendered when enabled, and the bundle is rate-limited.
+- `scrub: true` removes sensitive data before upload and fails closed when the scrubber is unavailable.
 - The chart warns about timeouts for `full`.
 
 ## Alternatives Considered
@@ -100,11 +97,12 @@ Add an opt-in, cloud-independent host-diagnostics step to log-collector. It auto
 
 - Non-goal: parsing these reports for detection. They are evidence for humans.
 - The GCP/AWS SOS flags keep their current meaning.
+- Future work, as a separate ADR: optional Rancher support bundle collection (`rancher/support-bundle-kit`) for Kubernetes objects and pod logs, which host reports do not cover. It would run as its own short-lived pod that collects through the Kubernetes API, not as a sidecar or on the host. Because log-collector Jobs run on many nodes at once, a cluster-wide rate limit would need a coordinator, such as a Kubernetes Lease, so that only one Job creates a bundle per interval.
 
 ## References
 
 - Tracking issue: #1955
 
 - `docs/log-collection.md`, `log-collector/entrypoint.sh`
-- supportutils `supportconfig -h` (3.2.14): `-m`, `-k`, `-c`, `-q`, `-x`, `-R`
-- https://github.com/rancher/support-bundle-kit (manager / standalone mode)
+- supportutils `supportconfig -h` (3.2.14): `-m`, `-k`, `-c`, `-q`, `-x`, `-R`, `-j`
+- `supportconfig(8)`: `-j` requires `supportutils-scrub` 1.2 or later
