@@ -71,7 +71,7 @@ This ADR adds the missing controls to node-drainer and fault-remediation, with o
 4. **node-drainer:** add `ruleSets` with the `drain` outcome.
    - The outcome is `stop: true` or a `method`. `BuiltIn` is the eviction by node-drainer. `Custom` is the custom drain CR.
    - A `BuiltIn` outcome can set its own `userNamespaces` or `podDrainPolicies`. They replace the top-level list for the nodes that the rule set matches. The top-level lists are the default, and they are not deprecated.
-   - No match gives the current behaviour: `Custom` when `customDrain.enabled` is true without a `nodeSelector` and no rule set selects `Custom`, and `BuiltIn` with the top-level lists otherwise.
+   - An event that no rule set matches uses `Custom` when the custom drain is enabled and not scoped, and `BuiltIn` with the top-level lists otherwise. The custom drain is scoped when `customDrain.nodeSelector` is set or a rule set selects `Custom`, as `customDrain.nodeSelector` scopes it at this time. Without `ruleSets`, the result is the same as at this time.
    - node-drainer selects the method one time, when the drain for an event starts. It records the rule set, the method, and the scope on the event status.
    - `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) is deprecated. It continues to work as a `Custom` rule set with the lowest priority.
 5. **fault-remediation:** add `ruleSets` with the `remediation` outcome.
@@ -127,7 +127,7 @@ ruleSets:
 
 | Key | Component | `stop: true` | Selection field | No match |
 |---|---|---|---|---|
-| `drain` | node-drainer | No drain. Node state `drain-stopped` | `method`: `BuiltIn` or `Custom`. `BuiltIn` can also set `userNamespaces` or `podDrainPolicies` | `BuiltIn` with the top-level lists. `Custom` when `customDrain.enabled` is true without a `nodeSelector`, and no rule set selects `Custom` |
+| `drain` | node-drainer | No drain. Node state `drain-stopped` | `method`: `BuiltIn` or `Custom`. `BuiltIn` can also set `userNamespaces` or `podDrainPolicies` | `BuiltIn` with the top-level lists. `Custom` when the custom drain is enabled and not scoped (see [Custom drain scope](#custom-drain-scope)) |
 | `remediation` | fault-remediation | No CR. Node state `remediation-stopped` | `action`: an entry of `maintenance.actions` | The action of the event |
 
 **Priority.** When the outcomes of two rule sets that match are in conflict, the rule set with the higher `priority` applies. If the priorities are equal, the first in the configuration applies. Each outcome defines what a conflict is:
@@ -280,7 +280,7 @@ customDrain:
 | An LPU event on any node | `lpu-no-drain` | Stop |
 | `scheduler=slurm` | `slurm` | Custom drain CR |
 | `example.com/pool=inference` | `inference-fast` | Eviction by node-drainer, `*` in `Immediate` mode |
-| Other nodes | None | Eviction by node-drainer, with the top-level `userNamespaces` |
+| Other nodes | None | Eviction by node-drainer, with the top-level `userNamespaces`. The `slurm` rule set selects `Custom`, so the custom drain is scoped (see [Custom drain scope](#custom-drain-scope)) |
 
 **Use of the schema.** The outcome key is `drain`. A `Node` rule reads the Node from the node informer of node-drainer. A `HealthEvent` rule reads the event, so a rule set can also select by fault type. A label selector cannot. `method: Custom` is valid only when `customDrain.enabled` is true. The Helm chart and startup validation check this.
 
@@ -289,10 +289,9 @@ customDrain:
 **One decision for each event.** Before node-drainer evicts the first pod or creates the custom drain CR for an event, it selects the drain method:
 
 1. `drainOverrides.skip` on the event applies first, as it does at this time. node-drainer marks the drain `AlreadyDrained` and does not evaluate the rule sets, so remediation continues. This is different from `stop: true`, which also stops remediation. An override on one event is more specific than a rule set. `drainOverrides.force` does not select `stop` or the method. It applies on the `BuiltIn` path, as it does at this time.
-2. The winning rule set gives `stop` or the method. For `BuiltIn`, the pod policies are those of the rule set, or the top-level lists if the rule set has none.
-3. If no rule set matches and `customDrain.nodeSelector` matches, the method is `Custom`. This is the deprecated form.
-4. If no rule set matches, `customDrain.enabled` is true, `customDrain.nodeSelector` is empty, and no enabled rule set selects `Custom`, the method is `Custom`. All nodes use the custom drain at this time with this configuration, and this does not change. When a rule set selects `Custom`, the rule sets scope the custom drain, as `customDrain.nodeSelector` does at this time.
-5. Otherwise, the method is `BuiltIn` with the top-level lists.
+2. The winning rule set gives `stop` or the method. For `BuiltIn`, the pod policies are those of the rule set, or the top-level lists if the rule set has none. The winner can be the `custom-drain-node-selector` rule set, which node-drainer makes from the deprecated `customDrain.nodeSelector` (see [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector)).
+3. If no rule set matches, and the custom drain is enabled and not scoped, the method is `Custom`, as at this time (see [Custom drain scope](#custom-drain-scope)).
+4. Otherwise, the method is `BuiltIn` with the top-level lists.
 
 node-drainer records the rule set, the method, and the drain scope (`Node`, or the entity for a partial drain) on the event status before it acts. Later passes for the same event read the record and do not evaluate the rule sets again. Thus, a label change during a drain does not change the method. A cold start reads the record.
 
@@ -307,6 +306,25 @@ The record does not copy the pod policies. A later pass reads the policies of th
 At this time, fault-quarantine finds out if a drain was partial from a copy of `partialDrainEnabled` ([#1960](https://github.com/NVIDIA/NVSentinel/pull/1960)). The recorded scope makes it possible to remove that copy later. This ADR does not change it.
 
 **Node cache.** At this time, the node informer keeps the name, the quarantine annotation, and only the label keys that `customDrain.nodeSelector` reads (`node-drainer/pkg/informers/informers.go`). It does not keep the spec, the status, or other annotations. With rule sets, the informer keeps the fields that are described in [Node fields and the node cache](#node-fields-and-the-node-cache). It also keeps the spec, as the fault-quarantine node cache does.
+
+#### Custom drain scope
+
+At this time, `customDrain.nodeSelector` scopes the custom drain (`IsScoped` in `node-drainer/pkg/config/custom_drain.go`). With a selector, the nodes that the selector does not match use the eviction by node-drainer. Without a selector, all nodes use the custom drain. With rule sets, the custom drain is scoped when `customDrain.enabled` is true and either:
+
+- `customDrain.nodeSelector` is set. node-drainer converts it to the `custom-drain-node-selector` rule set.
+- A rule set selects `Custom`. A rule set with `enabled: false` also counts. Thus, disabling a rule set turns off only its own match. It does not change the method of the nodes that no rule set matches.
+
+The scope decides the method for an event that no rule set matches, and the top-level lists that startup validation accepts:
+
+| Custom drain | An event that no rule set matches | Top-level `userNamespaces` and `podDrainPolicies` |
+|---|---|---|
+| `customDrain.enabled` is false | `BuiltIn` with the top-level lists | As at this time |
+| Enabled and scoped | `BuiltIn` with the top-level lists | One is required. Startup fails if both are empty, because node-drainer would mark the drain complete and evict no pods. This check exists at this time for `customDrain.nodeSelector` |
+| Enabled and not scoped | `Custom`, as at this time | Both must be empty. Startup fails if one is set, as at this time |
+
+In the [example](#node-drainer), the `slurm` rule set selects `Custom`. Thus, the custom drain is scoped, and the other nodes use `BuiltIn` with the top-level `userNamespaces`.
+
+An operator who uses the custom drain on all nodes has empty top-level lists. When the operator adds the first rule set that selects `Custom`, the custom drain becomes scoped, and the nodes that no rule set matches change from `Custom` to `BuiltIn`. Startup fails until the operator sets a top-level list, so this change is not silent.
 
 #### Pod policies for each rule set
 
@@ -336,14 +354,14 @@ drain:
 - A `drain` outcome with both `userNamespaces` and `podDrainPolicies`.
 - `userNamespaces` or `podDrainPolicies` with `method: Custom` or `stop: true`. These outcomes do not evict, so the list has no effect.
 - A `method` other than `BuiltIn` and `Custom`.
+- `method: Custom` when `customDrain.enabled` is false.
 - An eviction mode that does not exist.
 
 Startup validation also fails for:
 
 - A `podSelector` that does not parse.
-- A `BuiltIn` outcome without its own list when both top-level lists are empty. node-drainer would mark the drain complete and evict no pods. This is the same check that `customDrain.nodeSelector` has at this time.
-
-At this time, startup fails for `customDrain.enabled` together with a top-level list, unless `customDrain.nodeSelector` is set. With rule sets, the top-level list is also valid when a rule set selects `Custom`, because the nodes that do not match then use `BuiltIn` with the top-level list (step 5). This is the same as a scoped `customDrain.nodeSelector`.
+- A `BuiltIn` outcome without its own list when both top-level lists are empty. node-drainer would mark the drain complete and evict no pods.
+- Top-level lists that the [custom drain scope](#custom-drain-scope) does not accept.
 
 **Existing configurations.** Without `ruleSets`, each configuration that is valid at this time gives the same drain:
 
@@ -351,7 +369,7 @@ At this time, startup fails for `customDrain.enabled` together with a top-level 
 |---|---|---|
 | `userNamespaces` (the chart default) | Eviction with `userNamespaces` | `BuiltIn` with the top-level `userNamespaces` |
 | `podDrainPolicies`, `userNamespaces: []` | Eviction with `podDrainPolicies` | `BuiltIn` with the top-level `podDrainPolicies` |
-| `customDrain.enabled`, no `nodeSelector` | Custom drain on all nodes | `Custom` (step 4) |
+| `customDrain.enabled`, no `nodeSelector` | Custom drain on all nodes | `Custom`. The custom drain is not scoped |
 | `customDrain.enabled` with a `nodeSelector`, and one list | Custom drain on the nodes that match, eviction on the others | The `custom-drain-node-selector` rule set gives `Custom`. The other nodes use `BuiltIn` with the top-level list. A deprecation warning |
 
 Two changes apply without `ruleSets`:
@@ -370,7 +388,7 @@ Two changes apply without `ruleSets`:
 
 To limit these costs:
 
-- node-drainer converts `customDrain.nodeSelector` to a rule set at startup when `customDrain.enabled` is true, with the name `custom-drain-node-selector`, the outcome `drain: { method: Custom }`, and a priority lower than all configured rule sets. When `customDrain.enabled` is false, node-drainer ignores the selector, as it does at this time. The selection, the record, and the metrics are the same for both forms.
+- node-drainer converts `customDrain.nodeSelector` to a rule set at startup when `customDrain.enabled` is true, with the name `custom-drain-node-selector`, the outcome `drain: { method: Custom }`, and a priority lower than all configured rule sets. When `customDrain.enabled` is false, node-drainer ignores the selector, as it does at this time. The selection, the record, and the metrics are the same for both forms, and the record and the metrics use the rule set name `custom-drain-node-selector`.
 - node-drainer logs a deprecation warning at startup when the field is set. The Helm chart prints a deprecation note.
 - If `ruleSets` contains a rule set with `method: Custom` and `customDrain.nodeSelector` is also set, startup fails. One configuration must not use both forms for the same selection.
 - The field is removed after at least two minor releases. The release notes give the equivalent rule set.
@@ -546,6 +564,7 @@ A rule set change is a configuration change. As at this time, the component read
 - In node-drainer, a `Node` rule that reads the status reads an empty status. The same rule reads the full status in fault-remediation. Only a startup warning shows it.
 - A fault-remediation rule set can change a `COMPONENT_RESET` event after a partial drain to an action on the full node. The pods that were not drained then stop without a drain.
 - Pod policies can be in the top-level configuration and in each `BuiltIn` rule set. The operator must find the winning rule set to know which policies apply to a node.
+- On a cluster that uses the custom drain on all nodes, the first rule set that selects `Custom` changes the nodes that no rule set matches from `Custom` to `BuiltIn`.
 - No single field shows the full behaviour for a node. The operator reads the cordon-reason label and the two records on the event.
 - A rule set with a high priority hides the rule sets with a lower priority that match the same events.
 - The move of the CEL rule evaluators changes fault-quarantine code, although its behaviour does not change.
@@ -558,6 +577,7 @@ A rule set change is a configuration change. As at this time, the component read
 - Document one example per case, with the configuration of each component that it needs.
 - The startup warning for a `Node` rule names the rule set and the expression. The documentation describes the memory cost and shows how to replace a label prefix with a label that has a known key.
 - The documentation describes the risk of an action on the full node after a partial drain. The drain scope in the record on the event makes a later check possible.
+- Startup fails when the custom drain is scoped and both top-level lists are empty. Thus, the change from `Custom` to `BuiltIn` for the nodes that no rule set matches needs a top-level list, and it is not silent.
 
 ## Alternatives Considered
 
