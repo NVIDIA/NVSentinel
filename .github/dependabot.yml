@@ -15,8 +15,12 @@
 version: 2
 updates:
   # GitHub Actions
+  # "/" covers .github/workflows; the composite actions under .github/actions
+  # are only updated when their directories are listed too.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/*"
     target-branch: "main"
     schedule:
       interval: "weekly"
