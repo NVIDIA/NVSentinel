@@ -235,6 +235,9 @@ func testDryRun(t *testing.T) {
 	dryRunClient, err := NewClient(cfg, dynamicClient, restMapper, true)
 	require.NoError(t, err)
 
+	client, err := NewClient(cfg, dynamicClient, restMapper, false)
+	require.NoError(t, err)
+
 	templateData := TemplateData{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:  "test-node-dry-run",
@@ -247,12 +250,30 @@ func testDryRun(t *testing.T) {
 	crName, err := dryRunClient.CreateDrainCR(ctx, templateData)
 	require.NoError(t, err)
 
-	found, _, err := dryRunClient.GetCRStatus(ctx, crName)
+	found, _, err := client.GetCRStatus(ctx, crName)
 	require.NoError(t, err)
 	assert.False(t, found, "dry run must not persist the drain CR")
 
-	client, err := NewClient(cfg, dynamicClient, restMapper, false)
+	// The dry-run client remembers its CR, so a retry waits instead of creating it again.
+	found, complete, err := dryRunClient.GetCRStatus(ctx, crName)
 	require.NoError(t, err)
+	assert.True(t, found)
+	assert.False(t, complete)
+
+	exists, drainComplete, err := dryRunClient.ExistsForNode(ctx, "test-node-dry-run")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.False(t, drainComplete)
+
+	require.NoError(t, dryRunClient.DeleteDrainCR(ctx, crName))
+
+	found, _, err = dryRunClient.GetCRStatus(ctx, crName)
+	require.NoError(t, err)
+	assert.False(t, found, "a deleted dry-run CR must be forgotten")
+
+	exists, _, err = dryRunClient.ExistsForNode(ctx, "test-node-dry-run")
+	require.NoError(t, err)
+	assert.False(t, exists)
 
 	crName, err = client.CreateDrainCR(ctx, templateData)
 	require.NoError(t, err)

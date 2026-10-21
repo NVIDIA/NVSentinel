@@ -2399,6 +2399,11 @@ func TestReconciler_CustomDrainDryRun(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
 
+	// The retry finds the dry-run CR and waits instead of creating it again.
+	err = dryRunReconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for retry delay")
+
 	gvr := schema.GroupVersionResource{
 		Group:    "drain.example.com",
 		Version:  "v1alpha1",

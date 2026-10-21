@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/template"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -41,8 +42,15 @@ type Client struct {
 	template      *template.Template
 	config        config.CustomDrainConfig
 	dryRunMode    []string
+
+	// dryRunCRs remembers the CRs created in dry run (CR name -> node name). The API server
+	// does not store them, so without this every retry would find no CR and create it again.
+	dryRunMu  sync.Mutex
+	dryRunCRs map[string]string
 }
 
+// NewClient returns a client that renders drain CRs from the configured template. With dryRun
+// set, CRs are created and deleted with DryRunAll and are never stored.
 func NewClient(
 	cfg config.CustomDrainConfig,
 	dynamicClient dynamic.Interface,
@@ -96,9 +104,11 @@ func NewClient(
 		template:      tmpl,
 		config:        cfg,
 		dryRunMode:    dryRunMode,
+		dryRunCRs:     make(map[string]string),
 	}, nil
 }
 
+// CreateDrainCR renders the drain CR for the event and creates it, returning its name.
 func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, error) {
 	var buf bytes.Buffer
 	if err := c.template.Execute(&buf, data); err != nil {
@@ -147,6 +157,12 @@ func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, 
 		return "", fmt.Errorf("failed to create CR: %w", err)
 	}
 
+	if c.isDryRun() {
+		c.dryRunMu.Lock()
+		c.dryRunCRs[crName] = data.HealthEvent.NodeName
+		c.dryRunMu.Unlock()
+	}
+
 	return crName, nil
 }
 
@@ -175,7 +191,8 @@ func (c *Client) ExistsForNode(ctx context.Context, nodeName string) (bool, bool
 	}
 
 	if len(list.Items) == 0 {
-		return false, false, nil
+		// A CR created in dry run is in progress until it is deleted.
+		return c.hasDryRunCRForNode(nodeName), false, nil
 	}
 
 	for _, item := range list.Items {
@@ -232,7 +249,7 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, bool, er
 		Get(ctx, crName, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return false, false, nil
+			return c.hasDryRunCR(crName), false, nil
 		}
 
 		return false, false, fmt.Errorf("failed to get CR: %w", err)
@@ -241,6 +258,7 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, bool, er
 	return true, c.isCRComplete(*cr), nil
 }
 
+// DeleteDrainCR deletes the named drain CR. A CR that is already gone is not an error.
 func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {
 	gvk := schema.GroupVersionKind{
 		Group:   c.config.ApiGroup,
@@ -262,5 +280,47 @@ func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {
 		return fmt.Errorf("failed to delete CR: %w", err)
 	}
 
+	if c.isDryRun() {
+		c.dryRunMu.Lock()
+		delete(c.dryRunCRs, crName)
+		c.dryRunMu.Unlock()
+	}
+
 	return nil
+}
+
+func (c *Client) isDryRun() bool {
+	return len(c.dryRunMode) > 0
+}
+
+// hasDryRunCR reports whether the named CR was created in dry run and not deleted since.
+func (c *Client) hasDryRunCR(crName string) bool {
+	if !c.isDryRun() {
+		return false
+	}
+
+	c.dryRunMu.Lock()
+	defer c.dryRunMu.Unlock()
+
+	_, ok := c.dryRunCRs[crName]
+
+	return ok
+}
+
+// hasDryRunCRForNode reports whether a CR for the node was created in dry run and not deleted since.
+func (c *Client) hasDryRunCRForNode(nodeName string) bool {
+	if !c.isDryRun() {
+		return false
+	}
+
+	c.dryRunMu.Lock()
+	defer c.dryRunMu.Unlock()
+
+	for _, node := range c.dryRunCRs {
+		if node == nodeName {
+			return true
+		}
+	}
+
+	return false
 }
