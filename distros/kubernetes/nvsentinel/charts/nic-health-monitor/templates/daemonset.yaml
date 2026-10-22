@@ -41,6 +41,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with ((.Values.global).seLinuxOptions) }}
+      securityContext:
+        seLinuxOptions:
+          {{- toYaml . | nindent 10 }}
+      {{- end }}
       initContainers:
         # The state hostPath is created root-owned by the kubelet
         # (DirectoryOrCreate), and Kubernetes does not apply fsGroup to

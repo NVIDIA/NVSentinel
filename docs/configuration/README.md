@@ -191,6 +191,31 @@ global:
   imagePullSecrets: []
 ```
 
+### SELinux
+
+SELinux options for the pods that share host directories without running privileged: platform-connectors, syslog-health-monitor and nic-health-monitor. Privileged pods already run as `spc_t`.
+
+```yaml
+global:
+  seLinuxOptions: {}   # default: nothing rendered
+```
+
+On SELinux-enforcing nodes where the container runtime applies SELinux labels, those pods run as `container_t` and are denied the shared host paths. platform-connectors then cannot create `/var/run/nvsentinel.sock`, so no monitor can publish health events. This applies to RKE2 with SELinux support, which its RPM install enables by default on SUSE Linux Enterprise Server 16 and RHEL. On those nodes set:
+
+```yaml
+global:
+  seLinuxOptions:
+    type: spc_t
+```
+
+To check whether a node needs this setting:
+
+1. Run `sestatus` and confirm that SELinux is `enforcing`.
+2. Confirm that the runtime applies SELinux labels to containers. On RKE2, check for `selinux: true` in `/etc/rancher/rke2/config.yaml` or `RKE2_SELINUX=true` in the service environment.
+3. Check the process label of a running workload pod, for example with `ps -eZ | grep platform-connectors`. A `container_t` label means the pod is confined and needs `spc_t` to access the shared host paths.
+
+Set `spc_t` only when all three checks apply: it disables SELinux confinement for these pods.
+
 ### Tracing
 
 Enable OpenTelemetry distributed tracing to get end-to-end visibility into health event processing across all modules.
