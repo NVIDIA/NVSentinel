@@ -124,11 +124,13 @@ Compare the monitor pods against the GPU nodes:
 # Nodes running a monitor pod
 kubectl get pods -n nvsentinel -l app.kubernetes.io/name=gpu-health-monitor -o wide
 
-# Nodes carrying the version label the monitor DaemonSets select on
+# Nodes carrying the version label the monitor DaemonSet selects on
 kubectl get nodes -L nvsentinel.dgxc.nvidia.com/dcgm.version
 ```
 
-Every GPU node needs `nvsentinel.dgxc.nvidia.com/dcgm.version` set to `3.x` or `4.x`. The monitor DaemonSets select on it in all three source modes, so an unlabeled node is never a scheduling target. The DaemonSet stays healthy and reports no error, because Kubernetes never places a pod there to fail.
+Every GPU node needs `nvsentinel.dgxc.nvidia.com/dcgm.version` set to `4.x`. The monitor DaemonSet selects on it in all three source modes, so an unlabeled node is never a scheduling target. The DaemonSet stays healthy and reports no error, because Kubernetes never places a pod there to fail.
+
+A node labelled `3.x` runs DCGM 3.x, which is end-of-life. NVSentinel ships no monitor for DCGM 3.x, so that node also runs no monitor pod. Upgrade DCGM on the node to 4.x. See [DCGM Version Selection](../configuration/gpu-health-monitor.md#dcgm-version-selection).
 
 Which mode you run decides whether that is a bug or the expected setup step:
 

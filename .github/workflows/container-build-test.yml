@@ -54,8 +54,6 @@ jobs:
       matrix:
         include:
           # Health Monitors (Docker-based)
-          - component: gpu-health-monitor-dcgm3
-            make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm3'
           - component: gpu-health-monitor-dcgm4
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4'
           - component: syslog-health-monitor

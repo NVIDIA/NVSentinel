@@ -496,10 +496,6 @@ k8s_resource(
     resource_deps=['kwok']
 )
 k8s_resource(
-    workload='gpu-health-monitor-dcgm-3.x',
-    pod_readiness='ignore'
-)
-k8s_resource(
     workload='syslog-health-monitor-kata',
     pod_readiness='ignore'
 )

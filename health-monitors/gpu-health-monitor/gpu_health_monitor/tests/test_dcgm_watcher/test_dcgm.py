@@ -1604,19 +1604,13 @@ class TestDCGMHealthChecks:
         mock_handle.assert_not_called()
         mock_run_server.assert_not_called()
 
-    def test_dcgm_3_server_run_compatibility_fallback(self, monkeypatch):
-        engine_run = MagicMock(return_value=0)
-        check_return = MagicMock()
-        agent = MagicMock(spec=["dcgmFP"])
-        agent.dcgmFP.return_value = engine_run
+    def test_run_dcgm_server_listens_on_tcp(self, monkeypatch):
+        agent = MagicMock(spec=["dcgmServerRun"])
         monkeypatch.setattr(dcgm, "dcgm_agent", agent)
-        monkeypatch.setattr(dcgm.dcgm_structs, "_dcgmCheckReturn", check_return, raising=False)
 
         dcgm._run_dcgm_server(5555, "127.0.0.1")
 
-        agent.dcgmFP.assert_called_once_with("dcgmEngineRun")
-        engine_run.assert_called_once_with(5555, b"127.0.0.1", dcgm.DCGM_CONNECTION_TYPE_TCP)
-        check_return.assert_called_once_with(0)
+        agent.dcgmServerRun.assert_called_once_with(5555, "127.0.0.1", dcgm.DCGM_CONNECTION_TYPE_TCP)
 
     @patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
     def test_remote_mode_connects_to_addr(self, mock_handle):

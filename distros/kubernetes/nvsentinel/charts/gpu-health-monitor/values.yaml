@@ -215,8 +215,7 @@ processingStrategy: EXECUTE_REMEDIATION
 # suppressed regardless of this value.
 suppressNvlinkDownOnUnbridgedPcie: "False"
 
-# DaemonSet rolling update strategy. Shared by the dcgm-3.x and dcgm-4.x DaemonSets;
-# both are generated from this chart and only one is scheduled per node's DCGM major.
+# DaemonSet rolling update strategy for the dcgm-4.x DaemonSet.
 # type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.
 # maxUnavailable counts pods stranded on unreachable nodes as well, so a cluster with
 # many nodes down for service may need it raised or the rollout cannot start.

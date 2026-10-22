@@ -675,10 +675,6 @@ ko-publish: ## Build and publish all ko-based container images
 	@./scripts/buildko.sh
 
 # GPU health monitor Docker targets (special cases with DCGM versions)
-.PHONY: docker-gpu-health-monitor-dcgm3
-docker-gpu-health-monitor-dcgm3:
-	$(MAKE) -C docker build-gpu-health-monitor-dcgm3
-
 .PHONY: docker-gpu-health-monitor-dcgm4
 docker-gpu-health-monitor-dcgm4:
 	$(MAKE) -C docker build-gpu-health-monitor-dcgm4

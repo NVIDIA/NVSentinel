@@ -31,7 +31,7 @@
 #   ./scripts/check-image-attestations.sh v1.2.3 nvsentinel/platform-connectors  # Check with namespace
 #
 # Image names can be specified with or without the 'nvsentinel/' prefix.
-# For images with tag suffixes (dcgm-3.x, dcgm-4.x), use the base name without suffix.
+# For images with tag suffixes (dcgm-4.x), use the base name without suffix.
 #
 # Requirements:
 #   - crane (for manifest inspection and OCI 1.1 attestation detection)
@@ -72,7 +72,6 @@ KO_IMAGES=(
 )
 
 DOCKER_IMAGES=(
-    "nvsentinel/gpu-health-monitor:dcgm-3.x"
     "nvsentinel/gpu-health-monitor:dcgm-4.x"
     "nvsentinel/syslog-health-monitor"
     "nvsentinel/log-collector"
@@ -383,7 +382,7 @@ main() {
     if [ -z "$filter_image" ]; then
         echo -e "\n${BLUE}═══ Docker-built Images ═══${NC}"
         for image_spec in "${DOCKER_IMAGES[@]}"; do
-            # Handle images with tag suffixes (e.g., gpu-health-monitor:dcgm-3.x)
+            # Handle images with tag suffixes (e.g., gpu-health-monitor:dcgm-4.x)
             if [[ "$image_spec" == *":"* ]]; then
                 image_base="${image_spec%:*}"
                 suffix="${image_spec#*:}"

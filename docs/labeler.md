@@ -74,6 +74,8 @@ The Labeler applies these labels to nodes:
 
 Indicates which major version of DCGM is running on the node.
 
+GPU Health Monitor runs only on nodes labelled `4.x`. DCGM 3.x is end-of-life, so a node labelled `3.x` runs no GPU Health Monitor pod.
+
 ### Driver Installed
 **Label**: `nvsentinel.dgxc.nvidia.com/driver.installed`
 **Values**: `true` or `false`
