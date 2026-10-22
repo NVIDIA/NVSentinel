@@ -152,6 +152,9 @@ spec:
             - name: MONGODB_CA_CERT_PATH
               value: {{ printf "%s/ca.crt" $mongoCertMount | quote }}
             {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
             {{- if .Values.global.tracing.enabled }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.global.tracing.endpoint | quote }}
