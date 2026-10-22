@@ -804,10 +804,17 @@ func (r *FaultRemediationReconciler) coveredByActiveRemediationCR(
 		return false, nil
 	}
 
+	// The groups come from a map, so a CR that confirms coverage wins over an unreadable one regardless of order.
+	var firstErr error
+
 	for _, groupState := range common.FilterEquivalenceGroupStates(groupConfig, remediationState) {
 		state, err := statusChecker.GetCRState(ctx, groupState.ActionName, groupState.MaintenanceCR)
 		if err != nil {
-			return false, err
+			if firstErr == nil {
+				firstErr = err
+			}
+
+			continue
 		}
 
 		if state == crstatus.CRStateInProgress || state == crstatus.CRStateSucceeded {
@@ -815,7 +822,7 @@ func (r *FaultRemediationReconciler) coveredByActiveRemediationCR(
 		}
 	}
 
-	return false, nil
+	return false, firstErr
 }
 
 func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEvent, error) {

@@ -2390,6 +2390,52 @@ func TestPartialRecoveryLeavesLabelWhenCoveringCRCannotBeRead(t *testing.T) {
 	assert.Equal(t, 0, markProcessedCount, "the event must be retried, not finalized")
 }
 
+func TestCoveredByActiveRemediationCRPrefersAConfirmedCoveringCR(t *testing.T) {
+	readErr := errors.New("etcdserver: request timed out")
+	remediationState := &annotation.RemediationStateAnnotation{
+		EquivalenceGroups: map[string]annotation.EquivalenceGroupState{
+			"restart": {MaintenanceCR: "maintenance-restart", ActionName: "restart"},
+			"reset":   {MaintenanceCR: "maintenance-reset", ActionName: "reset"},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		resetState  crstatus.CRState
+		wantCovered bool
+		wantErr     bool
+	}{
+		{name: "another group's CR is in progress", resetState: crstatus.CRStateInProgress, wantCovered: true},
+		{name: "another group's CR succeeded", resetState: crstatus.CRStateSucceeded, wantCovered: true},
+		{name: "no other group confirms coverage", resetState: crstatus.CRStateFailed, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ReconcilerConfig{RemediationClient: &MockK8sClient{
+				mockStatusChecker: &mockStatusChecker{
+					stateByCR: map[string]crstatus.CRState{"maintenance-reset": tt.resetState},
+					errByCR:   map[string]error{"maintenance-restart": readErr},
+				},
+			}}
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+			// Map iteration order varies between runs, so repeat to cover both orders.
+			for range 20 {
+				covered, err := r.coveredByActiveRemediationCR(context.Background(),
+					getGroupConfig("restart", []string{"reset"}), remediationState)
+
+				assert.Equal(t, tt.wantCovered, covered)
+				if tt.wantErr {
+					require.ErrorIs(t, err, readErr)
+				} else {
+					require.NoError(t, err)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckExistingCRStatusReturnsCRReadError(t *testing.T) {
 	readErr := errors.New("etcdserver: request timed out")
 	mockAnnotationManager := &MockNodeAnnotationManager{
