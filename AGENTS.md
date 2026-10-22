@@ -41,7 +41,7 @@ Platform-connectors persists events to the store (MongoDB with change streams, o
 
 **No module calls another module directly.** Coordination happens through the shared event store and the Kubernetes API. A change that introduces a direct call between two modules is almost certainly wrong — check [docs/designs/](docs/designs/) before proposing one.
 
-**Tech stack:** Go 1.27.2, Python 3.10+ (Poetry), Kubernetes, gRPC + protobuf, MongoDB / PostgreSQL, Helm, DCGM. Tool versions are pinned in `.versions.yaml` — that file is the single source of truth; read it with `make show-versions`, never hardcode a version elsewhere.
+**Tech stack:** Go 1.27.3, Python 3.10+ (Poetry), Kubernetes, gRPC + protobuf, MongoDB / PostgreSQL, Helm, DCGM. Tool versions are pinned in `.versions.yaml` — that file is the single source of truth; read it with `make show-versions`, never hardcode a version elsewhere.
 
 ## Commands
 

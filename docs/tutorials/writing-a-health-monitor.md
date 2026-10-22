@@ -427,7 +427,7 @@ directory. Because dependencies are fetched from the module proxy (not local pat
 context is just the monitor directory itself:
 
 ```dockerfile
-FROM public.ecr.aws/docker/library/golang:1.27.2-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.3-trixie AS builder
 WORKDIR /src
 
 # Manifests first for better layer caching. go.mod/go.sum already pin the
