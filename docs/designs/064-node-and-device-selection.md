@@ -27,6 +27,7 @@ Status: Proposed.
    - [fault-quarantine](#fault-quarantine)
    - [node-drainer](#node-drainer)
    - [fault-remediation](#fault-remediation)
+   - [Quarantine session](#quarantine-session)
    - [Node state labels](#node-state-labels)
    - [The record on the event](#the-record-on-the-event)
    - [Phases](#phases)
@@ -169,7 +170,7 @@ node-drainer keeps Nodes in an informer. The informer prunes each Node to what t
 
 - The spec and the identity metadata, such as the name.
 - The labels and the annotations whose keys the rules name with a string literal, as `node.metadata.labels["<key>"]` or `"<key>" in node.metadata.labels`.
-- The keys that node-drainer reads for its own use, such as the quarantine annotation.
+- The keys that node-drainer reads for its own use, such as the [`quarantineHealthEvent` annotation](#quarantine-session).
 
 The informer does not keep the status. A rule that reads the status gets an empty status, as in fault-quarantine. node-drainer logs a warning at startup for each such rule, with the rule set name and the expression. The same rule reads the full status in fault-remediation.
 
@@ -295,17 +296,17 @@ customDrain:
 
 node-drainer records the rule set, the method, and the drain scope (`Node`, or the entity for a partial drain) on the event status before it acts. Later passes for the same event read the record and do not evaluate the rule sets again. Thus, a label change during a drain does not change the method. A cold start reads the record.
 
-The record does not copy the pod policies. A later pass reads the policies of the recorded rule set from the configuration. Thus, a configuration change during a drain changes the policies that apply to the pods that remain, as a change to the top-level lists does at this time. If the recorded rule set is no longer in the configuration, node-drainer does not evaluate the rule sets again, so the method does not change. For `BuiltIn`, it uses the top-level lists, logs a warning, and increments a metric. If both top-level lists are empty, as they are when the custom drain is not scoped (see [Custom drain scope](#custom-drain-scope)), node-drainer does not complete the drain, because it would evict no pods. It logs an error, increments the metric, and tries again with backoff. The node state stays `draining` until the rule set is in the configuration again, the event recovers, or the operator cancels it.
+The record does not copy the pod policies. A later pass reads the policies of the recorded rule set from the configuration. Thus, a configuration change during a drain changes the policies that apply to the pods that remain, as a change to the top-level lists does at this time. If the recorded rule set is no longer in the configuration, node-drainer does not evaluate the rule sets again, so the method does not change. For `BuiltIn`, it uses the top-level lists, logs a warning, and increments a metric. If both top-level lists are empty, as they are when the custom drain is not scoped (see [Custom drain scope](#custom-drain-scope)), node-drainer does not complete the drain, because it would evict no pods. It logs an error, increments the metric, and tries again with backoff. The node state stays `draining` until the rule set is in the configuration again or the [quarantine session](#quarantine-session) ends.
 
 **An error.** node-drainer does not drain, does not record a decision, and does not change the node state. It logs the rule set name and the error, increments the metric, and tries again with backoff, as it does at this time when it cannot evaluate an event. The next pass evaluates the rule sets again, so a label or configuration change can correct the failure.
 
 **No Node.** If the informer cannot return the Node, node-drainer does not evaluate the rule sets and does not set a node state. It waits and tries again, as it does for `customDrain.nodeSelector` at this time. The `custom-drain-node-selector` rule set behaves the same way.
 
-**Stop.** node-drainer records `userPodsEvictionStatus: Stopped`, a new value, and the node state `drain-stopped` (see [Node state labels](#node-state-labels)). `Stopped` is different from `AlreadyDrained`. fault-remediation starts only for `Succeeded` and `AlreadyDrained`, so it does not start for this event. The node stays in quarantine until the event recovers or the operator cancels it. For a fault that does not recover by itself, this is until the operator acts. A gauge counts the nodes in `drain-stopped` and `remediation-stopped`, so that the operator can alert on nodes that stay in these states.
+**Stop.** node-drainer records `userPodsEvictionStatus: Stopped`, a new value, and the node state `drain-stopped` (see [Node state labels](#node-state-labels)). `Stopped` is different from `AlreadyDrained`. fault-remediation starts only for `Succeeded` and `AlreadyDrained`, so it does not start for this event. The node stays in quarantine until the [quarantine session](#quarantine-session) ends, when the last failure recovers or the operator removes the quarantine. For a fault that does not recover by itself, this is until the operator acts. A gauge counts the nodes in `drain-stopped` and `remediation-stopped`, so that the operator can alert on nodes that stay in these states.
 
 At this time, fault-quarantine finds out if a drain was partial from a copy of `partialDrainEnabled` ([#1960](https://github.com/NVIDIA/NVSentinel/pull/1960)). The recorded scope makes it possible to remove that copy later. This ADR does not change it.
 
-**Node cache.** At this time, the node informer keeps the name, the quarantine annotation, and only the label keys that `customDrain.nodeSelector` reads (`node-drainer/pkg/informers/informers.go`). It does not keep the spec, the status, or other annotations. With rule sets, the informer keeps the fields that are described in [Node fields and the node cache](#node-fields-and-the-node-cache). It also keeps the spec, as the fault-quarantine node cache does.
+**Node cache.** At this time, the node informer keeps the name, the [`quarantineHealthEvent` annotation](#quarantine-session), and only the label keys that `customDrain.nodeSelector` reads (`node-drainer/pkg/informers/informers.go`). It does not keep the spec, the status, or other annotations. With rule sets, the informer keeps the fields that are described in [Node fields and the node cache](#node-fields-and-the-node-cache). It also keeps the spec, as the fault-quarantine node cache does.
 
 #### Custom drain scope
 
@@ -459,15 +460,32 @@ With rule sets, fault-remediation reads the Node and evaluates the rule sets fir
 
 Thus, a rule set can select an entry, or `stop`, for an event whose action has no entry in `maintenance.actions`.
 
-fault-remediation records the decision before the log collector runs. Later passes for the same event read the record and do not evaluate the rule sets again. The record has the name of the entry, not only the recommended action. fault-remediation uses that name to find the CR and its `completeConditionType`, and the equivalence group of the entry. Thus, a rule set change does not lose a CR that is in progress. When fault-remediation computes the node label again from the remaining active failures, it also reads the record of each event.
+fault-remediation records the decision before the log collector runs. Later passes for the same event read the record and do not evaluate the rule sets again. The record has the name of the entry, not only the recommended action. fault-remediation uses that name to find the CR and its `completeConditionType`, and the equivalence group of the entry. Thus, a rule set change does not lose a CR that is in progress. When fault-remediation computes the node label again from the remaining [active failures](#quarantine-session), it also reads the record of each event.
 
 **Partial drains.** With `partialDrainEnabled`, node-drainer drains only the pods that use the failed GPU for a `COMPONENT_RESET` event. If a rule set changes that event to an action on the full node, as `vm-replace` does, fault-remediation terminates or reboots a node whose other pods were not drained. The node-drainer Helm values already describe this risk for a `COMPONENT_RESET` entry that reboots the node. Rule sets make it easier to hit, because the action can change for each group of nodes.
 
 This ADR does not add a check. The documentation of rule sets describes the risk, next to the examples that change the action. The drain scope in the [record on the event](#the-record-on-the-event) gives fault-remediation the information for a later check.
 
+### Quarantine session
+
+A quarantine session is the time in which fault-quarantine keeps a node quarantined. A session can have more than one event. A node has at most one session at a time.
+
+- **Start.** fault-quarantine quarantines a node that is not quarantined. The event that causes this gets the status `nodeQuarantined: Quarantined`. Each later event of the session gets `AlreadyQuarantined`.
+- **End.** fault-quarantine removes the quarantine. This occurs when the last failure recovers, and the event that recovers it gets `UnQuarantined`. It also occurs when the operator removes the quarantine manually, and fault-quarantine marks each event of the session `Cancelled`.
+- **Events of the session.** While the node is quarantined, the events of the current session are the events of the node that the datastore created (`createdAt`) at or after the newest event of the node with `nodeQuarantined: Quarantined`.
+
+A component finds the events of the current session with two datastore queries:
+
+1. The newest event of the node with `nodeQuarantined: Quarantined`. Its `createdAt` is the start of the session.
+2. The events of the node with a `createdAt` at or after the start.
+
+fault-quarantine uses the same definition at this time. When an operator removes a quarantine manually, it finds the events of the current session in this way and marks them `Cancelled` (`fault-quarantine/pkg/eventwatcher/event_watcher.go`).
+
+The `quarantineHealthEvent` annotation on the Node is not the list of the events of the session. It lists only the active failures of the session, which are the events that have not recovered. When an event recovers, fault-quarantine removes it from the annotation, but the event stays in the session. fault-remediation computes the node state label from the active failures at this time.
+
 ### Node state labels
 
-Two new values join the node state labels: `drain-stopped` and `remediation-stopped`. A quarantine session can have more than one event, and each event has its own decision. Thus, the state label can move between a stopped state and the other states:
+Two new values join the node state labels: `drain-stopped` and `remediation-stopped`. A [quarantine session](#quarantine-session) can have more than one event, and each event has its own decision. Thus, the state label can move between a stopped state and the other states:
 
 | From | New expected transitions | Example |
 |---|---|---|
@@ -475,13 +493,13 @@ Two new values join the node state labels: `drain-stopped` and `remediation-stop
 | `drain-stopped` | `draining`, `drain-succeeded` | A later event in the session does not match a `stop` rule set, and node-drainer drains the node, or marks it `AlreadyDrained` |
 | `drain-succeeded` | `remediation-stopped` | The event matches a rule set with `remediation: { stop: true }` |
 | `remediation-stopped` | `remediating`, `remediation-succeeded`, `remediation-failed` | A later event in the session is remediated |
-| `remediating`, `remediation-succeeded`, `remediation-failed` | `remediation-stopped` | fault-remediation computes the label again from the remaining active failures, and all of them are stopped |
+| `remediating`, `remediation-succeeded`, `remediation-failed` | `remediation-stopped` | fault-remediation computes the label again from the remaining [active failures](#quarantine-session), and all of them are stopped |
 
-fault-remediation includes `remediation-stopped` when it computes the node label from the active failures. The label shows the state of the node. The record on each event shows the decision for that event.
+fault-remediation includes `remediation-stopped` when it computes the node label from the [active failures](#quarantine-session). The label shows the state of the node. The record on each event shows the decision for that event.
 
-node-drainer sets `drain-stopped` only when the node state is `quarantined` or `drain-stopped`. If another event of the session has already moved the node to a later state, node-drainer records the stop on the event and does not change the label.
+node-drainer sets `drain-stopped` only when the node state is `quarantined` or `drain-stopped`. If another event of the [session](#quarantine-session) has already moved the node to a later state, node-drainer records the stop on the event and does not change the label.
 
-When the quarantine session ends, the existing removal of the state label removes `drain-stopped` and `remediation-stopped`, as it removes the other values. The removal accepts any state, so it needs no change.
+When the [quarantine session](#quarantine-session) ends, the existing removal of the state label removes `drain-stopped` and `remediation-stopped`, as it removes the other values. The removal accepts any state, so it needs no change.
 
 ### The record on the event
 
@@ -505,7 +523,7 @@ message HealthEventStatus {
 }
 ```
 
-fault-quarantine already records its decision in the cordon-reason label and the quarantine annotation.
+fault-quarantine already records its decision in the cordon-reason label and the [`quarantineHealthEvent` annotation](#quarantine-session).
 
 The records are new fields of `HealthEventStatus` (fields 1 to 7 are in use at this time). The datastore keeps them with the event. A reader that does not know the fields ignores them, so the change is compatible with earlier versions.
 
@@ -525,7 +543,7 @@ A fault can take hours, from the event to the end of remediation. Node labels an
 
 | Stage | Decides | After the decision |
 |---|---|---|
-| fault-quarantine | When it evaluates the event | Unchanged by a label change. A recovery or a cancel ends it |
+| fault-quarantine | When it evaluates the event | Unchanged by a label change. It applies until the [quarantine session](#quarantine-session) ends |
 | node-drainer | Before the first eviction or custom drain CR | Uses the recorded method until the drain ends |
 | fault-remediation | Before the log collector and the CR | Uses the recorded entry. The CR continues. A change does not stop it |
 
