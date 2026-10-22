@@ -314,7 +314,7 @@ The record does not copy the pod policies. A later pass reads the policies of th
 
 At this time, fault-quarantine finds out if a drain was partial from a copy of `partialDrainEnabled` ([#1960](https://github.com/NVIDIA/NVSentinel/pull/1960)). The recorded scope makes it possible to remove that copy later. This ADR does not change it.
 
-**Node cache.** At this time, the node informer keeps the name, the [`quarantineHealthEvent` annotation](#quarantine-session), and only the label keys that `customDrain.nodeSelector` reads (`node-drainer/pkg/informers/informers.go`). It does not keep the spec, the status, or other annotations. With rule sets, the informer keeps the fields that are described in [Node fields and the node cache](#node-fields-and-the-node-cache). It also keeps the spec, as the fault-quarantine node cache does.
+**Node cache.** At this time, the node informer keeps only the name, the [`quarantineHealthEvent` annotation](#quarantine-session), and the label keys that `customDrain.nodeSelector` reads (`node-drainer/pkg/informers/informers.go`). It drops the spec, the status, and the other annotations. With rule sets, the informer keeps the fields in [Node fields and the node cache](#node-fields-and-the-node-cache), which add the spec, as the fault-quarantine node cache keeps it. It still drops the status.
 
 #### Custom drain scope
 
