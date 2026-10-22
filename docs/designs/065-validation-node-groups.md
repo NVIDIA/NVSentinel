@@ -22,9 +22,9 @@ In both paths, lifecycle-manager runs the tests, and uncordons the node only if 
 Validation selects tests for each node group with rule sets that can check the node labels. Both validation paths use the same rule set format:
 
 1. **Post-remediation validation:** A fault-quarantine rule set can check the node labels, so it can select a test for a specific node group. fault-quarantine selects the tests when the unhealthy event arrives, as before this ADR. If fault-quarantine cannot select the tests, it does not skip them. It tries again, and the node stays out of service until the tests are selected and pass.
-2. **New-node validation:** lifecycle-manager gets a new optional list of rule sets, `newNodeValidation.ruleSets`. Each rule set that matches a node adds tests to the tests in `newNodeTests` for that node. lifecycle-manager puts each test in a ValidationRequest with all the nodes that need that test. Tests that need the same nodes share one ValidationRequest.
+2. **New-node validation:** lifecycle-manager gets a new optional list of rule sets, `newNodeValidation.ruleSets`. Each rule set that matches a node adds additional tests to the existing tests in `newNodeTests` for that node. lifecycle-manager puts each test in a ValidationRequest with all the nodes that need that test. Tests that need the same nodes share one ValidationRequest.
 
-The rule set format keeps the format and behavior of the current fault-quarantine `validation.ruleSets`. Each rule set that matches adds its tests, and no rule set wins over a different rule set. With no new rule sets, validation works as it did before this ADR.
+The rule set keeps the format and behavior of the current fault-quarantine `validation.ruleSets`. Each rule set that matches adds its tests, and no rule set wins over a different rule set. With no new rule sets, validation works as it did before this ADR.
 
 ## Implementation
 
@@ -65,7 +65,7 @@ A GB200 node with a fatal GPU event gets `dcgm-diag-test` and `nccl-loopback-nvs
 
 - **Rule sets can check the node:** fault-quarantine keeps a copy of each node in a cache for its quarantine rule sets. This ADR lets the validation rule sets use the same cache. Before this ADR, the validation rule sets could not use the cache (`NewValidationClient` in `fault-quarantine/pkg/validation/validation.go`), so they could not have `Node` conditions. The cache already keeps the labels that the validation rule sets check (`fault-quarantine/pkg/nodecache/nodecache.go`).
 - **Tests are selected when the event arrives:** fault-quarantine checks the rule sets when an unhealthy event arrives, as before this ADR. It saves the event and its tests in the `quarantineValidationHealthEvent` annotation of the node.
-- **A failed selection does not stop the quarantine:** A `Node` condition can fail when a `HealthEvent` condition does not, for example when the node is not in the cache yet. If a rule set fails, fault-quarantine still quarantines the node. It does not skip the failed rule set, as it did before this ADR. It saves the event as a pending selection, logs an error, and increments a metric with the rule set name.
+- **A failed selection does not stop the quarantine:** Sometimes fault-quarantine cannot check a rule set. For example, a `Node` condition needs the node from the cache, but the node is not in the cache yet. Then fault-quarantine cannot know if the rule set matches. Before this ADR, fault-quarantine skipped this rule set, so the node could miss a test that it needs. After this ADR, fault-quarantine still quarantines the node, and it saves the event as a pending selection. It logs an error and increments a metric with the rule set name.
 - **Try again:** fault-quarantine tries the selection again for each node, and waits longer after each failure. node-drainer tries again in the same way (`node-drainer/pkg/queue`). Thus, a failure on one node does not delay the events of other nodes. At startup, fault-quarantine finds the pending selections on the nodes and tries them again. How fault-quarantine saves a pending selection is an open question.
 - **The retry also does the steps after the selection:** If the node is still quarantined when the selection succeeds, fault-quarantine saves the tests, and nothing else changes. If the last unhealthy event of the node already recovered, the retry also checks the drain and creates the ValidationRequest. fault-quarantine removes the pending selection only after the ValidationRequest exists. If the rule sets select no test, fault-quarantine uncordons the node, as it does when no tests are necessary.
 - **The node stays cordoned while a selection is pending:** When the last unhealthy event of the node recovers and a selection is pending, fault-quarantine does not uncordon the node, and it does not remove its taints. Before this ADR, fault-quarantine does the same when it cannot create the ValidationRequest (`triggerValidationOnUnquarantine` in `fault-quarantine/pkg/reconciler/reconciler.go`).
@@ -106,7 +106,7 @@ Both validation paths must follow these rules.
 
 ### Positive
 
-- Each node group runs the tests that it needs. A node does not run a test for hardware that it does not have.
+- Each node with a known group runs the tests selected for that group. A node does not run a test for hardware that it does not have.
 - Post-remediation validation does not skip a failed rule set. Thus, a node cannot return to service without a test that it needs.
 - Validation uses the same `Node` conditions as node-drainer and fault-remediation in ADR-064. Thus, operators describe a node group in one way in all components.
 - Existing configuration works without changes. With no new rule sets, validation works as before this ADR.
