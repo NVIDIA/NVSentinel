@@ -49,6 +49,7 @@ func NewHTTPSink(
 	}
 
 	transport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
 		MaxIdleConns:        maxConcurrency * 2,
 		MaxIdleConnsPerHost: maxConcurrency,
 		MaxConnsPerHost:     maxConcurrency,
