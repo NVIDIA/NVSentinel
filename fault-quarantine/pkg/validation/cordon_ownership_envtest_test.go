@@ -107,10 +107,13 @@ spec:
 			}
 			client := &ValidationClient{k8sClient: &informer.FaultQuarantineClient{DynamicClient: dynamicClient},
 				resourceGVR: gvr, resourceTemplate: tmpl, persistHandoff: true}
-			require.Error(t, client.CreateValidationRequest(ctx, node, []string{"quick"}, "stale", "trace", "span", source+" "))
+			_, err = client.CreateValidationRequest(ctx, node, []string{"quick"}, "stale", "trace", "span", source+" ")
+			require.Error(t, err)
 			_, err = dynamicClient.Resource(gvr).Get(ctx, node.Name+"-stale", metav1.GetOptions{})
 			require.True(t, apierrors.IsNotFound(err), "a changed source must not create a request")
-			require.NoError(t, client.CreateValidationRequest(ctx, node, []string{"quick"}, "session", "trace", "span", source))
+			persisted, err := client.CreateValidationRequest(ctx, node, []string{"quick"}, "session", "trace", "span", source)
+			require.NoError(t, err)
+			require.True(t, persisted)
 			// Clearing quarantine annotations does not discard the handoff's release decision.
 			node.Annotations = nil
 			_, err = clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
@@ -130,7 +133,8 @@ spec:
 			require.NoError(t, err)
 			restarted := &ValidationClient{k8sClient: &informer.FaultQuarantineClient{DynamicClient: dynamicClient},
 				resourceGVR: gvr, resourceTemplate: tmpl, persistHandoff: true}
-			require.Error(t, restarted.CreateValidationRequest(ctx, replacement, []string{"quick"}, "session", "trace", "span", source))
+			_, err = restarted.CreateValidationRequest(ctx, replacement, []string{"quick"}, "session", "trace", "span", source)
+			require.Error(t, err)
 		})
 	}
 }

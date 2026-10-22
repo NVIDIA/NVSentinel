@@ -250,11 +250,14 @@ func TestValidationRequestAlreadyExists_RequiresSameHandoff(t *testing.T) {
 			tc.change(existing)
 			_, err := client.Resource(gvr).Create(t.Context(), existing, metav1.CreateOptions{})
 			require.NoError(t, err)
-			err = fq.CreateValidationRequestResource(t.Context(), gvr, desired)
+			actual, err := fq.CreateValidationRequestResource(t.Context(), gvr, desired)
 			if tc.wantError {
 				require.Error(t, err)
+				require.Nil(t, actual)
 			} else {
 				require.NoError(t, err)
+				require.Equal(t, existing.GetAnnotations(), actual.GetAnnotations())
+				require.NotEmpty(t, actual.GetUID())
 			}
 			persisted, err := client.Resource(gvr).Get(t.Context(), desired.GetName(), metav1.GetOptions{})
 			require.NoError(t, err)

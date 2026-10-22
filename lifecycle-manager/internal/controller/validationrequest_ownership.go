@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/quarantinetaints"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
 
@@ -31,7 +32,10 @@ const (
 )
 
 func (r *ValidationRequestReconciler) onlyOwnedCordon() bool {
-	gate := r.Config.Validation.Spec.SchedulingGate
+	return requiresOwnedCordon(r.Config.Validation.Spec.SchedulingGate)
+}
+
+func requiresOwnedCordon(gate *v1alpha1.SchedulingGateConfig) bool {
 	return gate != nil && gate.Cordon.OnlyOwned
 }
 
@@ -114,14 +118,20 @@ func requestValidatedNode(request *v1alpha1.ValidationRequest, nodeName string, 
 	return false
 }
 
-func updateOwnedValidationSession(node *corev1.Node, request *v1alpha1.ValidationRequest,
-	tests []string) (bool, error) {
+func registerNodeValidationSession(node *corev1.Node, request *v1alpha1.ValidationRequest,
+	tests []string, onlyOwned bool) (bool, error) {
 	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
 	if err != nil {
 		return false, err
 	}
 
-	if !canRegisterOwnedRequest(node, request) {
+	if onlyOwned && !canRegisterOwnedRequest(node, request) {
+		return false, nil
+	}
+
+	// Default mode still accepts name-only sessions written by older versions.
+	// Do not attach a new object's identity to an existing legacy entry.
+	if !onlyOwned && slices.ContainsFunc(entries, func(entry sessionEntry) bool { return entry.Name == request.Name }) {
 		return false, nil
 	}
 
@@ -137,7 +147,7 @@ func updateOwnedValidationSession(node *corev1.Node, request *v1alpha1.Validatio
 		return false, err
 	}
 
-	changed, err := storeOwnedSession(node, entries)
+	changed, err := storeValidationSession(node, entries)
 
 	return changed || preserved, err
 }
@@ -163,7 +173,7 @@ func upsertOwnedSession(entries []sessionEntry, incoming sessionEntry) []session
 	return append(entries, incoming)
 }
 
-func storeOwnedSession(node *corev1.Node, entries []sessionEntry) (bool, error) {
+func storeValidationSession(node *corev1.Node, entries []sessionEntry) (bool, error) {
 	if len(entries) == 0 {
 		_, exists := node.Annotations[annotationValidationSession]
 		delete(node.Annotations, annotationValidationSession)
@@ -189,39 +199,70 @@ func storeOwnedSession(node *corev1.Node, entries []sessionEntry) (bool, error) 
 	return true, nil
 }
 
-func releaseOwnedNodeFromSession(node *corev1.Node, request *v1alpha1.ValidationRequest,
+func releaseNodeFromSession(node *corev1.Node, request *v1alpha1.ValidationRequest,
 	supersedeTests []string, succeeded bool, gate *v1alpha1.SchedulingGateConfig) (bool, error) {
 	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
 	if err != nil {
 		return false, err
 	}
 
-	// Legacy entries have no release grant but can still be cleaned up.
+	onlyOwned := requiresOwnedCordon(gate)
+
+	// Strict mode can clean up legacy entries without granting cordon release.
 	matches := func(entry sessionEntry) bool {
-		return ownedSessionTargetsRequest(entry, node, request)
+		if onlyOwned {
+			return ownedSessionTargetsRequest(entry, node, request)
+		}
+
+		return entry.Name == request.Name
 	}
-	if !slices.ContainsFunc(entries, matches) {
+	if onlyOwned && !slices.ContainsFunc(entries, matches) {
 		return false, nil
 	}
 
-	release := succeeded && ownedSessionCanRelease(node, request, entries)
+	// Calculate ownership in both modes so the persisted session stays useful
+	// across policy changes; the option controls whether release requires it.
+	ownedRelease := succeeded && ownedSessionCanRelease(node, request, entries)
 
 	preserved, err := preserveDepartingSession(node, request, entries)
 	if err != nil {
 		return false, err
 	}
 
-	remaining := removeOwnedSessionEntries(entries, matches, node, supersedeTests,
-		succeeded && requestClaimMatches(node, request), requestClaimID(request))
+	remaining := removeCompletedSessionEntries(entries, matches, supersedeTests, func(entry sessionEntry) bool {
+		return !onlyOwned || canSupersedeOwnedSession(node, request, entry, succeeded)
+	})
 
-	changed, err := storeOwnedSession(node, remaining)
+	changed, err := completeSessionRemoval(node, request, entries, remaining, !onlyOwned || ownedRelease, gate)
+
+	return changed || preserved, err
+}
+
+func completeSessionRemoval(node *corev1.Node, request *v1alpha1.ValidationRequest,
+	entries, remaining []sessionEntry, release bool, gate *v1alpha1.SchedulingGateConfig) (bool, error) {
+	changed, err := storeValidationSession(node, remaining)
 	if err != nil {
 		return false, err
 	}
 
-	released := finishOwnedSessionRelease(node, request, len(remaining) == 0, release, gate)
+	sessionEnded := len(entries) > 0 && len(remaining) == 0
+	released, err := finishSessionRelease(node, request, sessionEnded, release, gate)
 
-	return changed || released || preserved, nil
+	return changed || released, err
+}
+
+func removeCompletedSessionEntries(entries []sessionEntry, matches func(sessionEntry) bool,
+	supersedeTests []string, canSupersede func(sessionEntry) bool) []sessionEntry {
+	return slices.DeleteFunc(slices.Clone(entries), func(entry sessionEntry) bool {
+		return matches(entry) || (supersedeTests != nil && entry.Failed &&
+			sameTests(entry.Tests, supersedeTests) && canSupersede(entry))
+	})
+}
+
+func canSupersedeOwnedSession(node *corev1.Node, request *v1alpha1.ValidationRequest,
+	entry sessionEntry, succeeded bool) bool {
+	return succeeded && requestClaimMatches(node, request) &&
+		entry.NodeUID == node.UID && entry.ClaimID == requestClaimID(request)
 }
 
 // ownedReleaseRefusal explains why a successful request cannot release the
@@ -288,16 +329,8 @@ func ownedSessionCanRelease(node *corev1.Node, request *v1alpha1.ValidationReque
 		requestValidatedNode(request, node.Name, entries)
 }
 
-func removeOwnedSessionEntries(entries []sessionEntry, matches func(sessionEntry) bool,
-	node *corev1.Node, supersedeTests []string, succeeded bool, claimID string) []sessionEntry {
-	return slices.DeleteFunc(slices.Clone(entries), func(entry sessionEntry) bool {
-		return matches(entry) || (succeeded && supersedeTests != nil && entry.Failed &&
-			entry.NodeUID == node.UID && entry.ClaimID == claimID && sameTests(entry.Tests, supersedeTests))
-	})
-}
-
-func finishOwnedSessionRelease(node *corev1.Node, request *v1alpha1.ValidationRequest,
-	sessionEnded, release bool, gate *v1alpha1.SchedulingGateConfig) bool {
+func finishSessionRelease(node *corev1.Node, request *v1alpha1.ValidationRequest,
+	sessionEnded, release bool, gate *v1alpha1.SchedulingGateConfig) (bool, error) {
 	changed := false
 
 	if node.Annotations[annotationActiveValidationRequest] == request.Name {
@@ -306,18 +339,42 @@ func finishOwnedSessionRelease(node *corev1.Node, request *v1alpha1.ValidationRe
 		changed = true
 	}
 
-	_, quarantined := node.Annotations[annotationQuarantineHealthEvent]
-	if sessionEnded && !quarantined && !hasPendingValidationHandoff(node) {
-		if release {
-			changed = applySchedulingGateRelease(node, gate) || changed
-		} else {
-			// Ownership gates only the cordon. The configured taints are lifted when
-			// the session ends, exactly as the default release policy lifts them.
-			changed = releaseConfiguredTaints(node, gate) || changed
+	onlyOwned := requiresOwnedCordon(gate)
+
+	if sessionEnded && sessionCanReleaseGates(node, onlyOwned) {
+		released, err := releaseSessionGates(node, release, gate)
+		if err != nil {
+			return false, err
 		}
+
+		changed = changed || released
 	}
 
-	changed = retireCompletedClaim(node, request) || changed
+	if onlyOwned {
+		changed = retireCompletedClaim(node, request) || changed
+	} else {
+		changed = retireReleasedLegacyClaim(node) || changed
+	}
 
-	return changed
+	return changed, nil
+}
+
+func releaseSessionGates(node *corev1.Node, releaseCordon bool, gate *v1alpha1.SchedulingGateConfig) (bool, error) {
+	var changed bool
+	if releaseCordon {
+		changed = applySchedulingGateRelease(node, gate)
+	} else {
+		// Ownership gates only the cordon. Configured taints are lifted when the
+		// session ends, exactly as the default release policy lifts them.
+		changed = releaseConfiguredTaints(node, gate)
+	}
+
+	pruned, err := quarantinetaints.Prune(node, false)
+
+	return changed || pruned, err
+}
+
+func sessionCanReleaseGates(node *corev1.Node, onlyOwned bool) bool {
+	_, quarantined := node.Annotations[annotationQuarantineHealthEvent]
+	return !quarantined && (!onlyOwned || !hasPendingValidationHandoff(node))
 }

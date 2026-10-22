@@ -16,6 +16,7 @@ package informer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
@@ -28,8 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/cordonownership"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 )
 
 // Ownership and its claim are decided from the Node version being patched.
@@ -125,6 +128,78 @@ func preserveCordonClaim(node *corev1.Node) error {
 	return err
 }
 
+// A new quarantine can encounter a taint retained by an earlier validation. Its
+// presence does not change the recorded owner while that association is active.
+func (c *FaultQuarantineClient) retainValidationTaintOwnership(node *corev1.Node, annotations map[string]string) error {
+	key := common.QuarantineHealthEventAppliedTaintsAnnotationKey
+	_, wasDryRun := node.Annotations[common.QuarantineHealthEventDryRunAnnotationKey]
+
+	if c.DryRunMode || wasDryRun || annotations[key] == "" || node.Annotations[key] == "" ||
+		!hasValidationTaintAssociation(node) {
+		return nil
+	}
+
+	previous, err := parseAppliedTaintsAnnotation(node.Annotations[key])
+	if err != nil {
+		return fmt.Errorf("parse retained taint owners on node %s: %w", node.Name, err)
+	}
+
+	incoming, err := parseAppliedTaintsAnnotation(annotations[key])
+	if err != nil {
+		return fmt.Errorf("parse incoming taint owners on node %s: %w", node.Name, err)
+	}
+
+	if !inheritRetainedTaintOwners(node, incoming, previous) {
+		return nil
+	}
+
+	encoded, err := json.Marshal(incoming)
+	if err != nil {
+		return fmt.Errorf("encode retained taint owners on node %s: %w", node.Name, err)
+	}
+
+	annotations[key] = string(encoded)
+
+	return nil
+}
+
+func inheritRetainedTaintOwners(node *corev1.Node, incoming, previous []config.Taint) bool {
+	changed := false
+
+	for i, taint := range incoming {
+		if isRetainedOwnedTaint(node, taint, previous) {
+			incoming[i].PreExisting = false
+			changed = true
+		}
+	}
+
+	return changed
+}
+
+func isRetainedOwnedTaint(node *corev1.Node, taint config.Taint, previous []config.Taint) bool {
+	if !taint.PreExisting || !hasTaint(node, taint) {
+		return false
+	}
+
+	return slices.ContainsFunc(previous, func(record config.Taint) bool {
+		return !record.PreExisting && record.Key == taint.Key && record.Value == taint.Value &&
+			record.Effect == taint.Effect
+	})
+}
+
+func hasValidationTaintAssociation(node *corev1.Node) bool {
+	for _, key := range []string{
+		cordonownership.ValidationSessionAnnotationKey, cordonownership.PendingHandoffAnnotationKey,
+	} {
+		var entries []json.RawMessage
+		if json.Unmarshal([]byte(node.Annotations[key]), &entries) == nil && len(entries) > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Metadata-only acquisition must also conflict with concurrent ownership changes.
 func (c *FaultQuarantineClient) updateNodeOwnership(ctx context.Context, name string,
 	update func(*corev1.Node) error) error {
@@ -132,20 +207,17 @@ func (c *FaultQuarantineClient) updateNodeOwnership(ctx context.Context, name st
 	mu.(*sync.Mutex).Lock()
 	defer mu.(*sync.Mutex).Unlock()
 
-	nodes := &handoffNodeClient{NodeInterface: c.Clientset.CoreV1().Nodes()}
-
 	var originalUID string
 
-	_, err := c.nodePatcher.Patch(ctx, nodes, name, nil, func(node *corev1.Node) error {
+	_, err := c.nodePatcher.Patch(ctx, c.Clientset.CoreV1().Nodes(), name, nil, func(node *corev1.Node) error {
 		if originalUID != "" && originalUID != string(node.UID) {
 			return fmt.Errorf("node %s identity changed during cordon ownership update", name)
 		}
 
 		originalUID = string(node.UID)
-		nodes.uid, nodes.version = node.UID, node.ResourceVersion
 
 		return update(node)
-	})
+	}, kubeclient.WithOptimisticLock())
 
 	return err
 }
@@ -218,6 +290,40 @@ func sameValidationHandoff(existing, desired *unstructured.Unstructured) bool {
 	return reflect.DeepEqual(existing.Object["spec"], desired.Object["spec"])
 }
 
+// ValidateRecoveredValidationRequest verifies an orphan handoff without adopting
+// a legacy request that has no persisted source or cordon ownership decision.
+func ValidateRecoveredValidationRequest(existing, desired *unstructured.Unstructured) error {
+	ownershipKey := common.ValidationCordonOwnershipAnnotationKey
+	existingOwnership := existing.GetAnnotations()[ownershipKey]
+	desiredOwnership := desired.GetAnnotations()[ownershipKey]
+
+	if existing.GetName() != desired.GetName() ||
+		existing.GetAnnotations()[common.ValidationSourceHashAnnotationKey] == "" ||
+		desired.GetAnnotations()[common.ValidationSourceHashAnnotationKey] == "" {
+		return fmt.Errorf("ValidationRequest %s does not identify the recovered handoff", existing.GetName())
+	}
+
+	switch existingOwnership {
+	case common.CordonOwnershipOwned, common.CordonOwnershipPreExisting, common.CordonOwnershipUnknown:
+	default:
+		return fmt.Errorf("ValidationRequest %s has no persisted cordon ownership", existing.GetName())
+	}
+
+	// Both decisions withhold cordon release. Recovery after producer cleanup
+	// may lose the distinction, but must keep the existing request's decision.
+	nonGranting := func(value string) bool {
+		return value == common.CordonOwnershipPreExisting || value == common.CordonOwnershipUnknown
+	}
+	if nonGranting(existingOwnership) && nonGranting(desiredOwnership) {
+		existing = existing.DeepCopy()
+		annotations := existing.GetAnnotations()
+		annotations[ownershipKey] = desiredOwnership
+		existing.SetAnnotations(annotations)
+	}
+
+	return validateExistingValidationRequest(existing, desired)
+}
+
 func validationNodeOwner(obj *unstructured.Unstructured) (metav1.OwnerReference, error) {
 	var owners []metav1.OwnerReference
 
@@ -267,12 +373,17 @@ func removeQuarantineAnnotations(node *corev1.Node, keys []string) bool {
 			continue
 		}
 
-		if key != cordonownership.ValidationSessionAnnotationKey {
+		if key != cordonownership.ValidationSessionAnnotationKey &&
+			key != common.QuarantineHealthEventAppliedTaintsAnnotationKey {
 			delete(node.Annotations, key)
 		}
 	}
 
 	return retireClaim
+}
+
+func isValidationHandoff(handoff []bool) bool {
+	return len(handoff) > 0 && handoff[0]
 }
 
 func (c *FaultQuarantineClient) finishManualCordonClaim(node *corev1.Node) error {

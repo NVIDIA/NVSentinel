@@ -40,6 +40,22 @@ type NodePatcher struct {
 	pendingVersions sync.Map // map[string]string
 }
 
+// NodePatchOption configures the preconditions used when patching a Node.
+type NodePatchOption func(*nodePatchOptions)
+
+type nodePatchOptions struct {
+	optimisticLock bool
+}
+
+// WithOptimisticLock adds the original Node UID and resource version to every
+// nonempty patch, including metadata-only changes. It leaves no-op patches empty.
+// Callers must supply a Node read from the API and recheck its identity on retry.
+func WithOptimisticLock() NodePatchOption {
+	return func(options *nodePatchOptions) {
+		options.optimisticLock = true
+	}
+}
+
 // Patch applies mutate to a copy of cached and writes only the resulting diff.
 // cached may be nil when an informer is unavailable; in that case Patch reads the
 // current Node from the API server. A write not yet observed at cached's
@@ -50,6 +66,7 @@ func (p *NodePatcher) Patch(
 	nodeName string,
 	cached *v1.Node,
 	mutate func(*v1.Node) error,
+	options ...NodePatchOption,
 ) (bool, error) {
 	var current *v1.Node
 
@@ -73,7 +90,7 @@ func (p *NodePatcher) Patch(
 			return fmt.Errorf("mutate node %q: %w", nodeName, err)
 		}
 
-		patch, err := NodeMergePatch(current, desired)
+		patch, err := NodeMergePatch(current, desired, options...)
 		if err != nil {
 			return fmt.Errorf("build merge patch for node %q: %w", nodeName, err)
 		}
@@ -198,7 +215,7 @@ func IsRetryableNodePatchError(err error) bool {
 //
 // Taints are emitted only when the caller changed them. A projected Node whose Spec
 // is empty on both sides therefore cannot erase taints from the real object.
-func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
+func NodeMergePatch(original, modified *v1.Node, options ...NodePatchOption) ([]byte, error) {
 	originalProjection := projectNodePatchableFields(original)
 	modifiedProjection := projectNodePatchableFields(modified)
 
@@ -236,7 +253,44 @@ func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
 		return nil, nil
 	}
 
+	settings := resolveNodePatchOptions(options)
+	if settings.optimisticLock {
+		return withNodePatchPreconditions(patch, original)
+	}
+
 	return patch, nil
+}
+
+func resolveNodePatchOptions(options []NodePatchOption) nodePatchOptions {
+	var settings nodePatchOptions
+	for _, option := range options {
+		option(&settings)
+	}
+
+	return settings
+}
+
+func withNodePatchPreconditions(patch []byte, original *v1.Node) ([]byte, error) {
+	var document map[string]any
+	if err := json.Unmarshal(patch, &document); err != nil {
+		return nil, fmt.Errorf("decode node patch: %w", err)
+	}
+
+	metadata, _ := document["metadata"].(map[string]any)
+	if metadata == nil {
+		metadata = make(map[string]any)
+		document["metadata"] = metadata
+	}
+
+	metadata["uid"] = original.UID
+	metadata["resourceVersion"] = original.ResourceVersion
+
+	guarded, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("encode node patch preconditions: %w", err)
+	}
+
+	return guarded, nil
 }
 
 // patchProjectionJSON marshals a projection, keeping the named metadata maps in

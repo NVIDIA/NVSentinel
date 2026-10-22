@@ -16,6 +16,7 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/quarantinetaints"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
 
@@ -79,12 +81,12 @@ func TestOwnedSession_ReleaseRequiresEvidence(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			node, request, gate := ownershipFixture("request", cordonOwned)
-			_, err := updateOwnedValidationSession(node, request, []string{"smoke"})
+			_, err := registerNodeValidationSession(node, request, []string{"smoke"}, true)
 			require.NoError(t, err)
 			tc.mutate(node, request)
 			refusal := ownedReleaseRefusal(node, request)
 			require.Equal(t, tc.release, refusal == "", refusal)
-			_, err = releaseOwnedNodeFromSession(node, request, nil, true, gate)
+			_, err = releaseNodeFromSession(node, request, nil, true, gate)
 			require.NoError(t, err)
 			require.Equal(t, !tc.release, node.Spec.Unschedulable)
 			require.Equal(t, tc.taintsKept, len(node.Spec.Taints) > 0)
@@ -98,7 +100,7 @@ func TestOwnedSession_PreserveSurvivesCompletionOrderAndRestart(t *testing.T) {
 			node, owned, gate := ownershipFixture("owned", cordonOwned)
 			_, manual, _ := ownershipFixture("manual", cordonPreExisting)
 			for _, request := range []*v1alpha1.ValidationRequest{owned, manual} {
-				_, err := updateOwnedValidationSession(node, request, []string{"smoke"})
+				_, err := registerNodeValidationSession(node, request, []string{"smoke"}, true)
 				require.NoError(t, err)
 			}
 			order := []*v1alpha1.ValidationRequest{owned, manual}
@@ -111,7 +113,7 @@ func TestOwnedSession_PreserveSurvivesCompletionOrderAndRestart(t *testing.T) {
 				require.NoError(t, err)
 				node = &corev1.Node{}
 				require.NoError(t, json.Unmarshal(data, node))
-				_, err = releaseOwnedNodeFromSession(node, request, nil, true, gate)
+				_, err = releaseNodeFromSession(node, request, nil, true, gate)
 				require.NoError(t, err)
 				require.True(t, node.Spec.Unschedulable)
 			}
@@ -124,13 +126,13 @@ func TestOwnedSession_DeletePreservesOtherOwnedRequestGrant(t *testing.T) {
 	node, first, gate := ownershipFixture("first", cordonOwned)
 	_, second, _ := ownershipFixture("second", cordonOwned)
 	for _, request := range []*v1alpha1.ValidationRequest{first, second} {
-		_, err := updateOwnedValidationSession(node, request, []string{"smoke"})
+		_, err := registerNodeValidationSession(node, request, []string{"smoke"}, true)
 		require.NoError(t, err)
 	}
-	_, err := releaseOwnedNodeFromSession(node, first, nil, false, gate)
+	_, err := releaseNodeFromSession(node, first, nil, false, gate)
 	require.NoError(t, err)
 	require.True(t, node.Spec.Unschedulable)
-	_, err = releaseOwnedNodeFromSession(node, second, nil, true, gate)
+	_, err = releaseNodeFromSession(node, second, nil, true, gate)
 	require.NoError(t, err)
 	require.False(t, node.Spec.Unschedulable)
 	require.Empty(t, node.Spec.Taints)
@@ -140,13 +142,13 @@ func TestOwnedSession_DeletePreservesOtherOwnedRequestGrant(t *testing.T) {
 func TestOwnedSession_FailedOwnedRequestCanBeSuperseded(t *testing.T) {
 	node, failed, gate := ownershipFixture("failed", cordonOwned)
 	_, success, _ := ownershipFixture("success", cordonOwned)
-	_, err := updateOwnedValidationSession(node, failed, []string{"smoke"})
+	_, err := registerNodeValidationSession(node, failed, []string{"smoke"}, true)
 	require.NoError(t, err)
 	_, err = markNodeSessionEntryFailed(node, failed.Name)
 	require.NoError(t, err)
-	_, err = updateOwnedValidationSession(node, success, []string{"smoke"})
+	_, err = registerNodeValidationSession(node, success, []string{"smoke"}, true)
 	require.NoError(t, err)
-	_, err = releaseOwnedNodeFromSession(node, success, []string{"smoke"}, true, gate)
+	_, err = releaseNodeFromSession(node, success, []string{"smoke"}, true, gate)
 	require.NoError(t, err)
 	require.False(t, node.Spec.Unschedulable)
 	require.Empty(t, node.Annotations[annotationValidationSession])
@@ -157,7 +159,7 @@ func TestOwnedSession_LegacyAndMalformedSessionsRetainCordon(t *testing.T) {
 		t.Run(annotation, func(t *testing.T) {
 			node, request, gate := ownershipFixture("legacy", cordonOwned)
 			node.Annotations = map[string]string{annotationValidationSession: annotation}
-			_, err := releaseOwnedNodeFromSession(node, request, nil, true, gate)
+			_, err := releaseNodeFromSession(node, request, nil, true, gate)
 			if annotation == `{broken` {
 				require.Error(t, err)
 				require.NotEmpty(t, node.Spec.Taints)
@@ -174,13 +176,76 @@ func TestOwnedSession_LegacyAndMalformedSessionsRetainCordon(t *testing.T) {
 
 func TestOwnedSession_RecreatedRequestCannotUpgradeOldGrant(t *testing.T) {
 	node, request, gate := ownershipFixture("same-name", cordonOwned)
-	_, err := updateOwnedValidationSession(node, request, []string{"smoke"})
+	_, err := registerNodeValidationSession(node, request, []string{"smoke"}, true)
 	require.NoError(t, err)
 	request.UID = "replacement-request"
-	_, err = updateOwnedValidationSession(node, request, []string{"smoke"})
+	_, err = registerNodeValidationSession(node, request, []string{"smoke"}, true)
 	require.NoError(t, err)
 	require.True(t, ownedSessionMatches(node, request))
-	_, err = releaseOwnedNodeFromSession(node, request, nil, true, gate)
+	_, err = releaseNodeFromSession(node, request, nil, true, gate)
 	require.NoError(t, err)
 	require.True(t, node.Spec.Unschedulable)
+}
+
+func TestSessionOwnershipSurvivesEnablingStrictPolicy(t *testing.T) {
+	for _, ownership := range []string{cordonOwned, cordonPreExisting, cordonUnknown} {
+		t.Run(ownership, func(t *testing.T) {
+			node, request, strictGate := ownershipFixture("request", ownership)
+			_, err := registerNodeValidationSession(node, request, []string{"smoke"}, false)
+			require.NoError(t, err)
+			entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
+			require.Equal(t, node.UID, entries[0].NodeUID)
+			require.Equal(t, request.UID, entries[0].RequestUID)
+			require.Equal(t, ownership, entries[0].CordonOwnership)
+
+			// A restarted controller with strict mode enabled can use the original
+			// persisted evidence, without promoting a legacy entry or rerunning tests.
+			_, err = releaseNodeFromSession(node, request, nil, true, strictGate)
+			require.NoError(t, err)
+			require.Equal(t, ownership != cordonOwned, node.Spec.Unschedulable)
+		})
+	}
+}
+
+func TestDefaultRegistrationDoesNotPromoteLegacyIdentity(t *testing.T) {
+	node, request, _ := ownershipFixture("legacy", cordonOwned)
+	legacy := `[{"name":"legacy","tests":["smoke"]}]`
+	node.Annotations = map[string]string{annotationValidationSession: legacy}
+	for _, onlyOwned := range []bool{false, true} {
+		changed, err := registerNodeValidationSession(node, request, []string{"smoke"}, onlyOwned)
+		require.NoError(t, err)
+		require.False(t, changed)
+		require.Equal(t, legacy, node.Annotations[annotationValidationSession])
+	}
+}
+
+func TestSessionReleaseRetainsBookkeepingForUnmappedTaints(t *testing.T) {
+	for _, onlyOwned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("onlyOwned=%t", onlyOwned), func(t *testing.T) {
+			node, request, gate := ownershipFixture("request", cordonOwned)
+			gate.Cordon.OnlyOwned = onlyOwned
+			_, err := registerNodeValidationSession(node, request, []string{"smoke"}, onlyOwned)
+			require.NoError(t, err)
+			unmapped := corev1.Taint{Key: "test.example/unmapped", Value: "fault", Effect: corev1.TaintEffectNoSchedule}
+			preExisting := corev1.Taint{Key: "test.example/operator", Effect: corev1.TaintEffectNoSchedule}
+			node.Spec.Taints = append(node.Spec.Taints, unmapped, preExisting)
+			records := []map[string]any{
+				{"key": releaseRaceGateTaint.Key, "value": releaseRaceGateTaint.Value, "effect": releaseRaceGateTaint.Effect, "preExisting": false},
+				{"key": unmapped.Key, "value": unmapped.Value, "effect": unmapped.Effect, "preExisting": false},
+				{"key": preExisting.Key, "effect": preExisting.Effect, "preExisting": true},
+			}
+			value, err := json.Marshal(records)
+			require.NoError(t, err)
+			node.Annotations[quarantinetaints.AnnotationKey] = string(value)
+			_, err = releaseNodeFromSession(node, request, nil, true, gate)
+			require.NoError(t, err)
+			require.ElementsMatch(t, []corev1.Taint{unmapped, preExisting}, node.Spec.Taints)
+			var retained []map[string]any
+			require.NoError(t, json.Unmarshal([]byte(node.Annotations[quarantinetaints.AnnotationKey]), &retained))
+			require.Len(t, retained, 1)
+			require.Equal(t, unmapped.Key, retained[0]["key"])
+		})
+	}
 }

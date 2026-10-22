@@ -1696,8 +1696,9 @@ func TestE2E_ValidationRequestCreatedWhenComponentResetEventFullyDrained(t *test
 	require.NoError(t, err)
 	assert.True(t, node.Spec.Unschedulable, "Node should stay unschedulable pending validation")
 	verifyFQTaintPresent(t, node, "nvidia.com/gpu-xid-error")
-	assert.Empty(t, node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey],
-		"Applied-taints annotation should be cleared once the ValidationRequest is created")
+	assert.ElementsMatch(t, []config.Taint{
+		{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+	}, sessionAppliedTaints(t, node))
 	assert.Empty(t, node.Annotations[common.QuarantineValidationHealthEventAnnotationKey],
 		"Validation-session annotation should be cleared once the ValidationRequest is created")
 }
@@ -1907,8 +1908,10 @@ func TestE2E_ValidationRequestCreatedWhenEventDrained(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, node.Spec.Unschedulable, "Node should stay unschedulable pending validation")
 	verifyFQTaintPresent(t, node, "nvidia.com/gpu-xid-error")
-	assert.Empty(t, node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey],
-		"Applied-taints annotation should be cleared once the ValidationRequest is created")
+	assert.ElementsMatch(t, []config.Taint{
+		{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+		{Key: "nvidia.com/gpu-memory-error", Value: "true", Effect: "NoSchedule"},
+	}, sessionAppliedTaints(t, node))
 	assert.Empty(t, node.Annotations[common.QuarantineValidationHealthEventAnnotationKey],
 		"Validation-session annotation should be cleared once the ValidationRequest is created")
 
@@ -2002,7 +2005,11 @@ func TestE2E_ValidationRequestCreationKeepsTaints(t *testing.T) {
 			node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 			require.NoError(t, err)
 			assert.False(t, node.Spec.Unschedulable)
-			assert.Empty(t, node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey])
+			if tc.drained {
+				assert.ElementsMatch(t, []config.Taint{tomlConfig.RuleSets[0].Taint}, sessionAppliedTaints(t, node))
+			} else {
+				assert.NotContains(t, node.Annotations, common.QuarantineHealthEventAppliedTaintsAnnotationKey)
+			}
 			if tc.persistHandoff && tc.drained {
 				assert.NotEmpty(t, node.Annotations[common.QuarantineValidationHealthEventAnnotationKey])
 			} else {

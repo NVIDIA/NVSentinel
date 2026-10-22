@@ -280,6 +280,16 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		ds.HealthEventStore(),
 	)
 
+	return r.runEventProcessing(ctx)
+}
+
+func (r *Reconciler) runEventProcessing(ctx context.Context) error {
+	stopHandoffRecovery, err := r.startValidationHandoffRecovery(ctx)
+	if err != nil {
+		return err
+	}
+	defer stopHandoffRecovery()
+
 	if err := r.eventWatcher.Start(ctx); err != nil {
 		return fmt.Errorf("event watcher failed: %w", err)
 	}
@@ -2162,7 +2172,7 @@ func (r *Reconciler) performUncordon(
 		return false, nil
 	}
 
-	annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, validationNode, err :=
+	annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, handoff, err :=
 		r.triggerValidationOnUnquarantine(ctx, span, event, annotations, annotationsToBeRemoved, taintsToBeRemoved,
 			isUnCordon)
 	if err != nil {
@@ -2175,12 +2185,12 @@ func (r *Reconciler) performUncordon(
 	}
 
 	annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, labelsToRemove := r.prepareClaimRelease(
-		annotations, annotationsToBeRemoved, taintsToBeRemoved, ruleLabelsToRemove, isUnCordon, validationNode != nil)
+		annotations, annotationsToBeRemoved, taintsToBeRemoved, ruleLabelsToRemove, isUnCordon, handoff != nil)
 
-	handled, err := r.completeValidationHandoff(ctx, validationNode, annotationsToBeRemoved, labelsToRemove)
+	handled, err := r.completeValidationHandoff(ctx, handoff, annotationsToBeRemoved, labelsToRemove)
 	if !handled {
 		err = r.k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, event.NodeName, taintsToBeRemoved,
-			isUnCordon, annotationsToBeRemoved, labelsToRemove, labelsMap)
+			isUnCordon, annotationsToBeRemoved, labelsToRemove, labelsMap, handoff != nil)
 	}
 
 	if err != nil {
@@ -2240,13 +2250,19 @@ func (r *Reconciler) prepareClaimRelease(annotations map[string]string, annotati
 		r.buildUncordonLabelsToRemove(ruleLabels, validationCreated || keepValidationGate)
 }
 
-func (r *Reconciler) completeValidationHandoff(ctx context.Context, node *corev1.Node,
+type validationHandoff struct {
+	node      *corev1.Node
+	persisted bool
+}
+
+func (r *Reconciler) completeValidationHandoff(ctx context.Context, handoff *validationHandoff,
 	annotationKeys, labelsToRemove []string) (bool, error) {
-	if node == nil || !r.config.TomlConfig.Validation.PersistHandoff {
+	if handoff == nil || !r.config.TomlConfig.Validation.PersistHandoff {
 		return false, nil
 	}
 
-	return true, r.k8sClient.CompleteValidationHandoff(ctx, node, annotationKeys, labelsToRemove)
+	return true, r.k8sClient.CompleteValidationHandoff(
+		ctx, handoff.node, annotationKeys, labelsToRemove, handoff.persisted)
 }
 
 func (r *Reconciler) buildUncordonLabelsToRemove(ruleLabelsToRemove []config.Label,
@@ -2274,12 +2290,12 @@ func (r *Reconciler) buildUncordonLabelsToRemove(ruleLabelsToRemove []config.Lab
 // and annotations will be preserved.
 func (r *Reconciler) triggerValidationOnUnquarantine(ctx context.Context, span trace.Span, event *protos.HealthEvent,
 	annotations map[string]string, annotationsToBeRemoved []string, taintsToBeRemoved []config.Taint,
-	isUnCordon bool) ([]string, []config.Taint, bool, *corev1.Node, error) {
+	isUnCordon bool) ([]string, []config.Taint, bool, *validationHandoff, error) {
 	if _, exists := annotations[common.QuarantineValidationHealthEventAnnotationKey]; !exists {
 		return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, nil, nil
 	}
 
-	validationNode, err := r.createValidationRequestIfRequested(ctx, event, annotations)
+	handoff, err := r.createValidationRequestIfRequested(ctx, event, annotations)
 	if errors.Is(err, errValidationHandoffDone) {
 		return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, nil, err
 	}
@@ -2297,22 +2313,22 @@ func (r *Reconciler) triggerValidationOnUnquarantine(ctx context.Context, span t
 		return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, nil, err
 	}
 
-	if validationNode == nil || !r.config.TomlConfig.Validation.PersistHandoff {
+	if handoff == nil || !handoff.persisted {
 		annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineValidationHealthEventAnnotationKey)
 	}
 
-	if validationNode != nil {
+	if handoff != nil {
 		taintsToBeRemoved = nil
 		isUnCordon = false
 
 		span.SetAttributes(attribute.Bool("fault_quarantine.validation_request.created", true))
 	}
 
-	return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, validationNode, nil
+	return annotationsToBeRemoved, taintsToBeRemoved, isUnCordon, handoff, nil
 }
 
 func (r *Reconciler) createValidationRequestIfRequested(ctx context.Context, event *protos.HealthEvent,
-	annotations map[string]string) (*corev1.Node, error) {
+	annotations map[string]string) (*validationHandoff, error) {
 	// This check is present if a stale validationHealthEvent annotation exists on a node before the feature was
 	// disabled (validation.enabled is false or validation.ruleSets is empty)
 	if r.validationClient == nil {
@@ -2359,14 +2375,14 @@ func (r *Reconciler) createValidationRequestIfRequested(ctx context.Context, eve
 	traceID := tracing.TraceIDFromMetadata(event.GetMetadata())
 	spanID := tracing.SpanIDFromSpan(tracing.SpanFromContext(ctx))
 
-	if err := r.validationClient.CreateValidationRequest(
-		ctx, node, tests, sessionID, traceID, spanID, source); err != nil {
+	persisted, err := r.validationClient.CreateValidationRequest(ctx, node, tests, sessionID, traceID, spanID, source)
+	if err != nil {
 		return nil, err
 	}
 
 	slog.InfoContext(ctx, "Created ValidationRequest", "node", nodeName, "tests", tests)
 
-	return node, nil
+	return &validationHandoff{node: node, persisted: persisted}, nil
 }
 
 // prepareUncordonParams prepares parameters for uncordoning a node

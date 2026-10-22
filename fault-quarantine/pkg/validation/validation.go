@@ -26,6 +26,7 @@ import (
 	"text/template"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/cordonownership"
@@ -229,9 +230,32 @@ func (c *ValidationClient) FetchValidationTestsFromQuarantineSession(ctx context
 		return nil, "", nil
 	}
 
-	var eventsWithTests []common.HealthEventWithTests
-	if err := json.Unmarshal([]byte(quarantineValidationAnnotation), &eventsWithTests); err != nil {
+	events, tests, id, err := parseValidationSource(quarantineValidationAnnotation)
+	if err != nil {
 		return nil, "", fmt.Errorf("failed to parse validation annotation for node %s: %w", nodeName, err)
+	}
+
+	isDrained, err := drain.IsNodeDrained(ctx, c.healthEventStore, nodeName, events, "", nil,
+		c.partialDrainEnabled)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to look up drain status for node %s: %w", nodeName, err)
+	}
+
+	if !isDrained {
+		slog.InfoContext(ctx, "Skipping validation: no contributing event completed its drain", "node", nodeName)
+
+		return nil, "", nil
+	}
+
+	return tests, id, nil
+}
+
+// parseValidationSource reconstructs the requested tests without consulting event history.
+// Drain eligibility is checked only when the quarantine is first handed to validation.
+func parseValidationSource(source string) ([]*protos.HealthEvent, []string, string, error) {
+	var eventsWithTests []common.HealthEventWithTests
+	if err := json.Unmarshal([]byte(source), &eventsWithTests); err != nil {
+		return nil, nil, "", fmt.Errorf("decode validation source: %w", err)
 	}
 
 	events := make([]*protos.HealthEvent, 0, len(eventsWithTests))
@@ -260,26 +284,35 @@ func (c *ValidationClient) FetchValidationTestsFromQuarantineSession(ctx context
 		}
 	}
 
-	isDrained, err := drain.IsNodeDrained(ctx, c.healthEventStore, nodeName, events, "", nil,
-		c.partialDrainEnabled)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to look up drain status for node %s: %w", nodeName, err)
-	}
-
-	if !isDrained {
-		slog.InfoContext(ctx, "Skipping validation: no contributing event completed its drain", "node", nodeName)
-
-		return nil, "", nil
-	}
-
 	sort.Strings(tests)
 	sort.Strings(eventIDs)
 
-	return tests, sessionID(eventIDs), nil
+	return events, tests, sessionID(eventIDs), nil
 }
 
 func (c *ValidationClient) CreateValidationRequest(ctx context.Context, node *corev1.Node, tests []string, sessionID,
-	traceID, spanID, source string) error {
+	traceID, spanID, source string) (bool, error) {
+	validationObject, err := c.renderValidationRequest(node, tests, sessionID, traceID, spanID, source)
+	if err != nil {
+		return false, err
+	}
+
+	actual, err := c.k8sClient.CreateValidationRequestResource(ctx, c.resourceGVR, validationObject)
+	if err != nil {
+		return false, err
+	}
+
+	// An adopted legacy request cannot acknowledge a source it never recorded.
+	// Complete its original handoff without assigning it new ownership evidence.
+	if !c.persistHandoff || actual == nil {
+		return false, nil
+	}
+
+	return informer.ValidateRecoveredValidationRequest(actual, validationObject) == nil, nil
+}
+
+func (c *ValidationClient) renderValidationRequest(node *corev1.Node, tests []string, sessionID,
+	traceID, spanID, source string) (*unstructured.Unstructured, error) {
 	data := templateData{
 		NodeName:  node.Name,
 		SessionID: sessionID,
@@ -290,7 +323,7 @@ func (c *ValidationClient) CreateValidationRequest(ctx context.Context, node *co
 
 	validationObject, _, err := templates.Render(c.resourceTemplate, data)
 	if err != nil {
-		return fmt.Errorf("failed to render ValidationRequest for node %s: %w", node.Name, err)
+		return nil, fmt.Errorf("failed to render ValidationRequest for node %s: %w", node.Name, err)
 	}
 
 	templates.SetNodeOwnerRef(validationObject, node)
@@ -304,7 +337,7 @@ func (c *ValidationClient) CreateValidationRequest(ctx context.Context, node *co
 
 	if c.persistHandoff {
 		if source == "" || node.Annotations[common.QuarantineValidationHealthEventAnnotationKey] != source {
-			return fmt.Errorf("validation source changed while preparing request for node %s", node.Name)
+			return nil, fmt.Errorf("validation source changed while preparing request for node %s", node.Name)
 		}
 
 		annotations[common.ValidationSourceHashAnnotationKey] = fmt.Sprintf("%x", sha256.Sum256([]byte(source)))
@@ -314,7 +347,7 @@ func (c *ValidationClient) CreateValidationRequest(ctx context.Context, node *co
 
 	validationObject.SetAnnotations(annotations)
 
-	return c.k8sClient.CreateValidationRequestResource(ctx, c.resourceGVR, validationObject)
+	return validationObject, nil
 }
 
 func (c *ValidationClient) getTestsForHealthEvent(ctx context.Context, event *protos.HealthEvent) []string {

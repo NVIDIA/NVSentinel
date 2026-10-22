@@ -39,7 +39,7 @@ func TestReleaseNodeFromSessionPreservesNewQuarantine(t *testing.T) {
 		Cordon: v1alpha1.CordonConfig{Remove: true},
 	}
 
-	_, err := releaseNodeFromSession(node, "old-validation", nil, gate)
+	_, err := releaseNodeFromSession(node, &v1alpha1.ValidationRequest{ObjectMeta: metav1.ObjectMeta{Name: "old-validation"}}, nil, false, gate)
 	if err != nil {
 		t.Fatal(err)
 	}

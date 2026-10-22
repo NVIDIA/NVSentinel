@@ -41,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/cordonownership"
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/quarantinetaints"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
@@ -119,27 +120,31 @@ func newFaultQuarantineClient(config *rest.Config, dryRun bool,
 }
 
 func (c *FaultQuarantineClient) CreateValidationRequestResource(ctx context.Context, gvr schema.GroupVersionResource,
-	obj *unstructured.Unstructured) error {
+	obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	if c.DryRunMode {
 		slog.InfoContext(ctx, "DryRun mode enabled, skipping ValidationRequest creation", "name", obj.GetName())
-		return nil
+		return nil, nil
 	}
 
-	_, err := c.DynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+	created, err := c.DynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
 	if err == nil {
-		return nil
+		return created, nil
 	}
 
 	if !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("failed to create ValidationRequest %s: %w", obj.GetName(), err)
+		return nil, fmt.Errorf("failed to create ValidationRequest %s: %w", obj.GetName(), err)
 	}
 
 	existing, err := c.DynamicClient.Resource(gvr).Get(ctx, obj.GetName(), metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("get existing ValidationRequest %s: %w", obj.GetName(), err)
+		return nil, fmt.Errorf("get existing ValidationRequest %s: %w", obj.GetName(), err)
 	}
 
-	return validateExistingValidationRequest(existing, obj)
+	if err := validateExistingValidationRequest(existing, obj); err != nil {
+		return nil, err
+	}
+
+	return existing, nil
 }
 
 func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Context,
@@ -353,6 +358,10 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 
 		cordonAnnotations, err := c.annotationsWithCordonOwnership(node, annotations, isCordon, alreadyQuarantined)
 		if err != nil {
+			return err
+		}
+
+		if err := c.retainValidationTaintOwnership(node, cordonAnnotations); err != nil {
 			return err
 		}
 
@@ -735,6 +744,7 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 	annotationKeys []string,
 	labelsToRemove []string,
 	labels map[string]string,
+	validationHandoff ...bool,
 ) error {
 	updateFn := func(node *v1.Node) error {
 		_, claimPresent := node.Annotations[cordonownership.AnnotationKey]
@@ -746,7 +756,9 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 			// A successor validation retains the same cordon until its last association ends.
 			if !retireClaim || cordonownership.HasAssociations(node) {
 				c.removeLabels(ctx, node, labelsWithoutCordonAudit(labelsToRemove), nodename)
-				return nil
+				_, err := quarantinetaints.Prune(node, true)
+
+				return err
 			}
 
 			cordonownership.Delete(node)
@@ -762,7 +774,10 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 
 		c.removeLabels(ctx, node, labelsToRemove, nodename)
 
-		return nil
+		keepTaintOwners := isValidationHandoff(validationHandoff)
+		_, err := quarantinetaints.Prune(node, keepTaintOwners || cordonownership.HasAssociations(node))
+
+		return err
 	}
 
 	return c.updateNodeOwnership(ctx, nodename, updateFn)

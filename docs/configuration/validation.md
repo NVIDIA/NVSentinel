@@ -154,7 +154,9 @@ kubectl get nodes -o json |
     has("nvsentinel.nvidia.com/cordon-claim")) | .metadata.name'
 ```
 
-An old session without Node and request UIDs remains protected. A request name alone cannot prove object identity. Enabling strict ownership does not assign ownership to such sessions. A ValidationRequest that the previous fault-quarantine created is adopted when the upgraded controller retries the same hand-off, so an upgrade between request creation and quarantine cleanup does not leave the node quarantined.
+An old session without Node and request UIDs remains protected. A request name alone cannot prove object identity. Enabling strict ownership does not assign ownership to such sessions. When retrying an interrupted handoff, fault-quarantine adopts a legacy ValidationRequest only when its Node UID and exact specification match. It completes that handoff against the same live Node snapshot, preserving the validation gate and taint records while clearing the source that the old request cannot acknowledge. The request gains no ownership grant; complete legacy activity before enabling strict policy.
+
+New session entries record identities and ownership with either release policy. Existing name-only entries retain their original representation, so complete them before enabling strict ownership.
 
 The request check includes requests whose phase has not been initialized. Historical completed requests can remain once their Node associations are cleared; failed requests can still have retained sessions that need resolution.
 
@@ -386,14 +388,18 @@ status:
 | Key | Type | Purpose |
 |---|---|---|
 | enabled | bool | Whether fault-quarantine requests validation after a node recovers from a fault |
-| persistHandoff | bool | Defaults to false. Retains the validation source until the ownership-aware lifecycle manager registers the request. The cordon claim lasts through validation. Enable with strict ownership after legacy activity finishes |
+| persistHandoff | bool | Defaults to false. Retains the validation source until lifecycle-manager registers the request. Fault-quarantine retries pending handoffs every 30 seconds and recreates missing requests. The cordon claim lasts through validation. Enable with strict ownership after legacy activity finishes |
 | apiGroup, version, kind | string | The GroupVersionKind of the ValidationRequest resource fault-quarantine creates |
 | templateFileName | string | The filename of the Go text/template, resolved from templates, rendered to build the ValidationRequest |
 | templates | map[string]string | Inline template content, keyed by filename |
 | ruleSets | []RuleSet | Maps HealthEvents from a quarantine session to the tests they require |
 | partialDrainEnabled | bool | Must match node-drainer partialDrainEnabled. When false, a completed drain of a COMPONENT_RESET event counts as a full drain. Defaults to false. Set both with global.partialDrainEnabled |
 
-When fault-quarantine creates a ValidationRequest, it keeps the cordon and every taint it applied during the quarantine session, and it stops tracking them. lifecycle-manager releases them when validation passes. Every taint that a fault-quarantine rule-set applies must therefore be listed in lifecycle-manager schedulingGate.taints with remove set to true. A taint that is not listed is never removed. Test pods also do not tolerate it, unless the provider template tolerates it, as the default k8s-job-template.yaml does for NoExecute taints. Keep the not-under-quarantine readiness criterion so a new quarantine fails the pending validation instead of releasing the node. Use remove set to true only for taints that fault-quarantine alone applies: lifecycle-manager matches on key, value, and effect, so it also lifts a matching taint that was on the node before the quarantine. When no ValidationRequest is created, fault-quarantine removes its taints itself.
+When fault-quarantine hands a node to validation, it keeps the cordon, applied taints, and their bookkeeping. lifecycle-manager removes its configured taints when the session ends and removes the corresponding records. A later fault that recovers while an active cordon claim is still associated with validation keeps those taints and records, even when it creates no additional request. Other recoveries without a new validation request use fault-quarantine's normal taint cleanup.
+
+List every fault-quarantine taint used to gate validation in lifecycle-manager `schedulingGate.taints` with `remove: true`. A taint outside that configuration remains on the node with its record. Test pods need to tolerate it through this list or their provider template; the default `k8s-job-template.yaml` tolerates every NoExecute taint. Keep the `not-under-quarantine` readiness criterion so a new quarantine fails pending validation. Reserve `remove: true` for taints managed by fault-quarantine: lifecycle-manager matches key, value, and effect and also removes an identical taint that predated the quarantine.
+
+With `persistHandoff: true`, fault-quarantine automatically retries an unconsumed handoff after quarantine clears, including after a controller restart or deletion of the request before registration. It verifies the existing request or recreates the missing request from the retained source. A stopped lifecycle-manager leaves the node isolated until it resumes and registers the request. A source or request identity mismatch is logged and retried; resolving that mismatch is an operator exception. Restore the matching controller configuration and request identity before resuming validation. Automatic recovery never expires the isolation.
 
 ### fault-quarantine.validation.ruleSets
 

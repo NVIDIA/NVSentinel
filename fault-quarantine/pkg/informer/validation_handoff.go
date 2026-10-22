@@ -21,41 +21,45 @@ import (
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/cordonownership"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/quarantinetaints"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 )
 
 // CompleteValidationHandoff clears only the quarantine represented by the created
-// request. Its validation source remains until lifecycle-manager registers it.
+// request. By default, its validation source remains until lifecycle-manager
+// registers it. Passing retainSource=false consumes the source for an adopted
+// legacy request that cannot acknowledge it.
 func (c *FaultQuarantineClient) CompleteValidationHandoff(ctx context.Context, expected *corev1.Node,
-	annotationKeys, labelsToRemove []string) error {
+	annotationKeys, labelsToRemove []string, retainSource ...bool) error {
 	mu, _ := c.operationMutex.LoadOrStore(expected.Name, &sync.Mutex{})
 	mu.(*sync.Mutex).Lock()
 	defer mu.(*sync.Mutex).Unlock()
 
-	nodes := &handoffNodeClient{NodeInterface: c.Clientset.CoreV1().Nodes()}
-	_, err := c.nodePatcher.Patch(ctx, nodes, expected.Name, nil, func(node *corev1.Node) error {
+	_, err := c.nodePatcher.Patch(ctx, c.Clientset.CoreV1().Nodes(), expected.Name, nil, func(node *corev1.Node) error {
 		if err := matchingHandoffNode(node, expected); err != nil {
 			return err
 		}
 
-		nodes.uid, nodes.version = node.UID, node.ResourceVersion
-
 		for _, key := range annotationKeys {
 			if key != common.QuarantineValidationHealthEventAnnotationKey && key != cordonownership.AnnotationKey &&
-				key != cordonownership.ValidationSessionAnnotationKey {
+				key != cordonownership.ValidationSessionAnnotationKey && key != quarantinetaints.AnnotationKey {
 				delete(node.Annotations, key)
 			}
 		}
 
+		if len(retainSource) > 0 && !retainSource[0] {
+			delete(node.Annotations, common.QuarantineValidationHealthEventAnnotationKey)
+		}
+
 		c.removeLabels(ctx, node, labelsToRemove, node.Name)
 
-		return nil
-	})
+		_, err := quarantinetaints.Prune(node, true)
+
+		return err
+	}, kubeclient.WithOptimisticLock())
 
 	return err
 }
@@ -116,36 +120,4 @@ func sameClaimIdentity(node, expected *corev1.Node) bool {
 
 	return currentClaim.ID != "" && currentClaim.ID == previousClaim.ID &&
 		currentClaim.NodeUID == previousClaim.NodeUID
-}
-
-// The shared patcher versions spec changes; handoff also needs versioned metadata
-// changes so a new quarantine cannot be cleared between the read and the patch.
-type handoffNodeClient struct {
-	typedcorev1.NodeInterface
-	uid     types.UID
-	version string
-}
-
-func (n *handoffNodeClient) Patch(ctx context.Context, name string, patchType types.PatchType,
-	data []byte, options metav1.PatchOptions, subresources ...string) (*corev1.Node, error) {
-	var patch map[string]any
-	if err := json.Unmarshal(data, &patch); err != nil {
-		return nil, fmt.Errorf("decode validation handoff patch: %w", err)
-	}
-
-	metadata, ok := patch["metadata"].(map[string]any)
-	if !ok {
-		metadata = make(map[string]any)
-		patch["metadata"] = metadata
-	}
-
-	metadata["uid"] = string(n.uid)
-	metadata["resourceVersion"] = n.version
-
-	guarded, err := json.Marshal(patch)
-	if err != nil {
-		return nil, fmt.Errorf("encode validation handoff patch: %w", err)
-	}
-
-	return n.NodeInterface.Patch(ctx, name, patchType, guarded, options, subresources...)
 }

@@ -44,6 +44,20 @@ func createAPIClaim(nodeName string, req reconcile.Request) cordonownership.Clai
 	return claim
 }
 
+func persistLegacyAPISession(nodeName string) corev1.Node {
+	node := getNode(ctx, nodeName)
+	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+	Expect(err).NotTo(HaveOccurred())
+	for i, entry := range entries {
+		entries[i] = sessionEntry{Name: entry.Name, Tests: entry.Tests, Failed: entry.Failed}
+	}
+	value, err := marshalSessionAnnotation(entries)
+	Expect(err).NotTo(HaveOccurred())
+	node.Annotations[annotationValidationSession] = value
+	Expect(k8sClient.Update(ctx, &node)).To(Succeed())
+	return node
+}
+
 var _ = Describe("Validation continuous cordon claim", func() {
 	DescribeTable("keeps an owned successor eligible across deletion and restart",
 		func(id string, deleteFirst, registerSecond bool, ownership string) {
@@ -174,7 +188,9 @@ var _ = Describe("Validation continuous cordon claim", func() {
 		} else {
 			reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 10)
 		}
-		node := getNode(ctx, name)
+		// Model data persisted by an older controller. New controllers write
+		// identities even while the strict release policy is disabled.
+		node := persistLegacyAPISession(name)
 		entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
 		Expect(err).NotTo(HaveOccurred())
 		Expect(entries).To(HaveLen(1))
@@ -211,6 +227,29 @@ var _ = Describe("Validation continuous cordon claim", func() {
 			Expect(node.Spec.Taints).NotTo(ContainElement(releaseRaceGateTaint))
 		}
 	}, Entry("Pending legacy session", true), Entry("Running legacy session", false))
+
+	It("keeps new default-mode ownership usable after enabling strict policy", func() {
+		name := "claim-new-session-policy-change"
+		r, req, cfg := ownedRequestSetup("vr-"+name, name, cordonOwned, true, true)
+		createAPIClaim(name, req)
+		cfg.Validation.Spec.SchedulingGate.Cordon.OnlyOwned = false
+		r = restartOwnedReconciler(cfg)
+		vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 10)
+		node := getNode(ctx, name)
+		entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(entries).To(HaveLen(1))
+		Expect(entries[0].NodeUID).To(Equal(node.UID))
+		Expect(entries[0].RequestUID).To(Equal(vr.UID))
+		Expect(entries[0].CordonOwnership).To(Equal(cordonOwned))
+		cfg.Validation.Spec.SchedulingGate.Cordon.OnlyOwned = true
+		r = restartOwnedReconciler(cfg)
+		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
+		reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseSucceeded, 10)
+		node = getNode(ctx, name)
+		Expect(node.Spec.Unschedulable).To(BeFalse())
+		Expect(node.Annotations).NotTo(HaveKey(cordonownership.AnnotationKey))
+	})
 
 	It("retires a released claim in compatible mode", func() {
 		name := "claim-compatible-release"
@@ -261,6 +300,7 @@ var _ = Describe("Validation continuous cordon claim", func() {
 		cfg.Validation.Spec.SchedulingGate.Cordon.OnlyOwned = false
 		r = restartOwnedReconciler(cfg)
 		reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 10)
+		persistLegacyAPISession(name)
 		createAPIClaim(name, req)
 		vr := setRequestHandoffHash(req, handoffSource)
 		Expect(setHandoffSource(ctx, name, handoffSource)).To(Succeed())

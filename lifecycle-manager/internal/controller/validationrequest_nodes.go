@@ -254,24 +254,7 @@ func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Contex
 
 func (r *ValidationRequestReconciler) registerValidationSession(node *corev1.Node,
 	validationRequest *v1alpha1.ValidationRequest, tests []string) (bool, error) {
-	if r.onlyOwnedCordon() {
-		return updateOwnedValidationSession(node, validationRequest, tests)
-	}
-
-	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
-	if err != nil {
-		return false, err
-	}
-
-	for _, e := range entries {
-		if e.Name == validationRequest.Name {
-			return false, nil
-		}
-	}
-
-	entries = append(entries, sessionEntry{Name: validationRequest.Name, Tests: tests})
-
-	return storeOwnedSession(node, entries)
+	return registerNodeValidationSession(node, validationRequest, tests, r.onlyOwnedCordon())
 }
 
 func (r *ValidationRequestReconciler) releaseNodesFromSuccessfulRequest(ctx context.Context,
@@ -338,7 +321,7 @@ func (r *ValidationRequestReconciler) releaseSuccessfulNode(ctx context.Context,
 // whether the node stays cordoned with no association left.
 func (r *ValidationRequestReconciler) releaseDeletedOwnedNode(node *corev1.Node,
 	request *v1alpha1.ValidationRequest) (changed, retainedCordon bool, err error) {
-	changed, err = releaseOwnedNodeFromSession(node, request, nil, false, r.Config.Validation.Spec.SchedulingGate)
+	changed, err = releaseNodeFromSession(node, request, nil, false, r.Config.Validation.Spec.SchedulingGate)
 	if err != nil {
 		return false, false, err
 	}
@@ -350,18 +333,7 @@ func (r *ValidationRequestReconciler) releaseDeletedOwnedNode(node *corev1.Node,
 
 func (r *ValidationRequestReconciler) releaseSuccessfulNodeSession(node *corev1.Node,
 	request *v1alpha1.ValidationRequest, supersedeTests []string) (bool, error) {
-	if r.onlyOwnedCordon() {
-		return releaseOwnedNodeFromSession(node, request, supersedeTests, true,
-			r.Config.Validation.Spec.SchedulingGate)
-	}
-
-	changed, err := releaseNodeFromSession(node, request.Name, supersedeTests,
-		r.Config.Validation.Spec.SchedulingGate)
-	if err != nil {
-		return false, err
-	}
-
-	return retireReleasedLegacyClaim(node) || changed, nil
+	return releaseNodeFromSession(node, request, supersedeTests, true, r.Config.Validation.Spec.SchedulingGate)
 }
 
 func (r *ValidationRequestReconciler) checkNodesBeforeRelease(ctx context.Context,
@@ -425,7 +397,7 @@ func (r *ValidationRequestReconciler) releaseNodesFromDeletedRequest(ctx context
 			retainedGate = false
 			hadSession := len(node.Annotations[annotationValidationSession]) > 0
 
-			changed, err := releaseNodeFromSession(node, validationRequest.Name, nil, r.Config.Validation.Spec.SchedulingGate)
+			changed, err := releaseNodeFromSession(node, validationRequest, nil, false, r.Config.Validation.Spec.SchedulingGate)
 			if err != nil {
 				return false, err
 			}
@@ -455,48 +427,6 @@ func (r *ValidationRequestReconciler) releaseNodesFromDeletedRequest(ctx context
 	}
 
 	return nil
-}
-
-func releaseNodeFromSession(node *corev1.Node, validationRequestName string, supersedeTests []string,
-	schedulingGate *v1alpha1.SchedulingGateConfig) (bool, error) {
-	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
-	if err != nil {
-		return false, err
-	}
-
-	remaining, sessionBecameEmpty := removeSessionEntry(entries, validationRequestName, supersedeTests)
-
-	changed := false
-
-	if len(remaining) != len(entries) {
-		if sessionBecameEmpty {
-			delete(node.Annotations, annotationValidationSession)
-		} else {
-			annotation, err := marshalSessionAnnotation(remaining)
-			if err != nil {
-				return false, err
-			}
-
-			node.Annotations[annotationValidationSession] = annotation
-		}
-
-		changed = true
-	}
-
-	if node.Annotations[annotationActiveValidationRequest] == validationRequestName {
-		delete(node.Annotations, annotationActiveValidationRequest)
-
-		changed = true
-	}
-
-	// Deleting a request removes its session entry, but must not remove a new
-	// quarantine. Successful completion checks this condition before cleanup.
-	_, quarantined := node.Annotations[annotationQuarantineHealthEvent]
-	if sessionBecameEmpty && !quarantined && applySchedulingGateRelease(node, schedulingGate) {
-		changed = true
-	}
-
-	return changed, nil
 }
 
 func markNodeSessionEntryFailed(node *corev1.Node, validationRequestName string) (bool, error) {
@@ -659,7 +589,7 @@ func (r *ValidationRequestReconciler) patchNodeWithRetry(ctx context.Context, no
 			return nil
 		}
 
-		patch, err := validationNodeMergePatch(original, &node)
+		patch, err := kubeclient.NodeMergePatch(original, &node, kubeclient.WithOptimisticLock())
 		if err != nil {
 			return fmt.Errorf("build merge patch for node %q: %w", nodeName, err)
 		}
@@ -670,48 +600,6 @@ func (r *ValidationRequestReconciler) patchNodeWithRetry(ctx context.Context, no
 
 		return r.Patch(ctx, &node, client.RawPatch(types.MergePatchType, patch))
 	})
-}
-
-// Session membership and handoff consumption require the same optimistic
-// concurrency protection as spec changes, including annotation-only updates.
-func validationNodeMergePatch(original, modified *corev1.Node) ([]byte, error) {
-	patch, err := kubeclient.NodeMergePatch(original, modified)
-	if err != nil || patch == nil {
-		return patch, err
-	}
-
-	var document map[string]any
-	if err := json.Unmarshal(patch, &document); err != nil {
-		return nil, fmt.Errorf("decode node patch: %w", err)
-	}
-
-	metadata, _ := document["metadata"].(map[string]any)
-	if metadata == nil {
-		metadata = make(map[string]any)
-		document["metadata"] = metadata
-	}
-
-	metadata["uid"] = original.UID
-	metadata["resourceVersion"] = original.ResourceVersion
-
-	return json.Marshal(document)
-}
-
-func removeSessionEntry(entries []sessionEntry, validationRequestName string,
-	supersedeTests []string) (remaining []sessionEntry, sessionBecameEmpty bool) {
-	for _, e := range entries {
-		if e.Name == validationRequestName {
-			continue
-		}
-
-		if supersedeTests != nil && e.Failed && sameTests(e.Tests, supersedeTests) {
-			continue
-		}
-
-		remaining = append(remaining, e)
-	}
-
-	return remaining, len(entries) > 0 && len(remaining) == 0
 }
 
 func applySchedulingGateRelease(node *corev1.Node, schedulingGate *v1alpha1.SchedulingGateConfig) bool {
