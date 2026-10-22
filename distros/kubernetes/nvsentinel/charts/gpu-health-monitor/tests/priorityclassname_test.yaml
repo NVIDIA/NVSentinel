@@ -17,7 +17,6 @@ suite: priorityClassName (node-level agent)
 # so it has to be parseable; assertions are scoped to the DaemonSet.
 templates:
   - templates/daemonset-dcgm-4.x.yaml
-  - templates/daemonset-dcgm-3.x.yaml
   - templates/configmap.yaml
 tests:
   - it: must not emit priorityClassName when neither global nor local is set
@@ -65,58 +64,6 @@ tests:
   # value. Without this the two globals could silently collapse into one.
   - it: must ignore global.systemPriorityClassName
     template: templates/daemonset-dcgm-4.x.yaml
-    set:
-      global.platformConnectorAuth.enabled: false
-      global.systemPriorityClassName: system-cluster-critical
-    asserts:
-      - notExists:
-          path: spec.template.spec.priorityClassName
-
-  - it: must not emit priorityClassName when neither global nor local is set (3.x variant)
-    template: templates/daemonset-dcgm-3.x.yaml
-    set:
-      global.platformConnectorAuth.enabled: false
-      global.imagePullSecrets: []
-    asserts:
-      - notExists:
-          path: spec.template.spec.priorityClassName
-
-  - it: must take global.priorityClassName (3.x variant)
-    template: templates/daemonset-dcgm-3.x.yaml
-    set:
-      global.platformConnectorAuth.enabled: false
-      global.priorityClassName: system-node-critical
-    asserts:
-      - equal:
-          path: spec.template.spec.priorityClassName
-          value: system-node-critical
-
-  - it: must fall back to the component value when no global is set (3.x variant)
-    template: templates/daemonset-dcgm-3.x.yaml
-    set:
-      global.platformConnectorAuth.enabled: false
-      global.imagePullSecrets: []
-      priorityClassName: gpu-agents
-    asserts:
-      - equal:
-          path: spec.template.spec.priorityClassName
-          value: gpu-agents
-
-  - it: must prefer the global over the component value, as tolerations does (3.x variant)
-    template: templates/daemonset-dcgm-3.x.yaml
-    set:
-      global.platformConnectorAuth.enabled: false
-      global.priorityClassName: from-global
-      priorityClassName: from-local
-    asserts:
-      - equal:
-          path: spec.template.spec.priorityClassName
-          value: from-global
-
-  # The node-level agents key off global.priorityClassName, never the control-plane
-  # value. Without this the two globals could silently collapse into one.
-  - it: must ignore global.systemPriorityClassName (3.x variant)
-    template: templates/daemonset-dcgm-3.x.yaml
     set:
       global.platformConnectorAuth.enabled: false
       global.systemPriorityClassName: system-cluster-critical

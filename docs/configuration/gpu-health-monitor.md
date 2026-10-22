@@ -40,7 +40,7 @@ GPU Health Monitor starts an in-process DCGM hostengine and exposes it to pod-lo
 
 ## DCGM Version Selection
 
-Use a GPU Health Monitor image from the same DCGM major version as its hostengine. The node `nvsentinel.dgxc.nvidia.com/dcgm.version` label selects the 3.x or 4.x monitor image.
+GPU Health Monitor supports DCGM 4.x only. The node `nvsentinel.dgxc.nvidia.com/dcgm.version=4.x` label selects the nodes that run the monitor.
 
 In `operator-service` mode, labeler derives this label from the DCGM pod image. In `external-hostengine` and `embedded-mode`, the cluster operator supplies the label.
 
@@ -150,7 +150,7 @@ The GPU Operator sets the label back to `true` before the new driver loads, so t
 
 ### DCGM Version Node Label
 
-GPU Health Monitor ships one DaemonSet per DCGM major version. Each DaemonSet selects nodes with the `nvsentinel.dgxc.nvidia.com/dcgm.version` label, so every node gets the monitor image that matches its DCGM. All three modes render this `nodeSelector`, but only `operator-service` supplies the label for you.
+The GPU Health Monitor DaemonSet selects nodes with the `nvsentinel.dgxc.nvidia.com/dcgm.version=4.x` label, so the monitor runs only on nodes whose DCGM matches its image. All three modes render this `nodeSelector`, but only `operator-service` supplies the label for you.
 
 | Mode | Who sets the label |
 |---|---|
@@ -164,19 +164,17 @@ One case still removes the label: a node labelled `nvsentinel.dgxc.nvidia.com/ma
 
 An unlabeled node runs no GPU Health Monitor pod, and nothing reports an error. The DaemonSet stays healthy because Kubernetes never schedules a pod it can reject. GPU health monitoring is silently absent on that node.
 
-Label every GPU node with its DCGM major version. The only accepted values are `3.x` and `4.x`; labeler treats any other value as absent.
+Label every GPU node with its DCGM major version. Labeler accepts only `3.x` and `4.x` and treats any other value as absent. GPU Health Monitor runs only on nodes labelled `4.x`.
 
 ```bash
 # One node
 kubectl label node <node-name> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x
 
-# Many nodes at once. Label each DCGM version separately, using a selector that
-# matches only the nodes running that version.
+# Many nodes at once. Use a selector that matches only the nodes running DCGM 4.x.
 kubectl label node -l <your-4.x-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x
-kubectl label node -l <your-3.x-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=3.x
 ```
 
-Do not label every GPU node with one version. A node labelled `4.x` while running DCGM 3.x gets the 4.x monitor image, which then fails against the hostengine it finds. If your fleet is genuinely uniform, `nvidia.com/gpu.present=true` is a usable selector — it comes from Node Feature Discovery, which the GPU Operator installs. Substitute your own selector if you run neither, which is common in `embedded-mode`.
+Label a node `4.x` only when it runs DCGM 4.x. A node labelled `4.x` while running DCGM 3.x gets the 4.x monitor image, which then fails against the hostengine it finds. If your fleet is genuinely uniform, `nvidia.com/gpu.present=true` is a usable selector — it comes from Node Feature Discovery, which the GPU Operator installs. Substitute your own selector if you run neither, which is common in `embedded-mode`.
 
 Confirm a monitor pod now runs on each labeled node:
 

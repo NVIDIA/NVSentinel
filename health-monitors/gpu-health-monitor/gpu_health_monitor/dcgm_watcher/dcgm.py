@@ -53,17 +53,9 @@ THERMAL_HISTORY_SAMPLE_LIMIT = 1024
 def _run_dcgm_server(port: int, bind_address: str) -> None:
     """Expose the embedded hostengine over TCP for local DCGM clients.
 
-    DCGM 4.x ships dcgmServerRun in its Python bindings. DCGM 3.3.7 exports
-    the same dcgmEngineRun API but does not include that Python wrapper.
+    Requires DCGM Python bindings 4.5 or later, which ship dcgmServerRun.
     """
-    server_run = getattr(dcgm_agent, "dcgmServerRun", None)
-    if server_run is not None:
-        server_run(port, bind_address, DCGM_CONNECTION_TYPE_TCP)
-        return
-
-    fn = dcgm_agent.dcgmFP("dcgmEngineRun")
-    ret = fn(port, bind_address.encode("utf-8"), DCGM_CONNECTION_TYPE_TCP)
-    dcgm_structs._dcgmCheckReturn(ret)
+    dcgm_agent.dcgmServerRun(port, bind_address, DCGM_CONNECTION_TYPE_TCP)
 
 
 # Registry of DCGM field monitors, keyed by config key.

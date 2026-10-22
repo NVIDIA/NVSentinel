@@ -40,13 +40,9 @@ include ../../make/docker.mk
 
 # Cache configuration for specialized builds (respect DISABLE_REGISTRY_CACHE)
 ifeq ($(DISABLE_REGISTRY_CACHE),true)
-CACHE_FROM_ARG_DCGM3 :=
-CACHE_TO_ARG_DCGM3 :=
 CACHE_FROM_ARG_DCGM4 :=
 CACHE_TO_ARG_DCGM4 :=
 else
-CACHE_FROM_ARG_DCGM3 := --cache-from=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3
-CACHE_TO_ARG_DCGM3 := --cache-to=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3,mode=max
 CACHE_FROM_ARG_DCGM4 := --cache-from=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4
 CACHE_TO_ARG_DCGM4 := --cache-to=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4,mode=max
 endif
@@ -112,25 +108,9 @@ endif
 # PYTHON-SPECIFIC DOCKER OVERRIDES
 # =============================================================================
 
-# Override docker builds to support dual DCGM versions
-docker-build: setup-buildx docker-build-dcgm3 docker-build-dcgm4
-	@echo "Built both DCGM 3.x and 4.x images locally"
-
-docker-build-dcgm3: setup-buildx
-	@echo "Building Docker image for $(MODULE_NAME) with DCGM 3.x (local development)..."
-	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
-	cd $(REPO_ROOT) && docker buildx build \
-		--platform $(PLATFORMS) \
-		--network=host \
-		$(CACHE_FROM_ARG_DCGM3) \
-		$(CACHE_TO_ARG_DCGM3) \
-		$(DOCKER_EXTRA_ARGS) \
-		$(DOCKER_LOAD_ARG) \
-		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-3.x \
-		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
-		--build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 \
-		-f $(MODULE_PATH)/Dockerfile \
-		.
+# Override docker builds to tag the image with its DCGM major version
+docker-build: setup-buildx docker-build-dcgm4
+	@echo "Built DCGM 4.x image locally"
 
 docker-build-dcgm4: setup-buildx
 	@echo "Building Docker image for $(MODULE_NAME) with DCGM 4.x (local development)..."
@@ -146,25 +126,8 @@ docker-build-dcgm4: setup-buildx
 		-f $(MODULE_PATH)/Dockerfile \
 		.
 
-docker-publish: setup-buildx docker-publish-dcgm3 docker-publish-dcgm4
-	@echo "Published both DCGM 3.x and 4.x images to registry"
-
-docker-publish-dcgm3: setup-buildx
-	@echo "Building and publishing Docker image for $(MODULE_NAME) with DCGM 3.x (production)..."
-	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
-	cd $(REPO_ROOT) && docker buildx build \
-		--platform $(PLATFORMS) \
-		--network=host \
-		$(CACHE_FROM_ARG_DCGM3) \
-		$(CACHE_TO_ARG_DCGM3) \
-		$(DOCKER_EXTRA_ARGS) \
-		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
-		--push \
-		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-3.x \
-		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
-		--build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 \
-		-f $(MODULE_PATH)/Dockerfile \
-		.
+docker-publish: setup-buildx docker-publish-dcgm4
+	@echo "Published DCGM 4.x image to registry"
 
 docker-publish-dcgm4: setup-buildx
 	@echo "Building and publishing Docker image for $(MODULE_NAME) with DCGM 4.x (production)..."
@@ -275,21 +238,15 @@ protos-clean: vendor-proto
 # LEGACY COMPATIBILITY
 # =============================================================================
 
-.PHONY: image publish image-dcgm3 image-dcgm4 publish-dcgm3 publish-dcgm4
+.PHONY: image publish image-dcgm4 publish-dcgm4
 image: docker-build
 	@echo "Legacy 'image' target - use 'docker-build' for local development"
 
 publish: docker-publish
 	@echo "Legacy 'publish' target - use 'docker-publish' for CI/production"
 
-image-dcgm3: docker-build-dcgm3
-	@echo "Built DCGM 3.x image locally (legacy target)"
-
 image-dcgm4: docker-build-dcgm4
 	@echo "Built DCGM 4.x image locally (legacy target)"
-
-publish-dcgm3: docker-publish-dcgm3
-	@echo "Published DCGM 3.x image to registry (legacy target)"
 
 publish-dcgm4: docker-publish-dcgm4
 	@echo "Published DCGM 4.x image to registry (legacy target)"
@@ -328,21 +285,17 @@ help:
 	@echo "  protos-generate       - Generate Python protobuf files from .proto sources"
 	@echo "  format-protobuf-files - Format generated protobuf files with Black"
 	@echo ""
-	@echo "Docker targets (dual DCGM support):"
-	@echo "  docker-build         - Build both DCGM 3.x and 4.x images locally"
-	@echo "  docker-build-dcgm3   - Build DCGM 3.x image locally"
+	@echo "Docker targets:"
+	@echo "  docker-build         - Build DCGM 4.x image locally"
 	@echo "  docker-build-dcgm4   - Build DCGM 4.x image locally"
-	@echo "  docker-publish       - Build and publish both images (CI/production)"
-	@echo "  docker-publish-dcgm3 - Build and publish DCGM 3.x image"
+	@echo "  docker-publish       - Build and publish DCGM 4.x image (CI/production)"
 	@echo "  docker-publish-dcgm4 - Build and publish DCGM 4.x image"
 	@echo "  setup-buildx         - Setup Docker buildx builder"
 	@echo ""
 	@echo "Legacy targets:"
 	@echo "  image                - Legacy target (calls docker-build)"
 	@echo "  publish              - Legacy target (calls docker-publish)"
-	@echo "  image-dcgm3          - Legacy: Build DCGM 3.x locally"
 	@echo "  image-dcgm4          - Legacy: Build DCGM 4.x locally"
-	@echo "  publish-dcgm3        - Legacy: Publish DCGM 3.x"
 	@echo "  publish-dcgm4        - Legacy: Publish DCGM 4.x"
 	@echo ""
 	@echo "Development targets:"
@@ -354,7 +307,7 @@ help:
 	@echo ""
 	@echo "Module-specific notes:"
 	@echo "  - Python module using Poetry for dependency management"
-	@echo "  - Supports both DCGM 3.x and 4.x versions"
+	@echo "  - Supports DCGM 4.x (DCGM 3.x is end-of-life and no longer built)"
 	@echo "  - Uses standardized repo-root Docker build context"
 	@echo "  - Multi-platform builds: $(PLATFORMS)"
 	@echo "  - Build cache enabled for faster builds"

@@ -320,7 +320,6 @@ check_optional_deployment "simple-health-client" 1
 # Check daemonsets (system components that run on nodes)
 echo "=== DaemonSets ==="
 check_daemonset "platform-connectors"
-check_daemonset "gpu-health-monitor-dcgm-3.x"
 check_daemonset "gpu-health-monitor-dcgm-4.x"
 check_daemonset "syslog-health-monitor-regular"
 check_daemonset "syslog-health-monitor-kata"

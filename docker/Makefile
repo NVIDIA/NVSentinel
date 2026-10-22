@@ -40,16 +40,11 @@ ALL_MODULES := $(GO_MODULES) $(PYTHON_MODULES) $(CONTAINER_MODULES)
 build-all: build-gpu-health-monitor build-syslog-health-monitor build-metadata-collector build-log-collector
 	@echo "All Docker images built successfully for local development"
 
-# GPU health monitor (special case with DCGM variants)
+# GPU health monitor (special case with a DCGM version tag suffix)
 .PHONY: build-gpu-health-monitor
 build-gpu-health-monitor:
-	@echo "Building GPU health monitor (both DCGM variants)..."
+	@echo "Building GPU health monitor (DCGM 4.x)..."
 	$(MAKE) -C ../health-monitors/gpu-health-monitor image
-
-.PHONY: build-gpu-health-monitor-dcgm3
-build-gpu-health-monitor-dcgm3:
-	@echo "Building GPU health monitor with DCGM 3.x..."
-	$(MAKE) -C ../health-monitors/gpu-health-monitor image-dcgm3
 
 .PHONY: build-gpu-health-monitor-dcgm4
 build-gpu-health-monitor-dcgm4:
@@ -82,16 +77,11 @@ build-log-collector:
 publish-all: publish-gpu-health-monitor publish-syslog-health-monitor publish-metadata-collector publish-log-collector
 	@echo "All Docker images published successfully to registry"
 
-# GPU health monitor publish (special case with DCGM variants)
+# GPU health monitor publish (special case with a DCGM version tag suffix)
 .PHONY: publish-gpu-health-monitor
 publish-gpu-health-monitor:
-	@echo "Publishing GPU health monitor (both DCGM variants)..."
+	@echo "Publishing GPU health monitor (DCGM 4.x)..."
 	$(MAKE) -C ../health-monitors/gpu-health-monitor docker-publish
-
-.PHONY: publish-gpu-health-monitor-dcgm3
-publish-gpu-health-monitor-dcgm3:
-	@echo "Publishing GPU health monitor with DCGM 3.x..."
-	$(MAKE) -C ../health-monitors/gpu-health-monitor docker-publish-dcgm3
 
 .PHONY: publish-gpu-health-monitor-dcgm4
 publish-gpu-health-monitor-dcgm4:
@@ -184,10 +174,9 @@ help:
 	@echo "  publish-main-modules   - Build and push main module images"
 	@echo ""
 	@echo "Special GPU health monitor targets:"
-	@echo "  build-gpu-health-monitor       - Build both DCGM 3.x and 4.x GPU monitor images"
-	@echo "  build-gpu-health-monitor-dcgm3 - Build GPU monitor with DCGM 3.x"
+	@echo "  build-gpu-health-monitor       - Build the DCGM 4.x GPU monitor image"
 	@echo "  build-gpu-health-monitor-dcgm4 - Build GPU monitor with DCGM 4.x"
-	@echo "  publish-gpu-health-monitor     - Publish both DCGM variants"
+	@echo "  publish-gpu-health-monitor     - Publish the DCGM 4.x GPU monitor image"
 	@echo ""
 	@echo "Individual module targets:"
 	@echo "  build-<module-name>    - Build specific module locally"

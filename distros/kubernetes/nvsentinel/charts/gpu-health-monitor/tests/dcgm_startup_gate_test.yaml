@@ -15,7 +15,6 @@
 suite: DCGM startup gate
 templates:
   - templates/daemonset-dcgm-4.x.yaml
-  - templates/daemonset-dcgm-3.x.yaml
   - templates/configmap.yaml
 tests:
   - it: is disabled by default
@@ -54,8 +53,8 @@ tests:
           path: spec.template.spec.initContainers[0].image
           value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-4.x
 
-  - it: uses the external hostengine endpoint with the 3.x image
-    template: templates/daemonset-dcgm-3.x.yaml
+  - it: uses the external hostengine endpoint with the 4.x image
+    template: templates/daemonset-dcgm-4.x.yaml
     set:
       global.platformConnectorAuth.enabled: false
       dcgm.mode: external-hostengine
@@ -69,7 +68,7 @@ tests:
           value: 192.0.2.10:6666
       - equal:
           path: spec.template.spec.initContainers[0].image
-          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-3.x
+          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-4.x
 
       - equal:
           path: spec.template.spec.initContainers[0].args[5]

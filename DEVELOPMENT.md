@@ -341,7 +341,7 @@ make docker-platform-connectors          # Build platform connectors locally
 make docker-publish-platform-connectors  # Build and push to registry
 
 # Special cases
-make docker-gpu-health-monitor            # Both DCGM 3.x and 4.x versions locally
+make docker-gpu-health-monitor            # DCGM 4.x image locally
 make docker-log-collector                 # Container-only module (shell + Python)
 ```
 
@@ -380,7 +380,7 @@ make -C health-events-analyzer docker-build-local               # Local build, n
 make -C health-events-analyzer docker-publish                   # CI build
 
 # Python module (specialized patterns)
-make -C health-monitors/gpu-health-monitor docker-build-dcgm3  # DCGM 3.x local
+make -C health-monitors/gpu-health-monitor docker-build-dcgm4   # DCGM 4.x local
 make -C health-monitors/gpu-health-monitor docker-publish-dcgm4 # DCGM 4.x CI
 
 # Container-only module (shell + Python)
@@ -402,9 +402,8 @@ make -C platform-connectors docker-build-local                  # Local, no remo
 make -C platform-connectors docker-publish                      # CI/production
 
 # Python module (specialized patterns)
-make -C health-monitors/gpu-health-monitor docker-build-dcgm3  # DCGM 3.x local
 make -C health-monitors/gpu-health-monitor docker-build-dcgm4  # DCGM 4.x local
-make -C health-monitors/gpu-health-monitor docker-publish     # Push both versions
+make -C health-monitors/gpu-health-monitor docker-publish     # Push the DCGM 4.x image
 
 # Container-only module (shell + Python)
 make -C log-collector docker-build                 # Both log-collector and file-server-cleanup
@@ -456,7 +455,6 @@ make docker-all
 
 # Images will be tagged like:
 # ghcr.io/your-github-username/syslog-health-monitor:main
-# ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-3.x
 # ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-4.x
 ```
 
@@ -1262,7 +1260,6 @@ make -C docker build-main-modules     # Build all non-health-monitor images
 # Individual module targets (delegates to module Makefiles)
 make -C docker build-syslog-health-monitor          # Calls module's docker-build
 make -C docker build-csp-health-monitor             # Calls module's docker-build
-make -C docker build-gpu-health-monitor-dcgm3       # Calls module's docker-build-dcgm3
 make -C docker build-gpu-health-monitor-dcgm4       # Calls module's docker-build-dcgm4
 make -C docker build-platform-connectors            # Calls module's docker-build
 make -C docker build-health-events-analyzer         # Calls module's docker-build
@@ -1424,7 +1421,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 # Build for local testing (loads into local Docker daemon)
 make -C docker build-syslog-health-monitor           # Individual module
 make -C docker build-all                          # All modules
-make -C health-monitors/gpu-health-monitor docker-build-dcgm3  # Specific variant
+make -C health-monitors/gpu-health-monitor docker-build-dcgm4  # Specific variant
 
 # Test the built images locally
 # Test the built images locally
@@ -1442,7 +1439,7 @@ export CI_COMMIT_REF_NAME="main"
 # Build and push directly to registry (standardized patterns)
 make -C docker publish-syslog-health-monitor         # Individual module
 make -C docker publish-all                        # All modules
-make -C health-monitors/gpu-health-monitor docker-publish  # Both DCGM variants
+make -C health-monitors/gpu-health-monitor docker-publish  # DCGM 4.x image
 ```
 
 **Development vs CI Behavior:**

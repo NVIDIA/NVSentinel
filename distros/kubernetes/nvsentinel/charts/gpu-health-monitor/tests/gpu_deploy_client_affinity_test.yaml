@@ -19,32 +19,10 @@
 suite: gpu.deploy.client affinity
 templates:
   - templates/daemonset-dcgm-4.x.yaml
-  - templates/daemonset-dcgm-3.x.yaml
   - templates/configmap.yaml
 tests:
   - it: requires gpu.deploy.client to be true or absent in embedded-mode with DCGM 4.x
     template: templates/daemonset-dcgm-4.x.yaml
-    set:
-      global.platformConnectorAuth.enabled: false
-      dcgm.mode: embedded-mode
-      runtimeClassName: nvidia
-    asserts:
-      - equal:
-          path: spec.template.spec.affinity
-          value:
-            nodeAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                nodeSelectorTerms:
-                  - matchExpressions:
-                      - key: nvidia.com/gpu.deploy.client
-                        operator: In
-                        values: ["true"]
-                  - matchExpressions:
-                      - key: nvidia.com/gpu.deploy.client
-                        operator: DoesNotExist
-
-  - it: requires gpu.deploy.client to be true or absent in embedded-mode with DCGM 3.x
-    template: templates/daemonset-dcgm-3.x.yaml
     set:
       global.platformConnectorAuth.enabled: false
       dcgm.mode: embedded-mode
@@ -139,14 +117,6 @@ tests:
 
   - it: renders no affinity in operator-service mode with DCGM 4.x
     template: templates/daemonset-dcgm-4.x.yaml
-    set:
-      global.platformConnectorAuth.enabled: false
-    asserts:
-      - notExists:
-          path: spec.template.spec.affinity
-
-  - it: renders no affinity in operator-service mode with DCGM 3.x
-    template: templates/daemonset-dcgm-3.x.yaml
     set:
       global.platformConnectorAuth.enabled: false
     asserts:

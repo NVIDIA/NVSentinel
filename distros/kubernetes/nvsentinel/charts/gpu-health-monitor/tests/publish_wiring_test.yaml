@@ -15,14 +15,9 @@
 suite: direct publishing wiring
 release:
   namespace: nvsentinel
-# The publish wiring is duplicated across the two DCGM daemonset templates,
-# so every rendering case is asserted on BOTH: an edit that fixes one template
-# and misses the other must fail here. A render failure aborts the whole chart,
-# so the refusal case names one template.
 templates:
-  - templates/daemonset-dcgm-3.x.yaml
   - templates/daemonset-dcgm-4.x.yaml
-  # Rendered too because the templates above checksum-annotate it.
+  # Rendered too because the template above checksum-annotates it.
   - templates/configmap.yaml
 set:
   global.platformConnectorAuth.enabled: true
@@ -34,9 +29,7 @@ tests:
   # with the socket token and no HEALTH_PUBLISH_* env, CA volume or
   # publisher pod label.
   - it: renders no direct-publishing wiring on the default socket path
-    templates:
-      - templates/daemonset-dcgm-3.x.yaml
-      - templates/daemonset-dcgm-4.x.yaml
+    template: templates/daemonset-dcgm-4.x.yaml
     asserts:
       - contains:
           path: spec.template.spec.volumes
@@ -56,9 +49,7 @@ tests:
 
   # Direct mode presents the socket token from its usual mount.
   - it: wires target, token and CA in deployment mode
-    templates:
-      - templates/daemonset-dcgm-3.x.yaml
-      - templates/daemonset-dcgm-4.x.yaml
+    template: templates/daemonset-dcgm-4.x.yaml
     set:
       publishTo: deployment
     asserts:
@@ -95,9 +86,7 @@ tests:
   # The explicitly named insecure development mode swaps the CA file for
   # HEALTH_PUBLISH_INSECURE and renders no cert resources.
   - it: swaps to HEALTH_PUBLISH_INSECURE in insecure development mode
-    templates:
-      - templates/daemonset-dcgm-3.x.yaml
-      - templates/daemonset-dcgm-4.x.yaml
+    template: templates/daemonset-dcgm-4.x.yaml
     set:
       publishTo: deployment
       global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode
