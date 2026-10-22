@@ -73,7 +73,7 @@ This ADR adds the missing controls to node-drainer and fault-remediation, with o
    - The outcome is `stop: true` or a `method`. `BuiltIn` is the eviction by node-drainer. `Custom` is the custom drain CR.
    - A `BuiltIn` outcome can set its own `userNamespaces` or `podDrainPolicies`. They replace the top-level list for the events that use the rule set. The top-level lists are the default, and they are not deprecated.
    - An event that no rule set matches uses `Custom` when the custom drain is enabled and not scoped, and `BuiltIn` with the top-level lists otherwise. The custom drain is scoped when `customDrain.nodeSelector` is set or a rule set selects `Custom`, as `customDrain.nodeSelector` scopes it at this time. Without `ruleSets`, the result is the same as at this time.
-   - node-drainer selects the method one time for each [quarantine session](#quarantine-session), when it starts the first drain of the session. Each later event of the session uses the same method and rule set, but can still stop. node-drainer records the rule set, the method, and the scope on the status of each event.
+   - node-drainer selects the method one time for each [quarantine session](#quarantine-session), when it starts the first drain of the session. Each later event of the session uses the same method and rule set, but can still stop. node-drainer records the rule set, the method or the stop, and the scope on the status of each event.
    - `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) is deprecated. It continues to work as a `Custom` rule set with the lowest priority.
 5. **fault-remediation:** add `ruleSets` with the `remediation` outcome.
    - The outcome is `stop: true` or an `action` from `maintenance.actions`. No match gives the action of the event.
@@ -293,16 +293,16 @@ customDrain:
 
 1. `drainOverrides.skip` on the event applies first, as it does at this time. node-drainer marks the drain `AlreadyDrained` and does not evaluate the rule sets, so remediation continues. This is different from `stop: true`, which also stops remediation. An override on one event is more specific than a rule set. `drainOverrides.force` does not select `stop` or the method. It applies on the `BuiltIn` path, as it does at this time.
 2. If the winning rule set gives `stop: true`, node-drainer stops the drain for the event (see **Stop** below). An event can stop when another event of the session already drains the node.
-3. If another event of the [quarantine session](#quarantine-session) has a recorded method (`BuiltIn` or `Custom`), the event uses that method and the rule set of that record, so the pod policies are also the same. The drain scope still comes from the event.
+3. If another event of the [quarantine session](#quarantine-session) has a recorded method, the event uses that method and the rule set of that record, so the pod policies are also the same. The drain scope still comes from the event.
 4. Otherwise, the winning rule set gives the method. For `BuiltIn`, the pod policies are those of the rule set, or the top-level lists if the rule set has none. The winner can be the `custom-drain-node-selector` rule set, which node-drainer makes from the deprecated `customDrain.nodeSelector` (see [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector)).
 5. If no rule set matches, and the custom drain is enabled and not scoped, the method is `Custom`, as at this time (see [Custom drain scope](#custom-drain-scope)).
 6. Otherwise, the method is `BuiltIn` with the top-level lists.
 
-Thus, the first event of the session that node-drainer drains selects the method, and the later events of the session use it. Two events of a session do not drain the node with different methods, for example a custom drain CR for one event and the eviction by node-drainer for another. The exception is a drain that is in progress at the upgrade, which has no record and can change its method one time (see [Existing configurations](#existing-configurations)). A stopped event records `Stop`, which is not a drain method, so it does not select the method of the session.
+Thus, the first event of the session that node-drainer drains selects the method, and the later events of the session use it. Two events of a session do not drain the node with different methods, for example a custom drain CR for one event and the eviction by node-drainer for another. The exception is a drain that is in progress at the upgrade, which has no record and can change its method one time (see [Existing configurations](#existing-configurations)). A stopped event records `stopped` and no method, so it does not select the method of the session.
 
 node-drainer finds the other events in the datastore, as described in [Quarantine session](#quarantine-session), and not in the `quarantineHealthEvent` annotation. An event that recovers leaves the annotation, but its drain can still be in progress.
 
-node-drainer records the rule set, the method, and the drain scope (`Node`, or the entity for a partial drain) on the event status before it acts. When the event uses the method of another event, the record names that event in `reusedFrom`. Later passes for the same event read the record and do not evaluate the rule sets again. Thus, a label change during a drain, or between two events of a session, does not change the method. A cold start reads the record.
+node-drainer records the rule set, the method or the stop, and the drain scope (`Node`, or the entity for a partial drain) on the event status before it acts. When the event uses the method of another event, the record names that event in `reusedFrom`. Later passes for the same event read the record and do not evaluate the rule sets again. Thus, a label change during a drain, or between two events of a session, does not change the method. A cold start reads the record.
 
 The record does not copy the pod policies. A later pass reads the policies of the recorded rule set from the configuration. Thus, a configuration change during a drain changes the policies that apply to the pods that remain, as a change to the top-level lists does at this time. If the recorded rule set is no longer in the configuration, node-drainer does not evaluate the rule sets again, so the method does not change. For `BuiltIn`, it uses the top-level lists, logs a warning, and increments a metric. If both top-level lists are empty, as they are when the custom drain is not scoped (see [Custom drain scope](#custom-drain-scope)), node-drainer does not complete the drain, because it would evict no pods. It logs an error, increments the metric, and tries again with backoff. The node state stays `draining` until the rule set is in the configuration again or the [quarantine session](#quarantine-session) ends. node-drainer does the same for an event that uses the method of another event, when the rule set of that record is no longer in the configuration.
 
@@ -519,9 +519,10 @@ When the [quarantine session](#quarantine-session) ends, the existing removal of
 ```proto
 message DrainDecision {
   string ruleSet = 1;    // rule set that applies: the winner, or the rule set of the reusedFrom event. Empty for the default
-  string method = 2;     // BuiltIn | Custom | Stop
-  string scope = 3;      // Node, or the entity type of a partial drain
-  string reusedFrom = 4; // event of the session whose method this event uses; empty when this event selected it
+  string method = 2;     // BuiltIn | Custom; empty when stopped
+  bool stopped = 3;
+  string scope = 4;      // Node, or the entity type of a partial drain
+  string reusedFrom = 5; // event of the session whose method this event uses; empty when this event selected it
 }
 
 message RemediationDecision {
