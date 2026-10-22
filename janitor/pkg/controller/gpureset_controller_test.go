@@ -115,6 +115,19 @@ func draOperandPodLabels() []map[string]string {
 	}
 }
 
+// markJobFailed sets the terminal Failed condition the way the Job controller does: the API server requires a
+// startTime and a FailureTarget condition before it accepts Failed=True.
+func markJobFailed(job *batchv1.Job) {
+	now := metav1.Now()
+	job.Status.StartTime = &now
+	job.Status.Failed = 1
+	for _, condType := range []batchv1.JobConditionType{batchv1.JobFailureTarget, batchv1.JobFailed} {
+		job.Status.Conditions = append(job.Status.Conditions, batchv1.JobCondition{
+			Type: condType, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded", LastTransitionTime: now,
+		})
+	}
+}
+
 var _ = Describe("GPUReset Controller", func() {
 	var reconciler *GPUResetReconciler
 	var mgrClient client.Client
@@ -1193,7 +1206,7 @@ var _ = Describe("GPUReset Controller", func() {
 			var createdJob batchv1.Job
 			jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
 			Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
-			createdJob.Status.Failed = 1
+			markJobFailed(&createdJob)
 			Expect(k8sClient.Status().Update(ctx, &createdJob)).To(Succeed())
 
 			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string, _ []gpuservices.AppSpec) (bool, error) {
@@ -1350,6 +1363,14 @@ var _ = Describe("GPUReset Controller", func() {
 			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
+
+			// envtest has no garbage collector: a reset job created by a test outlives its GPUReset.
+			job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+				Name:      reconciler.expectedJobName(&v1alpha1.GPUReset{Name: resetName}),
+				Namespace: reconciler.Config.ResolvedJobTemplate.Namespace,
+			}}
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, job,
+				client.PropagationPolicy(metav1.DeletePropagationBackground)))).To(Succeed())
 		})
 
 		It("should short-circuit and remove finalizer immediately if no services are configured", func() {
@@ -1461,6 +1482,76 @@ var _ = Describe("GPUReset Controller", func() {
 			}, "10s", "250ms").Should(Succeed())
 
 			By("Verifying the services are re-enabled")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &updatedNode)).To(Succeed())
+			Expect(updatedNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("true"))
+		})
+
+		It("should wait for a running reset job before restoring services on deletion", func() {
+			reset := &v1alpha1.GPUReset{
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
+
+			By("Reconciling until the reset job exists")
+			var updatedReset v1alpha1.GPUReset
+			var jobKey types.NamespacedName
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCreated))).To(BeTrue())
+
+				jobKey = types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
+				g.Expect(reconciler.Get(ctx, jobKey, &batchv1.Job{})).To(Succeed())
+			}, "10s", "250ms").Should(Succeed())
+
+			By("Deleting the GPUReset while the job is still running")
+			Expect(k8sClient.Delete(ctx, reset)).To(Succeed())
+			reconciler.checkPodsReadyFn = func(context.Context, string, []gpuservices.AppSpec) (bool, error) {
+				return true, nil
+			}
+
+			By("Verifying the finalizer holds and the services stay disabled")
+			Consistently(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(controllerutil.ContainsFinalizer(&updatedReset, gpuResetFinalizer)).To(BeTrue())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Terminating))).To(BeFalse())
+
+				var currentNode corev1.Node
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &currentNode)).To(Succeed())
+				g.Expect(currentNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("false"))
+			}, "2s", "250ms").Should(Succeed())
+
+			By("Failing one pod: the job retries, so the finalizer must keep waiting")
+			var job batchv1.Job
+			Expect(k8sClient.Get(ctx, jobKey, &job)).To(Succeed())
+			job.Status.Failed = 1
+			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+			Consistently(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(controllerutil.ContainsFinalizer(&updatedReset, gpuResetFinalizer)).To(BeTrue())
+			}, "1s", "250ms").Should(Succeed())
+
+			By("Finishing the reset job")
+			Expect(k8sClient.Get(ctx, jobKey, &job)).To(Succeed())
+			job.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+
+			By("Reconciling until the resource is deleted and the services are re-enabled")
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &updatedReset))).To(BeTrue())
+			}, "10s", "250ms").Should(Succeed())
+
+			var updatedNode corev1.Node
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &updatedNode)).To(Succeed())
 			Expect(updatedNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("true"))
 		})
@@ -2322,7 +2413,7 @@ var _ = Describe("GPUReset Controller", func() {
 			var createdJob batchv1.Job
 			jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
 			Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
-			createdJob.Status.Failed = 1
+			markJobFailed(&createdJob)
 			Expect(k8sClient.Status().Update(ctx, &createdJob)).To(Succeed())
 
 			By("Waiting for workflow to complete")

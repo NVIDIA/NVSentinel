@@ -1984,6 +1984,16 @@ event-exporter:
   #   -n nvsentinel
   oidcSecretName: "event-exporter-oidc-secret"
 
+  # Extra environment variables to add to the event-exporter container.
+  # Use this to route sink and OIDC token requests through an HTTP proxy.
+  # Example:
+  # extraEnv:
+  #   - name: HTTPS_PROXY
+  #     value: "http://proxy.example.com:3128"
+  #   - name: NO_PROXY
+  #     value: ".svc,.cluster.local"
+  extraEnv: []
+
   # Event exporter configuration
   # Structured YAML configuration that gets converted to TOML format in the ConfigMap
   exporter:
