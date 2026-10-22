@@ -22,8 +22,8 @@
 
 # PyTorch version determines CUDA runtime version - must match cluster's GPU driver
 # See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
-#   26.04-py3 = CUDA 13.2.1 (Ubuntu 24.04, Python 3.12)
-ARG PYTORCH_VERSION=26.04-py3
+#   26.09-py3 = CUDA 13.4.1, NCCL 2.31.2 (Ubuntu 24.04, Python 3.12)
+ARG PYTORCH_VERSION=26.09-py3@sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6
 ARG VERSION="0.1.0"
 
 # =============================================================================
@@ -34,7 +34,7 @@ FROM public.ecr.aws/docker/library/python:3.13-trixie@sha256:4a0820d8b1b1a1e012a
 ARG VERSION
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install poetry==2.3.3 poetry-plugin-export==1.10.0
+    pip install poetry==2.5.1 poetry-plugin-export==1.10.1
 
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1 \
@@ -63,7 +63,9 @@ RUN poetry export --format requirements.txt --output constraints.txt --without-h
 # - CUDA toolkit and drivers
 # - PyTorch distributed with NCCL backend
 # =============================================================================
-# Not digest-pinned: the tag is a build-matrix parameter (see Makefile) used to produce multiple image variants.
+# Digest-pinned through the ARG value (tag@sha256). The tag is a build-matrix parameter (see
+# Makefile) used to produce image variants. Dependabot cannot update an ARG, so update the tag
+# and the digest together by hand.
 FROM nvcr.io/nvidia/pytorch:${PYTORCH_VERSION} AS runtime
 
 ARG VERSION

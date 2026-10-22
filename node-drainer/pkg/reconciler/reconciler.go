@@ -100,7 +100,7 @@ func NewReconciler(
 	if cfg.TomlConfig.CustomDrain.Enabled {
 		var err error
 
-		customDrainClient, err = customdrain.NewClient(cfg.TomlConfig.CustomDrain, dynamicClient, restMapper)
+		customDrainClient, err = customdrain.NewClient(cfg.TomlConfig.CustomDrain, dynamicClient, restMapper, dryRunEnabled)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize custom drain client: %w", err)
 		}
@@ -1309,7 +1309,8 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 
 	slog.InfoContext(ctx, "Created custom drain CR",
 		"node", nodeName,
-		"crName", crName)
+		"crName", crName,
+		"dryRun", r.DryRun)
 
 	span.SetAttributes(
 		attribute.String("node_drainer.custom_cr.name", crName),
