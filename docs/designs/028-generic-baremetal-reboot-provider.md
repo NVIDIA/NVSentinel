@@ -134,11 +134,11 @@ spec:
 |--------|-------|-----------|
 | `privileged` | `true` | Required for `chroot` syscall and reboot |
 | `hostPath: /` | mounted at `/host` | Access to host filesystem for `chroot` |
-| `backoffLimit` | `0` | Reboot kills the pod — retrying would double-reboot |
+| `backoffLimit` | `0` | Stops the Job controller from creating a replacement pod. It does not stop the kubelet from starting the same pod again after the node boots; a boot ID check in the reboot command prevents that second reboot ([#2077](https://github.com/NVIDIA/NVSentinel/issues/2077)) |
 | `ttlSecondsAfterFinished` | `3600` | Auto-cleanup after 1h |
 | `tolerations` | `[{operator: Exists}]` | Target node is likely cordoned/tainted |
-| `restartPolicy` | `Never` | Do not restart after reboot |
-| Image | `busybox:1.37` | Only needs `chroot` and the host `reboot` command |
+| `restartPolicy` | `Never` | Stops the kubelet from restarting a terminated container. The reboot kills the container before it reports a terminal status, so this setting alone does not stop a second run after boot ([#2077](https://github.com/NVIDIA/NVSentinel/issues/2077)) |
+| Image | `busybox:1.37` | Only needs `sh`, `cat`, `chroot` and the host `reboot` command. The boot ID check needs `sh` and `cat` ([#2077](https://github.com/NVIDIA/NVSentinel/issues/2077)) |
 
 #### IsNodeReady
 
@@ -162,7 +162,7 @@ flowchart TD
 
 A changed `bootID` is definitive proof that the node rebooted — unlike `lastTransitionTime`, it cannot change due to network blips or other non-reboot events. If the reboot never happened, `bootID` stays the same and the janitor controller will eventually time out.
 
-Once a successful reboot is confirmed, the Job is deleted to avoid a lingering "Failed" Job (the pod is killed by the reboot, so the Job always ends in a failed state).
+Once a successful reboot is confirmed, the Job is deleted to avoid a lingering "Failed" Job (the reboot kills the pod, so the Job usually ends in a failed state). If the kubelet starts the pod again after boot, the boot ID check skips the reboot and the Job can end Complete ([#2077](https://github.com/NVIDIA/NVSentinel/issues/2077)).
 
 ### 3. Helm Configuration
 
