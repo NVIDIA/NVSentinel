@@ -182,7 +182,7 @@ If the component cannot name the label keys that a rule reads, the informer keep
 |---|---|
 | `"scheduler" in node.metadata.labels && node.metadata.labels["scheduler"] == "slurm"` | The `scheduler` label |
 | `"example.com/team" in node.metadata.annotations` | The `example.com/team` annotation |
-| `node.spec.unschedulable` | No more. The spec is always kept |
+| `node.spec.unschedulable` | The spec is always kept |
 | `node.metadata.labels.exists(k, k.startsWith("example.com/"))` | All labels |
 | `size(node.metadata.labels) > 0` | All labels |
 | `node.metadata.labels[node.metadata.name]` | All labels. The key is not a literal |
