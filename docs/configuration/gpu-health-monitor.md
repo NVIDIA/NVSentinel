@@ -40,6 +40,9 @@ GPU Health Monitor starts an in-process DCGM hostengine and exposes it to pod-lo
 
 ## DCGM Version Selection
 
+> [!WARNING]
+> **Deprecated:** DCGM 3.x support is deprecated and will be removed no later than v1.32.0. DCGM 3.x is end-of-life and gets no more patches. After the removal, a node that runs DCGM 3.x runs no GPU Health Monitor pod, and NVSentinel does not detect GPU faults on that node. To find these nodes, run `kubectl get nodes -l nvsentinel.dgxc.nvidia.com/dcgm.version=3.x`. Upgrade DCGM on these nodes to 4.x. To object, open a GitHub issue before the feedback window closes. Refer to [GPU Health Monitor: DCGM 3.x Support Removal](../deprecations/gpu-health-monitor-dcgm-3-support-removal.md) for the reason and the timeline.
+
 Use a GPU Health Monitor image from the same DCGM major version as its hostengine. The node `nvsentinel.dgxc.nvidia.com/dcgm.version` label selects the 3.x or 4.x monitor image.
 
 In `operator-service` mode, labeler derives this label from the DCGM pod image. In `external-hostengine` and `embedded-mode`, the cluster operator supplies the label.

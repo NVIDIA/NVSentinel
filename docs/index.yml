@@ -183,3 +183,10 @@ navigation:
         path: runbooks/gpu-thermal-margin.md
       - page: Stale Events
         path: runbooks/stale-events.md
+
+  - section: Deprecations
+    contents:
+      - page: Deprecations Overview
+        path: deprecations/README.md
+      - page: "GPU Health Monitor: DCGM 3.x Support Removal"
+        path: deprecations/gpu-health-monitor-dcgm-3-support-removal.md
