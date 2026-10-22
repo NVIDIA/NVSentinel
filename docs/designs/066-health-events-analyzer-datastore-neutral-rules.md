@@ -56,7 +56,7 @@ aggregate = "count"
 - `history.window` is a duration. The window is `[t − window, t]` on `generatedTimestamp`, where `t` is the trigger's time.
 - `history.filter` is CEL over a stored event `e` and the trigger `event`. `history.aggregate` selects the primitive, and its parameters sit in the same table.
 - `match` is CEL over the aggregate result and `event`. An error in `match` means no match and increments an error metric; it never fails open.
-- A rule without `[rules.history]` decides on the trigger alone through `match`. XID74Reg2Bit13Set uses this form and needs no query.
+- A rule without `[rules.history]` decides on the trigger alone. Its `match` sees only `event`, and a reference to an aggregate result fails validation at load. XID74Reg2Bit13Set uses this form and needs no query.
 
 ### CEL vocabulary
 
@@ -64,7 +64,9 @@ Extend `commons/pkg/celevent` additively, so that the analyzer, platform-connect
 
 - Add `generatedTimestamp`, `processingStrategy` and `entitiesImpacted`, plus stored status on `e` only (`e.status.faultRemediated`).
 - Add entity helpers: `entities(type)` (all values of a type), `entity(type)` (the first value or null), and `register(name)` (the 32-character `REG0`–`REG6` string; the last value wins on duplicates).
-- Missing booleans read as `false`, a missing strategy as `UNSPECIFIED`, and a missing entity as null. One mapping in the store-client defines this for both datastores.
+- Missing booleans read as `false`, a missing strategy as `UNSPECIFIED`, and a missing entity as null.
+- `errorCode[0]` reads as null when `errorCode` is missing or empty, on `e` and on `event`. Comparisons follow CEL's null semantics: `==` and `in` are false, and `!=` is true. SQL renders `!=` as `IS DISTINCT FROM`; MongoDB's `$ne` already matches a missing element.
+- One mapping in the store-client defines all of this for both datastores.
 
 ### Compiling the filter
 
@@ -117,7 +119,7 @@ The derived event and the metric names do not change. `mongo_query_execution_dur
 ### Testing
 
 - Compiler: golden `ToMongo()` and `ToSQL()` output for each supported construct, and a load error for each unsupported one.
-- Conformance: one table of primitive cases (absent fields, duplicate registers, sticky XIDs, empty windows) runs against an in-memory reference store, MongoDB and PostgreSQL in CI.
+- Conformance: one table of primitive cases (absent fields, missing and empty `errorCode`, duplicate registers, sticky XIDs, empty windows) runs against an in-memory reference store, MongoDB and PostgreSQL in CI.
 - Equivalence: replay a recorded MongoDB dataset, in the style of #1901, through the `stage` and portable forms of every default rule. Zero differences are required, except the two solo-rule changes in Notes.
 - E2E: portable rule tests drop the `mongodb` build tag, and the 9 default rules without an E2E test get one.
 - Benchmarks: events/s per worker, ms per event, queries per event and database CPU per event, before and after, on both datastores, in the format of [#1912](https://github.com/NVIDIA/NVSentinel/pull/1912) and [#1913](https://github.com/NVIDIA/NVSentinel/pull/1913).
