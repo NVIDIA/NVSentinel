@@ -1,13 +1,14 @@
 # GPU Health Monitor: DCGM 3.x Support Removal
 
-DCGM 3.x support in GPU Health Monitor is deprecated. It will be removed no later than v1.32.0.
+DCGM 3.x support in GPU Health Monitor is deprecated. It will be removed no later than 16 November 2026.
 
 | Field | Value |
 |---|---|
 | Status | Deprecated |
 | Component | GPU Health Monitor |
 | Feedback window closes | 9 November 2026 |
-| Removal | No later than v1.32.0 |
+| Removal | No later than 16 November 2026 |
+| Removal PR | [PR #2102](https://github.com/NVIDIA/NVSentinel/pull/2102) |
 
 ## Reason
 
@@ -17,30 +18,52 @@ GPU Health Monitor ships one DaemonSet and one image for each DCGM major version
 
 ## Impact
 
-After the removal, a node that runs DCGM 3.x runs no GPU Health Monitor pod, and nothing reports an error. NVSentinel does not detect GPU faults on that node. Nodes that run DCGM 4.x are not affected.
+After the removal, NVSentinel will not detect faults on nodes running DCGM 3.x. Nodes running DCGM 4.x are not affected.
 
 ## Required Action
 
-1. Find the nodes that run DCGM 3.x:
+Find the nodes that run DCGM 3.x:
+
+```bash
+kubectl get nodes -l nvsentinel.dgxc.nvidia.com/dcgm.version=3.x
+```
+
+Upgrade DCGM on these nodes to 4.x before you upgrade NVSentinel to the release that removes DCGM 3.x support. The steps depend on `global.dcgm.mode`.
+
+### Operator Service Mode
+
+In `operator-service` mode, the GPU Operator runs DCGM. Make the change in the GPU Operator, not in NVSentinel. Set the GPU Operator `dcgm.version` Helm value to a DCGM 4.x image, or upgrade to a GPU Operator release that ships DCGM 4.x. Labeler reads the new DCGM pod image and changes the node label to `4.x`.
+
+### External Hostengine Mode
+
+In `external-hostengine` mode, you manage the hostengine.
+
+1. Upgrade the hostengine on the node to DCGM 4.x.
+2. Change the node label to `4.x`:
 
    ```bash
-   kubectl get nodes -l nvsentinel.dgxc.nvidia.com/dcgm.version=3.x
+   kubectl label node <node-name> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x --overwrite
    ```
 
-2. Upgrade DCGM on these nodes to 4.x before you upgrade to the release that removes DCGM 3.x support. In `operator-service` mode, upgrade the DCGM component of the GPU Operator.
-3. If you cannot upgrade DCGM, stay on the last NVSentinel release that supports DCGM 3.x, and raise an objection.
+The monitor image must match the major version of the hostengine. Change the label immediately after the hostengine upgrade.
 
-## Objections
+### Embedded Mode
 
-Before the feedback window closes, open a [GitHub issue](https://github.com/NVIDIA/NVSentinel/issues/new/choose) if your deployment depends on DCGM 3.x. Give the DCGM 3.x version, the environment, and the reason that the nodes cannot move to DCGM 4.x.
+In `embedded-mode`, the GPU Health Monitor image contains DCGM. Change the node label to `4.x`, and GPU Health Monitor then runs its DCGM 4.x image on the node:
 
-The maintainers decide whether an objection blocks the removal. If it does, they extend the feedback window or keep DCGM 3.x support.
+```bash
+kubectl label node <node-name> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x --overwrite
+```
+
+## Feedback
+
+If you have any concerns, please provide feedback in [PR #2102](https://github.com/NVIDIA/NVSentinel/pull/2102) before 9 November 2026.
 
 ## Timeline
 
-| Step | Release | Expected date |
-|---|---|---|
-| The feedback window closes | — | 9 November 2026 |
-| The removal ships, if there is no blocking objection | No later than v1.32.0 | No later than 16 November 2026 |
+| Step | Date |
+|---|---|
+| The feedback window closes | 9 November 2026 |
+| The removal in [PR #2102](https://github.com/NVIDIA/NVSentinel/pull/2102) ships | No later than 16 November 2026 |
 
 The GPU Health Monitor configuration page shows a [deprecation warning](../configuration/gpu-health-monitor.md#dcgm-version-selection) until the removal ships.
