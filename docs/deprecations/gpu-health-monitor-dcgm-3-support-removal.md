@@ -1,13 +1,12 @@
 # GPU Health Monitor: DCGM 3.x Support Removal
 
-DCGM 3.x support in GPU Health Monitor is deprecated. It will be removed no later than 16 November 2026.
+DCGM 3.x support in GPU Health Monitor is deprecated. It will be removed on 30 November 2026.
 
 | Field | Value |
 |---|---|
 | Status | Deprecated |
 | Component | GPU Health Monitor |
-| Feedback window closes | 9 November 2026 |
-| Removal | No later than 16 November 2026 |
+| Removal | 30 November 2026 |
 | Removal PR | [PR #2102](https://github.com/NVIDIA/NVSentinel/pull/2102) |
 
 ## Reason
@@ -57,13 +56,4 @@ kubectl label node <node-name> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x --ove
 
 ## Feedback
 
-If you have any concerns, please provide feedback in [PR #2102](https://github.com/NVIDIA/NVSentinel/pull/2102) before 9 November 2026.
-
-## Timeline
-
-| Step | Date |
-|---|---|
-| The feedback window closes | 9 November 2026 |
-| The removal in [PR #2102](https://github.com/NVIDIA/NVSentinel/pull/2102) ships | No later than 16 November 2026 |
-
-The GPU Health Monitor configuration page shows a [deprecation warning](../configuration/gpu-health-monitor.md#dcgm-version-selection) until the removal ships.
+If you have any concerns, please provide feedback in [PR #2102](https://github.com/NVIDIA/NVSentinel/pull/2102).
