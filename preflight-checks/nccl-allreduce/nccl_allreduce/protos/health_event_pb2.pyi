@@ -151,7 +151,7 @@ class HealthEvent(_message.Message):
     processingStrategy: ProcessingStrategy
     id: str
     customRecommendedAction: str
-    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommendedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ..., quarantineOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., drainOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., processingStrategy: _Optional[_Union[ProcessingStrategy, str]] = ..., id: _Optional[str] = ..., customRecommendedAction: _Optional[str] = ...) -> None: ...
+    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: _Optional[bool] = ..., isHealthy: _Optional[bool] = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommendedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ..., quarantineOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., drainOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., processingStrategy: _Optional[_Union[ProcessingStrategy, str]] = ..., id: _Optional[str] = ..., customRecommendedAction: _Optional[str] = ...) -> None: ...
 
 class BehaviourOverrides(_message.Message):
     __slots__ = ("force", "skip")
@@ -159,7 +159,7 @@ class BehaviourOverrides(_message.Message):
     SKIP_FIELD_NUMBER: _ClassVar[int]
     force: bool
     skip: bool
-    def __init__(self, force: bool = ..., skip: bool = ...) -> None: ...
+    def __init__(self, force: _Optional[bool] = ..., skip: _Optional[bool] = ...) -> None: ...
 
 class HealthEventResource(_message.Message):
     __slots__ = ("spec", "status")

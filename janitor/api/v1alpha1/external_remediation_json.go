@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Excluded when controller-gen loads the package: the CRD for this type comes from
+// protoc-gen-crd, and controller-gen cannot build a schema from protobuf structs.
+//go:build !controllergen
+
 package v1alpha1
 
 import (
