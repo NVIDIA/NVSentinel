@@ -760,7 +760,12 @@ func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 		return false, nil
 	}
 
-	if r.coveredByActiveRemediationCR(ctx, groupConfig, remediationState) {
+	covered, err := r.coveredByActiveRemediationCR(ctx, groupConfig, remediationState)
+	if err != nil {
+		return false, fmt.Errorf("failed to evaluate active event %s: %w", activeEvent.Id, err)
+	}
+
+	if covered {
 		*sawRemediationSuccess = true
 	}
 
@@ -783,29 +788,34 @@ func (r *FaultRemediationReconciler) partialRecoveryGroupConfig(
 
 // coveredByActiveRemediationCR reports whether an equivalent maintenance CR that is in progress or
 // succeeded covers the event's remediation group. It reads the live CR status (not just annotation
-// membership), so a recorded CR that has since failed or been deleted does not count as coverage.
+// membership), so a recorded CR that has since failed or been deleted does not count as coverage. A CR that cannot
+// be read returns an error, so the label is not recomputed from an unknown state.
 func (r *FaultRemediationReconciler) coveredByActiveRemediationCR(
 	ctx context.Context,
 	groupConfig *common.EquivalenceGroupConfig,
 	remediationState *annotation.RemediationStateAnnotation,
-) bool {
+) (bool, error) {
 	if groupConfig == nil || remediationState == nil {
-		return false
+		return false, nil
 	}
 
 	statusChecker := r.Config.RemediationClient.GetStatusChecker()
 	if statusChecker == nil {
-		return false
+		return false, nil
 	}
 
 	for _, groupState := range common.FilterEquivalenceGroupStates(groupConfig, remediationState) {
-		state := statusChecker.GetCRState(ctx, groupState.ActionName, groupState.MaintenanceCR)
+		state, err := statusChecker.GetCRState(ctx, groupState.ActionName, groupState.MaintenanceCR)
+		if err != nil {
+			return false, err
+		}
+
 		if state == crstatus.CRStateInProgress || state == crstatus.CRStateSucceeded {
-			return true
+			return true, nil
 		}
 	}
 
-	return false
+	return false, nil
 }
 
 func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEvent, error) {
@@ -1802,7 +1812,11 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, 
 
 	groupStates := sortedEquivalenceGroupStates(common.FilterEquivalenceGroupStates(groupConfig, state))
 
-	decision, groupsToRemove := r.evaluateExistingCRs(ctx, statusChecker, groupStates, eventCreatedAt, nodeName)
+	decision, groupsToRemove, err := r.evaluateExistingCRs(ctx, statusChecker, groupStates, eventCreatedAt, nodeName)
+	if err != nil {
+		return existingCRDecision{}, err
+	}
+
 	if !decision.shouldCreate {
 		return decision, nil
 	}
@@ -1824,7 +1838,7 @@ func (r *FaultRemediationReconciler) evaluateExistingCRs(
 	groupStates []namedEquivalenceGroupState,
 	eventCreatedAt time.Time,
 	nodeName string,
-) (existingCRDecision, []string) {
+) (existingCRDecision, []string, error) {
 	var groupsToRemove []string
 
 	for _, groupState := range groupStates {
@@ -1834,9 +1848,13 @@ func (r *FaultRemediationReconciler) evaluateExistingCRs(
 			continue
 		}
 
-		decision := r.evaluateExistingCR(ctx, statusChecker, groupState, eventCreatedAt, nodeName)
+		decision, err := r.evaluateExistingCR(ctx, statusChecker, groupState, eventCreatedAt, nodeName)
+		if err != nil {
+			return existingCRDecision{}, nil, err
+		}
+
 		if !decision.shouldCreate {
-			return decision, nil
+			return decision, nil, nil
 		}
 
 		if decision.removeGroup {
@@ -1844,7 +1862,7 @@ func (r *FaultRemediationReconciler) evaluateExistingCRs(
 		}
 	}
 
-	return existingCRDecision{shouldCreate: true}, groupsToRemove
+	return existingCRDecision{shouldCreate: true}, groupsToRemove, nil
 }
 
 type existingCRDecision struct {
@@ -1863,26 +1881,30 @@ func (r *FaultRemediationReconciler) evaluateExistingCR(
 	groupState namedEquivalenceGroupState,
 	eventCreatedAt time.Time,
 	nodeName string,
-) existingCRDecision {
+) (existingCRDecision, error) {
 	crName := groupState.state.MaintenanceCR
-	crState := statusChecker.GetCRState(ctx, groupState.state.ActionName, crName)
+
+	crState, err := statusChecker.GetCRState(ctx, groupState.state.ActionName, crName)
+	if err != nil {
+		return existingCRDecision{}, err
+	}
 
 	switch crState {
 	case crstatus.CRStateInProgress:
 		slog.InfoContext(ctx, "CR exists and is in progress, waiting for terminal state",
 			"node", nodeName, "crName", crName)
 
-		return existingCRDecision{shouldCreate: false, crName: crName, inProgress: true}
+		return existingCRDecision{shouldCreate: false, crName: crName, inProgress: true}, nil
 	case crstatus.CRStateSucceeded:
-		return r.evaluateSucceededCR(ctx, groupState, eventCreatedAt, nodeName)
+		return r.evaluateSucceededCR(ctx, groupState, eventCreatedAt, nodeName), nil
 	case crstatus.CRStateNotFound, crstatus.CRStateFailed:
 		slog.InfoContext(ctx, "CR completed or failed, allowing retry", "node", nodeName, "crName", crName)
 
-		return existingCRDecision{shouldCreate: true, removeGroup: true}
+		return existingCRDecision{shouldCreate: true, removeGroup: true}, nil
 	default:
 		slog.WarnContext(ctx, "Unknown CR state, allowing retry", "node", nodeName, "crName", crName, "state", crState)
 
-		return existingCRDecision{shouldCreate: true, removeGroup: true}
+		return existingCRDecision{shouldCreate: true, removeGroup: true}, nil
 	}
 }
 

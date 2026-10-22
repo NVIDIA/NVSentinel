@@ -16,6 +16,7 @@ package crstatus
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -53,22 +54,30 @@ func NewCRStatusChecker(
 	}
 }
 
-// ShouldSkipCRCreation returns true if an existing CR should suppress creation of a new CR.
+// ShouldSkipCRCreation returns true if an existing CR should suppress creation of a new CR. A CR that cannot be
+// read suppresses creation, since it may still be running.
 func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
-	state := c.GetCRState(ctx, actionName, crName)
+	state, err := c.GetCRState(ctx, actionName, crName)
+	if err != nil {
+		return true
+	}
+
 	return state == CRStateInProgress || state == CRStateSucceeded
 }
 
-func (c *CRStatusChecker) GetCRState(ctx context.Context, actionName string, crName string) CRState {
+// GetCRState returns the state of a maintenance CR. A CR that does not exist is CRStateNotFound. Any other read
+// error is returned, because it says nothing about the CR: treating it as missing would let a second CR be created
+// for the node, and treating it as in progress would report the node as remediated.
+func (c *CRStatusChecker) GetCRState(ctx context.Context, actionName string, crName string) (CRState, error) {
 	resource, exists := c.remediationActions[actionName]
 	if !exists {
 		slog.ErrorContext(ctx, "No remediation configuration found for action", "action", actionName)
-		return CRStateNotFound
+		return CRStateNotFound, nil
 	}
 
 	if c.dryRun {
 		slog.InfoContext(ctx, "DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
-		return CRStateNotFound
+		return CRStateNotFound, nil
 	}
 
 	gvk := schema.GroupVersionKind{
@@ -85,18 +94,13 @@ func (c *CRStatusChecker) GetCRState(ctx context.Context, actionName string, crN
 	if err := c.client.Get(ctx, key, obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			slog.InfoContext(ctx, "CR not found, allowing create", "crName", crName, "gvk", gvk.String())
-			return CRStateNotFound
+			return CRStateNotFound, nil
 		}
 
-		// A failed read says nothing about the CR. Reporting it as missing would drop the recorded CR and create a
-		// second one for the node while the first may still be running, so the event waits and is retried instead.
-		slog.WarnContext(ctx, "Failed to get CR, treating it as in progress", "crName", crName, "gvk", gvk.String(),
-			"error", err)
-
-		return CRStateInProgress
+		return "", fmt.Errorf("failed to get %s %s: %w", gvk.Kind, crName, err)
 	}
 
-	return c.checkCondition(obj, resource)
+	return c.checkCondition(obj, resource), nil
 }
 
 func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resource config.MaintenanceResource) CRState {

@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -137,34 +138,36 @@ func TestGetCRState_GetError(t *testing.T) {
 			CompleteConditionType: "NodeReady",
 		},
 	}
+	gr := schema.GroupResource{Group: "janitor.dgxc.nvidia.com", Resource: "rebootnodes"}
 
 	tests := []struct {
-		name       string
-		getErr     error
-		expected   CRState
-		expectSkip bool
+		name        string
+		getErr      error
+		expected    CRState
+		expectErr   bool
+		expectSkip  bool
 	}{
 		{
 			name:     "not found allows create",
-			getErr:   apierrors.NewNotFound(schema.GroupResource{Group: "janitor.dgxc.nvidia.com", Resource: "rebootnodes"}, "maintenance-node-1"),
+			getErr:   apierrors.NewNotFound(gr, "maintenance-node-1"),
 			expected: CRStateNotFound,
 		},
 		{
-			name:       "timeout keeps the CR in progress",
+			name:       "timeout is returned",
 			getErr:     apierrors.NewTimeoutError("etcdserver: request timed out", 1),
-			expected:   CRStateInProgress,
+			expectErr:  true,
 			expectSkip: true,
 		},
 		{
-			name:       "forbidden keeps the CR in progress",
-			getErr:     apierrors.NewForbidden(schema.GroupResource{Group: "janitor.dgxc.nvidia.com", Resource: "rebootnodes"}, "maintenance-node-1", errors.New("denied")),
-			expected:   CRStateInProgress,
+			name:       "forbidden is returned",
+			getErr:     apierrors.NewForbidden(gr, "maintenance-node-1", errors.New("denied")),
+			expectErr:  true,
 			expectSkip: true,
 		},
 		{
-			name:       "connection error keeps the CR in progress",
+			name:       "connection error is returned",
 			getErr:     errors.New("dial tcp 10.0.0.1:443: connect: connection refused"),
-			expected:   CRStateInProgress,
+			expectErr:  true,
 			expectSkip: true,
 		},
 	}
@@ -178,7 +181,16 @@ func TestGetCRState_GetError(t *testing.T) {
 			}).Build()
 			checker := NewCRStatusChecker(c, cfg, false)
 
-			assert.Equal(t, tt.expected, checker.GetCRState(context.Background(), "reboot", "maintenance-node-1"))
+			state, err := checker.GetCRState(context.Background(), "reboot", "maintenance-node-1")
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.getErr)
+				assert.False(t, apierrors.IsNotFound(err), "a read error must never look like a missing CR")
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expected, state)
+			}
+
 			assert.Equal(t, tt.expectSkip, checker.ShouldSkipCRCreation(context.Background(), "reboot", "maintenance-node-1"))
 		})
 	}
