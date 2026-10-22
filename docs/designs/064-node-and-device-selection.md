@@ -298,7 +298,7 @@ customDrain:
 5. If no rule set matches, and the custom drain is enabled and not scoped, the method is `Custom`, as at this time (see [Custom drain scope](#custom-drain-scope)).
 6. Otherwise, the method is `BuiltIn` with the top-level lists.
 
-Thus, the first event of the session that node-drainer drains selects the method, and the later events of the session use it. Two events of a session do not drain the node with different methods, for example a custom drain CR for one event and the eviction by node-drainer for another. The exception is a drain that is in progress at the upgrade, which has no record and can change its method one time (see the existing configurations in [Pod policies for each rule set](#pod-policies-for-each-rule-set)). A stopped event records `Stop`, which is not a drain method, so it does not select the method of the session.
+Thus, the first event of the session that node-drainer drains selects the method, and the later events of the session use it. Two events of a session do not drain the node with different methods, for example a custom drain CR for one event and the eviction by node-drainer for another. The exception is a drain that is in progress at the upgrade, which has no record and can change its method one time (see [Existing configurations](#existing-configurations)). A stopped event records `Stop`, which is not a drain method, so it does not select the method of the session.
 
 node-drainer finds the other events in the datastore, as described in [Quarantine session](#quarantine-session), and not in the `quarantineHealthEvent` annotation. An event that recovers leaves the annotation, but its drain can still be in progress.
 
@@ -373,7 +373,9 @@ Startup validation also fails for:
 - Top-level lists that the [custom drain scope](#custom-drain-scope) does not accept.
 - A rule set with `method: Custom` when `customDrain.nodeSelector` is also set (see [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector)).
 
-**Existing configurations.** Without `ruleSets`, each configuration that is valid at this time gives the same drain:
+#### Existing configurations
+
+Without `ruleSets`, each configuration that is valid at this time gives the same drain:
 
 | Configuration at this time | Drain at this time | With this ADR, without `ruleSets` |
 |---|---|---|
@@ -541,7 +543,7 @@ The records are new fields of `HealthEventStatus` (fields 1 to 7 are in use at t
 
 ### Phases
 
-Each phase is compatible with earlier versions. Phases 2 and 3 require phase 1, but not each other. Empty configuration gives the current behaviour, except for the two node-drainer changes that apply without `ruleSets` (see the existing configurations in [Pod policies for each rule set](#pod-policies-for-each-rule-set)).
+Each phase is compatible with earlier versions. Phases 2 and 3 require phase 1, but not each other. Empty configuration gives the current behaviour, except for the two node-drainer changes that apply without `ruleSets` (see [Existing configurations](#existing-configurations)).
 
 1. The shared rule set schema in `commons/pkg/ruleset`. The CEL rule evaluators move to `commons`. fault-quarantine uses them with no change in behaviour.
 2. node-drainer: the drain decision and its record. Then `ruleSets`, the pod policies for each rule set, `drain-stopped`, and the deprecation of `customDrain.nodeSelector`.
