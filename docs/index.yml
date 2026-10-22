@@ -14,6 +14,11 @@ navigation:
       - page: Integrations
         path: INTEGRATIONS.md
 
+  - section: User Guides
+    contents:
+      - page: Deploying on SUSE Linux Enterprise and RKE2
+        path: user-guides/deploying-on-suse-rke2.md
+
   - section: Tutorials
     contents:
       - page: Integrating Node Problem Detector
