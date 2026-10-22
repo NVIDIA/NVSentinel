@@ -282,6 +282,7 @@ GRPCIO_TOOLS_VERSION=$(yq '.protobuf.grpcio_tools' .versions.yaml)
 BLACK_VERSION=$(yq '.linting.black' .versions.yaml)
 SHELLCHECK_VERSION=$(yq '.linting.shellcheck' .versions.yaml)
 CTLPTL_VERSION=$(yq '.testing_tools.ctlptl' .versions.yaml)
+KIND_VERSION=$(yq '.testing_tools.kind' .versions.yaml)
 KO_VERSION=$(yq '.container_tools.ko' .versions.yaml)
 
 echo ""
@@ -600,7 +601,7 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
             if [[ "${OS}" == "darwin" ]]; then
                 brew install kind
             elif [[ "${OS}" == "linux" ]]; then
-                go install sigs.k8s.io/kind@v0.30.0
+                go install sigs.k8s.io/kind@v"${KIND_VERSION}"
                 sudo cp "$(go env GOPATH)/bin/kind" /usr/local/bin/
             fi
             log_success "Kind installed"
