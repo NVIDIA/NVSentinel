@@ -527,8 +527,6 @@ fault-quarantine already records its decision in the cordon-reason label and the
 
 The records are new fields of `HealthEventStatus` (fields 1 to 7 are in use at this time). The datastore keeps them with the event. A reader that does not know the fields ignores them, so the change is compatible with earlier versions.
 
-[#1950](https://github.com/NVIDIA/NVSentinel/issues/1950) and the NodeHealth ADR ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) propose a `NodeHealth` CR that replaces the datastore. If it is accepted, these two records move to `NodeHealth.status.remediation`. The fields stay the same.
-
 ### Phases
 
 Each phase is compatible with earlier versions. Phases 2 and 3 require phase 1, but not each other. Empty configuration gives the current behaviour.
@@ -687,7 +685,6 @@ Add `stopDrain.nodeSelector` in the syntax of `customDrain.nodeSelector`, and ke
 - [#1903](https://github.com/NVIDIA/NVSentinel/issues/1903), [#1904](https://github.com/NVIDIA/NVSentinel/issues/1904): heterogeneous cluster support (node and device dimensions)
 - [#1857](https://github.com/NVIDIA/NVSentinel/issues/1857), [#1871](https://github.com/NVIDIA/NVSentinel/pull/1871): custom drain for a subset of nodes
 - [#1960](https://github.com/NVIDIA/NVSentinel/pull/1960): validation after a full drain of a `COMPONENT_RESET` event
-- [#1950](https://github.com/NVIDIA/NVSentinel/issues/1950), [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015): remediation pipeline without a database (NodeHealth ADR)
 - [#1758](https://github.com/NVIDIA/NVSentinel/pull/1758): removal of the Node cache from fault-remediation
 - [ADR-003](003-rule-based-node-quarantine.md): rule-based node quarantine (CEL rules)
 - [ADR-021](021-health-event-property-overrides.md): health event property overrides
