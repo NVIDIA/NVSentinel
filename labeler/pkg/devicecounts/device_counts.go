@@ -26,6 +26,7 @@ import (
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/common/types/traits"
+	"cel.dev/cel-go/ext"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,6 +42,9 @@ type Config struct {
 }
 
 // ClassConfig describes one device-count class, such as GPU or NIC counts.
+//
+// A class either sets CurrentExpression and GroupingLabels directly, or lists
+// Sources. With Sources, each node uses the first source that is available on it.
 type ClassConfig struct {
 	Name                   string                  `toml:"name"`
 	Enabled                bool                    `toml:"enabled"`
@@ -48,6 +52,20 @@ type ClassConfig struct {
 	GroupingLabels         []string                `toml:"groupingLabels"`
 	ExpectedCountOverrides []ExpectedCountOverride `toml:"expectedCountOverrides"`
 	CurrentExpression      string                  `toml:"currentExpression"`
+	Sources                []SourceConfig          `toml:"sources"`
+}
+
+// SourceConfig describes one way to count a class's devices on a node.
+type SourceConfig struct {
+	Name string `toml:"name"`
+	// ResourceSliceDriver makes the source available only on nodes that have
+	// ResourceSlices from this driver, and limits resourceSlices to them.
+	ResourceSliceDriver string   `toml:"resourceSliceDriver"`
+	GroupingLabels      []string `toml:"groupingLabels"`
+	CurrentExpression   string   `toml:"currentExpression"`
+	// GroupingExpression returns a list of strings, such as device models, that
+	// further partitions nodes for expected-count learning.
+	GroupingExpression string `toml:"groupingExpression"`
 }
 
 // Labels contains the current and expected node labels managed for a class.
@@ -71,6 +89,14 @@ type Manager struct {
 type compiledClass struct {
 	ClassConfig
 	program cel.Program
+	sources []compiledSource
+}
+
+type compiledSource struct {
+	SourceConfig
+	className       string
+	currentProgram  cel.Program
+	groupingProgram cel.Program
 }
 
 // ReconcileCache caches peer observations while one or more target nodes are reconciled.
@@ -98,12 +124,11 @@ type ReconcileCache struct {
 	// nil result is cached as well, preventing repeated lookups for a missing source.
 	resourceSlices map[string][]*resourcev1.ResourceSlice
 
-	// peerCurrentCounts maps a class-and-node key to the current device count
-	// obtained by evaluating that class's CEL program for that peer. The value
-	// also records whether evaluation was impossible because its ResourceSlices
-	// were missing or because CEL returned an error. expectedDeviceCountForPartition
-	// uses this map to avoid reevaluating the same class/peer pair while the cache lives.
-	peerCurrentCounts map[peerCurrentCountKey]cachedCurrentCount
+	// peerObservations maps a class-and-node key to the observation obtained by
+	// evaluating that class for that peer: its current count and partition, or
+	// why no count was available. expectedDeviceCountForPartition uses this map
+	// to avoid reevaluating the same class/peer pair while the cache lives.
+	peerObservations map[peerCurrentCountKey]countObservation
 
 	// partitionExpected memoizes the maximum count learned from all peers in a
 	// class/partition pair, allowing every target in that partition to reuse it.
@@ -125,28 +150,38 @@ type peerCurrentCountKey struct {
 // partitionExpectedKey identifies the learned expected count shared by one
 // class and one hardware partition within a ReconcileCache.
 //
-// partitionKey is produced by compiledClass.partitionKey. It is "default" when
-// no grouping labels are configured, or a value such as
+// partitionKey is countObservation.partitionKey. For a class without sources it
+// is "default" when no grouping labels are configured, or a value such as
 // "node.kubernetes.io/instance-type=p5|nvidia.com/gpu.product=H100" otherwise.
+// For a class with sources it starts with the source name, for example
+// "source=dra|node.kubernetes.io/instance-type=p5|hardware=NVIDIA H100 80GB HBM3".
 // The class index keeps equal partition strings from different classes separate.
 type partitionExpectedKey struct {
 	classIndex   int
 	partitionKey string
 }
 
-// cachedCurrentCount records the result of evaluating one class for one peer.
+// countObservation records the result of evaluating one class for one node.
 //
 // Exactly one result state is meaningful:
-//   - missingSource is true when a ResourceSlice-backed class has no slices;
+//   - missingSource is true when no count source is available on the node;
 //   - err is non-nil when CEL evaluation failed; or
 //   - count is valid when missingSource is false and err is nil.
 //
+// partitionKey is meaningful only when hasPartition is true. A node without a
+// partition learns its expected count only from itself and is never a peer.
+// For a class without sources, the partition comes from node labels alone and
+// is known even when the count is not.
+//
 // Failed and missing-source observations are cached too, so every peer is
 // inspected at most once per class during a ReconcileCache's lifetime.
-type cachedCurrentCount struct {
+type countObservation struct {
 	count         int
 	missingSource bool
 	err           error
+	source        *compiledSource
+	partitionKey  string
+	hasPartition  bool
 }
 
 // LoadConfig loads expected device-count TOML configuration from a file.
@@ -192,7 +227,31 @@ func NewManager(config Config) (*Manager, error) {
 		return nil, nil
 	}
 
+	warnOnSharedLabelKeys(manager.classes)
+
 	return manager, nil
+}
+
+// warnOnSharedLabelKeys reports classes that write the same node label. This is
+// allowed for compatibility with configurations that split one device kind
+// across classes, but the classes overwrite each other's values.
+func warnOnSharedLabelKeys(classes []compiledClass) {
+	owners := map[string]string{}
+
+	for _, class := range classes {
+		for _, labelKey := range []string{class.Labels.Current, class.Labels.Expected} {
+			owner, ok := owners[labelKey]
+			if !ok {
+				owners[labelKey] = class.Name
+				continue
+			}
+
+			if owner != class.Name {
+				slog.Warn("Multiple device-count classes write the same label; use one class with sources instead",
+					"label", labelKey, "classes", []string{owner, class.Name})
+			}
+		}
+	}
 }
 
 // Enabled reports whether the manager has any compiled device-count classes.
@@ -207,7 +266,7 @@ func (m *Manager) RequiresResourceSlices() bool {
 	}
 
 	for _, class := range m.classes {
-		if class.referencesResourceSlices() {
+		if class.requiresResourceSlices() {
 			return true
 		}
 	}
@@ -242,7 +301,7 @@ func (m *Manager) NewReconcileCache(
 		peerNodes:                 peerNodes,
 		loadResourceSlicesForNode: loadResourceSlicesForNode,
 		resourceSlices:            make(map[string][]*resourcev1.ResourceSlice),
-		peerCurrentCounts:         make(map[peerCurrentCountKey]cachedCurrentCount),
+		peerObservations:          make(map[peerCurrentCountKey]countObservation),
 		partitionExpected:         make(map[partitionExpectedKey]int),
 	}
 }
@@ -262,32 +321,36 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 	resourceSlices := p.cachedResourceSlicesForNode(node)
 
 	for classIndex, class := range p.manager.classes {
-		// Do not turn a missing DRA source into current=0. A ResourceSlice-based
-		// expression should wait until at least one associated slice exists.
-		if class.referencesResourceSlices() && len(resourceSlices) == 0 {
+		observation := p.manager.observe(ctx, class, node, resourceSlices)
+		recordDeviceCountSource(class, node.Name, observation)
+
+		// Do not turn a missing source into current=0. The labels keep their
+		// last values until a source is available again.
+		if observation.missingSource {
 			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
-			slog.Warn("Skipping device count label update because no ResourceSlices are associated with the node",
-				"node", node.Name, "class", class.Name)
+			logMissingSource(class, node.Name)
 
 			continue
 		}
 
-		current, err := p.manager.evaluateCurrent(ctx, class, node, resourceSlices)
-		if err != nil {
+		if observation.err != nil {
 			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
 			slog.Warn("Skipping device count label update after current count evaluation failed",
-				"node", node.Name, "class", class.Name, "error", err)
+				"node", node.Name, "class", class.Name, "error", observation.err)
 
 			continue
 		}
 
-		expected := p.expectedDeviceCount(ctx, classIndex, class, node, current)
+		current := observation.count
+		expected := p.expectedDeviceCount(ctx, classIndex, class, node, observation)
 		currentValue := strconv.Itoa(current)
 		expectedValue := strconv.Itoa(expected)
-		partitionKey := class.partitionKey(node)
 
 		metrics.CurrentDeviceCount.WithLabelValues(node.Name, class.Name).Set(float64(current))
-		metrics.ExpectedDeviceCount.WithLabelValues(class.Name, partitionKey).Set(float64(expected))
+
+		if observation.hasPartition {
+			metrics.ExpectedDeviceCount.WithLabelValues(class.Name, observation.partitionKey).Set(float64(expected))
+		}
 
 		if node.Labels[class.Labels.Current] != currentValue {
 			node.Labels[class.Labels.Current] = currentValue
@@ -370,10 +433,12 @@ func resourceListToStringMap(rl corev1.ResourceList) map[string]string {
 
 func newDeviceCountCELEnv() (*cel.Env, error) {
 	// Keep the CEL surface intentionally small: expressions can only inspect
-	// the reconciled node, that node's associated ResourceSlices, and sum lists.
+	// the reconciled node and that node's associated ResourceSlices, sum lists,
+	// and use the cel-go list helpers such as flatten.
 	return cel.NewEnv(
 		cel.Variable("node", cel.DynType),
 		cel.Variable("resourceSlices", cel.ListType(cel.DynType)),
+		ext.Lists(),
 		cel.Function("sum",
 			cel.Overload("sum_list_int",
 				[]*cel.Type{cel.ListType(cel.IntType)},
@@ -397,30 +462,124 @@ func compileDeviceCountClass(
 		return compiledClass{}, false, fmt.Errorf("validate device-count class: %w", err)
 	}
 
-	ast, issues := env.Compile(classConfig.CurrentExpression)
-	if issues != nil && issues.Err() != nil {
-		return compiledClass{}, false, fmt.Errorf(
-			"expectedDeviceCounts.classes[%d] (%s): compile currentExpression: %w",
-			index, classConfig.Name, issues.Err())
+	prefix := fmt.Sprintf("expectedDeviceCounts.classes[%d] (%s)", index, classConfig.Name)
+
+	if len(classConfig.Sources) > 0 {
+		sources, err := compileDeviceCountSources(env, prefix, classConfig)
+		if err != nil {
+			return compiledClass{}, false, err
+		}
+
+		return compiledClass{
+			ClassConfig: classConfig,
+			sources:     sources,
+		}, true, nil
 	}
 
-	if ast.OutputType() != cel.IntType && ast.OutputType() != cel.DynType {
-		return compiledClass{}, false, fmt.Errorf(
-			"expectedDeviceCounts.classes[%d] (%s): currentExpression must return int, got %s",
-			index, classConfig.Name, ast.OutputType())
-	}
-
-	program, err := env.Program(ast)
+	program, err := compileExpression(env, prefix, "currentExpression", classConfig.CurrentExpression, countOutput)
 	if err != nil {
-		return compiledClass{}, false, fmt.Errorf(
-			"expectedDeviceCounts.classes[%d] (%s): create CEL program: %w",
-			index, classConfig.Name, err)
+		return compiledClass{}, false, err
 	}
 
 	return compiledClass{
 		ClassConfig: classConfig,
 		program:     program,
 	}, true, nil
+}
+
+func compileDeviceCountSources(env *cel.Env, classPrefix string, classConfig ClassConfig) ([]compiledSource, error) {
+	sources := make([]compiledSource, 0, len(classConfig.Sources))
+	names := map[string]struct{}{}
+
+	for j, sourceConfig := range classConfig.Sources {
+		prefix := fmt.Sprintf("%s.sources[%d] (%s)", classPrefix, j, sourceConfig.Name)
+
+		if err := validateDeviceCountSourceConfig(prefix, sourceConfig, names); err != nil {
+			return nil, err
+		}
+
+		names[sourceConfig.Name] = struct{}{}
+
+		currentProgram, err := compileExpression(env, prefix, "currentExpression",
+			sourceConfig.CurrentExpression, countOutput)
+		if err != nil {
+			return nil, err
+		}
+
+		source := compiledSource{
+			SourceConfig:   sourceConfig,
+			className:      classConfig.Name,
+			currentProgram: currentProgram,
+		}
+
+		if strings.TrimSpace(sourceConfig.GroupingExpression) != "" {
+			source.groupingProgram, err = compileExpression(env, prefix, "groupingExpression",
+				sourceConfig.GroupingExpression, groupingOutput)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		sources = append(sources, source)
+	}
+
+	return sources, nil
+}
+
+func validateDeviceCountSourceConfig(prefix string, sourceConfig SourceConfig, names map[string]struct{}) error {
+	if sourceConfig.Name == "" {
+		return fmt.Errorf("%s: name is required", prefix)
+	}
+
+	if _, ok := names[sourceConfig.Name]; ok {
+		return fmt.Errorf("%s: source names must be unique within a class", prefix)
+	}
+
+	if strings.TrimSpace(sourceConfig.CurrentExpression) == "" {
+		return fmt.Errorf("%s: currentExpression is required", prefix)
+	}
+
+	return nil
+}
+
+type outputRequirement struct {
+	allowed     func(*cel.Type) bool
+	description string
+}
+
+var (
+	countOutput    = outputRequirement{allowed: isCountType, description: "int"}
+	groupingOutput = outputRequirement{allowed: isGroupingType, description: "list<string>"}
+)
+
+func compileExpression(
+	env *cel.Env,
+	prefix, field, expression string,
+	output outputRequirement,
+) (cel.Program, error) {
+	ast, issues := env.Compile(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("%s: compile %s: %w", prefix, field, issues.Err())
+	}
+
+	if !output.allowed(ast.OutputType()) {
+		return nil, fmt.Errorf("%s: %s must return %s, got %s", prefix, field, output.description, ast.OutputType())
+	}
+
+	program, err := env.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("%s: create CEL program: %w", prefix, err)
+	}
+
+	return program, nil
+}
+
+func isCountType(outputType *cel.Type) bool {
+	return outputType == cel.IntType || outputType == cel.DynType
+}
+
+func isGroupingType(outputType *cel.Type) bool {
+	return outputType == cel.DynType || outputType.Kind() == types.ListKind
 }
 
 func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
@@ -434,10 +593,8 @@ func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
 			index, classConfig.Name)
 	}
 
-	if strings.TrimSpace(classConfig.CurrentExpression) == "" {
-		return fmt.Errorf(
-			"expectedDeviceCounts.classes[%d] (%s): currentExpression is required",
-			index, classConfig.Name)
+	if err := validateDeviceCountClassForm(index, classConfig); err != nil {
+		return err
 	}
 
 	for j, override := range classConfig.ExpectedCountOverrides {
@@ -446,6 +603,31 @@ func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
 				"expectedDeviceCounts.classes[%d] (%s).expectedCountOverrides[%d]: count must be non-negative",
 				index, classConfig.Name, j)
 		}
+	}
+
+	return nil
+}
+
+// validateDeviceCountClassForm requires either a class-level currentExpression
+// or sources. With sources, counting and grouping are defined only per source.
+func validateDeviceCountClassForm(index int, classConfig ClassConfig) error {
+	hasClassExpression := strings.TrimSpace(classConfig.CurrentExpression) != ""
+
+	if len(classConfig.Sources) == 0 {
+		if !hasClassExpression {
+			return fmt.Errorf(
+				"expectedDeviceCounts.classes[%d] (%s): currentExpression is required",
+				index, classConfig.Name)
+		}
+
+		return nil
+	}
+
+	if hasClassExpression || len(classConfig.GroupingLabels) > 0 {
+		return fmt.Errorf(
+			"expectedDeviceCounts.classes[%d] (%s): currentExpression and groupingLabels must be set on each "+
+				"source, not on the class, when sources are used",
+			index, classConfig.Name)
 	}
 
 	return nil
@@ -493,13 +675,37 @@ func sumIntList(args ...ref.Val) ref.Val {
 
 func (m *Manager) evaluateCurrent(
 	ctx context.Context,
-	class compiledClass,
+	program cel.Program,
 	node *corev1.Node,
 	resourceSlices []*resourcev1.ResourceSlice,
 ) (int, error) {
+	result, err := evaluateExpression(ctx, program, "currentExpression", node, resourceSlices)
+	if err != nil {
+		return 0, err
+	}
+
+	count, ok := celResultToInt(result)
+	if !ok {
+		return 0, fmt.Errorf("currentExpression returned non-integer: %T", result.Value())
+	}
+
+	if count < 0 {
+		return 0, fmt.Errorf("currentExpression returned negative count: %d", count)
+	}
+
+	return count, nil
+}
+
+func evaluateExpression(
+	ctx context.Context,
+	program cel.Program,
+	field string,
+	node *corev1.Node,
+	resourceSlices []*resourcev1.ResourceSlice,
+) (ref.Val, error) {
 	nodeMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(node)
 	if err != nil {
-		return 0, fmt.Errorf("convert node to CEL input: %w", err)
+		return nil, fmt.Errorf("convert node to CEL input: %w", err)
 	}
 
 	// Kubernetes labels are strings, but the documented GPU expression uses
@@ -513,34 +719,25 @@ func (m *Manager) evaluateCurrent(
 	for _, resourceSlice := range resourceSlices {
 		resourceSliceMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(resourceSlice)
 		if err != nil {
-			return 0, fmt.Errorf("convert ResourceSlice %s to CEL input: %w", resourceSlice.Name, err)
+			return nil, fmt.Errorf("convert ResourceSlice %s to CEL input: %w", resourceSlice.Name, err)
 		}
 
 		resourceSliceMaps = append(resourceSliceMaps, resourceSliceMap)
 	}
 
-	result, _, err := class.program.ContextEval(ctx, map[string]any{
+	result, _, err := program.ContextEval(ctx, map[string]any{
 		"node":           nodeMap,
 		"resourceSlices": resourceSliceMaps,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("evaluate currentExpression: %w", err)
+		return nil, fmt.Errorf("evaluate %s: %w", field, err)
 	}
 
 	if types.IsUnknownOrError(result) {
-		return 0, fmt.Errorf("currentExpression returned unknown/error: %v", result)
+		return nil, fmt.Errorf("%s returned unknown/error: %v", field, result)
 	}
 
-	count, ok := celResultToInt(result)
-	if !ok {
-		return 0, fmt.Errorf("currentExpression returned non-integer: %T", result.Value())
-	}
-
-	if count < 0 {
-		return 0, fmt.Errorf("currentExpression returned negative count: %d", count)
-	}
-
-	return count, nil
+	return result, nil
 }
 
 func celResultToInt(result ref.Val) (int, bool) {
@@ -623,7 +820,7 @@ func (p *ReconcileCache) expectedDeviceCount(
 	classIndex int,
 	class compiledClass,
 	node *corev1.Node,
-	current int,
+	observation countObservation,
 ) int {
 	if override, ok := class.expectedOverride(node); ok {
 		return override
@@ -631,17 +828,15 @@ func (p *ReconcileCache) expectedDeviceCount(
 
 	// Learned expected counts can rise from current observations or previously
 	// written labels, but they must not fall automatically when devices vanish.
-	expected := maxCountLabel(current, node.Labels[class.Labels.Expected])
+	expected := maxCountLabel(observation.count, node.Labels[class.Labels.Expected])
 
-	partitionKey := class.partitionKey(node)
+	// Without a partition the node cannot tell which peers have the same
+	// hardware, so it learns only from itself rather than risk a higher count.
+	if !observation.hasPartition {
+		return expected
+	}
 
-	partitionExpectedCount := p.expectedDeviceCountForPartition(
-		ctx,
-		classIndex,
-		class,
-		node.Name,
-		partitionKey,
-	)
+	partitionExpectedCount := p.expectedDeviceCountForPartition(ctx, classIndex, class, node, observation)
 	if partitionExpectedCount > expected {
 		expected = partitionExpectedCount
 	}
@@ -656,19 +851,36 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 	ctx context.Context,
 	classIndex int,
 	class compiledClass,
-	reconciledNodeName string,
-	partitionKey string,
+	node *corev1.Node,
+	observation countObservation,
 ) int {
-	key := partitionExpectedKey{classIndex: classIndex, partitionKey: partitionKey}
+	key := partitionExpectedKey{classIndex: classIndex, partitionKey: observation.partitionKey}
 	if expected, ok := p.partitionExpected[key]; ok {
 		return expected
 	}
 
+	groupingLabels := class.GroupingLabels
+	if observation.source != nil {
+		groupingLabels = observation.source.GroupingLabels
+	}
+
 	expected := 0
-	for _, peer := range peerNodesForPartition(class, partitionKey, p.peerNodes) {
+
+	for _, peer := range p.peerNodes {
+		// Peers with different grouping-label values cannot share the
+		// partition, so skip them before evaluating any CEL for them.
+		if !groupingLabelsMatch(groupingLabels, node, peer) {
+			continue
+		}
+
+		peerObservation := p.peerObservation(ctx, classIndex, class, peer)
+		if !peerObservation.hasPartition || peerObservation.partitionKey != observation.partitionKey {
+			continue
+		}
+
 		expected = maxCountLabel(expected, peer.Labels[class.Labels.Expected])
 
-		peerCurrent, ok := p.currentDeviceCountForPeer(ctx, classIndex, class, reconciledNodeName, peer)
+		peerCurrent, ok := usablePeerCount(class, node.Name, peer.Name, peerObservation)
 		if ok && peerCurrent > expected {
 			expected = peerCurrent
 		}
@@ -677,6 +889,16 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 	p.partitionExpected[key] = expected
 
 	return expected
+}
+
+func groupingLabelsMatch(groupingLabels []string, node, peer *corev1.Node) bool {
+	for _, label := range groupingLabels {
+		if node.Labels[label] != peer.Labels[label] {
+			return false
+		}
+	}
+
+	return true
 }
 
 func maxCountLabel(current int, raw string) int {
@@ -688,63 +910,48 @@ func maxCountLabel(current int, raw string) int {
 	return current
 }
 
-func peerNodesForPartition(
-	class compiledClass,
-	partitionKey string,
-	peerNodes []*corev1.Node,
-) []*corev1.Node {
-	nodes := []*corev1.Node{}
-
-	for _, peer := range peerNodes {
-		if class.partitionKey(peer) != partitionKey {
-			continue
-		}
-
-		nodes = append(nodes, peer)
-	}
-
-	return nodes
-}
-
-// currentDeviceCountForPeer evaluates each class/peer pair at most once per
-// cache lifetime, including failed and missing-source results.
-func (p *ReconcileCache) currentDeviceCountForPeer(
+// peerObservation evaluates each class/peer pair at most once per cache
+// lifetime, including failed and missing-source results.
+func (p *ReconcileCache) peerObservation(
 	ctx context.Context,
 	classIndex int,
 	class compiledClass,
-	reconciledNodeName string,
 	peer *corev1.Node,
-) (int, bool) {
+) countObservation {
 	key := peerCurrentCountKey{classIndex: classIndex, nodeName: peer.Name}
 
-	cached, ok := p.peerCurrentCounts[key]
-	if !ok {
-		peerResourceSlices := p.cachedResourceSlicesForNode(peer)
-
-		cached.missingSource = class.referencesResourceSlices() && len(peerResourceSlices) == 0
-		if !cached.missingSource {
-			cached.count, cached.err = p.manager.evaluateCurrent(ctx, class, peer, peerResourceSlices)
-		}
-
-		p.peerCurrentCounts[key] = cached
+	if cached, ok := p.peerObservations[key]; ok {
+		return cached
 	}
 
-	// A peer with no DRA source should not lower or initialize the baseline
-	// for ResourceSlice-backed classes.
-	if cached.missingSource {
+	observation := p.manager.observe(ctx, class, peer, p.cachedResourceSlicesForNode(peer))
+	p.peerObservations[key] = observation
+
+	return observation
+}
+
+// usablePeerCount returns a peer's current count when it may raise the
+// partition baseline.
+func usablePeerCount(
+	class compiledClass,
+	reconciledNodeName, peerName string,
+	observation countObservation,
+) (int, bool) {
+	// A peer with no source should not lower or initialize the baseline.
+	if observation.missingSource {
 		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
 		return 0, false
 	}
 
-	if cached.err != nil {
+	if observation.err != nil {
 		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
 		slog.Warn("Skipping peer device count during expected count learning",
-			"node", reconciledNodeName, "peer", peer.Name, "class", class.Name, "error", cached.err)
+			"node", reconciledNodeName, "peer", peerName, "class", class.Name, "error", observation.err)
 
 		return 0, false
 	}
 
-	return cached.count, true
+	return observation.count, true
 }
 
 func parseCountLabel(raw string) (int, bool) {
@@ -777,14 +984,48 @@ func (class compiledClass) referencesResourceSlices() bool {
 	return strings.Contains(class.CurrentExpression, "resourceSlices")
 }
 
+// requiresResourceSlices reports whether any expression or source of the class
+// reads ResourceSlices, so the labeler must watch them.
+func (class compiledClass) requiresResourceSlices() bool {
+	for _, source := range class.Sources {
+		if source.ResourceSliceDriver != "" {
+			return true
+		}
+	}
+
+	for _, expression := range class.expressions() {
+		if strings.Contains(expression, "resourceSlices") {
+			return true
+		}
+	}
+
+	return false
+}
+
 // referencesNodeResources is a cheap heuristic mirroring referencesResourceSlices.
 // It checks specifically for node.status.allocatable or node.status.capacity
 // rather than the broader node.status, so expressions that only reference
 // node.status.conditions (noisy with heartbeats) do not trigger unnecessary
 // allocatable/capacity comparisons on every node update.
 func (class compiledClass) referencesNodeResources() bool {
-	return strings.Contains(class.CurrentExpression, "node.status.allocatable") ||
-		strings.Contains(class.CurrentExpression, "node.status.capacity")
+	for _, expression := range class.expressions() {
+		if strings.Contains(expression, "node.status.allocatable") ||
+			strings.Contains(expression, "node.status.capacity") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// expressions returns the class-level expression and every source expression.
+func (class compiledClass) expressions() []string {
+	expressions := []string{class.CurrentExpression}
+	for _, source := range class.Sources {
+		expressions = append(expressions, source.CurrentExpression, source.GroupingExpression)
+	}
+
+	return expressions
 }
 
 func matchLabels(actual, expected map[string]string) bool {

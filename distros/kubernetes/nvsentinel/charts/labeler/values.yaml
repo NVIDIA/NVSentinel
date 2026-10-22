@@ -65,43 +65,65 @@ requireDCGMReadyForBootstrap: true
 # Expected device count labels
 # When enabled, the labeler writes current/expected device-count labels per configured class.
 # Current counts come from CEL expressions over the node object and associated ResourceSlices.
-# Expected counts are learned per grouping-label partition unless an override matches.
+# Expected counts are learned per grouping partition unless an override matches.
+#
+# A class defines either a single currentExpression with groupingLabels, or an ordered list of
+# sources. For each node, the labeler uses the first source that applies:
+#   - A source with resourceSliceDriver applies when the node has ResourceSlices from that driver.
+#     Its expressions see only the slices of that driver. An incomplete pool or a failed expression
+#     skips the class for this reconcile; the labeler does not try the next source.
+#   - A source without resourceSliceDriver applies when its currentExpression returns a count.
+# Each source has its own groupingLabels and an optional groupingExpression. The groupingExpression
+# returns a list of strings (for example GPU models) that the labeler adds to the partition key.
+# All sources of a class must count the same unit, because they write the same labels.
+# Overrides must match labels that exist in every mode, such as the instance type or a nodepool label.
 expectedDeviceCounts:
   enabled: true
   classes:
+    # Counts physical GPUs in both GPU Operator modes: from gpu.nvidia.com ResourceSlices in
+    # GPUCluster (DRA) mode, and from the GFD nvidia.com/gpu.count label in ClusterPolicy mode.
     - name: gpu
       enabled: true
       labels:
         current: nvsentinel.dgxc.nvidia.com/gpu.count.current
         expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
-      groupingLabels:
-        - node.kubernetes.io/instance-type
-        - nvidia.com/gpu.product
       expectedCountOverrides: []
-      currentExpression: |
-        int(node.metadata.labels['nvidia.com/gpu.count'])
-    # Detect GPUs in GPUCluster (DRA) mode of GPU Operator.
-    # Uncomment and adapt per environment.
-    # - name: gpu-dra
-    #   enabled: true
-    #   labels:
-    #     current: nvsentinel.dgxc.nvidia.com/gpu.count.current
-    #     expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
-    #   groupingLabels:
-    #     - node.kubernetes.io/instance-type
-    #   expectedCountOverrides: []
-    #   currentExpression: |
-    #     sum(resourceSlices
-    #       .filter(rs, rs.spec.driver == 'gpu.nvidia.com' && has(rs.spec.devices))
-    #       .map(rs, rs.spec.devices
-    #         .filter(d,
-    #           has(d.attributes) &&
-    #           'type' in d.attributes &&
-    #           has(d.attributes['type'].string) &&
-    #           d.attributes['type'].string == 'gpu'
-    #         )
-    #         .size()
-    #       ))
+      sources:
+        - name: dra
+          resourceSliceDriver: gpu.nvidia.com
+          groupingLabels:
+            - node.kubernetes.io/instance-type
+          currentExpression: |
+            sum(resourceSlices
+              .filter(rs, has(rs.spec.devices))
+              .map(rs, rs.spec.devices
+                .filter(d,
+                  has(d.attributes) &&
+                  'type' in d.attributes &&
+                  has(d.attributes['type'].string) &&
+                  d.attributes['type'].string == 'gpu'
+                )
+                .size()
+              ))
+          groupingExpression: |
+            resourceSlices
+              .map(rs, has(rs.spec.devices) ? rs.spec.devices : [])
+              .flatten()
+              .filter(d,
+                has(d.attributes) &&
+                'type' in d.attributes &&
+                has(d.attributes['type'].string) &&
+                d.attributes['type'].string == 'gpu' &&
+                'productName' in d.attributes &&
+                has(d.attributes['productName'].string)
+              )
+              .map(d, d.attributes['productName'].string)
+        - name: gfd
+          groupingLabels:
+            - node.kubernetes.io/instance-type
+            - nvidia.com/gpu.product
+          currentExpression: |
+            int(node.metadata.labels['nvidia.com/gpu.count'])
     - name: nic
       enabled: true
       labels:
