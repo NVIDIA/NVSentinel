@@ -15,7 +15,7 @@
 FROM public.ecr.aws/docker/library/python:3.14-alpine@sha256:c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc AS build
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install poetry==2.3.3 poetry-plugin-export==1.10.0
+    pip install poetry==2.5.1 poetry-plugin-export==1.10.1
 
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1 \

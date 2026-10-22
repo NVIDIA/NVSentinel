@@ -127,7 +127,7 @@ docker-build-dcgm3: setup-buildx
 		$(DOCKER_EXTRA_ARGS) \
 		$(DOCKER_LOAD_ARG) \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-3.x \
-		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
+		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04@sha256:9e01048c32948333c74d02c801a3a88754712063d0767a562fd628fd9ba58b50 \
 		--build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 \
 		-f $(MODULE_PATH)/Dockerfile \
 		.
@@ -161,7 +161,7 @@ docker-publish-dcgm3: setup-buildx
 		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
 		--push \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-3.x \
-		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
+		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04@sha256:9e01048c32948333c74d02c801a3a88754712063d0767a562fd628fd9ba58b50 \
 		--build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 \
 		-f $(MODULE_PATH)/Dockerfile \
 		.

@@ -14,8 +14,8 @@
 
 # PyTorch version determines CUDA runtime version - must match cluster's GPU driver
 # See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
-#   26.04-py3 = CUDA 13.2.1 (Ubuntu 24.04, Python 3.12)
-ARG NCCL_TESTS_VERSION=v2.13.11
+#   26.09-py3 = CUDA 13.4.1, NCCL 2.31.2 (Ubuntu 24.04, Python 3.12)
+ARG NCCL_TESTS_VERSION=v2.21.1
 
 # =============================================================================
 # Build stage: Compile Go binary
