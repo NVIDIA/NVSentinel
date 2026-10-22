@@ -77,7 +77,7 @@ This ADR adds the missing controls to node-drainer and fault-remediation, with o
    - `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) is deprecated. It continues to work as a `Custom` rule set with the lowest priority.
 5. **fault-remediation:** add `ruleSets` with the `remediation` outcome.
    - The outcome is `stop: true` or an `action` from `maintenance.actions`. No match gives the action of the event.
-   - fault-remediation evaluates the rule sets one time for each event, before the log collector and the CR. The selected entry replaces the action of the event in each later step, including the equivalence group and `maxRemediationAttempts`. It records the rule set and the action on the event status.
+   - fault-remediation evaluates the rule sets one time for each event, before it uses the action of the event, after the checks for `NONE` and for an event that is already remediated. The selected entry replaces the action of the event in each later step, including the equivalence group and `maxRemediationAttempts`. It records the rule set and the action on the event status.
    - A stopped remediation is recorded as `remediation-stopped`, not `remediation-failed`.
 6. **Device selection reads the health event.** A `HealthEvent` rule can read each field of the event. Device information that a later change adds to the event is available to the rules with no change to this ADR. Changes that add device information to the event are not part of this ADR.
 
@@ -128,8 +128,10 @@ ruleSets:
 
 | Key | Component | `stop: true` | Selection field | No match |
 |---|---|---|---|---|
-| `drain` | node-drainer | No drain. Node state `drain-stopped` | `method`: `BuiltIn` or `Custom`. `BuiltIn` can also set `userNamespaces` or `podDrainPolicies` | `BuiltIn` with the top-level lists. `Custom` when the custom drain is enabled and not scoped (see [Custom drain scope](#custom-drain-scope)) |
-| `remediation` | fault-remediation | No CR. Node state `remediation-stopped` | `action`: an entry of `maintenance.actions` | The action of the event |
+| `drain` | node-drainer | No drain. Node state `drain-stopped` (see [Node state labels](#node-state-labels)) | `method`: `BuiltIn` or `Custom`. `BuiltIn` can also set `userNamespaces` or `podDrainPolicies` | `BuiltIn` with the top-level lists. `Custom` when the custom drain is enabled and not scoped (see [Custom drain scope](#custom-drain-scope)) |
+| `remediation` | fault-remediation | No CR. Node state `remediation-stopped` (see [Node state labels](#node-state-labels)) | `action`: an entry of `maintenance.actions` | The action of the event |
+
+In node-drainer, when another event of the [quarantine session](#quarantine-session) has already selected the method, an event that does not stop uses that method, not the method of its own winner (see [node-drainer](#node-drainer)).
 
 **Priority.** When the outcomes of two rule sets that match are in conflict, the rule set with the higher `priority` applies. If the priorities are equal, the first in the configuration applies. Each outcome defines what a conflict is:
 
@@ -162,7 +164,7 @@ The component also logs a warning at startup, but continues, for:
 - In node-drainer, a `Node` rule that makes the node cache keep all labels ([Node fields and the node cache](#node-fields-and-the-node-cache)).
 - In node-drainer, a `Node` rule that reads the status. The node cache does not keep the status, so the rule reads an empty status.
 
-**Metrics.** Each component counts the wins and the errors of each rule set, with the same metric names and labels. A rule set that another rule set always hides has a count of zero. The rule set name is a metric label. The number of rule sets in the configuration limits its cardinality, not the number of nodes or events.
+**Metrics.** Each component counts the wins and the errors of each rule set, with the same metric names and labels. A win is counted for the winner of the evaluation of an event, also when node-drainer uses the method of the session for the event. Thus, a rule set that another rule set always hides has a count of zero. node-drainer also counts the events that use the method of the session. The rule set name is a metric label. The number of rule sets in the configuration limits its cardinality, not the number of nodes or events.
 
 #### Node fields and the node cache
 
@@ -296,13 +298,13 @@ customDrain:
 5. If no rule set matches, and the custom drain is enabled and not scoped, the method is `Custom`, as at this time (see [Custom drain scope](#custom-drain-scope)).
 6. Otherwise, the method is `BuiltIn` with the top-level lists.
 
-Thus, the first event of the session that node-drainer drains selects the method, and the later events of the session use it. Two events of a session do not drain the node with different methods, for example a custom drain CR for one event and the eviction by node-drainer for another. A stopped event has no method, so it does not select the method of the session.
+Thus, the first event of the session that node-drainer drains selects the method, and the later events of the session use it. Two events of a session do not drain the node with different methods, for example a custom drain CR for one event and the eviction by node-drainer for another. The exception is a drain that is in progress at the upgrade, which has no record and can change its method one time (see the existing configurations in [Pod policies for each rule set](#pod-policies-for-each-rule-set)). A stopped event records `Stop`, which is not a drain method, so it does not select the method of the session.
 
 node-drainer finds the other events in the datastore, as described in [Quarantine session](#quarantine-session), and not in the `quarantineHealthEvent` annotation. An event that recovers leaves the annotation, but its drain can still be in progress.
 
 node-drainer records the rule set, the method, and the drain scope (`Node`, or the entity for a partial drain) on the event status before it acts. When the event uses the method of another event, the record names that event in `reusedFrom`. Later passes for the same event read the record and do not evaluate the rule sets again. Thus, a label change during a drain, or between two events of a session, does not change the method. A cold start reads the record.
 
-The record does not copy the pod policies. A later pass reads the policies of the recorded rule set from the configuration. Thus, a configuration change during a drain changes the policies that apply to the pods that remain, as a change to the top-level lists does at this time. If the recorded rule set is no longer in the configuration, node-drainer does not evaluate the rule sets again, so the method does not change. For `BuiltIn`, it uses the top-level lists, logs a warning, and increments a metric. If both top-level lists are empty, as they are when the custom drain is not scoped (see [Custom drain scope](#custom-drain-scope)), node-drainer does not complete the drain, because it would evict no pods. It logs an error, increments the metric, and tries again with backoff. The node state stays `draining` until the rule set is in the configuration again or the [quarantine session](#quarantine-session) ends.
+The record does not copy the pod policies. A later pass reads the policies of the recorded rule set from the configuration. Thus, a configuration change during a drain changes the policies that apply to the pods that remain, as a change to the top-level lists does at this time. If the recorded rule set is no longer in the configuration, node-drainer does not evaluate the rule sets again, so the method does not change. For `BuiltIn`, it uses the top-level lists, logs a warning, and increments a metric. If both top-level lists are empty, as they are when the custom drain is not scoped (see [Custom drain scope](#custom-drain-scope)), node-drainer does not complete the drain, because it would evict no pods. It logs an error, increments the metric, and tries again with backoff. The node state stays `draining` until the rule set is in the configuration again or the [quarantine session](#quarantine-session) ends. node-drainer does the same for an event that uses the method of another event, when the rule set of that record is no longer in the configuration.
 
 **An error.** node-drainer does not drain, does not record a decision, and does not change the node state. It logs the rule set name and the error, increments the metric, and tries again with backoff, as it does at this time when it cannot evaluate an event. The next pass evaluates the rule sets again, so a label or configuration change can correct the failure.
 
@@ -369,6 +371,7 @@ Startup validation also fails for:
 - A `podSelector` that does not parse.
 - A `BuiltIn` outcome without its own list when both top-level lists are empty. node-drainer would mark the drain complete and evict no pods.
 - Top-level lists that the [custom drain scope](#custom-drain-scope) does not accept.
+- A rule set with `method: Custom` when `customDrain.nodeSelector` is also set (see [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector)).
 
 **Existing configurations.** Without `ruleSets`, each configuration that is valid at this time gives the same drain:
 
@@ -398,7 +401,7 @@ To limit these costs:
 - node-drainer converts `customDrain.nodeSelector` to a rule set at startup when `customDrain.enabled` is true, with the name `custom-drain-node-selector`, the outcome `drain: { method: Custom }`, and a priority lower than all configured rule sets. When `customDrain.enabled` is false, node-drainer ignores the selector, as it does at this time. The selection, the record, and the metrics are the same for both forms, and the record and the metrics use the rule set name `custom-drain-node-selector`.
 - node-drainer logs a deprecation warning at startup when the field is set. The Helm chart prints a deprecation note.
 - If `ruleSets` contains a rule set with `method: Custom` and `customDrain.nodeSelector` is also set, startup fails. One configuration must not use both forms for the same selection.
-- The field is removed after at least two minor releases. The release notes give the equivalent rule set.
+- The field is removed at least two minor releases after the release that adds `ruleSets`. The release notes give the equivalent rule set.
 
 ### fault-remediation
 
@@ -453,16 +456,16 @@ ruleSets:
 
 **Use of the schema.** The outcome key is `remediation`. A `Node` rule reads the Node that fault-remediation gets from the API server for the event. fault-remediation has no Node cache ([#1758](https://github.com/NVIDIA/NVSentinel/pull/1758)), so the labels are current. Each `action` must be a key of `maintenance.actions`. The Helm chart and startup validation check this.
 
-**Evaluation.** At this time, fault-remediation uses the action of the event in each step: the check for an action that has no entry, the equivalence group, the check for an existing CR, the `maxRemediationAttempts` count, the log collector, and the CR. It reads the Node only for the owner reference of the CR, after these steps.
+**Evaluation.** At this time, fault-remediation uses the action of the event in each step: the check for an action that has no entry, the equivalence group, the check for an existing CR, the `maxRemediationAttempts` count, the log collector, and the CR. It reads the Node from the API server for the owner reference of the CR, after these steps. It also reads the Node to check if the node is still quarantined, for an action that has no entry and for an event that may already be resolved.
 
-With rule sets, fault-remediation reads the Node and evaluates the rule sets first, after the checks for `NONE` and for an event that is already remediated. The selected entry then replaces the action of the event in each step. The CR uses the same Node, so the change does not add an API call for an event that gets a CR.
+With rule sets, fault-remediation reads the Node and evaluates the rule sets first, after the checks for `NONE` and for an event that is already remediated. The selected entry then replaces the action of the event in each step. The CR uses the same Node, so the change does not add an API call for an event that gets a CR. An event that does not get a CR, for example a stopped event, adds one read.
 
 | Result | Action |
 |---|---|
 | The winner has `action` | fault-remediation uses that entry of `maintenance.actions` instead of the entry for the recommended action, in each step |
-| The winner has `stop: true` | The log collector runs, as for other events. No CR. The node state is `remediation-stopped`. The event does not count against `maxRemediationAttempts` |
+| The winner has `stop: true` | The log collector runs, as for other events. No CR. The node state is `remediation-stopped`, unless another event of the session has already moved the node to a later state (see [Node state labels](#node-state-labels)). The event does not count against `maxRemediationAttempts` |
 | No rule set matches | The action of the event, as at this time. An action that has no entry is recorded as `remediation-failed`, as at this time |
-| A rule set cannot be evaluated | No CR. The node state is `remediation-failed`. fault-remediation tries again with backoff, as it does at this time when it cannot create a CR. The event does not count against `maxRemediationAttempts` |
+| A rule set cannot be evaluated | No CR. The node state does not change, as in node-drainer. fault-remediation logs the rule set name and the error, increments the metric, and tries again with backoff, as it does at this time when it cannot create a CR. The event does not count against `maxRemediationAttempts` |
 
 Thus, a rule set can select an entry, or `stop`, for an event whose action has no entry in `maintenance.actions`.
 
@@ -505,15 +508,17 @@ fault-remediation includes `remediation-stopped` when it computes the node label
 
 node-drainer sets `drain-stopped` only when the node state is `quarantined` or `drain-stopped`. If another event of the [session](#quarantine-session) has already moved the node to a later state, node-drainer records the stop on the event and does not change the label.
 
+fault-remediation sets `remediation-stopped` only when the node state is `drain-succeeded` or `remediation-stopped`. If another event of the session has already moved the node to a later state, for example `remediating`, fault-remediation records the stop on the event and does not change the label. The label can still become `remediation-stopped` later, when fault-remediation computes it again from the active failures.
+
 When the [quarantine session](#quarantine-session) ends, the existing removal of the state label removes `drain-stopped` and `remediation-stopped`, as it removes the other values. The removal accepts any state, so it needs no change.
 
 ### The record on the event
 
 ```proto
 message DrainDecision {
-  string ruleSet = 1; // rule set that won; empty when no rule set matched
-  string method = 2;  // BuiltIn | Custom | Stop
-  string scope = 3;   // Node, or the entity type of a partial drain
+  string ruleSet = 1;    // rule set that applies: the winner, or the rule set of the reusedFrom event. Empty for the default
+  string method = 2;     // BuiltIn | Custom | Stop
+  string scope = 3;      // Node, or the entity type of a partial drain
   string reusedFrom = 4; // event of the session whose method this event uses; empty when this event selected it
 }
 
@@ -536,7 +541,7 @@ The records are new fields of `HealthEventStatus` (fields 1 to 7 are in use at t
 
 ### Phases
 
-Each phase is compatible with earlier versions. Phases 2 and 3 require phase 1, but not each other. Empty configuration gives the current behaviour.
+Each phase is compatible with earlier versions. Phases 2 and 3 require phase 1, but not each other. Empty configuration gives the current behaviour, except for the two node-drainer changes that apply without `ruleSets` (see the existing configurations in [Pod policies for each rule set](#pod-policies-for-each-rule-set)).
 
 1. The shared rule set schema in `commons/pkg/ruleset`. The CEL rule evaluators move to `commons`. fault-quarantine uses them with no change in behaviour.
 2. node-drainer: the drain decision and its record. Then `ruleSets`, the pod policies for each rule set, `drain-stopped`, and the deprecation of `customDrain.nodeSelector`.
@@ -550,21 +555,21 @@ A fault can take hours, from the event to the end of remediation. Node labels an
 |---|---|---|
 | fault-quarantine | When it evaluates the event | Unchanged by a label change. It applies until the [quarantine session](#quarantine-session) ends |
 | node-drainer | Before the first eviction or custom drain CR | Uses the recorded method until the drain ends. The later events of the [quarantine session](#quarantine-session) use the same method |
-| fault-remediation | Before the log collector and the CR | Uses the recorded entry. The CR continues. A change does not stop it |
+| fault-remediation | Before the equivalence group, the log collector, and the CR | Uses the recorded entry. The CR continues. A change does not stop it |
 
 Thus, a label change applies to the stages of a fault that have not started. A change does not undo an action that a stage already did.
 
-A rule set change is a configuration change. As at this time, the component reads it when it starts. The records keep the decisions of events that are in progress, so a restart does not change them.
+A rule set change is a configuration change. As at this time, the component reads it when it starts. The records keep the decisions of events that are in progress, so a restart does not change them. The pod policies of a `BuiltIn` drain are not in the record, so they follow the new configuration (see [node-drainer](#node-drainer)).
 
 ## Rationale
 
 - **Most of the selection exists.** fault-quarantine and node-drainer can already select by node. A shared profile adds a second way to configure them.
-- **Small changes in the right place.** The gap is in fault-remediation. It already reads the Node for each event that it remediates, so it can select with current labels at no extra cost.
+- **Small changes in the right place.** The gap is in fault-remediation. It already reads the Node for each event that gets a CR. The rule sets use that read, so they select with current labels, and they add one read only for an event that does not get a CR.
 - **A simpler configuration for the operator.** node-drainer and fault-remediation use the same rule set fields, variables, winner, and error result. An operator learns one format and one set of rules for priority and errors. A rule set moves from one component to the other with a change to the outcome only. Both components can also select by event, which a label selector cannot do.
 - **The outcome key shows the stage.** Each rule set states which stage it configures. A rule set that is in the configuration of the wrong component fails validation at startup, with a clear message.
 - **Reusable types.** The schema is in `commons`, so other NVSentinel code can read and validate rule sets with the same types.
 - **Tested code.** The CEL rule evaluators already run the quarantine and the validation rule sets. The rules use the same CEL as fault-quarantine.
-- **Scale.** No new cache for the full cluster. fault-remediation uses its existing Node read. node-drainer keeps its pruned informer, and prunes it in the same way as fault-quarantine.
+- **Scale.** No new cache for the full cluster. fault-remediation reads the Node for each event, and the CR uses the same read. node-drainer keeps its pruned informer, and prunes it in the same way as fault-quarantine.
 
 ## Consequences
 
@@ -583,7 +588,7 @@ A rule set change is a configuration change. As at this time, the component read
 - fault-quarantine rule sets differ from the shared schema in seven ways (see [fault-quarantine](#fault-quarantine)). An operator must know both forms.
 - `customDrain.nodeSelector` is deprecated soon after its release in v1.26.0. Operators who adopted it must migrate, and node-drainer supports two forms during the deprecation period. See [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector).
 - A simple node selection, such as `scheduler=slurm`, is longer as a CEL rule set than as a label selector.
-- In node-drainer, a `Node` rule that reads labels by a prefix or by a computed key makes the node cache keep all labels of all nodes. Only a startup warning shows it, as in fault-quarantine.
+- In node-drainer, a `Node` rule that reads labels by a prefix or by a computed key makes the node cache keep all labels of all nodes. Only a startup warning shows it.
 - In node-drainer, a `Node` rule that reads the status reads an empty status. The same rule reads the full status in fault-remediation. Only a startup warning shows it.
 - A fault-remediation rule set can change a `COMPONENT_RESET` event after a partial drain to an action on the full node. The pods that were not drained then stop without a drain.
 - Pod policies can be in the top-level configuration and in each `BuiltIn` rule set. The operator must find the winning rule set to know which policies apply to a node.
@@ -621,7 +626,7 @@ A new `maintenance.rules` list, with one `expression` for each rule, where the f
 
 Add a remediation field to each quarantine rule set. fault-remediation reads which rule sets matched the event and does not evaluate rules itself. **Rejected** because:
 
-- The decision occurs at quarantine time, which can be hours before remediation. That is the same problem as a profile that is fixed when the event arrives.
+- The decision occurs at quarantine time, which can be hours before remediation. Node labels can change in that time (see [Changes for a fault in progress](#changes-for-a-fault-in-progress)).
 - A group that needs a different action must also have its own quarantine rule set.
 - Events with `quarantineOverrides.force` skip the rule sets, so they have no record of a match.
 
@@ -693,7 +698,6 @@ Add `stopDrain.nodeSelector` in the syntax of `customDrain.nodeSelector`, and ke
 
 ### Open questions
 
-- **Duration of the deprecation period.** Proposed answer: two minor releases after the release that adds `ruleSets`.
 - **Enum names in rules.** A rule compares `event.recommendedAction` with a number, not with a name such as `COMPONENT_RESET`. Proposed answer: keep the numbers in this ADR, so that existing fault-quarantine rules do not change. A later change to the shared CEL rule evaluators can add the names for all three components.
 
 ## References
