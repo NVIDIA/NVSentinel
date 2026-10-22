@@ -28,19 +28,32 @@ import (
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/transformer"
 )
 
-const proxiedSinkHost = "sink.example.invalid"
+const (
+	proxiedSinkHost  = "sink.example.invalid"
+	proxiedTokenHost = "token.example.invalid"
+)
 
-var proxiedSinkRequests atomic.Int32
+var proxiedSinkRequests, proxiedTokenRequests atomic.Int32
 
 // http.ProxyFromEnvironment reads the proxy env vars once per process, so the
 // proxy must be configured before any test runs. Requests to localhost are
 // never proxied, so the other tests in this package are unaffected.
 func TestMain(m *testing.M) {
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Host == proxiedSinkHost {
+		switch r.URL.Host {
+		case proxiedTokenHost:
+			proxiedTokenRequests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "test-token-123",
+				"expires_in":   3600,
+			})
+		case proxiedSinkHost:
 			proxiedSinkRequests.Add(1)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
 		}
-		w.WriteHeader(http.StatusOK)
 	}))
 
 	os.Setenv("HTTP_PROXY", proxy.URL)
@@ -53,17 +66,10 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// The token URL is not loopback, so this covers both the sink transport and
+// the OIDC token transport.
 func TestPublish_UsesProxyFromEnvironment(t *testing.T) {
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "test-token-123",
-			"expires_in":   3600,
-		})
-	}))
-	defer tokenServer.Close()
-
-	tokenProvider := auth.NewTokenProvider(tokenServer.URL, "client-id", "client-secret", "scope", false)
+	tokenProvider := auth.NewTokenProvider("http://"+proxiedTokenHost+"/token", "client-id", "client-secret", "scope", false)
 	sink := NewHTTPSink("http://"+proxiedSinkHost+"/events", 10*time.Second, tokenProvider, false, 1)
 
 	event := &transformer.CloudEvent{
@@ -75,13 +81,18 @@ func TestPublish_UsesProxyFromEnvironment(t *testing.T) {
 		Data:        map[string]any{},
 	}
 
-	before := proxiedSinkRequests.Load()
+	sinkBefore := proxiedSinkRequests.Load()
+	tokenBefore := proxiedTokenRequests.Load()
 
 	if err := sink.Publish(context.Background(), event); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	if got := proxiedSinkRequests.Load() - before; got != 1 {
+	if got := proxiedTokenRequests.Load() - tokenBefore; got != 1 {
+		t.Errorf("proxy received %d requests for %s, want 1", got, proxiedTokenHost)
+	}
+
+	if got := proxiedSinkRequests.Load() - sinkBefore; got != 1 {
 		t.Errorf("proxy received %d requests for %s, want 1", got, proxiedSinkHost)
 	}
 }
