@@ -1,0 +1,129 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The PDB must leave at least one disruption available at EVERY replicaCount.
+# `minAvailable: 2`, the previous default, made disruptionsAllowed 0 below three
+# members, so draining the node hosting a member blocked indefinitely - and the
+# only symptom was a stuck drain, because the pod itself stays healthy.
+#
+# The chart now leaves BOTH pdb keys empty and relies on the subchart rendering
+# maxUnavailable: 1 for that case, rather than setting a literal. The two
+# override cases below are why: a literal would combine with an operator's own
+# minAvailable into a PDB carrying both fields.
+#
+# Lives in the umbrella suite because the Bitnami subchart cannot render alone:
+# tls.replicaset.existingSecrets must hold one entry per member, so each case
+# sets them to match.
+suite: mongodb pod disruption budget
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+templates:
+  - charts/mongodb-store/charts/mongodb/templates/replicaset/pdb.yaml
+set:
+  global.mongodbStore.enabled: true
+tests:
+  - it: caps unavailable members at one for a single-member store
+    set:
+      mongodb-store.mongodb.replicaCount: 1
+      mongodb-store.mongodb.tls.replicaset.existingSecrets:
+        - mongo-server-cert-0
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      # The regression: any minAvailable >= replicaCount pins disruptionsAllowed
+      # to 0 and deadlocks the drain.
+      - notExists:
+          path: spec.minAvailable
+
+  - it: caps unavailable members at one at the default three members
+    set:
+      mongodb-store.mongodb.replicaCount: 3
+      mongodb-store.mongodb.tls.replicaset.existingSecrets:
+        - mongo-server-cert-0
+        - mongo-server-cert-1
+        - mongo-server-cert-2
+    asserts:
+      # Equivalent to the old minAvailable: 2 at exactly this count - 3 members
+      # with one away leaves 2, which is quorum.
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  - it: still caps at one member above three, where minAvailable 2 lost quorum
+    set:
+      mongodb-store.mongodb.replicaCount: 5
+      mongodb-store.mongodb.tls.replicaset.existingSecrets:
+        - mongo-server-cert-0
+        - mongo-server-cert-1
+        - mongo-server-cert-2
+        - mongo-server-cert-3
+        - mongo-server-cert-4
+    asserts:
+      # minAvailable: 2 would have allowed 3 of 5 to go away, leaving 2 - below
+      # the 3-member quorum, so the replica set would go read-only.
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  # An operator who already sets pdb.minAvailable must keep getting exactly that
+  # field. A literal maxUnavailable in the chart defaults would combine with
+  # theirs into a PDB carrying both, which the API server rejects as mutually
+  # exclusive - so these two cases guard the precedence, not just the default.
+  - it: honours an operator's explicit minAvailable and emits maxUnavailable with it
+    set:
+      mongodb-store.mongodb.replicaCount: 3
+      mongodb-store.mongodb.pdb.minAvailable: 2
+      mongodb-store.mongodb.tls.replicaset.existingSecrets:
+        - mongo-server-cert-0
+        - mongo-server-cert-1
+        - mongo-server-cert-2
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 2
+      - notExists:
+          path: spec.maxUnavailable
+
+  - it: honours an operator's explicit maxUnavailable
+    set:
+      mongodb-store.mongodb.replicaCount: 5
+      mongodb-store.mongodb.pdb.maxUnavailable: 2
+      mongodb-store.mongodb.tls.replicaset.existingSecrets:
+        - mongo-server-cert-0
+        - mongo-server-cert-1
+        - mongo-server-cert-2
+        - mongo-server-cert-3
+        - mongo-server-cert-4
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 2
+      - notExists:
+          path: spec.minAvailable
+
+  - it: is not created when pdb.create is false
+    set:
+      mongodb-store.mongodb.replicaCount: 1
+      mongodb-store.mongodb.pdb.create: false
+      mongodb-store.mongodb.tls.replicaset.existingSecrets:
+        - mongo-server-cert-0
+    asserts:
+      - hasDocuments:
+          count: 0

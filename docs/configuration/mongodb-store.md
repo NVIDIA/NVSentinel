@@ -232,6 +232,34 @@ mongodb-store:
       size: "100Gi"
 ```
 
+### Pod disruption budget (Bitnami)
+
+`mongodb.pdb.minAvailable` and `mongodb.pdb.maxUnavailable` are both empty by default, and the subchart renders `maxUnavailable: 1` for that case. That caps how many members may be unavailable at once, which is what lets a node drain evict a member and finish. `mongodb.pdb.create: false` removes the budget entirely.
+
+`maxUnavailable` bounds voluntary disruptions to one member at a time. That is not the same as preserving quorum, and the distinction matters at small sizes: at three members or more, evicting one leaves a majority; at two, the majority is two, so evicting one leaves no majority and the set loses its primary; at one, the eviction is the outage, and permitting it is the deliberate trade for a drain that completes. It is the right default because it is the tightest bound that still permits any voluntary disruption, which is what a drain needs. A fixed `minAvailable` is correct only at one specific replica count: set to 2 it can never be satisfied below three members, so `disruptionsAllowed` is 0 and any drain of the node hosting a member blocks indefinitely, while the pod itself stays `Ready` and reports nothing wrong. Above three members the same value becomes too permissive: at five it allows three to go away, leaving two, which is below quorum and takes the replica set read-only.
+
+**Set at most one of the two.** The template emits `minAvailable` whenever it is non-empty and `maxUnavailable` whenever that is non-empty, and a PodDisruptionBudget carrying both is rejected by the API server as mutually exclusive. This is why the chart ships both empty rather than a literal `maxUnavailable: 1`: an explicit `minAvailable` of yours then renders alone, as you intended.
+
+If you do set `minAvailable`, keep it strictly below `replicaCount`. Note that `minAvailable: 1` on a single-member store does not avoid the deadlock — `currentHealthy` minus `desiredHealthy` is still 0 — it only stops `KubePdbNotEnoughHealthyPods` from reporting it.
+
+```yaml
+mongodb-store:
+  mongodb:
+    pdb:
+      # Leave both empty for maxUnavailable: 1, or set exactly one of them.
+      minAvailable: ""
+      maxUnavailable: ""
+```
+
+Check the result rather than the values, since an unsatisfiable budget looks healthy from every other angle:
+
+```bash
+kubectl -n nvsentinel get pdb mongodb \
+  -o custom-columns=MIN:.spec.minAvailable,MAX:.spec.maxUnavailable,ALLOWED:.status.disruptionsAllowed,HEALTHY:.status.currentHealthy,DESIRED:.status.desiredHealthy
+```
+
+`ALLOWED` must be at least 1. A 0 there is a drain that will hang.
+
 ### Open-file limit (node prerequisite)
 
 The nodes that run MongoDB must give containers a soft open-file limit (`RLIMIT_NOFILE`) of at least 64000. This applies to Bitnami and to the Percona Operator. The chart does not set this limit. The container gets it from the container runtime on the node.
