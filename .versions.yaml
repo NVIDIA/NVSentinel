@@ -53,6 +53,8 @@ go_tools:
   setup_envtest: 'v0.25.2'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
   goimports: 'v0.52.0'
+  # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
+  deadcode: 'v0.52.0'
   # renovate: datasource=github-releases depName=google/go-containerregistry depType=go_tools
   crane: 'v0.22.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools depType=go_tools

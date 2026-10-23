@@ -54,10 +54,6 @@ var _ checks.TransactionalCheck = (*InfiniBandStateCheck)(nil)
 func (c *InfiniBandStateCheck) checkName() string { return checks.InfiniBandStateCheckName }
 func (c *InfiniBandStateCheck) linkLayer() string { return ibLinkLayer }
 
-func (c *InfiniBandStateCheck) isTargetPort(port *discovery.IBPort) bool {
-	return discovery.IsIBPort(port)
-}
-
 func (c *InfiniBandStateCheck) formatDeviceDisappearance(device string) string {
 	return fmt.Sprintf("NIC %s disappeared from /sys/class/infiniband/ - hardware failure", device)
 }

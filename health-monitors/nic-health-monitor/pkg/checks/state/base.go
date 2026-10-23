@@ -38,7 +38,6 @@ import (
 type linkLayerStrategy interface {
 	checkName() string
 	linkLayer() string
-	isTargetPort(port *discovery.IBPort) bool
 	formatDeviceDisappearance(device string) string
 	formatPortDisappearance(device string, port int) string
 }

@@ -111,10 +111,6 @@ type mockStatusChecker struct {
 	callCount  int
 }
 
-func (statusChecker *mockStatusChecker) ShouldSkipCRCreation(context.Context, string, string) bool {
-	return statusChecker.GetCRState(context.Background(), "", "") != crstatus.CRStateFailed
-}
-
 func (statusChecker *mockStatusChecker) GetCRState(_ context.Context, _ string, crName string) crstatus.CRState {
 	if statusChecker.stateByCR != nil {
 		return statusChecker.stateByCR[crName]

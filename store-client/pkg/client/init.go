@@ -71,26 +71,6 @@ func (f *defaultFilterBuilder) Gt(field string, value any) FilterBuilder {
 	return f
 }
 
-func (f *defaultFilterBuilder) Gte(field string, value any) FilterBuilder {
-	if f.filters == nil {
-		f.filters = make(map[string]any)
-	}
-
-	f.filters[field] = map[string]any{opGTE: value}
-
-	return f
-}
-
-func (f *defaultFilterBuilder) Lt(field string, value any) FilterBuilder {
-	if f.filters == nil {
-		f.filters = make(map[string]any)
-	}
-
-	f.filters[field] = map[string]any{opLT: value}
-
-	return f
-}
-
 func (f *defaultFilterBuilder) Lte(field string, value any) FilterBuilder {
 	if f.filters == nil {
 		f.filters = make(map[string]any)
@@ -117,16 +97,6 @@ func (f *defaultFilterBuilder) And(filters ...any) FilterBuilder {
 	}
 
 	f.filters["$and"] = filters
-
-	return f
-}
-
-func (f *defaultFilterBuilder) Or(filters ...any) FilterBuilder {
-	if f.filters == nil {
-		f.filters = make(map[string]any)
-	}
-
-	f.filters["$or"] = filters
 
 	return f
 }

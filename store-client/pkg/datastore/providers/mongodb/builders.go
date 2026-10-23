@@ -48,18 +48,6 @@ func (fb *mongoFilterBuilder) Gt(field string, value any) client.FilterBuilder {
 	return fb
 }
 
-// Gte adds a greater-than-or-equal filter
-func (fb *mongoFilterBuilder) Gte(field string, value any) client.FilterBuilder {
-	fb.filter[field] = bson.M{"$gte": value}
-	return fb
-}
-
-// Lt adds a less-than filter
-func (fb *mongoFilterBuilder) Lt(field string, value any) client.FilterBuilder {
-	fb.filter[field] = bson.M{"$lt": value}
-	return fb
-}
-
 // Lte adds a less-than-or-equal filter
 func (fb *mongoFilterBuilder) Lte(field string, value any) client.FilterBuilder {
 	fb.filter[field] = bson.M{"$lte": value}
@@ -75,12 +63,6 @@ func (fb *mongoFilterBuilder) In(field string, values any) client.FilterBuilder 
 // And combines multiple filters with logical AND
 func (fb *mongoFilterBuilder) And(filters ...any) client.FilterBuilder {
 	fb.filter["$and"] = filters
-	return fb
-}
-
-// Or combines multiple filters with logical OR
-func (fb *mongoFilterBuilder) Or(filters ...any) client.FilterBuilder {
-	fb.filter["$or"] = filters
 	return fb
 }
 

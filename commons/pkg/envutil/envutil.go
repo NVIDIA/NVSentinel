@@ -45,13 +45,3 @@ func GetEnvBool(key string, defaultVal bool) bool {
 
 	return defaultVal
 }
-
-// GetEnvString retrieves a string environment variable.
-// If the variable is not set, returns defaultVal.
-func GetEnvString(key string, defaultVal string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-
-	return defaultVal
-}

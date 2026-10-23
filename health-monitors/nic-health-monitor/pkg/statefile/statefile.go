@@ -248,11 +248,6 @@ type Manager struct {
 	scopeChanged bool
 }
 
-// NewManager constructs a Manager backed by the default on-host paths.
-func NewManager() *Manager {
-	return NewManagerWithPaths(DefaultStateFilePath, DefaultBootIDPath)
-}
-
 // NewManagerWithPaths constructs a Manager with explicit paths, used by
 // tests to redirect to tempdir-backed files.
 func NewManagerWithPaths(statePath, bootIDPath string) *Manager {

@@ -52,12 +52,6 @@ func NewCRStatusChecker(
 	}
 }
 
-// ShouldSkipCRCreation returns true if an existing CR should suppress creation of a new CR.
-func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
-	state := c.GetCRState(ctx, actionName, crName)
-	return state == CRStateInProgress || state == CRStateSucceeded
-}
-
 func (c *CRStatusChecker) GetCRState(ctx context.Context, actionName string, crName string) CRState {
 	resource, exists := c.remediationActions[actionName]
 	if !exists {

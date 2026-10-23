@@ -23,9 +23,6 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 )
 
-//go:fix inline
-func ptr[T any](v T) *T { return new(v) }
-
 func TestLambdaNormalizer_Normalize(t *testing.T) {
 	const (
 		testID      = "abc123"

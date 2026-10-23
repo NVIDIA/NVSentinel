@@ -31,10 +31,3 @@ const (
 	ExtRRVersion  = "v1"
 	ExtRRKind     = "ExternalRemediationRequest"
 )
-
-// IsExtRRResource reports whether (apiGroup, kind) identify an
-// ExternalRemediationRequest. Used by fault-remediation to branch into the
-// ADR-040 asymmetric semantics for status and construction.
-func IsExtRRResource(apiGroup, kind string) bool {
-	return apiGroup == ExtRRApiGroup && kind == ExtRRKind
-}
