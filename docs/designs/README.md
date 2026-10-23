@@ -72,5 +72,6 @@ Each record states one decision: the context that forced it, what was decided, w
 | 056 | [Performance — Concurrent Node-Partitioned Event Processing](056-concurrent-node-partitioned-event-processing.md) |
 | 058 | [Authentication — Host-Native Metadata Collector (proposed)](058-metadata-collector-host-authentication.md) |
 | 059 | [Health Events Analyzer — Operator Recovery of Derived Conditions (proposed)](059-derived-condition-recovery.md) |
+| 061 | [Fault Management — Cloud-Independent Host Diagnostics in Log Collector (proposed)](061-host-diagnostics-collection.md) |
 | 062 | [Fault Quarantine — Release Quarantine Actions Only at Session End (proposed)](062-fault-quarantine-release-at-session-end.md) |
 | 063 | [Node Drainer — Owner Kinds in Pod Drain Policies (proposed)](063-pod-drain-policies-owner-kinds.md) |
