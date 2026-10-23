@@ -258,7 +258,7 @@ global:
 
   # CSP Health Monitor - monitors cloud provider maintenance events
   # Detects scheduled maintenance windows from cloud provider APIs
-  # Supports: GCP (Compute Engine), AWS (EC2)
+  # Supports: GCP (Compute Engine), AWS (EC2), Akamai (LKE)
   # Requires: Cloud provider credentials configured
   cspHealthMonitor:
     enabled: false
