@@ -70,6 +70,7 @@ const (
 	CSPGCP    CSP = "gcp"
 	CSPAWS    CSP = "aws"
 	CSPLambda CSP = "lambda"
+	CSPAkamai CSP = "akamai"
 )
 
 // Constants for maintenance types
