@@ -1,0 +1,227 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Self-hosted Renovate. It updates the tool versions in .versions.yaml, which
+# Dependabot cannot read. Configuration: .github/renovate.json5.
+#
+# Renovate only edits .versions.yaml. When a PR bumps the protobuf tools or
+# controller-gen, the regenerate job commits the regenerated code to the PR
+# branch. It runs here, not on pull_request_target: GitHub starts no workflow
+# for PRs and pushes made with GITHUB_TOKEN.
+
+name: Renovate
+
+on:
+  schedule:
+    # Thursdays 05:00 UTC. Releases go out on Mondays, so this leaves two working
+    # days to merge the PRs or fix their conflicts before the release.
+    - cron: "0 5 * * 4"
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: "Run in dry-run mode (no branches or PRs)"
+        default: false
+        type: boolean
+      logLevel:
+        description: "Renovate log level"
+        default: "info"
+        type: choice
+        options:
+          - debug
+          - info
+          - warn
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RENOVATE_BRANCH_PREFIX: renovate/
+
+jobs:
+  renovate:
+    name: Renovate
+    if: github.repository == 'nvidia/nvsentinel'
+    # Renovate runs in a container, so the runner needs Docker.
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      # Renovate lists issues to close old config-error and Dependency Dashboard issues.
+      # It cannot open a config-error issue; make renovate-lint fails CI on a bad config.
+      issues: read
+      # Renovate writes a status check on each branch; without this the run aborts.
+      statuses: write
+      # Renovate reads Dependabot alerts to flag security updates in PRs.
+      security-events: read
+    steps:
+      # Only to read .versions.yaml. Renovate clones the repository itself.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install yq
+        run: |
+          if ! command -v yq &> /dev/null; then
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+            sudo chmod +x /usr/local/bin/yq
+          fi
+
+      - name: Load Renovate version from .versions.yaml
+        id: versions
+        run: echo "renovate=$(yq '.container_tools.renovate' .versions.yaml)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure dry-run mode
+        if: ${{ inputs.dryRun }}
+        run: echo "RENOVATE_DRY_RUN=full" >> "$GITHUB_ENV"
+
+      - name: Run Renovate
+        uses: renovatebot/github-action@f0f41e5f2e706165f6814b1d0f0d0e319de7d1d9  # v46.3.8
+        with:
+          renovate-version: ${{ steps.versions.outputs.renovate }}
+        env:
+          RENOVATE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RENOVATE_REPOSITORIES: '["${{ github.repository }}"]'
+          RENOVATE_ONBOARDING: "false"
+          RENOVATE_GIT_AUTHOR: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          # Scheduled runs have no inputs.
+          LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
+
+  plan:
+    name: Find PRs that need regenerated code
+    needs: renovate
+    if: ${{ !inputs.dryRun }}
+    runs-on: linux-amd64-cpu8
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      branches: ${{ steps.plan.outputs.branches }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install yq and jq
+        run: |
+          if ! command -v yq &> /dev/null; then
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq jq
+          fi
+
+      - name: Compare tool versions with the base branch
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          plan='[]'
+          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --author app/github-actions --state open \
+            --json headRefName,baseRefName \
+            --jq "map(select(.headRefName | startswith(\"$RENOVATE_BRANCH_PREFIX\"))) | .[] | \"\(.headRefName) \(.baseRefName)\"")
+          while read -r head base; do
+            [ -n "$head" ] || continue
+            git fetch --quiet origin "$head" "$base"
+            versions() { git show "origin/$1:.versions.yaml" | yq -o=json "$2"; }
+            protos=false
+            crds=false
+            [ "$(versions "$head" .protobuf)" != "$(versions "$base" .protobuf)" ] && protos=true
+            [ "$(versions "$head" .go_tools.controller_gen)" != "$(versions "$base" .go_tools.controller_gen)" ] && crds=true
+            if [ "$protos" = true ] || [ "$crds" = true ]; then
+              plan=$(jq -c --arg b "$head" --argjson p "$protos" --argjson c "$crds" \
+                '. + [{branch: $b, protos: $p, crds: $c}]' <<<"$plan")
+            fi
+          done <<<"$prs"
+          echo "branches=$plan" >> "$GITHUB_OUTPUT"
+          echo "$plan" | jq .
+
+  regenerate:
+    name: Regenerate code on ${{ matrix.branch }}
+    needs: plan
+    if: ${{ needs.plan.outputs.branches != '[]' && needs.plan.outputs.branches != '' }}
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.branches) }}
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ matrix.branch }}
+          persist-credentials: false
+
+      # Installs the tool versions from the PR branch's .versions.yaml.
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Regenerate protobuf code
+        if: ${{ matrix.protos }}
+        run: make protos-generate
+
+      - name: Regenerate CRDs and DeepCopy code
+        if: ${{ matrix.crds }}
+        run: |
+          set -euo pipefail
+          # Every module whose generate target runs the pinned controller-gen.
+          for makefile in $(git grep -lF "\$(CONTROLLER_GEN)" -- '*Makefile'); do
+            make -C "$(dirname "$makefile")" generate
+          done
+
+      - name: Guard generated changes
+        run: |
+          set -euo pipefail
+          git status --porcelain
+          bad=$(git status --porcelain | awk '{print $2}' | grep -Ev \
+            -e '\.pb\.go$' -e '_pb2(_grpc)?\.pyi?$' -e '(^|/)go\.(mod|sum)$' \
+            -e '(^|/)zz_generated\.deepcopy\.go$' \
+            -e '^distros/kubernetes/nvsentinel/charts/[^/]+/crds/[^/]+\.yaml$' \
+            -e '^plugins/[^/]+/config/crd/[^/]+\.yaml$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Refusing to commit files that are not generated code:"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: Commit regenerated code
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ matrix.branch }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Generated code is already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -s -m "chore(deps): regenerate code for the updated tools"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${HEAD_REF}"
