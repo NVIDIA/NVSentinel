@@ -365,6 +365,7 @@ func (c *InfiniBandStateCheck) buildEventsForPoll(
 		cardActive:      st.cardActive,
 		cardTotal:       st.cardTotal,
 		cardRole:        st.cardRole,
+		portCard:        st.portCard,
 		managementCards: st.managementCards,
 		uncertain:       st.discoveryUncertain,
 	}
@@ -402,7 +403,7 @@ func (c *InfiniBandStateCheck) portTransitionEvents(
 
 		if !firstPoll && !baselineRun && c.suppressedPortDue(key, current) {
 			c.forgetSuppressedPort(key)
-			events = append(events, c.unhealthyPortEvent(current))
+			events = append(events, c.suppressedPortEvent(current))
 
 			continue
 		}
@@ -607,8 +608,21 @@ func (c *InfiniBandStateCheck) healthyBaselineEvent(current portSnapshot) *pb.He
 // non-fatal intermediate state" to fatal when the card has fewer
 // active ports than its role peers.
 func (c *InfiniBandStateCheck) unhealthyPortEvent(snap portSnapshot) *pb.HealthEvent {
-	isFatal := ibPortIsFatal(snap)
+	return c.portStateEvent(snap, ibPortIsFatal(snap))
+}
 
+// suppressedPortEvent reports a port the first poll suppressed that stayed
+// unhealthy for stateCheck.suppressedPortReportAfter. The delay stands in for
+// the card-homogeneity verdict the first poll could not reach, and ADR-047
+// §3.2 makes a card whose port is still Polling at the first poll fatal. So a
+// port still DOWN is fatal here, Polling included. INIT and ARMED keep their
+// non-fatal severity: the link is up and waiting for the Subnet Manager, and
+// an SM outage must not mark every node that boots during it fatal.
+func (c *InfiniBandStateCheck) suppressedPortEvent(snap portSnapshot) *pb.HealthEvent {
+	return c.portStateEvent(snap, snap.State == checks.IBStateDown || ibPortIsFatal(snap))
+}
+
+func (c *InfiniBandStateCheck) portStateEvent(snap portSnapshot, isFatal bool) *pb.HealthEvent {
 	action := pb.RecommendedAction_NONE
 	if isFatal {
 		action = pb.RecommendedAction_REPLACE_VM

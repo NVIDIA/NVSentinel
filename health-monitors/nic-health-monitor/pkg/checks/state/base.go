@@ -193,13 +193,7 @@ func (b *baseStateCheck) seedFromPersistedState() {
 	// reboot or scope change already dropped the port states, so the times
 	// left here are from this boot. While a baseline is owed (a device stayed
 	// unreadable), a pod restart must not restart the wait.
-	b.suppressedSince = make(map[string]time.Time)
-
-	for k, v := range persisted {
-		if !v.SuppressedSince.IsZero() {
-			b.suppressedSince[k] = v.SuppressedSince
-		}
-	}
+	b.suppressedSince = persistedSuppressionTimes(persisted)
 
 	if b.emitHealthyBaselines || len(persisted) == 0 {
 		return
@@ -304,6 +298,18 @@ func (b *baseStateCheck) holdPort(
 	return prev, now.Sub(since) < holdDown
 }
 
+func persistedSuppressionTimes(persisted map[string]statefile.PortStateSnapshot) map[string]time.Time {
+	since := make(map[string]time.Time)
+
+	for k, v := range persisted {
+		if !v.SuppressedSince.IsZero() {
+			since[k] = v.SuppressedSince
+		}
+	}
+
+	return since
+}
+
 // recordSuppressedPort notes the first time the first-poll peer-evidence gate
 // suppressed a port. The time is recorded even when
 // stateCheck.suppressedPortReportAfter is zero: only suppressedPortDue reads
@@ -361,6 +367,45 @@ func (b *baseStateCheck) pruneSuppressedPorts(currentPorts map[string]portSnapsh
 	}
 }
 
+// peerVouchedCards returns the cards whose down ports suppressedPortReportAfter
+// must not report: cards the homogeneity check evaluated and found at or
+// above their group's mode, and cards exempt from peer comparison as
+// management-NIC siblings. Their down ports are expected, like the uncabled
+// second port of a dual-port card (#1379): reporting them would replace the
+// node, and the replacement has the same port down.
+func peerVouchedCards(
+	managementCards map[string]bool,
+	anomalousCards map[string]topology.CardAnomaly,
+	evaluatedCards map[string]int,
+) map[string]bool {
+	vouched := maps.Clone(managementCards)
+	if vouched == nil {
+		vouched = make(map[string]bool)
+	}
+
+	for card := range evaluatedCards {
+		if _, anomalous := anomalousCards[card]; !anomalous {
+			vouched[card] = true
+		}
+	}
+
+	return vouched
+}
+
+// forgetVouchedSuppressions drops the suppression timers of ports on cards
+// their peers vouch for. A first poll can see a tie while cabled ports are
+// still training, so a later poll that finds the card healthy drops its
+// timer too.
+func (b *baseStateCheck) forgetVouchedSuppressions(portCard map[string]string, vouched map[string]bool) {
+	for key := range b.suppressedSince {
+		if card, ok := portCard[key]; ok && vouched[card] {
+			slog.Info("Dropping first-poll suppression timer: peers vouch for the card",
+				"check", b.strategy.checkName(), "port_key", key, "card", card)
+			delete(b.suppressedSince, key)
+		}
+	}
+}
+
 // portIsHealthy reports whether a port snapshot is fully operational.
 // Both link layers share the same healthy definition.
 func portIsHealthy(snap portSnapshot) bool {
@@ -377,6 +422,7 @@ type pollAggregates struct {
 	cardActive      map[string]int
 	cardTotal       map[string]int
 	cardRole        map[string]topology.Role
+	portCard        map[string]string
 	managementCards map[string]bool
 	uncertain       bool
 }
@@ -430,8 +476,17 @@ func (b *baseStateCheck) buildEvents(
 	// emit their own device event and are still present at diff time.
 	latchedBefore := maps.Clone(b.disappearedLatch)
 
+	// Before the port pass, so a timer due this poll is not reported for a
+	// card its peers now vouch for; after it, because the first-poll gate
+	// records a timer for every port it suppresses.
+	vouched := peerVouchedCards(agg.managementCards, anomalousCards, evaluatedCards)
+	b.forgetVouchedSuppressions(agg.portCard, vouched)
+
 	events := clearEvents
 	events = append(events, portEvents(anomalousCards)...)
+
+	b.forgetVouchedSuppressions(agg.portCard, vouched)
+
 	events = append(events, disappearanceEvents...)
 	events = append(events, b.detectPortDisappearance(agg.currentDevices, agg.currentPorts)...)
 	events = append(events, b.deviceDisappearanceRecoveries(latchedBefore)...)

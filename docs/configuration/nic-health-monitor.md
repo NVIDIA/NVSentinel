@@ -121,9 +121,17 @@ The hold-down applies only to port state. The `link_downed` counter (InfiniBandD
 
 ## Reporting Ports Suppressed on the First Poll
 
-On the first poll, an unhealthy port is reported only with peer evidence that it should be up: its card has fewer active ports than the decisive mode of its role group. Without that evidence (a singleton group, a tie, or every card down) the port is suppressed, because it may be uncabled or disabled by design. A suppressed port that never comes up is otherwise never reported. A node with half its compute links down from boot gives a tie and stays silent.
+On the first poll, an unhealthy port is reported only with peer evidence that it should be up: its card has fewer active ports than the decisive mode of its role group. Otherwise the port is suppressed, because it may be uncabled or disabled by design. That happens when:
 
-`suppressedPortReportAfter` reports such a port once it has stayed unhealthy that long:
+- the card is at or above its group's mode, like the uncabled second port of a dual-port card. This is the most common case.
+- the card shares a PCI card with a management NIC, so it is left out of peer comparison.
+- the card is alone in its role group.
+- the group's vote is tied.
+- the group's mode is 0, because most of its cards are down.
+
+A suppressed port that never comes up is otherwise never reported. A node with half its compute links down from boot gives a tie and stays silent.
+
+`suppressedPortReportAfter` reports such a port once it has stayed unhealthy that long, but only when the peers gave no verdict on its card (a singleton group, a tie, or a mode of 0):
 
 ```yaml
 nic-health-monitor:
@@ -131,7 +139,8 @@ nic-health-monitor:
 ```
 
 - **Off by default.** `"0s"` keeps suppressing the port. Leave it off if some ports are down by design, or exclude those devices with `nicExclusionRegex`.
-- **Usual severity.** The port is reported with the severity a runtime transition to that state would have.
+- **Healthy cards are never reported.** A port on a card at or above its group's mode, or on a card that shares a PCI card with a management NIC, is not reported however long it stays down. If a later poll finds the card at or above the mode, for example once its other ports finish training, the port is dropped.
+- **Severity.** An InfiniBand port still `DOWN` is fatal with `REPLACE_VM`, `Polling` included, the same result the homogeneity check gives a card below its mode. `INIT` and `ARMED` stay non-fatal, so a subnet manager outage at boot does not mark every node fatal. A RoCE port is reported only when `DOWN`, which is fatal.
 - **Ports still training at boot are not reported.** A port that comes up before the delay is dropped.
 - **Survives restarts.** The suppression time is kept in the state file, so a pod restart does not restart the wait. This includes a restart while the reboot baseline is still owed because a device is unreadable. A reboot or discovery-scope change resets it, and the next first poll decides again.
 - **Recorded while off.** The monitor saves the suppression time even when the option is off. If you turn the option on later, a port that has stayed down since its suppression is reported at the first poll after the delay, without a reboot.

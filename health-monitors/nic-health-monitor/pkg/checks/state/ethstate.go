@@ -358,6 +358,7 @@ func (c *EthernetStateCheck) buildEventsForPoll(
 		cardActive:      st.cardActive,
 		cardTotal:       st.cardTotal,
 		cardRole:        st.cardRole,
+		portCard:        st.portCard,
 		managementCards: st.managementCards,
 		uncertain:       st.discoveryUncertain,
 	}

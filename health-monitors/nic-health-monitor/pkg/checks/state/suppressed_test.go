@@ -35,11 +35,16 @@ const testReportAfter = 10 * time.Minute
 // so the card-homogeneity vote is a 2-2 tie and the first poll has no peer
 // evidence for either down port.
 func tiedIBNode() *stubNode {
+	return tiedIBNodeWith(holdIBPolling)
+}
+
+// tiedIBNodeWith is tiedIBNode with mlx5_0 and mlx5_1 in the given state.
+func tiedIBNodeWith(down stubPort) *stubNode {
 	node := newStubNode()
 	for i, pci := range []string{"0000:03:00.0", "0002:03:00.0", "0010:03:00.0", "0012:03:00.0"} {
 		port := holdIBUp
 		if i < 2 {
-			port = holdIBPolling
+			port = down
 		}
 
 		node.addIB(fmt.Sprintf("mlx5_%d", i), &stubDevice{
@@ -119,7 +124,8 @@ func TestIBState_SuppressedPort_ReportedOnceAfterDelay(t *testing.T) {
 	assert.ElementsMatch(t, []string{"mlx5_0", "mlx5_1"}, unhealthyPorts(events))
 
 	for _, e := range events {
-		assert.False(t, e.IsFatal, "DOWN/Polling keeps its usual non-fatal severity")
+		assert.True(t, e.IsFatal, "a port still DOWN after the delay is fatal, Polling included")
+		assert.Equal(t, pb.RecommendedAction_REPLACE_VM, e.RecommendedAction)
 		assert.Equal(t, checks.InfiniBandStateCheckName, e.CheckName)
 	}
 
@@ -135,6 +141,42 @@ func TestIBState_SuppressedPort_ReportedOnceAfterDelay(t *testing.T) {
 	// against mlx5_1's card.
 	assert.True(t, events[1].IsFatal)
 	assert.Contains(t, events[1].Message, "Card 0002:03:00 (compute) has 0 active ports, expected 1")
+}
+
+func TestIBState_SuppressedPort_SeverityAfterDelay(t *testing.T) {
+	cases := []struct {
+		name   string
+		port   stubPort
+		fatal  bool
+		action pb.RecommendedAction
+	}{
+		{"DOWN/Polling", holdIBPolling, true, pb.RecommendedAction_REPLACE_VM},
+		{"DOWN/Disabled", stubPort{state: checks.IBStateDown, physState: checks.IBPhysDisabled, linkLayer: ibLinkLayer},
+			true, pb.RecommendedAction_REPLACE_VM},
+		// INIT and ARMED wait for the Subnet Manager; an SM outage must not
+		// make every booting node fatal.
+		{"INIT", stubPort{state: "INIT", physState: checks.IBPhysLinkUp, linkLayer: ibLinkLayer},
+			false, pb.RecommendedAction_NONE},
+		{"ARMED", stubPort{state: "ARMED", physState: checks.IBPhysLinkUp, linkLayer: ibLinkLayer},
+			false, pb.RecommendedAction_NONE},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check, clock := newSuppressedIBCheck(t, tiedIBNodeWith(tc.port), testReportAfter,
+				freshStateManager(t), suppressedStart)
+			require.Empty(t, runPoll(t, check), "a tied vote gives no peer evidence; the first poll must suppress")
+
+			clock.Advance(testReportAfter)
+			events := runPoll(t, check)
+			require.ElementsMatch(t, []string{"mlx5_0", "mlx5_1"}, unhealthyPorts(events))
+
+			for _, e := range events {
+				assert.Equal(t, tc.fatal, e.IsFatal)
+				assert.Equal(t, tc.action, e.RecommendedAction)
+			}
+		})
+	}
 }
 
 func TestIBState_SuppressedPort_ComesUpFirst_NeverReportedUnhealthy(t *testing.T) {
@@ -521,6 +563,114 @@ func TestState_SuppressedPort_FirstSeenHealthyAfterDelay_NotReportedUnhealthy(t 
 			assert.Empty(t, suppressionTimers(t, check))
 		})
 	}
+}
+
+// dualPortNode has one dual-port compute card per PCI address. Port 1 of the
+// first trainingCards cards is DOWN; port 2 of every card is uncabled.
+func dualPortNode(layer string, pcis []string, trainingCards int) *stubNode {
+	node := newStubNode()
+
+	for i, pci := range pcis {
+		first := upPort(layer)
+		if i < trainingCards {
+			first = downPort(layer)
+		}
+
+		node.addIB(fmt.Sprintf("mlx5_%d", i), &stubDevice{
+			pciAddress: pci, numaNode: 0,
+			ports: map[int]stubPort{1: first, 2: downPort(layer)},
+		})
+	}
+
+	return node
+}
+
+func TestState_SuppressedPort_UncabledPortOnVouchedCard_NeverReported(t *testing.T) {
+	for _, layer := range bothLayers {
+		for _, bootIDChanged := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/bootIDChanged=%t", layer, bootIDChanged), func(t *testing.T) {
+				// Every card has one active port out of two, so the vote is
+				// decisive and no card is below the mode (#1379).
+				node := dualPortNode(layer, []string{"0000:03:00.0", "0002:03:00.0"}, 0)
+				check, clock := newLayerCheckOn(t, layer, node, testReportAfter, freshStateManager(t),
+					suppressedStart, bootIDChanged)
+
+				assert.Empty(t, unhealthyPorts(runPoll(t, check)))
+				assert.Empty(t, suppressionTimers(t, check), "a card its peers vouch for must get no timer")
+
+				clock.Advance(24 * time.Hour)
+				assert.Empty(t, unhealthyPorts(runPoll(t, check)),
+					"an uncabled port on a healthy card must never be reported")
+			})
+		}
+	}
+}
+
+func TestState_SuppressedPort_TieThenCardsHealthy_DropsTimers(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			// Port 1 of two cards is still training at the first poll, so the
+			// vote is a 2-2 tie and every down port is suppressed.
+			pcis := []string{"0000:03:00.0", "0002:03:00.0", "0010:03:00.0", "0012:03:00.0"}
+			node := dualPortNode(layer, pcis, 2)
+			check, clock := newLayerCheckOn(t, layer, node, testReportAfter, freshStateManager(t),
+				suppressedStart, false)
+
+			require.Empty(t, unhealthyPorts(runPoll(t, check)))
+			require.Len(t, suppressionTimers(t, check), 6)
+
+			node.ib["mlx5_0"].ports[1] = upPort(layer)
+			node.ib["mlx5_1"].ports[1] = upPort(layer)
+			clock.Advance(30 * time.Second)
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)))
+			assert.Empty(t, suppressionTimers(t, check),
+				"a later poll that finds the cards healthy must drop their timers")
+
+			clock.Advance(testReportAfter)
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)))
+		})
+	}
+}
+
+func TestState_SuppressedPort_CardVouchedWhenDue_NotReported(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			pcis := []string{"0000:03:00.0", "0002:03:00.0", "0010:03:00.0", "0012:03:00.0"}
+			node := dualPortNode(layer, pcis, 2)
+			check, clock := newLayerCheckOn(t, layer, node, testReportAfter, freshStateManager(t),
+				suppressedStart, false)
+			require.Empty(t, unhealthyPorts(runPoll(t, check)))
+
+			// The training ports come up on the same poll the timers fall due.
+			node.ib["mlx5_0"].ports[1] = upPort(layer)
+			node.ib["mlx5_1"].ports[1] = upPort(layer)
+			clock.Advance(testReportAfter)
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)),
+				"a due timer must not report a port on a card its peers now vouch for")
+			assert.Empty(t, suppressionTimers(t, check))
+		})
+	}
+}
+
+func TestEthState_SuppressedPort_ManagementSiblingAndVouchedCards_NeverReported(t *testing.T) {
+	// mlx5_5 shares its card with the management NIC, so the card is exempt
+	// from peer comparison. mlx5_7 is the uncabled function of a card at its
+	// group's mode.
+	node := l40sFrontendNode()
+	reader := node.reader()
+	classifier := buildClassifier(t, reader, []string{"0000:0f:00.0"}, l40sTopology(),
+		writeProcNetRoute(t, "eth0"))
+	cfg := &config.Config{StateCheck: config.StateCheckConfig{ReportSuppressedAfter: testReportAfter}}
+	check := NewEthernetStateCheck("node1", reader, cfg,
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), true)
+	clock := &fakeClock{now: suppressedStart}
+	check.now = clock.Now
+
+	assert.Empty(t, unhealthyPorts(runPoll(t, check)))
+	assert.Empty(t, check.suppressedSince, "exempt and vouched cards must get no timer")
+
+	clock.Advance(24 * time.Hour)
+	assert.Empty(t, unhealthyPorts(runPoll(t, check)))
 }
 
 func TestState_SuppressedPort_DisabledAfterRestart_StaysSilent(t *testing.T) {
