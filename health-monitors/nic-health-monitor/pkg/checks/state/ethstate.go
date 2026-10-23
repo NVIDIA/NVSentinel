@@ -120,6 +120,7 @@ type ethPollState struct {
 	managementCards    map[string]bool
 	allPorts           []ethPortInfo
 	discoveryUncertain bool
+	unreadableDevices  map[string]error
 
 	cardActive map[string]int
 	cardTotal  map[string]int
@@ -193,15 +194,18 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	baselineRun := c.emitHealthyBaselines && len(result.UnreadableDevices) == 0
 	st := newEthPollState()
 	st.discoveryUncertain = len(result.UnreadableDevices) > 0
+	st.unreadableDevices = result.UnreadableDevices
 
 	committedAnomalous := c.anomalousLatch
 	committedDisappeared := c.disappearedLatch
 	committedPortLatch := c.disappearedPortLatch
 	committedMisses := c.deviceMissCounts
+	committedSuppressed := c.suppressedSince
 	c.anomalousLatch = maps.Clone(committedAnomalous)
 	c.disappearedLatch = maps.Clone(committedDisappeared)
 	c.disappearedPortLatch = maps.Clone(committedPortLatch)
 	c.deviceMissCounts = maps.Clone(committedMisses)
+	c.suppressedSince = maps.Clone(committedSuppressed)
 
 	c.collectDevicesAndPorts(result.Devices, st)
 	c.retainUnreadableDevices(
@@ -215,6 +219,7 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	}
 
 	events := c.buildEventsForPoll(st, firstPoll, baselineRun)
+	c.pruneSuppressedPorts(st.currentPorts)
 	c.logDiscoverySummaryIfChanged(st)
 
 	if firstPoll {
@@ -228,6 +233,7 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 		disappearedLatch:     c.disappearedLatch,
 		disappearedPortLatch: c.disappearedPortLatch,
 		deviceMissCounts:     c.deviceMissCounts,
+		suppressedSince:      c.suppressedSince,
 		linkLayer:            ethLinkLayer,
 		baselineRan:          baselineRun,
 	}
@@ -236,6 +242,7 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.disappearedLatch = committedDisappeared
 	c.disappearedPortLatch = committedPortLatch
 	c.deviceMissCounts = committedMisses
+	c.suppressedSince = committedSuppressed
 
 	return events, nil
 }
@@ -254,6 +261,7 @@ func (c *EthernetStateCheck) Commit() {
 	c.disappearedLatch = pending.disappearedLatch
 	c.disappearedPortLatch = pending.disappearedPortLatch
 	c.deviceMissCounts = pending.deviceMissCounts
+	c.suppressedSince = pending.suppressedSince
 
 	if pending.baselineRan {
 		c.emitHealthyBaselines = false
@@ -352,8 +360,10 @@ func (c *EthernetStateCheck) buildEventsForPoll(
 		cardActive:      st.cardActive,
 		cardTotal:       st.cardTotal,
 		cardRole:        st.cardRole,
+		portCard:        st.portCard,
 		managementCards: st.managementCards,
 		uncertain:       st.discoveryUncertain,
+		unreadable:      st.unreadableDevices,
 	}
 
 	return c.buildEvents(agg, baselineRun,
@@ -371,6 +381,10 @@ func (c *EthernetStateCheck) portTransitionEvents(
 
 	for _, pi := range st.allPorts {
 		if evt := c.evaluatePortTransition(pi, firstPoll, baselineRun, anomalousCards, st.portCard); evt != nil {
+			if !evt.IsHealthy {
+				c.forgetSuppressedPort(pi.key)
+			}
+
 			events = append(events, evt)
 		}
 	}
@@ -441,6 +455,15 @@ func (c *EthernetStateCheck) escalationEvent(
 	pi ethPortInfo, prev portSnapshot, isHealthy, firstPoll bool,
 	anomalousCards map[string]topology.CardAnomaly, portCard map[string]string,
 ) *pb.HealthEvent {
+	// A port the first poll suppressed stays unhealthy without a transition,
+	// so suppressedPortReportAfter reports it from here. Only DOWN is
+	// reported; a port that retrained to INIT or ARMED keeps its timer.
+	if !firstPoll && ethernetPortIsFatal(pi.snap) && c.suppressedPortDue(pi.key, pi.snap) {
+		c.forgetSuppressedPort(pi.key)
+
+		return c.unhealthyEvent(pi, prev, false, anomalousCards, portCard)
+	}
+
 	if !isHealthy && ethernetPortIsFatal(pi.snap) && !ethernetPortIsFatal(prev) {
 		return c.unhealthyEvent(pi, prev, firstPoll, anomalousCards, portCard)
 	}
@@ -513,6 +536,7 @@ func (c *EthernetStateCheck) unhealthyEvent(
 			slog.Info("Suppressing first-poll unhealthy RoCE port: no peer evidence of failure",
 				"device", pi.snap.Device, "port", pi.snap.Port, "card", card,
 				"state", pi.snap.State, "physState", pi.snap.PhysicalState)
+			c.recordSuppressedPort(pi.key)
 
 			return nil
 		}

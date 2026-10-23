@@ -126,6 +126,7 @@ type ibPollState struct {
 	ibPorts            []discovery.IBPort
 	skippedVFs         int
 	discoveryUncertain bool
+	unreadableDevices  map[string]error
 
 	cardActive   map[string]int
 	cardTotal    map[string]int
@@ -207,15 +208,18 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	st := newIBPollState()
 	st.skippedVFs = result.SkippedVFs
 	st.discoveryUncertain = len(result.UnreadableDevices) > 0
+	st.unreadableDevices = result.UnreadableDevices
 
 	committedAnomalous := c.anomalousLatch
 	committedDisappeared := c.disappearedLatch
 	committedPortLatch := c.disappearedPortLatch
 	committedMisses := c.deviceMissCounts
+	committedSuppressed := c.suppressedSince
 	c.anomalousLatch = maps.Clone(committedAnomalous)
 	c.disappearedLatch = maps.Clone(committedDisappeared)
 	c.disappearedPortLatch = maps.Clone(committedPortLatch)
 	c.deviceMissCounts = maps.Clone(committedMisses)
+	c.suppressedSince = maps.Clone(committedSuppressed)
 
 	c.collectDevicesAndPorts(result.Devices, st)
 	c.retainUnreadableDevices(
@@ -224,6 +228,7 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.applyPortHoldDown(st.currentPorts, st.cardActive, st.portCard, result.UnreadableDevices)
 
 	events := c.buildEventsForPoll(st, firstPoll, baselineRun)
+	c.pruneSuppressedPorts(st.currentPorts)
 	c.logDiscoverySummaryIfChanged(st)
 
 	c.pending = &statePollCommit{
@@ -233,6 +238,7 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 		disappearedLatch:     c.disappearedLatch,
 		disappearedPortLatch: c.disappearedPortLatch,
 		deviceMissCounts:     c.deviceMissCounts,
+		suppressedSince:      c.suppressedSince,
 		linkLayer:            ibLinkLayer,
 		baselineRan:          baselineRun,
 	}
@@ -241,6 +247,7 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	c.disappearedLatch = committedDisappeared
 	c.disappearedPortLatch = committedPortLatch
 	c.deviceMissCounts = committedMisses
+	c.suppressedSince = committedSuppressed
 
 	return events, nil
 }
@@ -259,6 +266,7 @@ func (c *InfiniBandStateCheck) Commit() {
 	c.disappearedLatch = pending.disappearedLatch
 	c.disappearedPortLatch = pending.disappearedPortLatch
 	c.deviceMissCounts = pending.deviceMissCounts
+	c.suppressedSince = pending.suppressedSince
 
 	if pending.baselineRan {
 		c.emitHealthyBaselines = false
@@ -359,8 +367,10 @@ func (c *InfiniBandStateCheck) buildEventsForPoll(
 		cardActive:      st.cardActive,
 		cardTotal:       st.cardTotal,
 		cardRole:        st.cardRole,
+		portCard:        st.portCard,
 		managementCards: st.managementCards,
 		uncertain:       st.discoveryUncertain,
+		unreadable:      st.unreadableDevices,
 	}
 
 	return c.buildEvents(agg, baselineRun,
@@ -389,12 +399,25 @@ func (c *InfiniBandStateCheck) portTransitionEvents(
 		// through the same peer-evidence gate.
 		if !st.portOverride[key] &&
 			c.shouldSuppressFirstPollWithoutPeerEvidence(firstPoll || baselineRun, current, port, card, anomalousCards) {
+			c.recordSuppressedPort(key)
+
+			continue
+		}
+
+		if !firstPoll && !baselineRun && c.suppressedPortDue(key, current) {
+			c.forgetSuppressedPort(key)
+			events = append(events, c.suppressedPortEvent(current))
+
 			continue
 		}
 
 		evt := c.evaluatePortTransition(key, current, prev, hasPrev, baselineRun)
 		if evt == nil {
 			continue
+		}
+
+		if !evt.IsHealthy {
+			c.forgetSuppressedPort(key)
 		}
 
 		events = append(events, evt)
@@ -588,8 +611,21 @@ func (c *InfiniBandStateCheck) healthyBaselineEvent(current portSnapshot) *pb.He
 // non-fatal intermediate state" to fatal when the card has fewer
 // active ports than its role peers.
 func (c *InfiniBandStateCheck) unhealthyPortEvent(snap portSnapshot) *pb.HealthEvent {
-	isFatal := ibPortIsFatal(snap)
+	return c.portStateEvent(snap, ibPortIsFatal(snap))
+}
 
+// suppressedPortEvent reports a port the first poll suppressed that stayed
+// unhealthy for stateCheck.suppressedPortReportAfter. The delay stands in for
+// the card-homogeneity verdict the first poll could not reach, and ADR-047
+// §3.2 makes a card whose port is still Polling at the first poll fatal. So a
+// port still DOWN is fatal here, Polling included. INIT and ARMED keep their
+// non-fatal severity: the link is up and waiting for the Subnet Manager, and
+// an SM outage must not mark every node that boots during it fatal.
+func (c *InfiniBandStateCheck) suppressedPortEvent(snap portSnapshot) *pb.HealthEvent {
+	return c.portStateEvent(snap, snap.State == checks.IBStateDown || ibPortIsFatal(snap))
+}
+
+func (c *InfiniBandStateCheck) portStateEvent(snap portSnapshot, isFatal bool) *pb.HealthEvent {
 	action := pb.RecommendedAction_NONE
 	if isFatal {
 		action = pb.RecommendedAction_REPLACE_VM
