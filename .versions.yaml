@@ -112,7 +112,7 @@ testing_tools:
 # Cluster Dependencies
 cluster:
   # renovate: datasource=helm depName=kube-prometheus-stack depType=cluster
-  prometheus_operator: '78.5.0'
+  prometheus_operator: '92.10.1'
   # renovate: datasource=helm depName=gpu-operator depType=cluster
   gpu_operator: 'v26.7.2'
   # renovate: datasource=helm depName=cert-manager depType=cluster
