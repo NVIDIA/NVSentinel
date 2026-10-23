@@ -66,15 +66,30 @@ func WithMetrics[T client.Object](fn func(kind string)) Option[T] {
 	}
 }
 
+// WithCompletionTime starts the TTL at the time fn returns instead of the
+// first reconcile. While fn returns nil the resource is never deleted, even if
+// it already carries an expiry annotation. Use this for kinds that can stay in
+// progress longer than the TTL. A nil fn is ignored.
+func WithCompletionTime[T client.Object](fn func(T) *time.Time) Option[T] {
+	return func(r *Reconciler[T]) {
+		if fn == nil {
+			return
+		}
+
+		r.completionTime = fn
+	}
+}
+
 // Reconciler is a generic TTL reconciler for any cluster-scoped
 // Kubernetes resource type T. A separate Reconciler is instantiated per CRD
 // via Setup, and each is hard-bound to its type at compile time.
 type Reconciler[T client.Object] struct {
 	client.Client
-	defaultTTL time.Duration
-	clock      Clock
-	onDeleted  func(kind string)
-	kind       string
+	defaultTTL     time.Duration
+	clock          Clock
+	onDeleted      func(kind string)
+	completionTime func(T) *time.Time
+	kind           string
 }
 
 // NewReconciler constructs a Reconciler for type T.
@@ -102,7 +117,7 @@ func (r *Reconciler[T]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	result, err := Process(ctx, obj, r.defaultTTL, r.clock)
+	result, err := Process(ctx, obj, r.defaultTTL, r.clock, r.processOptions(obj)...)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("process %s %q: %w", r.kind, obj.GetName(), err)
 	}
@@ -134,6 +149,15 @@ func (r *Reconciler[T]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	default:
 		return ctrl.Result{}, nil
 	}
+}
+
+// processOptions returns the per-object Process options for this kind.
+func (r *Reconciler[T]) processOptions(obj T) []ProcessOption {
+	if r.completionTime == nil {
+		return nil
+	}
+
+	return []ProcessOption{AfterCompletion(r.completionTime(obj))}
 }
 
 // Ensure Reconciler implements reconcile.Reconciler.

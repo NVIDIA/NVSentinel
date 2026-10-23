@@ -228,3 +228,42 @@ func TestExternalRemediationRequest_SetCompletionTime_IdempotentWhenAlreadySet(t
 	assert.Equal(t, original.AsTime(), extrr.Status.CompletionTime.AsTime(),
 		"SetCompletionTime must NOT overwrite an existing CompletionTime")
 }
+
+func TestExternalRemediationRequest_CompletedAt(t *testing.T) {
+	t.Parallel()
+
+	completedAt := time.Date(2026, 10, 23, 10, 0, 0, 123, time.UTC)
+
+	cases := []struct {
+		name     string
+		status   *protos.ExternalRemediationRequestStatus
+		expected *time.Time
+	}{
+		{name: "nil status"},
+		{name: "open without completion time", status: &protos.ExternalRemediationRequestStatus{}},
+		{
+			name:     "completed",
+			status:   &protos.ExternalRemediationRequestStatus{CompletionTime: timestamppb.New(completedAt)},
+			expected: &completedAt,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			extrr := newERR()
+			extrr.Status = tc.status
+
+			got := extrr.CompletedAt()
+			if tc.expected == nil {
+				assert.Nil(t, got)
+
+				return
+			}
+
+			require.NotNil(t, got)
+			assert.Equal(t, *tc.expected, *got)
+		})
+	}
+}

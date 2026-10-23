@@ -19,6 +19,8 @@
 package v1alpha1
 
 import (
+	"time"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -111,6 +113,18 @@ func (e *ExternalRemediationRequest) SetCompletionTime() {
 	if e.Status.CompletionTime == nil {
 		e.Status.CompletionTime = timestamppb.Now()
 	}
+}
+
+// CompletedAt returns Status.CompletionTime, or nil while the ExtRR is open.
+// The TTL reconciler uses it to start an ExtRR's TTL at completion (ADR-064).
+func (e *ExternalRemediationRequest) CompletedAt() *time.Time {
+	if e.Status == nil || e.Status.CompletionTime == nil {
+		return nil
+	}
+
+	completedAt := e.Status.CompletionTime.AsTime()
+
+	return &completedAt
 }
 
 // DeepCopyObject implements runtime.Object.
