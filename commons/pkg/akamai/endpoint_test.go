@@ -15,11 +15,32 @@
 package akamai
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// recordingT records what AllowLoopbackHostForTest does to its test, so a
+// rejection can be checked without failing the real test.
+type recordingT struct {
+	cleanups []func()
+	fatal    string
+}
+
+func (r *recordingT) Helper()           {}
+func (r *recordingT) Cleanup(fn func()) { r.cleanups = append(r.cleanups, fn) }
+
+func (r *recordingT) Fatalf(format string, args ...any) {
+	r.fatal = fmt.Sprintf(format, args...)
+}
+
+func (r *recordingT) runCleanups() {
+	for _, fn := range r.cleanups {
+		fn()
+	}
+}
 
 func TestNormalizeEndpoint(t *testing.T) {
 	tests := []struct {
@@ -55,4 +76,86 @@ func TestNormalizeEndpoint(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestAllowLoopbackHostForTest_HostSupplied_AcceptsOnlyLoopback(t *testing.T) {
+	tests := []struct {
+		host   string
+		accept bool
+	}{
+		{host: "127.0.0.1", accept: true},
+		{host: "127.0.0.2", accept: true},
+		{host: "::1", accept: true},
+		{host: "localhost", accept: true},
+		{host: "LOCALHOST", accept: true},
+		{host: "api.linode.com"},
+		{host: "example.com"},
+		{host: "10.0.0.5"},
+		{host: "0.0.0.0"},
+		{host: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			rec := &recordingT{}
+
+			AllowLoopbackHostForTest(rec, tt.host)
+
+			// Undo the call whatever happens, so a failure here cannot leak the
+			// moved pin into the tests that run after this one.
+			defer rec.runCleanups()
+
+			if tt.accept {
+				assert.Empty(t, rec.fatal)
+				assert.Len(t, rec.cleanups, 1, "an accepted host must register its restore")
+
+				return
+			}
+
+			assert.Contains(t, rec.fatal, "not a loopback host")
+			assert.Empty(t, rec.cleanups, "a refused host must leave the pin alone")
+
+			_, err := NormalizeEndpoint("akamai.apiEndpoint", DefaultAPIEndpoint)
+			assert.NoError(t, err, "the production pin must still accept the production endpoint")
+		})
+	}
+}
+
+func TestNormalizeEndpoint_PinMovedToLoopback_AcceptsOnlyThatHostThenRestores(t *testing.T) {
+	const local = "http://127.0.0.1:43210/v4"
+
+	// The production pin refuses a loopback endpoint.
+	_, err := NormalizeEndpoint("akamai.apiEndpoint", local)
+	require.ErrorContains(t, err, "cleartext")
+
+	t.Run("while moved", func(t *testing.T) {
+		AllowLoopbackHostForTest(t, "127.0.0.1")
+
+		got, err := NormalizeEndpoint("akamai.apiEndpoint", local)
+		require.NoError(t, err)
+		assert.Equal(t, local, got)
+
+		// Only the moved host is accepted. The production host is not, and
+		// neither is another loopback address.
+		_, err = NormalizeEndpoint("akamai.apiEndpoint", DefaultAPIEndpoint)
+		require.ErrorContains(t, err, "not an approved")
+
+		_, err = NormalizeEndpoint("akamai.apiEndpoint", "http://127.0.0.2:43210/v4")
+		require.ErrorContains(t, err, "not an approved")
+
+		// The userinfo, query and scheme rules still apply.
+		_, err = NormalizeEndpoint("akamai.apiEndpoint", "http://user:pw@127.0.0.1:43210/v4")
+		require.ErrorContains(t, err, "userinfo")
+
+		_, err = NormalizeEndpoint("akamai.apiEndpoint", "ftp://127.0.0.1:43210/v4")
+		require.ErrorContains(t, err, "absolute https URL")
+	})
+
+	// The production pin is back once the test that moved it has finished.
+	got, err := NormalizeEndpoint("akamai.apiEndpoint", DefaultAPIEndpoint)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultAPIEndpoint, got)
+
+	_, err = NormalizeEndpoint("akamai.apiEndpoint", local)
+	require.ErrorContains(t, err, "cleartext")
 }

@@ -66,7 +66,7 @@ logLevel: info
 # Set to an empty string to disable MongoDB TLS client certificate mounts.
 clientCertMountPath: /etc/ssl/client-certs
 
-# cspName specifies the active cloud service provider. Can be "gcp", "aws", or "lambda".
+# cspName specifies the active cloud service provider. Can be "gcp", "aws", "lambda", or "akamai".
 cspName: ""
 
 # config.toml content will be generated from the fields below using the configmap template.
@@ -118,6 +118,17 @@ configToml:
     # for a JSON-file source; set it directly in a locally-run config.toml when
     # exercising csp-health-monitor without hitting cloud.lambda.ai.
 
+  akamai:
+    # apiEndpoint is the base URL of the Akamai Cloud API, version included.
+    # Leave it empty to use the production API (https://api.linode.com/v4). The
+    # host is checked in code against a fixed host allowlist (api.linode.com),
+    # so any other host fails at startup.
+    apiEndpoint: ""
+    # pollingIntervalSeconds controls how often the account maintenance API is
+    # polled for new / updated events. Lower values reduce trigger latency.
+    # Must be at least 30.
+    pollingIntervalSeconds: 60
+
 # lambdaApiKeySecret names the Secret containing the LAMBDA_API_KEY env var.
 # Required when cspName=lambda unless lambdaWorkloadIdentity.identityLRN is set.
 lambdaApiKeySecret:
@@ -134,6 +145,13 @@ lambdaWorkloadIdentity:
   # It needs permission to read maintenance events in the workspace named by
   # configToml.lambda.workspaceId, and must trust this cluster's ServiceAccount.
   identityLRN: ""
+
+# akamaiApiTokenSecret names the Secret containing the LINODE_TOKEN env var.
+# Required when cspName=akamai; plaintext token values are not supported. The
+# monitor only lists maintenance events, so give it a read-only token.
+akamaiApiTokenSecret:
+  name: ""
+  key: "LINODE_TOKEN"
 
 # Where health events go: socket (the node-local platform connector, default) or
 # deployment (the deployment platform connector; needs platformConnector.deployment.enabled).
