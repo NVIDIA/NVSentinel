@@ -1,0 +1,150 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: postgresql migrations job
+templates:
+  - templates/job-postgresql-migrations.yaml
+set:
+  global.datastore:
+    provider: postgresql
+    connection:
+      host: nvsentinel-postgresql
+      port: 5432
+      database: nvsentinel
+      username: postgresql
+      sslmode: require
+tests:
+  - it: renders the migration ConfigMap and Job for PostgreSQL by default
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: ConfigMap
+        documentIndex: 0
+      - isKind:
+          of: Job
+        documentIndex: 1
+
+  - it: is skipped when the setup Job is disabled
+    set:
+      global.datastore.setupJob.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: is skipped for MongoDB
+    set:
+      global.datastore.provider: mongodb
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # The ConfigMap must carry every migration, or the Job records a version
+  # older than the one the components wait for.
+  - it: ships the script and every migration file
+    documentIndex: 0
+    asserts:
+      - exists:
+          path: data["postgresql-migrate.sh"]
+      - matchRegex:
+          path: data["00001_initial_schema.sql"]
+          pattern: INSERT INTO nvsentinel_schema_migrations
+      - matchRegex:
+          path: data["00002_reconcile_runtime_schema.sql"]
+          pattern: INSERT INTO nvsentinel_schema_migrations
+      - matchRegex:
+          path: data["00003_health_event_idempotency_index.sql"]
+          pattern: CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS healthevent_idempotency_key_unique
+
+  # Components wait for the schema this Job records, so a post-install hook
+  # that waits for ready pods would never finish.
+  - it: is a plain Job, not a Helm hook
+    documentIndex: 1
+    asserts:
+      - isNull:
+          path: metadata.annotations["helm.sh/hook"]
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Force=true,Replace=true
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: postgresql-migrations
+      - equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: postgresql-init
+
+  - it: connects with the datastore settings and the bundled client certificate
+    documentIndex: 1
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            configMapRef:
+              name: RELEASE-NAME-datastore-config
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: postgresql-client-cert
+            secret:
+              secretName: postgresql-client-cert
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/bitnamilegacy/postgresql:16.4.0-debian-12-r14
+
+  - it: uses password auth and a separate DDL role when configured
+    documentIndex: 1
+    set:
+      global.datastore.credentialsFromSecret.name: pg-app
+      global.datastore.setupJob.adminSecret: pg-ddl
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: pg-app
+              optional: false
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MIGRATION_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: pg-ddl
+                key: username
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: postgresql-client-cert
+            secret:
+              secretName: postgresql-client-cert
+
+  - it: honours activeDeadlineSeconds
+    documentIndex: 1
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: 7200
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 7200
+
+  # The Job is immutable, so the hash that makes a changed pod template a new
+  # Job must survive the 63-character name limit.
+  - it: keeps the hash in the name for a long release name
+    documentIndex: 1
+    release:
+      name: customer-production-gpu-cluster-nvsentinel-east-1
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: ^[a-z0-9-]{1,32}-postgresql-migrations-[0-9a-f]{8}$
