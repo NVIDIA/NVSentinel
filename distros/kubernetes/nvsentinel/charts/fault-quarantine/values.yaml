@@ -280,13 +280,17 @@ ruleSets:
 # The validation section configures post-remediation validation from the fault-quarantine
 # module. If enabled, fault-quarantine will create the given validation resource for the
 # requested tests when an unquarantine event occurs. When it creates one, it preserves the
-# scheduling gate on the node (the cordon and the taints it applied), so every taint a
+# scheduling gate and applied-taint records on the node, so every taint a
 # ruleSet above applies must be listed in lifecycle-manager config.schedulingGate.taints
 # with remove set to true. The list of test is derived from the unhealthy events which
 # occurred during the quarantine session and these tests are derived from the ruleSets
 # section below.
 validation:
   enabled: false
+  # Keep the validation source on the Node until lifecycle-manager registers the
+  # matching request. Requires lifecycle-manager support for persisted handoffs.
+  # Pending handoffs retry every 30 seconds and recreate missing requests.
+  persistHandoff: false
   # Whether node-drainer drains COMPONENT_RESET events partially. Must match
   # node-drainer.partialDrainEnabled. While true, a COMPONENT_RESET event's drain never counts as a
   # full drain, so it never triggers validation on its own. Set global.partialDrainEnabled to

@@ -127,6 +127,11 @@ type CordonConfig struct {
 	// +optional
 	Remove bool `json:"remove,omitempty"`
 
+	// OnlyOwned requires a UID-bound ownership grant before releasing the scheduling gate.
+	// Deleting a request then clears its association without releasing the gate.
+	// +optional
+	OnlyOwned bool `json:"onlyOwned,omitempty"`
+
 	// LabelPrefix is prepended to the cordon-by/cordon-reason/cordon-timestamp and uncordon-by/uncordon-reason/
 	// uncordon-timestamp label keys when Remove is true. If empty, these labels are not modified.
 	// +optional

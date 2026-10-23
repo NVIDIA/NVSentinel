@@ -44,4 +44,5 @@ rules:
   - {{ printf "%ss" (.Values.validation.kind | lower) }}
   verbs:
   - create
+  - get
 {{- end }}

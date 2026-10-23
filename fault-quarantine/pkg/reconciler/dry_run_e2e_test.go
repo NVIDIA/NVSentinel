@@ -409,17 +409,25 @@ func TestE2E_LiveQuarantineRemovesLeftoverDryRunMarker(t *testing.T) {
 		return err == nil && quarantined[nodeName]
 	}, statusCheckTimeout, statusCheckPollInterval, "the real quarantine should be counted")
 
-	// Already-quarantined path.
+	// The promotion decision reads the informer cache, so establish the marker there first.
 	addMarker()
+	require.Eventually(t, func() bool {
+		n, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+		return err == nil && n.Annotations[common.QuarantineHealthEventDryRunAnnotationKey] != ""
+	}, statusCheckTimeout, statusCheckPollInterval, "the informer should observe the leftover marker")
 	send("1", model.AlreadyQuarantined)
 	require.Eventually(t, markerGone, statusCheckTimeout, statusCheckPollInterval,
 		"a further real event should remove a leftover marker")
+	n, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, common.CordonOwnershipPreExisting, common.CordonOwnership(n.Annotations),
+		"an ambiguous dry-run record must not grant ownership of an existing cordon")
 
 	// A restart must keep the real quarantine.
 	setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{TomlConfig: dryRunRules(true, false), DryRun: false})
 	time.Sleep(time.Second)
 
-	n, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	n, err = e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.True(t, n.Spec.Unschedulable)
 	assert.NotEmpty(t, n.Annotations[common.QuarantineHealthEventAnnotationKey], "the real quarantine record should survive a restart")

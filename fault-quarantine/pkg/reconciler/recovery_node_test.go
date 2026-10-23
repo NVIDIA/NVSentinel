@@ -402,7 +402,7 @@ func TestRemoveFinalRecoveredEventRetainsAnnotationUntilUnquarantineSucceeds(t *
 func TestRecoveryTransientRuleEvaluationAppliesNoPartialActionsBeforeRetry(t *testing.T) {
 	transientErr := errors.New("temporary evaluator failure")
 	clientset := fake.NewSimpleClientset(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "node-a-uid", ResourceVersion: "1"},
 	})
 	fqClient := &informer.FaultQuarantineClient{Clientset: clientset}
 	r := NewReconciler(ReconcilerConfig{}, fqClient, nil)
@@ -775,7 +775,7 @@ func TestColdStartCompletedNewerHealthyStateStillSupersedesOlderFault(t *testing
 	}
 	newerHealthy := proto.Clone(oldFailure).(*protos.HealthEvent)
 	newerHealthy.IsHealthy = true
-	clientset := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}})
+	clientset := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "node-a-uid", ResourceVersion: "1"}})
 	r := NewReconciler(
 		ReconcilerConfig{}, &informer.FaultQuarantineClient{Clientset: clientset}, nil)
 	r.SetLabelKeys("nvsentinel.nvidia.com/")
@@ -834,7 +834,7 @@ func TestColdStartComplexProjectionUsesBoundedCoverAndProgresses(t *testing.T) {
 		records = append(records, recoveryStoreRecord(
 			t, fmt.Sprintf("recovery-%d", index), base.Add(time.Duration(index+1)*time.Minute), recovery))
 	}
-	clientset := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}})
+	clientset := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "node-a-uid", ResourceVersion: "1"}})
 	r := NewReconciler(
 		ReconcilerConfig{}, &informer.FaultQuarantineClient{Clientset: clientset}, nil)
 	r.SetLabelKeys("nvsentinel.nvidia.com/")
@@ -881,7 +881,7 @@ func TestColdStartResidualProjectionReachesRuleEvaluation(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	clientset := fake.NewSimpleClientset(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "node-a-uid", ResourceVersion: "1"},
 	})
 	fqClient := &informer.FaultQuarantineClient{Clientset: clientset}
 	r := NewReconciler(ReconcilerConfig{}, fqClient, nil)
@@ -935,7 +935,7 @@ func TestColdStartWithoutSupersessionPreservesCompoundRuleSemantics(t *testing.T
 	ctx := context.Background()
 	base := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	clientset := fake.NewSimpleClientset(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "node-a-uid", ResourceVersion: "1"},
 	})
 	fqClient := &informer.FaultQuarantineClient{Clientset: clientset}
 	r := NewReconciler(ReconcilerConfig{}, fqClient, nil)
@@ -990,7 +990,7 @@ func TestColdStartPartialSupersessionPreservesResidualCompoundRuleSemantics(t *t
 	ctx := context.Background()
 	base := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	clientset := fake.NewSimpleClientset(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "node-a-uid", ResourceVersion: "1"},
 	})
 	fqClient := &informer.FaultQuarantineClient{Clientset: clientset}
 	r := NewReconciler(ReconcilerConfig{}, fqClient, nil)
@@ -1061,7 +1061,7 @@ func TestColdStartProjectionTransientFailureAppliesNoPartialActions(t *testing.T
 	base := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	transientErr := errors.New("temporary projected evaluation failure")
 	clientset := fake.NewSimpleClientset(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "node-a-uid", ResourceVersion: "1"},
 	})
 	fqClient := &informer.FaultQuarantineClient{Clientset: clientset}
 	r := NewReconciler(ReconcilerConfig{}, fqClient, nil)
