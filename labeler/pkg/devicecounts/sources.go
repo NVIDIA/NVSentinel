@@ -30,8 +30,7 @@ import (
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
 
-// hardwareKeySeparator joins the sorted values of a grouping expression. It
-// cannot appear in a node label value, so it is unambiguous in partition keys.
+// hardwareKeySeparator joins the sorted values of a grouping expression.
 const hardwareKeySeparator = "+"
 
 // observe evaluates one class for one node.
@@ -194,7 +193,7 @@ func evaluateGrouping(
 ) (string, error) {
 	result, err := evaluateExpression(ctx, program, "groupingExpression", node, resourceSlices)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("evaluate grouping: %w", err)
 	}
 
 	list, ok := result.(traits.Lister)
@@ -204,7 +203,7 @@ func evaluateGrouping(
 
 	values, err := groupingValues(list)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read grouping values: %w", err)
 	}
 
 	if len(values) == 0 {
@@ -263,16 +262,4 @@ func recordDeviceCountSource(class compiledClass, nodeName string, observation c
 
 		metrics.DeviceCountSource.DeleteLabelValues(nodeName, class.Name, source.Name)
 	}
-}
-
-func logMissingSource(class compiledClass, nodeName string) {
-	if len(class.sources) == 0 {
-		slog.Warn("Skipping device count label update because no ResourceSlices are associated with the node",
-			"node", nodeName, "class", class.Name)
-
-		return
-	}
-
-	slog.Warn("Skipping device count label update because no device count source is available on the node",
-		"node", nodeName, "class", class.Name)
 }

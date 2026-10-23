@@ -187,7 +187,7 @@ When expected device counts are disabled, all of `status` is discarded.
 Expressions that reference discarded fields are unsupported and receive only
 the field's empty or absent value.
 
-For classes without a matching override, the expected value is learned as the maximum current or existing expected count among nodes with the same configured grouping-label values. For classes with sources, the grouping partition is described in [Grouping with sources](#grouping-with-sources). Learned expected counts can rise automatically, but do not fall automatically when a node reports fewer devices.
+For classes without a matching override, the expected value is learned as the maximum current or existing expected count among nodes with the same configured grouping-label values. Learned expected counts can rise automatically, but do not fall automatically when a node reports fewer devices.
 
 ### Device-Count Sources
 
@@ -279,7 +279,7 @@ The `labeler_device_count_source{node, class, source}` gauge shows the source th
 
 - A class with `sources` must not set a class-level `currentExpression` or `groupingLabels`. The labeler does not start with such a class.
 - `expectedCountOverrides` stay at class level and apply to all sources. Use match labels that exist in every mode, such as `node.kubernetes.io/instance-type` or a nodepool label. Do not use `nvidia.com/gpu.product`, because GPUCluster mode does not set it.
-- Classes without `sources` work as before. Such a class treats a ResourceSlice from any driver as a source. Thus a hand-written GPU DRA class in this form can report `0` GPUs on a node that has only NIC ResourceSlices. Move such a class to the `sources` form. The labeler logs a warning at startup when two enabled classes write the same labels.
+- Classes without `sources` work as before. A hand-written GPU DRA class in that form can report `0` on a node with only another driver's slices, so move it to `sources`.
 
 ### Kata Detection Examples
 

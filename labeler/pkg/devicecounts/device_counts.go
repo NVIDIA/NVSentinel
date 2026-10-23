@@ -227,31 +227,7 @@ func NewManager(config Config) (*Manager, error) {
 		return nil, nil
 	}
 
-	warnOnSharedLabelKeys(manager.classes)
-
 	return manager, nil
-}
-
-// warnOnSharedLabelKeys reports classes that write the same node label. This is
-// allowed for compatibility with configurations that split one device kind
-// across classes, but the classes overwrite each other's values.
-func warnOnSharedLabelKeys(classes []compiledClass) {
-	owners := map[string]string{}
-
-	for _, class := range classes {
-		for _, labelKey := range []string{class.Labels.Current, class.Labels.Expected} {
-			owner, ok := owners[labelKey]
-			if !ok {
-				owners[labelKey] = class.Name
-				continue
-			}
-
-			if owner != class.Name {
-				slog.Warn("Multiple device-count classes write the same label; use one class with sources instead",
-					"label", labelKey, "classes", []string{owner, class.Name})
-			}
-		}
-	}
 }
 
 // Enabled reports whether the manager has any compiled device-count classes.
@@ -328,7 +304,8 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 		// last values until a source is available again.
 		if observation.missingSource {
 			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
-			logMissingSource(class, node.Name)
+			slog.Warn("Skipping device count label update because no device count source is available on the node",
+				"node", node.Name, "class", class.Name)
 
 			continue
 		}
@@ -467,7 +444,7 @@ func compileDeviceCountClass(
 	if len(classConfig.Sources) > 0 {
 		sources, err := compileDeviceCountSources(env, prefix, classConfig)
 		if err != nil {
-			return compiledClass{}, false, err
+			return compiledClass{}, false, fmt.Errorf("compile sources: %w", err)
 		}
 
 		return compiledClass{
@@ -476,9 +453,10 @@ func compileDeviceCountClass(
 		}, true, nil
 	}
 
-	program, err := compileExpression(env, prefix, "currentExpression", classConfig.CurrentExpression, countOutput)
+	program, err := compileExpression(env, prefix, "currentExpression", classConfig.CurrentExpression,
+		isCountType, "int")
 	if err != nil {
-		return compiledClass{}, false, err
+		return compiledClass{}, false, fmt.Errorf("compile class expression: %w", err)
 	}
 
 	return compiledClass{
@@ -495,15 +473,15 @@ func compileDeviceCountSources(env *cel.Env, classPrefix string, classConfig Cla
 		prefix := fmt.Sprintf("%s.sources[%d] (%s)", classPrefix, j, sourceConfig.Name)
 
 		if err := validateDeviceCountSourceConfig(prefix, sourceConfig, names); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("validate source: %w", err)
 		}
 
 		names[sourceConfig.Name] = struct{}{}
 
 		currentProgram, err := compileExpression(env, prefix, "currentExpression",
-			sourceConfig.CurrentExpression, countOutput)
+			sourceConfig.CurrentExpression, isCountType, "int")
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("compile source current expression: %w", err)
 		}
 
 		source := compiledSource{
@@ -514,9 +492,9 @@ func compileDeviceCountSources(env *cel.Env, classPrefix string, classConfig Cla
 
 		if strings.TrimSpace(sourceConfig.GroupingExpression) != "" {
 			source.groupingProgram, err = compileExpression(env, prefix, "groupingExpression",
-				sourceConfig.GroupingExpression, groupingOutput)
+				sourceConfig.GroupingExpression, isGroupingType, "list<string>")
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("compile source grouping expression: %w", err)
 			}
 		}
 
@@ -542,28 +520,19 @@ func validateDeviceCountSourceConfig(prefix string, sourceConfig SourceConfig, n
 	return nil
 }
 
-type outputRequirement struct {
-	allowed     func(*cel.Type) bool
-	description string
-}
-
-var (
-	countOutput    = outputRequirement{allowed: isCountType, description: "int"}
-	groupingOutput = outputRequirement{allowed: isGroupingType, description: "list<string>"}
-)
-
 func compileExpression(
 	env *cel.Env,
 	prefix, field, expression string,
-	output outputRequirement,
+	allowed func(*cel.Type) bool,
+	want string,
 ) (cel.Program, error) {
 	ast, issues := env.Compile(expression)
 	if issues != nil && issues.Err() != nil {
 		return nil, fmt.Errorf("%s: compile %s: %w", prefix, field, issues.Err())
 	}
 
-	if !output.allowed(ast.OutputType()) {
-		return nil, fmt.Errorf("%s: %s must return %s, got %s", prefix, field, output.description, ast.OutputType())
+	if !allowed(ast.OutputType()) {
+		return nil, fmt.Errorf("%s: %s must return %s, got %s", prefix, field, want, ast.OutputType())
 	}
 
 	program, err := env.Program(ast)
@@ -594,7 +563,7 @@ func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
 	}
 
 	if err := validateDeviceCountClassForm(index, classConfig); err != nil {
-		return err
+		return fmt.Errorf("validate class form: %w", err)
 	}
 
 	for j, override := range classConfig.ExpectedCountOverrides {
@@ -681,7 +650,7 @@ func (m *Manager) evaluateCurrent(
 ) (int, error) {
 	result, err := evaluateExpression(ctx, program, "currentExpression", node, resourceSlices)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("evaluate current count: %w", err)
 	}
 
 	count, ok := celResultToInt(result)
