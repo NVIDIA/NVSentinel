@@ -54,6 +54,18 @@ NCCL INFO Destroying communicator
 #  Rank  1 Group  0 Pid 12 on test device  1 NVIDIA A100
 		268435456		67108864		float		sum		-1		2374.1		113.07		197.87		0
 `
+	// sampleNCCLTests221 follows the format strings of nccl-tests v2.21.1 (src/util.cu): the
+	// device field of the rank line has a full PCI bus ID, and each result row has the
+	// out-of-place and the in-place columns.
+	sampleNCCLTests221 = `# nccl-tests version 2.21.1 nccl-headers=23102 nccl-library=23102
+#  Rank  0 Group  0 Pid     12 on       test device  0 [0000:1b:00] NVIDIA B200
+#  Rank  1 Group  0 Pid     12 on       test device  1 [0000:43:00] NVIDIA B200
+#
+#                                                              out-of-place                       in-place
+#       size         count      type   redop    root     time   algbw   busbw  #wrong     time   algbw   busbw  #wrong
+#        (B)    (elements)                               (us)  (GB/s)  (GB/s)             (us)  (GB/s)  (GB/s)
+   268435456      67108864     float     sum      -1   2374.1  113.07  197.87       0   2370.4  113.25  198.18       0
+`
 )
 
 func TestParseOutput(t *testing.T) {
@@ -73,6 +85,7 @@ func TestParseOutput(t *testing.T) {
 		{"with NCCL_DEBUG", sampleWithNCCLDebug, 256, 2, 113.07, 197.87, false, ""},
 		{"single GPU", sample1GPU, 256, 1, 268.44, 0.00, false, ""},
 		{"whitespace/tabs", sampleWithTabs, 256, 2, 113.07, 197.87, false, ""},
+		{"nccl-tests v2.21.1 format", sampleNCCLTests221, 256, 2, 113.07, 197.87, false, ""},
 		// Error cases
 		{"empty output", "", 256, 0, 0, 0, true, "could not determine number of GPUs"},
 		{"wrong size", sample8GPU, 128, 0, 0, 0, true, "could not find results for size"},

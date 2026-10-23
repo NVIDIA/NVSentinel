@@ -7,8 +7,8 @@ packages = [{include = "dcgm_diag"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-grpcio = "^1.74.0"
-protobuf = ">=6.31.1,<8.0.0"
+grpcio = "^1.84.0"
+protobuf = ">=7.35.1,<8.0.0"
 pynvml = ">=12,<14"
 structlog = ">=25.1,<27.0"
 
