@@ -133,7 +133,9 @@ nic-health-monitor:
 - **Off by default.** `"0s"` keeps suppressing the port. Leave it off if some ports are down by design, or exclude those devices with `nicExclusionRegex`.
 - **Usual severity.** The port is reported with the severity a runtime transition to that state would have.
 - **Ports still training at boot are not reported.** A port that comes up before the delay is dropped.
-- **Survives restarts.** The suppression time is kept in the state file, so a pod restart does not restart the wait. A reboot or discovery-scope change resets it, and the next first poll decides again.
+- **Survives restarts.** The suppression time is kept in the state file, so a pod restart does not restart the wait. This includes a restart while the reboot baseline is still owed because a device is unreadable. A reboot or discovery-scope change resets it, and the next first poll decides again.
+- **Recorded while off.** The monitor saves the suppression time even when the option is off. If you turn the option on later, a port that has stayed down since its suppression is reported at the first poll after the delay, without a reboot.
+- **Upgrades.** Versions before this option did not save a suppression time. After an upgrade, a port suppressed by the older version is picked up only after the next reboot or discovery-scope change.
 
 ## Poll Stall Detection
 

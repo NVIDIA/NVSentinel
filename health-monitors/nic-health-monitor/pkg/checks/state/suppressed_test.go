@@ -16,6 +16,7 @@ package state
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -212,38 +213,314 @@ func TestEthState_SuppressedPort_ReportedFatalAfterDelay(t *testing.T) {
 	assert.Empty(t, runPoll(t, check))
 }
 
-func newSuppressedLayerCheck(
-	t *testing.T, layer string, reportAfter time.Duration, mgr *statefile.Manager, start time.Time,
-) (checks.TransactionalCheck, *stubNode, *fakeClock) {
-	t.Helper()
-
+// downPort is the port newSuppressedLayerCheck starts with: DOWN/Polling for
+// IB, DOWN/Disabled for RoCE.
+func downPort(layer string) stubPort {
 	physical := checks.IBPhysPolling
 	if layer == ethLinkLayer {
 		physical = checks.IBPhysDisabled
 	}
 
-	node := newStubNode().addIB("mlx5_0", &stubDevice{
+	return stubPort{state: checks.IBStateDown, physState: physical, linkLayer: layer}
+}
+
+func upPort(layer string) stubPort {
+	return stubPort{state: checks.IBStateActive, physState: checks.IBPhysLinkUp, linkLayer: layer}
+}
+
+// singletonDownNode has one down port on a singleton card, which the first
+// poll suppresses for lack of peer evidence.
+func singletonDownNode(layer string) *stubNode {
+	return newStubNode().addIB("mlx5_0", &stubDevice{
 		pciAddress: "0000:03:00.0", numaNode: 0,
-		ports: map[int]stubPort{1: {state: checks.IBStateDown, physState: physical, linkLayer: layer}},
+		ports: map[int]stubPort{1: downPort(layer)},
 	})
+}
+
+func newSuppressedLayerCheck(
+	t *testing.T, layer string, reportAfter time.Duration, mgr *statefile.Manager, start time.Time,
+) (checks.TransactionalCheck, *stubNode, *fakeClock) {
+	t.Helper()
+
+	node := singletonDownNode(layer)
+	check, clock := newLayerCheckOn(t, layer, node, reportAfter, mgr, start, false)
+
+	return check, node, clock
+}
+
+// newLayerCheckOn builds the layer's state check on node, with every device
+// on its own compute card.
+func newLayerCheckOn(
+	t *testing.T, layer string, node *stubNode, reportAfter time.Duration, mgr *statefile.Manager,
+	start time.Time, bootIDChanged bool,
+) (checks.TransactionalCheck, *fakeClock) {
+	t.Helper()
+
+	topo := make(map[string][]string, len(node.ib))
+	for name := range node.ib {
+		topo[name] = []string{"PIX"}
+	}
+
 	reader := node.reader()
-	classifier := buildClassifier(t, reader, []string{"0000:0f:00.0"}, map[string][]string{"mlx5_0": {"PIX"}})
+	classifier := buildClassifier(t, reader, []string{"0000:0f:00.0"}, topo)
 	cfg := &config.Config{StateCheck: config.StateCheckConfig{ReportSuppressedAfter: reportAfter}}
 	clock := &fakeClock{now: start}
 
 	if layer == ibLinkLayer {
 		check := NewInfiniBandStateCheck("suppressed-restart", reader, cfg,
-			classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+			classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, bootIDChanged)
 		check.now = clock.Now
 
-		return check, node, clock
+		return check, clock
 	}
 
 	check := NewEthernetStateCheck("suppressed-restart", reader, cfg,
-		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, bootIDChanged)
 	check.now = clock.Now
 
-	return check, node, clock
+	return check, clock
+}
+
+// suppressionTimers returns a check's staged-or-committed suppression times.
+func suppressionTimers(t *testing.T, check checks.TransactionalCheck) map[string]time.Time {
+	t.Helper()
+
+	switch c := check.(type) {
+	case *InfiniBandStateCheck:
+		return c.suppressedSince
+	case *EthernetStateCheck:
+		return c.suppressedSince
+	}
+
+	t.Fatalf("unexpected check type %T", check)
+
+	return nil
+}
+
+// rebootManager simulates a host reboot: it writes a new boot ID next to the
+// original manager's state file and loads a fresh manager from it.
+func rebootManager(t *testing.T, original *statefile.Manager, bootID string) *statefile.Manager {
+	t.Helper()
+
+	path, bootIDPath := original.Paths()
+	require.NoError(t, os.WriteFile(bootIDPath, []byte(bootID+"\n"), 0o644))
+
+	fresh := statefile.NewManagerWithPaths(path, bootIDPath)
+	require.NoError(t, fresh.Load())
+	require.True(t, fresh.BootIDChanged())
+
+	return fresh
+}
+
+// healthyFor returns the healthy events that name device.
+func healthyFor(events []*pb.HealthEvent, device string) []*pb.HealthEvent {
+	var out []*pb.HealthEvent
+
+	for _, e := range events {
+		if !e.IsHealthy {
+			continue
+		}
+
+		for _, ent := range e.EntitiesImpacted {
+			if ent.EntityType == checks.EntityTypeNIC && ent.EntityValue == device {
+				out = append(out, e)
+
+				break
+			}
+		}
+	}
+
+	return out
+}
+
+var bothLayers = []string{ibLinkLayer, ethLinkLayer}
+
+func TestState_SuppressedPort_FirstPollAfterReboot_ReportedAfterDelay(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			node := singletonDownNode(layer)
+			check, clock := newLayerCheckOn(t, layer, node, testReportAfter, freshStateManager(t),
+				suppressedStart, true)
+
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)),
+				"the baseline poll after a reboot must suppress a port with no peer evidence")
+			assert.Contains(t, suppressionTimers(t, check), "mlx5_0_1")
+
+			clock.Advance(testReportAfter - time.Second)
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)))
+
+			clock.Advance(time.Second)
+			assert.Equal(t, []string{"mlx5_0"}, unhealthyPorts(runPoll(t, check)))
+
+			clock.Advance(time.Minute)
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)), "a reported port must be published once")
+		})
+	}
+}
+
+func TestState_SuppressedPort_Reboot_RestartsWait(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			mgr := freshStateManager(t)
+			node := singletonDownNode(layer)
+			check, _ := newLayerCheckOn(t, layer, node, testReportAfter, mgr, suppressedStart, false)
+			require.Empty(t, unhealthyPorts(runPoll(t, check)))
+
+			rebooted := rebootManager(t, mgr, "after-reboot")
+			assert.Empty(t, rebooted.PortStatesFor(layer), "a reboot must drop the persisted suppression time")
+
+			restarted, clock := newLayerCheckOn(t, layer, node, testReportAfter, rebooted,
+				suppressedStart.Add(6*time.Minute), true)
+			require.Empty(t, unhealthyPorts(runPoll(t, restarted)))
+
+			clock.Advance(4 * time.Minute)
+			assert.Empty(t, unhealthyPorts(runPoll(t, restarted)),
+				"after a reboot the wait must restart from the new first poll")
+
+			clock.Advance(6 * time.Minute)
+			assert.Equal(t, []string{"mlx5_0"}, unhealthyPorts(runPoll(t, restarted)))
+		})
+	}
+}
+
+func TestState_SuppressedPort_PendingBaselineRestart_KeepsWait(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			// mlx5_9 stays unreadable for the whole boot, so the reboot
+			// baseline stays owed and every pod restart is a pending-baseline
+			// restart.
+			newNode := func() *stubNode {
+				return singletonDownNode(layer).addIB("mlx5_9", &stubDevice{
+					pciAddress: "0000:50:00.0", numaNode: 0,
+					ports:           map[int]stubPort{1: upPort(layer)},
+					portsUnreadable: true,
+				})
+			}
+
+			mgr := freshStateManager(t)
+			check, _ := newLayerCheckOn(t, layer, newNode(), testReportAfter, mgr, suppressedStart, true)
+
+			for range checks.FirstPollDeferralLimit {
+				require.Empty(t, runPoll(t, check))
+			}
+
+			require.Empty(t, unhealthyPorts(runPoll(t, check)), "the partial first poll must suppress")
+			require.True(t, mgr.PendingBaseline(check.Name()), "the baseline must stay owed")
+			require.Equal(t, suppressedStart, mgr.PortStatesFor(layer)["mlx5_0_1"].SuppressedSince)
+
+			restartedMgr := reloadManager(t, mgr)
+			restarted, clock := newLayerCheckOn(t, layer, newNode(), testReportAfter, restartedMgr,
+				suppressedStart.Add(6*time.Minute), false)
+
+			for range checks.FirstPollDeferralLimit {
+				require.Empty(t, runPoll(t, restarted))
+			}
+
+			assert.Empty(t, unhealthyPorts(runPoll(t, restarted)),
+				"the restarted pod must not report before the original delay")
+
+			clock.Advance(4 * time.Minute)
+			assert.Equal(t, []string{"mlx5_0"}, unhealthyPorts(runPoll(t, restarted)),
+				"a pending baseline must not restart the wait")
+		})
+	}
+}
+
+func TestState_SuppressedPort_EnabledAfterRestart_ReportsPortsSuppressedWhileOff(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			mgr := freshStateManager(t)
+			check, _, _ := newSuppressedLayerCheck(t, layer, 0, mgr, suppressedStart)
+			require.Empty(t, runPoll(t, check))
+			require.Equal(t, suppressedStart, mgr.PortStatesFor(layer)["mlx5_0_1"].SuppressedSince,
+				"the suppression time must be saved while the option is off")
+
+			restarted, _, clock := newSuppressedLayerCheck(t, layer, testReportAfter, reloadManager(t, mgr),
+				suppressedStart.Add(6*time.Minute))
+			assert.Empty(t, unhealthyPorts(runPoll(t, restarted)))
+
+			clock.Advance(4 * time.Minute)
+			assert.Equal(t, []string{"mlx5_0"}, unhealthyPorts(runPoll(t, restarted)),
+				"enabling the option must report a port suppressed while it was off")
+		})
+	}
+}
+
+func TestState_SuppressedPort_DiscardedReportIsRetried(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			check, _, clock := newSuppressedLayerCheck(t, layer, testReportAfter, freshStateManager(t),
+				suppressedStart)
+			require.Empty(t, runPoll(t, check))
+
+			clock.Advance(testReportAfter)
+			events, err := check.Prepare()
+			require.NoError(t, err)
+			require.Equal(t, []string{"mlx5_0"}, unhealthyPorts(events))
+			check.Discard()
+
+			clock.Advance(time.Second)
+			assert.Equal(t, []string{"mlx5_0"}, unhealthyPorts(runPoll(t, check)),
+				"a discarded report must be published on the next poll")
+			assert.Empty(t, runPoll(t, check))
+		})
+	}
+}
+
+func TestState_SuppressedPort_ComesUpFirst_Forgotten(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			check, node, clock := newSuppressedLayerCheck(t, layer, testReportAfter, freshStateManager(t),
+				suppressedStart)
+			require.Empty(t, runPoll(t, check))
+			require.Contains(t, suppressionTimers(t, check), "mlx5_0_1")
+
+			node.ib["mlx5_0"].ports[1] = upPort(layer)
+			clock.Advance(10 * time.Second)
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)))
+			assert.Empty(t, suppressionTimers(t, check), "a port read healthy must be forgotten")
+
+			clock.Advance(time.Hour)
+			assert.Empty(t, runPoll(t, check))
+		})
+	}
+}
+
+func TestState_SuppressedPort_WaitSurvivesPodRestart(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			mgr := freshStateManager(t)
+			check, _, _ := newSuppressedLayerCheck(t, layer, testReportAfter, mgr, suppressedStart)
+			require.Empty(t, runPoll(t, check))
+
+			restarted, _, clock := newSuppressedLayerCheck(t, layer, testReportAfter, reloadManager(t, mgr),
+				suppressedStart.Add(6*time.Minute))
+			assert.Empty(t, unhealthyPorts(runPoll(t, restarted)),
+				"the restarted pod must not report before the original delay")
+
+			clock.Advance(4 * time.Minute)
+			assert.Equal(t, []string{"mlx5_0"}, unhealthyPorts(runPoll(t, restarted)),
+				"the wait must be measured from the original suppression, not the restart")
+		})
+	}
+}
+
+func TestState_SuppressedPort_FirstSeenHealthyAfterDelay_NotReportedUnhealthy(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			check, node, clock := newSuppressedLayerCheck(t, layer, testReportAfter, freshStateManager(t),
+				suppressedStart)
+			require.Empty(t, runPoll(t, check))
+
+			// The next poll comes after the deadline, and the port is up by then.
+			node.ib["mlx5_0"].ports[1] = upPort(layer)
+			clock.Advance(testReportAfter + time.Minute)
+			events := runPoll(t, check)
+			assert.Empty(t, unhealthyPorts(events), "a port that came up must not be reported unhealthy")
+			assert.Len(t, healthyFor(events, "mlx5_0"), 1, "the port coming up publishes its healthy event")
+			assert.Empty(t, suppressionTimers(t, check))
+		})
+	}
 }
 
 func TestState_SuppressedPort_DisabledAfterRestart_StaysSilent(t *testing.T) {

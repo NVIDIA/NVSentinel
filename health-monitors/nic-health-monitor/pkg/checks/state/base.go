@@ -187,17 +187,25 @@ func (b *baseStateCheck) seedFromPersistedState() {
 	b.deviceMissCounts = b.state.DeviceMissCountsFor(b.strategy.linkLayer())
 	b.exemptionLogged = make(map[string]bool)
 
-	if b.emitHealthyBaselines {
-		return
+	persisted := b.state.PortStatesFor(b.strategy.linkLayer())
+
+	// Suppression times are restored before the pending-baseline return. A
+	// reboot or scope change already dropped the port states, so the times
+	// left here are from this boot. While a baseline is owed (a device stayed
+	// unreadable), a pod restart must not restart the wait.
+	b.suppressedSince = make(map[string]time.Time)
+
+	for k, v := range persisted {
+		if !v.SuppressedSince.IsZero() {
+			b.suppressedSince[k] = v.SuppressedSince
+		}
 	}
 
-	persisted := b.state.PortStatesFor(b.strategy.linkLayer())
-	if len(persisted) == 0 {
+	if b.emitHealthyBaselines || len(persisted) == 0 {
 		return
 	}
 
 	b.previousPorts = make(map[string]portSnapshot, len(persisted))
-	b.suppressedSince = make(map[string]time.Time)
 
 	for k, v := range persisted {
 		b.previousPorts[k] = portSnapshot{
@@ -205,10 +213,6 @@ func (b *baseStateCheck) seedFromPersistedState() {
 			Port:          v.Port,
 			State:         v.State,
 			PhysicalState: v.PhysicalState,
-		}
-
-		if !v.SuppressedSince.IsZero() {
-			b.suppressedSince[k] = v.SuppressedSince
 		}
 	}
 
@@ -301,12 +305,12 @@ func (b *baseStateCheck) holdPort(
 }
 
 // recordSuppressedPort notes the first time the first-poll peer-evidence gate
-// suppressed a port. Off when stateCheck.suppressedPortReportAfter is zero.
+// suppressed a port. The time is recorded even when
+// stateCheck.suppressedPortReportAfter is zero: only suppressedPortDue reads
+// the option. An operator who enables the option later, without a reboot,
+// then gets the ports suppressed while it was off. The first-poll gate does
+// not run again on a pod restart.
 func (b *baseStateCheck) recordSuppressedPort(key string) {
-	if b.cfg.StateCheck.ReportSuppressedAfter <= 0 {
-		return
-	}
-
 	if b.suppressedSince == nil {
 		b.suppressedSince = make(map[string]time.Time)
 	}
