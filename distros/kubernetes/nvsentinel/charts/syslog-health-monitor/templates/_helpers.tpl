@@ -79,6 +79,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with (($root.Values.global).seLinuxOptions) }}
+      securityContext:
+        seLinuxOptions:
+          {{- toYaml . | nindent 10 }}
+      {{- end }}
       {{- if and $root.Values.xidSideCar.enabled (semverCompare ">=1.29-0" $root.Capabilities.KubeVersion.Version) }}
       initContainers:
         - name: xid-analyzer-sidecar

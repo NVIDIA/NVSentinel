@@ -31,58 +31,91 @@
 
 # Language Versions
 languages:
-  go: '1.27.2'
+  go: '1.27.3'
   python: '3.13'
 
 # Build & Package Management
 build_tools:
-  poetry: '2.3.3'
-  poetry_plugin_export: '1.10.0'
+  # renovate: datasource=pypi depName=poetry depType=build_tools
+  poetry: '2.5.1'
+  # renovate: datasource=pypi depName=poetry-plugin-export depType=build_tools
+  poetry_plugin_export: '1.10.1'
 
 # Go Development Tools
 go_tools:
-  golangci_lint: 'v2.14.0'
+  # renovate: datasource=github-releases depName=golangci/golangci-lint depType=go_tools
+  golangci_lint: 'v2.15.0'
+  # renovate: datasource=github-releases depName=gotestyourself/gotestsum depType=go_tools
   gotestsum: 'v1.13.0'
-  gocover_cobertura: 'v1.4.0'
-  setup_envtest: 'v0.0.0-20260119123727-a2de7e94d2dd'
-  goimports: 'v0.30.0'
-  crane: 'v0.20.2'
-  controller_gen: 'v0.19.0'
+  # renovate: datasource=github-releases depName=boumenot/gocover-cobertura depType=go_tools
+  gocover_cobertura: 'v1.5.0'
+  # renovate: datasource=go depName=sigs.k8s.io/controller-runtime/tools/setup-envtest depType=go_tools
+  setup_envtest: 'v0.25.2'
+  # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
+  goimports: 'v0.52.0'
+  # renovate: datasource=github-releases depName=google/go-containerregistry depType=go_tools
+  crane: 'v0.22.1'
+  # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools depType=go_tools
+  controller_gen: 'v0.23.0'
 
 # Protocol Buffers / gRPC
 protobuf:
-  protobuf: 'v33.4'
-  protoc_gen_go: 'v1.36.10'
-  protoc_gen_go_grpc: 'v1.5.1'
-  grpcio_tools: '1.75.1'
+  # renovate: datasource=github-releases depName=protocolbuffers/protobuf depType=protobuf
+  protobuf: 'v36.2'
+  # renovate: datasource=go depName=google.golang.org/protobuf depType=protobuf
+  protoc_gen_go: 'v1.36.12'
+  # renovate: datasource=go depName=google.golang.org/grpc/cmd/protoc-gen-go-grpc depType=protobuf
+  protoc_gen_go_grpc: 'v1.6.2'
+  # renovate: datasource=pypi depName=grpcio-tools depType=protobuf
+  grpcio_tools: '1.84.0'
   # CRD/Protoc-gen-crd
+  # renovate: datasource=github-tags depName=yandex/protoc-gen-crd depType=protobuf
   protoc_gen_crd: 'v1.1.0'
 
 
 # Linting & Validation
 linting:
+  # renovate: datasource=github-releases depName=koalaman/shellcheck depType=linting
   shellcheck: 'v0.11.0'
+  # renovate: datasource=github-releases depName=google/addlicense depType=linting
   addlicense: 'v1.2.0'
-  black: '26.3.1'
+  # renovate: datasource=pypi depName=black depType=linting
+  black: '26.10.1'
 
 # Container Tools
 container_tools:
   docker_buildx: 'latest'
-  ko: 'v0.18.0'
+  # Self-hosted Renovate image as tag@digest. Used by .github/workflows/renovate.yaml and make renovate-lint.
+  renovate: '43@sha256:00185c0d63462acec8331cc9a94dcd74a763f2765fca0edcc3ff568af1dc8104'
+  # renovate: datasource=github-releases depName=ko-build/ko depType=container_tools
+  ko: 'v0.19.1'
+  # renovate: datasource=github-releases depName=sigstore/cosign depType=container_tools
+  cosign: 'v3.1.4'
 
 # Testing & E2E Tools
 testing_tools:
+  # renovate: datasource=github-releases depName=kubernetes-sigs/kind depType=testing_tools
   kind: '0.30.0'
+  # renovate: datasource=github-releases depName=helm/helm depType=testing_tools
   helm: 'v3.19.2'
+  # renovate: datasource=github-releases depName=helm-unittest/helm-unittest depType=testing_tools
   helm_unittest: 'v1.0.3'
+  # renovate: datasource=github-releases depName=kubernetes-sigs/kwok depType=testing_tools
   kwok: 'v0.8.0'
+  # renovate: datasource=helm depName=kwok depType=testing_tools
   kwok_chart: '0.3.0'  # KWOK Helm chart version (different from app version); tilt/Tiltfile pins this
+  # renovate: datasource=github-releases depName=tilt-dev/ctlptl depType=testing_tools
   ctlptl: '0.8.43'
+  # renovate: datasource=github-releases depName=tilt-dev/tilt depType=testing_tools
   tilt: '0.35.2'
 
 # Cluster Dependencies
 cluster:
-  prometheus_operator: '78.5.0'
+  # renovate: datasource=helm depName=kube-prometheus-stack depType=cluster
+  prometheus_operator: '92.10.1'
+  # renovate: datasource=helm depName=gpu-operator depType=cluster
   gpu_operator: 'v26.7.1'
+  # renovate: datasource=helm depName=cert-manager depType=cluster
   cert_manager: '1.21.1'
+  # renovate: datasource=helm depName=policy-controller depType=cluster
   policy_controller: '0.10.5'  # Sigstore Policy Controller Helm chart version
