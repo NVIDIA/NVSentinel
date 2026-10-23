@@ -23,64 +23,116 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 )
 
 func receivedCount(strategy, healthy string) float64 {
 	return testutil.ToFloat64(healthEventsReceived.WithLabelValues(strategy, healthy))
 }
 
-func TestHealthEventOccurredV1_CountsReceivedByStrategyAndHealth(t *testing.T) {
-	baseExecUnhealthy := receivedCount("EXECUTE_REMEDIATION", "false")
-	baseStoreHealthy := receivedCount("STORE_ONLY", "true")
-
-	server := &PlatformConnectorServer{}
-
-	healthEvents := &pb.HealthEvents{
-		Events: []*pb.HealthEvent{
-			{
-				NodeName:           "test-node-1",
-				CheckName:          "test-check",
-				ProcessingStrategy: pb.ProcessingStrategy_UNSPECIFIED,
-				IsHealthy:          false,
-			},
-			{
-				NodeName:           "test-node-2",
-				CheckName:          "test-check",
-				ProcessingStrategy: pb.ProcessingStrategy_STORE_ONLY,
-				IsHealthy:          true,
-			},
+func TestHealthEventOccurredV1_CountsReceivedByFinalStrategyAndHealth(t *testing.T) {
+	tests := []struct {
+		name          string
+		inputStrategy pb.ProcessingStrategy
+		isHealthy     bool
+		// storeOnlyFor, when set, installs a pipeline that rewrites events for this
+		// check name to STORE_ONLY, exercising counting after the pipeline.
+		storeOnlyFor string
+		wantStrategy string
+		wantHealthy  string
+	}{
+		{
+			name:          "UNSPECIFIED unhealthy is counted as its defaulted EXECUTE_REMEDIATION",
+			inputStrategy: pb.ProcessingStrategy_UNSPECIFIED,
+			isHealthy:     false,
+			wantStrategy:  "EXECUTE_REMEDIATION",
+			wantHealthy:   "false",
+		},
+		{
+			name:          "STORE_ONLY healthy is counted unchanged",
+			inputStrategy: pb.ProcessingStrategy_STORE_ONLY,
+			isHealthy:     true,
+			wantStrategy:  "STORE_ONLY",
+			wantHealthy:   "true",
+		},
+		{
+			name:          "a pipeline rewrite to STORE_ONLY is reflected in the label",
+			inputStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+			isHealthy:     false,
+			storeOnlyFor:  "test-check",
+			wantStrategy:  "STORE_ONLY",
+			wantHealthy:   "false",
 		},
 	}
 
-	_, err := server.HealthEventOccurredV1(context.Background(), healthEvents)
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := receivedCount(tt.wantStrategy, tt.wantHealthy)
 
-	// Events are counted after defaulting, so UNSPECIFIED lands under the
-	// EXECUTE_REMEDIATION label it was normalized to.
-	assert.Equal(t, baseExecUnhealthy+1, receivedCount("EXECUTE_REMEDIATION", "false"))
-	assert.Equal(t, baseStoreHealthy+1, receivedCount("STORE_ONLY", "true"))
+			server := &PlatformConnectorServer{}
+			if tt.storeOnlyFor != "" {
+				server.Pipeline = pipeline.New(&storeOnlyTransformer{checkName: tt.storeOnlyFor})
+			}
+
+			_, err := server.HealthEventOccurredV1(context.Background(), &pb.HealthEvents{
+				Events: []*pb.HealthEvent{{
+					NodeName:           "test-node",
+					CheckName:          "test-check",
+					ProcessingStrategy: tt.inputStrategy,
+					IsHealthy:          tt.isHealthy,
+				}},
+			})
+			require.NoError(t, err)
+
+			assert.Equal(t, before+1, receivedCount(tt.wantStrategy, tt.wantHealthy))
+		})
+	}
 }
 
 func TestHealthEventOccurredV1_RejectedBatchIsNotCounted(t *testing.T) {
-	baseExecUnhealthy := receivedCount("EXECUTE_REMEDIATION", "false")
-
-	server := &PlatformConnectorServer{}
-
-	// CUSTOM without a custom action string fails validation, so the whole
-	// batch is rejected before anything is counted.
-	healthEvents := &pb.HealthEvents{
-		Events: []*pb.HealthEvent{
-			{
+	tests := []struct {
+		name  string
+		event *pb.HealthEvent
+	}{
+		{
+			name: "CUSTOM action without a custom string",
+			event: &pb.HealthEvent{
 				NodeName:          "test-node",
-				CheckName:         "test-check",
 				RecommendedAction: pb.RecommendedAction_CUSTOM,
-				IsHealthy:         false,
+			},
+		},
+		{
+			name: "unknown processing strategy",
+			event: &pb.HealthEvent{
+				NodeName:           "test-node",
+				ProcessingStrategy: pb.ProcessingStrategy(99),
 			},
 		},
 	}
 
-	_, err := server.HealthEventOccurredV1(context.Background(), healthEvents)
-	require.Error(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := receivedCount("EXECUTE_REMEDIATION", "false")
 
-	assert.Equal(t, baseExecUnhealthy, receivedCount("EXECUTE_REMEDIATION", "false"))
+			server := &PlatformConnectorServer{}
+			_, err := server.HealthEventOccurredV1(context.Background(),
+				&pb.HealthEvents{Events: []*pb.HealthEvent{tt.event}})
+			require.Error(t, err)
+
+			assert.Equal(t, before, receivedCount("EXECUTE_REMEDIATION", "false"))
+		})
+	}
+}
+
+func TestHealthEventsReceived_SeriesInitializedAtZero(t *testing.T) {
+	// init() pre-creates one series per countable strategy times both health values,
+	// so a rate() can observe the first increment. Confirm all are exposed.
+	for _, strategy := range countableStrategies {
+		for _, healthy := range []string{"true", "false"} {
+			assert.GreaterOrEqual(t,
+				testutil.CollectAndCount(healthEventsReceived.WithLabelValues(strategy.String(), healthy)),
+				0, "series %s/%s must be registered", strategy, healthy)
+		}
+	}
+	assert.GreaterOrEqual(t, testutil.CollectAndCount(healthEventsReceived), len(countableStrategies)*2)
 }

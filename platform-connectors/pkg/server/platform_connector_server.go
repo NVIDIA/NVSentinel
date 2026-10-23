@@ -53,6 +53,14 @@ var (
 			"from STORE_ONLY and recovery events, e.g. for analyzer-stall alerting.",
 	}, []string{"processing_strategy", "healthy"})
 
+	// The strategies a stored event can carry: UNSPECIFIED is defaulted away before
+	// counting, so it never appears as a label value.
+	countableStrategies = []pb.ProcessingStrategy{
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		pb.ProcessingStrategy_STORE_ONLY,
+		pb.ProcessingStrategy_STORE_AND_ANALYSE,
+	}
+
 	requestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "platform_connector_request_duration_seconds",
 		Help: "Duration of health event batch requests, by outcome: ok, rejected (the batch is invalid) or " +
@@ -60,6 +68,18 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{"outcome"})
 )
+
+// init exposes every countable {processing_strategy, healthy} series at zero so a
+// quiet cluster is distinguishable from a dead exporter: a rate() over a series
+// that starts at 1 cannot see its first 0->1 transition, which is the one an
+// analyzer-stall alert depends on. Mirrors initMetrics() in the kubernetes connector.
+func init() {
+	for _, strategy := range countableStrategies {
+		for _, healthy := range []string{"true", "false"} {
+			healthEventsReceived.WithLabelValues(strategy.String(), healthy)
+		}
+	}
+}
 
 // PlatformConnectorServer serves the PlatformConnector gRPC service for both
 // roles of the binary. A batch is validated, run through the pipeline and
@@ -87,6 +107,15 @@ func ApplyEventDefaultsAndValidate(events []*pb.HealthEvent) error {
 		// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
 		if event.ProcessingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
 			event.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
+		}
+
+		// Reject unknown strategy values so they cannot reach the metric: String()
+		// turns each distinct unknown number into its own label value, which would
+		// let a client blow past the bounded series count.
+		if _, ok := pb.ProcessingStrategy_name[int32(event.ProcessingStrategy)]; !ok {
+			return status.Errorf(codes.InvalidArgument,
+				"unknown processingStrategy %d (node=%s, agent=%s)",
+				event.ProcessingStrategy, event.NodeName, event.Agent)
 		}
 
 		if event.GeneratedTimestamp == nil {
@@ -145,19 +174,21 @@ func (p *PlatformConnectorServer) handle(ctx context.Context, he *pb.HealthEvent
 		return outcomeRejected, err
 	}
 
-	// Counted after defaulting so processing_strategy reflects the stored value
-	// (UNSPECIFIED has already been defaulted to EXECUTE_REMEDIATION). Rejected
-	// batches are no longer counted; they are visible via requestDuration's
+	if p.Pipeline != nil {
+		p.Pipeline.ProcessBatch(ctx, he.GetEvents())
+	}
+
+	// Counted after the pipeline so processing_strategy reflects the final stored
+	// value: a transformer can move an event to STORE_ONLY, and the label should
+	// name what the analyzer will see. UNSPECIFIED is already defaulted and unknown
+	// values are already rejected above, so every value here is a known strategy.
+	// Rejected batches are not counted; they are visible via requestDuration's
 	// rejected outcome.
 	for _, event := range he.GetEvents() {
 		healthEventsReceived.WithLabelValues(
 			event.GetProcessingStrategy().String(),
 			strconv.FormatBool(event.GetIsHealthy()),
 		).Inc()
-	}
-
-	if p.Pipeline != nil {
-		p.Pipeline.ProcessBatch(ctx, he.GetEvents())
 	}
 
 	if p.Connector != nil {
