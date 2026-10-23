@@ -550,7 +550,7 @@ func registerTTLReconcilers(mgr ctrl.Manager, enabled bool, defaultTTL time.Dura
 
 	// An ExtRR can stay open for weeks while an external system repairs the
 	// node, and deleting it hands the node back to NVSentinel. Its TTL
-	// therefore starts at completion. See ADR-064.
+	// therefore starts at completion.
 	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest](
 		mgr, "externalremediationrequest-ttl", "ExternalRemediationRequest", defaultTTL,
 		ttl.WithCompletionTime((*janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest).CompletedAt)); err != nil {
