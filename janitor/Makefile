@@ -57,11 +57,9 @@ all: lint-test ## Run lint-test (default target)
 .PHONY: generate
 generate: ## Generate CRDs and move them to Helm chart directory
 	@echo "Generating CRDs and DeepCopy code implementations for janitor..."
-	@# Install controller-gen if not present
-	@which controller-gen > /dev/null || (echo "Installing controller-gen..." && go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest)
 	@# Generate CRDs into api/v1alpha1 directory
 	@# Note: Generated CRD YAML files do not include license headers (this is expected)
-	@controller-gen +crd:headerFile="../.github/headers/LICENSE_YAML" paths=./$(API_DIR) output:crd:dir=./$(API_DIR)
+	@$(CONTROLLER_GEN) +crd:headerFile="../.github/headers/LICENSE_YAML" paths=./$(API_DIR) output:crd:dir=./$(API_DIR)
 	@# Move generated CRDs to Helm chart crds directory
 	@echo "Moving generated CRDs to $(CRD_OUTPUT_DIR)..."
 	@mkdir -p $(CRD_OUTPUT_DIR)
@@ -69,7 +67,7 @@ generate: ## Generate CRDs and move them to Helm chart directory
 	@echo "CRDs generated and moved successfully!"
 	@echo "Generated files:"
 	@ls -1 $(CRD_OUTPUT_DIR)/*.yaml
-	@controller-gen +object:headerFile="../.github/headers/LICENSE_GO" paths="./..."
+	@$(CONTROLLER_GEN) +object:headerFile="../.github/headers/LICENSE_GO" paths="./..."
 	@echo "Generated code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations"
 
 .PHONY: manifests
