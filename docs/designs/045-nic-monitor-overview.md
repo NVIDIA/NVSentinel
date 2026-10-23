@@ -202,7 +202,7 @@ This monitor uses a binary severity model based on **workload impact**:
 |-------------------|--------------------------------------------------------------------------------|----------------------------------|
 | **State Monitor** | `state=DOWN` / `phys_state=Disabled` (runtime transition, or first-poll on a card below its role group's decisive mode), device disappeared, uncabled port anomaly | **RecommendedAction_REPLACE_VM** |
 
-> **First-poll severity gate**: A port that has never been observed healthy is fatal only with **peer evidence** — its card's active-port count is below the decisive mode of a ≥2-card role group. Singleton role groups and tied/zero-mode groups are indecisive, so their DOWN ports are logged and suppressed without an external `HealthEvent` (e.g., the intentionally-unprovisioned Aux frontend port on OCI `BM.GPU.H100.8`). See [Link State Detection, Section 4.3](./047-link-state-detection.md#43-uncabled-port-detection-role-based-card-homogeneity).
+> **First-poll severity gate**: A port that has never been observed healthy is fatal only with **peer evidence** — its card's active-port count is below the decisive mode of a ≥2-card role group. Singleton role groups and tied/all-zero groups are indecisive, so their DOWN ports are logged and suppressed without an external `HealthEvent` (e.g., the intentionally-unprovisioned Aux frontend port on OCI `BM.GPU.H100.8`). See [Link State Detection, Section 4.3](./047-link-state-detection.md#43-uncabled-port-detection-role-based-card-homogeneity).
 
 ### Counter Detection (Fatal - Defaults)
 

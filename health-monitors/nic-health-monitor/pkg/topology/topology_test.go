@@ -16,6 +16,7 @@ package topology
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -410,6 +411,88 @@ func TestCheckCardHomogeneity(t *testing.T) {
 	assert.Equal(t, 1, a.ActiveSeen)
 	assert.Equal(t, 2, a.ExpectedModeCount)
 	assert.Equal(t, RoleCompute, a.Role)
+}
+
+func TestCheckCardHomogeneity_DecisiveZeroModeWithActivePeersFlagsZeroCards(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs:        []model.GPUInfo{{PCIAddress: "0000:01:00.0", NUMANode: 0}},
+		NICTopology: map[string][]string{"mlx5_0": {"PIX"}},
+	})
+	reader := readerForTest(map[string]int{"mlx5_0": 0}, map[string]string{})
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	cardActive := make(map[string]int, 10)
+	cardTotal := make(map[string]int, 10)
+	cardRole := make(map[string]Role, 10)
+	for i := 0; i < 10; i++ {
+		card := fmt.Sprintf("0000:%02x:00", i)
+		cardActive[card] = 0
+		if i >= 7 {
+			cardActive[card] = 1
+		}
+		cardTotal[card] = 1
+		cardRole[card] = RoleCompute
+	}
+
+	anomalies, evaluated := c.EvaluateCardHomogeneity(cardActive, cardTotal, cardRole)
+	require.Len(t, anomalies, 7)
+	require.Len(t, evaluated, 10)
+	for i := 0; i < 7; i++ {
+		card := fmt.Sprintf("0000:%02x:00", i)
+		assert.Equal(t, CardAnomaly{Role: RoleCompute, ActiveSeen: 0, ExpectedModeCount: 1}, anomalies[card])
+		assert.Equal(t, 1, evaluated[card])
+	}
+	for i := 7; i < 10; i++ {
+		card := fmt.Sprintf("0000:%02x:00", i)
+		assert.NotContains(t, anomalies, card)
+		assert.Equal(t, 1, evaluated[card])
+	}
+}
+
+func TestCheckCardHomogeneity_AllZeroCardsRemainIndecisive(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs:        []model.GPUInfo{{PCIAddress: "0000:01:00.0", NUMANode: 0}},
+		NICTopology: map[string][]string{"mlx5_0": {"PIX"}},
+	})
+	reader := readerForTest(map[string]int{"mlx5_0": 0}, map[string]string{})
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	cards := []string{"0000:01:00", "0000:02:00", "0000:03:00"}
+	cardActive := map[string]int{cards[0]: 0, cards[1]: 0, cards[2]: 0}
+	cardTotal := map[string]int{cards[0]: 1, cards[1]: 1, cards[2]: 1}
+	cardRole := map[string]Role{cards[0]: RoleCompute, cards[1]: RoleCompute, cards[2]: RoleCompute}
+
+	anomalies, evaluated := c.EvaluateCardHomogeneity(cardActive, cardTotal, cardRole)
+	assert.Empty(t, anomalies)
+	assert.Empty(t, evaluated)
+}
+
+func TestCheckCardHomogeneity_TiedActivePeerCountsRemainIndecisive(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs:        []model.GPUInfo{{PCIAddress: "0000:01:00.0", NUMANode: 0}},
+		NICTopology: map[string][]string{"mlx5_0": {"PIX"}},
+	})
+	reader := readerForTest(map[string]int{"mlx5_0": 0}, map[string]string{})
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	cards := []string{"0000:01:00", "0000:02:00", "0000:03:00", "0000:04:00", "0000:05:00"}
+	cardActive := map[string]int{
+		cards[0]: 0, cards[1]: 0, cards[2]: 0,
+		cards[3]: 1, cards[4]: 2,
+	}
+	cardTotal := make(map[string]int, len(cards))
+	cardRole := make(map[string]Role, len(cards))
+	for _, card := range cards {
+		cardTotal[card] = 2
+		cardRole[card] = RoleCompute
+	}
+
+	anomalies, evaluated := c.EvaluateCardHomogeneity(cardActive, cardTotal, cardRole)
+	assert.Empty(t, anomalies, "without a decisive positive peer mode, zero-active cards must not be judged")
+	assert.Empty(t, evaluated)
 }
 
 func TestCheckCardHomogeneity_TiedModeIsIndecisive(t *testing.T) {
