@@ -211,8 +211,7 @@ config:
 # TTL-based cleanup of maintenance CRs (RebootNode / GPUReset / TerminateNode /
 # ExternalRemediationRequest). An ExternalRemediationRequest is never deleted
 # while it is open; its TTL starts at status.completionTime. See
-# docs/designs/037-janitor-cr-ttl-cleanup.md and
-# docs/designs/064-extrr-lifecycle-cleanup.md for details.
+# docs/designs/037-janitor-cr-ttl-cleanup.md for details.
 ttl:
   # Enable the TTL reconcilers. When false, the reconcilers are not registered
   # at all; maintenance CRs persist indefinitely and any

@@ -17,8 +17,7 @@
 // auto-delete maintenance CRs (RebootNode, GPUReset, TerminateNode,
 // ExternalRemediationRequest) once they are past their TTL.
 //
-// See docs/designs/037-janitor-cr-ttl-cleanup.md and
-// docs/designs/064-extrr-lifecycle-cleanup.md for the design rationale.
+// See docs/designs/037-janitor-cr-ttl-cleanup.md for the design rationale.
 package ttl
 
 import (

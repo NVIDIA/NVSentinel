@@ -383,7 +383,7 @@ janitor:
 ### enabled
 When `true`, the TTL controller deletes `RebootNode`, `TerminateNode`, `GPUReset` and `ExternalRemediationRequest` CRs after `defaultTTL` has elapsed.
 
-The TTL controller never deletes an open `ExternalRemediationRequest`. Its TTL starts at `status.completionTime`. This includes a request where the external system set `ExternalRemediationComplete=False`, because the node is still released to the external system. To keep an `ExternalRemediationRequest` after completion, set the `nvsentinel.nvidia.com/preserve: "true"` annotation. See [ADR-064](../designs/064-extrr-lifecycle-cleanup.md).
+The TTL controller never deletes an open `ExternalRemediationRequest`. Its TTL starts at `status.completionTime`. This includes a request where the external system set `ExternalRemediationComplete=False`, because the node is still released to the external system. To keep an `ExternalRemediationRequest` after completion, set the `nvsentinel.nvidia.com/preserve: "true"` annotation.
 
 For a completed `ExternalRemediationRequest`, janitor calculates the deletion time as `status.completionTime` plus the `nvsentinel.nvidia.com/ttl` value on every reconcile. Janitor writes the result to `nvsentinel.nvidia.com/expiry` for information. A change to the `ttl` annotation after completion changes the deletion time.
 

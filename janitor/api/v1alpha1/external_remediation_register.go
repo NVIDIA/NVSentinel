@@ -116,7 +116,7 @@ func (e *ExternalRemediationRequest) SetCompletionTime() {
 }
 
 // CompletedAt returns Status.CompletionTime, or nil while the ExtRR is open.
-// The TTL reconciler uses it to start an ExtRR's TTL at completion (ADR-064).
+// The TTL reconciler uses it to start an ExtRR's TTL at completion.
 func (e *ExternalRemediationRequest) CompletedAt() *time.Time {
 	if e.Status == nil || e.Status.CompletionTime == nil {
 		return nil
