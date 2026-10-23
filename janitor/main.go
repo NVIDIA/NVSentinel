@@ -548,26 +548,35 @@ func registerTTLReconcilers(mgr ctrl.Manager, enabled bool, defaultTTL time.Dura
 		return err
 	}
 
+	// An ExtRR can stay open for weeks while an external system repairs the
+	// node, and deleting it hands the node back to NVSentinel. Its TTL
+	// therefore starts at completion. See ADR-064.
 	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest](
-		mgr, "externalremediationrequest-ttl", "ExternalRemediationRequest", defaultTTL); err != nil {
+		mgr, "externalremediationrequest-ttl", "ExternalRemediationRequest", defaultTTL,
+		ttl.WithCompletionTime((*janitordgxcnvidiacomv1alpha1.ExternalRemediationRequest).CompletedAt)); err != nil {
 		return err
 	}
 
-	slog.Info("TTL reconcilers registered for RebootNode, GPUReset, TerminateNode, ExternalRemediationRequest",
+	slog.Info("TTL reconcilers registered for RebootNode, GPUReset, TerminateNode, ExternalRemediationRequest "+
+		"(ExternalRemediationRequest TTL starts at completion)",
 		"default-ttl", defaultTTL)
 
 	return nil
 }
 
 // setupTTL wires a single TTL reconciler for type T with the standard options
-// used by janitor (default TTL + metrics callback). Kept generic so a new
-// maintenance CR kind can be added with one line in registerTTLReconcilers.
-func setupTTL[T client.Object](mgr ctrl.Manager, name, kind string, defaultTTL time.Duration) error {
-	err := ttl.Setup[T](mgr, name,
+// used by janitor (default TTL + metrics callback) plus any kind-specific
+// extras. Kept generic so a new maintenance CR kind can be added with one line
+// in registerTTLReconcilers.
+func setupTTL[T client.Object](
+	mgr ctrl.Manager, name, kind string, defaultTTL time.Duration, extra ...ttl.Option[T],
+) error {
+	opts := append([]ttl.Option[T]{
 		ttl.WithDefaultTTL[T](defaultTTL),
 		ttl.WithMetrics[T](janitormetrics.GlobalMetrics.IncTTLDeletion),
-	)
-	if err != nil {
+	}, extra...)
+
+	if err := ttl.Setup[T](mgr, name, opts...); err != nil {
 		slog.Error("Unable to create TTL reconciler", "kind", kind, "error", err)
 
 		return fmt.Errorf("setup %s ttl: %w", kind, err)
