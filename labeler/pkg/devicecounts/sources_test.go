@@ -394,6 +394,11 @@ func TestDeviceCountSources_Config_Validation(t *testing.T) {
 			mutate:  func(c *ClassConfig) { c.Sources[0].GroupingExpression = "1" },
 			wantErr: "groupingExpression must return list<string>",
 		},
+		{
+			name:    "groupingExpression that returns a list of integers",
+			mutate:  func(c *ClassConfig) { c.Sources[0].GroupingExpression = "resourceSlices.map(rs, 1)" },
+			wantErr: "groupingExpression must return list<string>",
+		},
 	}
 
 	for _, tt := range tests {

@@ -548,7 +548,18 @@ func isCountType(outputType *cel.Type) bool {
 }
 
 func isGroupingType(outputType *cel.Type) bool {
-	return outputType == cel.DynType || outputType.Kind() == types.ListKind
+	if outputType.Kind() == types.DynKind {
+		return true
+	}
+
+	if outputType.Kind() != types.ListKind || len(outputType.Parameters()) != 1 {
+		return false
+	}
+
+	// Element types that CEL cannot infer, such as values read from ResourceSlices, are dyn.
+	element := outputType.Parameters()[0].Kind()
+
+	return element == types.StringKind || element == types.DynKind
 }
 
 func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
