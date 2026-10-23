@@ -41,6 +41,7 @@ Issues a reboot API call to the cloud provider. The node restarts with the same 
 | GCP | `reset` |
 | Azure | Virtual Machine restart |
 | OCI | `InstanceAction RESET` |
+| Akamai | `POST /linode/instances/{id}/reboot` |
 
 ### TerminateNode
 
@@ -78,7 +79,7 @@ janitor:
 
 janitor-provider:
   csp:
-    provider: aws         # Cloud provider: aws | gcp | azure | oci | nebius | generic | kind | kwok
+    provider: aws         # Cloud provider: aws | gcp | azure | oci | nebius | akamai | generic | kind | kwok
 ```
 
 See [Janitor configuration](configuration/janitor.md) and [Janitor Provider configuration](configuration/janitor-provider.md) for the full Helm reference.
@@ -92,6 +93,7 @@ See [Janitor configuration](configuration/janitor.md) and [Janitor Provider conf
 | `azure` | Yes | Yes | Yes |
 | `oci` | Yes | Yes | Yes |
 | `nebius` | Yes | Yes | Yes |
+| `akamai` | Yes | Yes | Yes |
 | `generic` | — | — | Yes (privileged Job) |
 | `kind` / `kwok` | Simulated | Simulated | Simulated |
 

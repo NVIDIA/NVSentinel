@@ -87,7 +87,7 @@ List of accepted token audiences. Must include the value set in `janitor.config.
 ```yaml
 janitor-provider:
   csp:
-    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic, label
+    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, akamai, generic, label
 ```
 
 Only one provider is active at a time. `kind` and `kwok` are for development only; they simulate reboots without contacting any cloud API.
@@ -376,6 +376,28 @@ The identity is attached when the pod is created, so it only appears on pods cre
 Expect `authMode=workload-identity`. If it says `api-key`, the pod never received an identity — check that the annotation is on the ServiceAccount and that the pod was created after it landed.
 
 Failures in the exchange itself surface on the first remediation, not at startup, because the token is minted lazily. When the exchange endpoint rejects the token it returns `401` with no detail by design, so an unauthenticated caller cannot probe for which identities exist; that means a missing trust, a wrong identity LRN and a disabled account all look identical from the client. Check the trust and the identity LRN first.
+
+## Akamai
+
+Reboot maps to the Linode reboot operation. Terminate recycles the node through LKE when the instance belongs to an LKE cluster, which deletes it and provisions a replacement so the node pool keeps its size, and deletes the instance directly otherwise. Nodes must carry `spec.providerID` in the form `linode://<instanceID>`, which the Linode cloud controller manager sets on LKE nodes.
+
+Authenticate with a static API token. A reboot is reported complete once the kubelet's `bootID` has changed, because the instance can still read `running` for a while after the API accepts the request.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "akamai"
+    akamai:
+      apiTokenSecretRef:
+        name: "akamai-api-token"
+        key: "LINODE_TOKEN"
+```
+
+### apiEndpoint
+Optional. Overrides the base URL of the Akamai Cloud API, passed as `AKAMAI_API_ENDPOINT`. Defaults to `https://api.linode.com/v4` when unset. Must be https, and must not carry userinfo, a query string, or a fragment. The host must be `api.linode.com`, so any other host fails at startup rather than on the first remediation.
+
+### apiTokenSecretRef
+Secret holding the Akamai Cloud API token, injected as `LINODE_TOKEN`, the variable the Linode CLI and SDKs read. `name` is required when `csp.provider` is `akamai`; the install fails without it. `key` defaults to `LINODE_TOKEN`. The token needs the `linodes:read_write` scope to reboot and delete instances and `lke:read_write` to recycle LKE nodes. The CSP Health Monitor reads the same variable but only lists maintenance events, so give it its own read-only token rather than sharing this one.
 
 ## Generic / Bare-Metal
 
