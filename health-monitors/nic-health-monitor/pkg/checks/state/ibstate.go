@@ -126,6 +126,7 @@ type ibPollState struct {
 	ibPorts            []discovery.IBPort
 	skippedVFs         int
 	discoveryUncertain bool
+	unreadableDevices  map[string]error
 
 	cardActive   map[string]int
 	cardTotal    map[string]int
@@ -207,6 +208,7 @@ func (c *InfiniBandStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	st := newIBPollState()
 	st.skippedVFs = result.SkippedVFs
 	st.discoveryUncertain = len(result.UnreadableDevices) > 0
+	st.unreadableDevices = result.UnreadableDevices
 
 	committedAnomalous := c.anomalousLatch
 	committedDisappeared := c.disappearedLatch
@@ -368,6 +370,7 @@ func (c *InfiniBandStateCheck) buildEventsForPoll(
 		portCard:        st.portCard,
 		managementCards: st.managementCards,
 		uncertain:       st.discoveryUncertain,
+		unreadable:      st.unreadableDevices,
 	}
 
 	return c.buildEvents(agg, baselineRun,

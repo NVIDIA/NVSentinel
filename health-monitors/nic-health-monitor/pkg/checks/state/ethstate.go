@@ -120,6 +120,7 @@ type ethPollState struct {
 	managementCards    map[string]bool
 	allPorts           []ethPortInfo
 	discoveryUncertain bool
+	unreadableDevices  map[string]error
 
 	cardActive map[string]int
 	cardTotal  map[string]int
@@ -193,6 +194,7 @@ func (c *EthernetStateCheck) Prepare() ([]*pb.HealthEvent, error) {
 	baselineRun := c.emitHealthyBaselines && len(result.UnreadableDevices) == 0
 	st := newEthPollState()
 	st.discoveryUncertain = len(result.UnreadableDevices) > 0
+	st.unreadableDevices = result.UnreadableDevices
 
 	committedAnomalous := c.anomalousLatch
 	committedDisappeared := c.disappearedLatch
@@ -361,6 +363,7 @@ func (c *EthernetStateCheck) buildEventsForPoll(
 		portCard:        st.portCard,
 		managementCards: st.managementCards,
 		uncertain:       st.discoveryUncertain,
+		unreadable:      st.unreadableDevices,
 	}
 
 	return c.buildEvents(agg, baselineRun,
@@ -453,13 +456,12 @@ func (c *EthernetStateCheck) escalationEvent(
 	anomalousCards map[string]topology.CardAnomaly, portCard map[string]string,
 ) *pb.HealthEvent {
 	// A port the first poll suppressed stays unhealthy without a transition,
-	// so suppressedPortReportAfter reports it from here.
-	if !isHealthy && !firstPoll && c.suppressedPortDue(pi.key, pi.snap) {
-		if evt := c.unhealthyEvent(pi, prev, false, anomalousCards, portCard); evt != nil {
-			c.forgetSuppressedPort(pi.key)
+	// so suppressedPortReportAfter reports it from here. Only DOWN is
+	// reported; a port that retrained to INIT or ARMED keeps its timer.
+	if !firstPoll && ethernetPortIsFatal(pi.snap) && c.suppressedPortDue(pi.key, pi.snap) {
+		c.forgetSuppressedPort(pi.key)
 
-			return evt
-		}
+		return c.unhealthyEvent(pi, prev, false, anomalousCards, portCard)
 	}
 
 	if !isHealthy && ethernetPortIsFatal(pi.snap) && !ethernetPortIsFatal(prev) {

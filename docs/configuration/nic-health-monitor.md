@@ -131,15 +131,17 @@ On the first poll, an unhealthy port is reported only with peer evidence that it
 
 A suppressed port that never comes up is otherwise never reported. A node with half its compute links down from boot gives a tie and stays silent.
 
-`suppressedPortReportAfter` reports such a port once it has stayed unhealthy that long, but only when the peers gave no verdict on its card (a singleton group, a tie, or a mode of 0):
+`suppressedPortReportAfter` reports such a port once it has stayed unhealthy that long, but only on a compute card the peers gave no verdict on (a singleton group, a tie, or a mode of 0):
 
 ```yaml
 nic-health-monitor:
   suppressedPortReportAfter: "10m"
 ```
 
-- **Off by default.** `"0s"` keeps suppressing the port. Leave it off if some ports are down by design, or exclude those devices with `nicExclusionRegex`.
+- **Off by default.** `"0s"` keeps suppressing the port. Leave it off if some compute ports are down by design, or exclude those devices with `nicExclusionRegex`.
+- **Compute cards only.** A port on a storage card is never reported. Storage and frontend ports can be down by design with no peer to compare against, like the unused frontend aux port on OCI BM.GPU.H100.8. InfiniBand NICs on a GPU socket are always compute.
 - **Healthy cards are never reported.** A port on a card at or above its group's mode, or on a card that shares a PCI card with a management NIC, is not reported however long it stays down. If a later poll finds the card at or above the mode, for example once its other ports finish training, the port is dropped.
+- **Unreadable devices.** While a device is unreadable the peer comparison does not run, so a port on a card with an active port waits for a complete poll: its card may be at its group's mode. A port on a card with no active port is reported, since no peer vote could find that card healthy, unless one of the card's own functions is unreadable.
 - **Severity.** An InfiniBand port still `DOWN` is fatal with `REPLACE_VM`, `Polling` included, the same result the homogeneity check gives a card below its mode. `INIT` and `ARMED` stay non-fatal, so a subnet manager outage at boot does not mark every node fatal. A RoCE port is reported only when `DOWN`, which is fatal.
 - **Ports still training at boot are not reported.** A port that comes up before the delay is dropped.
 - **Survives restarts.** The suppression time is kept in the state file, so a pod restart does not restart the wait. This includes a restart while the reboot baseline is still owed because a device is unreadable. A reboot or discovery-scope change resets it, and the next first poll decides again.

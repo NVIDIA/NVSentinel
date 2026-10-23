@@ -229,30 +229,96 @@ func TestIBState_SuppressedPort_DiscardedReportIsRetried(t *testing.T) {
 	assert.Empty(t, runPoll(t, check))
 }
 
-func TestEthState_SuppressedPort_ReportedFatalAfterDelay(t *testing.T) {
-	node := newStubNode().addIB("mlx5_11", &stubDevice{
+func TestEthState_SuppressedPort_OnlyComputeCardsReported(t *testing.T) {
+	// mlx5_0 is a lone compute card. mlx5_11 is a lone storage card, like the
+	// unused frontend aux port on OCI BM.GPU.H100.8 (ADR-047), which is down
+	// by design. InfiniBand NICs on a GPU socket always classify as compute.
+	node := singletonDownNode(ethLinkLayer).addIB("mlx5_11", &stubDevice{
 		pciAddress: "0000:a0:00.1", numaNode: 0, netDev: "eth1",
-		ports: map[int]stubPort{1: {state: "DOWN", physState: "Disabled", linkLayer: "Ethernet"}},
+		ports: map[int]stubPort{1: downPort(ethLinkLayer)},
 	})
 	node.nets["eth1"] = "down"
+	topo := map[string][]string{"mlx5_0": {"PIX"}, "mlx5_11": {"NODE"}}
+	check, clock := newLayerCheckWithTopology(t, ethLinkLayer, node, topo, testReportAfter,
+		freshStateManager(t), suppressedStart, false)
 
-	reader := node.reader()
-	classifier := buildClassifier(t, reader, []string{"0000:0f:00.0"}, map[string][]string{"mlx5_11": {"NODE"}})
-	cfg := &config.Config{StateCheck: config.StateCheckConfig{ReportSuppressedAfter: testReportAfter}}
-	check := NewEthernetStateCheck("suppressed-eth", reader, cfg,
-		classifier, pb.ProcessingStrategy_EXECUTE_REMEDIATION, freshStateManager(t), false)
-	clock := &fakeClock{now: suppressedStart}
-	check.now = clock.Now
-
-	assert.Empty(t, runPoll(t, check), "a singleton card has no peer evidence; the first poll must suppress")
+	assert.Empty(t, runPoll(t, check), "singleton cards have no peer evidence; the first poll must suppress")
+	assert.Contains(t, suppressionTimers(t, check), "mlx5_0_1")
+	assert.NotContains(t, suppressionTimers(t, check), "mlx5_11_1", "a storage card must get no timer")
 
 	clock.Advance(testReportAfter)
 	events := runPoll(t, check)
-	require.Len(t, events, 1)
-	assert.True(t, events[0].IsFatal, "a reported RoCE DOWN port keeps its usual fatal severity")
+	require.Equal(t, []string{"mlx5_0"}, unhealthyPorts(events), "only the compute card is reported")
+	assert.True(t, events[0].IsFatal, "a RoCE port still DOWN after the delay is fatal")
+	assert.Equal(t, pb.RecommendedAction_REPLACE_VM, events[0].RecommendedAction)
 
-	clock.Advance(time.Minute)
+	clock.Advance(24 * time.Hour)
 	assert.Empty(t, runPoll(t, check))
+}
+
+// TestState_SuppressedPort_UnreadableDevice_HoldsCardsPeersMayVouchFor covers
+// polls with an unreadable device, where the homogeneity vote does not run.
+func TestState_SuppressedPort_UnreadableDevice_HoldsCardsPeersMayVouchFor(t *testing.T) {
+	for _, layer := range bothLayers {
+		for _, bootIDChanged := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/bootIDChanged=%t", layer, bootIDChanged), func(t *testing.T) {
+				// Both cards have one active port out of two, so a complete
+				// poll vouches for them (#1379). mlx5_9 is unreadable.
+				node := dualPortNode(layer, []string{"0000:03:00.0", "0002:03:00.0"}, 0).
+					addIB("mlx5_9", &stubDevice{
+						pciAddress: "0000:50:00.0", numaNode: 0,
+						ports:           map[int]stubPort{1: upPort(layer)},
+						portsUnreadable: true,
+					})
+				check, clock := newLayerCheckOn(t, layer, node, testReportAfter, freshStateManager(t),
+					suppressedStart, bootIDChanged)
+
+				for range checks.FirstPollDeferralLimit {
+					require.Empty(t, runPoll(t, check))
+				}
+
+				require.Empty(t, unhealthyPorts(runPoll(t, check)), "the partial first poll must suppress")
+				require.Len(t, suppressionTimers(t, check), 2, "no vote ran, so the uncabled ports get timers")
+
+				clock.Advance(24 * time.Hour)
+				assert.Empty(t, unhealthyPorts(runPoll(t, check)),
+					"a card with an active port must wait for a complete poll")
+
+				node.ib["mlx5_9"].portsUnreadable = false
+				clock.Advance(time.Second)
+				assert.Empty(t, unhealthyPorts(runPoll(t, check)))
+				assert.Empty(t, suppressionTimers(t, check), "the complete poll vouches for the cards")
+			})
+		}
+	}
+}
+
+func TestState_SuppressedPort_UnreadableSiblingFunction_Holds(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			// mlx5_9 is the other function of mlx5_0's card, so the card's
+			// active count is unknown.
+			node := singletonDownNode(layer).addIB("mlx5_9", &stubDevice{
+				pciAddress: "0000:03:00.1", numaNode: 0,
+				ports:           map[int]stubPort{1: upPort(layer)},
+				portsUnreadable: true,
+			})
+			check, clock := newLayerCheckOn(t, layer, node, testReportAfter, freshStateManager(t),
+				suppressedStart, false)
+
+			for range checks.FirstPollDeferralLimit {
+				require.Empty(t, runPoll(t, check))
+			}
+
+			require.Empty(t, unhealthyPorts(runPoll(t, check)))
+			require.Contains(t, suppressionTimers(t, check), "mlx5_0_1")
+
+			clock.Advance(24 * time.Hour)
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)),
+				"a card with an unreadable function must wait for a complete poll")
+			assert.Contains(t, suppressionTimers(t, check), "mlx5_0_1", "the wait must not be dropped")
+		})
+	}
 }
 
 // downPort is the port newSuppressedLayerCheck starts with: DOWN/Polling for
@@ -302,6 +368,16 @@ func newLayerCheckOn(
 	for name := range node.ib {
 		topo[name] = []string{"PIX"}
 	}
+
+	return newLayerCheckWithTopology(t, layer, node, topo, reportAfter, mgr, start, bootIDChanged)
+}
+
+// newLayerCheckWithTopology is newLayerCheckOn with the given NIC topology.
+func newLayerCheckWithTopology(
+	t *testing.T, layer string, node *stubNode, topo map[string][]string, reportAfter time.Duration,
+	mgr *statefile.Manager, start time.Time, bootIDChanged bool,
+) (checks.TransactionalCheck, *fakeClock) {
+	t.Helper()
 
 	reader := node.reader()
 	classifier := buildClassifier(t, reader, []string{"0000:0f:00.0"}, topo)

@@ -128,6 +128,10 @@ type baseStateCheck struct {
 	// port snapshots so a restart does not restart the wait.
 	suppressedSince map[string]time.Time
 
+	// suppressionWaiting holds this poll's suppression timers that must not
+	// report yet because discovery is uncertain. See waitingSuppressions.
+	suppressionWaiting map[string]bool
+
 	pending *statePollCommit
 
 	strategy linkLayerStrategy
@@ -337,7 +341,7 @@ func (b *baseStateCheck) suppressedPortDue(key string, current portSnapshot) boo
 	}
 
 	since, ok := b.suppressedSince[key]
-	if !ok || portIsHealthy(current) {
+	if !ok || portIsHealthy(current) || b.suppressionWaiting[key] {
 		return false
 	}
 
@@ -367,43 +371,89 @@ func (b *baseStateCheck) pruneSuppressedPorts(currentPorts map[string]portSnapsh
 	}
 }
 
-// peerVouchedCards returns the cards whose down ports suppressedPortReportAfter
-// must not report: cards the homogeneity check evaluated and found at or
-// above their group's mode, and cards exempt from peer comparison as
-// management-NIC siblings. Their down ports are expected, like the uncabled
-// second port of a dual-port card (#1379): reporting them would replace the
-// node, and the replacement has the same port down.
-func peerVouchedCards(
-	managementCards map[string]bool,
+// suppressionExemptCards returns the cards whose down ports
+// suppressedPortReportAfter must not report:
+//   - cards the homogeneity check evaluated and found at or above their
+//     group's mode, and cards exempt from peer comparison as management-NIC
+//     siblings. Their down ports are expected, like the uncabled second port
+//     of a dual-port card (#1379): reporting them would replace the node, and
+//     the replacement has the same port down.
+//   - cards outside the compute role. Storage and frontend ports can be down
+//     by design with no peer to vouch for them, like the unused frontend aux
+//     port on OCI BM.GPU.H100.8 (ADR-047), a lone storage card.
+func suppressionExemptCards(
+	agg pollAggregates,
 	anomalousCards map[string]topology.CardAnomaly,
 	evaluatedCards map[string]int,
 ) map[string]bool {
-	vouched := maps.Clone(managementCards)
-	if vouched == nil {
-		vouched = make(map[string]bool)
+	exempt := maps.Clone(agg.managementCards)
+	if exempt == nil {
+		exempt = make(map[string]bool)
 	}
 
 	for card := range evaluatedCards {
 		if _, anomalous := anomalousCards[card]; !anomalous {
-			vouched[card] = true
+			exempt[card] = true
 		}
 	}
 
-	return vouched
+	for card, role := range agg.cardRole {
+		if role != topology.RoleCompute {
+			exempt[card] = true
+		}
+	}
+
+	return exempt
 }
 
-// forgetVouchedSuppressions drops the suppression timers of ports on cards
-// their peers vouch for. A first poll can see a tie while cabled ports are
-// still training, so a later poll that finds the card healthy drops its
-// timer too.
-func (b *baseStateCheck) forgetVouchedSuppressions(portCard map[string]string, vouched map[string]bool) {
+// forgetExemptSuppressions drops the suppression timers of ports on exempt
+// cards. A first poll can see a tie while cabled ports are still training,
+// so a later poll that finds the card healthy drops its timer too.
+func (b *baseStateCheck) forgetExemptSuppressions(portCard map[string]string, exempt map[string]bool) {
 	for key := range b.suppressedSince {
-		if card, ok := portCard[key]; ok && vouched[card] {
-			slog.Info("Dropping first-poll suppression timer: peers vouch for the card",
+		if card, ok := portCard[key]; ok && exempt[card] {
+			slog.Info("Dropping first-poll suppression timer: card is exempt",
 				"check", b.strategy.checkName(), "port_key", key, "card", card)
 			delete(b.suppressedSince, key)
 		}
 	}
+}
+
+// waitingSuppressions returns the suppression timers that must not report
+// this poll. While a device is unreadable the homogeneity vote does not run,
+// so the peers cannot vouch for a card. A card with an active port may still
+// be at its group's mode, like a healthy dual-port card whose second port is
+// uncabled, so its timers wait for a complete poll. A card with no active
+// port is below any nonzero mode, so no vote could vouch for it and its
+// timers may report. That holds only when every function of the card was
+// read: a card with an unreadable function, or any card when an unreadable
+// device's card is unknown, waits too.
+func (b *baseStateCheck) waitingSuppressions(agg pollAggregates, uncertain bool) map[string]bool {
+	if !uncertain || len(b.suppressedSince) == 0 {
+		return nil
+	}
+
+	unreadableCards := make(map[string]bool, len(agg.unreadable))
+	unplaced := false
+
+	for device := range agg.unreadable {
+		// PCICardOf falls back to the device name when the PCI address
+		// cannot be read.
+		card := b.classifier.PCICardOf(device)
+		unplaced = unplaced || card == device
+		unreadableCards[card] = true
+	}
+
+	waiting := make(map[string]bool)
+
+	for key := range b.suppressedSince {
+		card, ok := agg.portCard[key]
+		if unplaced || !ok || unreadableCards[card] || agg.cardActive[card] > 0 {
+			waiting[key] = true
+		}
+	}
+
+	return waiting
 }
 
 // portIsHealthy reports whether a port snapshot is fully operational.
@@ -425,6 +475,7 @@ type pollAggregates struct {
 	portCard        map[string]string
 	managementCards map[string]bool
 	uncertain       bool
+	unreadable      map[string]error
 }
 
 // buildEvents runs the shared per-poll event pipeline: the baseline
@@ -476,16 +527,17 @@ func (b *baseStateCheck) buildEvents(
 	// emit their own device event and are still present at diff time.
 	latchedBefore := maps.Clone(b.disappearedLatch)
 
-	// Before the port pass, so a timer due this poll is not reported for a
-	// card its peers now vouch for; after it, because the first-poll gate
-	// records a timer for every port it suppresses.
-	vouched := peerVouchedCards(agg.managementCards, anomalousCards, evaluatedCards)
-	b.forgetVouchedSuppressions(agg.portCard, vouched)
+	// Before the port pass, so a timer due this poll is not reported for an
+	// exempt card; after it, because the first-poll gate records a timer for
+	// every port it suppresses.
+	exempt := suppressionExemptCards(agg, anomalousCards, evaluatedCards)
+	b.forgetExemptSuppressions(agg.portCard, exempt)
+	b.suppressionWaiting = b.waitingSuppressions(agg, discoveryUncertain)
 
 	events := clearEvents
 	events = append(events, portEvents(anomalousCards)...)
 
-	b.forgetVouchedSuppressions(agg.portCard, vouched)
+	b.forgetExemptSuppressions(agg.portCard, exempt)
 
 	events = append(events, disappearanceEvents...)
 	events = append(events, b.detectPortDisappearance(agg.currentDevices, agg.currentPorts)...)

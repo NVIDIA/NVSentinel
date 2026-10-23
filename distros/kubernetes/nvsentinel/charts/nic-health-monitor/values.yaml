@@ -58,10 +58,10 @@ statePollingInterval: "1s"
 # unhealthy poll.
 portStateHoldDown: "0s"
 
-# Report a port that the first poll suppressed for lack of peer evidence (for
-# example a 2-2 card-homogeneity tie) once it has stayed unhealthy this long.
-# Leave "0s" if some ports are down by design; otherwise a port that never
-# comes up is never reported.
+# Report a compute port that the first poll suppressed for lack of peer
+# evidence (for example a 2-2 card-homogeneity tie) once it has stayed
+# unhealthy this long. Leave "0s" if some compute ports are down by design;
+# otherwise a port that never comes up is never reported.
 suppressedPortReportAfter: "0s"
 
 # Publish NICPollStallCheck when a poll has been in flight this long, so a host
