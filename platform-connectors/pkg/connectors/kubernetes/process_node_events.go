@@ -32,7 +32,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -170,7 +169,7 @@ func (r *K8sConnector) readAndUpdateNode(
 	_, err = r.clientset.CoreV1().Nodes().Patch(ctx, nodeName, types.JSONPatchType, patch,
 		metav1.PatchOptions{}, "status")
 
-	return false, r.conditionTestFailedAsConflict(ctx, nodeName, read, err)
+	return false, r.conditionTestFailedAsConflict(ctx, nodeName, node.ResourceVersion, err)
 }
 
 // conditionsPatch replaces the node's conditions only if they are still the
@@ -189,10 +188,12 @@ func conditionsPatch(read, updated []corev1.NodeCondition) ([]byte, error) {
 // conditionTestFailedAsConflict reports a failed conditions test as the
 // conflict it is, so the caller's conflict retry reads the node again. The API
 // server answers a failed JSON patch test with a bare 422 Invalid, the answer it
-// also gives an invalid condition, so the node is read again to tell them apart:
-// conditions that changed since the read mean the test failed.
+// also gives an invalid condition, so the node is read again to tell them apart.
+// Only a node unchanged since the read, at the same resourceVersion, proves the
+// test passed and the condition is invalid. Comparing the conditions instead
+// would miss another writer's change that a third write then reverted.
 func (r *K8sConnector) conditionTestFailedAsConflict(
-	ctx context.Context, nodeName string, read []corev1.NodeCondition, err error,
+	ctx context.Context, nodeName, readResourceVersion string, err error,
 ) error {
 	if !apierrors.IsInvalid(err) {
 		return err
@@ -205,12 +206,12 @@ func (r *K8sConnector) conditionTestFailedAsConflict(
 			err, getErr) //nolint:errorlint // Wrapping the 422 too would let it decide the retry.
 	}
 
-	if equality.Semantic.DeepEqual(node.Status.Conditions, read) {
+	if node.ResourceVersion == readResourceVersion {
 		return err
 	}
 
 	return apierrors.NewConflict(corev1.Resource("nodes"), nodeName,
-		errors.New("node conditions changed since they were read"))
+		errors.New("node changed since its conditions were read"))
 }
 
 func sortHealthEventsByTimestamp(events []*protos.HealthEvent) []*protos.HealthEvent {

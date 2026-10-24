@@ -437,11 +437,12 @@ func writtenNode(t *testing.T, action k8stesting.Action) (*corev1.Node, bool) {
 // That read's own error, not the 422, decides whether the write is retried.
 func TestConditionTestFailedAsConflict(t *testing.T) {
 	ctx := context.Background()
+	const readRV = "100"
 	read := []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
 	rejected := apierrors.NewInvalid(schema.GroupKind{Kind: "Node"}, "n", nil)
 
-	newConnector := func(conditions []corev1.NodeCondition, getErr error) *K8sConnector {
-		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n"}}
+	newConnector := func(resourceVersion string, conditions []corev1.NodeCondition, getErr error) *K8sConnector {
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n", ResourceVersion: resourceVersion}}
 		node.Status.Conditions = conditions
 		client := fake.NewSimpleClientset(node)
 		if getErr != nil {
@@ -455,25 +456,32 @@ func TestConditionTestFailedAsConflict(t *testing.T) {
 
 	t.Run("conditions changed is a conflict", func(t *testing.T) {
 		changed := append(slices.Clone(read), corev1.NodeCondition{Type: "SysLogsXIDError", Status: corev1.ConditionTrue})
-		err := newConnector(changed, nil).conditionTestFailedAsConflict(ctx, "n", read, rejected)
+		err := newConnector("101", changed, nil).conditionTestFailedAsConflict(ctx, "n", readRV, rejected)
 		require.True(t, apierrors.IsConflict(err), "got %v", err)
 	})
 
-	t.Run("conditions unchanged keeps the 422", func(t *testing.T) {
-		err := newConnector(read, nil).conditionTestFailedAsConflict(ctx, "n", read, rejected)
+	// Another writer changed a condition, failing the test, and a third write
+	// restored it before the node was read again.
+	t.Run("conditions changed and restored is a conflict", func(t *testing.T) {
+		err := newConnector("102", read, nil).conditionTestFailedAsConflict(ctx, "n", readRV, rejected)
+		require.True(t, apierrors.IsConflict(err), "got %v", err)
+	})
+
+	t.Run("node unchanged keeps the 422", func(t *testing.T) {
+		err := newConnector(readRV, read, nil).conditionTestFailedAsConflict(ctx, "n", readRV, rejected)
 		require.Same(t, rejected, err)
 	})
 
 	t.Run("transient read error is retried", func(t *testing.T) {
-		err := newConnector(read, apierrors.NewServiceUnavailable("unavailable")).
-			conditionTestFailedAsConflict(ctx, "n", read, rejected)
+		err := newConnector(readRV, read, apierrors.NewServiceUnavailable("unavailable")).
+			conditionTestFailedAsConflict(ctx, "n", readRV, rejected)
 		require.True(t, apierrors.IsServiceUnavailable(err), "got %v", err)
 		require.True(t, isTemporaryError(err))
 	})
 
 	t.Run("other errors pass through", func(t *testing.T) {
 		forbidden := apierrors.NewForbidden(schema.GroupResource{Resource: "nodes"}, "n", nil)
-		err := newConnector(read, nil).conditionTestFailedAsConflict(ctx, "n", read, forbidden)
+		err := newConnector(readRV, read, nil).conditionTestFailedAsConflict(ctx, "n", readRV, forbidden)
 		require.Same(t, forbidden, err)
 	})
 }
