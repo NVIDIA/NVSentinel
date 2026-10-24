@@ -95,19 +95,19 @@ container_tools:
 # Testing & E2E Tools
 testing_tools:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind depType=testing_tools
-  kind: '0.30.0'
+  kind: '0.33.0'
   # renovate: datasource=github-releases depName=helm/helm depType=testing_tools
-  helm: 'v3.19.2'
+  helm: 'v3.22.1'
   # renovate: datasource=github-releases depName=helm-unittest/helm-unittest depType=testing_tools
-  helm_unittest: 'v1.0.3'
+  helm_unittest: 'v1.2.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/kwok depType=testing_tools
   kwok: 'v0.8.0'
   # renovate: datasource=helm depName=kwok depType=testing_tools
   kwok_chart: '0.3.0'  # KWOK Helm chart version (different from app version); tilt/Tiltfile pins this
   # renovate: datasource=github-releases depName=tilt-dev/ctlptl depType=testing_tools
-  ctlptl: '0.8.43'
+  ctlptl: '0.9.6'
   # renovate: datasource=github-releases depName=tilt-dev/tilt depType=testing_tools
-  tilt: '0.35.2'
+  tilt: '0.37.8'
 
 # Cluster Dependencies
 cluster:
