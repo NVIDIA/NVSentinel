@@ -24,7 +24,7 @@ Clients can create a ValidationRequest to specify that a given set of validation
 4. Creating the resource for each test group, ensuring that no groups which overlap in node membership are executed concurrently.
 5. Monitoring that test resources run to completion and ensuring nodes remain healthy during the execution of the test.
 6. Running all test groups to completion, retrying a failed group before marking it terminal. The ValidationRequest is marked as succeeded only if all test groups complete successfully.
-7. Removing the ValidationRequest from each targeted node's validation-session. If this is the last ValidationRequest tracked in the session, the configured scheduling gate is removed from the node.
+7. Removing the ValidationRequest from each targeted node's validation-session. If this is the last ValidationRequest tracked in the session and the node still satisfies the readiness criteria, the configured scheduling gate is removed from the node.
 
 Within NVSentinel, there are 2 clients that can be opted-in to create ValidationRequests.
 
@@ -33,13 +33,15 @@ Within NVSentinel, there are 2 clients that can be opted-in to create Validation
 
 An operator can also create a ValidationRequest manually or implement their own clients.
 
-### Quarantine During Validation
+### Readiness Criteria at Release
 
-Before releasing a node, the validation-controller checks the live Node for `quarantineHealthEvent`, including when a release patch is retried after a conflict. A new quarantine invalidates the successful results of affected test groups. Their attempts are marked `NodeReadinessViolation`, with the original test end time preserved; a warning log records that the result was invalidated before release. When retries remain, a fresh test is required after quarantine clears. Pending tests also check the live Node before starting, so a stale readiness cache cannot start a retry on a node already known to be quarantined.
+Before the validation-controller releases a node, it evaluates the configured readiness criteria against the live Node. These are the same criteria that gate a pending or running test group, so with the default `not-under-quarantine` criterion a new `quarantineHealthEvent` annotation blocks the release. The controller evaluates every node of the request before it releases any of them, and it evaluates each node again inside the release patch. The patch carries the resourceVersion of the Node, so a fault recorded between the read and the write makes the patch conflict, and the retry reads and evaluates the node again.
 
-Release is not atomic across multiple nodes. A test group cannot retry if one of its members may already have returned to service or is no longer owned by this request. Independent groups are not blocked from retrying solely because another group's node was released or deleted.
+When a node fails a criterion at release, the ValidationRequest completes as `Failed` even though every test group succeeded. The controller logs a warning and sets the `ReleaseBlocked` condition with reason `NodeReadinessViolation`; its message names the failing nodes and criteria. The nodes keep their validation-session entry, marked failed, and their scheduling gate. Release is not atomic across the nodes of a request: a node that was already released when a later node failed its check stays released.
 
-Deleting a ValidationRequest during quarantine removes its session entry but preserves the scheduling gate. If it was the last entry, the controller logs a warning: clearing quarantine does **not** guarantee release of the retained cordon or taints, because fault-quarantine preserves gates that existed before it took ownership. After remediation, an operator can create a new ValidationRequest to validate and release the node, or inspect the node and explicitly remove the remaining gate. Do not manually release a node while quarantine is active. This deletion case does not automatically transfer ownership of the gate between controllers.
+A node held by a failed request is released when a new ValidationRequest with the same tests succeeds, which clears the failed session entry, or when an operator deletes the failed request after the node satisfies the readiness criteria again. With post-remediation validation, fault-quarantine creates such a request when the new fault matched `validation.ruleSets`.
+
+Deleting a ValidationRequest removes its session entry. If it was the last entry and the node fails a readiness criterion, the controller retains the scheduling gate and logs a warning instead of releasing the node. A later ValidationRequest that succeeds on the node releases the gate; otherwise an operator removes it.
 
 ## Configuration
 
