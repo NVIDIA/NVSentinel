@@ -155,7 +155,42 @@ mongodb:
   automountServiceAccountToken: true
   
   pdb:
-    minAvailable: 2  # At least 2 replicas must be available (ensures quorum)
+    # BOTH EMPTY ON PURPOSE. The subchart template then renders
+    # `maxUnavailable: 1`, which is Bitnami's documented behaviour for this
+    # case: "Defaults to 1 if both pdb.minAvailable and pdb.maxUnavailable are
+    # empty" (charts/mongodb/values.yaml, pdb.maxUnavailable).
+    #
+    # That default bounds VOLUNTARY DISRUPTIONS to one member at a time. It is
+    # not a quorum guarantee, and it is worth being exact about that:
+    #
+    #   replicaCount >= 3  evicting one leaves a majority, so quorum survives
+    #   replicaCount == 2  the majority of 2 is 2, so evicting one leaves no
+    #                      majority and the set loses its primary - one member
+    #                      away is already too many at this size
+    #   replicaCount == 1  the eviction IS the outage; there is no quorum to
+    #                      preserve, and permitting it is the deliberate trade -
+    #                      a drain that completes, against a budget that can
+    #                      never be satisfied
+    #
+    # It is still the right default because it is the tightest bound that
+    # permits any voluntary disruption at all, which is what a drain needs.
+    # Sizes where one eviction is unacceptable want their own value, not a
+    # budget that forbids every eviction.
+    #
+    # This block previously set `minAvailable: 2`, which is correct only at
+    # exactly replicaCount 3. Below 3 it can never be met, so disruptionsAllowed
+    # is 0 and any drain of the node hosting a member blocks indefinitely.
+    # Above 3 it is too permissive: at 5 members it allows 3 to go away, leaving
+    # 2, which loses quorum and makes the replica set read-only.
+    #
+    # DO NOT set maxUnavailable to a literal here. The template emits
+    # minAvailable whenever it is truthy AND maxUnavailable whenever that is
+    # truthy, so a literal here combines with an operator's own
+    # `pdb.minAvailable` into a PodDisruptionBudget carrying both fields, which
+    # the API server rejects as mutually exclusive. Leaving it empty keeps an
+    # explicit operator override working and still yields 1 by default.
+    minAvailable: ""
+    maxUnavailable: ""
 
   initContainers:
     - name: create-mongodb-credentials
