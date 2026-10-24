@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -24,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -495,7 +497,7 @@ func (r *ValidationRequestReconciler) reconcileDelete(ctx context.Context,
 		}
 	}
 
-	if err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest, nil); err != nil {
+	if err := r.releaseNodesFromDeletedRequest(ctx, validationRequest); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -511,13 +513,8 @@ func (r *ValidationRequestReconciler) reconcileDelete(ctx context.Context,
 func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest, phase v1alpha1.Phase,
 	skippedNodes, skippedTests []string) (ctrl.Result, error) {
-	if phase == v1alpha1.PhaseSucceeded {
-		err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest,
-			resolveValidationRequestTests(validationRequest, r.Config))
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-	} else if err := r.releaseNodesFromFailedRequest(ctx, validationRequest); err != nil {
+	phase, err := r.releaseNodesOnCompletion(ctx, validationRequest, phase)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -552,6 +549,50 @@ func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Cont
 	metrics.ValidationRequestsDurationSeconds.WithLabelValues(metricStatus).Observe(duration.Seconds())
 
 	return ctrl.Result{}, nil
+}
+
+/*
+releaseNodesOnCompletion releases the nodes of a successful request, or marks the session entry of every node of a
+failed request as failed. The nodes of a successful request are released only when every one of them still satisfies
+the readiness criteria. Otherwise the request completes as Failed with a ReleaseBlocked condition, and its nodes keep
+their failed session entry and their scheduling gate until an equivalent request succeeds or the request is deleted.
+*/
+func (r *ValidationRequestReconciler) releaseNodesOnCompletion(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest, phase v1alpha1.Phase) (v1alpha1.Phase, error) {
+	if phase == v1alpha1.PhaseSucceeded {
+		err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest,
+			resolveValidationRequestTests(validationRequest, r.Config))
+		if err == nil {
+			return phase, nil
+		}
+
+		var blocked *releaseBlockedError
+		if !errors.As(err, &blocked) {
+			return phase, err
+		}
+
+		slog.WarnContext(ctx, "Node failed readiness criteria before validation release; failing the request",
+			"validationRequest", validationRequest.Name, "violations", blocked.message())
+		setReleaseBlockedCondition(validationRequest, blocked)
+
+		phase = v1alpha1.PhaseFailed
+	}
+
+	if err := r.releaseNodesFromFailedRequest(ctx, validationRequest); err != nil {
+		return phase, err
+	}
+
+	return phase, nil
+}
+
+func setReleaseBlockedCondition(validationRequest *v1alpha1.ValidationRequest, blocked *releaseBlockedError) {
+	meta.SetStatusCondition(&validationRequest.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeReleaseBlocked,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: validationRequest.Generation,
+		Reason:             string(v1alpha1.FailureReasonNodeReadinessViolation),
+		Message:            blocked.message(),
+	})
 }
 
 func (r *ValidationRequestReconciler) transitionValidationRequestToRunning(ctx context.Context,
