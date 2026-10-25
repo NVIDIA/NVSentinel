@@ -46,8 +46,8 @@ github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.6 h1:FpBq24TG6WVSObTNhQO
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.6/go.mod h1:ONzdPVYC95oBOu0VWNEsKEntcoemP3xVKjT+qWml1s4=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.6 h1:Qmn60RWuk9+bd2ddvJJqwf3Cpac3VvGMOdbGemtUhX4=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.6/go.mod h1:h/YJhe4AVyQxEUMluph10iqV7mjajH7A9L+BHF5ppis=
-github.com/aws/aws-sdk-go-v2/service/ec2 v1.339.0 h1:QeML374NiRru1tMjY46LznOzY7VMbWstpnhrFPgscvM=
-github.com/aws/aws-sdk-go-v2/service/ec2 v1.339.0/go.mod h1:RttUwBa++DWLLpzTAQdcQzqI9uBF9cfRI/ek8gXzLR4=
+github.com/aws/aws-sdk-go-v2/service/ec2 v1.340.0 h1:H9eDiicM7ygKBIaEINAaSPmUPNwq7dquXFICqvpbcxs=
+github.com/aws/aws-sdk-go-v2/service/ec2 v1.340.0/go.mod h1:RttUwBa++DWLLpzTAQdcQzqI9uBF9cfRI/ek8gXzLR4=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.21 h1:e6YW5uME30TkrElR+4/xcY7NB6CCj2dcv7vtmGXhfhQ=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.21/go.mod h1:obpHAMP693+f3/A8PkLhIqfK1C+NWWn8zXzqD3OH520=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.6 h1:LHHdobjo5le1sjJdolitV7uVvYg3wkaeM1Ju2fDgeZQ=
@@ -60,8 +60,8 @@ github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.4 h1:j6c+HA4AoS0EBEjArPjavFEB
 github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.4/go.mod h1:RhghaXUk9q66VtOQUX1FdPddQuHnqQZzbB0fEYXmPRA=
 github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 h1:OKEfbf2tcfsF2pBk/S9QqNpo6alaAtiBs4hysCsBjPw=
 github.com/aws/aws-sdk-go-v2/service/sts v1.51.4/go.mod h1:mCd6qGo9b8hTtfjgsmNkFlzwjyce4owd7HDVFnCLXhM=
-github.com/aws/smithy-go v1.28.5 h1:OqbqKtzY9NUnr2yAe9+hiTdFb20tNaK/lI0PMOGXX9k=
-github.com/aws/smithy-go v1.28.5/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
+github.com/aws/smithy-go v1.28.6 h1:Pj+/sUviNYjow8ELRtNwKHZ9ECeF+7pATX3+shjLIrw=
+github.com/aws/smithy-go v1.28.6/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
@@ -267,8 +267,8 @@ gomodules.xyz/jsonpatch/v2 v2.5.0 h1:JELs8RLM12qJGXU4u/TO3V25KW8GreMKl9pdkk14RM0
 gomodules.xyz/jsonpatch/v2 v2.5.0/go.mod h1:AH3dM2RI6uoBZxn3LVrfvJ3E0/9dG4cSrbuBJT4moAY=
 gonum.org/v1/gonum v0.17.0 h1:VbpOemQlsSMrYmn7T2OUvQ4dqxQXU+ouZFQsZOx50z4=
 gonum.org/v1/gonum v0.17.0/go.mod h1:El3tOrEuMpv2UdMrbNlKEh9vd86bmQ6vqIcDwxEOc1E=
-google.golang.org/api v0.306.0 h1:jbakJtAJAO1d8PUFandqfYHuf/ecaeTgoas7+hpXLHc=
-google.golang.org/api v0.306.0/go.mod h1:4XMH+b/ZEfuTbK7FnrFRY9c4xfFHVflGTKuy/i5wUmE=
+google.golang.org/api v0.307.0 h1:KJJv1V/cOeCUrgKFippAhSg98QlR2IZFqubQKf7gQdg=
+google.golang.org/api v0.307.0/go.mod h1:4XMH+b/ZEfuTbK7FnrFRY9c4xfFHVflGTKuy/i5wUmE=
 google.golang.org/genproto v0.0.0-20261019180522-ce908d29299b h1:+t2qGqt6R8CO622uiX1JpnRvRvSOQoVRV0DiPzUjKXg=
 google.golang.org/genproto v0.0.0-20261019180522-ce908d29299b/go.mod h1:XRIfc1yr5xsbF8xFw5+g7SEmLJX/eQ7MMazTRbnMMvI=
 google.golang.org/genproto/googleapis/api v0.0.0-20261019180522-ce908d29299b h1:nB3spRIaSPtxJpxb0k41yljROvm2Jrwfs2pSNdKS5y8=
