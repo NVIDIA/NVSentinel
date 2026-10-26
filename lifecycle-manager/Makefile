@@ -58,24 +58,23 @@ all: lint-test ## Run lint-test (default target)
 .PHONY: generate
 generate: ## Generate CRDs and move them to Helm chart directory
 	@echo "Generating CRDs and DeepCopy code implementations for lifecycle-manager..."
-	@# Install controller-gen if not present
-	@which controller-gen > /dev/null || (echo "Installing controller-gen..." && go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest)
 	@# Generate CRDs into api/v1alpha1 directory
 	@# Note: Generated CRD YAML files do not include license headers (this is expected)
-	@controller-gen +crd:headerFile="../.github/headers/LICENSE_YAML" paths=./$(API_DIR) output:crd:dir=./$(API_DIR)
+	@$(CONTROLLER_GEN) +crd:headerFile="../.github/headers/LICENSE_YAML" paths=./$(API_DIR) output:crd:dir=./$(API_DIR)
 	@# Remove config-only CRDs that should not be deployed
 	@for crd in $(CONFIG_ONLY_CRDS); do \
 		find ./$(API_DIR) -name "*$${crd}*" -delete && \
 		echo "Removed config-only CRD: $${crd}"; \
 	done
-	@# Move remaining CRDs to Helm chart crds directory (clean first to remove stale files)
+	@# Move remaining CRDs to Helm chart crds directory. Remove stale controller-gen CRDs
+	@# first, but keep maintenance_request.crd.yaml, which data-models generates.
 	@echo "Moving generated CRDs to $(CRD_OUTPUT_DIR)..."
-	@rm -rf $(CRD_OUTPUT_DIR) && mkdir -p $(CRD_OUTPUT_DIR)
+	@mkdir -p $(CRD_OUTPUT_DIR) && rm -f $(CRD_OUTPUT_DIR)/nvsentinel.nvidia.com_*.yaml
 	@mv ./$(API_DIR)/*.yaml $(CRD_OUTPUT_DIR)/
 	@echo "CRDs generated and moved successfully!"
 	@echo "Generated files:"
 	@ls -1 $(CRD_OUTPUT_DIR)/*.yaml
-	@controller-gen +object:headerFile="../.github/headers/LICENSE_GO" paths="./..."
+	@$(CONTROLLER_GEN) +object:headerFile="../.github/headers/LICENSE_GO" paths="./..."
 	@echo "Generated code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations"
 
 .PHONY: manifests

@@ -95,8 +95,6 @@ type ValidationConfig struct {
 	RuleSets          []ValidationRuleSet `toml:"ruleSets"`
 	// PartialDrainEnabled must match node-drainer's partialDrainEnabled.
 	PartialDrainEnabled bool `toml:"partialDrainEnabled"`
-	// PersistHandoff keeps the source event annotation until lifecycle-manager registers the request.
-	PersistHandoff bool `toml:"persistHandoff"`
 }
 
 type TomlConfig struct {

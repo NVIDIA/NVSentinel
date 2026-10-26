@@ -40,12 +40,16 @@ type Client struct {
 	restMapper    *restmapper.DeferredDiscoveryRESTMapper
 	template      *template.Template
 	config        config.CustomDrainConfig
+	dryRunMode    []string
 }
 
+// NewClient returns a client that renders drain CRs from the configured template. With dryRun
+// set, CRs are created and deleted with DryRunAll and are never stored.
 func NewClient(
 	cfg config.CustomDrainConfig,
 	dynamicClient dynamic.Interface,
 	restMapper *restmapper.DeferredDiscoveryRESTMapper,
+	dryRun bool,
 ) (*Client, error) {
 	templatePath := filepath.Join(cfg.TemplateMountPath, cfg.TemplateFileName)
 
@@ -81,14 +85,23 @@ func NewClient(
 			"kind", cfg.Kind)
 	}
 
+	// In dry run the API server validates the CR but does not persist or delete it,
+	// the same way evictions are sent with DryRunAll.
+	dryRunMode := []string{}
+	if dryRun {
+		dryRunMode = []string{metav1.DryRunAll}
+	}
+
 	return &Client{
 		dynamicClient: dynamicClient,
 		restMapper:    restMapper,
 		template:      tmpl,
 		config:        cfg,
+		dryRunMode:    dryRunMode,
 	}, nil
 }
 
+// CreateDrainCR renders the drain CR for the event and creates it, returning its name.
 func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, error) {
 	var buf bytes.Buffer
 	if err := c.template.Execute(&buf, data); err != nil {
@@ -132,7 +145,7 @@ func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, 
 	_, err = c.dynamicClient.
 		Resource(mapping.Resource).
 		Namespace(c.config.Namespace).
-		Create(ctx, cr, metav1.CreateOptions{})
+		Create(ctx, cr, metav1.CreateOptions{DryRun: c.dryRunMode})
 	if err != nil {
 		return "", fmt.Errorf("failed to create CR: %w", err)
 	}
@@ -231,6 +244,7 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, bool, er
 	return true, c.isCRComplete(*cr), nil
 }
 
+// DeleteDrainCR deletes the named drain CR. A CR that is already gone is not an error.
 func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {
 	gvk := schema.GroupVersionKind{
 		Group:   c.config.ApiGroup,
@@ -246,7 +260,7 @@ func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {
 	err = c.dynamicClient.
 		Resource(mapping.Resource).
 		Namespace(c.config.Namespace).
-		Delete(ctx, crName, metav1.DeleteOptions{})
+		Delete(ctx, crName, metav1.DeleteOptions{DryRun: c.dryRunMode})
 
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete CR: %w", err)

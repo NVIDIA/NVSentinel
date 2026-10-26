@@ -14,6 +14,9 @@
 
 replicaCount: 1
 
+# Log level for the event-exporter (debug, info, warn or error). Defaults to info; any other value falls back to info.
+logLevel: info
+
 image:
   repository: ghcr.io/nvidia/nvsentinel/event-exporter
   pullPolicy: IfNotPresent
@@ -99,6 +102,16 @@ exporter:
   # Example: 'event.recommendedAction != \'NONE\' && !(\'45\' in event.errorCode)'
   filter:
     expression: ""
+
+# Extra environment variables to add to the event-exporter container.
+# Use this to route sink and OIDC token requests through an HTTP proxy.
+# Example:
+# extraEnv:
+#   - name: HTTPS_PROXY
+#     value: "http://proxy.example.com:3128"
+#   - name: NO_PROXY
+#     value: ".svc,.cluster.local"
+extraEnv: []
 
 # Pod priority for this component. Overridden by the matching global when that is set.
 priorityClassName: ""

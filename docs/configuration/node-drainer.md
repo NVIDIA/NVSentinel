@@ -185,7 +185,7 @@ annotations:
 
 ## Pod Drain Policies
 
-Use `podDrainPolicies` when workloads in the same namespace need different drain modes. Policies match pod labels using standard [Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors). The first matching policy wins. `podDrainPolicies` and `userNamespaces` are mutually exclusive; configuration with both non-empty is rejected. Set `userNamespaces: []` to clear the Helm chart's default namespace rule when enabling policies. Pods that match no policy are outside the drain scope and do not block completion.
+Use `podDrainPolicies` when workloads in the same namespace need different drain modes. Policies match pod labels using standard [Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors), the kind of the pod's owner, or both. The first matching policy wins. `podDrainPolicies` and `userNamespaces` are mutually exclusive; configuration with both non-empty is rejected. Set `userNamespaces: []` to clear the Helm chart's default namespace rule when enabling policies. Pods that match no policy are outside the drain scope and do not block completion.
 
 ```yaml
 node-drainer:
@@ -201,17 +201,24 @@ node-drainer:
     - name: bounded-shutdown
       podSelector: "example.com/drain-mode=timeout"
       mode: DeleteAfterTimeout
+    - name: stateful-workloads
+      ownerKinds: ["StatefulSet"]
+      mode: AllowCompletion
 ```
 
-Each policy has a unique, non-empty `name`, a non-empty `podSelector`, and a `mode` (`Immediate`, `AllowCompletion`, or `DeleteAfterTimeout`). `namespace` is an optional namespace-name glob; omitting it matches all user namespaces. Selectors support equality, set membership, and key existence. As in Kubernetes, `key!=value` and `key notin (value)` also match pods without that key; add a key-existence requirement if absent labels should not match.
+Each policy has a unique, non-empty `name`, a `podSelector`, `ownerKinds` or both, and a `mode` (`Immediate`, `AllowCompletion`, or `DeleteAfterTimeout`). `namespace` is an optional namespace-name glob; omitting it matches all user namespaces. Selectors support equality, set membership, and key existence. As in Kubernetes, `key!=value` and `key notin (value)` also match pods without that key; add a key-existence requirement if absent labels should not match.
+
+`ownerKinds` lists controller kinds. A pod matches when the kind of its controller owner reference is in the list. The comparison is exact and case-sensitive, so use the kind as Kubernetes stores it, for example `StatefulSet`, `ReplicaSet` or `Job`. The drainer reads only the pod's direct controller and does not follow owners further. Pods created by a Deployment have a `ReplicaSet` controller, and pods created by a CronJob have a `Job` controller. Pods without a controller never match a policy that sets `ownerKinds`. When a policy sets both `podSelector` and `ownerKinds`, a pod must match both.
+
+For built-in workloads, the labels that controllers add can also be used: `podSelector: "statefulset.kubernetes.io/pod-name"` selects StatefulSet pods and `podSelector: "batch.kubernetes.io/job-name"` selects Job pods. Labels come from the pod template, so any workload can carry them; `ownerKinds` matches the controller reference, which the controller sets when it creates the pod.
 
 Policy order takes precedence over mode: an early `AllowCompletion` match cannot be overridden by a later `Immediate` match. There is no namespace fallback in policy mode. Ensure the selectors cover every workload that should participate in draining. To retain namespace-based draining instead, leave `podDrainPolicies` empty and configure `userNamespaces` as before.
 
 Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. `DrainOverrides.Skip` retains its existing behavior. Custom drain configuration cannot be combined with pod drain policies unless `customDrain.nodeSelector` scopes it to part of the cluster; see [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
 
-Pod labels are read from the informer cache on each reconciliation and before eviction or timeout deletion. Changing a relevant label changes the policy on a subsequent observation. API deletion preconditions prevent a stale observation from deleting a relabelled or replaced pod. Configuration changes require restarting node-drainer. Only label keys referenced by policies are retained in its pod cache.
+Pod labels are read from the informer cache on each reconciliation and before eviction or timeout deletion. Changing a relevant label changes the policy on a subsequent observation. API deletion preconditions prevent a stale observation from deleting a relabelled or replaced pod. Configuration changes require restarting node-drainer. Only label keys referenced by policies are retained in its pod cache. The cache keeps the kind and controller flag of each owner reference.
 
-`DeleteAfterTimeout` continues to use `deleteAfterTimeoutMinutes` measured from the health event's creation, including after a restart. Policies do not introduce a new timeout or automatically choose a mode based on workload kind; workload owners opt in through labels.
+`DeleteAfterTimeout` continues to use `deleteAfterTimeoutMinutes` measured from the health event's creation, including after a restart. Policies do not introduce a new timeout. Policies never choose a mode from the workload kind by default; operators list the owner kinds in `ownerKinds`, or workload owners opt in through labels.
 
 ## Scoping custom drain to part of the cluster
 

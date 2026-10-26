@@ -129,42 +129,7 @@ fault-quarantine:
 
 The default ruleset creates a ValidationRequest which runs dcgm-diag-test against any unquarantined node that had an unhealthy event requiring a VM or BM restart remediation during its quarantine session.
 
-`fault-quarantine.validation.persistHandoff` defaults to `false`. Set it to `true` with ownership-aware validation after upgrading lifecycle manager. Fault quarantine retains the validation source on the Node until lifecycle manager registers the matching request. The request carries the source hash. Registration and source removal use one version-protected Node update. An unconsumed source prevents an older validation from releasing the Node.
-
 A ValidationRequest is only created if at least one event from the quarantine session completed a full drain, so validation tests do not run while workloads that node-drainer would evict are still on the node. `fault-quarantine.validation.partialDrainEnabled` tells fault-quarantine whether node-drainer drains COMPONENT_RESET events partially (only the pods using the impacted GPU). It defaults to `false`, the same as `node-drainer.partialDrainEnabled`, so a completed drain of a COMPONENT_RESET event counts as a full drain and can trigger validation; a validation ruleset must also match the event, and the default ruleset does not match COMPONENT_RESET. If partial drain is enabled in node-drainer, set `fault-quarantine.validation.partialDrainEnabled: true` as well (or set `global.partialDrainEnabled: true`, which overrides both), so a partial drain never counts as a full drain. Change this together with node-drainer's setting, after open quarantine sessions finish: fault-quarantine judges each event by the current value, so an event drained partially before the change may count as a full drain after it. See [Partial Drain](node-drainer.md#partial-drain).
-
-## Enabling Strict Cordon Ownership
-
-Set `lifecycle-manager.config.schedulingGate.cordon.onlyOwned: true` to release only cordons acquired by NVSentinel. Pre-existing manual cordons remain after validation succeeds. Ownership gates only the cordon: the configured taints are lifted when the session ends, as with the default policy. New-node validation requests without an ownership grant also retain their cordon. lifecycle-manager logs every retained cordon with its reason.
-
-Deploy the claim-aware lifecycle manager before the claim-producing fault quarantine controller. Keep the current release policy while existing requests finish. Stop the old fault quarantine controller, then run the checks below. Enable `onlyOwned` and `fault-quarantine.validation.persistHandoff` before starting the new producer. Failed sessions require an explicit recovery decision before changing policy.
-
-Replace the fault quarantine producer with Deployment strategy `Recreate`. Alternatively, stop its old replicas before starting the replacement. The older producer does not understand ownership claims. A default rolling deployment can briefly run both versions.
-
-Check both requests and Node annotations. Each command must produce no output before changing policy:
-
-```bash
-kubectl get validationrequests.nvsentinel.nvidia.com -A -o json |
-  jq -r '.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed") |
-    [.metadata.namespace // "", .metadata.name, .status.phase // "Pending"] | @tsv'
-
-kubectl get nodes -o json |
-  jq -r '.items[] | select((.metadata.annotations // {}) | has("quarantineHealthEvent") or
-    has("quarantineValidationHealthEvent") or has("nvsentinel.nvidia.com/validation-session") or
-    has("nvsentinel.nvidia.com/cordon-claim")) | .metadata.name'
-```
-
-An old session without Node and request UIDs remains protected. A request name alone cannot prove object identity. Enabling strict ownership does not assign ownership to such sessions. When retrying an interrupted handoff, fault-quarantine adopts a legacy ValidationRequest only when its Node UID and exact specification match. It completes that handoff against the same live Node snapshot, preserving the validation gate and taint records while clearing the source that the old request cannot acknowledge. The request gains no ownership grant; complete legacy activity before enabling strict policy.
-
-New session entries record identities and ownership with either release policy. Existing name-only entries retain their original representation, so complete them before enabling strict ownership.
-
-The request check includes requests whose phase has not been initialized. Historical completed requests can remain once their Node associations are cleared; failed requests can still have retained sessions that need resolution.
-
-Fault quarantine stores a unique claim for each continuous cordon. Overlapping owned requests carry the same claim ID and retain automatic release eligibility. Deleting one owned request retains the others' eligibility. Deleting the last association retains cordon; it retires the claim when no quarantine or pending successor remains.
-
-Ownership updates read the live Node before patching, including metadata-only changes. Each update adds an API GET. This ensures that ownership decisions use the Node identity and version being changed.
-
-Before rollback, let active claims, requests, and handoffs finish with both claim-aware controllers. Recheck the commands above, then revert the producer before the consumer. Keep automatic creation of new requests paused during the version change. If a failed request prevents completion, retain the ownership-aware controllers until the node's recovery and scheduling decision are resolved.
 
 ## Enabling NVCRE Validation
 
@@ -377,9 +342,8 @@ status:
 
 | Key | Type | Purpose |
 |---|---|---|
-| cordon.remove | bool | Whether nodes should be uncordoned after completing validation. A node is only uncordoned once there are no pending, in-progress, or failed ValidationRequests, since a node may be targeted by multiple ValidationRequests |
-| cordon.onlyOwned | bool | Defaults to false. When true, uncordoning requires successful tests and persisted NVSentinel cordon ownership bound to the Node and request UIDs. Pre-existing or unknown ownership preserves the cordon; the configured taints are still lifted when the session ends. Deleting a request only clears its session association and never releases the cordon. A retained cordon is logged with its reason |
-| cordon.labelPrefix | string | Prefix for the cordon-by/cordon-reason/cordon-timestamp and matching uncordon-* labels the controller writes when cordon.remove is true |
+| cordon.remove | bool | Whether nodes should be uncordoned once no pending, in-progress, or failed requests remain in their validation session. Fault-quarantine records `nvsentinel.nvidia.com/cordon-pre-existing` on its validation requests: `true` preserves the cordon; `false` permits release, regardless of labels in the request template. New-node and external requests without that annotation permit release as configured. The session retains permission until it ends, including when a permitting request is deleted or superseded. Sessions written by older controllers retain their previous release policy. Configured taint removal is unchanged |
+| cordon.labelPrefix | string | Prefix for the cordon-by/cordon-reason/cordon-timestamp and matching uncordon-* labels. For fault-quarantine requests without `cordon-pre-existing`, the controller uses the `<labelPrefix>cordon-by` label as a compatibility fallback; the prefix must match fault-quarantine's labelPrefix. An empty prefix retains the configured release behavior for these legacy requests. Requests with an explicit cordon decision use that decision regardless of the prefix |
 | taints[].key, .value, .effect | string | Identifies a taint that test pods must tolerate during validation. The controller does not apply these taints. They are expected to be applied externally prior to the ValidationRequest being created. Every test pod automatically tolerates node.kubernetes.io/unschedulable and every taint listed here, regardless of whether the taint is present on the node. The default k8s-job-template.yaml also tolerates every NoExecute taint |
 | taints[].remove | bool | Whether the controller lifts this specific taint when validation completes. Set false for a taint that exists for reasons other than gating validation |
 
@@ -388,18 +352,13 @@ status:
 | Key | Type | Purpose |
 |---|---|---|
 | enabled | bool | Whether fault-quarantine requests validation after a node recovers from a fault |
-| persistHandoff | bool | Defaults to false. Retains the validation source until lifecycle-manager registers the request. Fault-quarantine retries pending handoffs every 30 seconds and recreates missing requests. The cordon claim lasts through validation. Enable with strict ownership after legacy activity finishes |
 | apiGroup, version, kind | string | The GroupVersionKind of the ValidationRequest resource fault-quarantine creates |
 | templateFileName | string | The filename of the Go text/template, resolved from templates, rendered to build the ValidationRequest |
 | templates | map[string]string | Inline template content, keyed by filename |
 | ruleSets | []RuleSet | Maps HealthEvents from a quarantine session to the tests they require |
 | partialDrainEnabled | bool | Must match node-drainer partialDrainEnabled. When false, a completed drain of a COMPONENT_RESET event counts as a full drain. Defaults to false. Set both with global.partialDrainEnabled |
 
-When fault-quarantine hands a node to validation, it keeps the cordon, applied taints, and their bookkeeping. lifecycle-manager removes its configured taints when the session ends and removes the corresponding records. A later fault that recovers while an active cordon claim is still associated with validation keeps those taints and records, even when it creates no additional request. Other recoveries without a new validation request use fault-quarantine's normal taint cleanup.
-
-List every fault-quarantine taint used to gate validation in lifecycle-manager `schedulingGate.taints` with `remove: true`. A taint outside that configuration remains on the node with its record. Test pods need to tolerate it through this list or their provider template; the default `k8s-job-template.yaml` tolerates every NoExecute taint. Keep the `not-under-quarantine` readiness criterion so a new quarantine fails pending validation. Reserve `remove: true` for taints managed by fault-quarantine: lifecycle-manager matches key, value, and effect and also removes an identical taint that predated the quarantine.
-
-With `persistHandoff: true`, fault-quarantine automatically retries an unconsumed handoff after quarantine clears, including after a controller restart or deletion of the request before registration. It verifies the existing request or recreates the missing request from the retained source. A stopped lifecycle-manager leaves the node isolated until it resumes and registers the request. A source or request identity mismatch is logged and retried; resolving that mismatch is an operator exception. Restore the matching controller configuration and request identity before resuming validation. Automatic recovery never expires the isolation.
+When fault-quarantine creates a ValidationRequest, it keeps the cordon and every taint it applied during the quarantine session, and it stops tracking them. lifecycle-manager releases them when validation passes. Every taint that a fault-quarantine rule-set applies must therefore be listed in lifecycle-manager schedulingGate.taints with remove set to true. A taint that is not listed is never removed. Test pods also do not tolerate it, unless the provider template tolerates it, as the default k8s-job-template.yaml does for NoExecute taints. Keep the not-under-quarantine readiness criterion so a new quarantine fails the pending validation instead of releasing the node. Use remove set to true only for taints that fault-quarantine alone applies: lifecycle-manager matches on key, value, and effect, so it also lifts a matching taint that was on the node before the quarantine. When no ValidationRequest is created, fault-quarantine removes its taints itself.
 
 ### fault-quarantine.validation.ruleSets
 

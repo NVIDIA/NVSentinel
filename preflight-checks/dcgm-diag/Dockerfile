@@ -12,17 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG DCGM_VERSION="4.7.0-ubuntu24.04"
+ARG DCGM_VERSION="4.7.0-ubuntu24.04@sha256:c7e042a939a5c0d4d588fff28f9371d9d101e66eece7b3f831cf5d44fa182fc8"
 ARG VERSION="0.1.0"
 ARG GIT_COMMIT="none"
 ARG BUILD_DATE=$(date -u +%FT%TZ)
 
-FROM public.ecr.aws/docker/library/python:3.13-trixie@sha256:4a0820d8b1b1a1e012a23ff9a1296a3e28b48896a4d27a328a91ee197ce619d9 AS build
+FROM public.ecr.aws/docker/library/python:3.15-trixie@sha256:e5eb16387fc01b6d5af685c908cbc7f82f18b383d3a358d6e37cfbac6e88ac37 AS build
 
 ARG VERSION
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install poetry==2.3.3 poetry-plugin-export==1.10.0
+    pip install poetry==2.5.1 poetry-plugin-export==1.10.1
 
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1 \
@@ -38,7 +38,9 @@ RUN --mount=type=cache,target=/tmp/poetry_cache \
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
 
 
-# Not digest-pinned: the tag is a build-matrix parameter (see Makefile) used to produce multiple image variants.
+# Digest-pinned through the ARG value (tag@sha256). The tag is a build-matrix parameter (see
+# Makefile) used to produce image variants. Dependabot cannot update an ARG, so update the tag
+# and the digest together by hand.
 FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \

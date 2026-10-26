@@ -34,11 +34,11 @@ import (
 )
 
 type TokenProvider struct {
-	tokenURL           string
-	clientID           string
-	clientSecret       string
-	scope              string
-	insecureSkipVerify bool
+	tokenURL     string
+	clientID     string
+	clientSecret string
+	scope        string
+	client       *http.Client
 
 	mu             sync.Mutex
 	cachedToken    string
@@ -52,11 +52,20 @@ type tokenResponse struct {
 
 func NewTokenProvider(tokenURL, clientID, clientSecret, scope string, insecureSkipVerify bool) *TokenProvider {
 	return &TokenProvider{
-		tokenURL:           tokenURL,
-		clientID:           clientID,
-		clientSecret:       clientSecret,
-		scope:              scope,
-		insecureSkipVerify: insecureSkipVerify,
+		tokenURL:     tokenURL,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		scope:        scope,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				TLSClientConfig: &tls.Config{
+					MinVersion:         tls.VersionTLS12,
+					InsecureSkipVerify: insecureSkipVerify, //nolint:gosec // This is only used for testing
+				},
+			},
+		},
 	}
 }
 
@@ -158,17 +167,7 @@ func (p *TokenProvider) createTokenRequest(ctx context.Context) (*http.Request, 
 }
 
 func (p *TokenProvider) executeTokenRequest(req *http.Request) (*tokenResponse, int, error) {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS12,
-				InsecureSkipVerify: p.insecureSkipVerify, //nolint:gosec // This is only used for testing
-			},
-		},
-	}
-
-	resp, err := client.Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("execute request: %w", err)
 	}

@@ -129,6 +129,8 @@ spec:
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
+            - name: LOG_LEVEL
+              value: "{{ .Values.logLevel }}"
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
             {{- if $pgClientCert }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
@@ -149,6 +151,9 @@ spec:
               value: {{ printf "%s/tls.key" $mongoCertMount | quote }}
             - name: MONGODB_CA_CERT_PATH
               value: {{ printf "%s/ca.crt" $mongoCertMount | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
             {{- if .Values.global.tracing.enabled }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

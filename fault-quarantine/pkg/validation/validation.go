@@ -22,14 +22,13 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/cordonownership"
 	"github.com/nvidia/nvsentinel/commons/pkg/drain"
 	"github.com/nvidia/nvsentinel/commons/pkg/templates"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -44,6 +43,8 @@ import (
 // hold. When exceeded, the oldest entries are dropped.
 const maxQuarantineValidationHealthEvents = 10
 
+const annotationCordonPreExisting = "nvsentinel.nvidia.com/cordon-pre-existing"
+
 type ValidationClient struct {
 	k8sClient        *informer.FaultQuarantineClient
 	healthEventStore datastore.HealthEventStore
@@ -55,7 +56,6 @@ type ValidationClient struct {
 	resourceGVR      schema.GroupVersionResource
 
 	partialDrainEnabled bool
-	persistHandoff      bool
 }
 
 type templateData struct {
@@ -107,7 +107,6 @@ func NewValidationClient(cfg config.TomlConfig, k8sClient *informer.FaultQuarant
 		resourceTemplate:          validationTemplate,
 		resourceGVR:               gvr,
 		partialDrainEnabled:       cfg.Validation.PartialDrainEnabled,
-		persistHandoff:            cfg.Validation.PersistHandoff,
 	}, nil
 }
 
@@ -230,32 +229,9 @@ func (c *ValidationClient) FetchValidationTestsFromQuarantineSession(ctx context
 		return nil, "", nil
 	}
 
-	events, tests, id, err := parseValidationSource(quarantineValidationAnnotation)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to parse validation annotation for node %s: %w", nodeName, err)
-	}
-
-	isDrained, err := drain.IsNodeDrained(ctx, c.healthEventStore, nodeName, events, "", nil,
-		c.partialDrainEnabled)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to look up drain status for node %s: %w", nodeName, err)
-	}
-
-	if !isDrained {
-		slog.InfoContext(ctx, "Skipping validation: no contributing event completed its drain", "node", nodeName)
-
-		return nil, "", nil
-	}
-
-	return tests, id, nil
-}
-
-// parseValidationSource reconstructs the requested tests without consulting event history.
-// Drain eligibility is checked only when the quarantine is first handed to validation.
-func parseValidationSource(source string) ([]*protos.HealthEvent, []string, string, error) {
 	var eventsWithTests []common.HealthEventWithTests
-	if err := json.Unmarshal([]byte(source), &eventsWithTests); err != nil {
-		return nil, nil, "", fmt.Errorf("decode validation source: %w", err)
+	if err := json.Unmarshal([]byte(quarantineValidationAnnotation), &eventsWithTests); err != nil {
+		return nil, "", fmt.Errorf("failed to parse validation annotation for node %s: %w", nodeName, err)
 	}
 
 	events := make([]*protos.HealthEvent, 0, len(eventsWithTests))
@@ -284,35 +260,26 @@ func parseValidationSource(source string) ([]*protos.HealthEvent, []string, stri
 		}
 	}
 
+	isDrained, err := drain.IsNodeDrained(ctx, c.healthEventStore, nodeName, events, "", nil,
+		c.partialDrainEnabled)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to look up drain status for node %s: %w", nodeName, err)
+	}
+
+	if !isDrained {
+		slog.InfoContext(ctx, "Skipping validation: no contributing event completed its drain", "node", nodeName)
+
+		return nil, "", nil
+	}
+
 	sort.Strings(tests)
 	sort.Strings(eventIDs)
 
-	return events, tests, sessionID(eventIDs), nil
+	return tests, sessionID(eventIDs), nil
 }
 
 func (c *ValidationClient) CreateValidationRequest(ctx context.Context, node *corev1.Node, tests []string, sessionID,
-	traceID, spanID, source string) (bool, error) {
-	validationObject, err := c.renderValidationRequest(node, tests, sessionID, traceID, spanID, source)
-	if err != nil {
-		return false, err
-	}
-
-	actual, err := c.k8sClient.CreateValidationRequestResource(ctx, c.resourceGVR, validationObject)
-	if err != nil {
-		return false, err
-	}
-
-	// An adopted legacy request cannot acknowledge a source it never recorded.
-	// Complete its original handoff without assigning it new ownership evidence.
-	if !c.persistHandoff || actual == nil {
-		return false, nil
-	}
-
-	return informer.ValidateRecoveredValidationRequest(actual, validationObject) == nil, nil
-}
-
-func (c *ValidationClient) renderValidationRequest(node *corev1.Node, tests []string, sessionID,
-	traceID, spanID, source string) (*unstructured.Unstructured, error) {
+	traceID, spanID string) error {
 	data := templateData{
 		NodeName:  node.Name,
 		SessionID: sessionID,
@@ -323,7 +290,7 @@ func (c *ValidationClient) renderValidationRequest(node *corev1.Node, tests []st
 
 	validationObject, _, err := templates.Render(c.resourceTemplate, data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to render ValidationRequest for node %s: %w", node.Name, err)
+		return fmt.Errorf("failed to render ValidationRequest for node %s: %w", node.Name, err)
 	}
 
 	templates.SetNodeOwnerRef(validationObject, node)
@@ -333,21 +300,15 @@ func (c *ValidationClient) renderValidationRequest(node *corev1.Node, tests []st
 		annotations = make(map[string]string)
 	}
 
-	applyCordonClaim(node, annotations)
-
-	if c.persistHandoff {
-		if source == "" || node.Annotations[common.QuarantineValidationHealthEventAnnotationKey] != source {
-			return nil, fmt.Errorf("validation source changed while preparing request for node %s", node.Name)
-		}
-
-		annotations[common.ValidationSourceHashAnnotationKey] = fmt.Sprintf("%x", sha256.Sum256([]byte(source)))
-	} else {
-		delete(annotations, common.ValidationSourceHashAnnotationKey)
-	}
-
+	// Carry the quarantine's cordon decision through cleanup of its Node annotations.
+	preExisting := node.Annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey] ==
+		common.QuarantineHealthEventCordonPreExistingAnnotationValue ||
+		node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] !=
+			common.QuarantineHealthEventIsCordonedAnnotationValueTrue
+	annotations[annotationCordonPreExisting] = strconv.FormatBool(preExisting)
 	validationObject.SetAnnotations(annotations)
 
-	return validationObject, nil
+	return c.k8sClient.CreateValidationRequestResource(ctx, c.resourceGVR, validationObject)
 }
 
 func (c *ValidationClient) getTestsForHealthEvent(ctx context.Context, event *protos.HealthEvent) []string {
@@ -384,33 +345,4 @@ func (c *ValidationClient) getTestsForHealthEvent(ctx context.Context, event *pr
 func sessionID(eventIDs []string) string {
 	sum := sha256.Sum256([]byte(strings.Join(eventIDs, ",")))
 	return hex.EncodeToString(sum[:])[:12]
-}
-
-// Legacy requests retain their ownership check; a claim-bearing request must be
-// tied to the active continuous cordon, never to a template or detached claim.
-func applyCordonClaim(node *corev1.Node, annotations map[string]string) {
-	ownership := common.CordonOwnership(node.Annotations)
-
-	delete(annotations, cordonownership.RequestClaimIDAnnotationKey)
-
-	if claim, valid := cordonownership.Read(node); valid {
-		annotations[cordonownership.RequestClaimIDAnnotationKey] = claim.ID
-	}
-
-	if _, present := node.Annotations[cordonownership.AnnotationKey]; present {
-		_, inherited := cordonownership.Inheritable(node)
-		_, cordonRecorded := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
-		_, dryRun := node.Annotations[common.QuarantineHealthEventDryRunAnnotationKey]
-
-		switch {
-		case ownership == common.CordonOwnershipOwned && !inherited:
-			ownership = common.CordonOwnershipUnknown
-		case !cordonRecorded && !dryRun && inherited:
-			// A session that only tainted the node leaves the continuous cordon to
-			// the active claim, so its request inherits that ownership.
-			ownership = common.CordonOwnershipOwned
-		}
-	}
-
-	annotations[common.ValidationCordonOwnershipAnnotationKey] = ownership
 }

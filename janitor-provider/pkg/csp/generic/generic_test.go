@@ -16,6 +16,11 @@ package generic
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -79,7 +84,8 @@ func TestSendRebootSignal_CreatesJob(t *testing.T) {
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, "busybox:1.37", container.Image)
-	assert.Equal(t, []string{"chroot", hostMountPath, "reboot"}, container.Command)
+	assert.Equal(t, guardedCommand("chroot /host reboot"), container.Command)
+	assert.Equal(t, []corev1.EnvVar{{Name: preRebootBootIDEnvVar, Value: "boot-id-abc"}}, container.Env)
 	require.NotNil(t, container.SecurityContext)
 	assert.True(t, *container.SecurityContext.Privileged)
 
@@ -114,10 +120,9 @@ func TestSendRebootSignal_CreatesJob_WithSyslog(t *testing.T) {
 	job := jobs.Items[0]
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{
-		"sh", "-c",
+	assert.Equal(t, guardedCommand(
 		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; chroot /host reboot",
-	}, container.Command)
+	), container.Command)
 }
 
 func TestSendRebootSignal_CreatesJob_WithSyslogAndCRName(t *testing.T) {
@@ -141,10 +146,9 @@ func TestSendRebootSignal_CreatesJob_WithSyslogAndCRName(t *testing.T) {
 	job := jobs.Items[0]
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{
-		"sh", "-c",
+	assert.Equal(t, guardedCommand(
 		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1 cr=rebootnode-worker-1-xyz\" || true; chroot /host reboot",
-	}, container.Command)
+	), container.Command)
 }
 
 func TestSendRebootSignal_CreatesSysrqJob_WithSyslog(t *testing.T) {
@@ -169,10 +173,9 @@ func TestSendRebootSignal_CreatesSysrqJob_WithSyslog(t *testing.T) {
 	job := jobs.Items[0]
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{
-		"sh", "-c",
+	assert.Equal(t, guardedCommand(
 		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; sync || true; echo b > /host-proc/sysrq-trigger",
-	}, container.Command)
+	), container.Command)
 
 	require.Len(t, container.VolumeMounts, 2)
 	assert.Equal(t, corev1.VolumeMount{
@@ -221,10 +224,9 @@ func TestSendRebootSignal_CreatesSysrqJob_WithSyslogAndCRName(t *testing.T) {
 	job := jobs.Items[0]
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{
-		"sh", "-c",
+	assert.Equal(t, guardedCommand(
 		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1 cr=rebootnode-worker-1-xyz\" || true; sync || true; echo b > /host-proc/sysrq-trigger",
-	}, container.Command)
+	), container.Command)
 }
 
 func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
@@ -249,7 +251,7 @@ func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
 	job := jobs.Items[0]
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{"sh", "-c", "echo b > /host-proc/sysrq-trigger"}, container.Command)
+	assert.Equal(t, guardedCommand("echo b > /host-proc/sysrq-trigger"), container.Command)
 
 	require.Len(t, container.VolumeMounts, 1)
 	assert.Equal(t, corev1.VolumeMount{
@@ -268,9 +270,9 @@ func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
 func TestBuildRebootJob_UsesCommandRebootByDefault(t *testing.T) {
 	client := newTestClient()
 
-	job := client.buildRebootJob("worker-1", "")
+	job := client.buildRebootJob("worker-1", "", "boot-id-abc")
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{"chroot", hostMountPath, "reboot"}, container.Command)
+	assert.Equal(t, guardedCommand("chroot /host reboot"), container.Command)
 	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
 	assert.Equal(t, "host-root", job.Spec.Template.Spec.Volumes[0].Name)
 }
@@ -283,12 +285,11 @@ func TestBuildRebootJob_UsesSyslogWhenEnabled(t *testing.T) {
 		WriteSyslog:        true,
 	})
 
-	job := client.buildRebootJob("worker-1", "")
+	job := client.buildRebootJob("worker-1", "", "boot-id-abc")
 	container := job.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []string{
-		"sh", "-c",
+	assert.Equal(t, guardedCommand(
 		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; chroot /host reboot",
-	}, container.Command)
+	), container.Command)
 	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
 	assert.Equal(t, "host-root", job.Spec.Template.Spec.Volumes[0].Name)
 }
@@ -301,6 +302,10 @@ func TestSendRebootSignal_EmptyBootID(t *testing.T) {
 	_, err := client.SendRebootSignal(ctx, node, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no bootID")
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, jobs.Items, "no reboot Job may be created without a boot ID to guard it")
 }
 
 func TestIsNodeReady_BootIDUnchanged(t *testing.T) {
@@ -518,7 +523,7 @@ func TestSendRebootSignal_JobCreationFailure(t *testing.T) {
 
 func TestBuildRebootJob_UsesGenerateName(t *testing.T) {
 	client := newTestClient()
-	job := client.buildRebootJob("worker-1", "")
+	job := client.buildRebootJob("worker-1", "", "boot-id-abc")
 
 	assert.Empty(t, job.Name)
 	assert.Equal(t, "reboot-worker-1-", job.GenerateName)
@@ -571,4 +576,321 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		config := loadConfigFromEnv()
 		assert.False(t, config.WriteSyslog)
 	})
+}
+
+var rebootVariants = []struct {
+	name           string
+	useSysrqReboot bool
+	writeSyslog    bool
+}{
+	{name: "chroot reboot", useSysrqReboot: false, writeSyslog: false},
+	{name: "chroot reboot with syslog", useSysrqReboot: false, writeSyslog: true},
+	{name: "sysrq reboot", useSysrqReboot: true, writeSyslog: false},
+	{name: "sysrq reboot with syslog", useSysrqReboot: true, writeSyslog: true},
+}
+
+func TestBuildRebootJob_AllVariants_SetsPreRebootBootIDEnv(t *testing.T) {
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			client := newVariantClient(v.useSysrqReboot, v.writeSyslog)
+
+			job := client.buildRebootJob("worker-1", "rb-1", "boot-id-abc")
+
+			container := job.Spec.Template.Spec.Containers[0]
+			assert.Equal(t, []corev1.EnvVar{{Name: preRebootBootIDEnvVar, Value: "boot-id-abc"}}, container.Env)
+		})
+	}
+}
+
+func TestSendRebootSignal_NodeBootID_PassedToJobEnv(t *testing.T) {
+	client := newTestClient()
+	ctx := context.Background()
+	node := newNode("worker-1", "8f6c1f3e-0f7a-4d3b-9c55-2b1e7a9d4c10", true)
+
+	_, err := client.SendRebootSignal(ctx, node, "rb-1")
+	require.NoError(t, err)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, jobs.Items, 1)
+
+	container := jobs.Items[0].Spec.Template.Spec.Containers[0]
+	assert.Equal(t, []corev1.EnvVar{
+		{Name: preRebootBootIDEnvVar, Value: "8f6c1f3e-0f7a-4d3b-9c55-2b1e7a9d4c10"},
+	}, container.Env)
+}
+
+func TestRebootCommand_AllVariants_GuardPrecedesSideEffects(t *testing.T) {
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			command := newVariantClient(v.useSysrqReboot, v.writeSyslog).config.rebootCommand("worker-1", "rb-1")
+
+			require.Len(t, command, 3)
+			assert.Equal(t, []string{"sh", "-c"}, command[:2])
+			assert.True(t, strings.HasPrefix(command[2], bootIDGuard()),
+				"the boot ID guard must run before the syslog entry and the reboot")
+			assert.NotContains(t, bootIDGuard(), "logger")
+			assert.NotContains(t, bootIDGuard(), "chroot")
+			assert.NotContains(t, bootIDGuard(), "sysrq-trigger")
+		})
+	}
+}
+
+func TestRebootCommand_ShellMetacharBootID_NotInterpolated(t *testing.T) {
+	const hostileBootID = `$(touch /tmp/nvsentinel-pwned)"; reboot; "`
+
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			job := newVariantClient(v.useSysrqReboot, v.writeSyslog).buildRebootJob("worker-1", "rb-1", hostileBootID)
+
+			container := job.Spec.Template.Spec.Containers[0]
+			assert.NotContains(t, container.Command[2], hostileBootID)
+			assert.Equal(t, []corev1.EnvVar{{Name: preRebootBootIDEnvVar, Value: hostileBootID}}, container.Env)
+		})
+	}
+}
+
+func TestRebootScript_BootIDMatches_RunsRebootAction(t *testing.T) {
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			run := runRebootScript(t, v.useSysrqReboot, v.writeSyslog, scriptEnv{
+				hostBootID:      "boot-id-abc",
+				preRebootBootID: "boot-id-abc",
+			})
+
+			assert.Equal(t, 0, run.exitCode, run.output)
+			assert.True(t, run.rebootAttempted, run.output)
+			assert.Equal(t, v.writeSyslog, run.loggedToSyslog, run.output)
+		})
+	}
+}
+
+func TestRebootScript_BootIDChanged_DoesNotRebootAndExitsZero(t *testing.T) {
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			run := runRebootScript(t, v.useSysrqReboot, v.writeSyslog, scriptEnv{
+				hostBootID:      "boot-id-new",
+				preRebootBootID: "boot-id-abc",
+			})
+
+			assert.Equal(t, 0, run.exitCode, run.output)
+			assert.False(t, run.rebootAttempted, run.output)
+			assert.False(t, run.loggedToSyslog, run.output)
+			assert.Contains(t, run.output, "skipping reboot")
+		})
+	}
+}
+
+func TestRebootScript_BootIDUnreadable_DoesNotRebootAndExitsNonZero(t *testing.T) {
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			run := runRebootScript(t, v.useSysrqReboot, v.writeSyslog, scriptEnv{
+				missingBootIDFile: true,
+				preRebootBootID:   "boot-id-abc",
+			})
+
+			assert.NotEqual(t, 0, run.exitCode, run.output)
+			assert.False(t, run.rebootAttempted, run.output)
+			assert.False(t, run.loggedToSyslog, run.output)
+		})
+	}
+}
+
+func TestRebootScript_EmptyHostBootID_DoesNotRebootAndExitsNonZero(t *testing.T) {
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			run := runRebootScript(t, v.useSysrqReboot, v.writeSyslog, scriptEnv{
+				hostBootID:      "",
+				preRebootBootID: "boot-id-abc",
+			})
+
+			assert.NotEqual(t, 0, run.exitCode, run.output)
+			assert.False(t, run.rebootAttempted, run.output)
+			assert.False(t, run.loggedToSyslog, run.output)
+		})
+	}
+}
+
+func TestRebootScript_EmptyPreRebootBootID_DoesNotRebootAndExitsNonZero(t *testing.T) {
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			run := runRebootScript(t, v.useSysrqReboot, v.writeSyslog, scriptEnv{
+				hostBootID:      "boot-id-abc",
+				preRebootBootID: "",
+			})
+
+			assert.NotEqual(t, 0, run.exitCode, run.output)
+			assert.False(t, run.rebootAttempted, run.output)
+			assert.False(t, run.loggedToSyslog, run.output)
+		})
+	}
+}
+
+func TestRebootScript_RebootFails_ExitsNonZero(t *testing.T) {
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			run := runRebootScript(t, v.useSysrqReboot, v.writeSyslog, scriptEnv{
+				hostBootID:      "boot-id-abc",
+				preRebootBootID: "boot-id-abc",
+				rebootFails:     true,
+			})
+
+			assert.NotEqual(t, 0, run.exitCode, run.output)
+			assert.NotContains(t, run.output, "skipping reboot")
+		})
+	}
+}
+
+func TestRebootScript_ShellMetacharBootID_NotExecuted(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "pwned")
+	hostileBootID := fmt.Sprintf(`$(touch %s)`, marker)
+
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			run := runRebootScript(t, v.useSysrqReboot, v.writeSyslog, scriptEnv{
+				hostBootID:      "boot-id-new",
+				preRebootBootID: hostileBootID,
+			})
+
+			assert.Equal(t, 0, run.exitCode, run.output)
+			assert.False(t, run.rebootAttempted, run.output)
+			assert.NoFileExists(t, marker)
+		})
+	}
+}
+
+func TestIsNodeReady_GuardedPodSucceededAndBootIDChanged_ReturnsTrue(t *testing.T) {
+	pod := &corev1.Pod{
+		Name:      "reboot-worker-1-pod",
+		Namespace: "test-ns",
+		Labels: map[string]string{
+			jobLabelKey:     "true",
+			jobNodeLabelKey: "worker-1",
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodSucceeded,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+			},
+			ContainerStatuses: []corev1.ContainerStatus{
+				{
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"},
+					},
+				},
+			},
+		},
+	}
+
+	client := newTestClient(pod)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-new", true)
+
+	ready, err := client.IsNodeReady(ctx, node, "boot-id-old")
+	require.NoError(t, err)
+	assert.True(t, ready)
+}
+
+func guardedCommand(action string) []string {
+	return []string{"sh", "-c", bootIDGuard() + action}
+}
+
+func newVariantClient(useSysrqReboot, writeSyslog bool) *Client {
+	return NewClientWithK8s(fake.NewSimpleClientset(), Config{
+		RebootImage:        "busybox:1.37",
+		UseSysrqReboot:     useSysrqReboot,
+		RebootJobNamespace: "test-ns",
+		RebootJobTTL:       3600,
+		WriteSyslog:        writeSyslog,
+	})
+}
+
+type scriptEnv struct {
+	hostBootID        string
+	missingBootIDFile bool
+	preRebootBootID   string
+	rebootFails       bool
+}
+
+type scriptRun struct {
+	exitCode        int
+	output          string
+	rebootAttempted bool
+	loggedToSyslog  bool
+}
+
+// runRebootScript runs the reboot Job's real container script with sh. A stub chroot on
+// PATH records its arguments instead of touching the host, and the boot ID file and
+// sysrq-trigger paths point into a temp dir.
+func runRebootScript(t *testing.T, useSysrqReboot, writeSyslog bool, env scriptEnv) scriptRun {
+	t.Helper()
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	require.NoError(t, os.Mkdir(binDir, 0o755))
+
+	chrootCalls := filepath.Join(dir, "chroot-calls")
+	stub := "#!/bin/sh\n" +
+		`echo "$*" >> "$CHROOT_CALLS"` + "\n" +
+		`if [ "$2" = reboot ] && [ -n "$REBOOT_FAILS" ]; then exit 1; fi` + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "chroot"), []byte(stub), 0o755))
+
+	bootIDFile := filepath.Join(dir, "boot_id")
+	if !env.missingBootIDFile {
+		require.NoError(t, os.WriteFile(bootIDFile, []byte(env.hostBootID+"\n"), 0o644))
+	}
+
+	sysrqFile := filepath.Join(dir, "sysrq-trigger")
+	if env.rebootFails {
+		sysrqFile = filepath.Join(dir, "missing-dir", "sysrq-trigger")
+	}
+
+	job := newVariantClient(useSysrqReboot, writeSyslog).buildRebootJob("worker-1", "rb-1", env.preRebootBootID)
+	container := job.Spec.Template.Spec.Containers[0]
+	require.Equal(t, []string{"sh", "-c"}, container.Command[:2])
+
+	script := strings.NewReplacer(
+		bootIDPath, bootIDFile,
+		hostProcMountPath+"/sysrq-trigger", sysrqFile,
+	).Replace(container.Command[2])
+
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", script)
+	cmd.Env = []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"CHROOT_CALLS=" + chrootCalls,
+	}
+
+	for _, e := range container.Env {
+		cmd.Env = append(cmd.Env, e.Name+"="+e.Value)
+	}
+
+	if env.rebootFails {
+		cmd.Env = append(cmd.Env, "REBOOT_FAILS=1")
+	}
+
+	out, err := cmd.CombinedOutput()
+
+	run := scriptRun{output: string(out)}
+
+	if err != nil {
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr, "script did not run: %s", out)
+
+		run.exitCode = exitErr.ExitCode()
+	}
+
+	calls, err := os.ReadFile(chrootCalls)
+	if err != nil {
+		require.ErrorIs(t, err, os.ErrNotExist)
+	}
+
+	sysrq, err := os.ReadFile(sysrqFile)
+	if err != nil {
+		require.ErrorIs(t, err, os.ErrNotExist)
+	}
+
+	run.rebootAttempted = strings.Contains(string(calls), hostMountPath+" reboot") || string(sysrq) == "b\n"
+	run.loggedToSyslog = strings.Contains(string(calls), "logger")
+
+	return run
 }

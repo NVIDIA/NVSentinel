@@ -14,10 +14,7 @@
 
 package common
 
-import (
-	"github.com/nvidia/nvsentinel/commons/pkg/cordonownership"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-)
+import "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 
 // As part of the quarantineValidationHealthEvent annotation, we keep track of HealthEvents which contributed the
 // tests and the tests themselves. We will use the HealthEvent ID to check if the node was fully drained as part
@@ -53,12 +50,6 @@ const (
 	QuarantineHealthEventDryRunAnnotationKey   = "quarantineHealthEventDryRun"
 	QuarantineHealthEventDryRunAnnotationValue = "True"
 
-	ValidationCordonOwnershipAnnotationKey = "nvsentinel.nvidia.com/cordon-ownership"
-	ValidationSourceHashAnnotationKey      = "nvsentinel.nvidia.com/validation-source-hash"
-	CordonOwnershipOwned                   = "owned"
-	CordonOwnershipPreExisting             = "pre-existing"
-	CordonOwnershipUnknown                 = "unknown"
-
 	ServiceName = "NVSentinel"
 
 	// NodeCELVar is the CEL variable the Node rules are evaluated against.
@@ -71,26 +62,6 @@ const (
 	NodeCELVar = "node"
 )
 
-// CordonOwnership derives release permission from the current quarantine, not audit labels.
-func CordonOwnership(annotations map[string]string) string {
-	_, dryRun := annotations[QuarantineHealthEventDryRunAnnotationKey]
-	if annotations[QuarantineHealthEventIsCordonedAnnotationKey] != QuarantineHealthEventIsCordonedAnnotationValueTrue ||
-		dryRun {
-		return CordonOwnershipUnknown
-	}
-
-	value, exists := annotations[QuarantineHealthEventCordonPreExistingAnnotationKey]
-	if !exists {
-		return CordonOwnershipOwned
-	}
-
-	if value == QuarantineHealthEventCordonPreExistingAnnotationValue {
-		return CordonOwnershipPreExisting
-	}
-
-	return CordonOwnershipUnknown
-}
-
 // QuarantineAnnotationKeys are every annotation key fault-quarantine reads off
 // a node or removes from one.
 //
@@ -100,8 +71,6 @@ func CordonOwnership(annotations map[string]string) string {
 // and fault-quarantine then concludes no quarantine is in progress and
 // re-cordons a node it has already handled.
 var QuarantineAnnotationKeys = []string{
-	cordonownership.AnnotationKey,
-	cordonownership.ValidationSessionAnnotationKey,
 	QuarantineHealthEventAnnotationKey,
 	QuarantineHealthEventAppliedTaintsAnnotationKey,
 	QuarantineHealthEventAppliedLabelsAnnotationKey,

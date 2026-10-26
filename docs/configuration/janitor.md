@@ -36,7 +36,7 @@ janitor:
 
 ### Logging
 
-Sets the verbosity level for janitor logs. Inherited from `global.logLevel` when not overridden.
+Sets the verbosity level for janitor logs.
 
 ```yaml
 janitor:

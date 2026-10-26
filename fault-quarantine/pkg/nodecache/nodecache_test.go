@@ -21,7 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/cordonownership"
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
@@ -143,7 +142,6 @@ func TestDerive_QuarantineAnnotations_SurvivePruning(t *testing.T) {
 		annotations[key] = "set"
 	}
 
-	annotations[cordonownership.ValidationSessionAnnotationKey] = "persisted-session"
 	annotations["unrelated.example.com/annotation"] = "dropped"
 
 	node := &v1.Node{Name: "test-node", Annotations: annotations}
@@ -158,7 +156,6 @@ func TestDerive_QuarantineAnnotations_SurvivePruning(t *testing.T) {
 		require.Contains(t, cached.Annotations, key)
 	}
 
-	require.Equal(t, "persisted-session", cached.Annotations[cordonownership.ValidationSessionAnnotationKey])
 	require.NotContains(t, cached.Annotations, "unrelated.example.com/annotation")
 }
 

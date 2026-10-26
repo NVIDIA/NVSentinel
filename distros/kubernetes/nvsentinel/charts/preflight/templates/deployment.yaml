@@ -45,6 +45,9 @@ spec:
             - --port={{ .Values.webhook.port }}
             - --cert-dir=/certs
             - --config=/etc/preflight/config.yaml
+          env:
+            - name: LOG_LEVEL
+              value: "{{ .Values.logLevel }}"
           ports:
             - name: https
               containerPort: {{ .Values.webhook.port }}
