@@ -323,8 +323,8 @@ func (r *NodeValidationReconciler) createValidationRequest(ctx context.Context, 
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "nvsentinel",
-				labelCreatedBy:                 createdByLifecycleManager,
+				"app.kubernetes.io/managed-by":     "nvsentinel",
+				"nvsentinel.nvidia.com/created-by": "lifecycle-manager",
 			},
 		},
 		Spec: v1alpha1.ValidationRequestSpec{

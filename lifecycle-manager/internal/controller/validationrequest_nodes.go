@@ -182,7 +182,7 @@ func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Contex
 			}
 		}
 
-		allowed := r.requestAllowsCordonRelease(validationRequest, node)
+		allowed := requestAllowsCordonRelease(validationRequest)
 		entries = append(entries, sessionEntry{
 			Name: validationRequest.Name, Tests: tests,
 			CordonReleaseAllowed: &allowed,
@@ -228,35 +228,20 @@ func (r *ValidationRequestReconciler) releaseNodesFromSuccessfulRequest(ctx cont
 
 const annotationCordonPreExisting = "nvsentinel.nvidia.com/cordon-pre-existing"
 
-// Fault-quarantine's recorded cordon decision takes precedence over labels from a custom request template.
-// Without it, new-node and external requests allow release; legacy fault-quarantine requests use the audit label.
-func (r *ValidationRequestReconciler) requestAllowsCordonRelease(request *v1alpha1.ValidationRequest,
-	node *corev1.Node) bool {
-	if preExisting, recorded := request.Annotations[annotationCordonPreExisting]; recorded {
-		return preExisting == "false"
-	}
+// Requests without a recorded cordon decision retain their configured release behavior.
+func requestAllowsCordonRelease(request *v1alpha1.ValidationRequest) bool {
+	preExisting, recorded := request.Annotations[annotationCordonPreExisting]
 
-	if request.Labels[labelCreatedBy] != createdByFaultQuarantine {
-		return true
-	}
-
-	gate := r.Config.Validation.Spec.SchedulingGate
-	if gate == nil || gate.Cordon.LabelPrefix == "" {
-		return true
-	}
-
-	_, applied := node.Labels[labels.Key(gate.Cordon.LabelPrefix, labels.CordonedBySuffix)]
-
-	return applied
+	return !recorded || preExisting == "false"
 }
 
 // schedulingGateForRelease preserves a pre-existing cordon unless another request in this session authorizes
-// its release. Taints still follow the configured policy. The label fallback supports older producers only.
+// its release. Taints still follow the configured policy.
 func (r *ValidationRequestReconciler) schedulingGateForRelease(validationRequest *v1alpha1.ValidationRequest,
 	node *corev1.Node) *v1alpha1.SchedulingGateConfig {
 	gate := r.Config.Validation.Spec.SchedulingGate
 	if gate == nil || !gate.Cordon.Remove || !node.Spec.Unschedulable ||
-		r.requestAllowsCordonRelease(validationRequest, node) || sessionAllowsCordonRelease(node) {
+		requestAllowsCordonRelease(validationRequest) || sessionAllowsCordonRelease(node) {
 		return gate
 	}
 

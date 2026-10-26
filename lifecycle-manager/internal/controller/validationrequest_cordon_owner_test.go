@@ -29,7 +29,12 @@ import (
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
 )
 
-const cordonOwnerLabelPrefix = "k8s.nvidia.com/"
+const (
+	cordonOwnerLabelPrefix    = "k8s.nvidia.com/"
+	labelCreatedBy            = "nvsentinel.nvidia.com/created-by"
+	createdByFaultQuarantine  = "fault-quarantine"
+	createdByLifecycleManager = "lifecycle-manager"
+)
 
 var cordonOwnerGateTaint = corev1.Taint{Key: "nvsentinel", Effect: corev1.TaintEffectNoSchedule}
 
@@ -114,17 +119,18 @@ func expectCordonReleased(nodeName string) {
 	Expect(node.Spec.Taints).NotTo(ContainElement(HaveField("Key", Equal(cordonOwnerGateTaint.Key))))
 	Expect(node.Labels).NotTo(HaveKey(cordonOwnerLabelPrefix + "cordon-by"))
 	Expect(node.Labels).To(HaveKeyWithValue(cordonOwnerLabelPrefix+"uncordon-by", "NVSentinel"))
+	Expect(node.Annotations).NotTo(HaveKey(annotationValidationSession))
 }
 
 var _ = Describe("Validation release of a cordon NVSentinel did not apply", func() {
 	It("keeps a cordon without the cordon-by label after post-remediation validation succeeds", func() {
-		r, req, nodeName := newCordonOwnerRequest("cordon-foreign", createdByFaultQuarantine, false)
+		r, req, nodeName := newCordonOwnerRequest("cordon-foreign", createdByFaultQuarantine, false, "true")
 		succeedCordonOwnerRequest(r, req)
 		expectCordonKeptTaintReleased(nodeName)
 	})
 
 	It("releases the cordon fault-quarantine applied after post-remediation validation succeeds", func() {
-		r, req, nodeName := newCordonOwnerRequest("cordon-owned", createdByFaultQuarantine, true)
+		r, req, nodeName := newCordonOwnerRequest("cordon-owned", createdByFaultQuarantine, true, "false")
 		succeedCordonOwnerRequest(r, req)
 		expectCordonReleased(nodeName)
 	})
@@ -138,12 +144,29 @@ var _ = Describe("Validation release of a cordon NVSentinel did not apply", func
 	})
 
 	It("keeps a cordon without the cordon-by label when the post-remediation request is deleted", func() {
-		r, req, nodeName := newCordonOwnerRequest("cordon-foreign-delete", createdByFaultQuarantine, false)
+		r, req, nodeName := newCordonOwnerRequest("cordon-foreign-delete", createdByFaultQuarantine, false, "true")
 		vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, maxReconcileIterations)
 		Expect(k8sClient.Delete(ctx, &vr)).To(Succeed())
 		reconcileForIterations(ctx, r, req, 1)
 		expectCordonKeptTaintReleased(nodeName)
 	})
+
+	for _, outcome := range []string{"success", "deletion"} {
+		It("releases a legacy request with different label prefixes on "+outcome, func() {
+			r, req, nodeName := newCordonOwnerRequest("cordon-legacy-prefix-"+outcome, createdByFaultQuarantine, false)
+			const producerLabel = "quarantine.example.com/cordon-by"
+			Expect(patchNodeLabel(ctx, nodeName, producerLabel, "NVSentinel")).To(Succeed())
+			if outcome == "deletion" {
+				vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, maxReconcileIterations)
+				Expect(k8sClient.Delete(ctx, &vr)).To(Succeed())
+				reconcileForIterations(ctx, r, req, 1)
+			} else {
+				succeedCordonOwnerRequest(r, req)
+			}
+			expectCordonReleased(nodeName)
+			Expect(getNode(ctx, nodeName).Labels).To(HaveKeyWithValue(producerLabel, "NVSentinel"))
+		})
+	}
 
 	It("preserves an explicitly pre-existing cordon despite a historical NVSentinel label", func() {
 		r, req, nodeName := newCordonOwnerRequest("cordon-explicit-preserve", createdByFaultQuarantine, true, "true")
@@ -240,7 +263,9 @@ func TestSchedulingGateForRelease(t *testing.T) {
 		return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.NodeSpec{Unschedulable: cordoned}}
 	}
 
-	kept := r.schedulingGateForRelease(request(createdByFaultQuarantine), node(true, nil))
+	explicit := request(createdByFaultQuarantine)
+	explicit.Annotations = map[string]string{annotationCordonPreExisting: "true"}
+	kept := r.schedulingGateForRelease(explicit, node(true, nil))
 	g.Expect(kept.Cordon.Remove).To(BeFalse())
 	g.Expect(kept.Cordon.LabelPrefix).To(Equal(cordonOwnerLabelPrefix))
 	g.Expect(kept.Taints).To(Equal(gate.Taints), "configured taints are still released")
@@ -248,6 +273,11 @@ func TestSchedulingGateForRelease(t *testing.T) {
 
 	owned := node(true, map[string]string{cordonOwnerLabelPrefix + "cordon-by": "NVSentinel"})
 	g.Expect(r.schedulingGateForRelease(request(createdByFaultQuarantine), owned)).To(BeIdenticalTo(gate))
+	g.Expect(r.schedulingGateForRelease(request(createdByFaultQuarantine), node(true, nil))).To(BeIdenticalTo(gate),
+		"legacy requests retain the configured release behavior without audit labels")
+	foreign := node(true, map[string]string{cordonOwnerLabelPrefix + "cordon-by": "external-controller"})
+	g.Expect(r.schedulingGateForRelease(request(createdByFaultQuarantine), foreign)).To(BeIdenticalTo(gate),
+		"legacy requests retain the configured release behavior regardless of the audit label value")
 	g.Expect(r.schedulingGateForRelease(request(createdByLifecycleManager), node(true, nil))).To(BeIdenticalTo(gate))
 	g.Expect(r.schedulingGateForRelease(&v1alpha1.ValidationRequest{}, node(true, nil))).To(BeIdenticalTo(gate))
 	g.Expect(r.schedulingGateForRelease(request(createdByFaultQuarantine), node(false, nil))).To(BeIdenticalTo(gate))
@@ -278,9 +308,7 @@ func TestSchedulingGateForRelease(t *testing.T) {
 	noPrefix.Cordon.LabelPrefix = ""
 	cfg.Validation.Spec.SchedulingGate = &noPrefix
 	g.Expect(r.schedulingGateForRelease(request(createdByFaultQuarantine), node(true, nil))).To(BeIdenticalTo(&noPrefix),
-		"without a label prefix the owner cannot be read and the configured gate is released")
-	explicit := request(createdByFaultQuarantine)
-	explicit.Annotations = map[string]string{annotationCordonPreExisting: "true"}
+		"legacy requests retain the configured release behavior regardless of the label prefix")
 	g.Expect(r.schedulingGateForRelease(explicit, node(true, nil)).Cordon.Remove).To(BeFalse(),
 		"an explicit preservation decision does not depend on audit labels")
 

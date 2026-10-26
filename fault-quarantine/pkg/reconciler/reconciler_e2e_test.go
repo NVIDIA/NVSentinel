@@ -1923,6 +1923,99 @@ func TestE2E_ValidationRequestCreatedWhenEventDrained(t *testing.T) {
 		"nvsentinel-state label should be removed")
 }
 
+func TestHandleQuarantinedNode_RecoveryWithStaleCache_PreservesCordonDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		preExisting bool
+		staleOwned  bool
+		want        string
+	}{
+		{"fq-owned", false, false, "false"},
+		{"pre-existing", true, true, "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := coldstart.WithRecoveryContext(t.Context())
+			nodeName := "validation-handoff-" + generateShortTestID()
+			event := &protos.HealthEvent{
+				Id: generateTestID(), Version: 1, NodeName: nodeName,
+				Agent: "test-agent", CheckName: "GpuFault", IsFatal: true,
+				RecommendedAction: protos.RecommendedAction_RESTART_VM,
+			}
+			tracked := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+			tracked.AddOrUpdateEvent(event)
+			trackedJSON, err := json.Marshal(tracked)
+			require.NoError(t, err)
+			validationJSON, err := json.Marshal([]common.HealthEventWithTests{{HealthEvent: event, Tests: []string{"quick"}}})
+			require.NoError(t, err)
+			annotations := map[string]string{
+				common.QuarantineHealthEventAnnotationKey:           string(trackedJSON),
+				common.QuarantineValidationHealthEventAnnotationKey: string(validationJSON),
+				common.QuarantineHealthEventIsCordonedAnnotationKey: common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+			}
+			if tc.preExisting {
+				annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey] =
+					common.QuarantineHealthEventCordonPreExistingAnnotationValue
+			}
+			createE2ETestNode(ctx, t, nodeName, annotations, nil, nil, true)
+			t.Cleanup(func() {
+				require.NoError(t, e2eTestClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{}))
+			})
+			live, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			require.NoError(t, err)
+
+			// Hold the informer at an earlier revision while recovery reads the current API-server snapshot.
+			nodeInformer, err := informer.NewNodeInformer(
+				e2eTestClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue, nodecache.Keys{})
+			require.NoError(t, err)
+			stale := live.DeepCopy()
+			stale.Annotations = map[string]string{}
+			if tc.staleOwned {
+				stale.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] =
+					common.QuarantineHealthEventIsCordonedAnnotationValueTrue
+			}
+			require.NoError(t, nodeInformer.GetInformer().GetStore().Add(stale))
+			fqClient := &informer.FaultQuarantineClient{
+				Clientset: e2eTestClient, DynamicClient: e2eTestDynamicClient, NodeInformer: nodeInformer,
+			}
+			cfg := config.TomlConfig{Validation: validationConfig([]config.ValidationRuleSet{{
+				Enabled: true, Name: "quick", Version: "1", Tests: []string{"quick"},
+				Match: config.Match{Any: []config.Rule{{Kind: "HealthEvent", Expression: "event.isFatal == true"}}},
+			}})}
+			r := NewReconciler(ReconcilerConfig{TomlConfig: cfg}, fqClient, nil)
+			r.SetLabelKeys("k8s.nvidia.com/")
+			r.validationClient, err = validation.NewValidationClient(cfg, fqClient, mockHealthEventStoreWithDrainStatus(t, true))
+			require.NoError(t, err)
+
+			event.IsHealthy = true
+			event.IsFatal = false
+			_, err = r.handleQuarantinedNode(ctx, event, nil, rulesetsConfig{})
+			require.NoError(t, err)
+			current, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			require.NoError(t, err)
+			require.True(t, current.Spec.Unschedulable, "validation keeps the scheduling gate")
+			require.NotContains(t, current.Annotations, common.QuarantineHealthEventAnnotationKey)
+			require.NotContains(t, current.Annotations, common.QuarantineHealthEventIsCordonedAnnotationKey)
+			require.NotContains(t, current.Annotations, common.QuarantineHealthEventCordonPreExistingAnnotationKey)
+			requests, err := e2eTestDynamicClient.Resource(validationRequestGVR).List(ctx, metav1.ListOptions{})
+			require.NoError(t, err)
+			for _, request := range requests.Items {
+				owners := request.GetOwnerReferences()
+				if len(owners) == 0 || owners[0].UID != live.UID {
+					continue
+				}
+				t.Cleanup(func() {
+					require.NoError(t, e2eTestDynamicClient.Resource(validationRequestGVR).Delete(
+						context.Background(), request.GetName(), metav1.DeleteOptions{}))
+				})
+				require.Equal(t, tc.want, request.GetAnnotations()["nvsentinel.nvidia.com/cordon-pre-existing"])
+
+				return
+			}
+			t.Fatal("validation request was not created")
+		})
+	}
+}
+
 func TestE2E_ValidationRequestCreationKeepsTaints(t *testing.T) {
 	tests := []struct {
 		name    string

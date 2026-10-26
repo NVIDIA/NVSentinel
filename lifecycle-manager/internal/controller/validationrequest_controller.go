@@ -47,12 +47,6 @@ const (
 	annotationActiveValidationRequest = "nvsentinel.nvidia.com/active-validation-request"
 	annotationValidationSession       = "nvsentinel.nvidia.com/validation-session"
 	finalizerName                     = "nvsentinel.nvidia.com/validation-request"
-
-	// labelCreatedBy names the component that created a ValidationRequest. fault-quarantine's default request
-	// template sets it to createdByFaultQuarantine for post-remediation validation.
-	labelCreatedBy            = "nvsentinel.nvidia.com/created-by"
-	createdByFaultQuarantine  = "fault-quarantine"
-	createdByLifecycleManager = "lifecycle-manager"
 )
 
 type ValidationRequestReconciler struct {

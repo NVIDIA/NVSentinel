@@ -2279,7 +2279,7 @@ func (r *Reconciler) createValidationRequestIfRequested(ctx context.Context, eve
 		return false, nil
 	}
 
-	node, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+	node, err := r.getNode(ctx, nodeName)
 	if err != nil {
 		return false, fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
