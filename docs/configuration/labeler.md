@@ -241,13 +241,14 @@ labeler:
               - node.kubernetes.io/instance-type
               - nvidia.com/gpu.product
             # Count the GFD label only while the device plugin advertises GPUs.
+            # -1 means that the source does not apply.
             currentExpression: |
               has(node.status.allocatable) &&
               node.status.allocatable.exists(r,
-                (r == 'nvidia.com/gpu' || r.startsWith('nvidia.com/mig-')) &&
+                (r == 'nvidia.com/gpu' || r == 'nvidia.com/gpu.shared' || r.startsWith('nvidia.com/mig-')) &&
                 int(node.status.allocatable[r]) > 0)
                 ? int(node.metadata.labels['nvidia.com/gpu.count'])
-                : int('device plugin does not advertise GPUs')
+                : -1
 ```
 
 | Field | Required | Description |
@@ -255,7 +256,7 @@ labeler:
 | `name` | Yes | Unique name of the source in the class. It appears in logs, in the `source` label of `labeler_device_count_source` and in the partition key. |
 | `resourceSliceDriver` | No | The DRA driver of the source. When set, the source applies only to nodes with ResourceSlices from this driver. |
 | `groupingLabels` | No | Node labels that put nodes into the same partition when they use this source. |
-| `currentExpression` | Yes | CEL expression that returns the current count. |
+| `currentExpression` | Yes | CEL expression that returns the current count. In a source without `resourceSliceDriver`, a negative result means that the source does not apply to the node. |
 | `groupingExpression` | No | CEL expression that returns a `list<string>`, for example the GPU models on the node. The labeler adds the values to the partition key. |
 
 For each node, the labeler examines the sources in order and uses the first source that applies:
@@ -263,7 +264,7 @@ For each node, the labeler examines the sources in order and uses the first sour
 - A source with `resourceSliceDriver` applies when the node has at least one ResourceSlice from that driver. The labeler uses only the slices of the newest generation of each pool.
   - If a pool is incomplete, the labeler skips the class until the next ResourceSlice update. It does not try the next source.
   - If the expression fails, the labeler skips the class. It does not try the next source, so a stale node label cannot replace the DRA count.
-- A source without `resourceSliceDriver` applies when its `currentExpression` returns a count. If the expression fails, for example because a label is missing, the labeler tries the next source.
+- A source without `resourceSliceDriver` applies when its `currentExpression` returns a count of `0` or more. If the expression returns a negative number, or fails, for example because a label is missing, the labeler tries the next source. Return `-1` to skip a source on purpose. The default `gfd` source returns `-1` when the NVIDIA device plugin advertises no GPUs (`nvidia.com/gpu`, `nvidia.com/gpu.shared` or `nvidia.com/mig-*` in `node.status.allocatable`). GPUCluster mode has no device plugin, so a `nvidia.com/gpu.count` label left from ClusterPolicy mode is not counted on a node whose DRA plugin is down.
 - If no source applies, the labeler skips the class and keeps the existing labels. It never writes a current count of `0` for a missing source.
 
 Put DRA sources before label sources. A ResourceSlice exists only while its driver runs on the node, but a node label can stay on the node after the component that set it is gone.

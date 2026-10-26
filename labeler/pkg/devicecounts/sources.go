@@ -16,6 +16,7 @@ package devicecounts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -90,6 +91,15 @@ func (m *Manager) observeSource(
 	}
 
 	count, err := m.evaluateCurrent(ctx, source.currentProgram, node, resourceSlices)
+	if errors.Is(err, errNoCount) {
+		// A negative count is how a source without a driver says that it does not
+		// apply, for example while the device plugin advertises no GPUs.
+		slog.Debug("Device count source does not apply to node",
+			"node", node.Name, "class", source.className, "source", source.Name)
+
+		return countObservation{}, false
+	}
+
 	if err != nil {
 		// For a source without a driver, a failed expression means its input,
 		// such as a node label, is absent on this node.

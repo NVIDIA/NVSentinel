@@ -65,10 +65,10 @@ resourceSlices
 	testGFDGPUCurrentExpression = `
 has(node.status.allocatable) &&
 node.status.allocatable.exists(r,
-  (r == 'nvidia.com/gpu' || r.startsWith('nvidia.com/mig-')) &&
+  (r == 'nvidia.com/gpu' || r == 'nvidia.com/gpu.shared' || r.startsWith('nvidia.com/mig-')) &&
   int(node.status.allocatable[r]) > 0)
   ? int(node.metadata.labels['nvidia.com/gpu.count'])
-  : int('device plugin does not advertise GPUs')`
+  : -1`
 )
 
 func testGPUSourcesClass() ClassConfig {
@@ -137,6 +137,13 @@ func TestDeviceCountSources_SourceSelection_UsesFirstAvailableSource(t *testing.
 				"nvidia.com/gpu":         resource.MustParse("0"),
 				"nvidia.com/mig-1g.10gb": resource.MustParse("7"),
 			},
+			wantUpdated: true,
+			wantCurrent: "8",
+		},
+		{
+			name:        "ClusterPolicy node with renamed shared GPUs counts the GFD label",
+			nodeLabels:  map[string]string{testGFDGPUCount: "8"},
+			allocatable: corev1.ResourceList{"nvidia.com/gpu.shared": resource.MustParse("32")},
 			wantUpdated: true,
 			wantCurrent: "8",
 		},
@@ -244,6 +251,42 @@ func TestDeviceCountSources_DriverExpressionError_DoesNotFallBack(t *testing.T) 
 
 	require.False(t, updated)
 	require.NotContains(t, node.Labels, testGPUCountCurrentLabel)
+}
+
+func TestDeviceCountSources_NegativeCount(t *testing.T) {
+	t.Run("source without a driver does not apply and the next source is used", func(t *testing.T) {
+		class := testGPUSourcesClass()
+		class.Sources = []SourceConfig{
+			{Name: "skipped", CurrentExpression: "-1"},
+			{Name: "fallback", CurrentExpression: "4"},
+		}
+
+		node := testNode("node-a", map[string]string{})
+		manager := newTestManager(t, Config{Enabled: true, Classes: []ClassConfig{class}})
+
+		require.True(t, manager.CalculateAndSetDeviceCountLabels(context.Background(), node, []*corev1.Node{node}, nil))
+		require.Equal(t, "4", node.Labels[testGPUCountCurrentLabel])
+	})
+
+	t.Run("driver source skips the class instead of falling back", func(t *testing.T) {
+		class := testGPUSourcesClass()
+		class.Sources[0].CurrentExpression = "-1"
+
+		node := testNode("node-a", map[string]string{testGFDGPUCount: "8"})
+		node.Status.Allocatable = testDevicePluginGPUs("8")
+		slice := testGPUSlice("gpu", node.Name, 1, 1, testGPUDevices(8, testH100ProductName)...)
+
+		manager := newTestManager(t, Config{Enabled: true, Classes: []ClassConfig{class}})
+		updated := manager.CalculateAndSetDeviceCountLabels(
+			context.Background(),
+			node,
+			[]*corev1.Node{node},
+			func(*corev1.Node) []*resourcev1.ResourceSlice { return []*resourcev1.ResourceSlice{slice} },
+		)
+
+		require.False(t, updated)
+		require.NotContains(t, node.Labels, testGPUCountCurrentLabel)
+	})
 }
 
 func TestDeviceCountSources_GroupingWithoutInstanceType_SeparatesGPUModels(t *testing.T) {
