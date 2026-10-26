@@ -1,0 +1,114 @@
+{
+  // Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+  //
+  // Licensed under the Apache License, Version 2.0 (the "License");
+  // you may not use this file except in compliance with the License.
+  // You may obtain a copy of the License at
+  //
+  //     http://www.apache.org/licenses/LICENSE-2.0
+  //
+  // Unless required by applicable law or agreed to in writing, software
+  // distributed under the License is distributed on an "AS IS" BASIS,
+  // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  // See the License for the specific language governing permissions and
+  // limitations under the License.
+
+  // Renovate updates only what Dependabot cannot: the tool versions in
+  // .versions.yaml. Dependabot keeps gomod, pip, docker and github-actions.
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+  // Its monorepo groups would split protoc from its plugins; see packageRules.
+  ignorePresets: ["group:monorepos"],
+  enabledManagers: ["custom.regex"],
+  dependencyDashboard: false,
+  minimumReleaseAge: "3 days",
+  internalChecksFilter: "strict",
+  commitMessagePrefix: "chore(deps):",
+  // The default hourly limit (2) would hold back most groups on a weekly run.
+  prConcurrentLimit: 10,
+  prHourlyLimit: 10,
+  labels: ["dependencies"],
+  // probot/dco exempts bots, but the trailer keeps the commits valid if that changes.
+  commitBody: "Signed-off-by: {{{gitAuthor}}}",
+
+  customManagers: [
+    {
+      // Each pin has an annotation on the line above it:
+      //   # renovate: datasource=<ds> depName=<name> depType=<top-level section>
+      customType: "regex",
+      managerFilePatterns: ["/^\\.versions\\.yaml$/"],
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) depType=(?<depType>\\S+)\\s*\\n\\s*\\S+:\\s*['\"](?<currentValue>[^'\":]+)['\"]",
+      ],
+    },
+  ],
+
+  packageRules: [
+    // One PR per .versions.yaml section. Renovate makes the branch name from the
+    // group name (renovate/go-tools). make renovate-lint fails if a section has
+    // annotations but no rule here.
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["build_tools"],
+      groupName: "build tools",
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["go_tools"],
+      groupName: "go tools",
+    },
+    {
+      // protoc and its plugins generate code together (make protos-generate), so
+      // they move in one PR, majors included.
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["protobuf"],
+      groupName: "protobuf tools",
+      separateMajorMinor: false,
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["linting"],
+      groupName: "linting tools",
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["container_tools"],
+      groupName: "container tools",
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["testing_tools"],
+      groupName: "testing tools",
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["cluster"],
+      groupName: "cluster charts",
+    },
+    {
+      // These pins drop the leading v that the upstream tags carry.
+      matchDepNames: ["kubernetes-sigs/kind", "tilt-dev/ctlptl", "tilt-dev/tilt", "cert-manager"],
+      extractVersion: "^v?(?<version>.+)$",
+    },
+    {
+      matchDepNames: ["kwok"],
+      registryUrls: ["https://kwok.sigs.k8s.io/charts/"],
+    },
+    {
+      matchDepNames: ["kube-prometheus-stack"],
+      registryUrls: ["https://prometheus-community.github.io/helm-charts"],
+    },
+    {
+      matchDepNames: ["gpu-operator"],
+      registryUrls: ["https://helm.ngc.nvidia.com/nvidia"],
+    },
+    {
+      matchDepNames: ["cert-manager"],
+      registryUrls: ["https://charts.jetstack.io"],
+    },
+    {
+      matchDepNames: ["policy-controller"],
+      registryUrls: ["https://sigstore.github.io/helm-charts"],
+    },
+  ],
+}

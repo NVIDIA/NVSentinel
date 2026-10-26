@@ -161,6 +161,7 @@ func (p *TokenProvider) executeTokenRequest(req *http.Request) (*tokenResponse, 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
 			TLSClientConfig: &tls.Config{
 				MinVersion:         tls.VersionTLS12,
 				InsecureSkipVerify: p.insecureSkipVerify, //nolint:gosec // This is only used for testing

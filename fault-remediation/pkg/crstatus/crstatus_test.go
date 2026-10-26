@@ -15,10 +15,18 @@
 package crstatus
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 )
@@ -117,6 +125,73 @@ func TestCheckCondition(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := checker.checkCondition(tt.cr, testResource)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestGetCRState_GetError(t *testing.T) {
+	cfg := map[string]config.MaintenanceResource{
+		"reboot": {
+			ApiGroup:              "janitor.dgxc.nvidia.com",
+			Version:               "v1alpha1",
+			Kind:                  "RebootNode",
+			CompleteConditionType: "NodeReady",
+		},
+	}
+	gr := schema.GroupResource{Group: "janitor.dgxc.nvidia.com", Resource: "rebootnodes"}
+
+	tests := []struct {
+		name        string
+		getErr      error
+		expected    CRState
+		expectErr   bool
+		expectSkip  bool
+	}{
+		{
+			name:     "not found allows create",
+			getErr:   apierrors.NewNotFound(gr, "maintenance-node-1"),
+			expected: CRStateNotFound,
+		},
+		{
+			name:       "timeout is returned",
+			getErr:     apierrors.NewTimeoutError("etcdserver: request timed out", 1),
+			expectErr:  true,
+			expectSkip: true,
+		},
+		{
+			name:       "forbidden is returned",
+			getErr:     apierrors.NewForbidden(gr, "maintenance-node-1", errors.New("denied")),
+			expectErr:  true,
+			expectSkip: true,
+		},
+		{
+			name:       "connection error is returned",
+			getErr:     errors.New("dial tcp 10.0.0.1:443: connect: connection refused"),
+			expectErr:  true,
+			expectSkip: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+					return tt.getErr
+				},
+			}).Build()
+			checker := NewCRStatusChecker(c, cfg, false)
+
+			state, err := checker.GetCRState(context.Background(), "reboot", "maintenance-node-1")
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.getErr)
+				assert.False(t, apierrors.IsNotFound(err), "a read error must never look like a missing CR")
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expected, state)
+			}
+
+			assert.Equal(t, tt.expectSkip, checker.ShouldSkipCRCreation(context.Background(), "reboot", "maintenance-node-1"))
 		})
 	}
 }
