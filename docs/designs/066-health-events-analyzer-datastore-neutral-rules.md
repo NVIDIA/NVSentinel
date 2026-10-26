@@ -31,24 +31,25 @@ Options considered:
 
 ## Decision
 
-Option 4: replace the rule language, not the evaluation model. A portable rule states a CEL filter over stored events, one typed aggregate (`count`, `distinct`, `bursts` or `solo`) and a CEL `match` on the aggregate's result. The store-client compiles each rule into a native MongoDB or PostgreSQL query, so the work still runs in the database, as ADR-007 requires. `stage` rules keep working on MongoDB unchanged. Kubernetes NodeHealth mode (proposed ADR-063, [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) and change-stream behaviour are non-goals.
+Option 4: replace the rule language, not the evaluation model. A portable rule states a CEL filter over stored events, one typed aggregate (`count`, `distinct`, `bursts` or `solo`) and a CEL `match` on the aggregate's result. The store-client compiles each rule into a native MongoDB or PostgreSQL query, so the work still runs in the database, as ADR-007 requires. The portable form replaces `stage`. During the migration, `stage` stays as a deprecated path on MongoDB only, so existing custom rules keep loading, and it is removed after a deprecation period. Kubernetes NodeHealth mode (proposed ADR-063, [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) and change-stream behaviour are non-goals.
 
 ## Implementation
 
 ### Rule form
 
-The new fields are additive. A rule sets either `stage` or `[rules.history]`, not both.
+The new fields are additive. During the migration, a rule sets either `stage` or `[rules.history]`, not both.
 
 ```toml
 [[rules]]
-name = "MultipleRemediations"
+name = "RepeatedNICDriverError"
 recommended_action = "CONTACT_SUPPORT"
 evaluate_rule = true
-match = "count >= 5"
+when = "event.agent == 'syslog-health-monitor' && event.checkName == 'SysLogsNICDriverError' && event.isFatal == false && event.isHealthy == false && size(event.errorCode) > 0 && event.errorCode[0] in ['netdev_watchdog', 'port_module_high_temp', 'pci_power_insufficient', 'module_unplugged', 'mlx5_tx_timeout_detected', 'mlx5_rx_timeout_detected']"
+match = "count >= 3"
 
 [rules.history]
-window = "168h"
-filter = "e.status.faultRemediated && e.isFatal == event.isFatal"
+window = "1h"
+filter = "e.agent == 'syslog-health-monitor' && e.checkName == 'SysLogsNICDriverError' && !e.isFatal && !e.isHealthy && e.errorCode[0] == event.errorCode[0]"
 aggregate = "count"
 ```
 
@@ -70,11 +71,11 @@ Extend `commons/pkg/celevent` additively, so that the analyzer, platform-connect
 
 ### Compiling the filter
 
-`history.filter` must stay in a CEL subset that has an exact query form on every datastore: comparisons, `in`, `&&`, `||`, `!`, list literals, `e.errorCode[0]`, `e.errorCode.exists(c, c == '31')`, `sets.intersects(e.entities(T), event.entities(T))`, `e.entity(T) == event.entity(T)` and `e.register(R) in [...]`. `event.*` references are constants for one evaluation, as `this.` values are today.
+`history.filter` and the aggregate's condition parameters (`target`, `others`, `active`) must stay in a CEL subset that has an exact query form on every datastore: comparisons, `in`, `&&`, `||`, `!`, list literals, `all` over a list literal (unrolled into one condition per element), `e.errorCode[0]`, `e.errorCode.exists(c, c == '31')`, `sets.intersects(e.entities(T), event.entities(T))`, `v in e.entities(T)` for a constant `v`, `e.entity(T) == event.entity(T)` and `e.register(R) in [...]`. Key parameters (`keys`, `group_by`, `state_key`) are single field references, such as `e.errorCode[0]`, `e.entity(T)` or `e.register(R)`. `event.*` references, and `group` in `solo`, are constants for one evaluation, as `this.` values are today.
 
-A compiler in `store-client/pkg/query` walks the checked AST, as `commons/pkg/celfields` does, and emits a `query.Condition` tree, which already renders `ToMongo()` and `ToSQL()`. The work adds missing-field, array-contains and entity-element conditions, and typed casts. Any other construct makes the rule invalid at load: the analyzer logs the construct, skips the rule, increments `rule_config_invalid_total{rule_name}` and keeps running ([#1794](https://github.com/NVIDIA/NVSentinel/pull/1794)). A portable rule that loads therefore runs on every supported datastore.
+A compiler in `store-client/pkg/query` walks the checked AST, as `commons/pkg/celfields` does, and emits a `query.Condition` tree, which already renders `ToMongo()` and `ToSQL()`. The work adds missing-field, array-contains and entity-element conditions, and typed casts.
 
-*Open question for maintainers:* skip an invalid portable rule with a metric, as proposed, or fail at startup?
+Everything about a portable rule is checked when the config loads: CEL syntax, types and field names against the typed vocabulary, the subset above, and the aggregate's parameters. What remains for evaluation time is the data and the datastore: missing values follow the null rules above, a `when` or `match` error has the outcome defined above, and a datastore error is handled per event as today. A rule that fails these checks is logged and skipped, increments `rule_config_invalid_total{rule_name}`, and does not stop the analyzer ([#1794](https://github.com/NVIDIA/NVSentinel/pull/1794)). A portable rule that loads therefore runs on every supported datastore.
 
 ### Aggregate primitives
 
@@ -85,9 +86,583 @@ New `HealthEventStore` methods take the node, the window and the compiled condit
 | `count` | — | `count` | `$match`, `$count` | `COUNT(*)` |
 | `distinct` | `keys`: one or two key expressions | `distinct` | `$group` on keys | `COUNT(DISTINCT (k1, k2))` |
 | `bursts` | `gap`, `sticky_codes`, `sticky_window`, `target` | `bursts`, `latestTargets` | `$setWindowFields` with `$shift`, as today | `LAG()` and a running `SUM()` |
-| `solo` | `group_by`, `others` | `soloGroups` | `$group`, then `$lookup` | latest state per code, then `NOT EXISTS` |
+| `solo` | `group_by`, `others`, `state_key`, `active` | `soloGroups` | `$group`, then `$lookup` | newest row per key, then `NOT EXISTS` |
 
-Each burst rule's latest-burst behaviour becomes a `match` expression, for example `bursts - (latestTargets > 1 ? 1 : 0) >= 5` for RepeatedXIDErrorOnSameGPU. The primitive stays simple, and each rule's semantics stay visible in its config.
+- `bursts` orders the candidates by `generatedTimestamp`, and the first candidate starts the first burst. After that, a candidate whose `errorCode[0]` is in `sticky_codes` continues the current burst when the latest earlier sticky candidate is at most `sticky_window` before it; otherwise a gap over `gap` since the previous candidate starts a new burst. `bursts` counts the bursts with at least one `target` candidate, and `latestTargets` counts the `target` candidates in the latest burst.
+- `solo` groups the candidates by `group_by`. For each group, it takes the events in the window that satisfy `others`, with `group` bound to the group's key, and keeps the newest event per `state_key`. The group is solo when none of those events satisfies `active`. `soloGroups` counts the solo groups.
+
+Each burst rule's latest-burst behaviour becomes a `match` expression, so the primitive stays simple and each rule's semantics stay visible in its config.
+
+### Examples
+
+Two rules from today's chart, each with every parameter in the new form. The `stage` form is collapsed and copied from `values.yaml` ([RepeatedXIDErrorOnSameGPU](https://github.com/NVIDIA/NVSentinel/blob/d8e26169133881ea350ccf6d77095995178c41c9/distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml#L142-L416), [XID74Reg0SoloNVLinkError](https://github.com/NVIDIA/NVSentinel/blob/d8e26169133881ea350ccf6d77095995178c41c9/distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml#L1451-L1672)).
+
+**RepeatedXIDErrorOnSameGPU** (`bursts`)
+
+<details>
+<summary>Today</summary>
+
+```toml
+[[rules]]
+name = "RepeatedXIDErrorOnSameGPU"
+description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
+recommended_action = "CONTACT_SUPPORT"
+evaluate_rule = {{ .Values.enableRepeatedXIDErrorOnSameGPURule }}
+when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45'))"
+stage = [
+  '''
+  {
+    "$match": {
+      "$expr": {
+        "$and": [
+          {
+            "$gte": [
+              "$healthevent.generatedtimestamp.seconds",
+              {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+            ]
+          },
+          {
+            "$lte": [
+              "$healthevent.generatedtimestamp.seconds",
+              "this.healthevent.generatedtimestamp.seconds"
+            ]
+          }
+        ]
+      }
+    }
+  }
+  ''',
+    # Gate current event: only XID events carry GPU_UUID entities; without
+    # this guard, non-GPU events (e.g. NIC diagnostics) would reach the
+    # $setIntersection stage below and hit "$size on null".
+    '''
+  {
+    "$match": {
+      "$expr": {
+        "$and": [
+          {"$eq": ["this.healthevent.checkname", "SysLogsXIDError"]},
+          {
+            "$ne": [
+              "this.healthevent.errorcode.0",
+              "31"
+            ]
+          },
+          {
+            "$ne": [
+              "this.healthevent.errorcode.0",
+              "45"
+            ]
+          }
+        ]
+      }
+    }
+  }
+  ''',
+  # Candidate docs must also be XID events so non-XID unhealthy events on
+  # the same node are not merged into GPU burst counts.
+  #
+  # Excluded codes: 31 has its own dedicated rules; 45 is preemptive channel cleanup that
+  # the Xid catalogue resolves as "Not Solo: IGNORE (follow other Xid)", and a repeat is
+  # never solo.
+  '''
+  {
+    "$match": {
+      "healthevent.checkname": "SysLogsXIDError",
+      "healthevent.ishealthy": false,
+      "healthevent.nodename": "this.healthevent.nodename",
+      "$expr": {
+        "$and": [
+          {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "45"]]}]},
+          {
+            "$gt": [
+              {
+                "$size": {
+                  "$setIntersection": [
+                    {
+                      "$map": {
+                        "input": {
+                          "$filter": {
+                            "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                            "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                          }
+                        },
+                        "in": "$$this.entityvalue"
+                      }
+                    },
+                    {
+                      "$map": {
+                        "input": {
+                          "$filter": {
+                            "input": "this.healthevent.entitiesimpacted",
+                            "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                          }
+                        },
+                        "in": "$$this.entityvalue"
+                      }
+                    }
+                  ]
+                }
+              },
+              0
+            ]
+          }
+        ]
+      }
+    }
+  }
+  ''',
+  '''
+  {
+    "$setWindowFields": {
+      "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
+      "output": {
+        "prevTimestamp": {
+          "$shift": {
+            "output": "$healthevent.generatedtimestamp.seconds",
+            "by": -1
+          }
+        }
+      }
+    }
+  }
+  ''',
+  '''
+  {
+    "$addFields": {
+      "isStickyXid": {
+        "$in": [
+          {"$arrayElemAt": ["$healthevent.errorcode", 0]},
+          ["74", "79", "95", "109", "119"]
+        ]
+      }
+    }
+  }
+  ''',
+  # Only the most recent previous sticky XID can satisfy the 3 hour bound, so a
+  # scalar $max over the same window answers the question without materialising
+  # every previous event. Pushing $$ROOT made this stage quadratic in both data
+  # and work; see issue #1851.
+  '''
+  {
+    "$setWindowFields": {
+      "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
+      "output": {
+        "lastStickyTimestamp": {
+          "$max": {
+            "$cond": {
+              "if": "$isStickyXid",
+              "then": "$healthevent.generatedtimestamp.seconds",
+              "else": null
+            }
+          },
+          "window": {"documents": ["unbounded", -1]}
+        }
+      }
+    }
+  }
+  ''',
+  '''
+  {
+    "$addFields": {
+      "stickyXidWithin3Hours": {
+        "$cond": {
+          "if": "$isStickyXid",
+          "then": {
+            "$and": [
+              {"$ne": ["$lastStickyTimestamp", null]},
+              {"$lte": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$lastStickyTimestamp"]}, 10800]}
+            ]
+          },
+          "else": false
+        }
+      }
+    }
+  }
+  ''',
+  '''
+  {
+    "$setWindowFields": {
+      "sortBy": {"healthevent.generatedtimestamp.seconds": 1},
+      "output": {
+        "burstId": {
+          "$sum": {
+            "$cond": {
+              "if": {"$eq": ["$prevTimestamp", null]},
+              "then": 1,
+              "else": {
+                "$cond": {
+                  "if": {
+                    "$and": [
+                      "$isStickyXid",
+                      "$stickyXidWithin3Hours"
+                    ]
+                  },
+                  "then": 0,
+                  "else": {
+                    "$cond": {
+                      "if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 180]},
+                      "then": 1,
+                      "else": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "window": {"documents": ["unbounded", "current"]}
+        }
+      }
+    }
+  }
+  ''',
+  '''
+  {
+    "$group": {
+      "_id": {"burstId": "$burstId"},
+      "uniqueXidsInBurst": {"$addToSet": {"$arrayElemAt": ["$healthevent.errorcode", 0]}},
+      "targetXidCount": {
+        "$sum": {
+          "$cond": [
+            {"$eq": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "this.healthevent.errorcode.0"]},
+            1,
+            0
+          ]
+        }
+      }
+    }
+  }
+  ''',
+  '''
+  {
+    "$setWindowFields": {
+      "sortBy": {"_id.burstId": 1},
+      "output": {"maxBurstId": {"$max": "$_id.burstId"}}
+    }
+  }
+  ''',
+  '''
+  {
+    "$match": {
+      "$expr": {
+        "$and": [
+          {"$in": ["this.healthevent.errorcode.0", "$uniqueXidsInBurst"]},
+          {
+            "$or": [
+              {"$ne": ["$_id.burstId", "$maxBurstId"]},
+              {"$eq": ["$targetXidCount", 1]}
+            ]
+          }
+        ]
+      }
+    }
+  }
+  ''',
+  '''
+  {
+    "$group": {
+      "_id": null,
+      "count": {"$sum": 1},
+      "bursts": {"$push": {"burstId": "$_id.burstId", "uniqueXids": "$uniqueXidsInBurst"}}
+    }
+  }
+  ''',
+  '''
+  {
+  "$match": {
+      "$expr": {
+      "$gte": [
+          "$count", 5
+        ]
+      }
+  }
+  }
+  '''
+]
+```
+
+</details>
+
+```toml
+[[rules]]
+name = "RepeatedXIDErrorOnSameGPU"
+description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
+recommended_action = "CONTACT_SUPPORT"
+evaluate_rule = {{ .Values.enableRepeatedXIDErrorOnSameGPURule }}
+when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45'))"
+match = "bursts - (latestTargets > 1 ? 1 : 0) >= 5"
+
+[rules.history]
+window = "24h"
+filter = """
+e.checkName == 'SysLogsXIDError' && !e.isHealthy
+&& !(e.errorCode[0] in ['31', '45'])
+&& sets.intersects(e.entities('GPU_UUID'), event.entities('GPU_UUID'))
+"""
+aggregate = "bursts"
+gap = "180s"
+sticky_codes = ["74", "79", "95", "109", "119"]
+sticky_window = "3h"
+target = "e.errorCode[0] == event.errorCode[0]"
+```
+
+The `match` keeps today's latest-burst rule: the latest burst counts only while it holds exactly one event with the trigger's XID.
+
+**XID74Reg0SoloNVLinkError** (`solo`)
+
+<details>
+<summary>Today</summary>
+
+```toml
+[[rules]]
+  name = "XID74Reg0SoloNVLinkError"
+  description = "Detect if XID 74 occurred with register 0 bits 1 or 20 set with no other active errors in the last 24 hours"
+  recommended_action = "CONTACT_SUPPORT"
+  message = "one of the bits (1 or 20) is set in register 0, unexpected error please open an NVBug"
+  evaluate_rule = {{.Values.enableXID74Reg0SoloNVLinkErrorRule}}
+  when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
+  stage = [
+    '''
+    {
+      "$match": {
+        "$expr": {
+          "$and": [
+            {
+              "$gte": [
+                "$healthevent.generatedtimestamp.seconds",
+                {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+              ]
+            },
+            {
+              "$lte": [
+                "$healthevent.generatedtimestamp.seconds",
+                "this.healthevent.generatedtimestamp.seconds"
+              ]
+            }
+          ]
+        }
+      }
+    }
+    ''',
+    '''
+    {
+      "$match": {
+        "$expr": {
+          "$in": [
+            "this.healthevent.errorcode.0",
+            ["74"]
+          ]
+        }
+      }
+    }
+    ''',
+    '''
+    {
+      "$addFields": {
+        "registers": {
+          "$arrayToObject": {
+            "$map": {
+              "input": {
+                "$filter": {
+                  "input": "$healthevent.entitiesimpacted",
+                  "cond": {
+                    "$in": ["$$this.entitytype", ["REG0", "REG1", "REG2", "REG3", "REG4", "REG5", "REG6"]]
+                  }
+                }
+              },
+              "as": "reg",
+              "in": {
+                "k": "$$reg.entitytype",
+                "v": "$$reg.entityvalue"
+              }
+            }
+          }
+        }
+      }
+    }
+    ''',
+    '''
+    {
+      "$match": {
+        "$expr": {
+          "$and": [
+            {
+              "$or": [
+                {"$eq": ["$registers.REG0", "00000000000000000000000000000010"]},
+                {"$eq": ["$registers.REG0", "00000000000100000000000000000000"]}
+              ]
+            },
+            {"$eq": ["$registers.REG1", "00000000000000000000000000000000"]},
+            {"$eq": ["$registers.REG2", "00000000000000000000000000000000"]},
+            {"$eq": ["$registers.REG3", "00000000000000000000000000000000"]},
+            {"$eq": ["$registers.REG4", "00000000000000000000000000000000"]},
+            {"$eq": ["$registers.REG5", "00000000000000000000000000000000"]},
+            {"$eq": ["$registers.REG6", "00000000000000000000000000000000"]}
+          ]
+        }
+      }
+    }
+    ''',
+    # Collapse to one document per GPU before the $lookup below. That
+    # sub-query reads only currentNodeName, which the mandatory first stage
+    # already pins to a single node, and gpuUuid. Every event on the same GPU
+    # therefore asks it the same question, so running it once per event makes
+    # cost grow with the square of the node's event rate. Grouping first caps
+    # the sub-queries at the number of GPUs on the node.
+    '''
+    {
+      "$group": {
+        "_id": {
+          "$arrayElemAt": [
+            {
+              "$map": {
+                "input": {
+                  "$filter": {
+                    "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                    "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                  }
+                },
+                "in": "$$this.entityvalue"
+              }
+            },
+            0
+          ]
+        },
+        "doc": {"$first": "$$ROOT"}
+      }
+    }
+    ''',
+    # Restore the document shape the $lookup expects.
+    '{"$replaceRoot": {"newRoot": "$doc"}}',
+    '''
+    {
+      "$lookup": {
+        "from": "HealthEvents",
+        "let": {
+          "currentEventId": "$_id",
+          "currentNodeName": "$healthevent.nodename",
+          "gpuUuid": {
+            "$arrayElemAt": [
+              {
+                "$map": {
+                  "input": {
+                    "$filter": {
+                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
+                    }
+                  },
+                  "in": "$$this.entityvalue"
+                }
+              },
+              0
+            ]
+          }
+        },
+        "pipeline": [
+          {
+            "$match": {
+              "$expr": {
+                "$and": [
+                  {
+                    "$gte": [
+                      "$healthevent.generatedtimestamp.seconds",
+                      {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+                    ]
+                  },
+                  {"$ne": ["$_id", "$$currentEventId"]},
+                  {"$eq": ["$healthevent.nodename", "$$currentNodeName"]},
+                  {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "74"]},
+                  {
+                    "$gt": [
+                      {
+                        "$size": {
+                          "$filter": {
+                            "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                            "cond": {
+                              "$and": [
+                                {"$eq": ["$$this.entitytype", "GPU_UUID"]},
+                                {"$eq": ["$$this.entityvalue", "$$gpuUuid"]}
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      0
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "$sort": {
+              "healthevent.generatedtimestamp.seconds": -1
+            }
+          },
+          {
+            "$group": {
+              "_id": {
+                "$arrayElemAt": ["$healthevent.errorcode", 0]
+              },
+              "mostRecentEvent": {
+                "$first": {
+                  "id": "$_id",
+                  "isHealthy": {"$ifNull": ["$healthevent.ishealthy", false]},
+                  "timestamp": "$healthevent.generatedtimestamp.seconds"
+                }
+              }
+            }
+          },
+          {
+            "$match": {
+              "mostRecentEvent.isHealthy": false
+            }
+          }
+        ],
+        "as": "otherXidEvents"
+      }
+    }
+    ''',
+    '''
+    {
+      "$match": {
+        "$expr": {
+          "$eq": [{"$size": "$otherXidEvents"}, 0]
+        }
+      }
+    }
+    ''',
+    # The reconciler only tests whether the result is non-empty, so stop at
+    # the first match rather than returning every surviving document.
+    '{"$limit": 1}'
+  ]
+```
+
+</details>
+
+```toml
+[[rules]]
+name = "XID74Reg0SoloNVLinkError"
+description = "Detect if XID 74 occurred with register 0 bits 1 or 20 set with no other active errors in the last 24 hours"
+recommended_action = "CONTACT_SUPPORT"
+message = "one of the bits (1 or 20) is set in register 0, unexpected error please open an NVBug"
+evaluate_rule = {{.Values.enableXID74Reg0SoloNVLinkErrorRule}}
+when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
+match = "soloGroups >= 1"
+
+[rules.history]
+window = "24h"
+filter = """
+e.register('REG0') in ['00000000000000000000000000000010', '00000000000100000000000000000000']
+&& ['REG1', 'REG2', 'REG3', 'REG4', 'REG5', 'REG6'].all(r, e.register(r) == '00000000000000000000000000000000')
+"""
+aggregate = "solo"
+group_by = "e.entity('GPU_UUID')"
+others = "e.errorCode[0] != '74' && group in e.entities('GPU_UUID')"
+state_key = "e.errorCode[0]"
+active = "!e.isHealthy"
+```
+
+Two things differ from today, both listed in Notes: the look-up window ends at the trigger's time instead of `$$NOW`, and the look-up applies the base predicate.
 
 ### Flow
 
@@ -110,11 +685,9 @@ The derived event and the metric names do not change. `mongo_query_execution_dur
 ### Indexes and compatibility
 
 - PostgreSQL has no index on event time. Add a `generated_at` column set at insert, as `node_name` is, and an index on `(node_name, generated_at, created_at, id)`. MongoDB keeps the [#1901](https://github.com/NVIDIA/NVSentinel/pull/1901) indexes.
-- `stage` rules, defaults and custom, run on MongoDB unchanged. On PostgreSQL, the analyzer skips them at startup with one warning each; today they fail on every event.
+- During the migration, `stage` rules, defaults and custom, run on MongoDB unchanged. On PostgreSQL, the analyzer skips them at startup with one warning each; today they fail on every event. After the default switches, `stage` logs a deprecation warning, and step 5 removes it.
 - The chart ports the 22 default rules. `healthEventsAnalyzer.ruleFormat` selects `stage` or `portable`. The default stays `stage` on MongoDB until the equivalence and benchmark gates pass, and PostgreSQL always uses `portable`. The toggle reports through `nvsentinel_feature_flag_enabled` (ADR-032).
 - The Go XID burst detector is removed once `bursts` runs on PostgreSQL. The ADR-059 recovery boundary becomes a `query.Condition`, so recovery can also run on PostgreSQL.
-
-*Open question for maintainers:* add the PostgreSQL index through the current setup path, or through the versioned migrations of [#1777](https://github.com/NVIDIA/NVSentinel/pull/1777)?
 
 ### Testing
 
@@ -130,6 +703,7 @@ The derived event and the metric names do not change. `mongo_query_execution_dur
 2. `distinct` and `solo` (18 of 22).
 3. `bursts` (22 of 22); remove the Go XID detector.
 4. Switch the MongoDB default to `portable` after the gates pass; enable recovery on PostgreSQL; warn on `stage`.
+5. After a deprecation period announced in the release notes (proposed: two minor releases), remove `stage`, the `healthEventsAnalyzer.ruleFormat` toggle and the analyzer's `Aggregate` calls.
 
 Each step is a separate PR, and MongoDB behaviour stays unchanged until step 4.
 
@@ -159,7 +733,7 @@ Each step is a separate PR, and MongoDB behaviour stays unchanged until step 4.
 - Load errors name the unsupported construct and the rule.
 - One conformance suite runs every primitive case against every datastore.
 - The 22 ported default rules serve as the porting guide.
-- `stage` stays for MongoDB custom rules, with a deprecation warning only after the default switches.
+- `stage` keeps loading on MongoDB through the deprecation period, so custom rules can move at their own pace.
 
 ## Alternatives Considered
 
@@ -175,10 +749,18 @@ Each step is a separate PR, and MongoDB behaviour stays unchanged until step 4.
 ### Rules engine, scripting, or a MongoDB pipeline interpreter in Go
 **Rejected** because ADR-007 and ADR-003 rejected a rules engine and scripting, and an interpreter loads history into memory and reimplements about 40 MongoDB operators.
 
+## Open Questions
+
+1. Are the four primitives the right set? `solo` could instead be a general "newest state per key" primitive plus `count`.
+2. The ADR proposes skipping a portable rule that fails validation, with a metric. Should it stop startup instead?
+3. Should the solo rules' look-up window end at the trigger's time, as proposed, or keep `$$NOW`?
+4. Should the PostgreSQL event-time index go through the current setup path, or through the versioned migrations of [#1777](https://github.com/NVIDIA/NVSentinel/pull/1777)?
+5. Should the compiler live in `store-client/pkg/query`, as proposed, or in `commons`?
+
 ## Notes
 
 - Non-goals: Kubernetes NodeHealth mode, change-stream and checkpoint behaviour, and PostgreSQL re-delivery of updates.
-- The solo rules change in two ways. Their look-up window ends at the trigger's time instead of `$$NOW`, so a replay gives the same result. Their look-up also gets the base predicate, so the analyzer's own events and `STORE_ONLY` events no longer count as active codes. *Open question for maintainers:* keep `$$NOW` instead?
+- The solo rules change in two ways. Their look-up window ends at the trigger's time instead of `$$NOW`, so a replay gives the same result. Their look-up also gets the base predicate, so the analyzer's own events and `STORE_ONLY` events no longer count as active codes.
 - The derived event keeps the trigger's entities. Reporting the matched identity, for example another GPU in a solo rule, is a separate decision.
 - Until step 3, `docs/postgresql-provider.md` must not claim full feature parity for the analyzer.
 
