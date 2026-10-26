@@ -221,9 +221,11 @@ func TestState_SuppressedPort_StorageCardWithUnreadableFunction_NeverReports(t *
 	}
 }
 
-func TestState_SuppressedPort_MultiPlaneCard_ComputeMemberOnOtherLinkLayerQualifies(t *testing.T) {
+func TestState_SuppressedPort_MultiPlaneCard_ComputeMemberOnOtherLinkLayerDoesNotQualify(t *testing.T) {
 	for _, layer := range bothLayers {
 		t.Run(layer, func(t *testing.T) {
+			// mlx5_0 is compute but has no port on this check's link layer,
+			// so it is not evidence for the storage alias on its card.
 			check, node, clock := newMultiPlaneStateCheck(t, layer, false, testReportAfter)
 			otherLayer := ibLinkLayer
 			if layer == ibLinkLayer {
@@ -231,11 +233,11 @@ func TestState_SuppressedPort_MultiPlaneCard_ComputeMemberOnOtherLinkLayerQualif
 			}
 
 			node.ib["mlx5_0"].ports[1] = downPort(otherLayer)
-			require.Empty(t, runPoll(t, check))
-			require.Len(t, suppressionTimers(t, check), 4)
+			assert.Empty(t, runPoll(t, check))
+			assert.Empty(t, suppressionTimers(t, check))
 
-			clock.Advance(testReportAfter)
-			assert.ElementsMatch(t, []string{"smi0", "smi0", "smi0", "smi0"}, unhealthyPorts(runPoll(t, check)))
+			clock.Advance(24 * time.Hour)
+			assert.Empty(t, runPoll(t, check), "a card with no compute member on this link layer must remain exempt")
 		})
 	}
 }

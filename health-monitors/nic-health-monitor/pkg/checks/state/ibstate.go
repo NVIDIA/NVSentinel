@@ -311,10 +311,6 @@ func (c *InfiniBandStateCheck) collectDevicesAndPorts(devices []discovery.IBDevi
 		role := c.classifier.RoleOf(dev.Name)
 		card := c.classifier.PCICardOf(dev.Name)
 
-		if role == topology.RoleCompute {
-			st.computeCards[card] = true
-		}
-
 		for _, port := range dev.Ports {
 			if !discovery.IsIBPort(&port) {
 				continue
@@ -350,6 +346,7 @@ func (c *InfiniBandStateCheck) recordPort(
 	}
 
 	st.cardRole[card] = role
+	st.computeCards[card] = st.computeCards[card] || role == topology.RoleCompute
 	st.portCard[key] = card
 	st.portOverride[key] = includedByOverride
 }

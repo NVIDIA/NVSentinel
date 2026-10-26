@@ -306,10 +306,6 @@ func (c *EthernetStateCheck) collectDevicesAndPorts(devices []discovery.IBDevice
 		card := c.classifier.PCICardOf(dev.Name)
 		role := c.classifier.RoleOf(dev.Name)
 
-		if role == topology.RoleCompute {
-			st.computeCards[card] = true
-		}
-
 		for i := range dev.Ports {
 			p := dev.Ports[i]
 			if !discovery.IsEthernetPort(&p) {
@@ -318,6 +314,7 @@ func (c *EthernetStateCheck) collectDevicesAndPorts(devices []discovery.IBDevice
 
 			st.currentDevices[dev.Name] = true
 			st.cardRole[card] = role
+			st.computeCards[card] = st.computeCards[card] || role == topology.RoleCompute
 
 			c.recordPort(st, dev, card, p)
 		}

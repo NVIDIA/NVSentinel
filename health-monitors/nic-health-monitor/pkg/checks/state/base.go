@@ -503,8 +503,9 @@ type pollAggregates struct {
 	uncertain       bool
 	unreadable      map[string]error
 
-	// computeCards records any compute member independently of the role
-	// selected for peer grouping. SMI aliases can have a storage role.
+	// computeCards records the cards with a compute member that has a port
+	// on this check's link layer, independently of the role selected for
+	// peer grouping. SMI aliases can have a storage role.
 	computeCards map[string]bool
 }
 
