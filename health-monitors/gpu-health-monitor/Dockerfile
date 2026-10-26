@@ -18,7 +18,7 @@ ARG VERSION="0.1.0"
 ARG GIT_COMMIT="none"
 ARG BUILD_DATE=$(date -u +%FT%TZ)
 
-FROM public.ecr.aws/docker/library/python:3.13-trixie@sha256:4a0820d8b1b1a1e012a23ff9a1296a3e28b48896a4d27a328a91ee197ce619d9 AS build
+FROM public.ecr.aws/docker/library/python:3.15-trixie@sha256:e5eb16387fc01b6d5af685c908cbc7f82f18b383d3a358d6e37cfbac6e88ac37 AS build
 
 ARG VERSION
 

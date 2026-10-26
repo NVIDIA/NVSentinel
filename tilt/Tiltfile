@@ -95,6 +95,14 @@ helm_resource(
         '--version=0.3.0'  # pin: an unpinned chart floats to new releases mid-flight
     ]
 )
+# The chart gives every fake node the kwok pod IP. kindnetd cannot route through
+# a pod IP and restarts in a loop, which drops connections. Use an unused kind
+# network address instead, before the fake nodes exist. See set-kwok-node-ip.sh.
+local_resource(
+    'kwok-node-ip',
+    cmd='./set-kwok-node-ip.sh',
+    resource_deps=['kwok'],
+)
 helm_resource(
     'kwok-stage-fast',
     chart='sigs-kwok/stage-fast',
@@ -396,7 +404,7 @@ if not skip_kwok_nodes:
     k8s_resource(
         new_name='kwok-fake-nodes',
         objects=kwok_all_node_names,
-        resource_deps=['kwok', 'platform-connectors', 'fault-quarantine', 'fault-remediation',
+        resource_deps=['kwok', 'kwok-node-ip', 'platform-connectors', 'fault-quarantine', 'fault-remediation',
             'labeler', 'node-drainer', datastore_resource, 'simple-health-client'
         ],
     )
