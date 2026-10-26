@@ -26,8 +26,33 @@ import (
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 )
 
-func receivedCount(strategy, healthy string) float64 {
-	return testutil.ToFloat64(healthEventsReceived.WithLabelValues(strategy, healthy))
+func receivedCount(strategy, isHealthy string) float64 {
+	return testutil.ToFloat64(healthEventsReceived.WithLabelValues(strategy, isHealthy))
+}
+
+// This runs first, and no other test in the package creates an UNKNOWN series, so the
+// vec holds exactly the series init() created: the countable strategies times two
+// health values. Exact equality also catches a leaked series, e.g. UNSPECIFIED.
+func TestHealthEventsReceived_SeriesInitializedAtZero(t *testing.T) {
+	assert.Equal(t, len(countableStrategies)*2, testutil.CollectAndCount(healthEventsReceived))
+}
+
+func TestStrategyLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		strategy pb.ProcessingStrategy
+		want     string
+	}{
+		{"known EXECUTE_REMEDIATION", pb.ProcessingStrategy_EXECUTE_REMEDIATION, "EXECUTE_REMEDIATION"},
+		{"known STORE_ONLY", pb.ProcessingStrategy_STORE_ONLY, "STORE_ONLY"},
+		{"unknown value folds to UNKNOWN", pb.ProcessingStrategy(99), "UNKNOWN"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, strategyLabel(tt.strategy))
+		})
+	}
 }
 
 func TestHealthEventOccurredV1_CountsReceivedByFinalStrategyAndHealth(t *testing.T) {
@@ -90,49 +115,28 @@ func TestHealthEventOccurredV1_CountsReceivedByFinalStrategyAndHealth(t *testing
 }
 
 func TestHealthEventOccurredV1_RejectedBatchIsNotCounted(t *testing.T) {
-	tests := []struct {
-		name  string
-		event *pb.HealthEvent
-	}{
-		{
-			name: "CUSTOM action without a custom string",
-			event: &pb.HealthEvent{
-				NodeName:          "test-node",
-				RecommendedAction: pb.RecommendedAction_CUSTOM,
-			},
-		},
-		{
-			name: "unknown processing strategy",
-			event: &pb.HealthEvent{
-				NodeName:           "test-node",
-				ProcessingStrategy: pb.ProcessingStrategy(99),
-			},
-		},
-	}
+	// The strategy is a valid, init-created one, so a regression that counted before
+	// validation would bump this exact series' value; assert the value, not just the
+	// series count, to catch it. CollectAndCount also guards against a stray series.
+	valueBefore := receivedCount("EXECUTE_REMEDIATION", "false")
+	seriesBefore := testutil.CollectAndCount(healthEventsReceived)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			before := receivedCount("EXECUTE_REMEDIATION", "false")
+	server := &PlatformConnectorServer{}
 
-			server := &PlatformConnectorServer{}
-			_, err := server.HealthEventOccurredV1(context.Background(),
-				&pb.HealthEvents{Events: []*pb.HealthEvent{tt.event}})
-			require.Error(t, err)
+	// CUSTOM without a custom action string fails validation, so the whole batch is
+	// rejected before anything is counted.
+	_, err := server.HealthEventOccurredV1(context.Background(), &pb.HealthEvents{
+		Events: []*pb.HealthEvent{{
+			NodeName:           "test-node",
+			ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+			RecommendedAction:  pb.RecommendedAction_CUSTOM,
+			IsHealthy:          false,
+		}},
+	})
+	require.Error(t, err)
 
-			assert.Equal(t, before, receivedCount("EXECUTE_REMEDIATION", "false"))
-		})
-	}
-}
-
-func TestHealthEventsReceived_SeriesInitializedAtZero(t *testing.T) {
-	// init() pre-creates one series per countable strategy times both health values,
-	// so a rate() can observe the first increment. Confirm all are exposed.
-	for _, strategy := range countableStrategies {
-		for _, healthy := range []string{"true", "false"} {
-			assert.GreaterOrEqual(t,
-				testutil.CollectAndCount(healthEventsReceived.WithLabelValues(strategy.String(), healthy)),
-				0, "series %s/%s must be registered", strategy, healthy)
-		}
-	}
-	assert.GreaterOrEqual(t, testutil.CollectAndCount(healthEventsReceived), len(countableStrategies)*2)
+	assert.Equal(t, valueBefore, receivedCount("EXECUTE_REMEDIATION", "false"),
+		"a rejected batch must not be counted")
+	assert.Equal(t, seriesBefore, testutil.CollectAndCount(healthEventsReceived),
+		"a rejected batch must not create a series")
 }

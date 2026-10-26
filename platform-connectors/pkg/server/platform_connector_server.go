@@ -51,7 +51,7 @@ var (
 			"by processing strategy and event health. The labels let consumers separate " +
 			"analyzer-relevant traffic (unhealthy, EXECUTE_REMEDIATION or STORE_AND_ANALYSE) " +
 			"from STORE_ONLY and recovery events, e.g. for analyzer-stall alerting.",
-	}, []string{"processing_strategy", "healthy"})
+	}, []string{"processing_strategy", "is_healthy"})
 
 	// The strategies a stored event can carry: UNSPECIFIED is defaulted away before
 	// counting, so it never appears as a label value.
@@ -69,14 +69,28 @@ var (
 	}, []string{"outcome"})
 )
 
-// init exposes every countable {processing_strategy, healthy} series at zero so a
+// strategyLabel bounds the processing_strategy label to the known enum names plus a
+// single "UNKNOWN" bucket. A client on a newer proto can send a value this build does
+// not know; String() would turn each distinct unknown number into its own series, so
+// fold them all into one label value. The event is still stored unchanged; only the
+// metric label is normalised.
+func strategyLabel(s pb.ProcessingStrategy) string {
+	if _, ok := pb.ProcessingStrategy_name[int32(s)]; ok {
+		return s.String()
+	}
+
+	return "UNKNOWN"
+}
+
+// init exposes every countable {processing_strategy, is_healthy} series at zero so a
 // quiet cluster is distinguishable from a dead exporter: a rate() over a series
 // that starts at 1 cannot see its first 0->1 transition, which is the one an
 // analyzer-stall alert depends on. Mirrors initMetrics() in the kubernetes connector.
+// UNKNOWN is left out: it only appears on a bad input and should not read as expected.
 func init() {
 	for _, strategy := range countableStrategies {
-		for _, healthy := range []string{"true", "false"} {
-			healthEventsReceived.WithLabelValues(strategy.String(), healthy)
+		for _, isHealthy := range []string{"true", "false"} {
+			healthEventsReceived.WithLabelValues(strategy.String(), isHealthy)
 		}
 	}
 }
@@ -107,15 +121,6 @@ func ApplyEventDefaultsAndValidate(events []*pb.HealthEvent) error {
 		// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
 		if event.ProcessingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
 			event.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
-		}
-
-		// Reject unknown strategy values so they cannot reach the metric: String()
-		// turns each distinct unknown number into its own label value, which would
-		// let a client blow past the bounded series count.
-		if _, ok := pb.ProcessingStrategy_name[int32(event.ProcessingStrategy)]; !ok {
-			return status.Errorf(codes.InvalidArgument,
-				"unknown processingStrategy %d (node=%s, agent=%s)",
-				event.ProcessingStrategy, event.NodeName, event.Agent)
 		}
 
 		if event.GeneratedTimestamp == nil {
@@ -179,14 +184,13 @@ func (p *PlatformConnectorServer) handle(ctx context.Context, he *pb.HealthEvent
 	}
 
 	// Counted after the pipeline so processing_strategy reflects the final stored
-	// value: a transformer can move an event to STORE_ONLY, and the label should
-	// name what the analyzer will see. UNSPECIFIED is already defaulted and unknown
-	// values are already rejected above, so every value here is a known strategy.
-	// Rejected batches are not counted; they are visible via requestDuration's
-	// rejected outcome.
+	// value: a transformer can move an event to STORE_ONLY, and the label should name
+	// what the analyzer will see. strategyLabel folds unknown values into one bucket
+	// so the series stay bounded. Rejected batches are not counted; they are visible
+	// via requestDuration's rejected outcome.
 	for _, event := range he.GetEvents() {
 		healthEventsReceived.WithLabelValues(
-			event.GetProcessingStrategy().String(),
+			strategyLabel(event.GetProcessingStrategy()),
 			strconv.FormatBool(event.GetIsHealthy()),
 		).Inc()
 	}
