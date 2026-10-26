@@ -8,7 +8,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute v1.0.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
-	github.com/aws/aws-sdk-go-v2/service/ec2 v1.339.0
+	github.com/aws/aws-sdk-go-v2/service/ec2 v1.340.0
 	github.com/go-logr/logr v1.4.4
 	github.com/nebius/gosdk v0.2.81
 	github.com/nvidia/nvsentinel/api v0.0.0-00010101000000-000000000000
@@ -19,7 +19,7 @@ require (
 	go.opentelemetry.io/otel v1.47.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.24.0
-	google.golang.org/api v0.306.0
+	google.golang.org/api v0.307.0
 	google.golang.org/grpc v1.84.0
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
@@ -46,7 +46,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.38.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 // indirect
-	github.com/aws/smithy-go v1.28.5 // indirect
+	github.com/aws/smithy-go v1.28.6 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
