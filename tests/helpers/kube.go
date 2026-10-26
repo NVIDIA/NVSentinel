@@ -422,38 +422,6 @@ func WaitForNodesWithLabel(
 	}, EventuallyWaitTimeout, WaitInterval, "all nodes should have label %s=%s", labelKey, expectedValue)
 }
 
-// WaitForNodeLabelNotEqual waits for a single node's label to NOT equal a specific value.
-// This is useful for waiting for state transitions when you don't know the final state.
-func WaitForNodeLabelNotEqual(
-	ctx context.Context, t *testing.T, c klient.Client, nodeName, labelKey, notExpectedValue string,
-) {
-	t.Helper()
-
-	require.Eventually(t, func() bool {
-		node, err := GetNodeByName(ctx, c, nodeName)
-		if err != nil {
-			t.Logf("failed to get node %s: %v", nodeName, err)
-			return false
-		}
-
-		actualValue, exists := node.Labels[labelKey]
-		if !exists {
-			t.Logf("Node %s: label %s does not exist", nodeName, labelKey)
-			return false
-		}
-
-		if actualValue != notExpectedValue {
-			t.Logf("Node %s: label %s=%s (not %s) ✓", nodeName, labelKey, actualValue, notExpectedValue)
-			return true
-		}
-
-		t.Logf("Node %s: label %s still equals %s (waiting for change)", nodeName, labelKey, actualValue)
-
-		return false
-	}, EventuallyWaitTimeout, WaitInterval,
-		"expected node %s label %s to not equal %s", nodeName, labelKey, notExpectedValue)
-}
-
 func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
 	expectedEvent v1.Event) {
 	require.Eventually(t, func() bool {
@@ -988,20 +956,6 @@ func GetAllNodesNames(ctx context.Context, c klient.Client) ([]string, error) {
 	return nodeNames, nil
 }
 
-// CountSchedulableNodes returns the count of nodes that are schedulable (not cordoned).
-// It accepts a v1.NodeList and counts only nodes where Spec.Unschedulable is false.
-func CountSchedulableNodes(nodeList v1.NodeList) int {
-	count := 0
-
-	for _, node := range nodeList.Items {
-		if !node.Spec.Unschedulable {
-			count++
-		}
-	}
-
-	return count
-}
-
 // AllRealNodeNames returns every real (non-KWOK) worker node name, schedulable
 // ones first.
 func AllRealNodeNames(ctx context.Context, c klient.Client) ([]string, error) {
@@ -1240,38 +1194,6 @@ func CreateRebootNodeCR(ctx context.Context, c klient.Client, nodeName string,
 	}
 
 	return rebootNode, nil
-}
-
-// CreateValidationRequest creates a cluster-scoped ValidationRequest targeting the given nodes and tests
-func CreateValidationRequest(ctx context.Context, c klient.Client, crName string,
-	nodeNames, tests []string) (*unstructured.Unstructured, error) {
-	vr := &unstructured.Unstructured{}
-	vr.SetGroupVersionKind(ValidationRequestGVK)
-	vr.SetName(crName)
-
-	nodes := make([]interface{}, len(nodeNames))
-	for i, n := range nodeNames {
-		nodes[i] = map[string]interface{}{fieldNameKey: n}
-	}
-
-	if err := unstructured.SetNestedSlice(vr.Object, nodes, "spec", "nodes"); err != nil {
-		return nil, fmt.Errorf("failed to set nodes in spec: %w", err)
-	}
-
-	testsAny := make([]interface{}, len(tests))
-	for i, testName := range tests {
-		testsAny[i] = testName
-	}
-
-	if err := unstructured.SetNestedSlice(vr.Object, testsAny, "spec", "tests"); err != nil {
-		return nil, fmt.Errorf("failed to set tests in spec: %w", err)
-	}
-
-	if err := c.Resources().Create(ctx, vr); err != nil {
-		return nil, fmt.Errorf("failed to create ValidationRequest %s: %w", crName, err)
-	}
-
-	return vr, nil
 }
 
 func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crName string,

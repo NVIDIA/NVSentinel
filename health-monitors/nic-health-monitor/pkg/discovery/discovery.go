@@ -357,9 +357,3 @@ func matchesAny(name string, patterns []*regexp.Regexp) bool {
 
 	return false
 }
-
-// MatchesAny is the exported form of matchesAny for callers that want to
-// reuse the helper (e.g., the inclusion-override path in main).
-func MatchesAny(name, commaSeparated string) bool {
-	return matchesAny(name, compileRegexList(commaSeparated))
-}
