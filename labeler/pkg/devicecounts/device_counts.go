@@ -16,6 +16,7 @@ package devicecounts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -34,6 +35,10 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
+
+// errNoCount reports a negative currentExpression result. A source without a
+// ResourceSliceDriver returns it, for example -1, to say that it does not apply.
+var errNoCount = errors.New("currentExpression returned a negative count")
 
 // Config controls expected device-count label reconciliation.
 type Config struct {
@@ -670,7 +675,7 @@ func (m *Manager) evaluateCurrent(
 	}
 
 	if count < 0 {
-		return 0, fmt.Errorf("currentExpression returned negative count: %d", count)
+		return 0, fmt.Errorf("%w: %d", errNoCount, count)
 	}
 
 	return count, nil
