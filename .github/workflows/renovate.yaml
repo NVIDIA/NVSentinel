@@ -92,7 +92,7 @@ jobs:
         run: echo "RENOVATE_DRY_RUN=full" >> "$GITHUB_ENV"
 
       - name: Run Renovate
-        uses: renovatebot/github-action@f0f41e5f2e706165f6814b1d0f0d0e319de7d1d9  # v46.3.8
+        uses: renovatebot/github-action@a63d9a7bc606f7336fd20b47f2f32259a35e6213  # v46.3.9
         with:
           renovate-version: ${{ steps.versions.outputs.renovate }}
         env:

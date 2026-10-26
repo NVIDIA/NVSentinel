@@ -114,8 +114,8 @@ cluster:
   # renovate: datasource=helm depName=kube-prometheus-stack depType=cluster
   prometheus_operator: '92.10.1'
   # renovate: datasource=helm depName=gpu-operator depType=cluster
-  gpu_operator: 'v26.7.1'
+  gpu_operator: 'v26.7.2'
   # renovate: datasource=helm depName=cert-manager depType=cluster
-  cert_manager: '1.21.1'
+  cert_manager: '1.21.2'
   # renovate: datasource=helm depName=policy-controller depType=cluster
-  policy_controller: '0.10.5'  # Sigstore Policy Controller Helm chart version
+  policy_controller: '0.10.8'  # Sigstore Policy Controller Helm chart version

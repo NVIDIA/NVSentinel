@@ -16,6 +16,7 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -138,6 +139,7 @@ func (r *K8sConnector) readAndUpdateNode(
 		return false, err
 	}
 
+	read := slices.Clone(node.Status.Conditions)
 	changed := false
 
 	for conditionType, events := range conditionEventsMap {
@@ -150,9 +152,66 @@ func (r *K8sConnector) readAndUpdateNode(
 		return true, nil
 	}
 
-	_, err = r.clientset.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+	// A node with no conditions has not been registered by its kubelet yet, and
+	// JSON patch libraries disagree on a null test against a missing field.
+	// Such a node keeps the update at the read resourceVersion.
+	if len(read) == 0 {
+		_, err = r.clientset.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
 
-	return false, err
+		return false, err
+	}
+
+	patch, err := conditionsPatch(read, node.Status.Conditions)
+	if err != nil {
+		return false, err
+	}
+
+	_, err = r.clientset.CoreV1().Nodes().Patch(ctx, nodeName, types.JSONPatchType, patch,
+		metav1.PatchOptions{}, "status")
+
+	return false, r.conditionTestFailedAsConflict(ctx, nodeName, node.ResourceVersion, err)
+}
+
+// conditionsPatch replaces the node's conditions only if they are still the
+// ones read. Unlike an update at the read resourceVersion, it does not conflict
+// with writes to the node's labels, annotations, taints or cordon, which fault
+// quarantine, the node drainer and fault remediation make for the same event,
+// in the same second. Another writer's change to any condition still fails the
+// test, so the fold is retried on what that writer wrote.
+func conditionsPatch(read, updated []corev1.NodeCondition) ([]byte, error) {
+	return json.Marshal([]map[string]any{
+		{"op": "test", "path": "/status/conditions", "value": read},
+		{"op": "add", "path": "/status/conditions", "value": updated},
+	})
+}
+
+// conditionTestFailedAsConflict reports a failed conditions test as the
+// conflict it is, so the caller's conflict retry reads the node again. The API
+// server answers a failed JSON patch test with a bare 422 Invalid, the answer it
+// also gives an invalid condition, so the node is read again to tell them apart.
+// Only a node unchanged since the read, at the same resourceVersion, proves the
+// test passed and the condition is invalid. Comparing the conditions instead
+// would miss another writer's change that a third write then reverted.
+func (r *K8sConnector) conditionTestFailedAsConflict(
+	ctx context.Context, nodeName, readResourceVersion string, err error,
+) error {
+	if !apierrors.IsInvalid(err) {
+		return err
+	}
+
+	node, getErr := r.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if getErr != nil {
+		// The read's error, not the 422, decides whether the write is retried.
+		return fmt.Errorf("re-reading node after rejected conditions patch (%v): %w",
+			err, getErr) //nolint:errorlint // Wrapping the 422 too would let it decide the retry.
+	}
+
+	if node.ResourceVersion == readResourceVersion {
+		return err
+	}
+
+	return apierrors.NewConflict(corev1.Resource("nodes"), nodeName,
+		errors.New("node changed since its conditions were read"))
 }
 
 func sortHealthEventsByTimestamp(events []*protos.HealthEvent) []*protos.HealthEvent {
