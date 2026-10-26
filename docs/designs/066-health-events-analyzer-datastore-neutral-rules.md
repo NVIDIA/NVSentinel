@@ -102,13 +102,13 @@ New `HealthEventStore` methods take the node, the window and the compiled condit
 |---|---|---|---|---|
 | `count` | — | `count` | `$match`, `$count` | `COUNT(*)` |
 | `distinct` | `keys`: one or two key expressions | `distinct` | `$group` on keys | `COUNT(DISTINCT (k1, k2))` |
-| `bursts` | `gap`, `sticky_codes`, `sticky_window`, `target` | `bursts`, `latestTargets` | `$setWindowFields` with `$shift`, as today | `LAG()` and a running `SUM()` |
-| `solo` | `group_by`, `others`, `state_key`, `active` | `soloGroups` | `$group`, then `$lookup` | newest row per key, then `NOT EXISTS` |
+| `bursts` | `gap`, `sticky_codes`, `sticky_window`, `target` | `bursts`, `latestTargets` | `$group` per second, then `$setWindowFields` with `$shift` | `GROUP BY` second, then `LAG()` and a running `SUM()` |
+| `solo` | `group_by`, `others`, `state_key`, `active` | `soloGroups` | `$group`, then `$lookup` | newest second per key, then `NOT EXISTS` |
 
-`bursts` and `solo` order events by `generatedTimestamp`, then by the stored record (`_id` in MongoDB; `created_at`, then `id`, in PostgreSQL), so tied timestamps have one order on each datastore. Windows and gaps compare whole seconds, as today.
+`bursts` and `solo` compare `generatedTimestamp` in whole seconds, as today. Their results do not depend on the order of events within one second, so every datastore returns the same result.
 
-- `bursts` walks the candidates in that order, and the first candidate starts the first burst. After that, a candidate whose `errorCode[0]` is in `sticky_codes` continues the current burst when the latest earlier sticky candidate is at most `sticky_window` before it; otherwise a gap over `gap` since the previous candidate starts a new burst. `bursts` counts the bursts with at least one `target` candidate, and `latestTargets` counts the `target` candidates in the latest burst.
-- `solo` groups the candidates by `group_by`. For each group, it takes the events in the window that satisfy `others` and not `filter`, with `group` bound to the group's key, and keeps the newest event per `state_key`. The group is solo when none of those events satisfies `active`. `soloGroups` counts the solo groups. Because a candidate is never one of the others, the trigger cannot be its own active state; today's look-up excludes only one candidate, by ID.
+- `bursts` walks the seconds that hold candidates, in time order. Candidates in the same second share a burst, and the first second starts the first burst. A candidate is sticky when its `errorCode[0]` is in `sticky_codes`. A later second continues the current burst when it holds a sticky candidate and the latest sticky candidate from an earlier second is at most `sticky_window` before it. Otherwise, a gap over `gap` since the previous second starts a new burst. `bursts` counts the bursts with at least one `target` candidate, and `latestTargets` counts the `target` candidates in the latest burst.
+- `solo` groups the candidates by `group_by`. For each group, it takes the events in the window, other than the trigger, that satisfy `others`, with `group` bound to the group's key. Per `state_key`, it keeps the events from the newest second, and the key is active when one of them satisfies `active`. The group is solo when no key is active, and `soloGroups` counts the solo groups. Today's look-up excludes one candidate per group by ID, instead of the trigger. In the default rules, `others` excludes XID 74, the only code that carries register entities, so both give the same result.
 
 Each burst rule's latest-burst behaviour becomes a `match` expression, so the primitive stays simple and each rule's semantics stay visible in its config.
 
@@ -711,7 +711,7 @@ The derived event and the metric names do not change. `mongo_query_execution_dur
 ### Testing
 
 - Compiler: golden `ToMongo()` and `ToSQL()` output for each supported construct, and a load error for each unsupported one.
-- Conformance: one table of primitive cases (absent fields, missing and empty `errorCode`, duplicate registers, sticky XIDs, empty windows, tied timestamps, and an `others` that also matches candidates) runs against an in-memory reference store, MongoDB and PostgreSQL in CI.
+- Conformance: one table of primitive cases (absent fields, missing and empty `errorCode`, duplicate registers, sticky XIDs, empty windows, events in the same second, and an `others` that matches the trigger or another candidate) runs against an in-memory reference store, MongoDB and PostgreSQL in CI.
 - Equivalence: replay a recorded MongoDB dataset, in the style of #1901, through the `stage` and portable forms of every default rule. Zero differences are required, except the two solo-rule changes in Notes and differences that come from events in the same second, which have no defined order today. Each default rule must also give the same results with `when` removed.
 - E2E: portable rule tests drop the `mongodb` build tag, and the 9 default rules without an E2E test get one.
 - Benchmarks: events/s per worker, ms per event, queries per event and database CPU per event, before and after, on both datastores, in the format of [#1912](https://github.com/NVIDIA/NVSentinel/pull/1912) and [#1913](https://github.com/NVIDIA/NVSentinel/pull/1913).
