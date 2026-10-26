@@ -102,6 +102,16 @@ func (f *ClientFactory) CreateDatabaseClient(ctx context.Context) (client.Databa
 			)
 		}
 
+		if err := providers_postgresql.WaitForSchemaVersion(ctx, db); err != nil {
+			db.Close()
+
+			return nil, datastore.NewConnectionError(
+				datastore.ProviderPostgreSQL,
+				"PostgreSQL schema is not compatible",
+				err,
+			)
+		}
+
 		// Bound the connection pool so DATASTORE_MAX_CONNECTIONS takes effect
 		// on this path too, with the
 		// same idle and lifetime defaults NewPostgreSQLStore applies.
