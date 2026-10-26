@@ -154,14 +154,17 @@ func (he *HealthEventsAnnotationMap) AddOrUpdateEvent(event *protos.HealthEvent)
 }
 
 // AddOrUpdateEventFiltered applies only effect keys accepted by keep. When a
-// compound event is partially accepted, retained keys are compacted into exact
-// rectangular projections so JSON round trips cannot recreate filtered-out
-// effects without expanding one annotation payload per key.
+// compound event is partially accepted, or a key that another stored event
+// still covers is overwritten, the stored events are compacted into exact
+// rectangular projections so JSON round trips cannot recreate effects now
+// owned by a different event, without expanding one annotation payload per key.
 func (he *HealthEventsAnnotationMap) AddOrUpdateEventFiltered(
 	event *protos.HealthEvent,
 	keep func(HealthEventKey) bool,
 ) bool {
 	keys := createEventKeys(event)
+	partial := false
+
 	if keep != nil {
 		kept := keys[:0]
 		for _, key := range keys {
@@ -170,54 +173,39 @@ func (he *HealthEventsAnnotationMap) AddOrUpdateEventFiltered(
 			}
 		}
 
-		if len(kept) != len(keys) {
-			keys = kept
-
-			updated := he.addEventKeys(event, keys)
-			if updated && len(he.Events) > 0 {
-				// Compact after replacing accepted keys. The remaining keys that
-				// still point at an older compound event must no longer serialize
-				// effects now owned by the replacement.
-				he.compactStoredValues()
-			}
-
-			return updated
-		}
+		partial = len(kept) != len(keys)
+		keys = kept
 	}
 
-	updated := false
-
-	for _, key := range keys {
-		existing, exists := he.Events[key]
-		if !exists {
-			he.Events[key] = event
-			updated = true
-		} else if existing.RecommendedAction != event.RecommendedAction {
-			// Matching ignores RecommendedAction, so an escalated remediation must
-			// overwrite the stored event or consumers keep the stale action.
-			he.Events[key] = event
-			updated = true
-		}
+	updated, replaced := he.addEventKeys(event, keys)
+	if updated && (partial || replaced) && len(he.Events) > 0 {
+		// The keys that still point at an older compound event must no longer
+		// serialize effects now owned by the replacement, or the last event
+		// written by UnmarshalJSON would decide which action survives.
+		he.compactStoredValues()
 	}
 
 	return updated
 }
 
+// addEventKeys stores event under keys that are missing or carry a different
+// RecommendedAction; matching ignores RecommendedAction, so an escalated
+// remediation must overwrite the stored event or consumers keep the stale
+// action. replaced reports whether an existing entry was overwritten.
 func (he *HealthEventsAnnotationMap) addEventKeys(
 	event *protos.HealthEvent,
 	keys []HealthEventKey,
-) bool {
-	updated := false
-
+) (updated, replaced bool) {
 	for _, key := range keys {
 		existing, exists := he.Events[key]
 		if !exists || existing.RecommendedAction != event.RecommendedAction {
 			he.Events[key] = event
 			updated = true
+			replaced = replaced || exists
 		}
 	}
 
-	return updated
+	return updated, replaced
 }
 
 type annotationRectangle struct {

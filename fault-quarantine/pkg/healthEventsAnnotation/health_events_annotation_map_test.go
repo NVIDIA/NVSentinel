@@ -1012,6 +1012,46 @@ func TestAddOrUpdateEventFiltered_PartialEscalationSurvivesJSONRoundTrip(t *test
 	}
 }
 
+func TestAddOrUpdateEvent_PartialEscalationSurvivesJSONRoundTrip(t *testing.T) {
+	compound := &protos.HealthEvent{
+		Version: 1, Agent: "agent", ComponentClass: "GPU", CheckName: "check", NodeName: "node-a",
+		ErrorCode:         []string{"79"},
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "A"},
+			{EntityType: "GPU", EntityValue: "B"},
+		},
+	}
+	// The escalation arrives as its own event for GPU A only, through the unfiltered path.
+	escalated := proto.Clone(compound).(*protos.HealthEvent)
+	escalated.RecommendedAction = protos.RecommendedAction_CONTACT_SUPPORT
+	escalated.EntitiesImpacted = []*protos.Entity{{EntityType: "GPU", EntityValue: "A"}}
+
+	annotation := NewHealthEventsAnnotationMap()
+	require.True(t, annotation.AddOrUpdateEvent(compound))
+	require.True(t, annotation.AddOrUpdateEvent(escalated))
+
+	for range 20 {
+		encoded, err := json.Marshal(annotation)
+		require.NoError(t, err)
+		roundTripped := NewHealthEventsAnnotationMap()
+		require.NoError(t, json.Unmarshal(encoded, roundTripped))
+
+		require.Equal(t, 2, roundTripped.Count())
+		for key, event := range roundTripped.Events {
+			switch key.EntityValue {
+			case "A":
+				assert.Equal(t, protos.RecommendedAction_CONTACT_SUPPORT, event.GetRecommendedAction())
+			case "B":
+				assert.Equal(t, protos.RecommendedAction_COMPONENT_RESET, event.GetRecommendedAction())
+			default:
+				t.Fatalf("unexpected entity %q", key.EntityValue)
+			}
+		}
+		annotation = roundTripped
+	}
+}
+
 func TestAddOrUpdateEventFiltered_CompoundEventsRemainCompact(t *testing.T) {
 	annotation := NewHealthEventsAnnotationMap()
 	for eventIndex := range 10 {
