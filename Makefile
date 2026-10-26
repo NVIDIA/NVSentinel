@@ -272,7 +272,7 @@ install-go-ci: ## Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd
 
 # Lint and test all modules (delegates to sub-Makefiles)
 .PHONY: lint-test-all
-lint-test-all: protos-lint license-headers-lint gomod-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint gpu-reset-lint ## Lint and test all modules
+lint-test-all: protos-lint license-headers-lint gomod-lint renovate-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint gpu-reset-lint ## Lint and test all modules
 
 # Health monitors lint-test (delegate to health-monitors/Makefile)
 .PHONY: health-monitors-lint-test-all
@@ -363,6 +363,11 @@ license-headers-lint: ## Check license headers in source files
 gomod-lint: ## Validate go.mod files for local module replace directives
 	@echo "Validating go.mod files for local module replace directives..."
 	./scripts/validate-gomod.sh
+
+# Check the .versions.yaml annotations and .github/renovate.json5 (needs Docker)
+.PHONY: renovate-lint
+renovate-lint: ## Validate the Renovate configuration and .versions.yaml annotations
+	./scripts/validate-renovate.sh
 
 # Sync dependencies across all go modules using Go workspace
 .PHONY: dependencies-sync
