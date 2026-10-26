@@ -96,7 +96,7 @@ Everything about a portable rule is checked when the config loads: CEL syntax, t
 
 ### Aggregate primitives
 
-New `HealthEventStore` methods take the node, the window and the compiled condition. Each store adds the base predicate itself: the analyzer's own events are excluded, and the strategy must be `EXECUTE_REMEDIATION`, `STORE_AND_ANALYSE` or missing (ADR-025). Rule authors cannot remove the node scope or the base predicate (ADR-056, [#1676](https://github.com/NVIDIA/NVSentinel/pull/1676)). The trigger is a candidate, as today.
+New `HealthEventStore` methods take the node, the window, the compiled condition and the trigger's record ID, which the change stream event already carries. Each store adds the base predicate itself: the analyzer's own events are excluded, and the strategy must be `EXECUTE_REMEDIATION`, `STORE_AND_ANALYSE` or missing (ADR-025). Rule authors cannot remove the node scope or the base predicate (ADR-056, [#1676](https://github.com/NVIDIA/NVSentinel/pull/1676)). The trigger is a candidate, as today.
 
 | Primitive | Parameters | Result for `match` | MongoDB | PostgreSQL |
 |---|---|---|---|---|
@@ -108,7 +108,7 @@ New `HealthEventStore` methods take the node, the window and the compiled condit
 `bursts` and `solo` compare `generatedTimestamp` in whole seconds, as today. Their results do not depend on the order of events within one second, so every datastore returns the same result.
 
 - `bursts` walks the seconds that hold candidates, in time order. Candidates in the same second share a burst, and the first second starts the first burst. A candidate is sticky when its `errorCode[0]` is in `sticky_codes`. A later second continues the current burst when it holds a sticky candidate and the latest sticky candidate from an earlier second is at most `sticky_window` before it. Otherwise, a gap over `gap` since the previous second starts a new burst. `bursts` counts the bursts with at least one `target` candidate, and `latestTargets` counts the `target` candidates in the latest burst.
-- `solo` groups the candidates by `group_by`. For each group, it takes the events in the window, other than the trigger, that satisfy `others`, with `group` bound to the group's key. Per `state_key`, it keeps the events from the newest second, and the key is active when one of them satisfies `active`. The group is solo when no key is active, and `soloGroups` counts the solo groups. Today's look-up excludes one candidate per group by ID, instead of the trigger. In the default rules, `others` excludes XID 74, the only code that carries register entities, so both give the same result.
+- `solo` groups the candidates by `group_by`. For each group, it takes the events in the window that satisfy `others`, except the record with the trigger's ID, with `group` bound to the group's key. Per `state_key`, it keeps the events from the newest second, and the key is active when one of them satisfies `active`. The group is solo when no key is active, and `soloGroups` counts the solo groups. Today's look-up excludes one candidate per group by ID instead. `$group` picks it with `$first` and no `$sort`, so which candidate it excludes is unspecified. In the default rules, `others` excludes XID 74, the only code that carries register entities, so both give the same result. A ported custom rule can differ only if its `others` matches a candidate.
 
 Each burst rule's latest-burst behaviour becomes a `match` expression, so the primitive stays simple and each rule's semantics stay visible in its config.
 
