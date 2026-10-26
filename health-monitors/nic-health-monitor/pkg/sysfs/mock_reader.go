@@ -33,13 +33,15 @@ type MockReader struct {
 
 	ReadNetOperStateFunc func(iface string) (string, error)
 
-	ReadIBPortCounterFunc func(device string, port int, counterPath string) (uint64, error)
-	ReadNetStatisticFunc  func(iface, counter string) (uint64, error)
-	ReadNetAttributeFunc  func(iface, attr string) (uint64, error)
+	ReadIBPortCounterFunc     func(device string, port int, counterPath string) (uint64, error)
+	ReadIBDeviceHWCounterFunc func(device, counter string) (uint64, error)
+	ReadNetStatisticFunc      func(iface, counter string) (uint64, error)
+	ReadNetAttributeFunc      func(iface, attr string) (uint64, error)
 
-	ReadIBDeviceNUMAFunc  func(device string) (int, error)
-	ReadPCIAddressFunc    func(device string) (string, error)
-	IsVirtualFunctionFunc func(device string) bool
+	ReadIBDeviceNUMAFunc   func(device string) (int, error)
+	ReadPCIAddressFunc     func(device string) (string, error)
+	IsVirtualFunctionFunc  func(device string) bool
+	ReadIBDeviceDriverFunc func(device string) (string, error)
 }
 
 // Compile-time check.
@@ -157,6 +159,14 @@ func (m *MockReader) ReadIBPortCounter(device string, port int, counterPath stri
 	return 0, nil
 }
 
+func (m *MockReader) ReadIBDeviceHWCounter(device, counter string) (uint64, error) {
+	if m.ReadIBDeviceHWCounterFunc != nil {
+		return m.ReadIBDeviceHWCounterFunc(device, counter)
+	}
+
+	return 0, nil
+}
+
 func (m *MockReader) ReadNetStatistic(iface, counter string) (uint64, error) {
 	if m.ReadNetStatisticFunc != nil {
 		return m.ReadNetStatisticFunc(iface, counter)
@@ -195,4 +205,15 @@ func (m *MockReader) IsVirtualFunction(device string) bool {
 	}
 
 	return false
+}
+
+// ReadIBDeviceDriver returns "" with no error when no function is set so
+// existing fixtures keep behaving as Mellanox devices with an unknown
+// driver binding.
+func (m *MockReader) ReadIBDeviceDriver(device string) (string, error) {
+	if m.ReadIBDeviceDriverFunc != nil {
+		return m.ReadIBDeviceDriverFunc(device)
+	}
+
+	return "", nil
 }
