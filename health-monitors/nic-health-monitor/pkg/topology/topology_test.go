@@ -371,17 +371,20 @@ func TestPCICardOfStripsFunction(t *testing.T) {
 	assert.Equal(t, "0000:47:00", c.PCICardOf("mlx5_4"))
 }
 
-func TestPCICardOf_TransientReadFailure_ResolvesAndCachesAfterRecovery(t *testing.T) {
+// newFlakyPCIClassifier returns a classifier whose PCI address reads fail
+// while *unreadable is true, and a counter of the reads.
+func newFlakyPCIClassifier(t *testing.T, unreadable *bool) (*Classifier, *int) {
+	t.Helper()
+
 	path := writeMetadata(t, &model.GPUMetadata{
 		GPUs:        []model.GPUInfo{{PCIAddress: "0000:01:00.0", NUMANode: 0}},
 		NICTopology: map[string][]string{"mlx5_0": {"PIX"}},
 	})
-	unreadable := true
 	reads := 0
 	reader := &sysfs.MockReader{
 		ReadPCIAddressFunc: func(string) (string, error) {
 			reads++
-			if unreadable {
+			if *unreadable {
 				return "", errors.New("temporary PCI read failure")
 			}
 
@@ -391,15 +394,47 @@ func TestPCICardOf_TransientReadFailure_ResolvesAndCachesAfterRecovery(t *testin
 	classifier, err := LoadFromMetadata(path, reader)
 	require.NoError(t, err)
 
+	return classifier, &reads
+}
+
+func TestPCICardOf_TransientReadFailure_KeepsFallbackKey(t *testing.T) {
+	unreadable := true
+	classifier, reads := newFlakyPCIClassifier(t, &unreadable)
+
 	assert.Equal(t, "mlx5_0", classifier.PCICardOf("mlx5_0"))
-	assert.Equal(t, "mlx5_0", classifier.PCICardOf("mlx5_0"))
-	assert.Equal(t, 2, reads, "a failed lookup must remain eligible for a later observation")
 
 	unreadable = false
-	assert.Equal(t, "0000:47:00", classifier.PCICardOf("mlx5_0"))
+	assert.Equal(t, "mlx5_0", classifier.PCICardOf("mlx5_0"),
+		"card-keyed state must keep the key the device was first given")
+	assert.Equal(t, 1, *reads, "the fallback must be cached")
+}
+
+func TestLocatePCICard_TransientReadFailure_ResolvesAfterRecovery(t *testing.T) {
+	unreadable := true
+	classifier, _ := newFlakyPCIClassifier(t, &unreadable)
+
+	card, placed := classifier.LocatePCICard("mlx5_0")
+	assert.False(t, placed)
+	assert.Equal(t, "mlx5_0", card)
+
+	unreadable = false
+	card, placed = classifier.LocatePCICard("mlx5_0")
+	assert.True(t, placed, "a recovered read must place the device")
+	assert.Equal(t, "0000:47:00", card)
+	assert.Equal(t, "mlx5_0", classifier.PCICardOf("mlx5_0"), "locating must not change the cached key")
+}
+
+func TestLocatePCICard_ResolvedCard_UsesCache(t *testing.T) {
+	unreadable := false
+	classifier, reads := newFlakyPCIClassifier(t, &unreadable)
+
+	require.Equal(t, "0000:47:00", classifier.PCICardOf("mlx5_0"))
+
 	unreadable = true
-	assert.Equal(t, "0000:47:00", classifier.PCICardOf("mlx5_0"))
-	assert.Equal(t, 3, reads, "a successful lookup must remain cached")
+	card, placed := classifier.LocatePCICard("mlx5_0")
+	assert.True(t, placed)
+	assert.Equal(t, "0000:47:00", card)
+	assert.Equal(t, 1, *reads, "a resolved card must not be read again")
 }
 
 func TestCheckCardHomogeneity(t *testing.T) {

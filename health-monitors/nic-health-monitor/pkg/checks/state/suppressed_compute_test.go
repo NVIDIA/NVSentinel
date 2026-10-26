@@ -245,38 +245,10 @@ func TestState_SuppressedPort_TransientPCIReadFailure_DoesNotBlockUnrelatedCard(
 		t.Run(layer, func(t *testing.T) {
 			node := singletonDownNode(layer).addIB("mlx5_9", &stubDevice{
 				pciAddress: "0000:50:00.0", numaNode: 0,
-				ports: map[int]stubPort{1: upPort(layer)}, portsUnreadable: true,
+				ports: map[int]stubPort{1: upPort(layer)}, portsUnreadable: true, pciUnreadable: true,
 			})
-			reader := node.reader()
-			readPCI := reader.ReadPCIAddressFunc
-			pciUnavailable := true
-			reader.ReadPCIAddressFunc = func(device string) (string, error) {
-				if device == "mlx5_9" && pciUnavailable {
-					return "", fmt.Errorf("temporary PCI read failure")
-				}
-
-				return readPCI(device)
-			}
-			classifier := buildClassifier(t, reader, []string{"0000:0f:00.0"}, map[string][]string{
-				"mlx5_0": {"PIX"}, "mlx5_9": {"PIX"},
-			})
-			cfg := &config.Config{StateCheck: config.StateCheckConfig{ReportSuppressedAfter: testReportAfter}}
-			mgr := freshStateManager(t)
-			clock := &fakeClock{now: suppressedStart}
-
-			var check checks.TransactionalCheck
-
-			if layer == ibLinkLayer {
-				ib := NewInfiniBandStateCheck("pci-recovery", reader, cfg, classifier,
-					pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
-				ib.now = clock.Now
-				check = ib
-			} else {
-				eth := NewEthernetStateCheck("pci-recovery", reader, cfg, classifier,
-					pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
-				eth.now = clock.Now
-				check = eth
-			}
+			check, clock := newLayerCheckOn(t, layer, node, testReportAfter, freshStateManager(t),
+				suppressedStart, false)
 
 			for range checks.FirstPollDeferralLimit + 1 {
 				require.Empty(t, runPoll(t, check))
@@ -285,14 +257,61 @@ func TestState_SuppressedPort_TransientPCIReadFailure_DoesNotBlockUnrelatedCard(
 			clock.Advance(testReportAfter)
 			assert.Empty(t, runPoll(t, check), "an unplaced unreadable device must still hold reports")
 
-			pciUnavailable = false
+			node.ib["mlx5_9"].pciUnreadable = false
 			clock.Advance(time.Second)
 			events := runPoll(t, check)
-			assert.Equal(t, "0000:50:00", classifier.PCICardOf("mlx5_9"))
 			require.Equal(t, []string{"mlx5_0"}, unhealthyPorts(events),
 				"a recovered PCI read must stop globally holding unrelated timers")
 			assert.True(t, events[0].IsFatal)
 			assert.Empty(t, runPoll(t, check), "a committed delayed report must not repeat")
 		})
 	}
+}
+
+func TestState_CardAnomaly_TransientPCIReadFailure_RecoversUnderFirstKey(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			// mlx5_2's card is keyed by its device name while its PCI read
+			// fails. The key must not change when the read recovers: the
+			// card-anomaly latch holds absent cards, so a FATAL latched under
+			// the old key would never clear.
+			node := newStubNode()
+			for i, pci := range []string{"0000:03:00.0", "0000:04:00.0", "0000:05:00.0"} {
+				node.addIB(fmt.Sprintf("mlx5_%d", i), &stubDevice{
+					pciAddress: pci, numaNode: 0, ports: map[int]stubPort{1: upPort(layer)},
+				})
+			}
+			node.ib["mlx5_2"].pciUnreadable = true
+			check, _ := newLayerCheckOn(t, layer, node, 0, freshStateManager(t), suppressedStart, false)
+			require.Empty(t, unhealthyPorts(runPoll(t, check)))
+
+			node.ib["mlx5_2"].ports[1] = downPort(layer)
+			runPoll(t, check)
+			require.Equal(t, map[string]bool{"mlx5_2": true}, cardAnomalyLatch(t, check))
+
+			node.ib["mlx5_2"].pciUnreadable = false
+			assert.Empty(t, runPoll(t, check), "a recovered PCI read must not report the card again")
+			assert.Equal(t, map[string]bool{"mlx5_2": true}, cardAnomalyLatch(t, check))
+
+			node.ib["mlx5_2"].ports[1] = upPort(layer)
+			runPoll(t, check)
+			assert.Empty(t, cardAnomalyLatch(t, check), "the card recovered, so its FATAL must clear")
+		})
+	}
+}
+
+// cardAnomalyLatch returns a check's committed card-anomaly latch.
+func cardAnomalyLatch(t *testing.T, check checks.TransactionalCheck) map[string]bool {
+	t.Helper()
+
+	switch c := check.(type) {
+	case *InfiniBandStateCheck:
+		return c.anomalousLatch
+	case *EthernetStateCheck:
+		return c.anomalousLatch
+	}
+
+	t.Fatalf("unexpected check type %T", check)
+
+	return nil
 }

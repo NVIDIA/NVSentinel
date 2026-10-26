@@ -431,10 +431,10 @@ func (b *baseStateCheck) unreadableCardsOf(unreadable map[string]error) unreadab
 	u := unreadableCards{cards: make(map[string]bool, len(unreadable))}
 
 	for device := range unreadable {
-		// PCICardOf falls back to the device name when the PCI address
-		// cannot be read.
-		card := b.classifier.PCICardOf(device)
-		u.unplaced = u.unplaced || card == device
+		// LocatePCICard reads the PCI address again after a failed read, so
+		// one transient failure does not leave the device unplaced.
+		card, placed := b.classifier.LocatePCICard(device)
+		u.unplaced = u.unplaced || !placed
 		u.cards[card] = true
 	}
 

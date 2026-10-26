@@ -433,8 +433,12 @@ func (c *Classifier) netIfaceToIBDevice(iface string) string {
 // PCICardOf returns the "bus:device" portion of a NIC's PCI slot (i.e.,
 // the PCI address with the function digit stripped) so ports on the same
 // physical card are grouped together. Falls back to the device name on
-// sysfs errors so the caller still has a usable key. Safe for
-// concurrent use by the state and counter polling loops.
+// sysfs errors so the caller still has a usable key. The fallback is
+// cached like a resolved card: card-keyed state such as the card-anomaly
+// latch and the card entity of its events must keep the key the device was
+// first given, or a latch under the old key is never cleared. Use
+// LocatePCICard to find the card of a device whose first read failed. Safe
+// for concurrent use by the state and counter polling loops.
 func (c *Classifier) PCICardOf(device string) string {
 	c.mu.RLock()
 	card, ok := c.cachedCards[device]
@@ -453,19 +457,40 @@ func (c *Classifier) PCICardOf(device string) string {
 
 	addr, err := c.reader.ReadPCIAddress(device)
 	if err != nil {
-		// The device-name fallback is only this observation's identity.
-		// A later poll must be able to resolve a recovered PCI read.
+		c.cachedCards[device] = device
 		return device
 	}
 
-	card = addr
-	if idx := strings.LastIndex(addr, "."); idx > 0 {
-		card = addr[:idx]
-	}
-
+	card = cardOfPCIAddress(addr)
 	c.cachedCards[device] = card
 
 	return card
+}
+
+// LocatePCICard returns the physical card of a device and whether it is
+// known. Unlike PCICardOf, it reads the PCI address again when an earlier
+// read failed, and it does not change the cached key. Use it only to find
+// where a device sits, never as a key for state.
+func (c *Classifier) LocatePCICard(device string) (string, bool) {
+	if card := c.PCICardOf(device); card != device {
+		return card, true
+	}
+
+	addr, err := c.reader.ReadPCIAddress(device)
+	if err != nil {
+		return device, false
+	}
+
+	return cardOfPCIAddress(addr), true
+}
+
+// cardOfPCIAddress strips the function digit from a PCI address.
+func cardOfPCIAddress(addr string) string {
+	if idx := strings.LastIndex(addr, "."); idx > 0 {
+		return addr[:idx]
+	}
+
+	return addr
 }
 
 // summarizeLevels categorises a NIC's GPU relationship levels.
