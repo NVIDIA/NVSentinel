@@ -120,6 +120,17 @@ type baseStateCheck struct {
 	portHeldSince map[string]time.Time
 	now           func() time.Time
 
+	// suppressedSince records when the first-poll peer-evidence gate
+	// suppressed each still-unhealthy port, so stateCheck.
+	// suppressedPortReportAfter can report it once it has stayed unhealthy
+	// that long. Transactional like the latches, and persisted with the
+	// port snapshots so a restart does not restart the wait.
+	suppressedSince map[string]time.Time
+
+	// suppressionWaiting holds this poll's suppression timers that must not
+	// report yet because discovery is uncertain. See waitingSuppressions.
+	suppressionWaiting map[string]bool
+
 	pending *statePollCommit
 
 	strategy linkLayerStrategy
@@ -134,6 +145,7 @@ type statePollCommit struct {
 	disappearedLatch     map[string]bool
 	disappearedPortLatch map[string]statefile.DisappearedPortFlag
 	deviceMissCounts     map[string]int
+	suppressedSince      map[string]time.Time
 	linkLayer            string
 
 	// baselineRan records that this poll performed the baseline
@@ -178,16 +190,20 @@ func (b *baseStateCheck) seedFromPersistedState() {
 	b.deviceMissCounts = b.state.DeviceMissCountsFor(b.strategy.linkLayer())
 	b.exemptionLogged = make(map[string]bool)
 
-	if b.emitHealthyBaselines {
-		return
-	}
-
 	persisted := b.state.PortStatesFor(b.strategy.linkLayer())
-	if len(persisted) == 0 {
+
+	// Suppression times are restored before the pending-baseline return. A
+	// reboot or scope change already dropped the port states, so the times
+	// left here are from this boot. While a baseline is owed (a device stayed
+	// unreadable), a pod restart must not restart the wait.
+	b.suppressedSince = persistedSuppressionTimes(persisted)
+
+	if b.emitHealthyBaselines || len(persisted) == 0 {
 		return
 	}
 
 	b.previousPorts = make(map[string]portSnapshot, len(persisted))
+
 	for k, v := range persisted {
 		b.previousPorts[k] = portSnapshot{
 			Device:        v.Device,
@@ -285,6 +301,186 @@ func (b *baseStateCheck) holdPort(
 	return prev, now.Sub(since) < holdDown
 }
 
+func persistedSuppressionTimes(persisted map[string]statefile.PortStateSnapshot) map[string]time.Time {
+	since := make(map[string]time.Time)
+
+	for k, v := range persisted {
+		if !v.SuppressedSince.IsZero() {
+			since[k] = v.SuppressedSince
+		}
+	}
+
+	return since
+}
+
+// recordSuppressedPort notes the first time the first-poll peer-evidence gate
+// suppressed a port. The time is recorded even when
+// stateCheck.suppressedPortReportAfter is zero: only suppressedPortDue reads
+// the option. An operator who enables the option later, without a reboot,
+// then gets the ports suppressed while it was off. The first-poll gate does
+// not run again on a pod restart.
+func (b *baseStateCheck) recordSuppressedPort(key string) {
+	if b.suppressedSince == nil {
+		b.suppressedSince = make(map[string]time.Time)
+	}
+
+	if _, ok := b.suppressedSince[key]; !ok {
+		// Round(0) drops the monotonic reading and UTC matches what the
+		// state file loads, so the persisted value compares equal.
+		b.suppressedSince[key] = b.now().Round(0).UTC()
+	}
+}
+
+// suppressedPortDue reports whether a port suppressed on the first poll has
+// stayed unhealthy for stateCheck.suppressedPortReportAfter. The caller calls
+// forgetSuppressedPort once it reports the port.
+func (b *baseStateCheck) suppressedPortDue(key string, current portSnapshot) bool {
+	if b.cfg.StateCheck.ReportSuppressedAfter <= 0 {
+		return false
+	}
+
+	since, ok := b.suppressedSince[key]
+	if !ok || portIsHealthy(current) || b.suppressionWaiting[key] {
+		return false
+	}
+
+	if b.now().Sub(since) < b.cfg.StateCheck.ReportSuppressedAfter {
+		return false
+	}
+
+	slog.Info("Reporting first-poll-suppressed port: still unhealthy",
+		"check", b.strategy.checkName(), "device", current.Device, "port", current.Port,
+		"state", current.State, "physState", current.PhysicalState,
+		"unhealthyFor", b.now().Sub(since).Round(time.Second))
+
+	return true
+}
+
+func (b *baseStateCheck) forgetSuppressedPort(key string) {
+	delete(b.suppressedSince, key)
+}
+
+// pruneSuppressedPorts forgets ports that came up or are no longer present.
+// A port that came up is handled by the usual transitions from then on.
+func (b *baseStateCheck) pruneSuppressedPorts(currentPorts map[string]portSnapshot) {
+	for key := range b.suppressedSince {
+		if current, ok := currentPorts[key]; !ok || portIsHealthy(current) {
+			delete(b.suppressedSince, key)
+		}
+	}
+}
+
+// suppressionExemptCards returns the cards whose down ports
+// suppressedPortReportAfter must not report:
+//   - cards the homogeneity check evaluated and found at or above their
+//     group's mode, and cards exempt from peer comparison as management-NIC
+//     siblings. Their down ports are expected, like the uncabled second port
+//     of a dual-port card (#1379): reporting them would replace the node, and
+//     the replacement has the same port down.
+//   - cards with no compute-classified member. Storage and frontend ports
+//     can be down by design with no peer to vouch for them, like the unused
+//     frontend aux port on OCI BM.GPU.H100.8 (ADR-047), a lone storage card.
+//     A card with an unreadable function is not exempt for this reason: the
+//     function may be its compute member, like the mlx5 device beside a
+//     GB300 SMI alias. waitingSuppressions holds its timers until a complete
+//     poll classifies every member.
+func suppressionExemptCards(
+	agg pollAggregates,
+	anomalousCards map[string]topology.CardAnomaly,
+	evaluatedCards map[string]int,
+	unreadable unreadableCards,
+) map[string]bool {
+	exempt := maps.Clone(agg.managementCards)
+	if exempt == nil {
+		exempt = make(map[string]bool)
+	}
+
+	for card := range evaluatedCards {
+		if _, anomalous := anomalousCards[card]; !anomalous {
+			exempt[card] = true
+		}
+	}
+
+	for card := range agg.cardTotal {
+		if !agg.computeCards[card] && !unreadable.has(card) {
+			exempt[card] = true
+		}
+	}
+
+	return exempt
+}
+
+// unreadableCards is the set of cards with a function that was not read this
+// poll.
+type unreadableCards struct {
+	cards map[string]bool
+	// unplaced is true when an unreadable device's card is unknown, so any
+	// card may have an unreadable function.
+	unplaced bool
+}
+
+func (u unreadableCards) has(card string) bool {
+	return u.unplaced || u.cards[card]
+}
+
+// unreadableCardsOf places the unreadable devices on their cards. It reads
+// only the PCI address: classifying a device whose port attributes cannot be
+// read would cache a wrong role for the life of the pod.
+func (b *baseStateCheck) unreadableCardsOf(unreadable map[string]error) unreadableCards {
+	u := unreadableCards{cards: make(map[string]bool, len(unreadable))}
+
+	for device := range unreadable {
+		// LocatePCICard reads the PCI address again after a failed read, so
+		// one transient failure does not leave the device unplaced.
+		card, placed := b.classifier.LocatePCICard(device)
+		u.unplaced = u.unplaced || !placed
+		u.cards[card] = true
+	}
+
+	return u
+}
+
+// forgetExemptSuppressions drops the suppression timers of ports on exempt
+// cards. A first poll can see a tie while cabled ports are still training,
+// so a later poll that finds the card healthy drops its timer too.
+func (b *baseStateCheck) forgetExemptSuppressions(portCard map[string]string, exempt map[string]bool) {
+	for key := range b.suppressedSince {
+		if card, ok := portCard[key]; ok && exempt[card] {
+			slog.Info("Dropping first-poll suppression timer: card is exempt",
+				"check", b.strategy.checkName(), "port_key", key, "card", card)
+			delete(b.suppressedSince, key)
+		}
+	}
+}
+
+// waitingSuppressions returns the suppression timers that must not report
+// this poll. While a device is unreadable the homogeneity vote does not run,
+// so the peers cannot vouch for a card. A card with an active port may still
+// be at its group's mode, like a healthy dual-port card whose second port is
+// uncabled, so its timers wait for a complete poll. A card with no active
+// port is below any nonzero mode, so no vote could vouch for it and its
+// timers may report. That holds only when every function of the card was
+// read: a card with an unreadable function, or any card when an unreadable
+// device's card is unknown, waits too.
+func (b *baseStateCheck) waitingSuppressions(
+	agg pollAggregates, uncertain bool, unreadable unreadableCards,
+) map[string]bool {
+	if !uncertain || len(b.suppressedSince) == 0 {
+		return nil
+	}
+
+	waiting := make(map[string]bool)
+
+	for key := range b.suppressedSince {
+		card, ok := agg.portCard[key]
+		if !ok || unreadable.has(card) || agg.cardActive[card] > 0 {
+			waiting[key] = true
+		}
+	}
+
+	return waiting
+}
+
 // portIsHealthy reports whether a port snapshot is fully operational.
 // Both link layers share the same healthy definition.
 func portIsHealthy(snap portSnapshot) bool {
@@ -301,8 +497,15 @@ type pollAggregates struct {
 	cardActive      map[string]int
 	cardTotal       map[string]int
 	cardRole        map[string]topology.Role
+	portCard        map[string]string
 	managementCards map[string]bool
 	uncertain       bool
+	unreadable      map[string]error
+
+	// computeCards records the cards with a compute member that has a port
+	// on this check's link layer, independently of the role selected for
+	// peer grouping. SMI aliases can have a storage role.
+	computeCards map[string]bool
 }
 
 // buildEvents runs the shared per-poll event pipeline: the baseline
@@ -354,8 +557,19 @@ func (b *baseStateCheck) buildEvents(
 	// emit their own device event and are still present at diff time.
 	latchedBefore := maps.Clone(b.disappearedLatch)
 
+	// Before the port pass, so a timer due this poll is not reported for an
+	// exempt card; after it, because the first-poll gate records a timer for
+	// every port it suppresses.
+	unreadable := b.unreadableCardsOf(agg.unreadable)
+	exempt := suppressionExemptCards(agg, anomalousCards, evaluatedCards, unreadable)
+	b.forgetExemptSuppressions(agg.portCard, exempt)
+	b.suppressionWaiting = b.waitingSuppressions(agg, discoveryUncertain, unreadable)
+
 	events := clearEvents
 	events = append(events, portEvents(anomalousCards)...)
+
+	b.forgetExemptSuppressions(agg.portCard, exempt)
+
 	events = append(events, disappearanceEvents...)
 	events = append(events, b.detectPortDisappearance(agg.currentDevices, agg.currentPorts)...)
 	events = append(events, b.deviceDisappearanceRecoveries(latchedBefore)...)
@@ -936,11 +1150,12 @@ func (b *baseStateCheck) persistState(
 	snapshots := make(map[string]statefile.PortStateSnapshot, len(currentPorts))
 	for k, v := range currentPorts {
 		snapshots[k] = statefile.PortStateSnapshot{
-			Device:        v.Device,
-			Port:          v.Port,
-			State:         v.State,
-			PhysicalState: v.PhysicalState,
-			LinkLayer:     linkLayer,
+			Device:          v.Device,
+			Port:            v.Port,
+			State:           v.State,
+			PhysicalState:   v.PhysicalState,
+			LinkLayer:       linkLayer,
+			SuppressedSince: b.suppressedSince[k],
 		}
 	}
 

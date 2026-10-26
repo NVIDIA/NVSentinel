@@ -63,6 +63,10 @@ type stubDevice struct {
 	// a transient sysfs error mid-poll. Discovery must classify the
 	// device unreadable rather than fabricate empty observations.
 	attrReadsFail bool
+
+	// pciUnreadable fails the PCI address read (device/uevent), so the
+	// classifier cannot place the device on its card.
+	pciUnreadable bool
 }
 
 type stubPort struct {
@@ -243,6 +247,10 @@ func (n *stubNode) wireDeviceReads(m *sysfs.MockReader) {
 		d := n.ib[device]
 		if d == nil {
 			return "", nil
+		}
+
+		if d.pciUnreadable {
+			return "", fmt.Errorf("uevent read failed for %s", device)
 		}
 
 		return d.pciAddress, nil
