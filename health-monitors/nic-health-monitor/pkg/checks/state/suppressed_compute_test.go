@@ -239,3 +239,60 @@ func TestState_SuppressedPort_MultiPlaneCard_ComputeMemberOnOtherLinkLayerQualif
 		})
 	}
 }
+
+func TestState_SuppressedPort_TransientPCIReadFailure_DoesNotBlockUnrelatedCard(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			node := singletonDownNode(layer).addIB("mlx5_9", &stubDevice{
+				pciAddress: "0000:50:00.0", numaNode: 0,
+				ports: map[int]stubPort{1: upPort(layer)}, portsUnreadable: true,
+			})
+			reader := node.reader()
+			readPCI := reader.ReadPCIAddressFunc
+			pciUnavailable := true
+			reader.ReadPCIAddressFunc = func(device string) (string, error) {
+				if device == "mlx5_9" && pciUnavailable {
+					return "", fmt.Errorf("temporary PCI read failure")
+				}
+
+				return readPCI(device)
+			}
+			classifier := buildClassifier(t, reader, []string{"0000:0f:00.0"}, map[string][]string{
+				"mlx5_0": {"PIX"}, "mlx5_9": {"PIX"},
+			})
+			cfg := &config.Config{StateCheck: config.StateCheckConfig{ReportSuppressedAfter: testReportAfter}}
+			mgr := freshStateManager(t)
+			clock := &fakeClock{now: suppressedStart}
+
+			var check checks.TransactionalCheck
+
+			if layer == ibLinkLayer {
+				ib := NewInfiniBandStateCheck("pci-recovery", reader, cfg, classifier,
+					pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+				ib.now = clock.Now
+				check = ib
+			} else {
+				eth := NewEthernetStateCheck("pci-recovery", reader, cfg, classifier,
+					pb.ProcessingStrategy_EXECUTE_REMEDIATION, mgr, false)
+				eth.now = clock.Now
+				check = eth
+			}
+
+			for range checks.FirstPollDeferralLimit + 1 {
+				require.Empty(t, runPoll(t, check))
+			}
+
+			clock.Advance(testReportAfter)
+			assert.Empty(t, runPoll(t, check), "an unplaced unreadable device must still hold reports")
+
+			pciUnavailable = false
+			clock.Advance(time.Second)
+			events := runPoll(t, check)
+			assert.Equal(t, "0000:50:00", classifier.PCICardOf("mlx5_9"))
+			require.Equal(t, []string{"mlx5_0"}, unhealthyPorts(events),
+				"a recovered PCI read must stop globally holding unrelated timers")
+			assert.True(t, events[0].IsFatal)
+			assert.Empty(t, runPoll(t, check), "a committed delayed report must not repeat")
+		})
+	}
+}

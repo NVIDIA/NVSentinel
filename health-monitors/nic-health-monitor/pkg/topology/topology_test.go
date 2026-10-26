@@ -16,6 +16,7 @@ package topology
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -368,6 +369,37 @@ func TestPCICardOfStripsFunction(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "0000:47:00", c.PCICardOf("mlx5_3"))
 	assert.Equal(t, "0000:47:00", c.PCICardOf("mlx5_4"))
+}
+
+func TestPCICardOf_TransientReadFailure_ResolvesAndCachesAfterRecovery(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs:        []model.GPUInfo{{PCIAddress: "0000:01:00.0", NUMANode: 0}},
+		NICTopology: map[string][]string{"mlx5_0": {"PIX"}},
+	})
+	unreadable := true
+	reads := 0
+	reader := &sysfs.MockReader{
+		ReadPCIAddressFunc: func(string) (string, error) {
+			reads++
+			if unreadable {
+				return "", errors.New("temporary PCI read failure")
+			}
+
+			return "0000:47:00.1", nil
+		},
+	}
+	classifier, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, "mlx5_0", classifier.PCICardOf("mlx5_0"))
+	assert.Equal(t, "mlx5_0", classifier.PCICardOf("mlx5_0"))
+	assert.Equal(t, 2, reads, "a failed lookup must remain eligible for a later observation")
+
+	unreadable = false
+	assert.Equal(t, "0000:47:00", classifier.PCICardOf("mlx5_0"))
+	unreadable = true
+	assert.Equal(t, "0000:47:00", classifier.PCICardOf("mlx5_0"))
+	assert.Equal(t, 3, reads, "a successful lookup must remain cached")
 }
 
 func TestCheckCardHomogeneity(t *testing.T) {

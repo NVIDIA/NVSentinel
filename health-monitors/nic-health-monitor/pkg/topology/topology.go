@@ -453,7 +453,8 @@ func (c *Classifier) PCICardOf(device string) string {
 
 	addr, err := c.reader.ReadPCIAddress(device)
 	if err != nil {
-		c.cachedCards[device] = device
+		// The device-name fallback is only this observation's identity.
+		// A later poll must be able to resolve a recovered PCI read.
 		return device
 	}
 
