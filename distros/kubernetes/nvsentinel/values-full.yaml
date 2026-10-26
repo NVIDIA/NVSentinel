@@ -1448,8 +1448,17 @@ labeler:
             groupingLabels:
               - node.kubernetes.io/instance-type
               - nvidia.com/gpu.product
+            # Count the GFD label only while the device plugin advertises GPUs. GPUCluster
+            # (DRA) mode has no device plugin, so a nvidia.com/gpu.count label left from
+            # ClusterPolicy mode is not counted when the DRA slices are gone. The failed
+            # int() makes the source not apply, so the class is skipped.
             currentExpression: |
-              int(node.metadata.labels['nvidia.com/gpu.count'])
+              has(node.status.allocatable) &&
+              node.status.allocatable.exists(r,
+                (r == 'nvidia.com/gpu' || r.startsWith('nvidia.com/mig-')) &&
+                int(node.status.allocatable[r]) > 0)
+                ? int(node.metadata.labels['nvidia.com/gpu.count'])
+                : int('device plugin does not advertise GPUs')
       - name: nic
         enabled: true
         labels:

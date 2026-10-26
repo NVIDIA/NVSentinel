@@ -240,8 +240,14 @@ labeler:
             groupingLabels:
               - node.kubernetes.io/instance-type
               - nvidia.com/gpu.product
+            # Count the GFD label only while the device plugin advertises GPUs.
             currentExpression: |
-              int(node.metadata.labels['nvidia.com/gpu.count'])
+              has(node.status.allocatable) &&
+              node.status.allocatable.exists(r,
+                (r == 'nvidia.com/gpu' || r.startsWith('nvidia.com/mig-')) &&
+                int(node.status.allocatable[r]) > 0)
+                ? int(node.metadata.labels['nvidia.com/gpu.count'])
+                : int('device plugin does not advertise GPUs')
 ```
 
 | Field | Required | Description |

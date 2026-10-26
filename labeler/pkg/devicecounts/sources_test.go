@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
@@ -61,7 +62,13 @@ resourceSlices
     has(d.attributes['productName'].string)
   )
   .map(d, d.attributes['productName'].string)`
-	testGFDGPUCurrentExpression = "int(node.metadata.labels['nvidia.com/gpu.count'])"
+	testGFDGPUCurrentExpression = `
+has(node.status.allocatable) &&
+node.status.allocatable.exists(r,
+  (r == 'nvidia.com/gpu' || r.startsWith('nvidia.com/mig-')) &&
+  int(node.status.allocatable[r]) > 0)
+  ? int(node.metadata.labels['nvidia.com/gpu.count'])
+  : int('device plugin does not advertise GPUs')`
 )
 
 func testGPUSourcesClass() ClassConfig {
@@ -93,10 +100,17 @@ func testGPUSourcesConfig() Config {
 	return Config{Enabled: true, Classes: []ClassConfig{testGPUSourcesClass()}}
 }
 
+// testDevicePluginGPUs is the allocatable of a node whose NVIDIA device plugin
+// advertises count GPUs, as in ClusterPolicy mode.
+func testDevicePluginGPUs(count string) corev1.ResourceList {
+	return corev1.ResourceList{"nvidia.com/gpu": resource.MustParse(count)}
+}
+
 func TestDeviceCountSources_SourceSelection_UsesFirstAvailableSource(t *testing.T) {
 	tests := []struct {
 		name           string
 		nodeLabels     map[string]string
+		allocatable    corev1.ResourceList
 		resourceSlices func(nodeName string) []*resourcev1.ResourceSlice
 		wantUpdated    bool
 		wantCurrent    string
@@ -112,8 +126,24 @@ func TestDeviceCountSources_SourceSelection_UsesFirstAvailableSource(t *testing.
 		{
 			name:        "ClusterPolicy node counts the GFD label",
 			nodeLabels:  map[string]string{testGFDGPUCount: "8"},
+			allocatable: testDevicePluginGPUs("8"),
 			wantUpdated: true,
 			wantCurrent: "8",
+		},
+		{
+			name:       "ClusterPolicy node with only MIG devices counts the GFD label",
+			nodeLabels: map[string]string{testGFDGPUCount: "8"},
+			allocatable: corev1.ResourceList{
+				"nvidia.com/gpu":         resource.MustParse("0"),
+				"nvidia.com/mig-1g.10gb": resource.MustParse("7"),
+			},
+			wantUpdated: true,
+			wantCurrent: "8",
+		},
+		{
+			name:        "GFD label with zeroed device plugin GPUs is not counted",
+			nodeLabels:  map[string]string{testGFDGPUCount: "8"},
+			allocatable: testDevicePluginGPUs("0"),
 		},
 		{
 			name:       "DRA has priority over a stale GFD label",
@@ -125,8 +155,9 @@ func TestDeviceCountSources_SourceSelection_UsesFirstAvailableSource(t *testing.
 			wantCurrent: "7",
 		},
 		{
-			name:       "slices of another driver do not make the DRA source report zero",
-			nodeLabels: map[string]string{testGFDGPUCount: "8"},
+			name:        "slices of another driver do not make the DRA source report zero",
+			nodeLabels:  map[string]string{testGFDGPUCount: "8"},
+			allocatable: testDevicePluginGPUs("8"),
 			resourceSlices: func(nodeName string) []*resourcev1.ResourceSlice {
 				return []*resourcev1.ResourceSlice{testResourceSlice("nic", nodeName, testDevice("roce", stringAttribute("roce")))}
 			},
@@ -165,6 +196,8 @@ func TestDeviceCountSources_SourceSelection_UsesFirstAvailableSource(t *testing.
 			if node.Labels == nil {
 				node.Labels = map[string]string{}
 			}
+
+			node.Status.Allocatable = tt.allocatable
 
 			var resourceSlices []*resourcev1.ResourceSlice
 			if tt.resourceSlices != nil {
@@ -319,6 +352,8 @@ func TestDeviceCountSources_ModeChange_KeepsExpectedCount(t *testing.T) {
 	node.Labels[testGFDGPUCount] = "8"
 	node.Labels[testGFDGPUProduct] = "NVIDIA-H100-80GB-HBM3"
 
+	node.Status.Allocatable = testDevicePluginGPUs("8")
+
 	require.False(t, reconcile(nil), "ClusterPolicy mode reports the same count")
 
 	node.Labels[testGFDGPUCount] = "7"
@@ -327,6 +362,47 @@ func TestDeviceCountSources_ModeChange_KeepsExpectedCount(t *testing.T) {
 	require.Equal(t, "7", node.Labels[testGPUCountCurrentLabel])
 	require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel],
 		"the expected count learned in the other mode must carry over")
+}
+
+// A node that moved to GPUCluster mode can keep a stale GFD count. When the DRA
+// plugin stops, for example because the GPU driver is unhealthy, kubelet deletes
+// its slices. The stale count must not replace the DRA count, because GPUCluster
+// mode has no device plugin that advertises GPUs.
+func TestDeviceCountSources_DRASlicesRemoved_IgnoresStaleGFDLabel(t *testing.T) {
+	node := testNode("node-a", map[string]string{testGFDGPUCount: "8"})
+	manager := newTestManager(t, testGPUSourcesConfig())
+
+	reconcile := func(resourceSlices []*resourcev1.ResourceSlice) bool {
+		return manager.CalculateAndSetDeviceCountLabels(
+			context.Background(),
+			node,
+			[]*corev1.Node{node},
+			func(*corev1.Node) []*resourcev1.ResourceSlice { return resourceSlices },
+		)
+	}
+
+	require.True(t, reconcile([]*resourcev1.ResourceSlice{
+		testGPUSlice("gpu", node.Name, 1, 1, testGPUDevices(7, testH100ProductName)...),
+	}))
+	require.Equal(t, "7", node.Labels[testGPUCountCurrentLabel])
+
+	node.Labels[testGPUCountExpectedLabel] = "8"
+
+	require.False(t, reconcile(nil), "the stale GFD label must not be counted")
+	require.Equal(t, "7", node.Labels[testGPUCountCurrentLabel])
+	require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel])
+}
+
+// The GFD source reads the device plugin allocatable, so a device plugin that
+// starts or stops advertising GPUs must trigger a reconciliation.
+func TestDeviceCountSources_DevicePluginAllocatableChange_TriggersReconcile(t *testing.T) {
+	manager := newTestManager(t, testGPUSourcesConfig())
+
+	oldNode := testNode("node-a", nil)
+	newNode := testNode("node-a", nil)
+	newNode.Status.Allocatable = testDevicePluginGPUs("8")
+
+	require.True(t, manager.NodeResourcesAffectDeviceCounts(oldNode, newNode))
 }
 
 func TestDeviceCountSources_SourceMetric_TracksSelectedSource(t *testing.T) {
@@ -347,6 +423,7 @@ func TestDeviceCountSources_SourceMetric_TracksSelectedSource(t *testing.T) {
 	})
 
 	node.Labels[testGFDGPUCount] = "8"
+	node.Status.Allocatable = testDevicePluginGPUs("8")
 	reconcile(nil)
 
 	require.False(t, metrics.DeviceCountSource.DeleteLabelValues(node.Name, "gpu", "dra"),
