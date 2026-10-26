@@ -264,8 +264,3 @@ func (d *dataStoreAdapter) FindDocument(ctx context.Context, filter any,
 	options *client.FindOneOptions) (client.SingleResult, error) {
 	return d.FindOne(ctx, filter, options)
 }
-
-func (d *dataStoreAdapter) FindDocuments(ctx context.Context, filter any,
-	options *client.FindOptions) (client.Cursor, error) {
-	return d.Find(ctx, filter, options)
-}
