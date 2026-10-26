@@ -41,7 +41,7 @@ When a node fails a criterion at release, the ValidationRequest completes as `Fa
 
 A node held by a failed request is released when a new ValidationRequest with the same tests succeeds, which clears the failed session entry, or when an operator deletes the failed request after the node satisfies the readiness criteria again. With post-remediation validation, fault-quarantine creates such a request when the new fault matched `validation.ruleSets`.
 
-Deleting a ValidationRequest removes its session entry. If it was the last entry and the node fails a readiness criterion, the controller retains the scheduling gate and logs a warning instead of releasing the node. A later ValidationRequest that succeeds on the node releases the gate; otherwise an operator removes it.
+Deleting a ValidationRequest removes its session entry. If it was the last entry and the node fails a readiness criterion, or a criterion cannot be evaluated against the node, the controller retains the scheduling gate and logs a warning instead of releasing the node. A later ValidationRequest that succeeds on the node releases the gate; otherwise an operator removes it.
 
 ## Configuration
 
