@@ -127,6 +127,38 @@ func TestState_SuppressedPort_MultiPlaneCard_UnreadableComputeMemberKeepsTimers(
 	}
 }
 
+func TestIBState_SuppressedPort_MultiPlaneCard_UnreadableAfterRestartKeepsTimers(t *testing.T) {
+	// mlx5_0 has only NODE topology, so it is compute through the InfiniBand
+	// rule, which reads port 1 link_layer. A pod restart starts with an empty
+	// classifier cache. Classifying mlx5_0 while its port attributes are
+	// unreadable would cache it as storage and exempt its card for the life
+	// of the pod.
+	node := singletonDownNode(ibLinkLayer).addIB("smi0", &stubDevice{
+		pciAddress: "0000:03:00.0", numaNode: 0,
+		ports: map[int]stubPort{
+			1: downPort(ibLinkLayer), 2: downPort(ibLinkLayer), 3: downPort(ibLinkLayer), 4: downPort(ibLinkLayer),
+		},
+	})
+	topo := map[string][]string{"mlx5_0": {"NODE"}}
+	mgr := freshStateManager(t)
+
+	check, clock := newLayerCheckWithTopology(t, ibLinkLayer, node, topo, testReportAfter, mgr, suppressedStart, false)
+	require.Empty(t, runPoll(t, check))
+	require.Len(t, suppressionTimers(t, check), 5)
+
+	node.ib["mlx5_0"].attrReadsFail = true
+	clock.Advance(testReportAfter / 2)
+	restarted, restartedClock := newLayerCheckWithTopology(t, ibLinkLayer, node, topo, testReportAfter, mgr,
+		clock.Now(), false)
+	assert.Empty(t, unhealthyPorts(runPoll(t, restarted)))
+	assert.Len(t, suppressionTimers(t, restarted), 5, "an unreadable member must not exempt its card")
+
+	node.ib["mlx5_0"].attrReadsFail = false
+	restartedClock.Advance(testReportAfter / 2)
+	assert.ElementsMatch(t, []string{"mlx5_0", "smi0", "smi0", "smi0", "smi0"},
+		unhealthyPorts(runPoll(t, restarted)), "all ports must report at their original deadline once readable")
+}
+
 func TestState_SuppressedPort_MultiPlaneCard_ManagementSiblingStaysExempt(t *testing.T) {
 	for _, layer := range bothLayers {
 		t.Run(layer, func(t *testing.T) {
@@ -154,6 +186,37 @@ func TestState_SuppressedPort_MultiPlaneCard_StorageAliasWithoutComputeMemberSta
 
 			clock.Advance(24 * time.Hour)
 			assert.Empty(t, runPoll(t, check), "a storage-only card must remain exempt")
+		})
+	}
+}
+
+func TestState_SuppressedPort_StorageCardWithUnreadableFunction_NeverReports(t *testing.T) {
+	for _, layer := range bothLayers {
+		t.Run(layer, func(t *testing.T) {
+			// smi1 shares smi0's card and stays unreadable through the first
+			// poll, so the card keeps its timers until smi1 is classified.
+			check, node, clock := newMultiPlaneStateCheck(t, layer, false, testReportAfter)
+			delete(node.ib, "mlx5_0")
+			node.addIB("smi1", &stubDevice{
+				pciAddress: "0000:03:00.1", numaNode: 0,
+				ports:           map[int]stubPort{1: upPort(layer)},
+				portsUnreadable: true,
+			})
+
+			for range checks.FirstPollDeferralLimit {
+				require.Empty(t, runPoll(t, check))
+			}
+
+			require.Empty(t, unhealthyPorts(runPoll(t, check)), "the partial first poll must suppress")
+			require.Len(t, suppressionTimers(t, check), 4, "an unreadable function defers the storage verdict")
+
+			clock.Advance(24 * time.Hour)
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)), "the card must wait while smi1 is unreadable")
+
+			node.ib["smi1"].portsUnreadable = false
+			clock.Advance(time.Second)
+			assert.Empty(t, unhealthyPorts(runPoll(t, check)), "a storage-only card must remain exempt")
+			assert.Empty(t, suppressionTimers(t, check))
 		})
 	}
 }

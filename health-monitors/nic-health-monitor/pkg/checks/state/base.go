@@ -379,12 +379,17 @@ func (b *baseStateCheck) pruneSuppressedPorts(currentPorts map[string]portSnapsh
 //     of a dual-port card (#1379): reporting them would replace the node, and
 //     the replacement has the same port down.
 //   - cards with no compute-classified member. Storage and frontend ports
-//     can be down by design with no peer to vouch for them, like the unused frontend aux
-//     port on OCI BM.GPU.H100.8 (ADR-047), a lone storage card.
+//     can be down by design with no peer to vouch for them, like the unused
+//     frontend aux port on OCI BM.GPU.H100.8 (ADR-047), a lone storage card.
+//     A card with an unreadable function is not exempt for this reason: the
+//     function may be its compute member, like the mlx5 device beside a
+//     GB300 SMI alias. waitingSuppressions holds its timers until a complete
+//     poll classifies every member.
 func suppressionExemptCards(
 	agg pollAggregates,
 	anomalousCards map[string]topology.CardAnomaly,
 	evaluatedCards map[string]int,
+	unreadable unreadableCards,
 ) map[string]bool {
 	exempt := maps.Clone(agg.managementCards)
 	if exempt == nil {
@@ -398,7 +403,7 @@ func suppressionExemptCards(
 	}
 
 	for card := range agg.cardTotal {
-		if !agg.computeCards[card] {
+		if !agg.computeCards[card] && !unreadable.has(card) {
 			exempt[card] = true
 		}
 	}
@@ -406,32 +411,34 @@ func suppressionExemptCards(
 	return exempt
 }
 
-// computeCardsForPoll retains positive compute evidence from unreadable
-// members too. RoleOf uses cached classification or topology metadata, and
-// waitingSuppressions still holds the whole card until its members are read.
-// Only previously monitored devices are considered, so an unreadable first
-// observation cannot populate the classification cache from incomplete data.
-func (b *baseStateCheck) computeCardsForPoll(agg pollAggregates) map[string]bool {
-	computeCards := agg.computeCards
-	if computeCards == nil {
-		computeCards = make(map[string]bool)
+// unreadableCards is the set of cards with a function that was not read this
+// poll.
+type unreadableCards struct {
+	cards map[string]bool
+	// unplaced is true when an unreadable device's card is unknown, so any
+	// card may have an unreadable function.
+	unplaced bool
+}
+
+func (u unreadableCards) has(card string) bool {
+	return u.unplaced || u.cards[card]
+}
+
+// unreadableCardsOf places the unreadable devices on their cards. It reads
+// only the PCI address: classifying a device whose port attributes cannot be
+// read would cache a wrong role for the life of the pod.
+func (b *baseStateCheck) unreadableCardsOf(unreadable map[string]error) unreadableCards {
+	u := unreadableCards{cards: make(map[string]bool, len(unreadable))}
+
+	for device := range unreadable {
+		// PCICardOf falls back to the device name when the PCI address
+		// cannot be read.
+		card := b.classifier.PCICardOf(device)
+		u.unplaced = u.unplaced || card == device
+		u.cards[card] = true
 	}
 
-	if len(agg.unreadable) == 0 {
-		return computeCards
-	}
-
-	for _, device := range b.state.KnownDevices() {
-		if _, unreadable := agg.unreadable[device]; !unreadable {
-			continue
-		}
-
-		if b.classifier.RoleOf(device) == topology.RoleCompute {
-			computeCards[b.classifier.PCICardOf(device)] = true
-		}
-	}
-
-	return computeCards
+	return u
 }
 
 // forgetExemptSuppressions drops the suppression timers of ports on exempt
@@ -456,27 +463,18 @@ func (b *baseStateCheck) forgetExemptSuppressions(portCard map[string]string, ex
 // timers may report. That holds only when every function of the card was
 // read: a card with an unreadable function, or any card when an unreadable
 // device's card is unknown, waits too.
-func (b *baseStateCheck) waitingSuppressions(agg pollAggregates, uncertain bool) map[string]bool {
+func (b *baseStateCheck) waitingSuppressions(
+	agg pollAggregates, uncertain bool, unreadable unreadableCards,
+) map[string]bool {
 	if !uncertain || len(b.suppressedSince) == 0 {
 		return nil
-	}
-
-	unreadableCards := make(map[string]bool, len(agg.unreadable))
-	unplaced := false
-
-	for device := range agg.unreadable {
-		// PCICardOf falls back to the device name when the PCI address
-		// cannot be read.
-		card := b.classifier.PCICardOf(device)
-		unplaced = unplaced || card == device
-		unreadableCards[card] = true
 	}
 
 	waiting := make(map[string]bool)
 
 	for key := range b.suppressedSince {
 		card, ok := agg.portCard[key]
-		if unplaced || !ok || unreadableCards[card] || agg.cardActive[card] > 0 {
+		if !ok || unreadable.has(card) || agg.cardActive[card] > 0 {
 			waiting[key] = true
 		}
 	}
@@ -562,10 +560,10 @@ func (b *baseStateCheck) buildEvents(
 	// Before the port pass, so a timer due this poll is not reported for an
 	// exempt card; after it, because the first-poll gate records a timer for
 	// every port it suppresses.
-	agg.computeCards = b.computeCardsForPoll(agg)
-	exempt := suppressionExemptCards(agg, anomalousCards, evaluatedCards)
+	unreadable := b.unreadableCardsOf(agg.unreadable)
+	exempt := suppressionExemptCards(agg, anomalousCards, evaluatedCards, unreadable)
 	b.forgetExemptSuppressions(agg.portCard, exempt)
-	b.suppressionWaiting = b.waitingSuppressions(agg, discoveryUncertain)
+	b.suppressionWaiting = b.waitingSuppressions(agg, discoveryUncertain, unreadable)
 
 	events := clearEvents
 	events = append(events, portEvents(anomalousCards)...)
