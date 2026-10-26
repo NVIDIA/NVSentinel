@@ -497,7 +497,14 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 		return ctrl.Result{}, err
 	}
 
-	if err := r.annotationManager.ClearRemediationState(ctx, nodeName); err != nil {
+	if status == model.UnQuarantined && r.Config.RemediationClient.GetConfig().MaxRemediationAttempts > 0 {
+		// The node may stay out of service for post-remediation validation.
+		err = r.annotationManager.KeepAttemptsForValidation(ctx, nodeName)
+	} else {
+		err = r.annotationManager.ClearRemediationState(ctx, nodeName)
+	}
+
+	if err != nil {
 		slog.ErrorContext(ctx, "Failed to clear remediation state for node",
 			"node", nodeName,
 			"error", err)
@@ -1209,8 +1216,8 @@ func (r *FaultRemediationReconciler) trySkipResolvedEvent(
 //
 // The attempt is recorded before the CR is created on purpose: an attempt that never produces
 // a CR (missing CRD, RBAC denial, rejecting webhook) still consumes budget and cannot loop.
-// The counter survives a failed CR because RemoveGroupsFromState keeps it, and is cleared with
-// the rest of the state when the quarantine session ends.
+// The counter survives a failed CR because RemoveGroupsFromState keeps it, and is cleared when
+// the node returns to service.
 func (r *FaultRemediationReconciler) tryStopAtMaxAttempts(
 	ctx context.Context,
 	nodeName string,
@@ -1269,7 +1276,7 @@ func (r *FaultRemediationReconciler) tryStopIfAlreadyCapped(
 	watcherInstance datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 ) (ctrl.Result, error, bool) {
-	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	state, err := r.annotationManager.PrepareRemediationAttempt(ctx, nodeName)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to read remediation state before log collection; "+
 			"the attempt cap is still enforced after collection",

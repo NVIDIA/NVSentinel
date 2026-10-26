@@ -32,12 +32,21 @@ type NodeAnnotationManagerInterface interface {
 	UpdateRemediationState(ctx context.Context, nodeName string, group string, crName string, actionName string) error
 	RecordRemediationAttempt(ctx context.Context, nodeName string, group string) (int, error)
 	ClearRemediationState(ctx context.Context, nodeName string) error
+	KeepAttemptsForValidation(ctx context.Context, nodeName string) error
+	PrepareRemediationAttempt(ctx context.Context, nodeName string) (*RemediationStateAnnotation, error)
 	RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error
 }
 
 // RemediationStateAnnotation represents the structure of the node annotation
 type RemediationStateAnnotation struct {
 	EquivalenceGroups map[string]EquivalenceGroupState `json:"equivalenceGroups"`
+
+	// ValidationAttempts holds the attempt counts of a quarantine session that ended by handing
+	// the node to post-remediation validation. See KeepAttemptsForValidation.
+	ValidationAttempts map[string]int `json:"validationAttempts,omitempty"`
+	// ValidationRequests names the ValidationRequests in the node's validation session at the
+	// hand-off. It is empty when lifecycle-manager had not registered the request yet.
+	ValidationRequests []string `json:"validationRequests,omitempty"`
 }
 
 // EquivalenceGroupState represents the state of a single equivalence group
@@ -51,6 +60,6 @@ type EquivalenceGroupState struct {
 
 	// AttemptCount tracks how many remediation attempts have been made for this equivalence
 	// group in the current quarantine session. It is persisted in the node annotation so it
-	// survives pod restarts, and is cleared when the session ends.
+	// survives pod restarts, and is cleared when the node returns to service.
 	AttemptCount int `json:"attemptCount,omitempty"`
 }
