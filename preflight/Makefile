@@ -47,14 +47,13 @@ TEST_SETUP_COMMANDS := \
 .PHONY: generate
 generate: ## Generate CRDs and DeepCopy implementations for preflight
 	@echo "Generating CRDs and DeepCopy code implementations for preflight..."
-	@which controller-gen > /dev/null || (echo "Installing controller-gen $(CONTROLLER_GEN_VERSION)..." && go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION))
-	@controller-gen +crd:headerFile="../.github/headers/LICENSE_YAML" paths=./$(API_DIR) output:crd:dir=./$(API_DIR)
+	@$(CONTROLLER_GEN) +crd:headerFile="../.github/headers/LICENSE_YAML" paths=./$(API_DIR) output:crd:dir=./$(API_DIR)
 	@echo "Moving generated CRDs to $(CRD_OUTPUT_DIR)..."
 	@mkdir -p $(CRD_OUTPUT_DIR)
 	@mv ./$(API_DIR)/*.yaml $(CRD_OUTPUT_DIR)/
 	@echo "Generated files:"
 	@ls -1 $(CRD_OUTPUT_DIR)/*.yaml
-	@controller-gen +object:headerFile="../.github/headers/LICENSE_GO" paths="./..."
+	@$(CONTROLLER_GEN) +object:headerFile="../.github/headers/LICENSE_GO" paths="./..."
 	@echo "Generated DeepCopy method implementations"
 
 .PHONY: manifests

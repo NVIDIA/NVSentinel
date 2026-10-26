@@ -120,6 +120,11 @@ clean: protos-clean ## Remove generated code.
 
 ##@ Build Dependencies
 
+# The plugin targets are the unversioned symlinks, so make would keep an old plugin after a
+# version bump in .versions.yaml. Phony targets always run go-install-tool, which installs
+# the pinned version if it is missing and points the symlink at it.
+.PHONY: $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_GRPC)
+
 $(PROTOC_GEN_GO):
 	$(call go-install-tool,$(PROTOC_GEN_GO),google.golang.org/protobuf/cmd/protoc-gen-go,$(PROTOC_GEN_GO_VERSION))
 
