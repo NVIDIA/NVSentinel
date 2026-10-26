@@ -12,7 +12,7 @@ Status: Proposed for upstream review (tracking issue #606). Maintainer acceptanc
 
 The only rule logic that runs on PostgreSQL is a Go XID burst detector that copies one MongoDB rule. It has drifted: it reads a rule name that [#471](https://github.com/NVIDIA/NVSentinel/pull/471) renamed, does not exclude XID 31 and 45, cannot be turned off, and loses its history on restart. [#1191](https://github.com/NVIDIA/NVSentinel/issues/1191) was an earlier instance of the same drift.
 
-The 22 default rules have five shapes. Each is scoped to the trigger's node and to a window that ends at the trigger's `generatedTimestamp`:
+The 22 default rules have five shapes. Each is scoped to the trigger's node and to a window that ends at the trigger's `generatedTimestamp`. Only the look-up in the 4 solo rules differs: it covers the 24 h before `$$NOW`, with no upper bound.
 
 | Shape | Rules | Windows |
 |---|---|---|
@@ -31,7 +31,7 @@ Options considered:
 
 ## Decision
 
-Option 4: replace the rule language, not the evaluation model. A portable rule states a CEL filter over stored events, one typed aggregate (`count`, `distinct`, `bursts` or `solo`) and a CEL `match` on the aggregate's result. The store-client compiles each rule into a native MongoDB or PostgreSQL query, so the work still runs in the database, as ADR-007 requires. The portable form replaces `stage`. During the migration, `stage` stays as a deprecated path on MongoDB only, so existing custom rules keep loading, and it is removed after a deprecation period. Kubernetes NodeHealth mode (proposed ADR-063, [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) and change-stream behaviour are non-goals.
+Option 4: replace the rule language, not the evaluation model. A portable rule states a CEL filter over stored events, one typed aggregate (`count`, `distinct`, `bursts` or `solo`) and a CEL `match` on the aggregate's result. The store-client compiles each rule into a native MongoDB or PostgreSQL query, so the work still runs in the database, as ADR-007 requires. The portable form replaces `stage`. During the migration, `stage` stays as a deprecated path on MongoDB only, so existing custom rules keep loading, and it is removed after a deprecation period. Kubernetes NodeHealth mode (proposed in [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) and change-stream behaviour are non-goals.
 
 ## Implementation
 
@@ -44,8 +44,17 @@ The new fields are additive. During the migration, a rule sets either `stage` or
 name = "RepeatedNICDriverError"
 recommended_action = "CONTACT_SUPPORT"
 evaluate_rule = true
-when = "event.agent == 'syslog-health-monitor' && event.checkName == 'SysLogsNICDriverError' && event.isFatal == false && event.isHealthy == false && size(event.errorCode) > 0 && event.errorCode[0] in ['netdev_watchdog', 'port_module_high_temp', 'pci_power_insufficient', 'module_unplugged', 'mlx5_tx_timeout_detected', 'mlx5_rx_timeout_detected']"
-match = "count >= 3"
+when = """
+event.agent == 'syslog-health-monitor' && event.checkName == 'SysLogsNICDriverError'
+&& event.isFatal == false && event.isHealthy == false && size(event.errorCode) > 0
+&& event.errorCode[0] in ['netdev_watchdog', 'port_module_high_temp', 'pci_power_insufficient', 'module_unplugged', 'mlx5_tx_timeout_detected', 'mlx5_rx_timeout_detected']
+"""
+match = """
+event.agent == 'syslog-health-monitor' && event.checkName == 'SysLogsNICDriverError'
+&& event.isFatal == false && event.isHealthy == false && size(event.errorCode) > 0
+&& event.errorCode[0] in ['netdev_watchdog', 'port_module_high_temp', 'pci_power_insufficient', 'module_unplugged', 'mlx5_tx_timeout_detected', 'mlx5_rx_timeout_detected']
+&& count >= 3
+"""
 
 [rules.history]
 window = "1h"
@@ -53,10 +62,18 @@ filter = "e.agent == 'syslog-health-monitor' && e.checkName == 'SysLogsNICDriver
 aggregate = "count"
 ```
 
-- `when` keeps its meaning: a CEL gate on the trigger that fails open.
+`when`, `history.filter` and `match` split the work:
+
+| Field | Sees | Runs in | On error |
+|---|---|---|---|
+| `when` | the trigger `event` | the analyzer, before the query | the rule runs anyway |
+| `history.filter` and the aggregate's condition parameters | each stored event `e`, with `event` as constants | the database | rejected at load |
+| `match` | the aggregate result and `event` | the analyzer, after the query | no match |
+
+- `when` keeps its meaning: it only saves a query that cannot match. So `match` repeats every condition on the trigger, and `when` must be true for every trigger that `filter` and `match` can accept. Removing `when` then never changes a result.
+- `when` errors count in the existing `health_event_analyzer_rule_when_errors_total`. `match` errors count in a new `health_event_analyzer_rule_match_errors_total`.
 - `history.window` is a duration. The window is `[t − window, t]` on `generatedTimestamp`, where `t` is the trigger's time.
-- `history.filter` is CEL over a stored event `e` and the trigger `event`. `history.aggregate` selects the primitive, and its parameters sit in the same table.
-- `match` is CEL over the aggregate result and `event`. An error in `match` means no match and increments an error metric; it never fails open.
+- `history.aggregate` selects the primitive, and its parameters sit in the same table.
 - A rule without `[rules.history]` decides on the trigger alone. Its `match` sees only `event`, and a reference to an aggregate result fails validation at load. XID74Reg2Bit13Set uses this form and needs no query.
 
 ### CEL vocabulary
@@ -75,7 +92,7 @@ Extend `commons/pkg/celevent` additively, so that the analyzer, platform-connect
 
 A compiler in `store-client/pkg/query` walks the checked AST, as `commons/pkg/celfields` does, and emits a `query.Condition` tree, which already renders `ToMongo()` and `ToSQL()`. The work adds missing-field, array-contains and entity-element conditions, and typed casts.
 
-Everything about a portable rule is checked when the config loads: CEL syntax, types and field names against the typed vocabulary, the subset above, and the aggregate's parameters. What remains for evaluation time is the data and the datastore: missing values follow the null rules above, a `when` or `match` error has the outcome defined above, and a datastore error is handled per event as today. A rule that fails these checks is logged and skipped, increments `rule_config_invalid_total{rule_name}`, and does not stop the analyzer ([#1794](https://github.com/NVIDIA/NVSentinel/pull/1794)). A portable rule that loads therefore runs on every supported datastore.
+Everything about a portable rule is checked when the config loads: CEL syntax, types and field names against the typed vocabulary, the subset above, and the aggregate's parameters. What remains for evaluation time is the data and the datastore: missing values follow the null rules above, a `when` or `match` error has the outcome in the table above, and a datastore error is handled per event as today ([#1794](https://github.com/NVIDIA/NVSentinel/pull/1794)). A rule that fails these checks is logged and skipped, and increments a new counter, `rule_config_invalid_total{rule_name}`; the analyzer keeps running. This is a policy change: today, a `when` that fails to compile stops the analyzer at startup (open question 2). A portable rule that loads therefore runs on every supported datastore.
 
 ### Aggregate primitives
 
@@ -88,8 +105,10 @@ New `HealthEventStore` methods take the node, the window and the compiled condit
 | `bursts` | `gap`, `sticky_codes`, `sticky_window`, `target` | `bursts`, `latestTargets` | `$setWindowFields` with `$shift`, as today | `LAG()` and a running `SUM()` |
 | `solo` | `group_by`, `others`, `state_key`, `active` | `soloGroups` | `$group`, then `$lookup` | newest row per key, then `NOT EXISTS` |
 
-- `bursts` orders the candidates by `generatedTimestamp`, and the first candidate starts the first burst. After that, a candidate whose `errorCode[0]` is in `sticky_codes` continues the current burst when the latest earlier sticky candidate is at most `sticky_window` before it; otherwise a gap over `gap` since the previous candidate starts a new burst. `bursts` counts the bursts with at least one `target` candidate, and `latestTargets` counts the `target` candidates in the latest burst.
-- `solo` groups the candidates by `group_by`. For each group, it takes the events in the window that satisfy `others`, with `group` bound to the group's key, and keeps the newest event per `state_key`. The group is solo when none of those events satisfies `active`. `soloGroups` counts the solo groups.
+`bursts` and `solo` order events by `generatedTimestamp`, then by the stored record (`_id` in MongoDB; `created_at`, then `id`, in PostgreSQL), so tied timestamps have one order on each datastore. Windows and gaps compare whole seconds, as today.
+
+- `bursts` walks the candidates in that order, and the first candidate starts the first burst. After that, a candidate whose `errorCode[0]` is in `sticky_codes` continues the current burst when the latest earlier sticky candidate is at most `sticky_window` before it; otherwise a gap over `gap` since the previous candidate starts a new burst. `bursts` counts the bursts with at least one `target` candidate, and `latestTargets` counts the `target` candidates in the latest burst.
+- `solo` groups the candidates by `group_by`. For each group, it takes the events in the window that satisfy `others` and not `filter`, with `group` bound to the group's key, and keeps the newest event per `state_key`. The group is solo when none of those events satisfies `active`. `soloGroups` counts the solo groups. Because a candidate is never one of the others, the trigger cannot be its own active state; today's look-up excludes only one candidate, by ID.
 
 Each burst rule's latest-burst behaviour becomes a `match` expression, so the primitive stays simple and each rule's semantics stay visible in its config.
 
@@ -389,7 +408,7 @@ description = "Detect occurrence of XID errors (any XID except 31 and 45) on the
 recommended_action = "CONTACT_SUPPORT"
 evaluate_rule = {{ .Values.enableRepeatedXIDErrorOnSameGPURule }}
 when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45'))"
-match = "bursts - (latestTargets > 1 ? 1 : 0) >= 5"
+match = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45')) && bursts - (latestTargets > 1 ? 1 : 0) >= 5"
 
 [rules.history]
 window = "24h"
@@ -405,7 +424,7 @@ sticky_window = "3h"
 target = "e.errorCode[0] == event.errorCode[0]"
 ```
 
-The `match` keeps today's latest-burst rule: the latest burst counts only while it holds exactly one event with the trigger's XID.
+`match` repeats the trigger condition from `when`, as today's second stage does, and keeps today's latest-burst rule: the latest burst counts only while it holds exactly one event with the trigger's XID.
 
 **XID74Reg0SoloNVLinkError** (`solo`)
 
@@ -647,7 +666,7 @@ recommended_action = "CONTACT_SUPPORT"
 message = "one of the bits (1 or 20) is set in register 0, unexpected error please open an NVBug"
 evaluate_rule = {{.Values.enableXID74Reg0SoloNVLinkErrorRule}}
 when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
-match = "soloGroups >= 1"
+match = "size(event.errorCode) > 0 && event.errorCode[0] == '74' && soloGroups >= 1"
 
 [rules.history]
 window = "24h"
@@ -684,7 +703,7 @@ The derived event and the metric names do not change. `mongo_query_execution_dur
 
 ### Indexes and compatibility
 
-- PostgreSQL has no index on event time. Add a `generated_at` column set at insert, as `node_name` is, and an index on `(node_name, generated_at, created_at, id)`. MongoDB keeps the [#1901](https://github.com/NVIDIA/NVSentinel/pull/1901) indexes.
+- PostgreSQL has no index on event time. Add a `generated_at` column, set at insert as `node_name` is, and an index on `(node_name, generated_at, created_at, id)`. Both schema paths need them: the chart's `initdb` script for new databases, and the store's setup path for existing ones, which adds the column with `ADD COLUMN IF NOT EXISTS` and backfills it from the document. The compiled SQL filters on the `node_name` and `generated_at` columns, not on JSONB paths, so the index applies. MongoDB keeps the [#1901](https://github.com/NVIDIA/NVSentinel/pull/1901) indexes.
 - During the migration, `stage` rules, defaults and custom, run on MongoDB unchanged. On PostgreSQL, the analyzer skips them at startup with one warning each; today they fail on every event. After the default switches, `stage` logs a deprecation warning, and step 5 removes it.
 - The chart ports the 22 default rules. `healthEventsAnalyzer.ruleFormat` selects `stage` or `portable`. The default stays `stage` on MongoDB until the equivalence and benchmark gates pass, and PostgreSQL always uses `portable`. The toggle reports through `nvsentinel_feature_flag_enabled` (ADR-032).
 - The Go XID burst detector is removed once `bursts` runs on PostgreSQL. The ADR-059 recovery boundary becomes a `query.Condition`, so recovery can also run on PostgreSQL.
@@ -692,8 +711,8 @@ The derived event and the metric names do not change. `mongo_query_execution_dur
 ### Testing
 
 - Compiler: golden `ToMongo()` and `ToSQL()` output for each supported construct, and a load error for each unsupported one.
-- Conformance: one table of primitive cases (absent fields, missing and empty `errorCode`, duplicate registers, sticky XIDs, empty windows) runs against an in-memory reference store, MongoDB and PostgreSQL in CI.
-- Equivalence: replay a recorded MongoDB dataset, in the style of #1901, through the `stage` and portable forms of every default rule. Zero differences are required, except the two solo-rule changes in Notes.
+- Conformance: one table of primitive cases (absent fields, missing and empty `errorCode`, duplicate registers, sticky XIDs, empty windows, tied timestamps, and an `others` that also matches candidates) runs against an in-memory reference store, MongoDB and PostgreSQL in CI.
+- Equivalence: replay a recorded MongoDB dataset, in the style of #1901, through the `stage` and portable forms of every default rule. Zero differences are required, except the two solo-rule changes in Notes and differences that come from events in the same second, which have no defined order today. Each default rule must also give the same results with `when` removed.
 - E2E: portable rule tests drop the `mongodb` build tag, and the 9 default rules without an E2E test get one.
 - Benchmarks: events/s per worker, ms per event, queries per event and database CPU per event, before and after, on both datastores, in the format of [#1912](https://github.com/NVIDIA/NVSentinel/pull/1912) and [#1913](https://github.com/NVIDIA/NVSentinel/pull/1913).
 
@@ -744,7 +763,7 @@ Each step is a separate PR, and MongoDB behaviour stays unchanged until step 4.
 **Rejected** because every rule exists twice and the copies drift, as the Go XID detector shows.
 
 ### Fetch history and evaluate it in memory with CEL
-**Rejected** because it loads events into memory, which ADR-007 rejected. ADR-039 stores repeated observations as `STORE_AND_ANALYSE`, which is analyzer input, so an XID flood of 120 events/s (proposed ADR-063) stores more than 400,000 events on one node in an hour. A fetch limit would change results, and in-process state breaks across restarts. This was the auto-generated plan on #606.
+**Rejected** because it loads events into memory, which ADR-007 rejected. ADR-039 stores repeated observations as `STORE_AND_ANALYSE`, which is analyzer input, so an XID flood of 120 events/s, the lowest rate in #2015, stores more than 400,000 events on one node in an hour. A fetch limit would change results, and in-process state breaks across restarts. This was the auto-generated plan on #606.
 
 ### Rules engine, scripting, or a MongoDB pipeline interpreter in Go
 **Rejected** because ADR-007 and ADR-003 rejected a rules engine and scripting, and an interpreter loads history into memory and reimplements about 40 MongoDB operators.
@@ -768,6 +787,6 @@ Each step is a separate PR, and MongoDB behaviour stays unchanged until step 4.
 
 - Tracking issue: #606
 - [ADR-007](007-event-correlation-and-analysis.md), superseded in part: the rule language only.
-- ADR-003, ADR-021, ADR-025, ADR-032, ADR-039, ADR-056, ADR-059; proposed ADR-063 (#2015).
+- ADR-003, ADR-021, ADR-025, ADR-032, ADR-039, ADR-056, ADR-059; the Kubernetes NodeHealth mode proposal in #2015.
 - [#2079](https://github.com/NVIDIA/NVSentinel/issues/2079), [#1706](https://github.com/NVIDIA/NVSentinel/pull/1706), [#1191](https://github.com/NVIDIA/NVSentinel/issues/1191), [#1901](https://github.com/NVIDIA/NVSentinel/pull/1901), [#1912](https://github.com/NVIDIA/NVSentinel/pull/1912), [#1913](https://github.com/NVIDIA/NVSentinel/pull/1913).
 - `health-events-analyzer/pkg/reconciler/reconciler.go`, `store-client/pkg/client/postgresql_client.go`, `store-client/pkg/query/builder.go`, `commons/pkg/celevent`.
