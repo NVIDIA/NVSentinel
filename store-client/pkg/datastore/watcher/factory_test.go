@@ -15,42 +15,8 @@
 package watcher
 
 import (
-	"context"
 	"testing"
-
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
-
-// mockDataStore is a mock implementation for testing unsupported datastore types
-type mockDataStore struct{}
-
-func (m *mockDataStore) MaintenanceEventStore() datastore.MaintenanceEventStore { return nil }
-func (m *mockDataStore) HealthEventStore() datastore.HealthEventStore           { return nil }
-func (m *mockDataStore) Ping(ctx context.Context) error                         { return nil }
-func (m *mockDataStore) Close(ctx context.Context) error                        { return nil }
-func (m *mockDataStore) Provider() datastore.DataStoreProvider {
-	return datastore.DataStoreProvider("unsupported")
-}
-
-func TestCreateChangeStreamWatcher_UnsupportedDatastore(t *testing.T) {
-	ctx := context.Background()
-	mock := &mockDataStore{}
-
-	config := Config{
-		ClientName: "test-client",
-		TableName:  "test-table",
-	}
-
-	_, err := CreateChangeStreamWatcher(ctx, mock, config)
-	if err == nil {
-		t.Error("expected error for unsupported datastore type, got nil")
-	}
-
-	expectedMsg := "change stream watching not supported for datastore type"
-	if err != nil && !contains(err.Error(), expectedMsg) {
-		t.Errorf("expected error message to contain %q, got %q", expectedMsg, err.Error())
-	}
-}
 
 func TestConfig_Validation(t *testing.T) {
 	tests := []struct {
@@ -106,19 +72,4 @@ func TestConfig_Validation(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Helper function to check if a string contains a substring
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

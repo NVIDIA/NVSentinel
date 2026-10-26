@@ -47,10 +47,6 @@ var _ checks.TransactionalCheck = (*EthernetStateCheck)(nil)
 func (c *EthernetStateCheck) checkName() string { return checks.EthernetStateCheckName }
 func (c *EthernetStateCheck) linkLayer() string { return ethLinkLayer }
 
-func (c *EthernetStateCheck) isTargetPort(port *discovery.IBPort) bool {
-	return discovery.IsEthernetPort(port)
-}
-
 func (c *EthernetStateCheck) formatDeviceDisappearance(device string) string {
 	return fmt.Sprintf("RoCE device %s disappeared from sysfs", device)
 }

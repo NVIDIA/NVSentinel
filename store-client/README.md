@@ -51,28 +51,6 @@ for _, event := range events {
 }
 ```
 
-### Legacy DatabaseClient (Backward Compatible)
-
-**For existing code using the old API**:
-
-```go
-import (
-    "github.com/nvidia/nvsentinel/store-client/pkg/helper"
-    _ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb"
-)
-
-// Create database client only (no change streams)
-dbClient, err := helper.NewDatabaseClientOnly(ctx, "my-module")
-if err != nil {
-    return err
-}
-defer dbClient.Close(ctx)
-
-// Use MongoDB-style filters
-filter := map[string]interface{}{"nodename": "node-1"}
-cursor, err := dbClient.Find(ctx, filter, nil)
-```
-
 ### With Change Streams
 
 For modules that need to watch database changes:
@@ -371,7 +349,6 @@ err := dbClient.WithTransaction(ctx, func(sessCtx client.SessionContext) error {
                           │                                     │
 ┌─────────────────────────▼───────────────────────────────┐
 │  DatabaseClient / Helper                                 │
-│  • helper.NewDatabaseClientOnly()                        │
 │  • helper.NewDatastoreClient()                           │
 └─────────────────────────┬───────────────────────────────┘
                           │

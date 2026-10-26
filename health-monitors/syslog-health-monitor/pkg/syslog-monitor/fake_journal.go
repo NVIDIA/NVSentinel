@@ -337,29 +337,3 @@ func (f *FakeJournalFactory) NewJournalFromDir(path string) (Journal, error) {
 func (f *FakeJournalFactory) RequiresFileSystemCheck() bool {
 	return false // Fake journals don't need filesystem validation
 }
-
-// PrepareFakeJournalWithEntries creates a fake journal with test entries
-func PrepareFakeJournalWithEntries(messages []string) *FakeJournal {
-	journal := NewFakeJournal()
-
-	for i, msg := range messages {
-		cursor := fmt.Sprintf("fake-cursor-%d", i)
-		journal.AddEntryWithMessage(msg, cursor)
-	}
-
-	return journal
-}
-
-// AddPatternsToJournal adds entries that match specific patterns to a journal
-func AddPatternsToJournal(journal *FakeJournal, patterns []string, matchCount int) {
-	for i, pattern := range patterns {
-		// Create a simple entry that matches the pattern
-		message := fmt.Sprintf("Test message matching pattern: %s", pattern)
-
-		// Add multiple entries for each pattern if needed
-		for j := range matchCount {
-			cursor := fmt.Sprintf("pattern-cursor-%d-%d", i, j)
-			journal.AddEntryWithMessage(message, cursor)
-		}
-	}
-}

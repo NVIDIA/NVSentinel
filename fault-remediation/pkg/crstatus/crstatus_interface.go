@@ -21,6 +21,5 @@ import (
 )
 
 type CRStatusCheckerInterface interface {
-	ShouldSkipCRCreation(context.Context, string, string) bool
 	GetCRState(context.Context, string, string) (CRState, error)
 }
