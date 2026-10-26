@@ -378,8 +378,8 @@ func (b *baseStateCheck) pruneSuppressedPorts(currentPorts map[string]portSnapsh
 //     siblings. Their down ports are expected, like the uncabled second port
 //     of a dual-port card (#1379): reporting them would replace the node, and
 //     the replacement has the same port down.
-//   - cards outside the compute role. Storage and frontend ports can be down
-//     by design with no peer to vouch for them, like the unused frontend aux
+//   - cards with no compute-classified member. Storage and frontend ports
+//     can be down by design with no peer to vouch for them, like the unused frontend aux
 //     port on OCI BM.GPU.H100.8 (ADR-047), a lone storage card.
 func suppressionExemptCards(
 	agg pollAggregates,
@@ -397,13 +397,41 @@ func suppressionExemptCards(
 		}
 	}
 
-	for card, role := range agg.cardRole {
-		if role != topology.RoleCompute {
+	for card := range agg.cardTotal {
+		if !agg.computeCards[card] {
 			exempt[card] = true
 		}
 	}
 
 	return exempt
+}
+
+// computeCardsForPoll retains positive compute evidence from unreadable
+// members too. RoleOf uses cached classification or topology metadata, and
+// waitingSuppressions still holds the whole card until its members are read.
+// Only previously monitored devices are considered, so an unreadable first
+// observation cannot populate the classification cache from incomplete data.
+func (b *baseStateCheck) computeCardsForPoll(agg pollAggregates) map[string]bool {
+	computeCards := agg.computeCards
+	if computeCards == nil {
+		computeCards = make(map[string]bool)
+	}
+
+	if len(agg.unreadable) == 0 {
+		return computeCards
+	}
+
+	for _, device := range b.state.KnownDevices() {
+		if _, unreadable := agg.unreadable[device]; !unreadable {
+			continue
+		}
+
+		if b.classifier.RoleOf(device) == topology.RoleCompute {
+			computeCards[b.classifier.PCICardOf(device)] = true
+		}
+	}
+
+	return computeCards
 }
 
 // forgetExemptSuppressions drops the suppression timers of ports on exempt
@@ -476,6 +504,10 @@ type pollAggregates struct {
 	managementCards map[string]bool
 	uncertain       bool
 	unreadable      map[string]error
+
+	// computeCards records any compute member independently of the role
+	// selected for peer grouping. SMI aliases can have a storage role.
+	computeCards map[string]bool
 }
 
 // buildEvents runs the shared per-poll event pipeline: the baseline
@@ -530,6 +562,7 @@ func (b *baseStateCheck) buildEvents(
 	// Before the port pass, so a timer due this poll is not reported for an
 	// exempt card; after it, because the first-poll gate records a timer for
 	// every port it suppresses.
+	agg.computeCards = b.computeCardsForPoll(agg)
 	exempt := suppressionExemptCards(agg, anomalousCards, evaluatedCards)
 	b.forgetExemptSuppressions(agg.portCard, exempt)
 	b.suppressionWaiting = b.waitingSuppressions(agg, discoveryUncertain)

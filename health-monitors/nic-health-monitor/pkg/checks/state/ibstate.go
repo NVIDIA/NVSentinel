@@ -131,6 +131,7 @@ type ibPollState struct {
 	cardActive   map[string]int
 	cardTotal    map[string]int
 	cardRole     map[string]topology.Role
+	computeCards map[string]bool
 	portCard     map[string]string
 	portOverride map[string]bool
 }
@@ -146,6 +147,7 @@ func newIBPollState() *ibPollState {
 		cardActive:      make(map[string]int),
 		cardTotal:       make(map[string]int),
 		cardRole:        make(map[string]topology.Role),
+		computeCards:    make(map[string]bool),
 		portCard:        make(map[string]string),
 		portOverride:    make(map[string]bool),
 	}
@@ -309,6 +311,10 @@ func (c *InfiniBandStateCheck) collectDevicesAndPorts(devices []discovery.IBDevi
 		role := c.classifier.RoleOf(dev.Name)
 		card := c.classifier.PCICardOf(dev.Name)
 
+		if role == topology.RoleCompute {
+			st.computeCards[card] = true
+		}
+
 		for _, port := range dev.Ports {
 			if !discovery.IsIBPort(&port) {
 				continue
@@ -367,6 +373,7 @@ func (c *InfiniBandStateCheck) buildEventsForPoll(
 		cardActive:      st.cardActive,
 		cardTotal:       st.cardTotal,
 		cardRole:        st.cardRole,
+		computeCards:    st.computeCards,
 		portCard:        st.portCard,
 		managementCards: st.managementCards,
 		uncertain:       st.discoveryUncertain,

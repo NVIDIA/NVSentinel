@@ -122,10 +122,11 @@ type ethPollState struct {
 	discoveryUncertain bool
 	unreadableDevices  map[string]error
 
-	cardActive map[string]int
-	cardTotal  map[string]int
-	cardRole   map[string]topology.Role
-	portCard   map[string]string
+	cardActive   map[string]int
+	cardTotal    map[string]int
+	cardRole     map[string]topology.Role
+	computeCards map[string]bool
+	portCard     map[string]string
 }
 
 func newEthPollState() *ethPollState {
@@ -139,6 +140,7 @@ func newEthPollState() *ethPollState {
 		cardActive:      make(map[string]int),
 		cardTotal:       make(map[string]int),
 		cardRole:        make(map[string]topology.Role),
+		computeCards:    make(map[string]bool),
 		portCard:        make(map[string]string),
 	}
 }
@@ -304,6 +306,10 @@ func (c *EthernetStateCheck) collectDevicesAndPorts(devices []discovery.IBDevice
 		card := c.classifier.PCICardOf(dev.Name)
 		role := c.classifier.RoleOf(dev.Name)
 
+		if role == topology.RoleCompute {
+			st.computeCards[card] = true
+		}
+
 		for i := range dev.Ports {
 			p := dev.Ports[i]
 			if !discovery.IsEthernetPort(&p) {
@@ -360,6 +366,7 @@ func (c *EthernetStateCheck) buildEventsForPoll(
 		cardActive:      st.cardActive,
 		cardTotal:       st.cardTotal,
 		cardRole:        st.cardRole,
+		computeCards:    st.computeCards,
 		portCard:        st.portCard,
 		managementCards: st.managementCards,
 		uncertain:       st.discoveryUncertain,

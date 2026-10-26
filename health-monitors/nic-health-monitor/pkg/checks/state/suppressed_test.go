@@ -232,7 +232,7 @@ func TestIBState_SuppressedPort_DiscardedReportIsRetried(t *testing.T) {
 func TestEthState_SuppressedPort_OnlyComputeCardsReported(t *testing.T) {
 	// mlx5_0 is a lone compute card. mlx5_11 is a lone storage card, like the
 	// unused frontend aux port on OCI BM.GPU.H100.8 (ADR-047), which is down
-	// by design. InfiniBand NICs on a GPU socket always classify as compute.
+	// by design. Its card has no compute-classified member.
 	node := singletonDownNode(ethLinkLayer).addIB("mlx5_11", &stubDevice{
 		pciAddress: "0000:a0:00.1", numaNode: 0, netDev: "eth1",
 		ports: map[int]stubPort{1: downPort(ethLinkLayer)},
