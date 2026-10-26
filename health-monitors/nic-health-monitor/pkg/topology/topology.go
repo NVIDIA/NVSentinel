@@ -516,11 +516,11 @@ func formatIntSet(s map[int]struct{}) string {
 //
 // Groups with fewer than two cards are skipped (nothing to compare
 // against — e.g., a lone storage NIC left over after its twin was
-// excluded as the default-route management NIC); groups whose mode is
-// zero (every card has no active ports) or tied (no majority pattern,
-// e.g., an asymmetric Prime/Aux frontend pair) are also skipped because
-// the mode is not meaningful and we would otherwise flag healthy-by-design
-// cards.
+// excluded as the default-route management NIC). Tied groups (no majority
+// pattern, e.g., an asymmetric Prime/Aux frontend pair) are also skipped.
+// When zero is the decisive mode but some peers have active ports, the
+// mode among those active peers is used to detect cards with no active
+// ports. An entirely zero-active group remains indecisive.
 func (c *Classifier) CheckCardHomogeneity(
 	cardActive map[string]int,
 	cardTotal map[string]int,
@@ -532,13 +532,13 @@ func (c *Classifier) CheckCardHomogeneity(
 }
 
 // EvaluateCardHomogeneity is CheckCardHomogeneity plus the positive
-// evidence set: it also returns the decisive mode for every card that
-// was actually judged (member of a >=2-card role group with a nonzero,
-// untied mode). Callers use the evaluated map to drive the card-anomaly
-// latch lifecycle: a latched card recovers only when it is present,
-// its group is decisive, and it is no longer below the mode. Absent
-// cards and indecisive groups hold the latch — no evidence, no verdict,
-// matching the first-poll suppression philosophy.
+// evidence set: it also returns the decisive positive mode for every
+// card that was actually judged. When zero is the decisive mode, the
+// positive mode is learned from cards with active ports. Callers use the
+// evaluated map to drive the card-anomaly latch lifecycle: a latched card
+// recovers only when it is present, its group is decisive, and it is no
+// longer below the mode. Absent cards and indecisive groups hold the latch
+// — no evidence, no verdict, matching the first-poll suppression philosophy.
 func (c *Classifier) EvaluateCardHomogeneity(
 	cardActive map[string]int,
 	cardTotal map[string]int,
@@ -561,8 +561,8 @@ func (c *Classifier) EvaluateCardHomogeneity(
 			continue
 		}
 
-		mode := modeActiveCount(cardActive, cards)
-		if mode == 0 {
+		mode, decisive := decisiveActiveMode(cardActive, cards)
+		if !decisive {
 			continue
 		}
 
@@ -583,6 +583,34 @@ func (c *Classifier) EvaluateCardHomogeneity(
 	return anomalies, evaluated
 }
 
+// decisiveActiveMode returns the group's positive comparison mode. If the
+// decisive group mode is zero, it learns the comparison mode from active
+// peers; an all-zero group or a tied active-peer mode remains indecisive.
+func decisiveActiveMode(cardActive map[string]int, cards []string) (int, bool) {
+	mode, decisive := modeActiveCount(cardActive, cards)
+	if !decisive || mode > 0 {
+		return mode, decisive
+	}
+
+	activeCards := make([]string, 0, len(cards))
+	for _, card := range cards {
+		if cardActive[card] > 0 {
+			activeCards = append(activeCards, card)
+		}
+	}
+
+	if len(activeCards) == 0 {
+		return 0, false
+	}
+
+	mode, decisive = modeActiveCount(cardActive, activeCards)
+	if !decisive || mode == 0 {
+		return 0, false
+	}
+
+	return mode, true
+}
+
 // CardAnomaly describes a card whose active-port count is below the mode
 // for its role group.
 type CardAnomaly struct {
@@ -591,14 +619,14 @@ type CardAnomaly struct {
 	ExpectedModeCount int
 }
 
-// modeActiveCount returns the most common active-port count among a
-// group of cards, or 0 when there is no decisive mode. A tie between two
-// distinct counts means the group has no majority pattern to learn from —
-// numerically, an intentionally-idle card (e.g., the unused Aux port of a
-// Prime/Aux frontend pair) is indistinguishable from a failed one — so the
-// callers must skip the group rather than guess. Returning 0 reuses the
-// existing "mode is meaningless" skip path.
-func modeActiveCount(cardActive map[string]int, cards []string) int {
+// modeActiveCount returns the most common active-port count and whether
+// it is decisive. A tie between distinct counts means the group has no
+// majority pattern to learn from — numerically, an intentionally-idle card
+// (e.g., the unused Aux port of a Prime/Aux frontend pair) is
+// indistinguishable from a failed one — so callers must skip the group
+// rather than guess. The boolean keeps a decisive zero mode distinct from
+// an indecisive tie.
+func modeActiveCount(cardActive map[string]int, cards []string) (int, bool) {
 	freq := make(map[int]int)
 	for _, card := range cards {
 		freq[cardActive[card]]++
@@ -620,8 +648,8 @@ func modeActiveCount(cardActive map[string]int, cards []string) int {
 	}
 
 	if tied {
-		return 0
+		return 0, false
 	}
 
-	return mode
+	return mode, true
 }
