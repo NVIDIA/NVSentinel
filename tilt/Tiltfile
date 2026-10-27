@@ -87,12 +87,23 @@ helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
 # pod's host-node IP, kindnetd then treats them as that node and rewrites its
 # CNI config with fake podCIDRs, and real pods created there get duplicate IPs
 # whose traffic NetworkPolicy enforcement misattributes and drops.
+#
+# Without hostNetwork, the fake nodes get the kwok pod IP. kindnetd cannot route
+# through a pod IP and restarts in a loop, which drops connections (see
+# kubernetes-sigs/kwok#819). Set POD_IP, which the chart passes as --node-ip, to
+# an unused kind network address instead (see kwok-node-ip.sh). Helm replaces the
+# env list, so HOST_IP keeps the chart default here.
+kwok_node_ip = str(local('./kwok-node-ip.sh', quiet=True)).strip()
 helm_resource(
     'kwok',
     chart='sigs-kwok/kwok',
     namespace='kube-system',
     flags=[
-        '--version=0.3.0'  # pin: an unpinned chart floats to new releases mid-flight
+        '--version=0.3.0',  # pin: an unpinned chart floats to new releases mid-flight
+        '--set=env[0].name=POD_IP',
+        '--set=env[0].value=' + kwok_node_ip,
+        '--set=env[1].name=HOST_IP',
+        '--set=env[1].valueFrom.fieldRef.fieldPath=status.hostIP',
     ]
 )
 helm_resource(

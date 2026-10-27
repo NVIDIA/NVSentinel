@@ -54,6 +54,12 @@ jobs:
           - component: gomod
             make_command: 'make gomod-lint'
             step_name: 'Run gomod lint'
+          - component: renovate
+            make_command: 'make renovate-lint'
+            step_name: 'Validate Renovate configuration'
+          - component: dead-code
+            make_command: 'make dead-code-lint'
+            step_name: 'Check for dead code'
           - component: log-collector
             make_command: 'make -C log-collector lint-log-collector'
             step_name: 'Run lint'
@@ -332,7 +338,7 @@ jobs:
           fi
 
       - name: Install go-coverage-report CLI tool
-        run: go install github.com/fgrosse/go-coverage-report/cmd/go-coverage-report@v1.2.0
+        run: go install github.com/fgrosse/go-coverage-report/cmd/go-coverage-report@v1.5.0
 
       - name: Get changed files
         uses: tj-actions/changed-files@aa08304bd477b800d468db44fe10f6c61f7f7b11  # v42.1.0

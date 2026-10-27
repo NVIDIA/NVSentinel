@@ -36,7 +36,6 @@ type NodeEvent struct {
 type DataStore interface {
 	UpdateDocument(ctx context.Context, filter any, update any) (*client.UpdateResult, error)
 	FindDocument(ctx context.Context, filter any, options *client.FindOneOptions) (client.SingleResult, error)
-	FindDocuments(ctx context.Context, filter any, options *client.FindOptions) (client.Cursor, error)
 }
 
 // DataStoreEventProcessor provides database-agnostic event processing

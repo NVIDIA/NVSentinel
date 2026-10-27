@@ -35,15 +35,6 @@ func TestSpanCreation(t *testing.T) {
 		span.End()
 	})
 
-	t.Run("StartChildSpan returns false with no parent", func(t *testing.T) {
-		ctx := context.Background()
-
-		newCtx, span, traced := StartChildSpanIfParentTraceActive(ctx, "child-span")
-		assert.Equal(t, ctx, newCtx)
-		assert.Nil(t, span)
-		assert.False(t, traced)
-	})
-
 	t.Run("StartSpanFromTraceContext with empty trace ID", func(t *testing.T) {
 		ctx, span := StartSpanFromTraceContext(context.Background(), "", "", "test-span")
 		assert.NotNil(t, ctx)
@@ -102,10 +93,6 @@ func TestMetadataHelpers(t *testing.T) {
 func TestSpanHelpers(t *testing.T) {
 	_, span := noop.NewTracerProvider().Tracer("test").Start(context.Background(), "test")
 	defer span.End()
-
-	t.Run("SetSpanAttributes does not panic", func(t *testing.T) {
-		assert.NotPanics(t, func() { SetSpanAttributes(span) })
-	})
 
 	t.Run("RecordError does not panic", func(t *testing.T) {
 		assert.NotPanics(t, func() { RecordError(span, assert.AnError) })

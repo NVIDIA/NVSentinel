@@ -7648,14 +7648,6 @@ func TestMetrics_NodeQuarantineDuration(t *testing.T) {
 	t.Log("NodeQuarantineDuration metric recorded successfully")
 }
 
-func getHistogramSampleSum(t *testing.T, histogram prometheus.Histogram) float64 {
-	t.Helper()
-	metric := &dto.Metric{}
-	err := histogram.Write(metric)
-	require.NoError(t, err)
-	return metric.Histogram.GetSampleSum()
-}
-
 // getHistogramVecCount returns the total sample count across all label values
 // of a HistogramVec.
 func getHistogramVecCount(t *testing.T, vec *prometheus.HistogramVec) uint64 {

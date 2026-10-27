@@ -58,6 +58,12 @@ statePollingInterval: "1s"
 # unhealthy poll.
 portStateHoldDown: "0s"
 
+# Report a first-poll-suppressed port on a card with a compute-classified
+# device once it has stayed unhealthy this long (for example a 2-2 tie).
+# SMI aliases on the same card qualify too. Leave "0s" if some of its ports
+# are down by design; otherwise a port that never comes up is never reported.
+suppressedPortReportAfter: "0s"
+
 # Publish NICPollStallCheck when a poll has been in flight this long, so a host
 # that stalls the monitor's sysfs reads is reported before the liveness probe
 # restarts the container (about 60 to 90s into a stall). Keep it well below

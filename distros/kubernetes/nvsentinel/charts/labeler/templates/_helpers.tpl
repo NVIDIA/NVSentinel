@@ -12,8 +12,15 @@ Whether expected device-count configuration needs ResourceSlice access.
 {{- $requires := false -}}
 {{- if .Values.expectedDeviceCounts.enabled -}}
 {{- range .Values.expectedDeviceCounts.classes }}
-{{- if and .enabled (contains "resourceSlices" (default "" .currentExpression)) -}}
+{{- if .enabled -}}
+{{- if contains "resourceSlices" (default "" .currentExpression) -}}
 {{- $requires = true -}}
+{{- end -}}
+{{- range .sources }}
+{{- if or .resourceSliceDriver (contains "resourceSlices" (default "" .currentExpression)) (contains "resourceSlices" (default "" .groupingExpression)) -}}
+{{- $requires = true -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -90,9 +97,15 @@ enabled = {{ .enabled }}
 {{- with .groupingLabels }}
 groupingLabels = [{{- range $i, $label := . }}{{ if $i }}, {{ end }}{{ $label | quote }}{{- end }}]
 {{- end }}
+{{- if not .sources }}
 currentExpression = '''
 {{ trimSuffix "\n" (default "" .currentExpression) }}
 '''
+{{- else if .currentExpression }}
+currentExpression = '''
+{{ trimSuffix "\n" .currentExpression }}
+'''
+{{- end }}
 
 [classes.labels]
 current = {{ .labels.current | quote }}
@@ -107,6 +120,25 @@ count = {{ .count }}
 {{- range $key, $value := . }}
 {{ $key | quote }} = {{ $value | quote }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- range .sources }}
+
+[[classes.sources]]
+name = {{ .name | quote }}
+{{- with .resourceSliceDriver }}
+resourceSliceDriver = {{ . | quote }}
+{{- end }}
+{{- with .groupingLabels }}
+groupingLabels = [{{- range $i, $label := . }}{{ if $i }}, {{ end }}{{ $label | quote }}{{- end }}]
+{{- end }}
+currentExpression = '''
+{{ trimSuffix "\n" (default "" .currentExpression) }}
+'''
+{{- with .groupingExpression }}
+groupingExpression = '''
+{{ trimSuffix "\n" . }}
+'''
 {{- end }}
 {{- end }}
 {{- end }}

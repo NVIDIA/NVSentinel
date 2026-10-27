@@ -61,8 +61,6 @@ type EventProcessorConfig struct {
 type EventProcessor interface {
 	// Start begins processing events from the change stream
 	Start(ctx context.Context) error
-	// Stop gracefully shuts down the processor
-	Stop(ctx context.Context) error
 	// SetEventHandler sets the callback function for processing events
 	SetEventHandler(handler EventHandler)
 }

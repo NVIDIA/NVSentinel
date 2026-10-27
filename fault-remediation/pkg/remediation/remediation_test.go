@@ -30,10 +30,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"os"
 	"path/filepath"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"strings"
 	"testing"
 	"text/template"
 	"time"
@@ -535,6 +537,49 @@ func TestRunLogCollectorJob(t *testing.T) {
 
 		})
 	}
+}
+
+func TestLogCollectorNodeLabelValue(t *testing.T) {
+	short := "test-node-1"
+	assert.Equal(t, short, logCollectorNodeLabelValue(short))
+
+	exact := strings.Repeat("a", 63)
+	assert.Equal(t, exact, logCollectorNodeLabelValue(exact))
+
+	// Same first 63 characters, and a '.' where truncation would otherwise end the value.
+	base := "gpu-node-" + strings.Repeat("a", 44) + ".rack.example.com"
+	long1 := base + ".dc1"
+	long2 := base + ".dc2"
+
+	for _, name := range []string{long1, long2} {
+		value := logCollectorNodeLabelValue(name)
+		assert.Empty(t, validation.IsValidLabelValue(value), "invalid label value %q", value)
+		assert.Equal(t, value, logCollectorNodeLabelValue(name), "label value must be deterministic")
+	}
+
+	assert.NotEqual(t, logCollectorNodeLabelValue(long1), logCollectorNodeLabelValue(long2))
+}
+
+func TestRunLogCollectorJob_LongNodeName(t *testing.T) {
+	nodeName := "gpu-node-" + strings.Repeat("a", 44) + ".rack.example.com.dc1"
+	fakeClient := fake.NewClientBuilder().Build()
+	remediationClient := &FaultRemediationClient{
+		client:            fakeClient,
+		dryRunMode:        []string{},
+		templateMountPath: "templates",
+	}
+
+	_, err := remediationClient.RunLogCollectorJob(context.Background(), nodeName, "12345")
+	require.NoError(t, err)
+
+	jobs := &batchv1.JobList{}
+	require.NoError(t, fakeClient.List(context.Background(), jobs))
+	require.Len(t, jobs.Items, 1)
+
+	job := jobs.Items[0]
+	assert.Empty(t, validation.IsValidLabelValue(job.Labels[logCollectorNodeLabel]),
+		"invalid label value %q", job.Labels[logCollectorNodeLabel])
+	assert.Equal(t, nodeName, job.Spec.Template.Spec.NodeName)
 }
 
 func TestRemediationClientGetters(t *testing.T) {

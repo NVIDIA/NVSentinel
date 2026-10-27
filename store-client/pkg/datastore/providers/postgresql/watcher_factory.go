@@ -111,11 +111,6 @@ func (f *PostgreSQLWatcherFactory) applyPipelineFilter(
 	}
 }
 
-// SupportedProvider returns the provider this factory supports
-func (f *PostgreSQLWatcherFactory) SupportedProvider() datastore.DataStoreProvider {
-	return datastore.ProviderPostgreSQL
-}
-
 // init registers the PostgreSQL watcher factory
 func init() {
 	watcher.RegisterWatcherFactory(datastore.ProviderPostgreSQL, NewPostgreSQLWatcherFactory())
