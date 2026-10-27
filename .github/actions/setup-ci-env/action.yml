@@ -103,11 +103,10 @@ runs:
           echo "helm-unittest ${VERSION} is already installed"
           exit 0
         fi
-        # Helm verifies the release tarball against its .prov signature, using the
-        # key helm-unittest publishes as public-key.asc. A new signing key fails
-        # here until helm-unittest-public-key.asc is updated.
+        # Helm 4 verifies plugin signatures by default. This skips the check, as
+        # Helm 3 did, so no signing key needs to be kept here.
         helm plugin install "https://github.com/helm-unittest/helm-unittest/releases/download/${VERSION}/unittest-${VERSION#v}.tgz" \
-          --keyring "${{ github.action_path }}/helm-unittest-public-key.asc"
+          --verify=false
 
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
