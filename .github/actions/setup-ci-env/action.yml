@@ -46,6 +46,7 @@ runs:
         echo "gotestsum_version=$(yq '.go_tools.gotestsum' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "gocover_cobertura_version=$(yq '.go_tools.gocover_cobertura' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "goimports_version=$(yq '.go_tools.goimports' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "deadcode_version=$(yq '.go_tools.deadcode' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "crane_version=$(yq '.go_tools.crane' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "helm_version=$(yq '.testing_tools.helm' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "helm_unittest_version=$(yq '.testing_tools.helm_unittest' .versions.yaml)" >> $GITHUB_OUTPUT
@@ -188,6 +189,7 @@ runs:
         # Using version from .versions.yaml
         go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ steps.versions.outputs.setup_envtest_version }}
         go install golang.org/x/tools/cmd/goimports@${{ steps.versions.outputs.goimports_version }}
+        go install golang.org/x/tools/cmd/deadcode@${{ steps.versions.outputs.deadcode_version }}
         go install github.com/google/go-containerregistry/cmd/crane@${{ steps.versions.outputs.crane_version }}
         go install github.com/google/ko@${{ steps.versions.outputs.ko_version }}
 

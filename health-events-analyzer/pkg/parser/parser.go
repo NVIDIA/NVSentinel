@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -103,56 +102,6 @@ func processArrayValue(v []any, event datamodels.HealthEventWithStatus) ([]any, 
 	}
 
 	return result, nil
-}
-
-// ParseSequenceString converts a criteria map into a database filter map
-// This uses the same map[string]interface{} type as store-client filters
-func ParseSequenceString(
-	criteria map[string]any,
-	event datamodels.HealthEventWithStatus,
-) (map[string]any, error) {
-	doc := make(map[string]any)
-	allowedStringPattern := regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
-
-	for key, value := range criteria {
-		strVal, isString := value.(string)
-
-		if !isString {
-			doc[key] = value
-			continue
-		}
-
-		// "this." reference → resolve from current event
-		if after, ok := strings.CutPrefix(strVal, "this."); ok {
-			fieldPath := after
-
-			resolvedValue, err := getValueFromPath(fieldPath, event)
-			if err != nil {
-				return nil, fmt.Errorf("error in getting value from path: %w", err)
-			}
-
-			doc[key] = resolvedValue
-
-			continue
-		}
-
-		// JSON object string representing database operator (e.g. '{"$ne":"x"}')
-		var operatorMap map[string]any
-		if err := json.Unmarshal([]byte(strVal), &operatorMap); err == nil {
-			doc[key] = operatorMap
-			continue
-		}
-
-		// String with only allowed characters (alphanumeric, dot, and hyphen)
-		if allowedStringPattern.MatchString(strVal) {
-			doc[key] = strVal
-			continue
-		}
-
-		return nil, fmt.Errorf("failed to parse criteria '%s'", strVal)
-	}
-
-	return doc, nil
 }
 
 func getValueFromPath(path string, event datamodels.HealthEventWithStatus) (any, error) {

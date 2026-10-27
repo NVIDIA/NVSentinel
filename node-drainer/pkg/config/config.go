@@ -238,58 +238,6 @@ type EnvConfig struct {
 	IntervalCACertSeconds     int
 }
 
-// LoadEnvConfig loads and validates environment variable configuration using centralized store-client
-func LoadEnvConfig() (*EnvConfig, error) {
-	// Use centralized configuration from store-client
-	databaseConfig, err := config.NewDatabaseConfigFromEnv()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load database configuration: %w", err)
-	}
-
-	// Load token configuration using centralized function
-	tokenConfig, err := config.TokenConfigFromEnv("node-drainer")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load token configuration: %w", err)
-	}
-
-	// Get timeout configuration
-	timeoutConfig := databaseConfig.GetTimeoutConfig()
-
-	return &EnvConfig{
-		DatabaseURI:               databaseConfig.GetConnectionURI(),
-		DatabaseName:              databaseConfig.GetDatabaseName(),
-		DatabaseCollection:        databaseConfig.GetCollectionName(),
-		TokenDatabase:             tokenConfig.TokenDatabase,
-		TokenCollection:           tokenConfig.TokenCollection,
-		TotalTimeoutSeconds:       timeoutConfig.GetPingTimeoutSeconds(),
-		IntervalSeconds:           timeoutConfig.GetPingIntervalSeconds(),
-		TotalCACertTimeoutSeconds: timeoutConfig.GetCACertTimeoutSeconds(),
-		IntervalCACertSeconds:     timeoutConfig.GetCACertIntervalSeconds(),
-	}, nil
-}
-
-// NewDatabaseConfig creates a database configuration from environment config and certificate paths.
-// When databaseClientCertMountPath is empty (TLS disabled), passes empty through to avoid
-// reintroducing default cert paths.
-func NewDatabaseConfig(databaseClientCertMountPath string) (config.DatabaseConfig, error) {
-	return config.NewDatabaseConfigFromEnvWithDefaults(databaseClientCertMountPath)
-}
-
-// NewTokenConfig is DEPRECATED and should not be used.
-// This function hardcoded ClientName="node-draining-module", which caused resume token
-// lookup failures because LoadEnvConfig uses ClientName="node-drainer".
-// Instead, use config.TokenConfigFromEnv("node-drainer") directly like other modules.
-//
-// Deprecated: Use config.TokenConfigFromEnv("node-drainer") instead.
-func NewTokenConfig(envConfig *EnvConfig) client.TokenConfig {
-	// Return config with the CORRECT ClientName to match what's used for token storage
-	return client.TokenConfig{
-		ClientName:      "node-drainer", // Fixed: was "node-draining-module"
-		TokenDatabase:   envConfig.TokenDatabase,
-		TokenCollection: envConfig.TokenCollection,
-	}
-}
-
 // NewQuarantinePipeline creates the database change stream pipeline for watching quarantine events
 // This uses the provider-specific pipeline builder for optimal performance with both MongoDB and PostgreSQL
 func NewQuarantinePipeline() any {

@@ -155,10 +155,7 @@ func (e *projectedEventRecorder) Evaluate(
 	return common.RuleEvaluationSuccess, nil
 }
 
-func (e *projectedEventRecorder) GetName() string  { return e.name }
-func (*projectedEventRecorder) GetVersion() string { return "1" }
-func (*projectedEventRecorder) GetPriority() int   { return 0 }
-
+func (e *projectedEventRecorder) GetName() string { return e.name }
 func (e *recordingErrorCodeEvaluator) Evaluate(
 	_ context.Context,
 	event *protos.HealthEvent,
@@ -174,9 +171,7 @@ func (e *recordingErrorCodeEvaluator) Evaluate(
 	return common.RuleEvaluationFailed, nil
 }
 
-func (e *recordingErrorCodeEvaluator) GetName() string  { return e.name }
-func (*recordingErrorCodeEvaluator) GetVersion() string { return "1" }
-func (*recordingErrorCodeEvaluator) GetPriority() int   { return 0 }
+func (e *recordingErrorCodeEvaluator) GetName() string { return e.name }
 
 type allErrorCodesEvaluator struct {
 	name     string
@@ -204,9 +199,7 @@ func (e *allErrorCodesEvaluator) Evaluate(
 	return common.RuleEvaluationFailed, nil
 }
 
-func (e *allErrorCodesEvaluator) GetName() string  { return e.name }
-func (*allErrorCodesEvaluator) GetVersion() string { return "1" }
-func (*allErrorCodesEvaluator) GetPriority() int   { return 0 }
+func (e *allErrorCodesEvaluator) GetName() string { return e.name }
 
 type flakyProjectedEvaluator struct {
 	name     string
@@ -227,10 +220,7 @@ func (e *flakyProjectedEvaluator) Evaluate(
 	return common.RuleEvaluationSuccess, nil
 }
 
-func (e *flakyProjectedEvaluator) GetName() string  { return e.name }
-func (*flakyProjectedEvaluator) GetVersion() string { return "1" }
-func (*flakyProjectedEvaluator) GetPriority() int   { return 0 }
-
+func (e *flakyProjectedEvaluator) GetName() string { return e.name }
 func (p *reconcilerRecoveryProcessor) ProcessStoredEvent(
 	ctx context.Context,
 	event model.HealthEventWithStatus,
