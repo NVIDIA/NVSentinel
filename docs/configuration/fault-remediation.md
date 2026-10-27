@@ -218,9 +218,9 @@ Attempts are counted, not retries: `1` allows one attempt and no retry, and `3` 
 
 When a node reaches the cap, fault-remediation sets its state label to `remediation-failed` and stops, leaving the node for an operator. This ends the remediation loop that a node repeats when remediation never fixes the underlying fault.
 
-With post-remediation validation, quarantine ends when fault-quarantine hands the node to validation, but the node stays out of service until validation passes. Fault-remediation keeps the spent counts together with the ValidationRequests in the node's validation session at the hand-off. A fault found while one of those requests is still in the session continues the count, and the quarantine it starts keeps that count even if validation finishes later. If lifecycle-manager has not registered the request yet when fault-remediation processes the hand-off, any request in the session continues the count.
+With post-remediation validation, quarantine ends when fault-quarantine hands the node to validation, but the node stays cordoned until validation passes. At the hand-off, fault-remediation keeps the spent counts together with the ValidationRequests in the node's validation session. A fault found while one of those requests is still in the session continues the count, and the quarantine it starts keeps that count even if validation finishes later. If lifecycle-manager has not registered the request yet when fault-remediation processes the hand-off, any request in the session continues the count.
 
-Once validation has released the node, the next fault starts from zero, as it does after a quarantine without validation. Cancelling the quarantine resets the count immediately.
+A node that is uncordoned and in no validation session when its quarantine ends has returned to service: fault-remediation clears its state, and the next fault starts from zero. The same applies once validation has released the node. Cancelling the quarantine resets the count immediately.
 
 After the cap, the health monitors can send more events for the same fault. Fault-remediation closes each of these events before the log collector starts, so a capped node gets no more log-collector Jobs.
 

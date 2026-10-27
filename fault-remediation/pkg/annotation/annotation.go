@@ -30,11 +30,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
 
-// validationSessionAnnotation is where lifecycle-manager lists the ValidationRequests that hold a
-// node: pending, running, or failed. A node with no entries has been released by validation.
-const validationSessionAnnotation = "nvsentinel.nvidia.com/validation-session"
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
+)
 
 // conflictBackoff is a custom retry backoff for annotation read-modify-write
 // operations under concurrent access. The default retry (5 steps, 10ms, no
@@ -214,20 +212,7 @@ func (m *NodeAnnotationManager) ClearRemediationState(ctx context.Context, nodeN
 			return err
 		}
 
-		if node.Annotations == nil {
-			return nil
-		}
-
-		updatedNode := node.DeepCopy()
-		delete(updatedNode.Annotations, AnnotationKey)
-
-		if err := m.client.Update(ctx, updatedNode); err != nil {
-			return err
-		}
-
-		slog.InfoContext(ctx, "Cleared remediation state annotation for node", "node", nodeName)
-
-		return nil
+		return m.removeStateAnnotation(ctx, node)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to clear remediation state for node %s: %w", nodeName, err)
@@ -236,16 +221,40 @@ func (m *NodeAnnotationManager) ClearRemediationState(ctx context.Context, nodeN
 	return nil
 }
 
+// removeStateAnnotation drops the remediation state from the Node, which ends its quarantine session.
+func (m *NodeAnnotationManager) removeStateAnnotation(ctx context.Context, node *corev1.Node) error {
+	if node.Annotations == nil {
+		return nil
+	}
+
+	updatedNode := node.DeepCopy()
+	delete(updatedNode.Annotations, AnnotationKey)
+
+	if err := m.client.Update(ctx, updatedNode); err != nil {
+		return err
+	}
+
+	slog.InfoContext(ctx, "Cleared remediation state annotation for node", "node", node.Name)
+
+	return nil
+}
+
 // KeepAttemptsForValidation ends the quarantine session like ClearRemediationState, but keeps the
-// attempt counts with the ValidationRequests that hold the node at this point. Fault-quarantine
-// also ends the session when it hands the node to post-remediation validation, and the node stays
-// out of service until validation releases it. resumeValidationAttempts decides at the next fault
-// whether the counts carry over.
+// attempt counts while the node stays out of service: fault-quarantine also ends the session when
+// it hands the node to post-remediation validation, and leaves the node cordoned until validation
+// releases it. The counts are kept with the ValidationRequests that hold the node at this point,
+// and resumeValidationAttempts decides at the next fault whether they carry over. A node that is
+// back in service has its state cleared as before.
 func (m *NodeAnnotationManager) KeepAttemptsForValidation(ctx context.Context, nodeName string) error {
 	err := retry.RetryOnConflict(conflictBackoff, func() error {
 		state, node, err := m.GetRemediationState(ctx, nodeName)
 		if err != nil {
 			return err
+		}
+
+		session := validationSessionRequests(node)
+		if !nodeOutOfService(node, session) {
+			return m.removeStateAnnotation(ctx, node)
 		}
 
 		// Without new attempts, keep the counts bound to the requests of the earlier hand-off,
@@ -255,7 +264,7 @@ func (m *NodeAnnotationManager) KeepAttemptsForValidation(ctx context.Context, n
 		}
 
 		state.ValidationAttempts = make(map[string]int)
-		state.ValidationRequests = validationSessionRequests(node)
+		state.ValidationRequests = session
 
 		for group, groupState := range state.EquivalenceGroups {
 			if groupState.AttemptCount > 0 {
@@ -366,19 +375,21 @@ func resumeValidationAttempts(state *RemediationStateAnnotation, node *corev1.No
 	state.ValidationRequests = nil
 }
 
+// nodeOutOfService reports whether the node is still held after its quarantine ended:
+// fault-quarantine leaves a node cordoned when it hands it to validation, and lifecycle-manager
+// lists the node in a validation session. A node that is neither has returned to service.
+func nodeOutOfService(node *corev1.Node, session []string) bool {
+	return node.Spec.Unschedulable || len(session) > 0
+}
+
 // validationSessionRequests returns the names of the ValidationRequests that hold the node.
 func validationSessionRequests(node *corev1.Node) []string {
-	var entries []struct {
-		Name string `json:"name"`
-	}
+	entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
+	if err != nil {
+		slog.Warn("Cannot read validation session; treating the node as released by validation",
+			"node", node.Name, "error", err)
 
-	if raw := node.Annotations[validationSessionAnnotation]; raw != "" {
-		if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-			slog.Warn("Cannot read validation session; treating the node as released by validation",
-				"node", node.Name, "error", err)
-
-			return nil
-		}
+		return nil
 	}
 
 	var names []string
