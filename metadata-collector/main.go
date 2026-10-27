@@ -79,18 +79,12 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	metadata, err := runCollector(ctx)
-	if err != nil {
-		slog.Error("Metadata collector failed", "error", err)
-		cancel()
-		os.Exit(1)
-	}
+	collectionCompleted := newCollectionCompletedGauge(prometheus.DefaultRegisterer)
 
-	slog.Info("Metadata collector completed successfully, starting pod device mapper")
-
-	// The mapper loops until the context ends, so the metrics endpoint has to run alongside it
-	// rather than after it. Either goroutine returning cancels the other, which keeps the
-	// threshold's non-zero exit intact.
+	// The metrics endpoint starts before collection, not after it. Collection calls into the GPU
+	// driver, which can block indefinitely when the driver is wedged, and a pod stuck there should
+	// still be scraped and show the stall through collectionCompleted rather than go dark. Either
+	// goroutine returning cancels the other, which keeps the mapper threshold's non-zero exit intact.
 	group, groupCtx := errgroup.WithContext(ctx)
 
 	if *metricsPort > 0 {
@@ -110,6 +104,17 @@ func main() {
 			return nil
 		})
 	}
+
+	metadata, err := runCollector(ctx)
+	if err != nil {
+		slog.Error("Metadata collector failed", "error", err)
+		cancel()
+		os.Exit(1)
+	}
+
+	collectionCompleted.SetToCurrentTime()
+
+	slog.Info("Metadata collector completed successfully, starting pod device mapper")
 
 	group.Go(func() error {
 		return runMapper(groupCtx, newPodMapperMetrics(prometheus.DefaultRegisterer), metadata.GPUs)

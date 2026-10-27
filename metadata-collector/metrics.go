@@ -53,3 +53,14 @@ func (m *podMapperMetrics) recordFailure(consecutive int) {
 func (m *podMapperMetrics) recordSuccess() {
 	m.consecutiveFailures.Set(0)
 }
+
+// newCollectionCompletedGauge makes a collection that never finishes alertable: the metrics
+// endpoint is up before collection starts, so a collector blocked on a wedged driver is a live
+// target that keeps reporting 0 here.
+func newCollectionCompletedGauge(reg prometheus.Registerer) prometheus.Gauge {
+	return promauto.With(reg).NewGauge(prometheus.GaugeOpts{
+		Name: "metadata_collector_collection_completed_timestamp_seconds",
+		Help: "Unix time GPU metadata collection completed, or 0 while it is still running. " +
+			"Collection can block on a wedged GPU driver, so 0 long after process start means it has stalled.",
+	})
+}

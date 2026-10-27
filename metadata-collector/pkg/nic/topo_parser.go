@@ -31,7 +31,14 @@ import (
 	"time"
 )
 
-const topoCommandTimeout = 30 * time.Second
+const (
+	topoCommandTimeout = 30 * time.Second
+
+	// commandWaitDelay bounds how long to keep waiting once the timeout has killed nvidia-smi. A
+	// process in uninterruptible sleep on a wedged driver ignores the kill, and without this the
+	// wait never returns.
+	commandWaitDelay = 5 * time.Second
+)
 
 // Column patterns recognise NIC-naming conventions in the header:
 //   - NICn placeholders (older/OCI drivers), remapped via "NIC Legend"
@@ -79,7 +86,10 @@ func RunTopoCommand(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, topoCommandTimeout)
 	defer cancel()
 
-	output, err := exec.CommandContext(ctx, "nvidia-smi", "topo", "-m").CombinedOutput()
+	cmd := exec.CommandContext(ctx, "nvidia-smi", "topo", "-m")
+	cmd.WaitDelay = commandWaitDelay
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("nvidia-smi topo -m failed: %w (output: %s)", err, string(output))
 	}

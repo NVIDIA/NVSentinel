@@ -32,6 +32,11 @@ type GPUNVLinkTopology struct {
 	Connections []model.NVLink
 }
 
+// commandWaitDelay bounds how long to keep waiting once the timeout has killed nvidia-smi. A
+// process in uninterruptible sleep on a wedged driver ignores the kill, and without this the wait
+// never returns.
+const commandWaitDelay = 5 * time.Second
+
 var (
 	gpuHeaderPattern = regexp.MustCompile(`^GPU (\d+):`)
 	linkPattern      = regexp.MustCompile(`^\s*Link (\d+):\s+Remote Device\s+([0-9a-fA-F:\.]+):\s+Link\s+(\d+)`)
@@ -42,6 +47,7 @@ func DetectNVLinkTopology(ctx context.Context) (map[int]GPUNVLinkTopology, error
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "nvidia-smi", "nvlink", "-R")
+	cmd.WaitDelay = commandWaitDelay
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
