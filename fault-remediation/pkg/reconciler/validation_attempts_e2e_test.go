@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,6 +49,14 @@ func handOffToValidation(ctx context.Context, t *testing.T, r *FaultRemediationR
 		ResumeToken: []byte(nodeName + "-handoff"),
 	})
 	require.NoError(t, err)
+
+	// The reconciler reads the Node through the informer cache. Wait until the cache holds the
+	// kept counts, so the next event does not read the state from before the hand-off.
+	require.Eventually(t, func() bool {
+		state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+
+		return err == nil && len(state.ValidationAttempts) > 0
+	}, 10*time.Second, 50*time.Millisecond, "kept attempts must be visible through the cache")
 }
 
 func setValidationState(ctx context.Context, t *testing.T, nodeName, validationState string,
