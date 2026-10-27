@@ -182,20 +182,6 @@ func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) 
 	return GetTracer().Start(ctx, name, opts...)
 }
 
-// StartChildSpanIfParentTraceActive starts a child span only when ctx already carries a valid
-// span. If there is no active trace, returns ctx unchanged with traced=false;
-func StartChildSpanIfParentTraceActive(
-	ctx context.Context, name string, opts ...trace.SpanStartOption,
-) (context.Context, trace.Span, bool) {
-	if !trace.SpanFromContext(ctx).SpanContext().IsValid() {
-		return ctx, nil, false
-	}
-
-	ctx, span := StartSpan(ctx, name, opts...)
-
-	return ctx, span, true
-}
-
 // StartSpanFromTraceID starts a new span that belongs to an existing trace.
 // When only traceID is provided, the span is placed under the same trace but
 // without a parent-child link (sibling root span). For proper parent-child
@@ -343,11 +329,6 @@ func ParentSpanID(spanIDs map[string]string, parentService string) string {
 	}
 
 	return spanIDs[parentService]
-}
-
-// SetSpanAttributes attaches one or more key-value attributes to the given span.
-func SetSpanAttributes(span trace.Span, attrs ...attribute.KeyValue) {
-	span.SetAttributes(attrs...)
 }
 
 // RecordError records the error as a span event and sets the span status to Error.

@@ -23,6 +23,7 @@ endif
 # Load versions from .versions.yaml
 ADDLICENSE_VERSION := $(shell $(YQ) '.linting.addlicense' .versions.yaml)
 BLACK_VERSION := $(shell $(YQ) '.linting.black' .versions.yaml)
+DEADCODE_VERSION := $(shell $(YQ) '.go_tools.deadcode' .versions.yaml)
 DOCKER_BUILDX_VERSION := $(shell $(YQ) '.container_tools.docker_buildx' .versions.yaml)
 GO_VERSION := $(shell $(YQ) '.languages.go' .versions.yaml)
 GOCOVER_COBERTURA_VERSION := $(shell $(YQ) '.go_tools.gocover_cobertura' .versions.yaml)
@@ -132,7 +133,7 @@ dev-env-setup: ## Setup complete development environment (installs all required 
 
 # Install lint tools
 .PHONY: install-lint-tools
-install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobertura ## Install all lint tools (golangci-lint, gotestsum, gocover-cobertura)
+install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobertura install-deadcode ## Install all lint tools (golangci-lint, gotestsum, gocover-cobertura, deadcode)
 	@echo "All lint tools installed successfully"
 	@echo ""
 	@echo "=== Installed Tool Versions and Locations ==="
@@ -155,6 +156,12 @@ install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobe
 		echo "    Location: $$(which gocover-cobertura)"; \
 	else \
 		echo "gocover-cobertura: not found"; \
+	fi
+	@if command -v deadcode >/dev/null 2>&1; then \
+		echo "deadcode: installed (no version command available)"; \
+		echo "    Location: $$(which deadcode)"; \
+	else \
+		echo "deadcode: not found"; \
 	fi
 	@echo "=============================================="
 
@@ -198,6 +205,17 @@ install-gocover-cobertura:
 		$(GO) install github.com/boumenot/gocover-cobertura@$(GOCOVER_COBERTURA_VERSION); \
 	else \
 		echo "gocover-cobertura is already installed"; \
+	fi
+
+# Install deadcode
+.PHONY: install-deadcode
+install-deadcode:
+	@echo "Installing deadcode..."
+	@if ! command -v deadcode >/dev/null 2>&1; then \
+		echo "deadcode not found, installing..."; \
+		$(GO) install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION); \
+	else \
+		echo "deadcode is already installed"; \
 	fi
 
 # Install Go $(GO_VERSION) for CI environments (Linux and macOS, amd64 and arm64)
@@ -272,7 +290,7 @@ install-go-ci: ## Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd
 
 # Lint and test all modules (delegates to sub-Makefiles)
 .PHONY: lint-test-all
-lint-test-all: protos-lint license-headers-lint gomod-lint renovate-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint gpu-reset-lint ## Lint and test all modules
+lint-test-all: protos-lint license-headers-lint gomod-lint renovate-lint dead-code-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint gpu-reset-lint ## Lint and test all modules
 
 # Health monitors lint-test (delegate to health-monitors/Makefile)
 .PHONY: health-monitors-lint-test-all
@@ -368,6 +386,12 @@ gomod-lint: ## Validate go.mod files for local module replace directives
 .PHONY: renovate-lint
 renovate-lint: ## Validate the Renovate configuration and .versions.yaml annotations
 	./scripts/validate-renovate.sh
+
+# Check all Go modules for dead code
+.PHONY: dead-code-lint
+dead-code-lint: ## Fail on Go functions no binary or test reaches, and on unused code including test files
+	@echo "Checking Go modules for dead code..."
+	./scripts/check-dead-code.sh
 
 # Sync dependencies across all go modules using Go workspace
 .PHONY: dependencies-sync
@@ -862,7 +886,19 @@ cluster-create: ## Create local ctlptl-managed Kind cluster with registry
 		echo "Error: ctlptl config file $(CTLPTL_CONFIG_FILE) not found"; \
 		exit 1; \
 	fi
-	ctlptl apply -f $(CTLPTL_CONFIG_FILE)
+	@# kind's load balancer sends traffic to control planes that are not up yet
+	@# while fewer than half are healthy, so joining one can fail at random.
+	@# kind deletes the nodes of a cluster it fails to create, so try again.
+	@for attempt in 1 2 3; do \
+		if ctlptl apply -f $(CTLPTL_CONFIG_FILE); then \
+			break; \
+		fi; \
+		if [ $$attempt -eq 3 ]; then \
+			echo "Error: cluster creation failed after $$attempt attempts"; \
+			exit 1; \
+		fi; \
+		echo "Cluster creation failed on attempt $$attempt, retrying..."; \
+	done
 	@echo "Waiting for all nodes to be ready..."
 	@kubectl wait --for=condition=ready nodes --all --timeout=300s
 	@echo "Raising kindnet memory limit"

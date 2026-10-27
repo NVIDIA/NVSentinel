@@ -103,7 +103,6 @@ type resumeControlStore interface {
 	GetMode(ctx context.Context, clientName string) (string, error)
 	SetMode(ctx context.Context, clientName, mode string) error
 	GetColdStartCutoff(ctx context.Context, clientName string) (time.Time, error)
-	SetColdStartCutoff(ctx context.Context, clientName string, cutoff time.Time) error
 	BeginCreate(ctx context.Context, clientName string, cutoff time.Time) error
 }
 

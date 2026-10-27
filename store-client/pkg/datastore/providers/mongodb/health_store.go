@@ -73,63 +73,6 @@ func (h *MongoHealthEventStore) UpdateSpanID(ctx context.Context, id string, ser
 	return nil
 }
 
-// UpdateHealthEventStatusByNode updates health event status by node
-func (h *MongoHealthEventStore) UpdateHealthEventStatusByNode(ctx context.Context, nodeName string,
-	status datastore.HealthEventStatus) error {
-	// Create filter for node name
-	filter := map[string]any{
-		fieldHealthEventNodeName: nodeName,
-	}
-
-	// Create update document
-	update := map[string]any{
-		"$set": map[string]any{
-			"healtheventstatus": status,
-		},
-	}
-
-	_, err := h.databaseClient.UpdateDocument(ctx, filter, update)
-	if err != nil {
-		return fmt.Errorf("failed to update health event status by node: %w", err)
-	}
-
-	return nil
-}
-
-// FindHealthEventsByNode finds health events by node
-func (h *MongoHealthEventStore) FindHealthEventsByNode(ctx context.Context,
-	nodeName string) ([]datastore.HealthEventWithStatus, error) {
-	filter := map[string]any{
-		fieldHealthEventNodeName: nodeName,
-	}
-
-	cursor, err := h.databaseClient.Find(ctx, filter, nil)
-	if err != nil {
-		return nil, datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to find health events by node",
-			err,
-		).WithMetadata("nodeName", nodeName)
-	}
-	defer cursor.Close(ctx)
-
-	var events []datastore.HealthEventWithStatus
-
-	err = cursor.All(ctx, &events)
-	if err != nil {
-		return nil, datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to decode health events by node",
-			err,
-		).WithMetadata("nodeName", nodeName)
-	}
-
-	// Normalize HealthEvent fields from bson.M to map[string]interface{}
-	normalizeHealthEvents(events)
-
-	return events, nil
-}
-
 // FindHealthEventsByFilter finds health events by filter
 func (h *MongoHealthEventStore) FindHealthEventsByFilter(ctx context.Context,
 	filter map[string]any) ([]datastore.HealthEventWithStatus, error) {
@@ -197,86 +140,6 @@ func (h *MongoHealthEventStore) FindHealthEventsByFilter(ctx context.Context,
 	return events, nil
 }
 
-// FindHealthEventsByStatus finds health events by status
-func (h *MongoHealthEventStore) FindHealthEventsByStatus(ctx context.Context,
-	status datastore.Status) ([]datastore.HealthEventWithStatus, error) {
-	// Query for any status field that matches the given status
-	filter := map[string]any{
-		"$or": []map[string]any{
-			{"healtheventstatus.nodequarantined": status},
-			{"healtheventstatus.userpodsevictionstatus.status": status},
-		},
-	}
-
-	cursor, err := h.databaseClient.Find(ctx, filter, nil)
-	if err != nil {
-		return nil, datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to find health events by status",
-			err,
-		).WithMetadata("status", string(status))
-	}
-	defer cursor.Close(ctx)
-
-	var events []datastore.HealthEventWithStatus
-
-	err = cursor.All(ctx, &events)
-	if err != nil {
-		return nil, datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to decode health events by status",
-			err,
-		).WithMetadata("status", string(status))
-	}
-
-	// Normalize HealthEvent fields from bson.M to map[string]interface{}
-	normalizeHealthEvents(events)
-
-	return events, nil
-}
-
-// UpdateNodeQuarantineStatus updates node quarantine status
-func (h *MongoHealthEventStore) UpdateNodeQuarantineStatus(ctx context.Context, eventID string,
-	status datastore.Status, spanID string) error {
-	// Use the convenience function from our existing implementation
-	return client.UpdateHealthEventNodeQuarantineStatus(ctx, h.databaseClient, eventID,
-		string(status), spanID)
-}
-
-// UpdatePodEvictionStatus updates pod eviction status
-func (h *MongoHealthEventStore) UpdatePodEvictionStatus(ctx context.Context, eventID string,
-	status datastore.OperationStatus) error {
-	// Use the convenience function from our existing implementation
-	return client.UpdateHealthEventPodEvictionStatus(ctx, h.databaseClient, eventID, status)
-}
-
-// UpdateRemediationStatus updates remediation status
-func (h *MongoHealthEventStore) UpdateRemediationStatus(ctx context.Context, eventID string, status any) error {
-	// Use the convenience function from our existing implementation
-	return client.UpdateHealthEventRemediationStatus(ctx, h.databaseClient, eventID, status)
-}
-
-// CheckIfNodeAlreadyDrained checks if a node is already drained
-func (h *MongoHealthEventStore) CheckIfNodeAlreadyDrained(ctx context.Context,
-	nodeName string) (bool, error) {
-	// Look for events where the node is successfully drained
-	filter := map[string]any{
-		fieldHealthEventNodeName:                          nodeName,
-		"healtheventstatus.userpodsevictionstatus.status": datastore.StatusSucceeded,
-	}
-
-	count, err := h.databaseClient.CountDocuments(ctx, filter, nil)
-	if err != nil {
-		return false, datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to check if node is already drained",
-			err,
-		).WithMetadata("nodeName", nodeName)
-	}
-
-	return count > 0, nil
-}
-
 // findLatestByFilter returns the newest matching event by creation time and document ID.
 // Errors are returned unwrapped so callers can add their own message and metadata.
 func (h *MongoHealthEventStore) findLatestByFilter(
@@ -312,25 +175,6 @@ func (h *MongoHealthEventStore) findLatestByFilter(
 	return &event, nil
 }
 
-// FindLatestEventForNode finds the latest event for a node
-func (h *MongoHealthEventStore) FindLatestEventForNode(
-	ctx context.Context,
-	nodeName string,
-) (*datastore.HealthEventWithStatus, error) {
-	event, err := h.findLatestByFilter(ctx, map[string]any{
-		fieldHealthEventNodeName: nodeName,
-	})
-	if err != nil {
-		return nil, datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to find latest event for node",
-			err,
-		).WithMetadata("nodeName", nodeName)
-	}
-
-	return event, nil
-}
-
 // FindLatestHealthEventByQuery returns the newest matching event (by createdAt) using a
 // server-side sort and limit, so it never loads more than one document.
 func (h *MongoHealthEventStore) FindLatestHealthEventByQuery(ctx context.Context,
@@ -356,29 +200,6 @@ func (h *MongoHealthEventStore) FindHealthEventsByQuery(ctx context.Context,
 
 	// Use existing implementation
 	return h.FindHealthEventsByFilter(ctx, filter)
-}
-
-// UpdateHealthEventsByQuery updates health events using query builder
-// MongoDB: converts builders to maps and uses existing UpdateMany
-func (h *MongoHealthEventStore) UpdateHealthEventsByQuery(ctx context.Context,
-	queryBuilder datastore.QueryBuilder, updateBuilder datastore.UpdateBuilder) error {
-	// Convert query builder to MongoDB filter
-	filter := queryBuilder.ToMongo()
-
-	// Convert update builder to MongoDB update document
-	update := updateBuilder.ToMongo()
-
-	// Use MongoDB UpdateManyDocuments
-	_, err := h.databaseClient.UpdateManyDocuments(ctx, filter, update)
-	if err != nil {
-		return datastore.NewUpdateError(
-			datastore.ProviderMongoDB,
-			"failed to update health events by query",
-			err,
-		)
-	}
-
-	return nil
 }
 
 // decodeRawDocToHealthEvent decodes a raw BSON map into a HealthEventWithStatus,

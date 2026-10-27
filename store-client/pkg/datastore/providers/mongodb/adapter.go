@@ -38,8 +38,7 @@ type AdaptedMongoStore struct {
 	config           datastore.DataStoreConfig
 
 	// Store implementations
-	maintenanceStore datastore.MaintenanceEventStore
-	healthStore      datastore.HealthEventStore
+	healthStore datastore.HealthEventStore
 }
 
 // NewAdaptedMongoStore creates a new adapted MongoDB store
@@ -107,17 +106,11 @@ func NewAdaptedMongoStore(ctx context.Context, certMountPath *string,
 	}
 
 	// Initialize store implementations
-	store.maintenanceStore = NewMongoMaintenanceEventStore(databaseClient, collectionClient)
 	store.healthStore = NewMongoHealthEventStore(databaseClient, collectionClient)
 
 	slog.Info("Successfully created adapted MongoDB store")
 
 	return store, nil
-}
-
-// MaintenanceEventStore returns the maintenance event store
-func (a *AdaptedMongoStore) MaintenanceEventStore() datastore.MaintenanceEventStore {
-	return a.maintenanceStore
 }
 
 // HealthEventStore returns the health event store
