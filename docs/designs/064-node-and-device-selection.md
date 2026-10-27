@@ -31,7 +31,7 @@ Status: Proposed.
    - [Design details](#design-details)
      - Rule sets: [Rule set evaluation](#rule-set-evaluation), [Validation](#validation), [Metrics](#metrics), [Differences from fault-quarantine](#differences-from-fault-quarantine), [Code](#code)
      - Node data: [Node fields and the node cache](#node-fields-and-the-node-cache)
-     - node-drainer: [The drain decision](#the-drain-decision), [One drain method for each session](#one-drain-method-for-each-session), [Already drained](#already-drained), [Custom drain scope](#custom-drain-scope), [Pod policies for each rule set](#pod-policies-for-each-rule-set), [Existing configurations](#existing-configurations), [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector)
+     - node-drainer: [The drain decision](#the-drain-decision), [Stop rule sets](#stop-rule-sets), [One drain method for each session](#one-drain-method-for-each-session), [Already drained](#already-drained), [Custom drain scope](#custom-drain-scope), [Pod policies for each rule set](#pod-policies-for-each-rule-set), [Existing configurations](#existing-configurations), [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector)
      - fault-remediation: [The remediation decision](#the-remediation-decision), [Partial drains and actions on the full node](#partial-drains-and-actions-on-the-full-node)
      - Across components: [Quarantine session](#quarantine-session), [Node state labels](#node-state-labels), [The record on the event](#the-record-on-the-event), [Changes for a fault in progress](#changes-for-a-fault-in-progress)
    - [Phases](#phases)
@@ -80,10 +80,10 @@ node-drainer and fault-remediation get rule sets in the form of the fault-quaran
 1. **A shared rule set schema for node-drainer and fault-remediation.** A rule set has a common part (`name`, `enabled`, `priority`, and `match`) and one outcome key that is named for the component (`drain` or `remediation`). The common part, the CEL variables, the meaning of `priority`, and the result of an error are the same in both components. An operator learns one format, and a rule set moves from one component to the other with a change to the outcome only. The exception is a `Node` rule that reads the status, which node-drainer does not keep (see [Node fields and the node cache](#node-fields-and-the-node-cache)). The types and the evaluator are in `commons`.
 2. **Each component keeps its own configuration.** There is no shared profile and no shared definition of node groups.
 3. **fault-quarantine:** no change. Its rule sets already select by node and by event. The shared schema is based on its rule sets and its node cache, but this ADR does not change its configuration or its behaviour (see [Differences from fault-quarantine](#differences-from-fault-quarantine)).
-4. **node-drainer:** add `ruleSets` with the `drain` outcome. The outcome is `stop: true` or a `method`. `BuiltIn` is the eviction by node-drainer. `Custom` is the custom drain CR. A `BuiltIn` outcome can set its own `userNamespaces` or `podDrainPolicies`, which replace the top-level list for the events that use the rule set. The top-level lists are the default, and they are not deprecated. An event that no rule set matches uses `BuiltIn` with the top-level lists, or `Custom` when the custom drain is not scoped (see [Custom drain scope](#custom-drain-scope)).
+4. **node-drainer:** add `ruleSets` with the `drain` outcome. The outcome is `stop: true` or a `method`. A rule set with `stop: true` can use only `Node` rules, and it wins over the rule sets that select a method (see [Stop rule sets](#stop-rule-sets)). `BuiltIn` is the eviction by node-drainer. `Custom` is the custom drain CR. A `BuiltIn` outcome can set its own `userNamespaces` or `podDrainPolicies`, which replace the top-level list for the events that use the rule set. The top-level lists are the default, and they are not deprecated. An event that no rule set matches uses `BuiltIn` with the top-level lists, or `Custom` when the custom drain is not scoped (see [Custom drain scope](#custom-drain-scope)).
 5. **fault-remediation:** add `ruleSets` with the `remediation` outcome. The outcome is `stop: true` or an `action` from `maintenance.actions`. No match gives the action of the event. fault-remediation decides before it uses the action of the event, so the selected entry applies in each later step, including the equivalence group and `maxRemediationAttempts` (see [The remediation decision](#the-remediation-decision)).
 6. **A stop is not a failure.** A stop is recorded on the event, and the node state is `drain-stopped` or `remediation-stopped`, not a failure state (see [Node state labels](#node-state-labels)).
-7. **Each decision is made one time and recorded on the event.** Later passes read the record, so a label or configuration change does not change a decision that is in progress. The exception is the pod policies of a `BuiltIn` drain, which are not in the record and follow the configuration. node-drainer selects the drain method one time for each [quarantine session](#quarantine-session), when it starts the first drain of the session. Each later event of the session uses the same method and rule set, but can still stop (see [One drain method for each session](#one-drain-method-for-each-session)). node-drainer records the rule set, the method or the stop, and the scope. fault-remediation records the rule set and the action (see [The record on the event](#the-record-on-the-event)).
+7. **Each decision is made one time and recorded on the event.** Later passes read the record, so a label or configuration change does not change a decision that is in progress. The exception is the pod policies of a `BuiltIn` drain, which are not in the record and follow the configuration. node-drainer selects the drain method one time for each [quarantine session](#quarantine-session), when it starts the first drain of the session. Each later event of the session uses the same method and rule set (see [One drain method for each session](#one-drain-method-for-each-session)). A drain stop reads only the Node, so the events of a session get the same stop decision unless a label changes during the session. node-drainer records the rule set, the method or the stop, and the scope. fault-remediation records the rule set and the action (see [The record on the event](#the-record-on-the-event)).
 8. **Device selection reads the health event.** A `HealthEvent` rule can read each field of the event. Device information that a later change adds to the event is available to the rules with no change to this ADR. Changes that add device information to the event are not part of this ADR.
 9. **Existing configurations continue to work.** Without `ruleSets`, each component behaves as at this time, except for two node-drainer changes (see [Existing configurations](#existing-configurations)). `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) is deprecated. It continues to work as a `Custom` rule set with the lowest priority (see [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector)).
 
@@ -93,7 +93,7 @@ node-drainer and fault-remediation get rule sets in the form of the fault-quaran
 | 2. External repair | fault-remediation rule set: an action entry for an `ExternalRemediationRequest` |
 | 3. Reset bare metal, replace VMs | fault-remediation rule set: `COMPONENT_RESET` on VM nodes selects a `TerminateNode` entry |
 | 4. Slurm drain plugin | node-drainer rule set: `drain: { method: Custom }` for Slurm nodes. `customDrain.nodeSelector` works at this time |
-| 5. Device type or model | A rule set on `event.componentClass`, `event.entitiesImpacted`, or other device fields of the event, in any of the three components |
+| 5. Device type or model | A rule set on `event.componentClass`, `event.entitiesImpacted`, or other device fields of the event, in any of the three components. A drain stop cannot select by event (see [Stop rule sets](#stop-rule-sets)) |
 | 6. Monitoring only | fault-quarantine rule sets whose `Node` rule excludes the group, at this time |
 | 6. Monitoring and quarantine | node-drainer rule set: `drain: { stop: true }` |
 
@@ -128,10 +128,10 @@ Each rule set has one outcome key. The key is the name of the stage that reads i
 
 | Key | Component | `stop: true` | Selection field | No match |
 |---|---|---|---|---|
-| `drain` | node-drainer | No drain. Node state `drain-stopped`, unless another event of the session has already moved the node to a later state (see [Node state labels](#node-state-labels)) | `method`: `BuiltIn` or `Custom`. `BuiltIn` can also set `userNamespaces` or `podDrainPolicies` | `BuiltIn` with the top-level lists. `Custom` when the custom drain is enabled and not scoped (see [Custom drain scope](#custom-drain-scope)) |
+| `drain` | node-drainer | No drain. Node state `drain-stopped`, unless another event of the session has already moved the node to a later state (see [Node state labels](#node-state-labels)). Only `Node` rules, and the rule set wins over the rule sets that select a method (see [Stop rule sets](#stop-rule-sets)) | `method`: `BuiltIn` or `Custom`. `BuiltIn` can also set `userNamespaces` or `podDrainPolicies` | `BuiltIn` with the top-level lists. `Custom` when the custom drain is enabled and not scoped (see [Custom drain scope](#custom-drain-scope)) |
 | `remediation` | fault-remediation | No CR. Node state `remediation-stopped`, unless another event of the session has already moved the node to a later state (see [Node state labels](#node-state-labels)) | `action`: an entry of `maintenance.actions` | The action of the event |
 
-The component evaluates the enabled rule sets in order of `priority`, and the first rule set that matches wins. If a rule set before the winner cannot be evaluated, the component does not decide, and it tries again (see [Rule set evaluation](#rule-set-evaluation)).
+The component evaluates the enabled rule sets in order of `priority`, and the first rule set that matches wins. In node-drainer, the `stop` rule sets come before the rule sets that select a method. If a rule set before the winner cannot be evaluated, the component does not decide, and it tries again (see [Rule set evaluation](#rule-set-evaluation)).
 
 In node-drainer, when another event of the [quarantine session](#quarantine-session) has already selected the method, an event that does not stop uses that method, not the method of its own winner (see [One drain method for each session](#one-drain-method-for-each-session)).
 
@@ -157,14 +157,6 @@ ruleSets:
           expression: >-
             "example.com/pool" in node.metadata.labels &&
             node.metadata.labels["example.com/pool"] == "quarantine-only"
-    drain:
-      stop: true
-  - name: lpu-no-drain
-    priority: 90
-    match:
-      all:
-        - kind: HealthEvent
-          expression: 'event.componentClass == "LPU"'
     drain:
       stop: true
   - name: slurm
@@ -202,12 +194,11 @@ customDrain:
 | Node or event | Winner | Drain |
 |---|---|---|
 | `example.com/pool=quarantine-only` | `quarantine-only` | Stop |
-| An LPU event on any node | `lpu-no-drain` | Stop |
 | `scheduler=slurm` | `slurm` | Custom drain CR |
 | `example.com/pool=inference` | `inference-fast` | Eviction by node-drainer, `*` in `Immediate` mode |
 | Other nodes | None | Eviction by node-drainer, with the top-level `userNamespaces`. The `slurm` rule set selects `Custom`, so the custom drain is scoped (see [Custom drain scope](#custom-drain-scope)) |
 
-**Use of the schema.** The outcome key is `drain`. A `Node` rule reads the Node from the node informer of node-drainer. A `HealthEvent` rule reads the event, so a rule set can also select by fault type. A label selector cannot. `method: Custom` is valid only when `customDrain.enabled` is true. The Helm chart and startup validation check this.
+**Use of the schema.** The outcome key is `drain`. A `Node` rule reads the Node from the node informer of node-drainer. A `HealthEvent` rule reads the event, so a rule set can also select the method by fault type. A label selector cannot. A `stop` rule set can use only `Node` rules. A stop for an LPU fault is a `remediation` stop in fault-remediation (see [fault-remediation](#fault-remediation)), or a hold label (see [Stop rule sets](#stop-rule-sets)). `method: Custom` is valid only when `customDrain.enabled` is true. The Helm chart and startup validation check this.
 
 **The decision.** Before node-drainer drains for an event, it applies `drainOverrides.skip`, then `stop`, then the check for an earlier drain that covers the event, then the method of the session, and then the winner or the default. It records the decision on the event before it acts. The details are:
 
@@ -279,7 +270,7 @@ The sections below describe each decision in full. They are grouped by area:
 
 - **Rule sets:** [Rule set evaluation](#rule-set-evaluation), [Validation](#validation), [Metrics](#metrics), [Differences from fault-quarantine](#differences-from-fault-quarantine), [Code](#code).
 - **Node data:** [Node fields and the node cache](#node-fields-and-the-node-cache).
-- **node-drainer:** [The drain decision](#the-drain-decision), [One drain method for each session](#one-drain-method-for-each-session), [Already drained](#already-drained), [Custom drain scope](#custom-drain-scope), [Pod policies for each rule set](#pod-policies-for-each-rule-set), [Existing configurations](#existing-configurations), [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector).
+- **node-drainer:** [The drain decision](#the-drain-decision), [Stop rule sets](#stop-rule-sets), [One drain method for each session](#one-drain-method-for-each-session), [Already drained](#already-drained), [Custom drain scope](#custom-drain-scope), [Pod policies for each rule set](#pod-policies-for-each-rule-set), [Existing configurations](#existing-configurations), [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector).
 - **fault-remediation:** [The remediation decision](#the-remediation-decision), [Partial drains and actions on the full node](#partial-drains-and-actions-on-the-full-node).
 - **Across components:** [Quarantine session](#quarantine-session), [Node state labels](#node-state-labels), [The record on the event](#the-record-on-the-event), [Changes for a fault in progress](#changes-for-a-fault-in-progress).
 
@@ -303,7 +294,7 @@ The sections below describe each decision in full. They are grouped by area:
 | `remediation` | Any two rule sets that match. The outcome is one choice |
 | fault-quarantine (for reference, not part of this schema) | Two rule sets that match and set the same taint key and value, or the same label key. The other fields combine |
 
-**One winner.** The `drain` and `remediation` outcomes are each one choice, so one rule set applies. The component evaluates the enabled rule sets in order of `priority`, the highest first, and in the sequence of the configuration for equal priorities. The first rule set that matches wins, and the component does not evaluate the rule sets after it. Only the outcome of the winner applies.
+**One winner.** The `drain` and `remediation` outcomes are each one choice, so one rule set applies. The component evaluates the enabled rule sets in order of `priority`, the highest first, and in the sequence of the configuration for equal priorities. The first rule set that matches wins, and the component does not evaluate the rule sets after it. Only the outcome of the winner applies. node-drainer evaluates its `stop` rule sets first, and then the rule sets that select a method, each group in order of `priority` (see [Stop rule sets](#stop-rule-sets)).
 
 **An error stops the decision.** If a rule set before the winner cannot be evaluated, the component does not use the result of the other rule sets, and it does not use the default. The failed rule set could have won, for example with `stop` for the node. A rule set after the winner is not evaluated, so it cannot stop the decision. Thus, a rule set with an error stops only the decisions in which no rule set with a higher priority matches. The component logs the rule set name and the error, and a metric counts the error for each rule set. What each component does then is in [The drain decision](#the-drain-decision) and [The remediation decision](#the-remediation-decision).
 
@@ -332,6 +323,7 @@ The component also logs a warning at startup, but continues, for:
 
 - A `drain` outcome with both `userNamespaces` and `podDrainPolicies`.
 - `userNamespaces` or `podDrainPolicies` with `method: Custom` or `stop: true`. These outcomes do not evict, so the list has no effect.
+- A rule set with `stop: true` that has a `HealthEvent` rule (see [Stop rule sets](#stop-rule-sets)).
 - A `method` other than `BuiltIn` and `Custom`.
 - `method: Custom` when `customDrain.enabled` is false.
 - An eviction mode that does not exist.
@@ -413,7 +405,7 @@ If the component cannot name the label keys that a rule reads, the informer keep
 **The order.** Before node-drainer evicts the first pod or creates the custom drain CR for an event, it selects the drain method:
 
 1. `drainOverrides.skip` on the event applies first, as it does at this time. node-drainer marks the drain `AlreadyDrained` and does not evaluate the rule sets, so remediation continues. This is different from `stop: true`, which also stops remediation. An override on one event is more specific than a rule set. `drainOverrides.force` does not select `stop` or the method. It applies on the `BuiltIn` path, as it does at this time.
-2. If the winning rule set gives `stop: true`, node-drainer stops the drain for the event (see **Stop** below). An event can stop when another event of the session already drains the node.
+2. If a `stop` rule set matches, node-drainer stops the drain for the event (see **Stop** below). The `stop` rule sets come before the rule sets that select a method, whatever their priority (see [Stop rule sets](#stop-rule-sets)). An event can stop while another event of the session drains the node. The stop applies only to this event. It does not end that drain, and it does not stop the remediation of that event.
 3. If an earlier drain of the session covers the event, node-drainer marks the drain `AlreadyDrained`, as it does at this time (see [Already drained](#already-drained)).
 4. If another event of the [quarantine session](#quarantine-session) has a recorded method, the event uses that method and the rule set of that record, so the pod policies are also the same. The drain scope still comes from the event (see [One drain method for each session](#one-drain-method-for-each-session)).
 5. Otherwise, the winning rule set gives the method. For `BuiltIn`, the pod policies are those of the rule set, or the top-level lists if the rule set has none. The winner can be the `custom-drain-node-selector` rule set, which node-drainer makes from the deprecated `customDrain.nodeSelector` (see [Deprecation of `customDrain.nodeSelector`](#deprecation-of-customdrainnodeselector)).
@@ -422,11 +414,24 @@ If the component cannot name the label keys that a rule reads, the informer keep
 
 node-drainer records the rule set, the method or the stop, and the drain scope (the full node, or the entity type and value for a partial drain) on the event status before it acts. Later passes for the same event read the record and do not evaluate the rule sets again. A cold start reads the record.
 
-**Stop.** node-drainer records `userPodsEvictionStatus: Stopped`, a new value, and the node state `drain-stopped` (see [Node state labels](#node-state-labels)). `Stopped` is different from `AlreadyDrained`. fault-remediation starts only for `Succeeded` and `AlreadyDrained`, so it does not start for this event. The node stays in quarantine until the [quarantine session](#quarantine-session) ends, when the last failure recovers or the operator removes the quarantine. For a fault that does not recover by itself, this is until the operator acts.
+**Stop.** node-drainer records `userPodsEvictionStatus: Stopped`, a new value, on the event. `Stopped` is different from `AlreadyDrained`. fault-remediation starts only for `Succeeded` and `AlreadyDrained`, so it does not start for this event. If no other event of the session has started a drain, the node state is `drain-stopped`, and the node stays in quarantine until the [quarantine session](#quarantine-session) ends, when the last failure recovers or the operator removes the quarantine. For a fault that does not recover by itself, this is until the operator acts. If another event of the session has started a drain, for example because the label that the `stop` rule set reads was added during the session, the stop does not change the node state (see [Node state labels](#node-state-labels)). The drain and the remediation of the other event continue. Only the stopped event gets no remediation.
 
 **An error.** node-drainer does not drain, does not record a decision, and does not change the node state. It logs the rule set name and the error, increments the metric, and tries again with backoff, as it does at this time when it cannot evaluate an event. The next pass evaluates the rule sets again, so a label or configuration change can correct the failure.
 
 **No Node.** If the informer cannot return the Node, node-drainer does not evaluate the rule sets and does not set a node state. It waits and tries again, as it does for `customDrain.nodeSelector` at this time. The `custom-drain-node-selector` rule set behaves the same way.
+
+#### Stop rule sets
+
+A `drain` rule set with `stop: true` can use only `Node` rules. The Helm chart and startup validation fail for a `HealthEvent` rule in it. Each event of a node reads the same Node, so all events of a [quarantine session](#quarantine-session) get the same stop decision while the labels do not change. With a `HealthEvent` rule, one event of the session could stop while a later event drains and remediates the node, so the stop could not hold the node.
+
+node-drainer evaluates the `stop` rule sets before the rule sets that select a method, whatever their priority. If a method rule set with a `HealthEvent` rule had a higher priority, it would win for some events of the session and not for others, and those events would drain the node. Priority orders the rule sets within each of the two groups. An error in a `stop` rule set stops the decision for each event on the node (see [Rule set evaluation](#rule-set-evaluation)).
+
+A stop that a fault triggers uses a label. For example, to hold nodes that have an XID 79 fault for a return to the vendor, a fault-quarantine rule set with a `HealthEvent` rule adds a hold label, and a node-drainer `stop` rule set matches the label. fault-quarantine keeps the label until the session ends, so each later event of the session also stops. A stop by fault type that does not hold the node, for example no reboot for an LPU fault, is a `remediation: { stop: true }` rule set in fault-remediation, which can use `HealthEvent` rules.
+
+A label that changes during a session can still give two events different stop decisions:
+
+- A label added during a session stops the later events. It does not end a drain or a remediation that an earlier event has started (see **Stop** in [The drain decision](#the-drain-decision)).
+- A label removed during a session lets a later event drain the node. A stopped event records no method, so the later event selects the method of the session.
 
 #### One drain method for each session
 
@@ -568,12 +573,12 @@ The `quarantineHealthEvent` annotation on the Node is not the list of the events
 
 #### Node state labels
 
-Two new values join the node state labels: `drain-stopped` and `remediation-stopped`. A [quarantine session](#quarantine-session) can have more than one event, and each event has its own decision. Thus, the state label can move between a stopped state and the other states:
+Two new values join the node state labels: `drain-stopped` and `remediation-stopped`. A [quarantine session](#quarantine-session) can have more than one event, and each event has its own decision. A drain stop reads only the Node, so the events of a session differ in the drain stop only when a label changes during the session (see [Stop rule sets](#stop-rule-sets)). Thus, the state label can move between a stopped state and the other states:
 
 | From | New expected transitions | Example |
 |---|---|---|
 | `quarantined` | `drain-stopped` | The first event matches a rule set with `drain: { stop: true }` |
-| `drain-stopped` | `draining`, `drain-succeeded` | A later event in the session does not match a `stop` rule set, and node-drainer drains the node, or marks it `AlreadyDrained` |
+| `drain-stopped` | `draining`, `drain-succeeded` | The label that the `stop` rule set reads is removed during the session, and node-drainer drains the node for a later event, or marks it `AlreadyDrained` |
 | `drain-succeeded` | `remediation-stopped` | The event matches a rule set with `remediation: { stop: true }` |
 | `remediation-stopped` | `remediating`, `remediation-succeeded`, `remediation-failed` | A later event in the session is remediated |
 | `remediating`, `remediation-succeeded`, `remediation-failed` | `remediation-stopped` | fault-remediation computes the label again from the remaining [active failures](#quarantine-session), and all of them are stopped |
@@ -658,6 +663,7 @@ Each phase is compatible with earlier versions. Phases 2 and 3 require phase 1, 
 - Existing configuration continues to work, including `customDrain.nodeSelector` during its deprecation period. Operators add rule sets only where they need them.
 - One rule set schema for node-drainer and fault-remediation, and the same CEL rules as fault-quarantine.
 - "Off" is a separate result that the operator can see, for drain and for remediation.
+- All events of a quarantine session get the same drain stop decision while the labels of the node do not change.
 - The drain method no longer changes during a drain, and all events of a quarantine session use one method.
 - A group of nodes can use different eviction modes, and the top-level `userNamespaces` and `podDrainPolicies` are not deprecated.
 
@@ -670,6 +676,9 @@ Each phase is compatible with earlier versions. Phases 2 and 3 require phase 1, 
 - No single field shows the full behaviour for a node. The operator reads the cordon-reason label and the two records on the event.
 - A rule set with a high priority hides the rule sets with a lower priority that match the same events.
 - A rule set that fails before the winner stops the decision in node-drainer and fault-remediation, but does not match in fault-quarantine.
+- A drain stop cannot select by event. A hold that a fault triggers needs a fault-quarantine rule set that adds a label, and a node-drainer rule set that matches it.
+- In node-drainer, a `stop` rule set comes before all rule sets that select a method, so an error in it stops the drain decision for each event on the nodes where it fails.
+- A stop that a label change adds during a session does not end a drain or a remediation that another event of the session has started.
 - The move of the CEL rule evaluators changes fault-quarantine code, although its behaviour does not change.
 - A later event of a quarantine session cannot change the drain method. For example, a more severe event cannot move the drain to a faster method, or to the `Immediate` policies of another rule set. The first event that node-drainer drains selects the method, and it is not always the first event of the session.
 - Pod policies can be in the top-level configuration and in each `BuiltIn` rule set. The operator must find the winning rule set to know which policies apply to a node.
@@ -742,6 +751,14 @@ Each event selects its own method, and the record keeps it for the passes of tha
 #### Only `Node` rules select the method
 
 A rule set with a `HealthEvent` rule can only stop. **Rejected** because: a label change between two events still gives them different methods, and a rule set can no longer select the method by fault type.
+
+#### `HealthEvent` rules in a drain stop rule set
+
+**Rejected** because: one event of a session can stop while a later event that does not match drains and remediates the node, so a stop by fault type cannot hold the node. A label that a fault-quarantine rule set adds gives the same selection and lasts for the session.
+
+#### A stop that ends a drain in progress
+
+A later event that stops ends the drain or the remediation that another event of the session has started. **Rejected** because: that work was started for a fault that needs it. A custom drain CR or a maintenance CR that is deleted while it runs has no defined result for its controller.
 
 #### `Evict` as the name of the built-in method
 
