@@ -16,8 +16,6 @@ limitations under the License.
 
 # ADR-064: Configuration — Node and Device Selection in Each Component
 
-Status: Proposed.
-
 ## Table of Contents
 
 1. [Context](#context)
