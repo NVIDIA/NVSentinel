@@ -37,9 +37,8 @@ import (
 // validationStateLabel is the label lifecycle-manager keeps on a node while validation holds it.
 const validationStateLabel = "nvsentinel.nvidia.com/validation-state"
 
-// handOffToValidation models fault-quarantine handing the node to validation: the node stays
-// cordoned, and FR processes the UnQuarantined event after LM registered the Node session. An
-// empty validationState models a hand-off before that registration.
+// handOffToValidation models fault-quarantine handing the node to validation, with FR processing
+// the UnQuarantined event after LM registered the Node session.
 func handOffToValidation(ctx context.Context, t *testing.T, r *FaultRemediationReconciler,
 	nodeName, validationState string) {
 	t.Helper()
@@ -61,12 +60,13 @@ func handOffToValidation(ctx context.Context, t *testing.T, r *FaultRemediationR
 	}, 10*time.Second, 50*time.Millisecond, "kept attempts must be visible through the cache")
 }
 
-// unquarantineToService models a quarantine that ends without validation: fault-quarantine
-// uncordons the node, and FR processes the UnQuarantined event.
-func unquarantineToService(ctx context.Context, t *testing.T, r *FaultRemediationReconciler, nodeName string) {
+// unquarantineWithoutSession models an UnQuarantined event that finds no request in the node's
+// validation session: a quarantine that ends without validation, or a hand-off that FR processes
+// before LM registers the request.
+func unquarantineWithoutSession(ctx context.Context, t *testing.T, r *FaultRemediationReconciler,
+	nodeName string) {
 	t.Helper()
 
-	setNodeUnschedulable(ctx, t, nodeName, false)
 	setValidationState(ctx, t, nodeName, "", statemanager.NVSentinelStateLabelKey)
 
 	_, err := r.reconcileEvent(ctx, &datastore.EventWithToken{
@@ -80,27 +80,6 @@ func unquarantineToService(ctx context.Context, t *testing.T, r *FaultRemediatio
 
 		return err == nil && len(state.EquivalenceGroups) == 0 && len(state.ValidationAttempts) == 0
 	}, 10*time.Second, 50*time.Millisecond, "the cleared state must be visible through the cache")
-}
-
-// releaseFromValidation models LM releasing the node: the session ends and the node is uncordoned.
-func releaseFromValidation(ctx context.Context, t *testing.T, nodeName string) {
-	t.Helper()
-
-	setValidationState(ctx, t, nodeName, "")
-	setNodeUnschedulable(ctx, t, nodeName, false)
-}
-
-// setNodeUnschedulable cordons the node, as fault-quarantine does when it quarantines the node,
-// or uncordons it, as fault-quarantine and lifecycle-manager do when they return it to service.
-func setNodeUnschedulable(ctx context.Context, t *testing.T, nodeName string, unschedulable bool) {
-	t.Helper()
-
-	node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-	require.NoError(t, err)
-
-	node.Spec.Unschedulable = unschedulable
-	_, err = testClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-	require.NoError(t, err)
 }
 
 func setValidationState(ctx context.Context, t *testing.T, nodeName, validationState string,
@@ -157,7 +136,6 @@ func prepareValidationRepair(t *testing.T, nodeName string, cap int) (*FaultReme
 	ctx := t.Context()
 	r, _, _ := newCappedReconciler(t, cap)
 	prepareQuarantinedNode(ctx, t, r, nodeName)
-	setNodeUnschedulable(ctx, t, nodeName, true)
 	cleanupValidationBudgetNode(t, nodeName)
 	require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, nodeName+"-fault-1"))
 	crName := currentCR(ctx, t, r, nodeName)
@@ -210,30 +188,34 @@ func TestMaxAttempts_FaultDuringValidationContinuesBudget(t *testing.T) {
 			assert.Equal(t, string(statemanager.RemediationFailedLabelValue), nodeStateLabel(ctx, t, nodeName))
 
 			// Validation finishing later does not lift the cap of the running quarantine.
-			releaseFromValidation(ctx, t, nodeName)
+			setValidationState(ctx, t, nodeName, "")
 			require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, nodeName+"-fault-3"))
 			assert.Empty(t, currentCR(ctx, t, r, nodeName), "the quarantine stays capped")
 		})
 	}
 }
 
-// TestMaxAttempts_ValidationRegisteredAfterHandOffContinuesBudget covers a hand-off that
-// fault-remediation processes before lifecycle-manager registers the new request in the node's
-// validation session. The request holds the node by the time the next fault arrives.
-func TestMaxAttempts_ValidationRegisteredAfterHandOffContinuesBudget(t *testing.T) {
+// TestMaxAttempts_HandOffBeforeRegistrationStartsFreshBudget covers a hand-off that
+// fault-remediation processes before lifecycle-manager registers the request: no request can
+// carry the counts, so the state is cleared, and neither that request nor an independent one
+// started after validation released the node revives the budget of the earlier repair.
+func TestMaxAttempts_HandOffBeforeRegistrationStartsFreshBudget(t *testing.T) {
 	ctx := t.Context()
 	nodeName := "validation-budget-late-registration"
 
-	r, _ := prepareValidationRepair(t, nodeName, 1)
+	r, crName1 := prepareValidationRepair(t, nodeName, 1)
+	unquarantineWithoutSession(ctx, t, r, nodeName)
 
-	handOffToValidation(ctx, t, r, nodeName, "")
-	setValidationState(ctx, t, nodeName, "validation-failed")
+	setValidationState(ctx, t, nodeName, "validation-pending")
+	setValidationState(ctx, t, nodeName, "")
+	setValidationRequests(ctx, t, nodeName, "validating", []string{"independent-" + nodeName})
 
 	applyQuarantineLabels(ctx, t, r, nodeName)
 	require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, nodeName+"-fault-2"))
 
-	assert.Empty(t, currentCR(ctx, t, r, nodeName), "the hand-off must not renew the spent budget")
-	assert.Equal(t, string(statemanager.RemediationFailedLabelValue), nodeStateLabel(ctx, t, nodeName))
+	crName2 := currentCR(ctx, t, r, nodeName)
+	assert.NotEmpty(t, crName2, "a hand-off without a registered request must not charge a later validation")
+	assert.NotEqual(t, crName1, crName2)
 }
 
 // TestMaxAttempts_BudgetContinuesAcrossRepeatedHandOffs follows a node through two hand-offs. The
@@ -279,7 +261,7 @@ func TestMaxAttempts_FaultAfterValidationReleaseStartsFreshBudget(t *testing.T) 
 	r, crName1 := prepareValidationRepair(t, nodeName, 1)
 
 	handOffToValidation(ctx, t, r, nodeName, "validating")
-	releaseFromValidation(ctx, t, nodeName)
+	setValidationState(ctx, t, nodeName, "")
 
 	applyQuarantineLabels(ctx, t, r, nodeName)
 	require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, nodeName+"-fault-2"))
@@ -295,21 +277,20 @@ func TestMaxAttempts_FaultAfterValidationReleaseStartsFreshBudget(t *testing.T) 
 }
 
 // TestMaxAttempts_UnquarantineWithoutValidationClearsState covers a quarantine that ends without
-// validation: fault-quarantine uncordons the node, so the state is cleared as before, and a
-// validation that an operator starts later does not pick up the spent count.
+// validation: no request holds the node, so the state is cleared as before, and a validation that
+// an operator starts later does not pick up the spent count.
 func TestMaxAttempts_UnquarantineWithoutValidationClearsState(t *testing.T) {
 	ctx := t.Context()
 	nodeName := "validation-budget-no-validation"
 
 	r, crName1 := prepareValidationRepair(t, nodeName, 1)
-	unquarantineToService(ctx, t, r, nodeName)
+	unquarantineWithoutSession(ctx, t, r, nodeName)
 
 	node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.NotContains(t, node.Annotations, annotation.AnnotationKey)
 
 	setValidationRequests(ctx, t, nodeName, "validating", []string{"manual-" + nodeName})
-	setNodeUnschedulable(ctx, t, nodeName, true)
 
 	applyQuarantineLabels(ctx, t, r, nodeName)
 	require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, nodeName+"-fault-2"))
@@ -317,24 +298,6 @@ func TestMaxAttempts_UnquarantineWithoutValidationClearsState(t *testing.T) {
 	crName2 := currentCR(ctx, t, r, nodeName)
 	assert.NotEmpty(t, crName2, "a validation started after the node returned to service starts a fresh budget")
 	assert.NotEqual(t, crName1, crName2)
-}
-
-// TestMaxAttempts_TaintGatedValidationContinuesBudget covers a quarantine that gates the node with
-// taints instead of a cordon: the validation session alone shows that the node is still held.
-func TestMaxAttempts_TaintGatedValidationContinuesBudget(t *testing.T) {
-	ctx := t.Context()
-	nodeName := "validation-budget-taint-gated"
-
-	r, _ := prepareValidationRepair(t, nodeName, 1)
-	setNodeUnschedulable(ctx, t, nodeName, false)
-
-	handOffToValidation(ctx, t, r, nodeName, "validation-pending")
-
-	applyQuarantineLabels(ctx, t, r, nodeName)
-	require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, nodeName+"-fault-2"))
-
-	assert.Empty(t, currentCR(ctx, t, r, nodeName), "the hand-off must not renew the spent budget")
-	assert.Equal(t, string(statemanager.RemediationFailedLabelValue), nodeStateLabel(ctx, t, nodeName))
 }
 
 // TestMaxAttempts_IndependentValidationAfterReleaseStartsFreshBudget covers a node that validation
@@ -347,7 +310,7 @@ func TestMaxAttempts_IndependentValidationAfterReleaseStartsFreshBudget(t *testi
 	r, crName1 := prepareValidationRepair(t, nodeName, 1)
 
 	handOffToValidation(ctx, t, r, nodeName, "validation-failed")
-	releaseFromValidation(ctx, t, nodeName)
+	setValidationState(ctx, t, nodeName, "")
 	setValidationRequests(ctx, t, nodeName, "validating", []string{"independent-" + nodeName})
 
 	applyQuarantineLabels(ctx, t, r, nodeName)
@@ -390,7 +353,7 @@ func TestMaxAttempts_StaleCacheDoesNotRejectFaultAfterRelease(t *testing.T) {
 
 	snapshot, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
-	releaseFromValidation(ctx, t, nodeName)
+	setValidationState(ctx, t, nodeName, "")
 	applyQuarantineLabels(ctx, t, r, nodeName)
 
 	r.annotationManager = annotation.NewNodeAnnotationManager(&staleNodeClient{
@@ -437,7 +400,7 @@ func TestMaxAttempts_ResumedBudgetOutlivesValidationRelease(t *testing.T) {
 	crName2 := currentCR(ctx, t, r, nodeName)
 	require.NotEmpty(t, crName2, "the second attempt is still within the budget")
 
-	releaseFromValidation(ctx, t, nodeName)
+	setValidationState(ctx, t, nodeName, "")
 	updateRebootNodeStatus(ctx, t, crName2, "Failed")
 
 	require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, nodeName+"-fault-3"))
@@ -478,7 +441,6 @@ func TestMaxAttempts_FaultDuringValidationAtCapSkipsLogCollector(t *testing.T) {
 
 	r, _, _ := newCappedReconciler(t, 1, true)
 	prepareQuarantinedNode(ctx, t, r, nodeName)
-	setNodeUnschedulable(ctx, t, nodeName, true)
 	cleanupValidationBudgetNode(t, nodeName)
 
 	_, err := r.annotationManager.RecordRemediationAttempt(ctx, nodeName, "restart")

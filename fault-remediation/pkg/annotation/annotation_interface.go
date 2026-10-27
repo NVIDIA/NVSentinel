@@ -45,7 +45,7 @@ type RemediationStateAnnotation struct {
 	// the node to post-remediation validation. See KeepAttemptsForValidation.
 	ValidationAttempts map[string]int `json:"validationAttempts,omitempty"`
 	// ValidationRequests names the ValidationRequests in the node's validation session at the
-	// hand-off. It is empty when lifecycle-manager had not registered the request yet.
+	// hand-off. The counts continue only while one of them is still in the session.
 	ValidationRequests []string `json:"validationRequests,omitempty"`
 }
 

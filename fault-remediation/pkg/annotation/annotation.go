@@ -240,11 +240,10 @@ func (m *NodeAnnotationManager) removeStateAnnotation(ctx context.Context, node 
 }
 
 // KeepAttemptsForValidation ends the quarantine session like ClearRemediationState, but keeps the
-// attempt counts while the node stays out of service: fault-quarantine also ends the session when
-// it hands the node to post-remediation validation, and leaves the node cordoned until validation
-// releases it. The counts are kept with the ValidationRequests that hold the node at this point,
-// and resumeValidationAttempts decides at the next fault whether they carry over. A node that is
-// back in service has its state cleared as before.
+// attempt counts bound to the ValidationRequests that hold the node at this point: fault-quarantine
+// also ends the session when it hands the node to post-remediation validation, and the node stays
+// out of service until validation releases it. resumeValidationAttempts decides at the next fault
+// whether the counts carry over. With no request in the session, the state is cleared as before.
 func (m *NodeAnnotationManager) KeepAttemptsForValidation(ctx context.Context, nodeName string) error {
 	err := retry.RetryOnConflict(conflictBackoff, func() error {
 		state, node, err := m.GetRemediationState(ctx, nodeName)
@@ -253,7 +252,7 @@ func (m *NodeAnnotationManager) KeepAttemptsForValidation(ctx context.Context, n
 		}
 
 		session := validationSessionRequests(node)
-		if !nodeOutOfService(node, session) {
+		if len(session) == 0 {
 			return m.removeStateAnnotation(ctx, node)
 		}
 
@@ -351,17 +350,17 @@ func (m *NodeAnnotationManager) PrepareRemediationAttempt(ctx context.Context,
 
 // resumeValidationAttempts moves the counts kept by KeepAttemptsForValidation back into the
 // session while validation still holds the node for the same hand-off: one of the requests
-// recorded at the hand-off is still in the node's validation session. When lifecycle-manager had
-// not registered any request yet at the hand-off, any request in the session holds the node.
-// Otherwise validation has released the node, and the counts are dropped.
+// recorded at the hand-off is still in the node's validation session. Otherwise validation has
+// released the node, and the counts are dropped.
 func resumeValidationAttempts(state *RemediationStateAnnotation, node *corev1.Node) {
 	if len(state.ValidationAttempts) == 0 {
 		return
 	}
 
 	session := validationSessionRequests(node)
-	held := len(session) > 0 && (len(state.ValidationRequests) == 0 ||
-		slices.ContainsFunc(state.ValidationRequests, func(name string) bool { return slices.Contains(session, name) }))
+	held := slices.ContainsFunc(state.ValidationRequests, func(name string) bool {
+		return slices.Contains(session, name)
+	})
 
 	if held {
 		for group, count := range state.ValidationAttempts {
@@ -373,13 +372,6 @@ func resumeValidationAttempts(state *RemediationStateAnnotation, node *corev1.No
 
 	state.ValidationAttempts = nil
 	state.ValidationRequests = nil
-}
-
-// nodeOutOfService reports whether the node is still held after its quarantine ended:
-// fault-quarantine leaves a node cordoned when it hands it to validation, and lifecycle-manager
-// lists the node in a validation session. A node that is neither has returned to service.
-func nodeOutOfService(node *corev1.Node, session []string) bool {
-	return node.Spec.Unschedulable || len(session) > 0
 }
 
 // validationSessionRequests returns the names of the ValidationRequests that hold the node.
