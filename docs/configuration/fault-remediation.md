@@ -220,7 +220,7 @@ When a node reaches the cap, fault-remediation sets its state label to `remediat
 
 With post-remediation validation, quarantine ends when fault-quarantine hands the node to validation, but the node stays out of service until validation passes. At the hand-off, fault-remediation keeps the spent counts bound to the ValidationRequests in the node's validation session. A fault found while one of those requests is still in the session continues the count, and the quarantine it starts keeps that count even if validation finishes later.
 
-When the quarantine ends with no request in the session, fault-remediation clears its state and the next fault starts from zero. This is the case after a quarantine without validation, and after a hand-off that fault-remediation processes before lifecycle-manager has registered the request. The same applies once validation has released the node. Cancelling the quarantine resets the count immediately.
+When the quarantine ends with no request in the session, fault-remediation clears its state and the next fault starts from zero. This is the case after a quarantine without validation, and after a hand-off that fault-remediation processes before lifecycle-manager has registered the request. After validation has released the node, the next fault starts from zero as well; fault-remediation drops the kept counts at that fault, so the `latestFaultRemediationState` annotation stays on the node until then. Cancelling the quarantine resets the count immediately.
 
 After the cap, the health monitors can send more events for the same fault. Fault-remediation closes each of these events before the log collector starts, so a capped node gets no more log-collector Jobs.
 
