@@ -87,22 +87,26 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/.local/share/helm/plugins
-        # The plugin version is part of both keys: `helm plugin install` below
-        # fails on an already-installed plugin and the step ignores that, so a
-        # restored cache from an older version would silently win over a bump.
-        key: ${{ runner.os }}-helm-plugins-${{ steps.versions.outputs.helm_unittest_version }}-${{ hashFiles('.github/actions/setup-ci-env/action.yml') }}
+        # The Helm and plugin versions are part of both keys, so a restored
+        # cache always holds the plugin version installed by this Helm version.
+        key: ${{ runner.os }}-helm-plugins-${{ steps.versions.outputs.helm_version }}-${{ steps.versions.outputs.helm_unittest_version }}-${{ hashFiles('.github/actions/setup-ci-env/action.yml') }}
         restore-keys: |
-          ${{ runner.os }}-helm-plugins-${{ steps.versions.outputs.helm_unittest_version }}-
-
-    - name: Install Helm Push plugin
-      shell: bash
-      run: |
-        helm plugin install https://github.com/chartmuseum/helm-push || echo "Helm push plugin may already be installed"
+          ${{ runner.os }}-helm-plugins-${{ steps.versions.outputs.helm_version }}-${{ steps.versions.outputs.helm_unittest_version }}-
 
     - name: Install Helm unittest plugin
       shell: bash
+      env:
+        VERSION: ${{ steps.versions.outputs.helm_unittest_version }}
       run: |
-        helm plugin install https://github.com/helm-unittest/helm-unittest --version ${{ steps.versions.outputs.helm_unittest_version }} || echo "Helm unittest plugin may already be installed"
+        if helm plugin list | awk 'NR > 1 { print $1, $2 }' | grep -qx "unittest ${VERSION#v}"; then
+          echo "helm-unittest ${VERSION} is already installed"
+          exit 0
+        fi
+        # Helm verifies the release tarball against its .prov signature, using the
+        # key helm-unittest publishes as public-key.asc. A new signing key fails
+        # here until helm-unittest-public-key.asc is updated.
+        helm plugin install "https://github.com/helm-unittest/helm-unittest/releases/download/${VERSION}/unittest-${VERSION#v}.tgz" \
+          --keyring "${{ github.action_path }}/helm-unittest-public-key.asc"
 
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
