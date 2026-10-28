@@ -1,0 +1,393 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The E2E tests that each CI job runs, so that the jobs do not all run the same tests.
+#
+# Each key is the E2E_JOB_ID of a job in .github/workflows/e2e-test.yml. Its value lists the tests
+# that the job runs. The tests in "all" run in every job. A job skips each test that is not in its
+# list or in "all". The build tags of the test file still select the architecture.
+#
+# Every test function in tests/ must be in this file, in "all" or in one or more jobs, and every
+# test in this file must exist. e2e-skip-pattern.sh fails if not. So, when you add a test, you must
+# select its jobs.
+#
+# These tests are in "all": the smoke tests, change streams, resume tokens, cold start, the circuit
+# breaker cursor and the deployment platform connector tests. They check the connection to each
+# datastore and its change stream.
+#
+# Tests that do not depend on the datastore are in one job for each architecture: health monitor
+# detection, node labels, preflight and janitor requests.
+#
+# Pipeline tests are in one MongoDB job and one PostgreSQL job for each architecture. The MongoDB,
+# MongoDB (no TLS) and MongoDB (Percona) jobs use the same MongoDB engine with a different
+# connection or operator, so one of them is sufficient for each test. MongoDB-only tests are in one
+# MongoDB job for each architecture.
+#
+# Every health monitor that can publish to the deployment platform connector has at least one test
+# in the deployment platform connector job of its architecture.
+#
+# The tests in health_events_analyzer_recovery_test.go and health_events_analyzer_test.go are in the
+# same job, and run in file order. TestMultipleRemediationsNotTriggered needs a node with no
+# remediations. The analyzer tests take nodes from the node pool, but other tests use the same nodes
+# without the pool. When the earlier analyzer tests run first, they take those nodes, as on main.
+#
+# To balance the jobs, use the test durations in results/e2e-tests.json of each job.
+
+all:
+  # Tests that check the datastore connection and change stream.
+
+  # cold_start_test.go
+  - TestFaultRemediationColdStart
+  - TestNodeDrainerColdStart
+
+  # event_exporter_test.go
+  - TestEventExporterChangeStream
+  - TestEventExporterResumeToken
+
+  # fault_quarantine_test.go
+  - TestCircuitBreakerCursorCreateSkipsAccumulatedEvents
+
+  # fault_remediation_resume_token_test.go
+  - TestFaultRemediationResumeTokenAdvances
+
+  # platform_connector_deployment_test.go
+  - TestPlatformConnectorDeploymentAcknowledgesWhenNodeUpdatesFail
+  - TestPlatformConnectorDeploymentCallerContract
+  - TestPlatformConnectorDeploymentDeliversAfterOutage
+
+  # smoke_test.go
+  - TestFatalHealthEvent
+  - TestFatalUnsupportedHealthEvent
+
+  # zz_stale_resume_token_test.go
+  - TestStaleResumeTokenRecovery
+
+  # Other tests.
+
+  # gpu_reset_test.go: the test skips itself.
+  - TestGPUResetScale
+
+  # helpers/label_watcher_test.go: unit tests of the test helpers.
+  - TestHandleLabelAbsent_PrematureRemoval
+  - TestHandleLabelAbsent_SuccessfulRemoval
+  - TestHandleLabelPresent_DuplicateUpdateIgnored
+  - TestHandleMatchedLabel_FinalNoRemoval
+  - TestHandleOutOfSequenceLabel_MissedEarlyLabels
+  - TestHandleOutOfSequenceLabel_SkipToFinalNoRemoval
+  - TestHandleOutOfSequenceLabel_SkipToFinalWithRemoval
+  - TestHandleOutOfSequenceLabel_UnexpectedLabel
+  - TestResultSentGuard_PreventsDuplicateSend
+
+amd64-mongodb:
+  # Tests that do not depend on the datastore.
+
+  # gpu_health_monitor_test.go
+  - TestDCGMBootstrapCompletedAnnotation
+
+  # nic_health_monitor_counter_test.go
+  - TestNICCounterBootIDClearsBreachState
+  - TestNICCounterIBDegradation
+
+  # syslog_health_monitor_cancellation_test.go
+  - TestSyslogHealthMonitorCancellationRules
+
+  # syslog_health_monitor_test.go
+  - TestSyslogHealthMonitorNAPISoftLockupDetection
+  - TestSyslogHealthMonitorStoreOnlyStrategy
+  - TestSyslogHealthMonitorXIDDetection
+
+  # Pipeline tests.
+
+  # fault_quarantine_test.go
+  - TestPreCordonedNodeHandling
+
+  # scale_test.go
+  - TestScaleHealthEvents
+
+amd64-mongodb-no-tls:
+  # Tests that do not depend on the datastore.
+
+  # gpu_health_monitor_test.go
+  - TestGPUHealthMonitorMultipleErrors
+
+  # topology_test.go
+  - TestKataTopology
+
+  # Pipeline tests.
+
+  # fault_quarantine_test.go
+  - TestDontCordonIfEventDoesntMatchCELExpression
+
+  # health_events_analyzer_recovery_test.go
+  - TestHealthEventsAnalyzerAnnotationRecovery
+
+  # health_events_analyzer_test.go
+  - TestHealthEventsAnalyzerProcessingStrategyRuleOverride
+  - TestHealthEventsAnalyzerStoreOnlyStrategy
+  - TestMultipleRemediationsCompleted
+  - TestMultipleRemediationsNotTriggered
+  - TestRepeatedNICRules_RepeatedNonFatalSignals_TriggersExpectedEscalations
+  - TestRepeatedXID31OnSameGPU
+  - TestRepeatedXIDOnSameGPU
+  - TestSoloNoBurstRule
+  - TestXID74Reg0ECCParityError
+  - TestXID74Reg0SoloNVLinkError
+  - TestXID74Reg2Bit16Or19SetRule
+  - TestXID74Reg4ECCError
+  - TestXIDErrorOnGPCAndTPC
+
+  # platform_connector_node_condition_test.go
+  - TestPlatformConnectorClearsCompactedLongEntityCondition
+
+amd64-mongodb-percona:
+  # Tests that do not depend on the datastore.
+
+  # gpu_health_monitor_test.go
+  - TestGPUHealthMonitorThermalMarginViolationLifecycle
+
+  # syslog_health_monitor_test.go
+  - TestSyslogHealthMonitorNICDriverDetection
+  - TestSyslogHealthMonitorSXIDDetection
+
+  # topology_test.go
+  - TestTopologyLabels
+
+  # Pipeline tests.
+
+  # fault_quarantine_test.go
+  - TestFaultQuarantineWithProcessingStrategy
+
+  # fault_remediation_test.go
+  - TestNewCRsAreCreatedAfterFaultsAreRemediated
+
+  # node_drainer_test.go
+  - TestNodeDrainerEvictionModes
+  - TestNodeDrainerPartialDrain
+
+  # validation_request_test.go
+  - TestValidationController
+
+amd64-postgresql:
+  # Pipeline tests.
+
+  # fault_quarantine_test.go
+  - TestDontCordonIfEventDoesntMatchCELExpression
+  - TestFaultQuarantineWithProcessingStrategy
+  - TestPreCordonedNodeHandling
+
+  # fault_remediation_inprogress_test.go
+  - TestEventDuringInProgressCRIsRetriedAfterCompletion
+
+  # fault_remediation_test.go
+  - TestNewCRsAreCreatedAfterFaultsAreRemediated
+
+  # maintenance_request_test.go
+  - TestMaintenanceRequestLifecycle
+
+  # node_drainer_pod_policies_test.go
+  - TestNodeDrainerPodPolicies
+
+  # node_drainer_test.go
+  - TestNodeDrainerEvictionModes
+  - TestNodeDrainerPartialDrain
+
+  # platform_connector_dedup_test.go
+  - TestPlatformConnectorDeduplicatesRepeatedHealthEvents
+
+  # platform_connector_node_condition_test.go
+  - TestPlatformConnectorClearsCompactedLongEntityCondition
+
+  # scale_test.go
+  - TestScaleHealthEvents
+
+  # validation_request_test.go
+  - TestValidationController
+
+amd64-mongodb-deployment-pc:
+  # Tests that do not depend on the datastore.
+
+  # gpu_health_monitor_test.go
+  - TestGPUHealthMonitorDCGMConnectionError
+  - TestGpuHealthMonitorStoreOnlyEvents
+  - TestGpuNvlinkWatchSemicolonMessageParsing
+
+  # nic_health_monitor_counter_test.go
+  - TestNICCounterBelowThreshold
+  - TestNICCounterEthernetDegradation
+
+  # preflight_test.go
+  - TestPreflightEndToEnd
+
+  # syslog_health_monitor_cancellation_test.go
+  - TestSyslogHealthMonitorCancellationUncordonsNode
+
+  # syslog_health_monitor_test.go
+  - TestSyslogHealthMonitorXIDWithoutMetadata
+
+  # Pipeline tests.
+
+  # fault_remediation_inprogress_test.go
+  - TestEventDuringInProgressCRIsRetriedAfterCompletion
+
+  # maintenance_request_test.go
+  - TestMaintenanceRequestLifecycle
+
+  # node_drainer_pod_policies_test.go
+  - TestNodeDrainerPodPolicies
+
+  # platform_connector_dedup_test.go
+  - TestPlatformConnectorDeduplicatesRepeatedHealthEvents
+
+arm64-mongodb:
+  # Tests that do not depend on the datastore.
+
+  # janitor_test.go
+  - TestJanitorWebhookRejectsNonExistentNode
+
+  # kubernetes_object_monitor_test.go
+  - TestKubernetesObjectMonitorInitContainerFailures
+  - TestKubernetesObjectMonitorMainContainerFailures
+  - TestKubernetesObjectMonitorWithRuleOverride
+
+  # nic_health_monitor_test.go
+  - TestNICHealthMonitorMultiPortFault
+  - TestNICHealthMonitorMultipleDownRecoveryCycles
+  - TestNICHealthMonitorPhysStateDisabled
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorStoreOnlyProcessingStrategy
+
+  # external_remediation_test.go
+  - TestExtRROperatorDeleteEscape
+
+  # fault_management_test.go
+  - TestPartialRecoveryClearsStaleRemediationFailed
+
+  # health_events_analyzer_recovery_test.go
+  - TestHealthEventsAnalyzerAnnotationRecovery
+
+arm64-mongodb-no-tls:
+  # Tests that do not depend on the datastore.
+
+  # janitor_test.go
+  - TestJanitorDuplicateRebootDetection
+
+  # nic_health_monitor_test.go
+  - TestNICHealthMonitorConditionMessage
+  - TestNICHealthMonitorPersistence
+  - TestNICHealthMonitorVFSkip
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorAWSMaintenanceEvent
+  - TestCSPHealthMonitorGCPMaintenanceEvent
+
+  # external_remediation_test.go
+  - TestExtRRAsymmetricFalse
+  - TestExtRRLifecycleHappyPath
+  - TestExtRRWebhookRejectsInvalidSpec
+
+  # fault_management_test.go
+  - TestDryRunMode
+  - TestManualUncordonWithFaultRemediation
+  - TestNodeDeletedDuringDrain
+
+arm64-mongodb-percona:
+  # Tests that do not depend on the datastore.
+
+  # janitor_test.go
+  - TestJanitorDuplicateGPUResetNonOverlappingGPUs
+  - TestJanitorDuplicateGPUResetOverlappingGPUs
+  - TestJanitorDuplicateTerminateNodeDetection
+
+  # kubernetes_object_monitor_test.go
+  - TestKubernetesObjectMonitorWithStoreOnlyStrategy
+
+  # nic_health_monitor_test.go
+  - TestNICHealthMonitorBootIDChange
+  - TestNICHealthMonitorIBStateDetection
+  - TestNICHealthMonitorRoCEStateDetection
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorQuarantineThreshold
+
+  # fault_management_test.go
+  - TestManualUncordonPropagation
+  - TestNodeRecoveryDuringDrain
+
+  # gpu_reset_test.go
+  - TestGPUReset
+
+  # log_collector_test.go
+  - TestLogCollectorFailure
+
+arm64-postgresql:
+  # Tests that do not depend on the datastore.
+
+  # janitor_test.go
+  - TestJanitorNodeLocking
+  - TestJanitorRebootWithTLSAuth
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorAWSMaintenanceEvent
+  - TestCSPHealthMonitorGCPMaintenanceEvent
+
+  # external_remediation_test.go
+  - TestExtRRAsymmetricFalse
+  - TestExtRRLifecycleHappyPath
+  - TestExtRRWebhookRejectsInvalidSpec
+
+  # fault_management_test.go
+  - TestManualUncordonWithFaultRemediation
+  - TestNodeDeletedDuringDrain
+
+  # gpu_reset_test.go
+  - TestGPUReset
+
+  # log_collector_test.go
+  - TestLogCollectorFailure
+
+arm64-postgresql-deployment-pc:
+  # Tests that do not depend on the datastore.
+
+  # kubernetes_object_monitor_test.go
+  - TestKubernetesObjectMonitor
+
+  # nic_health_monitor_test.go
+  - TestNICHealthMonitorIBDeviceDisappearance
+
+  # nvcre_certification_monitor_test.go
+  - TestNVCRECertificationMonitor
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorQuarantineThreshold
+  - TestCSPHealthMonitorStoreOnlyProcessingStrategy
+
+  # external_remediation_test.go
+  - TestExtRROperatorDeleteEscape
+
+  # fault_management_test.go
+  - TestDryRunMode
+  - TestManualUncordonPropagation
+  - TestNodeRecoveryDuringDrain
+  - TestPartialRecoveryClearsStaleRemediationFailed
