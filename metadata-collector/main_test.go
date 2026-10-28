@@ -288,3 +288,18 @@ current-context: test
 		})
 	}
 }
+
+// Alerts on a stalled collection depend on this metric being scrapeable at 0 before collection
+// completes, so its name and starting value are part of the contract.
+func TestCollectionCompletedGauge_StartsAtZero(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	gauge := newCollectionCompletedGauge(reg)
+
+	count, err := testutil.GatherAndCount(reg, "metadata_collector_collection_completed_timestamp_seconds")
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	assert.Zero(t, testutil.ToFloat64(gauge))
+
+	gauge.SetToCurrentTime()
+	assert.InDelta(t, float64(time.Now().Unix()), testutil.ToFloat64(gauge), 5)
+}
