@@ -4,8 +4,6 @@ IMAGE_NAME ?= slinky-drainer
 IMAGE_TAG ?= latest
 IMG ?= $(IMAGE_NAME):$(IMAGE_TAG)
 
-CONTROLLER_GEN ?= $(shell go env GOPATH)/bin/controller-gen
-
 include ../../make/common.mk
 include ../../make/go.mk
 
@@ -34,7 +32,7 @@ run:
 	go run main.go --slinky-namespace=slinky --pod-check-interval=5s --drain-timeout=30m
 
 .PHONY: generate
-generate: controller-gen hack/boilerplate.go.txt
+generate: hack/boilerplate.go.txt
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
 	$(CONTROLLER_GEN) crd paths="./api/..." output:crd:artifacts:config=config/crd
 
@@ -43,10 +41,6 @@ hack/boilerplate.go.txt: ../../.github/headers/LICENSE
 	@echo "/*" > $@
 	@cat $< >> $@
 	@echo "*/" >> $@
-
-.PHONY: controller-gen
-controller-gen:
-	@test -s $(CONTROLLER_GEN) || { echo "Installing controller-gen..."; go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest; }
 
 .PHONY: ko-build
 ko-build:

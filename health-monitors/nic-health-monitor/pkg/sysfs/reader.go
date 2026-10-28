@@ -53,10 +53,6 @@ func (r *fsReader) IBPortPath(device string, port int) string {
 	return filepath.Join(r.ibBase, device, "ports", strconv.Itoa(port))
 }
 
-func (r *fsReader) NetInterfacePath(iface string) string {
-	return filepath.Join(r.netBase, iface)
-}
-
 func (r *fsReader) ReadFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

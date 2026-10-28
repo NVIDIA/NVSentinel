@@ -150,6 +150,23 @@ The event exporter uses OAuth 2.0 Client Credentials grant:
 3. Includes token in `Authorization: Bearer {token}` header for event POSTs
 4. Automatically refreshes expired tokens
 
+## HTTP Proxy
+
+Sink and OIDC token requests honor the standard `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` environment variables. Set them on the event-exporter container with `extraEnv`:
+
+```yaml
+event-exporter:
+  extraEnv:
+    - name: HTTPS_PROXY
+      value: "http://proxy.example.com:3128"
+    - name: NO_PROXY
+      value: ".svc,.cluster.local"
+```
+
+`extraEnv` accepts any Kubernetes `EnvVar` entries, including `valueFrom` references to a Secret when the proxy URL contains credentials. It defaults to an empty list.
+
+Datastore connections (MongoDB or PostgreSQL) do not use these variables.
+
 ## Backfill Configuration
 
 Controls whether historical events are exported when the exporter starts.

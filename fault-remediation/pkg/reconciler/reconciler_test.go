@@ -108,14 +108,19 @@ type mockStatusChecker struct {
 	shouldSkip []bool
 	states     []crstatus.CRState
 	stateByCR  map[string]crstatus.CRState
+	errByCR    map[string]error
 	callCount  int
 }
 
-func (statusChecker *mockStatusChecker) ShouldSkipCRCreation(context.Context, string, string) bool {
-	return statusChecker.GetCRState(context.Background(), "", "") != crstatus.CRStateFailed
+func (statusChecker *mockStatusChecker) GetCRState(_ context.Context, _ string, crName string) (crstatus.CRState, error) {
+	if err, ok := statusChecker.errByCR[crName]; ok {
+		return "", err
+	}
+
+	return statusChecker.crState(crName), nil
 }
 
-func (statusChecker *mockStatusChecker) GetCRState(_ context.Context, _ string, crName string) crstatus.CRState {
+func (statusChecker *mockStatusChecker) crState(crName string) crstatus.CRState {
 	if statusChecker.stateByCR != nil {
 		return statusChecker.stateByCR[crName]
 	}
@@ -245,6 +250,12 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 	return annotationState, m.node(), nil
 }
 
+func (m *MockNodeAnnotationManager) PrepareRemediationAttempt(ctx context.Context,
+	nodeName string) (*annotation.RemediationStateAnnotation, error) {
+	state, _, err := m.GetRemediationState(ctx, nodeName)
+	return state, err
+}
+
 func (m *MockNodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
 	group string, crName string, actionName string) error {
 	if m.existingCRs == nil {
@@ -278,6 +289,12 @@ func (m *MockNodeAnnotationManager) ClearRemediationState(ctx context.Context, n
 	m.attemptCounts = nil
 
 	return nil
+}
+
+// KeepAttemptsForValidation mirrors a node that validation does not hold: the next fault starts a
+// fresh budget.
+func (m *MockNodeAnnotationManager) KeepAttemptsForValidation(ctx context.Context, nodeName string) error {
+	return m.ClearRemediationState(ctx, nodeName)
 }
 
 // RemoveGroupsFromState mirrors the real manager: the CR reference is dropped but the attempt
@@ -2314,6 +2331,139 @@ func TestPartialRecoveryRecomputesSucceededWhenCoveringCRInProgress(t *testing.T
 	}, targetLabels)
 	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
 	assert.Equal(t, 1, markProcessedCount)
+}
+
+func TestPartialRecoveryLeavesLabelWhenCoveringCRCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+	readErr := errors.New("etcdserver: request timed out")
+
+	// Same setup as TestPartialRecoveryRecomputesSucceededWhenCoveringCRInProgress, but the covering CR
+	// cannot be read. An unknown CR state must not be taken as coverage, so the label stays as it is and
+	// the recompute is reported as an error.
+	activeEvent := testAnnotationHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM, "GPU-a")
+	mockAnnotationManager := &MockNodeAnnotationManager{
+		existingCRs: map[string]string{
+			"restart": "maintenance-test-node-event-a",
+		},
+		nodeAnnotations: quarantineAnnotationForTest(t, activeEvent),
+		nodeLabels: map[string]string{
+			statemanager.NVSentinelStateLabelKey: string(statemanager.RemediationFailedLabelValue),
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		RemediationClient: &MockK8sClient{
+			annotationManagerOverride: mockAnnotationManager,
+			mockStatusChecker: &mockStatusChecker{
+				errByCR: map[string]error{"maintenance-test-node-event-a": readErr},
+			},
+		},
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string, statemanager.NVSentinelStateLabelValue,
+				bool) (bool, error) {
+				t.Fatal("the node label must not change when the covering CR cannot be read")
+				return false, nil
+			},
+		},
+	}
+
+	mockStore := &MockHealthEventStore{
+		FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+			return []datastore.HealthEventWithStatus{
+				{
+					HealthEventStatus: datastore.HealthEventStatus{
+						UserPodsEvictionStatus: datastore.OperationStatus{
+							Status: datastore.StatusSucceeded,
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	r := NewFaultRemediationReconciler(nil, nil, mockStore, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent("event-c", nodeName, protos.RecommendedAction_NONE),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	_, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, readErr)
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 0, markProcessedCount, "the event must be retried, not finalized")
+}
+
+func TestCoveredByActiveRemediationCRPrefersAConfirmedCoveringCR(t *testing.T) {
+	readErr := errors.New("etcdserver: request timed out")
+	remediationState := &annotation.RemediationStateAnnotation{
+		EquivalenceGroups: map[string]annotation.EquivalenceGroupState{
+			"restart": {MaintenanceCR: "maintenance-restart", ActionName: "restart"},
+			"reset":   {MaintenanceCR: "maintenance-reset", ActionName: "reset"},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		resetState  crstatus.CRState
+		wantCovered bool
+		wantErr     bool
+	}{
+		{name: "another group's CR is in progress", resetState: crstatus.CRStateInProgress, wantCovered: true},
+		{name: "another group's CR succeeded", resetState: crstatus.CRStateSucceeded, wantCovered: true},
+		{name: "no other group confirms coverage", resetState: crstatus.CRStateFailed, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ReconcilerConfig{RemediationClient: &MockK8sClient{
+				mockStatusChecker: &mockStatusChecker{
+					stateByCR: map[string]crstatus.CRState{"maintenance-reset": tt.resetState},
+					errByCR:   map[string]error{"maintenance-restart": readErr},
+				},
+			}}
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+			// Map iteration order varies between runs, so repeat to cover both orders.
+			for range 20 {
+				covered, err := r.coveredByActiveRemediationCR(context.Background(),
+					getGroupConfig("restart", []string{"reset"}), remediationState)
+
+				assert.Equal(t, tt.wantCovered, covered)
+				if tt.wantErr {
+					require.ErrorIs(t, err, readErr)
+				} else {
+					require.NoError(t, err)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckExistingCRStatusReturnsCRReadError(t *testing.T) {
+	readErr := errors.New("etcdserver: request timed out")
+	mockAnnotationManager := &MockNodeAnnotationManager{
+		existingCRs: map[string]string{"restart": "maintenance-test-node-event-a"},
+	}
+
+	cfg := ReconcilerConfig{RemediationClient: &MockK8sClient{
+		annotationManagerOverride: mockAnnotationManager,
+		mockStatusChecker: &mockStatusChecker{
+			errByCR: map[string]error{"maintenance-test-node-event-a": readErr},
+		},
+	}}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+	_, err := r.checkExistingCRStatus(context.Background(), &protos.HealthEvent{NodeName: "test-node"},
+		time.Now(), getGroupConfig("restart", nil))
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, readErr)
+	// tryHandleExistingCR finalizes the event as stale on a NotFound error, so a read error must not look like one.
+	assert.False(t, apierrors.IsNotFound(err))
 }
 
 func TestPartialRecoveryDowngradesStaleRemediationSucceeded(t *testing.T) {

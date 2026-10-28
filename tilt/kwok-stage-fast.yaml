@@ -1,0 +1,299 @@
+# Copyright The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The Stages of the kwok stage-fast Helm chart 0.3.0, rendered with
+#   helm template kwok-stage-fast stage-fast --repo https://kwok.sigs.k8s.io/charts/ --version 0.3.0
+# pod-delete is left out: kwok-pod-delete-respect-finalizers.yaml replaces it.
+---
+# Source: stage-fast/templates/node-heartbeat-with-lease.yaml
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: node-heartbeat-with-lease
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Node
+  selector:
+    matchExpressions:
+    - key: '.status.phase'
+      operator: 'In'
+      values:
+      - 'Running'
+    - key: '.status.conditions.[] | select( .type == "Ready" ) | .status'
+      operator: 'In'
+      values:
+      - 'True'
+  delay:
+    durationMilliseconds: 600000
+    jitterDurationMilliseconds: 610000
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      {{ $lastTransitionTime := or .metadata.creationTimestamp $now }}
+      conditions:
+      {{ range NodeConditions }}
+      - lastHeartbeatTime: {{ $now | Quote }}
+        lastTransitionTime: {{ $lastTransitionTime | Quote }}
+        message: {{ .message | Quote }}
+        reason: {{ .reason | Quote }}
+        status: {{ .status | Quote }}
+        type: {{ .type | Quote }}
+      {{ end }}
+
+      addresses:
+      {{ with .status.addresses }}
+      {{ YAML . 1 }}
+      {{ else }}
+      {{ with NodeIP }}
+      - address: {{ . | Quote }}
+        type: InternalIP
+      {{ end }}
+      {{ with NodeName }}
+      - address: {{ . | Quote }}
+        type: Hostname
+      {{ end }}
+      {{ end }}
+
+      {{ with NodePort }}
+      daemonEndpoints:
+        kubeletEndpoint:
+          Port: {{ . }}
+      {{ end }}
+---
+# Source: stage-fast/templates/node-initialize.yaml
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: node-initialize
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Node
+  selector:
+    matchExpressions:
+    - key: '.status.conditions.[] | select( .type == "Ready" ) | .status'
+      operator: 'NotIn'
+      values:
+      - 'True'
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      {{ $lastTransitionTime := or .metadata.creationTimestamp $now }}
+      conditions:
+      {{ range NodeConditions }}
+      - lastHeartbeatTime: {{ $now | Quote }}
+        lastTransitionTime: {{ $lastTransitionTime | Quote }}
+        message: {{ .message | Quote }}
+        reason: {{ .reason | Quote }}
+        status: {{ .status | Quote }}
+        type: {{ .type  | Quote}}
+      {{ end }}
+
+      {{ $hasInternalIP := false }}
+      {{ $hasHostname := false }}
+      {{ range .status.addresses }}
+        {{ if eq .type "InternalIP" }}
+          {{ $hasInternalIP = true }}
+        {{ end }}
+        {{ if eq .type "Hostname" }}
+          {{ $hasHostname = true }}
+        {{ end }}
+      {{ end }}
+      {{ if or (not $hasInternalIP) (not $hasHostname) }}
+      addresses:
+      {{ end }}
+      {{ if not $hasInternalIP }}
+      {{ with NodeIP }}
+      - address: {{ . | Quote }}
+        type: InternalIP
+      {{ end }}
+      {{ end }}
+      {{ if not $hasHostname }}
+      {{ with NodeName }}
+      - address: {{ . | Quote }}
+        type: Hostname
+      {{ end }}
+      {{ end }}
+
+      {{ with NodePort }}
+      daemonEndpoints:
+        kubeletEndpoint:
+          Port: {{ . }}
+      {{ end }}
+
+      allocatable:
+      {{ with .status.allocatable }}
+      {{ YAML . 1 }}
+      {{ else }}
+        cpu: 1k
+        memory: 1Ti
+        pods: 1M
+      {{ end }}
+      capacity:
+      {{ with .status.capacity }}
+      {{ YAML . 1 }}
+      {{ else }}
+        cpu: 1k
+        memory: 1Ti
+        pods: 1M
+      {{ end }}
+
+      {{ $nodeInfo := .status.nodeInfo }}
+      {{ $kwokVersion := printf "kwok-%s" Version }}
+      nodeInfo:
+        architecture: {{ or $nodeInfo.architecture "amd64" }}
+        bootID: {{ or $nodeInfo.bootID "\"\"" }}
+        containerRuntimeVersion: {{ or $nodeInfo.containerRuntimeVersion $kwokVersion }}
+        kernelVersion: {{ or $nodeInfo.kernelVersion $kwokVersion }}
+        kubeProxyVersion: {{ or $nodeInfo.kubeProxyVersion $kwokVersion }}
+        kubeletVersion: {{ or $nodeInfo.kubeletVersion $kwokVersion }}
+        machineID: {{ or $nodeInfo.machineID "\"\"" }}
+        operatingSystem: {{ or $nodeInfo.operatingSystem "linux" }}
+        osImage: {{ or $nodeInfo.osImage "\"\"" }}
+        systemUUID: {{ or $nodeInfo.systemUUID "\"\"" }}
+      phase: Running
+---
+# Source: stage-fast/templates/pod-complete.yaml
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-complete
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+    - key: '.metadata.deletionTimestamp'
+      operator: 'DoesNotExist'
+    - key: '.status.phase'
+      operator: 'In'
+      values:
+      - 'Running'
+    - key: '.metadata.ownerReferences.[].kind'
+      operator: 'In'
+      values:
+      - 'Job'
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      {{ $root := . }}
+      containerStatuses:
+      {{ range $index, $item := .spec.containers }}
+      {{ $origin := index $root.status.containerStatuses $index }}
+      - image: {{ $item.image | Quote }}
+        name: {{ $item.name | Quote }}
+        ready: false
+        restartCount: 0
+        started: false
+        state:
+          terminated:
+            exitCode: 0
+            finishedAt: {{ $now | Quote }}
+            reason: Completed
+            startedAt: {{ $now | Quote }}
+      {{ end }}
+      phase: Succeeded
+---
+# Source: stage-fast/templates/pod-ready.yaml
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-ready
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+    - key: '.metadata.deletionTimestamp'
+      operator: 'DoesNotExist'
+    - key: '.status.phase'
+      operator: 'In'
+      values:
+      - 'Pending'
+    - key: '.status.conditions.[] | select( .type == "Ready" ) | .status'
+      operator: 'NotIn'
+      values:
+      - 'True'
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+
+      conditions:
+      - lastTransitionTime: {{ $now | Quote }}
+        status: "True"
+        type: Initialized
+      - lastTransitionTime: {{ $now | Quote }}
+        status: "True"
+        type: Ready
+      - lastTransitionTime: {{ $now | Quote }}
+        status: "True"
+        type: ContainersReady
+      {{ range .spec.readinessGates }}
+      - lastTransitionTime: {{ $now | Quote }}
+        status: "True"
+        type: {{ .conditionType | Quote }}
+      {{ end }}
+
+      containerStatuses:
+      {{ range .spec.containers }}
+      - image: {{ .image | Quote }}
+        name: {{ .name | Quote }}
+        ready: true
+        restartCount: 0
+        state:
+          running:
+            startedAt: {{ $now | Quote }}
+      {{ end }}
+
+      initContainerStatuses:
+      {{ range .spec.initContainers }}
+      - image: {{ .image | Quote }}
+        name: {{ .name | Quote }}
+        ready: true
+        restartCount: 0
+        {{ if eq .restartPolicy "Always" }}
+        started: true
+        state:
+          running:
+            startedAt: {{ $now | Quote }}
+        {{ else }}
+        state:
+          terminated:
+            exitCode: 0
+            finishedAt: {{ $now | Quote }}
+            reason: Completed
+            startedAt: {{ $now | Quote }}
+        {{ end }}
+      {{ end }}
+      {{ $hostIPs := NodeIPsWith .spec.nodeName }}
+      {{ with $hostIPs }}
+      hostIP: {{ index . 0 | Quote }}
+      hostIPs:
+      {{ range . }}
+      - ip: {{ . | Quote }}
+      {{ end }}
+      {{ end }}
+      {{ $podIPs := PodIPsWith .spec.nodeName ( or .spec.hostNetwork false ) ( or .metadata.uid "" ) ( or .metadata.name "" ) ( or .metadata.namespace "" ) }}
+      {{ with $podIPs }}
+      podIP: {{ index . 0 | Quote }}
+      podIPs:
+      {{ range . }}
+      - ip: {{ . | Quote }}
+      {{ end }}
+      {{ end }}
+      phase: Running
+      startTime: {{ $now | Quote }}

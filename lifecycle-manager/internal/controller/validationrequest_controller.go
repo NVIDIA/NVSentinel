@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/metrics"
@@ -45,7 +46,6 @@ import (
 
 const (
 	annotationActiveValidationRequest = "nvsentinel.nvidia.com/active-validation-request"
-	annotationValidationSession       = "nvsentinel.nvidia.com/validation-session"
 	finalizerName                     = "nvsentinel.nvidia.com/validation-request"
 )
 
@@ -88,7 +88,7 @@ func (r *ValidationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1alpha1.ValidationRequest{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.nodeToValidationRequest),
 			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
-				_, ok := obj.GetAnnotations()[annotationValidationSession]
+				_, ok := obj.GetAnnotations()[annotationutil.ValidationSessionKey]
 				return ok
 			}))).
 		Named("validationrequest")
@@ -120,7 +120,7 @@ func (r *ValidationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func (r *ValidationRequestReconciler) nodeToValidationRequest(ctx context.Context,
 	obj client.Object) []reconcile.Request {
-	entries, err := parseSessionAnnotation(obj.GetAnnotations()[annotationValidationSession])
+	entries, err := annotationutil.ParseValidationSession(obj.GetAnnotations()[annotationutil.ValidationSessionKey])
 	if err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to parse validation-session annotation", "node", obj.GetName())
 		return nil

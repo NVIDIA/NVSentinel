@@ -116,11 +116,6 @@ func (m *mockDataStore) FindDocument(ctx context.Context, filter any, options *s
 	return &mockSingleResult{document: event}, nil
 }
 
-func (m *mockDataStore) FindDocuments(ctx context.Context, filter any, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
-	// Mock implementation - return nil for now
-	return nil, nil
-}
-
 func newMockHealthEventStore(healthEvents []datastore.HealthEventWithStatus, err error) *mockHealthEventStore {
 	return &mockHealthEventStore{
 		healthEvents: healthEvents,
@@ -1309,13 +1304,6 @@ func (m *MockMongoCollection) FindDocument(ctx context.Context, filter any, opti
 	return &MockSingleResult{}, nil
 }
 
-func (m *MockMongoCollection) FindDocuments(ctx context.Context, filter any, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
-	if m.FindDocumentsFunc != nil {
-		return m.FindDocumentsFunc(ctx, filter, options)
-	}
-	return &MockCursor{}, nil
-}
-
 // Mock implementations for client interfaces
 type MockSingleResult struct {
 	DecodeFunc func(v any) error
@@ -2354,6 +2342,60 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
 		return errors.IsNotFound(err)
 	}, 10*time.Second, 500*time.Millisecond, "CR should be deleted after drain completes")
+}
+
+// In dry run node-drainer must not hand the node to the external drain controller, so the
+// DrainRequest CR is sent with DryRunAll and never persisted.
+func TestReconciler_CustomDrainDryRun(t *testing.T) {
+	customDrainCfg := config.CustomDrainConfig{
+		Enabled:               true,
+		TemplateMountPath:     "../customdrain/testdata",
+		TemplateFileName:      "drain-template.yaml",
+		Namespace:             "default",
+		ApiGroup:              "drain.example.com",
+		Version:               "v1alpha1",
+		Kind:                  "DrainRequest",
+		StatusConditionType:   "Complete",
+		StatusConditionStatus: "True",
+		Timeout:               config.Duration{Duration: 30 * time.Minute},
+	}
+
+	setup := setupCustomDrainTest(t, customDrainCfg)
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(setup.restConfig)
+	require.NoError(t, err)
+	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
+
+	healthEventStore := newMockHealthEventStore(nil, nil)
+	dryRunReconciler, err := reconciler.NewReconciler(setup.reconciler.Config, true, setup.client,
+		setup.informersInstance, setup.mockDB, healthEventStore, setup.dynamicClient, restMapper)
+	require.NoError(t, err)
+
+	nodeName := "custom-drain-dry-run-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "app-ns")
+	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil, nil)
+	waitForNodeInInformer(t, setup.informersInstance, nodeName)
+
+	event := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		nodeQuarantined: model.Quarantined,
+	})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	err = dryRunReconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
+
+	gvr := schema.GroupVersionResource{
+		Group:    "drain.example.com",
+		Version:  "v1alpha1",
+		Resource: "drainrequests",
+	}
+
+	crs, err := setup.dynamicClient.Resource(gvr).Namespace("default").List(setup.ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, crs.Items, "dry run must not create a DrainRequest CR")
 }
 
 func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {

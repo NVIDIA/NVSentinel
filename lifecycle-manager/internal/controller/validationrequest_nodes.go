@@ -16,7 +16,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -28,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
@@ -47,14 +47,8 @@ const (
 	validationFailedLabelValue  validationStateLabelValue = "validation-failed"
 )
 
-type sessionEntry struct {
-	Name   string   `json:"name"`
-	Tests  []string `json:"tests,omitempty"`
-	Failed bool     `json:"failed,omitempty"`
-}
-
 func reconcileValidationStateLabel(node *corev1.Node) (bool, error) {
-	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+	entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 	if err != nil {
 		return false, err
 	}
@@ -86,7 +80,8 @@ func reconcileValidationStateLabel(node *corev1.Node) (bool, error) {
 	return true, nil
 }
 
-func deriveValidationStateLabel(activeValidationRequest string, entries []sessionEntry) validationStateLabelValue {
+func deriveValidationStateLabel(activeValidationRequest string,
+	entries []annotationutil.ValidationSessionEntry) validationStateLabelValue {
 	if len(entries) == 0 {
 		return ""
 	}
@@ -102,29 +97,6 @@ func deriveValidationStateLabel(activeValidationRequest string, entries []sessio
 	}
 
 	return validationFailedLabelValue
-}
-
-func marshalSessionAnnotation(entries []sessionEntry) (string, error) {
-	b, err := json.Marshal(entries)
-	if err != nil {
-		return "", fmt.Errorf("marshal %q annotation: %w", annotationValidationSession, err)
-	}
-
-	return string(b), nil
-}
-
-func parseSessionAnnotation(sessionAnnotation string) ([]sessionEntry, error) {
-	if len(sessionAnnotation) == 0 {
-		return nil, nil
-	}
-
-	var entries []sessionEntry
-
-	if err := json.Unmarshal([]byte(sessionAnnotation), &entries); err != nil {
-		return nil, fmt.Errorf("unmarshal %q annotation: %w", annotationValidationSession, err)
-	}
-
-	return entries, nil
 }
 
 func (r *ValidationRequestReconciler) addToSessionAndCheckEligibility(ctx context.Context, ns v1alpha1.NodeSpec,
@@ -169,7 +141,7 @@ func (r *ValidationRequestReconciler) addToSessionAndCheckEligibility(ctx contex
 func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Context, nodeName,
 	validationRequestName string, tests []string) error {
 	return r.patchNodeWithRetry(ctx, nodeName, func(node *corev1.Node) (bool, error) {
-		entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+		entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 		if err != nil {
 			return false, err
 		}
@@ -180,18 +152,18 @@ func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Contex
 			}
 		}
 
-		entries = append(entries, sessionEntry{Name: validationRequestName, Tests: tests})
+		entries = append(entries, annotationutil.ValidationSessionEntry{Name: validationRequestName, Tests: tests})
 
 		if node.Annotations == nil {
 			node.Annotations = make(map[string]string)
 		}
 
-		annotation, err := marshalSessionAnnotation(entries)
+		annotation, err := annotationutil.MarshalValidationSession(entries)
 		if err != nil {
 			return false, err
 		}
 
-		node.Annotations[annotationValidationSession] = annotation
+		node.Annotations[annotationutil.ValidationSessionKey] = annotation
 
 		return true, nil
 	})
@@ -213,7 +185,7 @@ func (r *ValidationRequestReconciler) releaseNodesFromSuccessfulRequest(ctx cont
 
 func releaseNodeFromSession(node *corev1.Node, validationRequestName string, supersedeTests []string,
 	schedulingGate *v1alpha1.SchedulingGateConfig) (bool, error) {
-	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+	entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 	if err != nil {
 		return false, err
 	}
@@ -224,14 +196,14 @@ func releaseNodeFromSession(node *corev1.Node, validationRequestName string, sup
 
 	if len(remaining) != len(entries) {
 		if sessionBecameEmpty {
-			delete(node.Annotations, annotationValidationSession)
+			delete(node.Annotations, annotationutil.ValidationSessionKey)
 		} else {
-			annotation, err := marshalSessionAnnotation(remaining)
+			annotation, err := annotationutil.MarshalValidationSession(remaining)
 			if err != nil {
 				return false, err
 			}
 
-			node.Annotations[annotationValidationSession] = annotation
+			node.Annotations[annotationutil.ValidationSessionKey] = annotation
 		}
 
 		changed = true
@@ -251,7 +223,7 @@ func releaseNodeFromSession(node *corev1.Node, validationRequestName string, sup
 }
 
 func markNodeSessionEntryFailed(node *corev1.Node, validationRequestName string) (bool, error) {
-	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+	entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 	if err != nil {
 		return false, err
 	}
@@ -266,12 +238,12 @@ func markNodeSessionEntryFailed(node *corev1.Node, validationRequestName string)
 	}
 
 	if changed {
-		annotation, err := marshalSessionAnnotation(entries)
+		annotation, err := annotationutil.MarshalValidationSession(entries)
 		if err != nil {
 			return false, err
 		}
 
-		node.Annotations[annotationValidationSession] = annotation
+		node.Annotations[annotationutil.ValidationSessionKey] = annotation
 	}
 
 	if node.Annotations[annotationActiveValidationRequest] == validationRequestName {
@@ -384,8 +356,8 @@ func (r *ValidationRequestReconciler) patchNodeWithRetry(ctx context.Context, no
 	})
 }
 
-func removeSessionEntry(entries []sessionEntry, validationRequestName string,
-	supersedeTests []string) (remaining []sessionEntry, sessionBecameEmpty bool) {
+func removeSessionEntry(entries []annotationutil.ValidationSessionEntry, validationRequestName string,
+	supersedeTests []string) (remaining []annotationutil.ValidationSessionEntry, sessionBecameEmpty bool) {
 	for _, e := range entries {
 		if e.Name == validationRequestName {
 			continue

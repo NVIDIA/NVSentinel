@@ -18,8 +18,12 @@ load('./helpers.star', 'merge_dicts')
 
 # Suppress unused image warning for log-collector because it's used in dynamically-created
 # jobs by the fault-remediation controller (not deployed via Helm templates).
+# TILT_MAX_PARALLEL_UPDATES sets how many resources Tilt builds and deploys at the same time.
+# The default is the Tilt default. make tilt-ci sets more, because a cold install in CI waits
+# for free slots (see #2136).
 update_settings(
     k8s_upsert_timeout_secs=600,
+    max_parallel_updates=int(os.getenv('TILT_MAX_PARALLEL_UPDATES') or '3'),
     suppress_unused_image_warnings=['localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest']
 )
 
@@ -48,11 +52,13 @@ else:
 if use_pc_deployment:
     print("Publishing to the deployment platform connector (USE_DEPLOYMENT_PLATFORM_CONNECTOR=1)")
 
+# helm_resource does not wait for its helm_repo, so each chart lists its repo in resource_deps.
 helm_repo('jetstack', 'https://charts.jetstack.io')
 helm_resource(
     'cert-manager',
     chart='jetstack/cert-manager',
     namespace='cert-manager',
+    resource_deps=['jetstack'],
     flags=[
         '--create-namespace',
         '--set=installCRDs=true',
@@ -65,6 +71,7 @@ helm_resource(
     'prometheus-operator',
     chart='prometheus-community/kube-prometheus-stack',
     namespace='monitoring',
+    resource_deps=['prometheus-community'],
     flags=[
         '--create-namespace',
         '--set=prometheus.enabled=true',
@@ -76,9 +83,28 @@ helm_resource(
     ],
 )
 
+# Tilt runs a local_resource without allow_parallel=True only while nothing else builds, so it waits
+# for the longest image build. The local resources here only run kubectl, helm or docker and do not
+# change shared files, so they can run in parallel (see #2136).
+# When tilt ci stops an attempt during the install, the release stays in a pending state and every
+# later helm upgrade fails with "another operation is in progress". Remove such a release first.
+# --wait waits for the SchedulingShard to be ready, which KAI reports in the
+# standard way since v0.12.26 (kai-scheduler/KAI-Scheduler#1060). Releases from
+# then on are published under the kai-scheduler organization.
 local_resource(
     'kai-scheduler',
-    cmd='helm upgrade --install kai-scheduler oci://ghcr.io/nvidia/kai-scheduler/kai-scheduler --version v0.12.10 --create-namespace -n kai-scheduler --wait',
+    cmd='''
+        set -e
+        status=$(helm status kai-scheduler -n kai-scheduler 2>/dev/null | awk '/^STATUS:/ {print $2}')
+        case "$status" in
+            pending-*)
+                echo "Removing kai-scheduler release in state $status"
+                helm uninstall kai-scheduler -n kai-scheduler --wait
+                ;;
+        esac
+        helm upgrade --install kai-scheduler oci://ghcr.io/kai-scheduler/kai-scheduler/kai-scheduler --version v0.12.26 --create-namespace -n kai-scheduler --wait
+    ''',
+    allow_parallel=True,
 )
 
 helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
@@ -87,23 +113,29 @@ helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
 # pod's host-node IP, kindnetd then treats them as that node and rewrites its
 # CNI config with fake podCIDRs, and real pods created there get duplicate IPs
 # whose traffic NetworkPolicy enforcement misattributes and drops.
+#
+# Without hostNetwork, the fake nodes get the kwok pod IP. kindnetd cannot route
+# through a pod IP and restarts in a loop, which drops connections (see
+# kubernetes-sigs/kwok#819). Set POD_IP, which the chart passes as --node-ip, to
+# an unused kind network address instead (see kwok-node-ip.sh). Helm replaces the
+# env list, so HOST_IP keeps the chart default here.
+kwok_node_ip = str(local('./kwok-node-ip.sh', quiet=True)).strip()
 helm_resource(
     'kwok',
     chart='sigs-kwok/kwok',
     namespace='kube-system',
+    resource_deps=['sigs-kwok'],
     flags=[
-        '--version=0.3.0'  # pin: an unpinned chart floats to new releases mid-flight
+        '--version=0.3.0',  # pin: an unpinned chart floats to new releases mid-flight
+        '--set=env[0].name=POD_IP',
+        '--set=env[0].value=' + kwok_node_ip,
+        '--set=env[1].name=HOST_IP',
+        '--set=env[1].valueFrom.fieldRef.fieldPath=status.hostIP',
     ]
 )
-helm_resource(
-    'kwok-stage-fast',
-    chart='sigs-kwok/stage-fast',
-    resource_deps=['kwok'],
-    pod_readiness='ignore',
-    flags=[
-        '--version=0.3.0'
-    ]
-)
+# The stage-fast chart's Stages, applied by Tilt rather than Helm, so that the
+# pod-delete Stage below has a single owner instead of being taken over from Helm.
+k8s_yaml('./kwok-stage-fast.yaml')
 
 namespace_create('gpu-operator')
 namespace_create('nvsentinel')
@@ -237,6 +269,7 @@ local_resource(
         echo "cert-manager is ready"
     ''',
     resource_deps=['cert-manager'],
+    allow_parallel=True,
 )
 
 k8s_yaml(yaml)
@@ -321,12 +354,14 @@ local_resource(
     'wait-for-janitor-cert',
     cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/janitor-webhook-cert -n nvsentinel',
     resource_deps=['cert-manager-resources'],
+    allow_parallel=True,
 )
 
 local_resource(
     'wait-for-janitor-provider-cert',
     cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/janitor-provider-grpc-cert -n nvsentinel',
     resource_deps=['cert-manager-resources'],
+    allow_parallel=True,
 )
 
 k8s_resource(
@@ -343,6 +378,7 @@ local_resource(
     'wait-for-lifecycle-manager-cert',
     cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/lifecycle-manager-webhook-cert -n nvsentinel',
     resource_deps=['cert-manager-resources'],
+    allow_parallel=True,
 )
 
 k8s_resource(
@@ -355,12 +391,19 @@ if use_percona:
         'nvsentinel-psmdb-operator',
         resource_deps=['wait-for-cert-manager-crds'],
     )
+    # Tilt applies uncategorized objects together with their CRDs. Tilt 0.37 can fail to map
+    # PerconaServerMongoDB right after it creates the CRD, so apply the cluster after the operator.
+    k8s_resource(
+        new_name='mongodb-percona-cluster',
+        objects=['mongodb:perconaservermongodb'],
+        resource_deps=['nvsentinel-psmdb-operator'],
+    )
 
 # MongoDB database creation (only for MongoDB, not PostgreSQL)
 if not use_postgresql:
     k8s_resource(
         mongodb_init_job,
-        resource_deps=['wait-for-cert-manager-crds', 'nvsentinel-psmdb-operator'] if use_percona else ['wait-for-cert-manager-crds'],
+        resource_deps=['wait-for-cert-manager-crds', 'nvsentinel-psmdb-operator', 'mongodb-percona-cluster'] if use_percona else ['wait-for-cert-manager-crds'],
     )
 
     if not use_percona:
@@ -443,6 +486,7 @@ local_resource(
     'nic-metadata-stub',
     cmd='./inject-nic-metadata-stub.sh',
     resource_deps=['platform-connectors', 'labeler'],
+    allow_parallel=True,
 )
 
 k8s_resource(
@@ -491,8 +535,13 @@ k8s_resource(
 )
 
 k8s_resource(
-    'kwok-stage-fast',
-    pod_readiness='ignore',
+    new_name='kwok-stage-fast',
+    objects=[
+        'node-heartbeat-with-lease:stage',
+        'node-initialize:stage',
+        'pod-complete:stage',
+        'pod-ready:stage',
+    ],
     resource_deps=['kwok']
 )
 k8s_resource(

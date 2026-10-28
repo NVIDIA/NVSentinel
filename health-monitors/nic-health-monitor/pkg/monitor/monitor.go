@@ -130,9 +130,6 @@ func (m *NICHealthMonitor) RunCounterChecks(ctx context.Context) error {
 	return m.runChecks(ctx, m.counterChecks, "counter")
 }
 
-// StateInterval returns the configurable state polling interval.
-func (m *NICHealthMonitor) StateInterval() time.Duration { return m.stateInterval }
-
 // Close shuts down the publisher and the connection it owns.
 func (m *NICHealthMonitor) Close() {
 	m.pub.CloseOrWarn()
