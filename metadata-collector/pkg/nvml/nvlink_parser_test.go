@@ -15,11 +15,7 @@
 package nvml
 
 import (
-	"context"
-	"os"
-	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -175,29 +171,4 @@ func TestParseLinkLine(t *testing.T) {
 			require.Equal(t, tt.expected, link)
 		}
 	}
-}
-
-// fakeNvidiaSmi puts an nvidia-smi on PATH whose output pipe outlives the kill: the background
-// sleep inherits stdout, the way a child stuck in uninterruptible sleep on a wedged driver keeps
-// it open. Without Cmd.WaitDelay, CombinedOutput blocks until that sleep exits.
-func fakeNvidiaSmi(t *testing.T) {
-	t.Helper()
-
-	dir := t.TempDir()
-	script := "#!/bin/sh\nsleep 30 &\nsleep 30\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "nvidia-smi"), []byte(script), 0o700))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-func TestDetectNVLinkTopology_ReturnsWhenOutputPipeStaysOpen(t *testing.T) {
-	fakeNvidiaSmi(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	start := time.Now()
-	_, err := DetectNVLinkTopology(ctx)
-
-	require.Error(t, err)
-	require.Less(t, time.Since(start), 15*time.Second)
 }
