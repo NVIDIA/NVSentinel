@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -41,6 +42,8 @@ import (
 // maxQuarantineValidationHealthEvents bounds how many entries the quarantineValidationHealthEvent annotation can
 // hold. When exceeded, the oldest entries are dropped.
 const maxQuarantineValidationHealthEvents = 10
+
+const annotationCordonPreExisting = "nvsentinel.nvidia.com/cordon-pre-existing"
 
 type ValidationClient struct {
 	k8sClient        *informer.FaultQuarantineClient
@@ -291,6 +294,19 @@ func (c *ValidationClient) CreateValidationRequest(ctx context.Context, node *co
 	}
 
 	templates.SetNodeOwnerRef(validationObject, node)
+
+	annotations := validationObject.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+
+	// Carry the quarantine's cordon decision through cleanup of its Node annotations.
+	preExisting := node.Annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey] ==
+		common.QuarantineHealthEventCordonPreExistingAnnotationValue ||
+		node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] !=
+			common.QuarantineHealthEventIsCordonedAnnotationValueTrue
+	annotations[annotationCordonPreExisting] = strconv.FormatBool(preExisting)
+	validationObject.SetAnnotations(annotations)
 
 	return c.k8sClient.CreateValidationRequestResource(ctx, c.resourceGVR, validationObject)
 }

@@ -51,6 +51,8 @@ type sessionEntry struct {
 	Name   string   `json:"name"`
 	Tests  []string `json:"tests,omitempty"`
 	Failed bool     `json:"failed,omitempty"`
+	// A missing value keeps the release policy of sessions written by older controllers.
+	CordonReleaseAllowed *bool `json:"cordonReleaseAllowed,omitempty"`
 }
 
 func reconcileValidationStateLabel(node *corev1.Node) (bool, error) {
@@ -139,7 +141,7 @@ func (r *ValidationRequestReconciler) addToSessionAndCheckEligibility(ctx contex
 		return false, false, fmt.Errorf("get node %q: %w", ns.Name, err)
 	}
 
-	if err := r.updateValidationSession(ctx, ns.Name, validationRequest.Name, resolvedTests); err != nil {
+	if err := r.updateValidationSession(ctx, ns.Name, validationRequest, resolvedTests); err != nil {
 		return true, false, fmt.Errorf("ensure session on node %q: %w", ns.Name, err)
 	}
 
@@ -166,8 +168,8 @@ func (r *ValidationRequestReconciler) addToSessionAndCheckEligibility(ctx contex
 	return true, true, nil
 }
 
-func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Context, nodeName,
-	validationRequestName string, tests []string) error {
+func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Context, nodeName string,
+	validationRequest *v1alpha1.ValidationRequest, tests []string) error {
 	return r.patchNodeWithRetry(ctx, nodeName, func(node *corev1.Node) (bool, error) {
 		entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
 		if err != nil {
@@ -175,12 +177,16 @@ func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Contex
 		}
 
 		for _, e := range entries {
-			if e.Name == validationRequestName {
+			if e.Name == validationRequest.Name {
 				return false, nil
 			}
 		}
 
-		entries = append(entries, sessionEntry{Name: validationRequestName, Tests: tests})
+		allowed := requestAllowsCordonRelease(validationRequest)
+		entries = append(entries, sessionEntry{
+			Name: validationRequest.Name, Tests: tests,
+			CordonReleaseAllowed: &allowed,
+		})
 
 		if node.Annotations == nil {
 			node.Annotations = make(map[string]string)
@@ -201,7 +207,16 @@ func (r *ValidationRequestReconciler) releaseNodesFromSuccessfulRequest(ctx cont
 	validationRequest *v1alpha1.ValidationRequest, supersedeTests []string) error {
 	for _, ns := range validationRequest.Spec.Nodes {
 		err := r.patchNodeWithRetry(ctx, ns.Name, func(node *corev1.Node) (bool, error) {
-			return releaseNodeFromSession(node, validationRequest.Name, supersedeTests, r.Config.Validation.Spec.SchedulingGate)
+			gate := r.schedulingGateForRelease(validationRequest, node)
+
+			changed, err := releaseNodeFromSession(node, validationRequest.Name, supersedeTests, gate)
+			if err == nil && gate != r.Config.Validation.Spec.SchedulingGate &&
+				len(node.Annotations[annotationValidationSession]) == 0 {
+				slog.InfoContext(ctx, "Validation released the node but kept a cordon that NVSentinel did not apply",
+					"validationRequest", validationRequest.Name, "node", node.Name)
+			}
+
+			return changed, err
 		})
 		if err != nil {
 			return fmt.Errorf("release node %q from successful request: %w", ns.Name, err)
@@ -209,6 +224,47 @@ func (r *ValidationRequestReconciler) releaseNodesFromSuccessfulRequest(ctx cont
 	}
 
 	return nil
+}
+
+const annotationCordonPreExisting = "nvsentinel.nvidia.com/cordon-pre-existing"
+
+// Requests without a recorded cordon decision retain their configured release behavior.
+func requestAllowsCordonRelease(request *v1alpha1.ValidationRequest) bool {
+	preExisting, recorded := request.Annotations[annotationCordonPreExisting]
+
+	return !recorded || preExisting == "false"
+}
+
+// schedulingGateForRelease preserves a pre-existing cordon unless another request in this session authorizes
+// its release. Taints still follow the configured policy.
+func (r *ValidationRequestReconciler) schedulingGateForRelease(validationRequest *v1alpha1.ValidationRequest,
+	node *corev1.Node) *v1alpha1.SchedulingGateConfig {
+	gate := r.Config.Validation.Spec.SchedulingGate
+	if gate == nil || !gate.Cordon.Remove || !node.Spec.Unschedulable ||
+		requestAllowsCordonRelease(validationRequest) || sessionAllowsCordonRelease(node) {
+		return gate
+	}
+
+	keepCordon := *gate
+	keepCordon.Cordon.Remove = false
+
+	return &keepCordon
+}
+
+func sessionAllowsCordonRelease(node *corev1.Node) bool {
+	entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+	if err != nil {
+		// releaseNodeFromSession reports this error before it changes the node.
+		return false
+	}
+
+	return entriesAllowCordonRelease(entries)
+}
+
+func entriesAllowCordonRelease(entries []sessionEntry) bool {
+	return slices.ContainsFunc(entries, func(entry sessionEntry) bool {
+		return entry.CordonReleaseAllowed == nil || *entry.CordonReleaseAllowed
+	})
 }
 
 func releaseNodeFromSession(node *corev1.Node, validationRequestName string, supersedeTests []string,
@@ -396,6 +452,14 @@ func removeSessionEntry(entries []sessionEntry, validationRequestName string,
 		}
 
 		remaining = append(remaining, e)
+	}
+
+	if len(remaining) != len(entries) && entriesAllowCordonRelease(entries) {
+		// Keep authorization until every request has finished, independently of the current gate configuration.
+		allowed := true
+		for i := range remaining {
+			remaining[i].CordonReleaseAllowed = &allowed
+		}
 	}
 
 	return remaining, len(entries) > 0 && len(remaining) == 0
