@@ -15,8 +15,12 @@
 version: 2
 updates:
   # GitHub Actions
+  # "/" covers .github/workflows; the composite actions under .github/actions
+  # are only updated when their directories are listed too.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/*"
     target-branch: "main"
     schedule:
       interval: "weekly"
@@ -105,8 +109,9 @@ updates:
   # weekly so base image CVE fixes are picked up promptly.
   # Exception: the DCGM images (gpu-health-monitor, dcgm-diag, tilt/dcgm-fake)
   # and the PyTorch image in nccl-allreduce are selected by a build ARG that the
-  # Makefile overrides to produce image variants, so they cannot be digest-pinned
-  # and Dependabot cannot update them. Every other base image is pinned.
+  # Makefile overrides to produce image variants. They are digest-pinned inside
+  # the ARG value (tag@sha256), which Dependabot cannot update, so their tags and
+  # digests are updated by hand. Every other base image is pinned on its FROM line.
   - package-ecosystem: "docker"
     directories:
       - "/demos/local-custom-remediation-demo/memory-pressure-monitor"

@@ -25,8 +25,6 @@ import (
 type RuleSetEvaluatorIface interface {
 	Evaluate(context.Context, *protos.HealthEvent) (common.RuleEvaluationResult, error)
 	GetName() string
-	GetVersion() string
-	GetPriority() int
 }
 
 type baseRuleSetEvaluator struct {
@@ -37,12 +35,4 @@ type baseRuleSetEvaluator struct {
 
 func (baseEval *baseRuleSetEvaluator) GetName() string {
 	return baseEval.Name
-}
-
-func (baseEval *baseRuleSetEvaluator) GetPriority() int {
-	return baseEval.Priority
-}
-
-func (baseEval *baseRuleSetEvaluator) GetVersion() string {
-	return baseEval.Version
 }

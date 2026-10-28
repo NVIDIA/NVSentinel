@@ -181,6 +181,8 @@ Kubernetes permissions are automatically generated based on your policies - you 
 ### State Tracking
 Maintains state for each resource to detect transitions between healthy and unhealthy states.
 
+The monitor saves each unhealthy match in the `nvsentinel.nvidia.com/k8s-object-monitor-policy-matches` annotation on the node. When the monitor starts, it reads these annotations and checks each saved resource again. A resource that became healthy or was deleted while the monitor was stopped gets a healthy event, so its node can recover. If the monitor cannot read the node annotations at startup, it does not start, and Kubernetes restarts it.
+
 ### Extensible
 Monitor any resource: core resources (Nodes, Pods), namespaced resources, cluster-scoped resources, or CRDs.
 

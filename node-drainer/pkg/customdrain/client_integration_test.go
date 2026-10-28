@@ -103,6 +103,10 @@ func TestCustomDrainClient_Integration(t *testing.T) {
 	t.Run("StatusConditions", func(t *testing.T) {
 		testStatusConditions(t)
 	})
+
+	t.Run("DryRun", func(t *testing.T) {
+		testDryRun(t)
+	})
 }
 
 func newTestConfig() config.CustomDrainConfig {
@@ -125,7 +129,7 @@ func testCRDNotFound(t *testing.T) {
 	cfg.ApiGroup = "nonexistent.example.com"
 	cfg.Kind = "FakeResource"
 
-	client, err := NewClient(cfg, dynamicClient, restMapper)
+	client, err := NewClient(cfg, dynamicClient, restMapper, false)
 	require.Error(t, err, "NewClient should error when CRD doesn't exist")
 	require.Nil(t, client, "client should be nil when CRD validation fails")
 	assert.Contains(t, err.Error(), "failed to find rest mapping for custom drain CRD",
@@ -136,7 +140,7 @@ func testStatusConditions(t *testing.T) {
 	ctx := context.Background()
 	cfg := newTestConfig()
 
-	client, err := NewClient(cfg, dynamicClient, restMapper)
+	client, err := NewClient(cfg, dynamicClient, restMapper, false)
 	require.NoError(t, err)
 
 	templateData := TemplateData{
@@ -222,4 +226,43 @@ func testStatusConditions(t *testing.T) {
 	assert.True(t, found)
 	assert.True(t, isComplete, "Status check should be case-insensitive")
 
+}
+
+func testDryRun(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTestConfig()
+
+	dryRunClient, err := NewClient(cfg, dynamicClient, restMapper, true)
+	require.NoError(t, err)
+
+	templateData := TemplateData{
+		HealthEvent: &protos.HealthEvent{
+			NodeName:  "test-node-dry-run",
+			CheckName: "dry-run-check",
+		},
+		EventID:     "event-dry-run",
+		PodsToDrain: map[string][]string{},
+	}
+
+	crName, err := dryRunClient.CreateDrainCR(ctx, templateData)
+	require.NoError(t, err)
+
+	found, _, err := dryRunClient.GetCRStatus(ctx, crName)
+	require.NoError(t, err)
+	assert.False(t, found, "dry run must not persist the drain CR")
+
+	client, err := NewClient(cfg, dynamicClient, restMapper, false)
+	require.NoError(t, err)
+
+	crName, err = client.CreateDrainCR(ctx, templateData)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = client.DeleteDrainCR(ctx, crName)
+	})
+
+	require.NoError(t, dryRunClient.DeleteDrainCR(ctx, crName))
+
+	found, _, err = client.GetCRStatus(ctx, crName)
+	require.NoError(t, err)
+	assert.True(t, found, "dry run must not delete an existing drain CR")
 }

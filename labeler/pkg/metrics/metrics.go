@@ -74,6 +74,16 @@ var (
 		[]string{ClassLabel, "partition"},
 	)
 
+	// DeviceCountSource is 1 for the source that counted a node's devices. A
+	// node has no series for a class while no source is available.
+	DeviceCountSource = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "labeler_device_count_source",
+			Help: "Source that counted a node's devices for a device class (1 for the selected source).",
+		},
+		[]string{"node", ClassLabel, "source"},
+	)
+
 	// DeviceCountSkippedUpdates tracks skipped device-count label updates.
 	DeviceCountSkippedUpdates = promauto.NewCounterVec(
 		prometheus.CounterOpts{

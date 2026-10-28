@@ -381,6 +381,8 @@ Failures in the exchange itself surface on the first remediation, not at startup
 
 The `generic` provider spawns a privileged Kubernetes Job on the target node that runs `chroot /host reboot` to reboot the node. Use this for bare-metal clusters, on-premises deployments, or any environment not covered by the cloud provider backends.
 
+The provider records the node boot ID when it creates the Job and passes it to the container in the `PRE_REBOOT_BOOT_ID` environment variable. Before any other action, the container compares this value with `/proc/sys/kernel/random/boot_id`. If the values are different, the node has already rebooted, so the container exits without a reboot and without a syslog entry. This check stops a second reboot when the kubelet starts the same pod again after the node boots. If the container cannot read either boot ID, it exits with an error and does not reboot the node.
+
 ```yaml
 janitor-provider:
   csp:
@@ -395,7 +397,7 @@ janitor-provider:
 ```
 
 ### rebootImage
-Container image used by the reboot Job. Must include `chroot` and standard shell utilities.
+Container image used by the reboot Job. Must include `sh`, `cat` and `chroot`. Every reboot method runs through `sh -c`, because the boot ID check needs a shell. If the image has no `sh`, the container does not start and the node does not reboot.
 
 ### useSysrqReboot
 When `false` (default), the Job runs `chroot /host reboot` to trigger a clean OS shutdown and restart.
