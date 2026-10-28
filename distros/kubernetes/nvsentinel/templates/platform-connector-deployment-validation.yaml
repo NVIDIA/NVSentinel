@@ -52,15 +52,20 @@
 # mapper writes. With the mapper off while partial drain is on, the misconfiguration only surfaces
 # at runtime: a COMPONENT_RESET partial drain on a node with a GPU pod errors because the pod has no
 # annotation, stays draining, is retried forever, and remediation never starts. Fail at install/upgrade
-# instead. partialDrainEnabled resolves the same way node-drainer's configmap does: global overrides the
-# subchart value. podMapper.enabled defaults to true.
-{{- $mc := index .Values "metadata-collector" | default dict }}
-{{- $mcEnabled := (($.Values.global | default dict).metadataCollector | default dict).enabled }}
-{{- $podMapper := $mc.podMapper | default dict }}
-{{- $podMapperEnabled := ternary $podMapper.enabled true (not (kindIs "invalid" $podMapper.enabled)) }}
+# instead. The check applies only when node-drainer is deployed (it is off by default in the umbrella
+# chart, so partial drain cannot run without it) and metadata-collector is enabled. partialDrainEnabled
+# resolves the same way node-drainer's configmap does: global overrides the subchart value.
+# podMapper.enabled defaults to true, and values are compared as rendered strings so a quoted "false"
+# still counts as disabled.
+{{- $global := .Values.global | default dict }}
+{{- $mcEnabled := ($global.metadataCollector | default dict).enabled }}
+{{- $nodeDrainerEnabled := ($global.nodeDrainer | default dict).enabled }}
+{{- $podMapperEnabledRaw := ((index .Values "metadata-collector" | default dict).podMapper | default dict).enabled }}
+{{- $podMapperOff := and (not (kindIs "invalid" $podMapperEnabledRaw)) (eq (lower (printf "%v" $podMapperEnabledRaw)) "false") }}
 {{- $nd := index .Values "node-drainer" | default dict }}
-{{- $globalPartial := (($.Values.global | default dict).partialDrainEnabled) }}
-{{- $partialDrainEnabled := ternary $globalPartial ($nd.partialDrainEnabled | default false) (not (kindIs "invalid" $globalPartial)) }}
-{{- if and $mcEnabled (not $podMapperEnabled) $partialDrainEnabled }}
+{{- $globalPartial := $global.partialDrainEnabled }}
+{{- $partialRaw := ternary $globalPartial $nd.partialDrainEnabled (not (kindIs "invalid" $globalPartial)) }}
+{{- $partialDrainOn := eq (lower (printf "%v" $partialRaw)) "true" }}
+{{- if and $mcEnabled $nodeDrainerEnabled $podMapperOff $partialDrainOn }}
 {{- fail "metadata-collector.podMapper.enabled is false but partial drain is enabled (node-drainer.partialDrainEnabled or global.partialDrainEnabled). The pod device mapper writes the dgxc.nvidia.com/devices annotation that partial drains need, so with it off a COMPONENT_RESET partial drain on a node with a GPU pod errors, stays draining, and is retried indefinitely, and remediation never starts. Enable metadata-collector.podMapper or disable partial drain (node-drainer.partialDrainEnabled and global.partialDrainEnabled)." }}
 {{- end }}
