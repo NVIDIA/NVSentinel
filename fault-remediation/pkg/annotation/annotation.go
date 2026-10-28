@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +30,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 )
 
 // conflictBackoff is a custom retry backoff for annotation read-modify-write
@@ -160,6 +163,8 @@ func (m *NodeAnnotationManager) RecordRemediationAttempt(ctx context.Context, no
 			return err
 		}
 
+		resumeValidationAttempts(state, node)
+
 		// A missing key yields the zero struct, so this also covers the first attempt.
 		groupState := state.EquivalenceGroups[group]
 		groupState.AttemptCount++
@@ -207,26 +212,187 @@ func (m *NodeAnnotationManager) ClearRemediationState(ctx context.Context, nodeN
 			return err
 		}
 
-		if node.Annotations == nil {
-			return nil
-		}
-
-		updatedNode := node.DeepCopy()
-		delete(updatedNode.Annotations, AnnotationKey)
-
-		if err := m.client.Update(ctx, updatedNode); err != nil {
-			return err
-		}
-
-		slog.InfoContext(ctx, "Cleared remediation state annotation for node", "node", nodeName)
-
-		return nil
+		return m.removeStateAnnotation(ctx, node)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to clear remediation state for node %s: %w", nodeName, err)
 	}
 
 	return nil
+}
+
+// removeStateAnnotation drops the remediation state from the Node, which ends its quarantine session.
+func (m *NodeAnnotationManager) removeStateAnnotation(ctx context.Context, node *corev1.Node) error {
+	if node.Annotations == nil {
+		return nil
+	}
+
+	updatedNode := node.DeepCopy()
+	delete(updatedNode.Annotations, AnnotationKey)
+
+	if err := m.client.Update(ctx, updatedNode); err != nil {
+		return err
+	}
+
+	slog.InfoContext(ctx, "Cleared remediation state annotation for node", "node", node.Name)
+
+	return nil
+}
+
+// KeepAttemptsForValidation ends the quarantine session like ClearRemediationState, but keeps the
+// attempt counts bound to the ValidationRequests that hold the node at this point: fault-quarantine
+// also ends the session when it hands the node to post-remediation validation, and the node stays
+// out of service until validation releases it. resumeValidationAttempts decides at the next fault
+// whether the counts carry over. With no request in the session, the state is cleared as before.
+func (m *NodeAnnotationManager) KeepAttemptsForValidation(ctx context.Context, nodeName string) error {
+	err := retry.RetryOnConflict(conflictBackoff, func() error {
+		state, node, err := m.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return err
+		}
+
+		session := validationSessionRequests(node)
+		if len(session) == 0 {
+			return m.removeStateAnnotation(ctx, node)
+		}
+
+		// Without new attempts, keep the counts bound to the requests of the earlier hand-off,
+		// so a later, independent validation does not take them over.
+		if len(state.EquivalenceGroups) == 0 {
+			return nil
+		}
+
+		state.ValidationAttempts = make(map[string]int)
+		state.ValidationRequests = session
+
+		for group, groupState := range state.EquivalenceGroups {
+			if groupState.AttemptCount > 0 {
+				state.ValidationAttempts[group] = groupState.AttemptCount
+			}
+		}
+
+		updatedNode := node.DeepCopy()
+
+		if len(state.ValidationAttempts) == 0 {
+			delete(updatedNode.Annotations, AnnotationKey)
+		} else {
+			stateJSON, err := json.Marshal(RemediationStateAnnotation{
+				EquivalenceGroups:  map[string]EquivalenceGroupState{},
+				ValidationAttempts: state.ValidationAttempts,
+				ValidationRequests: state.ValidationRequests,
+			})
+			if err != nil {
+				return err
+			}
+
+			updatedNode.Annotations[AnnotationKey] = string(stateJSON)
+		}
+
+		if err := m.client.Update(ctx, updatedNode); err != nil {
+			return err
+		}
+
+		slog.InfoContext(ctx, "Kept remediation attempts for post-remediation validation",
+			"node", nodeName,
+			"attempts", state.ValidationAttempts)
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to keep remediation attempts for node %s: %w", nodeName, err)
+	}
+
+	return nil
+}
+
+// PrepareRemediationAttempt resolves the counts kept by KeepAttemptsForValidation before the cap is
+// checked, and returns the resulting state. The decision is persisted, so the Node's
+// resourceVersion rejects a decision made from a stale cache, and a quarantine that resumed the
+// counts stays capped when validation finishes later.
+func (m *NodeAnnotationManager) PrepareRemediationAttempt(ctx context.Context,
+	nodeName string) (*RemediationStateAnnotation, error) {
+	var state *RemediationStateAnnotation
+
+	err := retry.RetryOnConflict(conflictBackoff, func() error {
+		var (
+			node *corev1.Node
+			err  error
+		)
+
+		state, node, err = m.GetRemediationState(ctx, nodeName)
+		if err != nil || len(state.ValidationAttempts) == 0 {
+			return err
+		}
+
+		resumeValidationAttempts(state, node)
+
+		updatedNode := node.DeepCopy()
+
+		if len(state.EquivalenceGroups) == 0 {
+			delete(updatedNode.Annotations, AnnotationKey)
+		} else {
+			stateJSON, err := json.Marshal(state)
+			if err != nil {
+				return err
+			}
+
+			updatedNode.Annotations[AnnotationKey] = string(stateJSON)
+		}
+
+		return m.client.Update(ctx, updatedNode)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare remediation attempt for node %s: %w", nodeName, err)
+	}
+
+	return state, nil
+}
+
+// resumeValidationAttempts moves the counts kept by KeepAttemptsForValidation back into the
+// session while validation still holds the node for the same hand-off: one of the requests
+// recorded at the hand-off is still in the node's validation session. Otherwise validation has
+// released the node, and the counts are dropped.
+func resumeValidationAttempts(state *RemediationStateAnnotation, node *corev1.Node) {
+	if len(state.ValidationAttempts) == 0 {
+		return
+	}
+
+	session := validationSessionRequests(node)
+	held := slices.ContainsFunc(state.ValidationRequests, func(name string) bool {
+		return slices.Contains(session, name)
+	})
+
+	if held {
+		for group, count := range state.ValidationAttempts {
+			groupState := state.EquivalenceGroups[group]
+			groupState.AttemptCount = max(groupState.AttemptCount, count)
+			state.EquivalenceGroups[group] = groupState
+		}
+	}
+
+	state.ValidationAttempts = nil
+	state.ValidationRequests = nil
+}
+
+// validationSessionRequests returns the names of the ValidationRequests that hold the node.
+func validationSessionRequests(node *corev1.Node) []string {
+	entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
+	if err != nil {
+		slog.Warn("Cannot read validation session; treating the node as released by validation",
+			"node", node.Name, "error", err)
+
+		return nil
+	}
+
+	var names []string
+
+	for _, entry := range entries {
+		if entry.Name != "" {
+			names = append(names, entry.Name)
+		}
+	}
+
+	return names
 }
 
 // endGroupSessions clears the CR reference of each named group while keeping its attempt
@@ -254,8 +420,7 @@ func endGroupSessions(state *RemediationStateAnnotation, groups []string) {
 // The CR reference is dropped so a new remediation may start, but AttemptCount is carried over:
 // groups are removed precisely when their CR failed or vanished, which is the case the attempt
 // cap exists to stop. Deleting the count here would reset the budget on every failure and the
-// cap could never be reached. The count is cleared by ClearRemediationState when the quarantine
-// session actually ends.
+// cap could never be reached. The count is cleared when the node returns to service.
 func (m *NodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error {
 	err := retry.RetryOnConflict(conflictBackoff, func() error {
 		state, node, err := m.GetRemediationState(ctx, nodeName)
@@ -267,7 +432,7 @@ func (m *NodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, nodeN
 		endGroupSessions(state, groups)
 
 		// If no groups remain, clear the entire annotation
-		if len(state.EquivalenceGroups) == 0 {
+		if len(state.EquivalenceGroups) == 0 && len(state.ValidationAttempts) == 0 {
 			updatedNode := node.DeepCopy()
 			if updatedNode.Annotations != nil {
 				delete(updatedNode.Annotations, AnnotationKey)
