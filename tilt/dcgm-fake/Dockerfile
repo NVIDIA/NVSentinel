@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Match DCGM_VERSION used in gpu-health-monitor and preflight dcgm-diag Dockerfiles
-ARG DCGM_VERSION=4.4.2-1-ubuntu22.04
+# Match DCGM_VERSION used in gpu-health-monitor and preflight dcgm-diag Dockerfiles.
+# Digest-pinned through the ARG value (tag@sha256); Dependabot cannot update an ARG.
+ARG DCGM_VERSION=4.4.2-1-ubuntu22.04@sha256:becae9b24707d2bdfce87cb72626e24b2fbfbca812329ca52540ad0e0d955717
 FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION}
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \

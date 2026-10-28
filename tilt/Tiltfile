@@ -76,9 +76,12 @@ helm_resource(
     ],
 )
 
+# --wait waits for the SchedulingShard to be ready, which KAI reports in the
+# standard way since v0.12.26 (kai-scheduler/KAI-Scheduler#1060). Releases from
+# then on are published under the kai-scheduler organization.
 local_resource(
     'kai-scheduler',
-    cmd='helm upgrade --install kai-scheduler oci://ghcr.io/nvidia/kai-scheduler/kai-scheduler --version v0.12.10 --create-namespace -n kai-scheduler --wait',
+    cmd='helm upgrade --install kai-scheduler oci://ghcr.io/kai-scheduler/kai-scheduler/kai-scheduler --version v0.12.26 --create-namespace -n kai-scheduler --wait',
 )
 
 helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
@@ -87,23 +90,28 @@ helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
 # pod's host-node IP, kindnetd then treats them as that node and rewrites its
 # CNI config with fake podCIDRs, and real pods created there get duplicate IPs
 # whose traffic NetworkPolicy enforcement misattributes and drops.
+#
+# Without hostNetwork, the fake nodes get the kwok pod IP. kindnetd cannot route
+# through a pod IP and restarts in a loop, which drops connections (see
+# kubernetes-sigs/kwok#819). Set POD_IP, which the chart passes as --node-ip, to
+# an unused kind network address instead (see kwok-node-ip.sh). Helm replaces the
+# env list, so HOST_IP keeps the chart default here.
+kwok_node_ip = str(local('./kwok-node-ip.sh', quiet=True)).strip()
 helm_resource(
     'kwok',
     chart='sigs-kwok/kwok',
     namespace='kube-system',
     flags=[
-        '--version=0.3.0'  # pin: an unpinned chart floats to new releases mid-flight
+        '--version=0.3.0',  # pin: an unpinned chart floats to new releases mid-flight
+        '--set=env[0].name=POD_IP',
+        '--set=env[0].value=' + kwok_node_ip,
+        '--set=env[1].name=HOST_IP',
+        '--set=env[1].valueFrom.fieldRef.fieldPath=status.hostIP',
     ]
 )
-helm_resource(
-    'kwok-stage-fast',
-    chart='sigs-kwok/stage-fast',
-    resource_deps=['kwok'],
-    pod_readiness='ignore',
-    flags=[
-        '--version=0.3.0'
-    ]
-)
+# The stage-fast chart's Stages, applied by Tilt rather than Helm, so that the
+# pod-delete Stage below has a single owner instead of being taken over from Helm.
+k8s_yaml('./kwok-stage-fast.yaml')
 
 namespace_create('gpu-operator')
 namespace_create('nvsentinel')
@@ -491,8 +499,13 @@ k8s_resource(
 )
 
 k8s_resource(
-    'kwok-stage-fast',
-    pod_readiness='ignore',
+    new_name='kwok-stage-fast',
+    objects=[
+        'node-heartbeat-with-lease:stage',
+        'node-initialize:stage',
+        'pod-complete:stage',
+        'pod-ready:stage',
+    ],
     resource_deps=['kwok']
 )
 k8s_resource(

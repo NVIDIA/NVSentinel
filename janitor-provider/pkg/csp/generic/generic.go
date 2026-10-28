@@ -38,6 +38,12 @@ const (
 	jobNodeLabelKey            = "nvsentinel.nvidia.com/reboot-node"
 	hostMountPath              = "/host"
 	hostProcMountPath          = "/host-proc"
+	// preRebootBootIDEnvVar is the reboot container env var holding the node's boot ID
+	// recorded when the Job was created.
+	preRebootBootIDEnvVar = "PRE_REBOOT_BOOT_ID"
+	// bootIDPath is the kernel boot ID file. It is not namespaced, so the container reads
+	// the host's value.
+	bootIDPath = "/proc/sys/kernel/random/boot_id"
 )
 
 var _ model.CSPClient = (*Client)(nil)
@@ -105,7 +111,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, crName 
 		return "", fmt.Errorf("node %s has no bootID", node.Name)
 	}
 
-	job := c.buildRebootJob(node.Name, crName)
+	job := c.buildRebootJob(node.Name, crName, preRebootBootID)
 
 	slog.InfoContext(ctx, "Creating reboot Job", "node", node.Name, "namespace", c.config.RebootJobNamespace,
 		"useSysrqReboot", c.config.UseSysrqReboot, "writeSyslog", c.config.WriteSyslog)
@@ -159,7 +165,9 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 }
 
 // buildRebootJob constructs the privileged batchv1.Job specification for rebooting the node.
-func (c *Client) buildRebootJob(nodeName, crName string) *batchv1.Job {
+// preRebootBootID is passed to the container as an env var so the reboot command can
+// skip the reboot once the node has booted again.
+func (c *Client) buildRebootJob(nodeName, crName, preRebootBootID string) *batchv1.Job {
 	image := c.config.RebootImage
 	ttl := c.config.RebootJobTTL
 	command := c.config.rebootCommand(nodeName, crName)
@@ -243,6 +251,9 @@ func (c *Client) buildRebootJob(nodeName, crName string) *batchv1.Job {
 							Name:    "reboot",
 							Image:   image,
 							Command: command,
+							Env: []corev1.EnvVar{
+								{Name: preRebootBootIDEnvVar, Value: preRebootBootID},
+							},
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: new(true),
 							},
@@ -257,7 +268,29 @@ func (c *Client) buildRebootJob(nodeName, crName string) *batchv1.Job {
 }
 
 // rebootCommand generates the container command slice based on sysrq and syslog settings.
+// Every variant runs the boot ID guard before any side effect. The kubelet can start the
+// same pod again after the node boots, because the reboot killed the container before it
+// reported a terminal status; the guard makes that second run exit without rebooting.
 func (c Config) rebootCommand(nodeName, crName string) []string {
+	return []string{"sh", "-c", bootIDGuard() + c.rebootAction(nodeName, crName)}
+}
+
+// bootIDGuard returns a shell prefix that exits 0 when the host boot ID differs from
+// PRE_REBOOT_BOOT_ID, and exits non-zero when either value is missing. The boot ID is read
+// from the env var only and is never interpolated into the script.
+func bootIDGuard() string {
+	return fmt.Sprintf(
+		`cur=$(cat %[1]s) || { echo "nvsentinel-reboot: cannot read boot ID, not rebooting" >&2; exit 1; }; `+
+			`if [ -z "$%[2]s" ] || [ -z "$cur" ]; then `+
+			`echo "nvsentinel-reboot: boot ID missing, not rebooting" >&2; exit 1; fi; `+
+			`if [ "$cur" != "$%[2]s" ]; then `+
+			`echo "nvsentinel-reboot: boot ID changed from $%[2]s to $cur, skipping reboot"; exit 0; fi; `,
+		bootIDPath, preRebootBootIDEnvVar)
+}
+
+// rebootAction returns the shell commands that write the optional syslog entry and reboot
+// the node. The reboot runs last so a failed reboot makes the container exit non-zero.
+func (c Config) rebootAction(nodeName, crName string) string {
 	attribution := fmt.Sprintf("NVSentinel reboot: node=%s", nodeName)
 	if crName != "" {
 		attribution = fmt.Sprintf("NVSentinel reboot: node=%s cr=%s", nodeName, crName)
@@ -265,25 +298,20 @@ func (c Config) rebootCommand(nodeName, crName string) []string {
 
 	if c.UseSysrqReboot {
 		if c.WriteSyslog {
-			return []string{
-				"sh", "-c",
-				fmt.Sprintf("chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; sync || true; echo b > %s/sysrq-trigger",
-					hostMountPath, attribution, hostProcMountPath),
-			}
+			return fmt.Sprintf(
+				"chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; sync || true; echo b > %s/sysrq-trigger",
+				hostMountPath, attribution, hostProcMountPath)
 		}
 
-		return []string{"sh", "-c", fmt.Sprintf("echo b > %s/sysrq-trigger", hostProcMountPath)}
+		return fmt.Sprintf("echo b > %s/sysrq-trigger", hostProcMountPath)
 	}
 
 	if c.WriteSyslog {
-		return []string{
-			"sh", "-c",
-			fmt.Sprintf("chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; chroot %s reboot",
-				hostMountPath, attribution, hostMountPath),
-		}
+		return fmt.Sprintf("chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; chroot %s reboot",
+			hostMountPath, attribution, hostMountPath)
 	}
 
-	return []string{"chroot", hostMountPath, "reboot"}
+	return fmt.Sprintf("chroot %s reboot", hostMountPath)
 }
 
 // checkRebootJobPodStatus checks the reboot Job's pod for terminal failures

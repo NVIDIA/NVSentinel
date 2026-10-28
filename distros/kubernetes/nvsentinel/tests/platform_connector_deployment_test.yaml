@@ -43,7 +43,7 @@ tests:
               verbs: ["get"]
             - apiGroups: [""]
               resources: ["nodes/status"]
-              verbs: ["update"]
+              verbs: ["patch", "update"]
             - apiGroups: [""]
               resources: ["events"]
               verbs: ["create", "get", "update"]

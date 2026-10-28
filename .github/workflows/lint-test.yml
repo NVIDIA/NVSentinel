@@ -54,6 +54,12 @@ jobs:
           - component: gomod
             make_command: 'make gomod-lint'
             step_name: 'Run gomod lint'
+          - component: renovate
+            make_command: 'make renovate-lint'
+            step_name: 'Validate Renovate configuration'
+          - component: dead-code
+            make_command: 'make dead-code-lint'
+            step_name: 'Check for dead code'
           - component: log-collector
             make_command: 'make -C log-collector lint-log-collector'
             step_name: 'Run lint'

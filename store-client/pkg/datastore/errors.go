@@ -109,61 +109,11 @@ func (e *DatastoreError) WithMetadata(key string, value any) *DatastoreError {
 	return e
 }
 
-// IsConnectionError checks if the error is a connection-related error
-func IsConnectionError(err error) bool {
-	if datastoreErr, ok := errors.AsType[*DatastoreError](err); ok {
-		return datastoreErr.Type == ErrorTypeConnection ||
-			datastoreErr.Type == ErrorTypeAuthentication ||
-			datastoreErr.Type == ErrorTypeTimeout ||
-			datastoreErr.Type == ErrorTypeCertificate
-	}
-
-	return false
-}
-
-// IsRetryableError checks if the error should be retried
-func IsRetryableError(err error) bool {
-	if datastoreErr, ok := errors.AsType[*DatastoreError](err); ok {
-		switch datastoreErr.Type {
-		case ErrorTypeConnection, ErrorTypeTimeout, ErrorTypeChangeStream:
-			return true
-		case ErrorTypeAuthentication, ErrorTypeCertificate, ErrorTypeQuery, ErrorTypeInsert,
-			ErrorTypeUpdate, ErrorTypeDelete, ErrorTypeTransaction, ErrorTypeDocumentNotFound,
-			ErrorTypeValidation, ErrorTypeSerialization, ErrorTypeConversion, ErrorTypeConfiguration,
-			ErrorTypeProviderNotFound, ErrorTypeInvalidProvider, ErrorTypeResumeToken, ErrorTypeUnknown:
-			return false
-		default:
-			return false
-		}
-	}
-
-	return false
-}
-
-// IsNotFoundError checks if the error indicates a document was not found
-func IsNotFoundError(err error) bool {
-	if datastoreErr, ok := errors.AsType[*DatastoreError](err); ok {
-		return datastoreErr.Type == ErrorTypeDocumentNotFound
-	}
-
-	return false
-}
-
 // Error constructors for common error scenarios
 
 // NewConnectionError creates a connection error
 func NewConnectionError(provider DataStoreProvider, message string, cause error) *DatastoreError {
 	return NewDatastoreError(ErrorTypeConnection, provider, message, cause)
-}
-
-// NewAuthenticationError creates an authentication error
-func NewAuthenticationError(provider DataStoreProvider, message string, cause error) *DatastoreError {
-	return NewDatastoreError(ErrorTypeAuthentication, provider, message, cause)
-}
-
-// NewTimeoutError creates a timeout error
-func NewTimeoutError(provider DataStoreProvider, message string, cause error) *DatastoreError {
-	return NewDatastoreError(ErrorTypeTimeout, provider, message, cause)
 }
 
 // NewQueryError creates a query error
@@ -181,11 +131,6 @@ func NewUpdateError(provider DataStoreProvider, message string, cause error) *Da
 	return NewDatastoreError(ErrorTypeUpdate, provider, message, cause)
 }
 
-// NewDocumentNotFoundError creates a document not found error
-func NewDocumentNotFoundError(provider DataStoreProvider, message string, cause error) *DatastoreError {
-	return NewDatastoreError(ErrorTypeDocumentNotFound, provider, message, cause)
-}
-
 // NewValidationError creates a validation error
 func NewValidationError(provider DataStoreProvider, message string, cause error) *DatastoreError {
 	return NewDatastoreError(ErrorTypeValidation, provider, message, cause)
@@ -196,11 +141,6 @@ func NewConfigurationError(provider DataStoreProvider, message string, cause err
 	return NewDatastoreError(ErrorTypeConfiguration, provider, message, cause)
 }
 
-// NewProviderNotFoundError creates a provider not found error
-func NewProviderNotFoundError(provider DataStoreProvider, message string, cause error) *DatastoreError {
-	return NewDatastoreError(ErrorTypeProviderNotFound, provider, message, cause)
-}
-
 // NewChangeStreamError creates a change stream error
 func NewChangeStreamError(provider DataStoreProvider, message string, cause error) *DatastoreError {
 	return NewDatastoreError(ErrorTypeChangeStream, provider, message, cause)
@@ -209,14 +149,4 @@ func NewChangeStreamError(provider DataStoreProvider, message string, cause erro
 // NewSerializationError creates a serialization error
 func NewSerializationError(provider DataStoreProvider, message string, cause error) *DatastoreError {
 	return NewDatastoreError(ErrorTypeSerialization, provider, message, cause)
-}
-
-// NewTransactionError creates a transaction error
-func NewTransactionError(provider DataStoreProvider, message string, cause error) *DatastoreError {
-	return NewDatastoreError(ErrorTypeTransaction, provider, message, cause)
-}
-
-// NewUnknownError creates an unknown error
-func NewUnknownError(provider DataStoreProvider, message string, cause error) *DatastoreError {
-	return NewDatastoreError(ErrorTypeUnknown, provider, message, cause)
 }
