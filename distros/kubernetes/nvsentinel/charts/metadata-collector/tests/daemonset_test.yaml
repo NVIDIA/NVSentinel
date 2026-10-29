@@ -49,6 +49,20 @@ tests:
             name: LD_LIBRARY_PATH
           any: true
 
+  - it: must enable the pod device mapper by default
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --pod-mapper-enabled=true
+
+  - it: must disable the pod device mapper when podMapper.enabled is false
+    set:
+      podMapper.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --pod-mapper-enabled=false
+
   - it: must mount pod-resources from the default kubelet root dir
     asserts:
       - contains:
