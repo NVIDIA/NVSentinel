@@ -360,6 +360,105 @@ func TestIsNodeReady_BootIDChangedAndReady_CleansUpJob(t *testing.T) {
 	assert.Empty(t, jobs.Items)
 }
 
+// staleRebootJob returns the Job and pod an earlier RebootNode attempt leaves behind
+// when the janitor gives up on it: the pod is scheduled but its image never pulled.
+func staleRebootJob(nodeName string) (*batchv1.Job, *corev1.Pod) {
+	labels := map[string]string{jobLabelKey: "true", jobNodeLabelKey: nodeName}
+	job := &batchv1.Job{Name: "reboot-" + nodeName + "-old12", Namespace: "test-ns", Labels: labels}
+	pod := &corev1.Pod{
+		Name: job.Name + "-abcde", Namespace: "test-ns", Labels: labels,
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}},
+			ContainerStatuses: []corev1.ContainerStatus{{State: corev1.ContainerState{
+				Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"}}}},
+		},
+	}
+
+	return job, pod
+}
+
+func TestSendRebootSignal_RemovesJobOfEarlierAttempt(t *testing.T) {
+	job, pod := staleRebootJob("worker-1")
+	client := newTestClient(job, pod)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ref, err := client.SendRebootSignal(ctx, node, "rebootnode-2")
+	require.NoError(t, err)
+	assert.Equal(t, model.ResetSignalRequestRef("boot-id-abc"), ref)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, jobs.Items, 1, "only the new attempt's Job must remain")
+	assert.NotEqual(t, job.Name, jobs.Items[0].Name)
+}
+
+func TestIsNodeReady_TerminalPodError_RemovesJob(t *testing.T) {
+	job, pod := staleRebootJob("worker-1")
+	job.UID = "job-uid"
+	pod.OwnerReferences = []metav1.OwnerReference{{Kind: "Job", Name: job.Name, UID: job.UID}}
+	client := newTestClient(job, pod)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	_, err := client.IsNodeReady(ctx, node, "boot-id-abc")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ImagePullBackOff")
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, jobs.Items, "the Job whose pod cannot start must not outlive the failed attempt")
+}
+
+func TestIsNodeReady_IgnoresPodOfDeletedJob(t *testing.T) {
+	// The earlier attempt's Job is gone, its pod is still listed while the garbage collector
+	// has not removed it (no deletionTimestamp yet), and the new attempt's Job exists.
+	_, oldPod := staleRebootJob("worker-1")
+	oldPod.OwnerReferences = []metav1.OwnerReference{{Kind: "Job", Name: "reboot-worker-1-old12", UID: "old-job-uid"}}
+	newJob := &batchv1.Job{
+		Name: "reboot-worker-1-new34", Namespace: "test-ns", UID: "new-job-uid",
+		Labels: map[string]string{jobLabelKey: "true", jobNodeLabelKey: "worker-1"},
+	}
+
+	client := newTestClient(oldPod, newJob)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ready, err := client.IsNodeReady(ctx, node, "boot-id-abc")
+	require.NoError(t, err, "the earlier attempt's pod must not fail the current one")
+	assert.False(t, ready)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, jobs.Items, 1, "the current attempt's Job must survive")
+	assert.Equal(t, "reboot-worker-1-new34", jobs.Items[0].Name)
+}
+
+func TestSendRebootSignal_ThenIsNodeReady_IgnoresPodOfRemovedJob(t *testing.T) {
+	// Background deletion removes the Job at once but its pod only later; the next
+	// readiness check for the new attempt must not read that pod.
+	job, pod := staleRebootJob("worker-1")
+	job.UID = "old-job-uid"
+	pod.OwnerReferences = []metav1.OwnerReference{{Kind: "Job", Name: job.Name, UID: job.UID}}
+
+	client := newTestClient(job, pod)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ref, err := client.SendRebootSignal(ctx, node, "rebootnode-2")
+	require.NoError(t, err)
+
+	ready, err := client.IsNodeReady(ctx, node, string(ref))
+	require.NoError(t, err, "the removed Job's pod must not fail the new attempt")
+	assert.False(t, ready)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, jobs.Items, 1, "the new attempt's Job must survive")
+	assert.NotEqual(t, job.Name, jobs.Items[0].Name)
+}
+
 func TestIsNodeReady_ImagePullBackOff(t *testing.T) {
 	pod := &corev1.Pod{
 		Name:      "reboot-worker-1-pod",

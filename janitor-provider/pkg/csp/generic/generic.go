@@ -25,6 +25,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -104,12 +105,19 @@ func NewClientWithK8s(k8sClient kubernetes.Interface, config Config) *Client {
 
 // SendRebootSignal creates a privileged Job on the target node that executes
 // the configured reboot command. Returns the node's pre-reboot bootID as the requestID.
+//
+// A Job left by an earlier attempt is removed first. The janitor does not tell the
+// provider when it gives up on a RebootNode (timeout, failed readiness check), so such a
+// Job stays until the node is deleted: its pod would run the reboot command whenever the
+// node next schedules it, and its state would be read as this attempt's by IsNodeReady.
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, crName string) (model.ResetSignalRequestRef, error) {
 	preRebootBootID := node.Status.NodeInfo.BootID
 	if preRebootBootID == "" {
 		slog.ErrorContext(ctx, "Node has no bootID", "node", node.Name)
 		return "", fmt.Errorf("node %s has no bootID", node.Name)
 	}
+
+	c.cleanupRebootJob(ctx, node.Name)
 
 	job := c.buildRebootJob(node.Name, crName, preRebootBootID)
 
@@ -130,11 +138,15 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, crName 
 
 // IsNodeReady checks whether the node has rebooted by comparing the current bootID
 // with the pre-reboot bootID (passed as requestID). It first checks the reboot Job's
-// pod status for early failure detection (e.g., ImagePullBackOff).
+// pod status for early failure detection (e.g., ImagePullBackOff). The janitor fails
+// the RebootNode on that error, so the Job is removed before it is returned: left in
+// place, its pod would still run the reboot command once the image pull succeeds.
 func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
 	preRebootBootID := requestID
 
 	if err := c.checkRebootJobPodStatus(ctx, node.Name); err != nil {
+		c.cleanupRebootJob(ctx, node.Name)
+
 		return false, fmt.Errorf("failed to check reboot job pod status for node %s: %w", node.Name, err)
 	}
 
@@ -315,7 +327,10 @@ func (c Config) rebootAction(nodeName, crName string) string {
 }
 
 // checkRebootJobPodStatus checks the reboot Job's pod for terminal failures
-// (e.g., ImagePullBackOff) that indicate the reboot was never attempted.
+// (e.g., ImagePullBackOff) that indicate the reboot was never attempted. Only pods
+// owned by a reboot Job that still exists are read: after cleanupRebootJob deletes a
+// Job, its pods stay listed until the garbage collector removes them, and their state
+// belongs to the earlier attempt.
 func (c *Client) checkRebootJobPodStatus(ctx context.Context, nodeName string) error {
 	namespace := c.config.RebootJobNamespace
 	labelSelector := fmt.Sprintf("%s=true,%s=%s", jobLabelKey, jobNodeLabelKey, nodeName)
@@ -332,8 +347,21 @@ func (c *Client) checkRebootJobPodStatus(ctx context.Context, nodeName string) e
 		return nil
 	}
 
+	jobs, err := c.k8sClient.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to list reboot jobs, skipping pod status check", "node", nodeName, "error", err)
+		return nil
+	}
+
+	existingJobs := make(map[types.UID]struct{}, len(jobs.Items))
+	for i := range jobs.Items {
+		existingJobs[jobs.Items[i].UID] = struct{}{}
+	}
+
 	for _, pod := range pods.Items {
-		if !isPodScheduled(pod) {
+		if pod.DeletionTimestamp != nil || !isPodScheduled(pod) || !ownedByExistingJob(pod, existingJobs) {
 			continue
 		}
 
@@ -352,6 +380,23 @@ func (c *Client) checkRebootJobPodStatus(ctx context.Context, nodeName string) e
 	}
 
 	return nil
+}
+
+// ownedByExistingJob reports whether pod belongs to one of the listed reboot Jobs. A pod
+// whose owning Job is gone was left by an earlier attempt and is waiting for garbage
+// collection. Pods without a Job owner are accepted so that nothing is skipped by mistake.
+func ownedByExistingJob(pod corev1.Pod, existingJobs map[types.UID]struct{}) bool {
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind != "Job" {
+			continue
+		}
+
+		_, exists := existingJobs[owner.UID]
+
+		return exists
+	}
+
+	return true
 }
 
 func (c *Client) cleanupRebootJob(ctx context.Context, nodeName string) {
