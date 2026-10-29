@@ -691,7 +691,7 @@ func (r *Reconciler) handleEvent(
 	// For healthy events, if there's no existing quarantine annotation,
 	// skip processing as there's no transition from unhealthy to healthy
 	if event.HealthEvent.IsHealthy {
-		slog.InfoContext(ctx, "Skipping healthy event for node as there's no existing quarantine annotation",
+		slog.DebugContext(ctx, "Skipping healthy event for node as there's no existing quarantine annotation",
 			"node", event.HealthEvent.NodeName, "event", event.HealthEvent)
 		span.SetAttributes(
 			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
@@ -1926,7 +1926,7 @@ func (r *Reconciler) getHealthEventsFromAnnotation(
 
 	quarantineAnnotationStr, exists := annotations[common.QuarantineHealthEventAnnotationKey]
 	if !exists || quarantineAnnotationStr == "" {
-		slog.InfoContext(ctx, "No quarantine annotation found for node", "node", event.NodeName)
+		slog.DebugContext(ctx, "No quarantine annotation found for node", "node", event.NodeName)
 		span.SetAttributes(attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
 			attribute.String("fault_quarantine.skip.reason", "No existing quarantine annotation found for node"),
 		)
