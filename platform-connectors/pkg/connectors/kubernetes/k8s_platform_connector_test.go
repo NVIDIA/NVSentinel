@@ -919,34 +919,29 @@ func TestLegacyGPURecovery(t *testing.T) {
 	}
 }
 
+// Entries cut inside their identity were written by earlier versions of the
+// connector (the writer no longer stores them), so the matcher must still
+// refuse to clear them on a recovery for another GPU.
 func TestLegacyGPURecoveryKeepsTruncatedModernEntries(t *testing.T) {
 	tests := []struct {
-		name    string
-		padding [2]int
-		last    string
-		gpu     string
+		name     string
+		fragment string
+		gpu      string
 	}{
-		{name: "cut inside the GPU index", padding: [2]int{25, 25}, last: "GPU:10", gpu: "1"},
-		{name: "cut before the PCI colon", padding: [2]int{23, 24}, last: "GPU:0", gpu: "0"},
+		{name: "cut inside the GPU index", fragment: "ErrorCode:48 GPU:1", gpu: "1"},
+		{name: "cut before the PCI colon", fragment: "ErrorCode:48 GPU:0 PCI", gpu: "0"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var messages []string
+			var stored []string
 
 			for i := range 17 {
-				padding := ""
-				if i < len(tc.padding) {
-					padding = strings.Repeat("x", tc.padding[i])
-				}
-
-				messages = append(messages,
-					fmt.Sprintf("ErrorCode:%d GPU:7 fault%s Recommended Action=RESTART_VM", 100+i, padding))
+				stored = append(stored,
+					fmt.Sprintf("ErrorCode:%d GPU:7 fault Recommended Action=RESTART_VM", 100+i))
 			}
 
-			messages = append(messages,
-				"ErrorCode:48 "+tc.last+" PCI:0000:10:00.0 fault Recommended Action=RESTART_VM")
-			stored := parseMessages(k8sConnector.truncateNodeConditionMessage(messages))
+			stored = append(stored, tc.fragment)
 			require.Len(t, stored, 18)
 
 			event := &protos.HealthEvent{

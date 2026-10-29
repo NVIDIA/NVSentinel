@@ -412,7 +412,7 @@ Maximum length of node condition messages in characters.
 #### compactedHealthEventMsgLen
 Budget, in bytes, for the part of each event's message that precedes its recommended action. The default is `72` and it must be greater than zero.
 
-One node condition message can carry several health events. The connector compacts only when their combined length exceeds `maxNodeConditionMessageLength`: it first drops messages with a duplicate identity (same error code, entity and recommended action), then shortens each remaining message's free-text diagnostic to this budget while keeping the entity identifiers that recovery needs. If the result still does not fit, the last entry is truncated. Lower this value to fit more events into one condition; raise it to keep more of each event's original text.
+One node condition message can carry several health events. The connector compacts only when their combined length exceeds `maxNodeConditionMessageLength`: it first drops messages with a duplicate identity (same error code, entity and recommended action), then shortens each remaining message's free-text diagnostic to this budget while keeping the entity identifiers that recovery needs. If the result still does not fit, the connector removes diagnostic text. It also shortens GPU UUID values to 8 characters plus `...` when the same entry also has a GPU or PCI identifier. This form keeps the error code, entity tokens and recommended action, and is used only when it saves bytes. If the list still exceeds the limit, the existing byte-level cut remains the final fallback. Lower this value to fit more events into one condition; raise it to keep more of each event's original text.
 
 #### qps
 Queries per second allowed to the Kubernetes API server.
