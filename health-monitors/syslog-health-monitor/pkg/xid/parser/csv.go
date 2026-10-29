@@ -250,10 +250,12 @@ func (p *CSVParser) getRecommendedActionForXid(xidCode int, message string) pb.R
 
 			slog.Debug("recommendation from log", "recommendation", recommendation)
 
+			// Drivers up to R595 print "GPU Reset Required" and "Node Reboot Required"; R610 and
+			// later print "PF FLR" and "OS Reboot" for the same recovery actions (values 0x1 and 0x2).
 			switch recommendation {
-			case "GPU Reset Required", "Drain and Reset":
+			case "GPU Reset Required", "PF FLR", "Drain and Reset":
 				recommendedAction = pb.RecommendedAction_COMPONENT_RESET
-			case "Node Reboot Required":
+			case "Node Reboot Required", "OS Reboot":
 				recommendedAction = pb.RecommendedAction_RESTART_BM
 			case "None":
 				recommendedAction = pb.RecommendedAction_NONE
