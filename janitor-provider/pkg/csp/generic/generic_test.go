@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
@@ -392,6 +393,27 @@ func TestSendRebootSignal_RemovesJobOfEarlierAttempt(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, jobs.Items, 1, "only the new attempt's Job must remain")
 	assert.NotEqual(t, job.Name, jobs.Items[0].Name)
+}
+
+func TestSendRebootSignal_FailsWhenEarlierJobCannotBeRemoved(t *testing.T) {
+	job, pod := staleRebootJob("worker-1")
+	client := newTestClient(job, pod)
+	fakeClient := client.k8sClient.(*fake.Clientset)
+	fakeClient.PrependReactor("delete", "jobs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(fmt.Errorf("etcd unavailable"))
+	})
+
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	_, err := client.SendRebootSignal(ctx, node, "rebootnode-2")
+	require.Error(t, err, "the attempt must not start while the earlier attempt's Job remains")
+	assert.Contains(t, err.Error(), "failed to remove the previous reboot job")
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, jobs.Items, 1, "no new Job must be created")
+	assert.Equal(t, job.Name, jobs.Items[0].Name)
 }
 
 func TestIsNodeReady_TerminalPodError_RemovesJob(t *testing.T) {

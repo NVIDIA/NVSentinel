@@ -16,6 +16,7 @@ package generic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,6 +25,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -106,10 +108,13 @@ func NewClientWithK8s(k8sClient kubernetes.Interface, config Config) *Client {
 // SendRebootSignal creates a privileged Job on the target node that executes
 // the configured reboot command. Returns the node's pre-reboot bootID as the requestID.
 //
-// A Job left by an earlier attempt is removed first. The janitor does not tell the
-// provider when it gives up on a RebootNode (timeout, failed readiness check), so such a
-// Job stays until the node is deleted: its pod would run the reboot command whenever the
-// node next schedules it, and its state would be read as this attempt's by IsNodeReady.
+// A Job left by an earlier attempt is removed first, and the attempt is not started when
+// that fails. The janitor does not tell the provider when it gives up on a RebootNode
+// (timeout, failed readiness check), so such a Job stays until the node is deleted: its
+// pod would run the reboot command whenever the node next schedules it, and its state
+// would be read as this attempt's by IsNodeReady. Background deletion may briefly
+// leave pods from both attempts running. Each pod's boot ID guard skips the reboot
+// if the node has already rebooted since that pod's Job was created.
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, crName string) (model.ResetSignalRequestRef, error) {
 	preRebootBootID := node.Status.NodeInfo.BootID
 	if preRebootBootID == "" {
@@ -117,7 +122,9 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, crName 
 		return "", fmt.Errorf("node %s has no bootID", node.Name)
 	}
 
-	c.cleanupRebootJob(ctx, node.Name)
+	if err := c.cleanupRebootJob(ctx, node.Name); err != nil {
+		return "", fmt.Errorf("failed to remove the previous reboot job for node %s: %w", node.Name, err)
+	}
 
 	job := c.buildRebootJob(node.Name, crName, preRebootBootID)
 
@@ -145,7 +152,9 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	preRebootBootID := requestID
 
 	if err := c.checkRebootJobPodStatus(ctx, node.Name); err != nil {
-		c.cleanupRebootJob(ctx, node.Name)
+		if cleanupErr := c.cleanupRebootJob(ctx, node.Name); cleanupErr != nil {
+			slog.WarnContext(ctx, "Failed to remove the reboot job of the failed attempt", "node", node.Name, "error", cleanupErr)
+		}
 
 		return false, fmt.Errorf("failed to check reboot job pod status for node %s: %w", node.Name, err)
 	}
@@ -166,7 +175,9 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	slog.InfoContext(ctx, "Node rebooted and Ready", "node", node.Name,
 		"oldBootID", preRebootBootID, "newBootID", currentBootID)
 
-	c.cleanupRebootJob(ctx, node.Name)
+	if err := c.cleanupRebootJob(ctx, node.Name); err != nil {
+		slog.WarnContext(ctx, "Failed to remove the reboot job after the reboot", "node", node.Name, "error", err)
+	}
 
 	return true, nil
 }
@@ -327,44 +338,15 @@ func (c Config) rebootAction(nodeName, crName string) string {
 }
 
 // checkRebootJobPodStatus checks the reboot Job's pod for terminal failures
-// (e.g., ImagePullBackOff) that indicate the reboot was never attempted. Only pods
-// owned by a reboot Job that still exists are read: after cleanupRebootJob deletes a
-// Job, its pods stay listed until the garbage collector removes them, and their state
-// belongs to the earlier attempt.
+// (e.g., ImagePullBackOff) that indicate the reboot was never attempted.
 func (c *Client) checkRebootJobPodStatus(ctx context.Context, nodeName string) error {
-	namespace := c.config.RebootJobNamespace
-	labelSelector := fmt.Sprintf("%s=true,%s=%s", jobLabelKey, jobNodeLabelKey, nodeName)
-
-	pods, err := c.k8sClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labelSelector,
-	})
+	pods, err := c.currentRebootPods(ctx, nodeName)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to list reboot job pods, skipping pod status check", "node", nodeName, "error", err)
 		return nil
 	}
 
-	if len(pods.Items) == 0 {
-		return nil
-	}
-
-	jobs, err := c.k8sClient.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labelSelector,
-	})
-	if err != nil {
-		slog.WarnContext(ctx, "Failed to list reboot jobs, skipping pod status check", "node", nodeName, "error", err)
-		return nil
-	}
-
-	existingJobs := make(map[types.UID]struct{}, len(jobs.Items))
-	for i := range jobs.Items {
-		existingJobs[jobs.Items[i].UID] = struct{}{}
-	}
-
-	for _, pod := range pods.Items {
-		if pod.DeletionTimestamp != nil || !isPodScheduled(pod) || !ownedByExistingJob(pod, existingJobs) {
-			continue
-		}
-
+	for _, pod := range pods {
 		for _, cs := range pod.Status.ContainerStatuses {
 			if cs.State.Waiting != nil {
 				reason := cs.State.Waiting.Reason
@@ -380,6 +362,48 @@ func (c *Client) checkRebootJobPodStatus(ctx context.Context, nodeName string) e
 	}
 
 	return nil
+}
+
+// currentRebootPods returns the node's scheduled reboot pods that belong to a reboot
+// Job which still exists and are not being deleted. After cleanupRebootJob deletes a
+// Job, its pods stay listed until the garbage collector removes them, and their state
+// belongs to the earlier attempt.
+func (c *Client) currentRebootPods(ctx context.Context, nodeName string) ([]corev1.Pod, error) {
+	namespace := c.config.RebootJobNamespace
+	labelSelector := fmt.Sprintf("%s=true,%s=%s", jobLabelKey, jobNodeLabelKey, nodeName)
+
+	pods, err := c.k8sClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(pods.Items) == 0 {
+		return nil, nil
+	}
+
+	jobs, err := c.k8sClient.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	existingJobs := make(map[types.UID]struct{}, len(jobs.Items))
+	for i := range jobs.Items {
+		existingJobs[jobs.Items[i].UID] = struct{}{}
+	}
+
+	current := make([]corev1.Pod, 0, len(pods.Items))
+
+	for _, pod := range pods.Items {
+		if pod.DeletionTimestamp == nil && isPodScheduled(pod) && ownedByExistingJob(pod, existingJobs) {
+			current = append(current, pod)
+		}
+	}
+
+	return current, nil
 }
 
 // ownedByExistingJob reports whether pod belongs to one of the listed reboot Jobs. A pod
@@ -399,7 +423,10 @@ func ownedByExistingJob(pod corev1.Pod, existingJobs map[types.UID]struct{}) boo
 	return true
 }
 
-func (c *Client) cleanupRebootJob(ctx context.Context, nodeName string) {
+// cleanupRebootJob deletes the node's reboot Jobs. It returns an error when the Jobs could
+// not be listed or one of them could not be deleted; a Job that is already gone is not an
+// error.
+func (c *Client) cleanupRebootJob(ctx context.Context, nodeName string) error {
 	namespace := c.config.RebootJobNamespace
 	labelSelector := fmt.Sprintf("%s=true,%s=%s", jobLabelKey, jobNodeLabelKey, nodeName)
 	propagation := metav1.DeletePropagationBackground
@@ -408,20 +435,24 @@ func (c *Client) cleanupRebootJob(ctx context.Context, nodeName string) {
 		LabelSelector: labelSelector,
 	})
 	if err != nil {
-		slog.WarnContext(ctx, "Failed to list reboot jobs for cleanup", "node", nodeName, "error", err)
-		return
+		return fmt.Errorf("failed to list reboot jobs for node %s: %w", nodeName, err)
 	}
+
+	var errs []error
 
 	for i := range jobs.Items {
 		err := c.k8sClient.BatchV1().Jobs(namespace).Delete(ctx, jobs.Items[i].Name, metav1.DeleteOptions{
 			PropagationPolicy: &propagation,
 		})
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to cleanup reboot job", "job", jobs.Items[i].Name, "node", nodeName, "error", err)
-		} else {
-			slog.InfoContext(ctx, "Cleaned up reboot job", "job", jobs.Items[i].Name, "node", nodeName)
+		if err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("failed to delete reboot job %s: %w", jobs.Items[i].Name, err))
+			continue
 		}
+
+		slog.InfoContext(ctx, "Cleaned up reboot job", "job", jobs.Items[i].Name, "node", nodeName)
 	}
+
+	return errors.Join(errs...)
 }
 
 func buildImagePullSecrets(names []string) []corev1.LocalObjectReference {
