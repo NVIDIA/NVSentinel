@@ -177,7 +177,7 @@ func (he *HealthEventsAnnotationMap) AddOrUpdateEventFiltered(
 		keys = kept
 	}
 
-	updated, replaced := he.addEventKeys(event, keys)
+	updated, replaced := he.addEventKeys(withGPUSlotMetadata(event), keys)
 	if updated && (partial || replaced) && len(he.Events) > 0 {
 		// The keys that still point at an older compound event must no longer
 		// serialize effects now owned by the replacement, or the last event
@@ -463,9 +463,99 @@ func replacedGPUMatches(storedKey HealthEventKey, storedEvent, event *protos.Hea
 	return true
 }
 
-// gpuSlotEntities returns the GPU index and PCI entities, which stay the same
-// when a GPU is replaced.
+// gpuRecoverySlotKey stores a GPU_UUID fault's slot (its GPU index and PCI entities) in the event
+// metadata. Compaction projects EntitiesImpacted down to the keys an event still owns, which can drop
+// the slot entities from a GPU_UUID entry; keeping the slot in metadata preserves it for replaced-GPU
+// recovery. createEventKeys ignores metadata, so this never recreates an effect on a JSON round trip.
+const gpuRecoverySlotKey = "nvsentinel.dgxc.nvidia.com/gpu-recovery-slot"
+
+type recoverySlotEntity struct {
+	EntityType  string `json:"entityType"`
+	EntityValue string `json:"entityValue"`
+}
+
+// withGPUSlotMetadata returns the event to store: for a GPU_UUID fault that carries its GPU/PCI slot
+// in EntitiesImpacted, a clone with the slot recorded in metadata so it survives compaction. Other
+// events, and events that already carry the slot, are returned unchanged.
+func withGPUSlotMetadata(event *protos.HealthEvent) *protos.HealthEvent {
+	// Only a single-GPU_UUID fault has an unambiguous slot to preserve. A compound event with several
+	// GPU_UUIDs keeps relying on EntitiesImpacted, which compaction shrinks to the slot still unrecovered.
+	if countEntityType(event, "GPU_UUID") != 1 {
+		return event
+	}
+
+	if _, ok := event.GetMetadata()[gpuRecoverySlotKey]; ok {
+		return event
+	}
+
+	impacted := slotEntitiesFromImpacted(event)
+	if len(impacted) == 0 {
+		return event
+	}
+
+	slot := make([]recoverySlotEntity, 0, len(impacted))
+	for _, e := range impacted {
+		slot = append(slot, recoverySlotEntity{EntityType: e.EntityType, EntityValue: e.EntityValue})
+	}
+
+	encoded, err := json.Marshal(slot)
+	if err != nil {
+		return event
+	}
+
+	clone := proto.Clone(event).(*protos.HealthEvent)
+	if clone.Metadata == nil {
+		clone.Metadata = make(map[string]string, 1)
+	}
+
+	clone.Metadata[gpuRecoverySlotKey] = string(encoded)
+
+	return clone
+}
+
+func hasEntityType(event *protos.HealthEvent, entityType string) bool {
+	for _, e := range event.EntitiesImpacted {
+		if e.EntityType == entityType {
+			return true
+		}
+	}
+
+	return false
+}
+
+func countEntityType(event *protos.HealthEvent, entityType string) int {
+	count := 0
+
+	for _, e := range event.EntitiesImpacted {
+		if e.EntityType == entityType {
+			count++
+		}
+	}
+
+	return count
+}
+
+// gpuSlotEntities returns the GPU index and PCI entities, which stay the same when a GPU is replaced.
+// It reads the slot recorded in metadata first, so it still works after compaction has projected the
+// slot entities out of EntitiesImpacted, and falls back to EntitiesImpacted for events stored before
+// the slot was recorded.
 func gpuSlotEntities(event *protos.HealthEvent) []*protos.Entity {
+	if raw, ok := event.GetMetadata()[gpuRecoverySlotKey]; ok && raw != "" {
+		var slot []recoverySlotEntity
+		if err := json.Unmarshal([]byte(raw), &slot); err == nil {
+			entities := make([]*protos.Entity, 0, len(slot))
+			for _, s := range slot {
+				entities = append(entities, &protos.Entity{EntityType: s.EntityType, EntityValue: s.EntityValue})
+			}
+
+			return entities
+		}
+	}
+
+	return slotEntitiesFromImpacted(event)
+}
+
+func slotEntitiesFromImpacted(event *protos.HealthEvent) []*protos.Entity {
 	var slot []*protos.Entity
 
 	for _, e := range event.EntitiesImpacted {
