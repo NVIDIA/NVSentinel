@@ -239,6 +239,39 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedMetadata:  map[string]string{},
 		},
 		{
+			name:              "XID 154 with R610 wording PF FLR",
+			message:           "NVRM: Xid (PCI:0000:61:00): 154, GPU recovery action changed from 0x0 (None) to 0x1 (PF FLR)",
+			expectedSuccess:   true,
+			expectedXIDCode:   154,
+			expectedPCIAddr:   "0000:61:00",
+			expectedAction:    pb.RecommendedAction_COMPONENT_RESET,
+			expectedMnemonic:  "XID 154",
+			expectedErrorCode: "154",
+			expectedMetadata:  map[string]string{},
+		},
+		{
+			name:              "XID 154 with R610 wording OS Reboot",
+			message:           "NVRM: Xid (PCI:0000:61:00): 154, GPU recovery action changed from 0x0 (None) to 0x2 (OS Reboot)",
+			expectedSuccess:   true,
+			expectedXIDCode:   154,
+			expectedPCIAddr:   "0000:61:00",
+			expectedAction:    pb.RecommendedAction_RESTART_BM,
+			expectedMnemonic:  "XID 154",
+			expectedErrorCode: "154",
+			expectedMetadata:  map[string]string{},
+		},
+		{
+			name:              "XID 154 with R610 wording returned to None",
+			message:           "NVRM: Xid (PCI:0000:61:00): 154, GPU recovery action changed from 0x2 (OS Reboot) to 0x0 (None)",
+			expectedSuccess:   true,
+			expectedXIDCode:   154,
+			expectedPCIAddr:   "0000:61:00",
+			expectedAction:    pb.RecommendedAction_NONE,
+			expectedMnemonic:  "XID 154",
+			expectedErrorCode: "154",
+			expectedMetadata:  map[string]string{},
+		},
+		{
 			// Untrusted/garbage syslog line that matches the XID 154 pattern but has its
 			// last ')' before its last '(' (trailing unmatched '('). The parser must not
 			// panic with slice-bounds-out-of-range and must fall back to CONTACT_SUPPORT.

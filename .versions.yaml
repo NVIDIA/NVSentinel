@@ -99,7 +99,7 @@ testing_tools:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind depType=testing_tools
   kind: '0.33.0'
   # renovate: datasource=github-releases depName=helm/helm depType=testing_tools
-  helm: 'v3.22.1'
+  helm: 'v4.3.1'
   # renovate: datasource=github-releases depName=helm-unittest/helm-unittest depType=testing_tools
   helm_unittest: 'v1.2.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/kwok depType=testing_tools
