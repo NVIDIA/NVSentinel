@@ -260,11 +260,13 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 			truncationSuffix          = "..."
 		)
 
-		// We need 10+ unique node condition entries to exceed 1024 bytes after per-message
-		// compaction (each compacted message is ~110 bytes). The burst test already created 3
-		// entries (XIDs 119, 94, 145), so we inject 7 more across all 4 GPU PCI addresses.
-		// The last message is a duplicate of XID 119 on PCI:0002:00:00 (already present from
-		// the burst test) to verify identity-based dedup replaces rather than duplicates.
+		// We need 10 unique node condition entries to exceed 1024 bytes after per-message
+		// compaction (each compacted message is ~110 bytes), which makes the connector shrink
+		// the entries to their identity (~85 bytes each) instead of cutting one. The burst test
+		// already created 3 entries (XIDs 119, 94, 145), so we inject 7 more across all 4 GPU
+		// PCI addresses. The last message is a duplicate of XID 119 on PCI:0002:00:00 (already
+		// present from the burst test) to verify identity-based dedup replaces rather than
+		// duplicates.
 		additionalXidMessages := []string{
 			// XID 119 on remaining GPUs (0002:00:00 already exists from burst test)
 			"kernel: [16450076.435595] NVRM: Xid (PCI:0001:00:00): 119, pid=15822501, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
@@ -331,12 +333,15 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Inject one more XID to trigger hard truncation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Inject one more XID and verify entries are shrunk, not cut", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
 		nodeName := ctx.Value(keySyslogNodeName).(string)
 
+		// Eleven compacted entries do not fit in 1024 bytes. The connector shrinks every entry
+		// to its ErrorCode, entity tokens and Recommended Action, so all eleven stay in the
+		// message, each one still clearable by its own recovery, and nothing is cut.
 		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, []string{
 			"kernel: [16450076.435595] NVRM: Xid (PCI:0001:00:00): 94, pid=789101, name=process, Contained ECC error.",
 		})
@@ -348,9 +353,65 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 				return false
 			}
 
+			if len(condition.Message) > 1024 || strings.HasSuffix(condition.Message, "...") {
+				t.Logf("Message is %d bytes, hard truncated: %v", len(condition.Message),
+					strings.HasSuffix(condition.Message, "..."))
+
+				return false
+			}
+
+			entries := 0
+
+			for part := range strings.SplitSeq(condition.Message, ";") {
+				if part == "" {
+					continue
+				}
+
+				entries++
+
+				if !strings.Contains(part, "ErrorCode:") || !strings.Contains(part, " PCI:") {
+					t.Logf("Entry lost its identity: %q", part)
+					return false
+				}
+			}
+
+			if entries != 11 {
+				t.Logf("Waiting for 11 entries, have %d (%d bytes)", entries, len(condition.Message))
+				return false
+			}
+
+			t.Logf("PASS: %d entries in %d bytes, every entry keeps its ErrorCode and PCI tokens", entries, len(condition.Message))
+
+			return true
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"11 entries should be shrunk to their identity and fit within 1KB without hard truncation")
+
+		return ctx
+	})
+
+	feature.Assess("Inject more XIDs to trigger hard truncation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+
+		// A shrunk entry is at least 82 bytes, so 13 unique entries exceed 1024 bytes whatever
+		// the connector does to them, and the last one is cut at the byte level.
+		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, []string{
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 94, pid=789102, name=process, Contained ECC error.",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0000:19:00): 94, pid=789103, name=process, Contained ECC error.",
+		})
+
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
+			if err != nil || condition == nil {
+				return false
+			}
+
 			return len(condition.Message) <= 1024 && strings.HasSuffix(condition.Message, "...")
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
-			"11th entry should trigger hard truncation with '...' suffix")
+			"13 entries should exceed 1KB even when shrunk and trigger hard truncation with '...' suffix")
 
 		return ctx
 	})
