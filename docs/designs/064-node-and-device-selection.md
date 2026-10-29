@@ -424,7 +424,7 @@ A `drain` rule set with `stop: true` can use only `Node` rules. The Helm chart a
 
 node-drainer evaluates the `stop` rule sets before the rule sets that select a method, whatever their priority. If a method rule set with a `HealthEvent` rule had a higher priority, it would win for some events of the session and not for others, and those events would drain the node. Priority orders the rule sets within each of the two groups. An error in a `stop` rule set stops the decision for each event on the node (see [Rule set evaluation](#rule-set-evaluation)).
 
-A stop that a fault triggers uses a node label. For example, to keep nodes that have an XID 79 fault cordoned for an investigation, with no drain or remediation for any event of the session, a fault-quarantine rule set with a `HealthEvent` rule adds a label such as `example.com/hold=investigate`, and a node-drainer `stop` rule set matches that label. fault-quarantine removes the labels of its rule sets when the session ends, so the label applies to each later event of the session and no longer. A stop by fault type that applies only to one event, for example no reboot for an LPU fault while a GPU fault on the same node is still remediated, is a `remediation: { stop: true }` rule set in fault-remediation, which can use `HealthEvent` rules.
+A stop that a fault triggers uses a node label. For example, to keep nodes that have an XID 79 fault cordoned for an investigation, a fault-quarantine rule set with a `HealthEvent` rule adds a label such as `example.com/hold=investigate`. A node-drainer `stop` rule set and a fault-remediation `stop` rule set both match that label. The fault-remediation rule set covers the events that do not reach the node-drainer stop: an event with `drainOverrides.skip`, and an event whose drain started before the label was added. A drain or a maintenance CR that has started continues. When the last failure of the session recovers, fault-quarantine removes the label. After a manual uncordon, fault-quarantine leaves its rule labels on the node, as it leaves its taints, so the label stops the events of later sessions until the operator removes it. This is a use of the rule sets, not a hold that each stage enforces (see [Non-goals](#non-goals)). A stop by fault type that applies only to one event, for example no reboot for an LPU fault while a GPU fault on the same node is still remediated, is a `remediation: { stop: true }` rule set in fault-remediation, which can use `HealthEvent` rules.
 
 A label that changes during a session can still give two events different stop decisions:
 
@@ -674,7 +674,7 @@ Each phase is compatible with earlier versions. Phases 2 and 3 require phase 1, 
 - No single field shows the full behaviour for a node. The operator reads the cordon-reason label and the two records on the event.
 - A rule set with a high priority hides the rule sets with a lower priority that match the same events.
 - A rule set that fails before the winner stops the decision in node-drainer and fault-remediation, but does not match in fault-quarantine.
-- A drain stop cannot select by event. A stop for all events of a session that a fault triggers needs a fault-quarantine rule set that adds a label, and a node-drainer rule set that matches it.
+- A drain stop cannot select by event. A stop for all events of a session that a fault triggers needs a fault-quarantine rule set that adds a label, and a node-drainer and a fault-remediation rule set that match it. After a manual uncordon, the label stays on the node until the operator removes it.
 - In node-drainer, a `stop` rule set comes before all rule sets that select a method, so an error in it stops the drain decision for each event on the nodes where it fails.
 - A stop that a label change adds during a session does not end a drain or a remediation that another event of the session has started.
 - The move of the CEL rule evaluators changes fault-quarantine code, although its behaviour does not change.
@@ -752,7 +752,7 @@ A rule set with a `HealthEvent` rule can only stop. **Rejected** because: a labe
 
 #### `HealthEvent` rules in a drain stop rule set
 
-**Rejected** because: one event of a session can stop while a later event that does not match drains and remediates the node, so a stop by fault type cannot apply to all events of the session. A label that a fault-quarantine rule set adds gives the same selection and lasts for the session.
+**Rejected** because: one event of a session can stop while a later event that does not match drains and remediates the node, so a stop by fault type cannot apply to all events of the session. A label that a fault-quarantine rule set adds gives the same selection for the later events of the session.
 
 #### A stop that ends a drain in progress
 
@@ -795,6 +795,7 @@ Accept a `Node` rule only if it reads the name and labels with a literal key, so
 - A stop of a maintenance CR when a rule set change disables remediation.
 - A check that prevents an action on the full node after a partial drain.
 - A change to the rule set format or the behaviour of fault-quarantine.
+- A hold on a node that each stage enforces and that ends with the quarantine session.
 
 ### Open questions
 
