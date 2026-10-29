@@ -175,11 +175,13 @@ func (p *SidecarParser) Parse(message string) (*Response, error) {
 	}
 
 	// if the side car returns the recommendation as is from the XID error message, then
-	// map it to well known resolutions string from the proto
+	// map it to well known resolutions string from the proto. Drivers up to R595 print
+	// "GPU Reset Required" and "Node Reboot Required"; R610 and later print "PF FLR" and
+	// "OS Reboot" for the same recovery actions.
 	switch xidResp.Result.Resolution {
-	case "GPU Reset Required", "Drain and Reset":
+	case "GPU Reset Required", "PF FLR", "Drain and Reset":
 		xidResp.Result.Resolution = "COMPONENT_RESET"
-	case "Node Reboot Required":
+	case "Node Reboot Required", "OS Reboot":
 		xidResp.Result.Resolution = "RESTART_BM"
 	}
 
