@@ -20,12 +20,24 @@ from threading import Event, Thread
 from gpu_health_monitor.healthz import start_server as start_health_server
 import csv
 from .dcgm_watcher import dcgm
-from .dcgm_watcher.types import DCGMWatcherConfig
+from .dcgm_watcher.types import DCGMVersionMismatchError, DCGMWatcherConfig
 from .platform_connector import platform_connector
 from . import metrics
 from gpu_health_monitor.metadata import MetadataReader
 from gpu_health_monitor.protos import health_event_pb2 as platformconnector_pb2
 from gpu_health_monitor.logger import set_default_structured_logger_with_level
+
+# Kubernetes copies this file into the container's last terminated state.
+TERMINATION_LOG_PATH = "/dev/termination-log"
+
+
+def _write_termination_message(message: str) -> None:
+    """Record why the container exits, so `kubectl describe pod` shows it after a restart."""
+    try:
+        with open(TERMINATION_LOG_PATH, "w") as f:
+            f.write(message)
+    except OSError as e:
+        log.warning(f"Could not write termination message to {TERMINATION_LOG_PATH}: {e}")
 
 
 def _parse_min_consecutive_polls(raw: str) -> dict[str, int]:
@@ -390,7 +402,19 @@ def cli(
         callbacks=enabled_event_processors,
         metadata_reader=metadata_reader,
     )
-    dcgm_watcher.start([], exit)
+    try:
+        dcgm_watcher.start([], exit)
+    except DCGMVersionMismatchError as e:
+        # Exit non-zero so the pod restarts until the labeler moves the node to
+        # the matching image lane. Stop the other threads first, or they keep
+        # the process alive.
+        _write_termination_message(
+            f"DCGM API version mismatch: {e}. "
+            "Check the nvsentinel.dgxc.nvidia.com/dcgm.version node label against the hostengine version."
+        )
+        exit.set()
+        shut_down()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -217,6 +217,17 @@ const (
 	BatchFailurePolicyIgnore BatchFailurePolicy = "ignore"
 )
 
+// ImageByNodeLabel maps the value of a node label to a container image.
+type ImageByNodeLabel struct {
+	// Key is the node label to read.
+	// +required
+	Key string `json:"key"`
+
+	// Images maps a label value to the image to use for nodes with that value.
+	// +optional
+	Images map[string]string `json:"images,omitempty"`
+}
+
 // TestConfig defines a named test and how it is executed.
 type TestConfig struct {
 	// Provider references the name of a ProviderConfig that executes this test.
@@ -226,6 +237,11 @@ type TestConfig struct {
 	// Image is the container image referenced in test provider resource templates.
 	// +optional
 	Image string `json:"image,omitempty"`
+
+	// ImageByNodeLabel selects the image from a label on the target node. If the node does not have the
+	// label, or Images has no entry for its value, Image is used.
+	// +optional
+	ImageByNodeLabel *ImageByNodeLabel `json:"imageByNodeLabel,omitempty"`
 
 	// Command overrides the container entrypoint referenced in test provider resource templates.
 	// +optional
