@@ -718,7 +718,7 @@ func (r *Reconciler) handleEvent(
 	selectedLabels := make(map[string]selectedLabel)
 
 	evaluationErr := r.evaluateRulesets(
-		ctx, event, ruleSetEvals, rulesetsConfig,
+		ctx, event.HealthEvent, ruleSetEvals, rulesetsConfig,
 		taintAppliedMap, &labelsMap, &appliedLabelsMap, selectedLabels, &isCordoned, taintEffectPriorityMap,
 	)
 	if shouldDeferRecoveryActions(ctx, evaluationErr) {
@@ -947,7 +947,7 @@ func (r *Reconciler) resolveAlreadyQuarantinedStatus(
 // evaluateRulesets evaluates all rulesets against the health event in parallel.
 func (r *Reconciler) evaluateRulesets(
 	ctx context.Context,
-	event *model.HealthEventWithStatus,
+	event *protos.HealthEvent,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
 	taintAppliedMap map[keyValTaint]string,
@@ -961,13 +961,13 @@ func (r *Reconciler) evaluateRulesets(
 	defer span.End()
 
 	// Handle quarantine override (force quarantine without rule evaluation)
-	if event.HealthEvent.QuarantineOverrides != nil && event.HealthEvent.QuarantineOverrides.Force {
+	if event.QuarantineOverrides != nil && event.QuarantineOverrides.Force {
 		isCordoned.Store(true)
 
-		creatorID := event.HealthEvent.Metadata["creator_id"]
-		labelsMap.LoadOrStore(r.cordonedByLabelKey, event.HealthEvent.Agent+"-"+creatorID)
+		creatorID := event.Metadata["creator_id"]
+		labelsMap.LoadOrStore(r.cordonedByLabelKey, event.Agent+"-"+creatorID)
 		labelsMap.Store(r.cordonedReasonLabelKey,
-			formatCordonOrUncordonReasonValue(event.HealthEvent.Message, 63))
+			formatCordonOrUncordonReasonValue(event.Message, 63))
 
 		span.SetAttributes(attribute.String("fault_quarantine.ruleset.override", "force_quarantine"))
 	}
@@ -985,7 +985,7 @@ func (r *Reconciler) evaluateRulesets(
 
 			slog.InfoContext(ctx, "Handling event for ruleset", "event", event, "ruleset", eval.GetName())
 
-			matched, err := evaluateRuleAgainstRecoveryEffects(ctx, event.HealthEvent, eval)
+			matched, err := evaluateRuleAgainstRecoveryEffects(ctx, event, eval)
 
 			if matched {
 				r.handleSuccessfulRuleEvaluation(
@@ -995,7 +995,7 @@ func (r *Reconciler) evaluateRulesets(
 			}
 
 			if err != nil {
-				r.handleRuleEvaluationError(ctx, event.HealthEvent, eval.GetName(), err)
+				r.handleRuleEvaluationError(ctx, event, eval.GetName(), err)
 
 				errCh <- err
 			}
@@ -1610,7 +1610,7 @@ func (r *Reconciler) evaluateSessionActions(
 	)
 
 	evaluationErr := r.evaluateRulesets(
-		ctx, &model.HealthEventWithStatus{HealthEvent: event}, ruleSetEvals, rulesetsConfig,
+		ctx, event, ruleSetEvals, rulesetsConfig,
 		taintAppliedMap, &labelsMap, &appliedLabelsMap, make(map[string]selectedLabel), &isCordoned,
 		taintEffectPriorityMap,
 	)
