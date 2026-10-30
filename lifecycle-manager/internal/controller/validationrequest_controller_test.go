@@ -2269,8 +2269,12 @@ var _ = Describe("ValidationRequest Controller", func() {
 				Taints: []v1alpha1.TaintConfig{taintCfg},
 			}
 
-			// The node has no validation-session annotation at all but it's cordoned and tainted for an external reason
-			Expect(k8sClient.Create(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}})).To(Succeed())
+			// The node satisfies the readiness criteria and has no validation-session annotation at all, but it's
+			// cordoned and tainted for an external reason
+			Expect(k8sClient.Create(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+				Name:   nodeName,
+				Labels: map[string]string{"ready": "true"},
+			}})).To(Succeed())
 			DeferCleanup(func() {
 				Expect(client.IgnoreNotFound(
 					k8sClient.Delete(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}))).To(Succeed())
