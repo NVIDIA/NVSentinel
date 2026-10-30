@@ -149,27 +149,30 @@ Updates cluster state based on health events:
 
 #### What the condition timestamps mean
 
-Both timestamps on a node condition written by the Kubernetes connector come from the health event that last changed it, and the condition is written only when its status, reason or message changes. A check that reports healthy and stays healthy therefore writes its condition once; both timestamps hold that moment and do not move again — including across a node reboot and a restart of every NVSentinel pod.
+A condition that does not yet exist is always created. An existing one is rewritten only when its status, reason or message changes. Both timestamps are taken from the health event being processed, not from the time of the write, and they move on different triggers:
 
 | Field | What it means |
 |---|---|
-| `status` | whether the fault is present now |
-| `lastTransitionTime` | when that last changed |
-| `lastHeartbeatTime` | the timestamp of the same event, not a liveness signal despite the name |
+| `status` | the state reported by the most recent health event that wrote this condition — not proof that the fault is present or absent *now* |
+| `lastTransitionTime` | set when the condition is created, and again whenever `status` changes |
+| `lastHeartbeatTime` | the timestamp of the health event that most recently wrote the condition; not a liveness signal despite the name |
 
-So a node condition answers *what was found*, never *whether the check is still running*. This matches how Kubernetes treats `lastHeartbeatTime` generally — node liveness moved to the `Lease` API, and `kubelet` posts node status only every `nodeStatusReportFrequency` (5m by default) when nothing has changed — but it does mean the Node object carries no freshness for these conditions, and a condition that has not moved in days is not evidence that anything is wrong.
+A reason- or message-only change therefore moves `lastHeartbeatTime` without moving `lastTransitionTime`, so the two can differ. A check that reports healthy and stays healthy writes its condition once and neither timestamp moves again — including across a node reboot and a restart of every NVSentinel pod.
+
+So a node condition answers *what was last reported*, never *whether the check is still running*, and its age is not evidence either way. This matches how Kubernetes treats `lastHeartbeatTime` generally — node liveness moved to the `Lease` API, and `kubelet` posts node status only every `nodeStatusReportFrequency` (5m by default) when nothing has changed — but it does mean the Node object carries no freshness for these conditions.
 
 #### Checking that a check is still running
 
-Use the metrics rather than the Node object:
+Use the metrics rather than the Node object. None of these proves a component is currently doing useful work; each is a staleness signal, and what they are measuring is worth knowing before alerting on them:
 
-| Question | Metric |
+| Metric | What it actually reports |
 |---|---|
-| Is the monitor up and being scraped? | `up{namespace="nvsentinel", container="gpu-health-monitor"}`, and the same for the other monitors — the exact labels depend on your scrape configuration |
-| Is a change-stream consumer still reading? | `change_stream_lag_seconds{client="..."}`, with `change_stream_lag_known` to tell "caught up" from "cannot yet compute" |
-| Is a consumer attached to the store? | `datastore_connected` |
+| `up{namespace="nvsentinel", container="gpu-health-monitor"}` | the pod is being scraped and its metrics endpoint answers. The same applies to the other monitors; the exact labels depend on your scrape configuration |
+| `change_stream_lag_seconds{client="..."}` | seconds since the consumer last had evidence it was caught up — **an empty batch counts as that evidence**, so a rising value means the loop is stuck or genuinely behind, while a low value means the loop ran recently and found nothing to do |
+| `change_stream_lag_known` | only that lag can be computed yet. Before the first empty batch or event read, `change_stream_lag_seconds` is absent rather than zero, so a threshold rule alone cannot catch a consumer that never completed a first read |
+| `datastore_connected` | only that the watcher provider has been constructed and handed to the readiness checker. It is `1` from that point on and does not re-check the connection |
 
-See [METRICS.md](METRICS.md) for the full set. A component that has silently stopped keeps its pod `Running`, answers `/healthz`, never restarts, and leaves its node conditions exactly as they were, so these metrics are the only signal that distinguishes it from a component with nothing to report.
+See [METRICS.md](METRICS.md) for the full set. A component that has silently stopped keeps its pod `Running`, answers `/healthz`, never restarts, and leaves its node conditions exactly as they were, so these metrics — read together, and with their limits above in mind — are what distinguishes it from a component with nothing to report.
 
 ## Event Processing Pipeline
 
