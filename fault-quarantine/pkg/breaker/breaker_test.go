@@ -841,6 +841,27 @@ func TestValidateBounds_StandingBoundOnly_IsAccepted(t *testing.T) {
 	require.Contains(t, err.Error(), "maxCordonedNodes must not be negative")
 }
 
+func TestNewSlidingWindowBreaker_RejectsNonPositiveWindow(t *testing.T) {
+	testCases := map[string]time.Duration{
+		"zero window":     0,
+		"negative window": -5 * time.Minute,
+	}
+	for name, window := range testCases {
+		t.Run(name, func(t *testing.T) {
+			b, err := NewSlidingWindowBreaker(context.Background(), Config{
+				Window:               window,
+				TripMaxCordonedNodes: 5,
+				K8sClient:            setupTestClient(t),
+				ConfigMapName:        "test-breaker-window",
+				ConfigMapNamespace:   "default",
+			})
+			require.Error(t, err)
+			assert.Nil(t, b)
+			assert.Contains(t, err.Error(), "window must be a positive duration")
+		})
+	}
+}
+
 func TestIsTripped_WindowBoundReachedAndCordonedLookupFails_StillTrips(t *testing.T) {
 	ctx := context.Background()
 
