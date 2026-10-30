@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/metrics"
@@ -411,9 +412,9 @@ func checkNodeValidationState(ctx context.Context, vrName string, nodeNames []st
 			continue
 		}
 
-		entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+		entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 		Expect(err).NotTo(HaveOccurred())
-		var found *sessionEntry
+		var found *annotationutil.ValidationSessionEntry
 		for i := range entries {
 			if entries[i].Name == vrName {
 				found = &entries[i]
@@ -937,7 +938,7 @@ var _ = Describe("ValidationRequest Controller", func() {
 			reconcileForIterations(ctx, r, req, 2)
 
 			node := getNode(ctx, nodeName)
-			entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+			entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(1))
 			Expect(entries[0].Name).To(Equal(vrName))
@@ -962,7 +963,7 @@ var _ = Describe("ValidationRequest Controller", func() {
 
 			for _, nodeName := range []string{node1, node2} {
 				node := getNode(ctx, nodeName)
-				entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+				entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 				Expect(err).NotTo(HaveOccurred())
 				Expect(entries).To(HaveLen(1))
 				Expect(entries[0].Name).To(Equal(vrName))
@@ -1987,7 +1988,7 @@ var _ = Describe("ValidationRequest Controller", func() {
 			reconcileUntilPhase(ctx, rB, reqB, v1alpha1.PhaseSucceeded, 10)
 
 			node := getNode(ctx, nodeName)
-			Expect(node.Annotations[annotationValidationSession]).To(BeEmpty())
+			Expect(node.Annotations[annotationutil.ValidationSessionKey]).To(BeEmpty())
 		})
 
 		It("leaves the failed request session entry when the succeeding request targets different tests", func() {
@@ -2015,9 +2016,9 @@ var _ = Describe("ValidationRequest Controller", func() {
 			reconcileUntilPhase(ctx, rB, reqB, v1alpha1.PhaseSucceeded, 10)
 
 			node := getNode(ctx, nodeName)
-			entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+			entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 			Expect(err).NotTo(HaveOccurred())
-			var vrAEntry *sessionEntry
+			var vrAEntry *annotationutil.ValidationSessionEntry
 			for i := range entries {
 				if entries[i].Name == vrA {
 					vrAEntry = &entries[i]
@@ -2058,9 +2059,9 @@ var _ = Describe("ValidationRequest Controller", func() {
 			reconcileUntilPhase(ctx, rB, reqB, v1alpha1.PhaseSucceeded, 10)
 
 			node := getNode(ctx, nodeName)
-			entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+			entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 			Expect(err).NotTo(HaveOccurred())
-			var vrAEntry *sessionEntry
+			var vrAEntry *annotationutil.ValidationSessionEntry
 			for i := range entries {
 				if entries[i].Name == vrA {
 					vrAEntry = &entries[i]
@@ -2084,7 +2085,7 @@ var _ = Describe("ValidationRequest Controller", func() {
 			reconcileForIterations(ctx, rB, reqB, 2)
 
 			node := getNode(ctx, nodeName)
-			entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+			entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 			Expect(err).NotTo(HaveOccurred())
 			names := make([]string, len(entries))
 			for i, e := range entries {
@@ -2122,7 +2123,7 @@ var _ = Describe("ValidationRequest Controller", func() {
 			reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseFailed, 10)
 
 			node := getNode(ctx, nodeName)
-			entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+			entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(1))
 			Expect(entries[0].Failed).To(BeTrue())
@@ -2132,7 +2133,7 @@ var _ = Describe("ValidationRequest Controller", func() {
 			reconcileForIterations(ctx, r, req, 1)
 
 			node = getNode(ctx, nodeName)
-			Expect(node.Annotations[annotationValidationSession]).To(BeEmpty())
+			Expect(node.Annotations[annotationutil.ValidationSessionKey]).To(BeEmpty())
 		})
 	})
 
