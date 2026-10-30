@@ -55,6 +55,7 @@ import (
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
 
+	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
 
@@ -2220,6 +2221,25 @@ func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName s
 // RemoveNodeManagedByNVSentinelLabel removes the ManagedByNVSentinel label from a node.
 func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, nodeName string) error {
 	return SetNodeLabel(ctx, c, nodeName, "k8saas.nvidia.com/ManagedByNVSentinel", "")
+}
+
+// RemoveNodeUncordonLabels removes the uncordon-by, uncordon-reason and uncordon-timestamp labels with each
+// prefix from the node, so that a test sees only the labels of its own uncordon.
+func RemoveNodeUncordonLabels(ctx context.Context, c klient.Client, nodeName string, prefixes ...string) error {
+	suffixes := []string{
+		cordonlabels.UncordonedBySuffix, cordonlabels.UncordonedReasonSuffix, cordonlabels.UncordonedTimestampSuffix,
+	}
+
+	for _, prefix := range prefixes {
+		for _, suffix := range suffixes {
+			key := cordonlabels.Key(prefix, suffix)
+			if err := SetNodeLabel(ctx, c, nodeName, key, ""); err != nil {
+				return fmt.Errorf("failed to remove label %s from node %s: %w", key, nodeName, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 func SetNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey, labelValue string) error {

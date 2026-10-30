@@ -198,6 +198,40 @@ func TestPollPodDevices_ThresholdReached_RecordsTheFinalStreak(t *testing.T) {
 
 // Both names are in the issue and will be alerted on, so a rename should break a test rather
 // than silently break someone's alert.
+func TestRunPodMapperIfEnabled_Disabled_WaitsForTheContextWithoutRunning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ran := false
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runPodMapperIfEnabled(ctx, false, func(context.Context) error {
+			ran = true
+			return nil
+		})
+	}()
+
+	// Returning before the context ends would let the DaemonSet restart the container in a loop.
+	select {
+	case err := <-done:
+		t.Fatalf("returned before the context ended: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	require.NoError(t, <-done)
+	assert.False(t, ran)
+}
+
+func TestRunPodMapperIfEnabled_Enabled_ReturnsTheMapperResult(t *testing.T) {
+	mapperErr := errors.New("mapper failed")
+
+	err := runPodMapperIfEnabled(context.Background(), true, func(context.Context) error {
+		return mapperErr
+	})
+
+	require.ErrorIs(t, err, mapperErr)
+}
+
 func TestNewPodMapperMetrics_ExposesTheDocumentedNames(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := newPodMapperMetrics(reg)

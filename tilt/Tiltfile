@@ -18,8 +18,12 @@ load('./helpers.star', 'merge_dicts')
 
 # Suppress unused image warning for log-collector because it's used in dynamically-created
 # jobs by the fault-remediation controller (not deployed via Helm templates).
+# TILT_MAX_PARALLEL_UPDATES sets how many resources Tilt builds and deploys at the same time.
+# The default is the Tilt default. make tilt-ci sets more, because a cold install in CI waits
+# for free slots (see #2136).
 update_settings(
     k8s_upsert_timeout_secs=600,
+    max_parallel_updates=int(os.getenv('TILT_MAX_PARALLEL_UPDATES') or '3'),
     suppress_unused_image_warnings=['localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest']
 )
 
@@ -48,11 +52,22 @@ else:
 if use_pc_deployment:
     print("Publishing to the deployment platform connector (USE_DEPLOYMENT_PLATFORM_CONNECTOR=1)")
 
+# When tilt ci stops an attempt during a Helm install or upgrade, the release stays in a pending state,
+# and the next attempt fails. Each Helm release depends on this resource, which removes such releases.
+local_resource(
+    'remove-pending-helm-releases',
+    cmd='./remove-pending-helm-releases.sh cert-manager/cert-manager monitoring/prometheus-operator ' +
+        'kai-scheduler/kai-scheduler kube-system/kwok',
+    allow_parallel=True,
+)
+
+# helm_resource does not wait for its helm_repo, so each chart lists its repo in resource_deps.
 helm_repo('jetstack', 'https://charts.jetstack.io')
 helm_resource(
     'cert-manager',
     chart='jetstack/cert-manager',
     namespace='cert-manager',
+    resource_deps=['jetstack', 'remove-pending-helm-releases'],
     flags=[
         '--create-namespace',
         '--set=installCRDs=true',
@@ -65,6 +80,7 @@ helm_resource(
     'prometheus-operator',
     chart='prometheus-community/kube-prometheus-stack',
     namespace='monitoring',
+    resource_deps=['prometheus-community', 'remove-pending-helm-releases'],
     flags=[
         '--create-namespace',
         '--set=prometheus.enabled=true',
@@ -76,12 +92,35 @@ helm_resource(
     ],
 )
 
+# Tilt runs a local_resource without allow_parallel=True only while nothing else builds, so it waits
+# for the longest image build. The local resources here only run kubectl, helm or docker and do not
+# change shared files, so they can run in parallel (see #2136).
+# The kai-scheduler operator creates its webhook configurations, and they stay after helm uninstall.
+# The chart also keeps its Queues. When the release is not installed, a stale webhook rejects the
+# server-side apply of the Queues, because the webhook service is not running. So delete the webhook
+# configurations before the install. The operator creates them again.
 # --wait waits for the SchedulingShard to be ready, which KAI reports in the
 # standard way since v0.12.26 (kai-scheduler/KAI-Scheduler#1060). Releases from
 # then on are published under the kai-scheduler organization.
+# By default, the kai-scheduler admission webhook receives each pod create in all namespaces except
+# kube-system and kai-scheduler, and rejects it while its service is not ready. Only the preflight
+# E2E tests use kai-scheduler, in namespaces with the label below. So the namespace label selector
+# limits kai-scheduler to these namespaces, and pod creates in nvsentinel do not fail while
+# kai-scheduler installs.
 local_resource(
     'kai-scheduler',
-    cmd='helm upgrade --install kai-scheduler oci://ghcr.io/kai-scheduler/kai-scheduler/kai-scheduler --version v0.12.26 --create-namespace -n kai-scheduler --wait',
+    cmd='''
+        set -e
+        release=$(helm list -n kai-scheduler --short --filter '^kai-scheduler$')
+        if [ -z "$release" ]; then
+            kubectl delete validatingwebhookconfiguration kai-podgroup-validation-v2alpha2 kai-queue-validation-v2 validating-kai-admission --ignore-not-found
+            kubectl delete mutatingwebhookconfiguration mutating-kai-admission --ignore-not-found
+        fi
+        helm upgrade --install kai-scheduler oci://ghcr.io/kai-scheduler/kai-scheduler/kai-scheduler --version v0.12.26 --create-namespace -n kai-scheduler --wait \\
+            --set-string 'global.namespaceLabelSelector.nvsentinel\\.nvidia\\.com/preflight=enabled'
+    ''',
+    resource_deps=['remove-pending-helm-releases'],
+    allow_parallel=True,
 )
 
 helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
@@ -101,6 +140,7 @@ helm_resource(
     'kwok',
     chart='sigs-kwok/kwok',
     namespace='kube-system',
+    resource_deps=['sigs-kwok', 'remove-pending-helm-releases'],
     flags=[
         '--version=0.3.0',  # pin: an unpinned chart floats to new releases mid-flight
         '--set=env[0].name=POD_IP',
@@ -245,6 +285,7 @@ local_resource(
         echo "cert-manager is ready"
     ''',
     resource_deps=['cert-manager'],
+    allow_parallel=True,
 )
 
 k8s_yaml(yaml)
@@ -329,12 +370,14 @@ local_resource(
     'wait-for-janitor-cert',
     cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/janitor-webhook-cert -n nvsentinel',
     resource_deps=['cert-manager-resources'],
+    allow_parallel=True,
 )
 
 local_resource(
     'wait-for-janitor-provider-cert',
     cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/janitor-provider-grpc-cert -n nvsentinel',
     resource_deps=['cert-manager-resources'],
+    allow_parallel=True,
 )
 
 k8s_resource(
@@ -351,6 +394,7 @@ local_resource(
     'wait-for-lifecycle-manager-cert',
     cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/lifecycle-manager-webhook-cert -n nvsentinel',
     resource_deps=['cert-manager-resources'],
+    allow_parallel=True,
 )
 
 k8s_resource(
@@ -363,12 +407,19 @@ if use_percona:
         'nvsentinel-psmdb-operator',
         resource_deps=['wait-for-cert-manager-crds'],
     )
+    # Tilt applies uncategorized objects together with their CRDs. Tilt 0.37 can fail to map
+    # PerconaServerMongoDB right after it creates the CRD, so apply the cluster after the operator.
+    k8s_resource(
+        new_name='mongodb-percona-cluster',
+        objects=['mongodb:perconaservermongodb'],
+        resource_deps=['nvsentinel-psmdb-operator'],
+    )
 
 # MongoDB database creation (only for MongoDB, not PostgreSQL)
 if not use_postgresql:
     k8s_resource(
         mongodb_init_job,
-        resource_deps=['wait-for-cert-manager-crds', 'nvsentinel-psmdb-operator'] if use_percona else ['wait-for-cert-manager-crds'],
+        resource_deps=['wait-for-cert-manager-crds', 'nvsentinel-psmdb-operator', 'mongodb-percona-cluster'] if use_percona else ['wait-for-cert-manager-crds'],
     )
 
     if not use_percona:
@@ -451,6 +502,7 @@ local_resource(
     'nic-metadata-stub',
     cmd='./inject-nic-metadata-stub.sh',
     resource_deps=['platform-connectors', 'labeler'],
+    allow_parallel=True,
 )
 
 k8s_resource(
@@ -481,6 +533,14 @@ if use_pc_deployment:
 k8s_resource(
     'fault-quarantine',
     resource_deps=[datastore_resource]
+)
+
+# The analyzer reads the datastore with the datastore client certificate, and publishes to
+# platform-connectors. If it starts before them, it restarts with an increasing back-off and can
+# miss the readiness timeout of tilt ci.
+k8s_resource(
+    'health-events-analyzer',
+    resource_deps=[datastore_resource, 'platform-connector-deployment' if use_pc_deployment else 'platform-connectors']
 )
 
 k8s_resource(
