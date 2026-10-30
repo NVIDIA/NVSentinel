@@ -44,6 +44,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -66,6 +67,16 @@ const (
 	validationRequestPollInterval = 1 * time.Second
 	NVSentinelNamespace           = "nvsentinel"
 )
+
+// ConflictBackoff is the backoff for retry.RetryOnConflict in the E2E tests. NVSentinel components update the same
+// Nodes and CRs as the tests, so a write can conflict for longer than the 50 ms of ConflictBackoff. This backoff
+// tries 10 times in about 7.5 seconds.
+var ConflictBackoff = wait.Backoff{
+	Steps:    10,
+	Duration: 100 * time.Millisecond,
+	Factor:   1.5,
+	Jitter:   0.1,
+}
 
 var (
 	RebootNodeGVK = schema.GroupVersionKind{
@@ -613,7 +624,7 @@ func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.N
 }
 
 func SetNodeCordon(ctx context.Context, c klient.Client, nodeName string, cordoned bool) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
 			return err
@@ -1404,40 +1415,47 @@ func WaitForNodeReleaseStateCleared(ctx context.Context, t *testing.T, c klient.
 // removes the release taint and managed label irrespective of ownership so a
 // mid-test failure can't leak state to the next test.
 func ScrubExtRRStateFromNode(ctx context.Context, c klient.Client, nodeName string) error {
-	node, err := GetNodeByName(ctx, c, nodeName)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			return err
+		}
+
+		changed := false
+
+		filtered := node.Spec.Taints[:0]
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvsentinel.dgxc.nvidia.com/external-remediation" {
+				changed = true
+				continue
+			}
+
+			filtered = append(filtered, taint)
+		}
+
+		node.Spec.Taints = filtered
+
+		if _, hasLabel := node.Labels["nvsentinel.dgxc.nvidia.com/managed"]; hasLabel {
+			delete(node.Labels, "nvsentinel.dgxc.nvidia.com/managed")
+
+			changed = true
+		}
+
+		if !changed {
 			return nil
 		}
 
-		return fmt.Errorf("get node %q for ExtRR scrub: %w", nodeName, err)
-	}
-
-	changed := false
-
-	filtered := node.Spec.Taints[:0]
-	for _, taint := range node.Spec.Taints {
-		if taint.Key == "nvsentinel.dgxc.nvidia.com/external-remediation" {
-			changed = true
-			continue
-		}
-
-		filtered = append(filtered, taint)
-	}
-
-	node.Spec.Taints = filtered
-
-	if _, hasLabel := node.Labels["nvsentinel.dgxc.nvidia.com/managed"]; hasLabel {
-		delete(node.Labels, "nvsentinel.dgxc.nvidia.com/managed")
-
-		changed = true
-	}
-
-	if !changed {
+		return c.Resources().Update(ctx, node)
+	})
+	if apierrors.IsNotFound(err) {
 		return nil
 	}
 
-	return c.Resources().Update(ctx, node)
+	if err != nil {
+		return fmt.Errorf("scrub ExtRR state from node %q: %w", nodeName, err)
+	}
+
+	return nil
 }
 
 func WaitForValidationRequestForNodes(ctx context.Context, t *testing.T, c klient.Client,
@@ -1683,7 +1701,7 @@ func UpdateConfigMapTOMLField[T any](
 func ScaleDeployment(ctx context.Context, t *testing.T, c klient.Client, name, namespace string, replicas int32) error {
 	t.Logf("Scaling deployment %s/%s to %d", namespace, name, replicas)
 
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		current := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, name, namespace, current); err != nil {
 			return err
@@ -1959,7 +1977,7 @@ func RestartDeployment(
 
 	restartTime := time.Now().Format(time.RFC3339)
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, name, namespace, deployment); err != nil {
 			return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
@@ -1992,7 +2010,7 @@ func RestartDeployment(
 func SetDeploymentEnvVars(
 	ctx context.Context, c klient.Client, deploymentName, namespace, containerName string, envVars map[string]string,
 ) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
 			return err
@@ -2052,7 +2070,7 @@ func setEnvVarsOnContainer(container *v1.Container, envVars map[string]string) {
 func RemoveDeploymentEnvVars(
 	ctx context.Context, c klient.Client, deploymentName, namespace, containerName string, envVarNames []string,
 ) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
 			return err
@@ -2183,7 +2201,7 @@ func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceNa
 		Namespace: namespace,
 	}
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		if err := c.Resources().Get(ctx, serviceName, namespace, svc); err != nil {
 			return fmt.Errorf("failed to get service %s/%s: %w", namespace, serviceName, err)
 		}
@@ -2243,7 +2261,7 @@ func RemoveNodeUncordonLabels(ctx context.Context, c klient.Client, nodeName str
 }
 
 func SetNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey, labelValue string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
 			return err
@@ -2270,7 +2288,7 @@ func SetNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey, labe
 }
 
 func SetNodeAnnotation(ctx context.Context, c klient.Client, nodeName, annotationKey, annotationValue string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
 			return err
@@ -2615,7 +2633,7 @@ func SetNodeConditionStatus(
 	t.Helper()
 
 	require.Eventually(t, func() bool {
-		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		err := retry.RetryOnConflict(ConflictBackoff, func() error {
 			node, err := GetNodeByName(ctx, client, nodeName)
 			if err != nil {
 				return err
@@ -3180,7 +3198,7 @@ func UpdateDaemonSetArgs(ctx context.Context, t *testing.T,
 
 	var originalArgs []string
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		daemonSet := &appsv1.DaemonSet{}
 		if err := client.Resources().Get(ctx, daemonsetName, NVSentinelNamespace, daemonSet); err != nil {
 			return err
@@ -3223,7 +3241,7 @@ func RestoreDaemonSetArgs(ctx context.Context, t *testing.T, client klient.Clien
 	t.Logf("Restoring args for daemonset %s/%s container %s to original state",
 		NVSentinelNamespace, daemonsetName, containerName)
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		daemonSet := &appsv1.DaemonSet{}
 		if err := client.Resources().Get(ctx, daemonsetName, NVSentinelNamespace, daemonSet); err != nil {
 			return err
@@ -3433,7 +3451,7 @@ func SetDeploymentArgs(
 ) ([]string, error) {
 	var originalArgs []string
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
 			return err
@@ -3484,7 +3502,7 @@ func RestoreDeploymentArgs(
 	t.Helper()
 	t.Logf("Restoring args %v for deployment %s/%s container %s", originalArgs, namespace, deploymentName, containerName)
 
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
 			return err

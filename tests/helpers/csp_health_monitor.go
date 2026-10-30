@@ -231,7 +231,7 @@ func cleanupCSPTestNode(ctx context.Context, client klient.Client, nodeName stri
 		return
 	}
 
-	_ = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	_ = retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, client, nodeName)
 		if err != nil {
 			return err
@@ -254,7 +254,7 @@ func cleanupCSPTestNode(ctx context.Context, client klient.Client, nodeName stri
 // AddGCPInstanceIDAnnotation adds the GCP instance ID annotation and zone label to a node.
 // Both are required for the csp-health-monitor to map GCP maintenance events to K8s nodes.
 func AddGCPInstanceIDAnnotation(ctx context.Context, client klient.Client, nodeName, instanceID, zone string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, client, nodeName)
 		if err != nil {
 			return err
@@ -278,7 +278,7 @@ func AddGCPInstanceIDAnnotation(ctx context.Context, client klient.Client, nodeN
 
 // AddAWSProviderID adds an AWS-style provider ID to a node's spec.
 func AddAWSProviderID(ctx context.Context, client klient.Client, nodeName, instanceID, zone string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, client, nodeName)
 		if err != nil {
 			return err

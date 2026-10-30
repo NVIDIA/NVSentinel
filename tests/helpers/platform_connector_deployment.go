@@ -577,7 +577,7 @@ func GetClusterRoleRules(ctx context.Context, client klient.Client, name string)
 
 // SetClusterRoleRules replaces the named ClusterRole's rules.
 func SetClusterRoleRules(ctx context.Context, client klient.Client, name string, rules []rbacv1.PolicyRule) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		role := &rbacv1.ClusterRole{}
 		if err := client.Resources().Get(ctx, name, "", role); err != nil {
 			return fmt.Errorf("failed to get ClusterRole %s: %w", name, err)

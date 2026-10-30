@@ -108,17 +108,21 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Logf("Manually cordoning and tainting node %s", testCtx.NodeName)
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
+		err = retry.RetryOnConflict(helpers.ConflictBackoff, func() error {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return err
+			}
 
-		node.Spec.Unschedulable = true
-		node.Spec.Taints = append(node.Spec.Taints, v1.Taint{
-			Key:    "manual-taint",
-			Value:  "true",
-			Effect: v1.TaintEffectNoSchedule,
+			node.Spec.Unschedulable = true
+			node.Spec.Taints = append(node.Spec.Taints, v1.Taint{
+				Key:    "manual-taint",
+				Value:  "true",
+				Effect: v1.TaintEffectNoSchedule,
+			})
+
+			return client.Resources().Update(ctx, node)
 		})
-
-		err = client.Resources().Update(ctx, node)
 		require.NoError(t, err)
 		t.Logf("Node %s pre-cordoned with manual taint", testCtx.NodeName)
 
@@ -228,7 +232,7 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 
 		// Retried on conflict: other components write the node right after the
 		// test, and a lost update would leave manual-taint on it for later tests.
-		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		err = retry.RetryOnConflict(helpers.ConflictBackoff, func() error {
 			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 			if err != nil {
 				return err
