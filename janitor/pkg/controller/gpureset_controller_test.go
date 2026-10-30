@@ -1332,6 +1332,22 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
 			}, "10s", "100ms").Should(Succeed())
 
+			By("Waiting for the reconciler's cache to observe the reset teardown condition and the reverted node label")
+			// The reconciler reads through the manager cache, which can lag the writes seen above via k8sClient. A
+			// stale GPUReset makes the next reconcile detect drift again instead of re-applying the node labels, and a
+			// stale node either hides the reverted label or fails the optimistic-lock patch.
+			Eventually(func(g Gomega) {
+				var cachedReset v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cachedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionFalse(cachedReset.Status.Conditions,
+					string(v1alpha1.ServicesTornDown))).To(BeTrue())
+
+				var apiNode, cachedNode corev1.Node
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &apiNode)).To(Succeed())
+				g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: nodeName}, &cachedNode)).To(Succeed())
+				g.Expect(cachedNode.ResourceVersion).To(Equal(apiNode.ResourceVersion))
+			}, "10s", "100ms").Should(Succeed())
+
 			By("Running reconciliation again to enforce the correct state")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
