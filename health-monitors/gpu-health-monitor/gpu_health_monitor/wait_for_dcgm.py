@@ -26,7 +26,7 @@ import dcgm_fields
 import dcgm_structs
 import pydcgm
 
-from gpu_health_monitor.dcgm_watcher.types import split_dcgm_addrs
+from gpu_health_monitor.dcgm_watcher.types import is_dcgm_version_mismatch, split_dcgm_addrs
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
 
@@ -49,6 +49,11 @@ def dcgm_is_ready(dcgm_addr: str) -> bool:
         log.info("DCGM is ready at %s; discovered %d supported GPU(s)", dcgm_addr, len(gpu_ids))
         return True
     except Exception as error:
+        if is_dcgm_version_mismatch(error):
+            # The hostengine is up but on the other side of a DCGM protocol break.
+            # Waiting cannot fix that; the monitor reports it without a cordon.
+            log.warning("DCGM at %s rejected this image's DCGM API version: %s; not waiting", dcgm_addr, error)
+            return True
         log.warning("DCGM is not ready at %s: %s", dcgm_addr, error)
         return False
     finally:

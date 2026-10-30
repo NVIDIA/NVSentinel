@@ -57,6 +57,11 @@ lifecycle-manager:
       dcgm-diag-test:
         provider: k8s-job-provider
         image: nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04
+        imageByNodeLabel:
+          key: nvsentinel.dgxc.nvidia.com/dcgm.version
+          images:
+            "4.x": nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04
+            "4.7.1-plus": nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04
         command:
           - sh
           - -c
@@ -321,6 +326,7 @@ status:
 |---|---|---|
 | provider | string | The test provider that runs this test |
 | image | string | The container image to use for a given test. Only meaningful for providers that render it, such as k8s-job-provider |
+| imageByNodeLabel.key, .images | string, map[string]string | Optional. Selects the image from a label on the first node of the test group: the controller reads the label named by key and uses images[value]. If the node does not have the label, or images has no entry for its value, image is used. The default dcgm-diag-test uses this with the labeler's nvsentinel.dgxc.nvidia.com/dcgm.version label, because dcgmi diag fails when the client and the node's DCGM hostengine are on different sides of DCGM 4.7.1 |
 | command | []string | The command to run in the container for a given test. Only meaningful for providers that render it, such as k8s-job-provider |
 | env | []EnvVar | A list of environment variables with names and values to set in the provider resource template for a given test |
 | supportsBatchingNodes | bool | Whether this test supports testing multiple nodes in a single test |

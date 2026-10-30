@@ -58,6 +58,8 @@ jobs:
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm3'
           - component: gpu-health-monitor-dcgm4
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4'
+          - component: gpu-health-monitor-dcgm4.7.1-plus
+            make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4.7.1-plus'
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-build'
           # Log Collection (Docker-based)

@@ -186,7 +186,7 @@ var _ = Describe("chart k8s-job-template.yaml", func() {
 			Nodes:    []string{"node-chart-template"},
 		}
 
-		u, err := r.renderTestGroupObject(vr, group, "vr-chart-template-dcgm-diag-test-1")
+		u, err := r.renderTestGroupObject(ctx, vr, group, "vr-chart-template-dcgm-diag-test-1")
 		Expect(err).NotTo(HaveOccurred())
 
 		job := &batchv1.Job{}
@@ -216,4 +216,53 @@ var _ = Describe("chart k8s-job-template.yaml", func() {
 			Key: "example.com/bringup", Value: "in-progress", Effect: corev1.TaintEffectNoSchedule,
 		})).To(BeFalse())
 	})
+})
+
+var _ = Describe("test image selection by node label", func() {
+	const dcgmVersionLabel = "nvsentinel.dgxc.nvidia.com/dcgm.version"
+
+	DescribeTable("selects the chart's dcgm-diag-test image from the node's DCGM version label",
+		func(ctx SpecContext, nodeName string, labels map[string]string, createNode bool, expectedImage string) {
+			if createNode {
+				node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: labels}}
+				Expect(k8sClient.Create(ctx, node)).To(Succeed())
+				DeferCleanup(func(ctx SpecContext) {
+					Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, node))).To(Succeed())
+				})
+				Eventually(func() error {
+					return k8sClient.Get(ctx, client.ObjectKeyFromObject(node), &corev1.Node{})
+				}).Should(Succeed())
+			}
+
+			cfg := loadChartConfig()
+			r, err := NewValidationRequestReconciler(k8sClient, k8sClient, scheme.Scheme, cfg, testNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			vr := &v1alpha1.ValidationRequest{ObjectMeta: metav1.ObjectMeta{Name: "vr-image-by-label"}}
+			group := &v1alpha1.TestGroupStatus{
+				Name:     "dcgm-diag-test-1",
+				Provider: "k8s-job-provider",
+				Tests:    []string{"dcgm-diag-test"},
+				Nodes:    []string{nodeName},
+			}
+
+			u, err := r.renderTestGroupObject(ctx, vr, group, "vr-image-by-label-dcgm-diag-test-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			job := &batchv1.Job{}
+			Expect(runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, job)).To(Succeed())
+			Expect(job.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(job.Spec.Template.Spec.Containers[0].Image).To(Equal(expectedImage))
+		},
+		Entry("4.x lane", "node-image-4x", map[string]string{dcgmVersionLabel: "4.x"}, true,
+			"nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04"),
+		Entry("4.7.1-plus lane", "node-image-471plus", map[string]string{dcgmVersionLabel: "4.7.1-plus"}, true,
+			"nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04"),
+		Entry("label value with no image uses the default", "node-image-3x", map[string]string{dcgmVersionLabel: "3.x"},
+			true, "nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04"),
+		Entry("no label uses the default", "node-image-nolabel", nil, true,
+			"nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04"),
+		Entry("missing node uses the default", "node-image-missing", nil, false,
+			"nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04"),
+	)
 })

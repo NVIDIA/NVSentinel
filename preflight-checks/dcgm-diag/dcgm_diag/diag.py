@@ -85,6 +85,16 @@ class DCGMDiagnostic:
         finally:
             self._disconnect()
 
+    def get_hostengine_build_info(self) -> str:
+        """Return the hostengine rawBuildInfoString (contains "version:X.Y.Z")."""
+        self._connect()
+        try:
+            info = dcgm_agent.dcgmHostengineVersionInfo(self._handle.handle)
+            raw = info.rawBuildInfoString
+            return raw.decode() if isinstance(raw, bytes) else raw
+        finally:
+            self._disconnect()
+
     def get_all_gpu_uuids(self) -> list[str]:
         return self._gpu_discovery.get_all_uuids()
 

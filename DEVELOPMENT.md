@@ -384,6 +384,7 @@ make -C health-events-analyzer docker-publish                   # CI build
 # Python module (specialized patterns)
 make -C health-monitors/gpu-health-monitor docker-build-dcgm3  # DCGM 3.x local
 make -C health-monitors/gpu-health-monitor docker-publish-dcgm4 # DCGM 4.x CI
+make -C health-monitors/gpu-health-monitor docker-publish-dcgm4.7.1-plus # DCGM 4.7.1-plus CI
 
 # Container-only module (shell + Python)
 make -C log-collector docker-build-log-collector   # Local build
@@ -405,8 +406,9 @@ make -C platform-connectors docker-publish                      # CI/production
 
 # Python module (specialized patterns)
 make -C health-monitors/gpu-health-monitor docker-build-dcgm3  # DCGM 3.x local
-make -C health-monitors/gpu-health-monitor docker-build-dcgm4  # DCGM 4.x local
-make -C health-monitors/gpu-health-monitor docker-publish     # Push both versions
+make -C health-monitors/gpu-health-monitor docker-build-dcgm4  # DCGM 4.x local (DCGM 4.0.0-4.7.0 hostengines)
+make -C health-monitors/gpu-health-monitor docker-build-dcgm4.7.1-plus  # DCGM 4.7.1-plus local (DCGM 4.7.1+ hostengines)
+make -C health-monitors/gpu-health-monitor docker-publish     # Push all lane images
 
 # Container-only module (shell + Python)
 make -C log-collector docker-build                 # Both log-collector and file-server-cleanup
@@ -460,6 +462,7 @@ make docker-all
 # ghcr.io/your-github-username/syslog-health-monitor:main
 # ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-3.x
 # ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-4.x
+# ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-4.7.1-plus
 ```
 
 **Testing Specific Module:**
@@ -1266,6 +1269,7 @@ make -C docker build-syslog-health-monitor          # Calls module's docker-buil
 make -C docker build-csp-health-monitor             # Calls module's docker-build
 make -C docker build-gpu-health-monitor-dcgm3       # Calls module's docker-build-dcgm3
 make -C docker build-gpu-health-monitor-dcgm4       # Calls module's docker-build-dcgm4
+make -C docker build-gpu-health-monitor-dcgm4.7.1-plus # Calls module's docker-build-dcgm4.7.1-plus
 make -C docker build-platform-connectors            # Calls module's docker-build
 make -C docker build-health-events-analyzer         # Calls module's docker-build
 make -C docker build-log-collector                  # Calls module's docker-build

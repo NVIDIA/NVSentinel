@@ -15,6 +15,7 @@
 from unittest.mock import MagicMock, call, patch
 
 import dcgm_fields
+import dcgm_structs
 from click.testing import CliRunner
 
 from gpu_health_monitor.wait_for_dcgm import cli, dcgm_is_ready, dcgm_is_ready_with_timeout, wait_for_dcgm
@@ -55,6 +56,19 @@ def test_dcgm_is_ready_returns_false_and_closes_handle_after_discovery_failure(d
     dcgm_handle_factory.return_value = dcgm_handle
 
     assert dcgm_is_ready("dcgm.example:5555") is False
+    dcgm_handle.Shutdown.assert_called_once_with()
+
+
+@patch("gpu_health_monitor.wait_for_dcgm.pydcgm.DcgmHandle")
+def test_dcgm_is_ready_does_not_wait_on_a_dcgm_version_mismatch(dcgm_handle_factory: MagicMock) -> None:
+    """A hostengine on the other side of a DCGM protocol break will not become ready by waiting."""
+    dcgm_handle = MagicMock()
+    dcgm_handle.GetSystem.return_value.discovery.GetEntityGroupEntities.side_effect = dcgm_structs.dcgmExceptionClass(
+        dcgm_structs.DCGM_ST_VER_MISMATCH
+    )()
+    dcgm_handle_factory.return_value = dcgm_handle
+
+    assert dcgm_is_ready("dcgm.example:5555") is True
     dcgm_handle.Shutdown.assert_called_once_with()
 
 
