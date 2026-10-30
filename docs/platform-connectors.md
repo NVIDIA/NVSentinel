@@ -149,7 +149,7 @@ Updates cluster state based on health events:
 
 #### What the condition timestamps mean
 
-A condition that does not yet exist is always created. An existing one is rewritten only when its status, reason or message changes. Both timestamps are taken from the health event being processed, not from the time of the write, and they move on different triggers:
+A condition that does not yet exist is always created. An existing one is rewritten only when its status, reason or message changes. Both timestamps are taken from the health event being processed rather than from the time of the write, and they move on different triggers:
 
 | Field | What it means |
 |---|---|
@@ -158,6 +158,8 @@ A condition that does not yet exist is always created. An existing one is rewrit
 | `lastHeartbeatTime` | the timestamp of the health event that most recently wrote the condition; not a liveness signal despite the name |
 
 A reason- or message-only change therefore moves `lastHeartbeatTime` without moving `lastTransitionTime`, so the two can differ. A check that reports healthy and stays healthy writes its condition once and neither timestamp moves again — including across a node reboot and a restart of every NVSentinel pod.
+
+One exception: an event that arrives with no `generatedTimestamp` is stamped with its arrival time before anything else sees it, and a `HealthEvent has nil GeneratedTimestamp` warning is logged. The condition timestamps then carry that arrival time, which is close to the write time rather than to the moment the check observed anything. A monitor that omits the field will therefore produce condition timestamps that look like write times without being them.
 
 So a node condition answers *what was last reported*, never *whether the check is still running*, and its age is not evidence either way. This matches how Kubernetes treats `lastHeartbeatTime` generally — node liveness moved to the `Lease` API, and `kubelet` posts node status only every `nodeStatusReportFrequency` (5m by default) when nothing has changed — but it does mean the Node object carries no freshness for these conditions.
 
