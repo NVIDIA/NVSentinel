@@ -147,6 +147,30 @@ Updates cluster state based on health events:
 - **Node Events**: Creates Kubernetes events for non-fatal issues
 - Event correlation and deduplication
 
+#### What the condition timestamps mean
+
+Both timestamps on a node condition written by the Kubernetes connector come from the health event that last changed it, and the condition is written only when its status, reason or message changes. A check that reports healthy and stays healthy therefore writes its condition once; both timestamps hold that moment and do not move again — including across a node reboot and a restart of every NVSentinel pod.
+
+| Field | What it means |
+|---|---|
+| `status` | whether the fault is present now |
+| `lastTransitionTime` | when that last changed |
+| `lastHeartbeatTime` | the timestamp of the same event, not a liveness signal despite the name |
+
+So a node condition answers *what was found*, never *whether the check is still running*. This matches how Kubernetes treats `lastHeartbeatTime` generally — node liveness moved to the `Lease` API, and `kubelet` posts node status only every `nodeStatusReportFrequency` (5m by default) when nothing has changed — but it does mean the Node object carries no freshness for these conditions, and a condition that has not moved in days is not evidence that anything is wrong.
+
+#### Checking that a check is still running
+
+Use the metrics rather than the Node object:
+
+| Question | Metric |
+|---|---|
+| Is the monitor up and being scraped? | `up{namespace="nvsentinel", container="gpu-health-monitor"}`, and the same for the other monitors — the exact labels depend on your scrape configuration |
+| Is a change-stream consumer still reading? | `change_stream_lag_seconds{client="..."}`, with `change_stream_lag_known` to tell "caught up" from "cannot yet compute" |
+| Is a consumer attached to the store? | `datastore_connected` |
+
+See [METRICS.md](METRICS.md) for the full set. A component that has silently stopped keeps its pod `Running`, answers `/healthz`, never restarts, and leaves its node conditions exactly as they were, so these metrics are the only signal that distinguishes it from a component with nothing to report.
+
 ## Event Processing Pipeline
 
 The event processing pipeline processes health events before they reach storage or Kubernetes. Transformers run in a configurable order, with each transformer able to modify events based on the enrichments from previous transformers.
