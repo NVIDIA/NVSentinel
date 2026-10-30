@@ -151,6 +151,7 @@ config:
       # If not set or set to empty, defaults to config.timeout (25m)
       # AWS/Azure/OCI: Typically 25m (includes 5min cooldown period)
       # GCP: Can be shorter as operation status is tracked directly
+      # Akamai (LKE): About 3m for a GPU node in testing
       # kind/kwok: Can be much shorter for testing (5m)
       timeout: "25m"
     
