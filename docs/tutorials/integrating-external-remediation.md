@@ -101,10 +101,11 @@ The result controls what NVSentinel does next:
 | `ExternalRemediationComplete=True` | janitor removes the taint and the label, and sets `status.completionTime`. NVSentinel manages the node again. The health monitors restart and check the node. If the node is healthy, fault-quarantine uncordons it. If the fault is still present, NVSentinel creates a new ExternalRemediationRequest. |
 | `ExternalRemediationComplete=False` | janitor makes no change. The node stays released, because NVSentinel does not know the state of the node. |
 | You delete the ExternalRemediationRequest | janitor removes the taint and the label, and then deletes the ExternalRemediationRequest. NVSentinel manages the node again. If the fault is still present, NVSentinel creates a new ExternalRemediationRequest. |
+| Someone deletes the Node | Kubernetes deletes the ExternalRemediationRequest too, because the Node is its owner. janitor records the close as `node_deleted` and creates an `OwnerNodeDeleted` event. |
 
 janitor adds a finalizer to each ExternalRemediationRequest. A finalizer stops Kubernetes from removing an object until a controller completes its cleanup. Because of this finalizer, a deletion always returns the node to NVSentinel. To take back a node after `ExternalRemediationComplete=False`, delete the ExternalRemediationRequest.
 
-> **Note:** In a default install, janitor deletes each ExternalRemediationRequest 336 hours after janitor first finds it, even if the repair is not complete. The deletion returns the node to NVSentinel. The template in section 4 disables this time limit.
+> **Note:** janitor never deletes an open ExternalRemediationRequest. In a default install, janitor deletes it 336 hours after `status.completionTime` is set. At that time the node is already back with NVSentinel, so the deletion does not change the node. Janitor versions before the fix for [issue #2072](https://github.com/NVIDIA/NVSentinel/issues/2072) count the 336 hours from creation and delete open requests. The template in section 4 disables the time limit for those versions.
 
 ---
 
@@ -189,7 +190,7 @@ fault-remediation:
 | Part of the template | Reason |
 | --- | --- |
 | `name: extrr-{{.HealthEventID}}` | The name becomes the value of the release taint. Kubernetes limits a taint value to 63 characters. This name has 42 characters or fewer. |
-| `nvsentinel.nvidia.com/preserve: "true"` | Stops janitor from deleting the ExternalRemediationRequest after 336 hours. |
+| `nvsentinel.nvidia.com/preserve: "true"` | Stops janitor from deleting the ExternalRemediationRequest. Janitor versions before the fix for issue #2072 need it, because they delete open requests after 336 hours. On later versions it is optional: remove it to delete completed requests 336 hours after completion. |
 | `trace-id` and `span-id` | Connect the ExternalRemediationRequest to the trace of the original health event. |
 | `printf "%q"` | Puts each text value in quotes. A `message` that contains a colon or a quote then cannot break the YAML. |
 | `spec.healthEvent` | The fields that the external system reads. The template copies only fields that have one value. |
@@ -520,8 +521,9 @@ Follow these requirements:
    - Add maintenance.templates."external-remediation.yaml" as shown in section 4
      of docs/tutorials/integrating-external-remediation.md. Name the object
      extrr-{{.HealthEventID}}. Keep the annotation
-     nvsentinel.nvidia.com/preserve: "true". Without it, janitor deletes the
-     object after 336 hours and takes the node back during the repair.
+     nvsentinel.nvidia.com/preserve: "true" if janitor is older than the fix
+     for issue #2072. Without it, those versions delete the object after 336
+     hours and take the node back during the repair.
    - Use plain Go text/template only. Sprig functions are not available.
 
 3. Run helm upgrade with --reset-then-reuse-values and the values file. Do not

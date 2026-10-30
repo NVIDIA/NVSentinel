@@ -37,8 +37,11 @@ const (
 const (
 	ExtRRResultSuccess         = "success"
 	ExtRRResultOperatorDeleted = "operator_deleted"
+	// ExtRRResultNodeDeleted is recorded when an open ExtRR is deleted and its
+	// target Node is gone or was replaced by a Node with a different UID.
+	ExtRRResultNodeDeleted = "node_deleted"
 	// ExtRRResultNodeNotFound is recorded when the apply path fails because
-	// the target Node doesn't exist at reconcile time. Terminal — no retry.
+	// the target Node is absent or was replaced. Terminal — no retry.
 	ExtRRResultNodeNotFound = "node_not_found"
 	// ExtRRResultNone is the explicit sentinel for phases without an outcome.
 	ExtRRResultNone = ""
@@ -53,9 +56,9 @@ var (
 	//   created           — fresh ExtRR initialised.
 	//   released          — NVSentinelOwnershipReleased transitioned:
 	//                       result=success (taint applied) or
-	//                       result=node_not_found (target node absent at apply time).
+	//                       result=node_not_found (target Node instance unavailable).
 	//   external_response — ExternalRemediationComplete=True observed. result=success.
-	//   closed            — cleanup ran. result=success | operator_deleted.
+	//   closed            — cleanup ran. result=success | operator_deleted | node_deleted.
 	ExtRRTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "nvsentinel_external_remediation_total",
 		Help: "Lifecycle transitions of ExternalRemediationRequest objects, labeled by phase and outcome.",
@@ -80,12 +83,21 @@ func (m *ActionMetrics) IncExtRRTotal(phase, result string) {
 	}).Inc()
 }
 
-func (m *ActionMetrics) AdjustExtRROpen(node, recommendedAction, state string, delta float64) {
+// SetExtRROpen sets the absolute open state (1 or 0) instead of adding a
+// delta, so a missed transition or a janitor restart cannot skew the gauge.
+// One series per node is enough: the node lock allows only one open ExtRR
+// per node at a time.
+func (m *ActionMetrics) SetExtRROpen(node, recommendedAction, state string, open bool) {
+	value := 0.0
+	if open {
+		value = 1.0
+	}
+
 	ExtRROpen.With(prometheus.Labels{
 		labelNode:              node,
 		labelRecommendedAction: recommendedAction,
 		"state":                state,
-	}).Add(delta)
+	}).Set(value)
 }
 
 func (m *ActionMetrics) ObserveExtRRAge(recommendedAction, result string, ageSeconds float64) {
