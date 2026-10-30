@@ -20,7 +20,7 @@ The `cspName` field determines which cloud provider to monitor. Only one provide
 
 ```yaml
 csp-health-monitor:
-  cspName: "gcp"  # Options: "gcp", "aws", or "lambda"
+  cspName: "gcp"  # Options: "gcp", "aws", "lambda", or "akamai"
 ```
 
 ## Global Settings
@@ -386,6 +386,48 @@ Expect `authMode=workload-identity`. If it says `api-key`, the pod never receive
 
 Failures in the exchange itself surface on the first poll, not at startup, because the token is minted lazily. When the exchange endpoint rejects the token it returns `401` with no detail by design, so an unauthenticated caller cannot probe for which identities exist; that means a missing trust, a wrong identity LRN and a disabled account all look identical from the client. Check the trust and the identity LRN first.
 
+## Akamai Configuration
+
+Polls the Akamai Cloud account maintenance API (`GET /account/maintenance`) and raises a health event for each event affecting a node in this cluster. The account lists maintenance for every instance in it, so events are matched to nodes by the Linode instance ID in the event's `entity`, and events for instances that are not nodes of this cluster are ignored. Nodes must carry `spec.providerID` in the form `linode://<instanceID>`, which the Linode cloud controller manager sets on LKE nodes.
+
+```yaml
+global:
+  cspHealthMonitor:
+    enabled: true
+
+csp-health-monitor:
+  cspName: "akamai"
+
+  akamaiApiTokenSecret:
+    name: "akamai-api-token"
+    key: "LINODE_TOKEN"
+
+  configToml:
+    clusterName: "my-cluster"
+
+    akamai:
+      pollingIntervalSeconds: 60
+```
+
+### Which maintenance events quarantine a node
+Every maintenance type the API reports (`reboot`, `cold_migration`, `live_migration`, `migrate` and `power_off_on`) quarantines the node. A GPU workload cannot live-migrate, so `live_migration` is not treated as harmless. The type and the maintenance policy are kept in the event metadata for reference.
+
+Events whose `description` is `emergency` are quarantined on the next poll, without waiting for the trigger window. All others are quarantined ahead of the event's `when` time, within `triggerQuarantineWorkflowTimeLimitMinutes`. Notice varies by policy, from a few hours for a live migration to seven days for a power off and on, so size that window to the notice you need to drain a node.
+
+The API does not report an event's last-updated time, so the monitor compares a fingerprint of the status, type and schedule instead, and writes an event again only when one of them changes. A cancellation or a reschedule therefore still takes effect.
+
+### Cancelled maintenance
+The monitor does not rely on the API to return a `canceled` status. It treats a `pending` or `scheduled` maintenance of this cluster that is no longer listed in two consecutive polls as cancelled, and releases the node through a `CANCELLED` event. The monitor uses the event it stored earlier as the record of why the node was quarantined. A poll that fails never counts as an absence. A list that has fewer entries than the total the API reports is an error, so it never counts as an absence either. A maintenance that is `started`, `in-progress` or `completed` is never released this way. The event carries the check name `CSPMaintenance`, so only the maintenance fault is cleared and any other fault on the node keeps it quarantined. Two rules keep the monitor from releasing a node too early. First, if the whole list is empty, the monitor waits for 10 consecutive polls, because a lasting empty list is more likely a fault on the way to the API than a cancellation of every maintenance. Second, the monitor does not release a node while another stored `pending`, `scheduled`, `started` or `in-progress` event of this cluster is on the same node, because the healthy event clears the maintenance check of the node and not one event. An event for an instance that is still listed but is no longer a node of this cluster is not cancelled. It stays stored until the API stops listing it. Without a datastore the monitor cannot detect a cancellation and logs one warning.
+
+### apiEndpoint
+Optional. Base URL of the Akamai Cloud API, version included. Defaults to `https://api.linode.com/v4`, so the happy path needs no override. Must be https, and must not carry userinfo, a query string, or a fragment. The host must be `api.linode.com`, so any other host fails at startup rather than on the first poll.
+
+### pollingIntervalSeconds
+How often the maintenance API is polled. Minimum 30.
+
+### akamaiApiTokenSecret
+Secret holding the Akamai Cloud API token, injected as `LINODE_TOKEN`, the variable the Linode CLI and SDKs read. `name` is required when `cspName` is `akamai`; the install fails without it. Create the Secret in the release namespace before the install, because the pod cannot start without it. `key` defaults to `LINODE_TOKEN`. The monitor only lists maintenance events, so give it a read-only token with the `account:read_only` scope. A restricted identity that Akamai limits by permission needs the `list_maintenances` permission. The legacy `read_only` grant also authorizes the endpoint, so a read-only token needs no extra role. Do not share the Janitor Provider's token, which can reboot and delete instances.
+
 ## CSP-Specific IAM Requirements
 
 Each cloud provider handles IAM identity for the CSP Health Monitor differently:
@@ -395,6 +437,7 @@ Each cloud provider handles IAM identity for the CSP Health Monitor differently:
 | **GCP**  | `gcp.gcpServiceAccountName` — User provides any GCP Service Account name. The ServiceAccount annotation is built as `{SA_NAME}@{PROJECT}.iam.gserviceaccount.com`. | Fully flexible. No naming convention enforced. |
 | **AWS (EKS)** | `aws.iamRoleName` (optional) — User provides a custom IAM role name. If omitted, the role name defaults to `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`. | Flexible when `iamRoleName` is set. The default convention imposes a **19-character cluster name limit** (AWS IAM role names max 64 chars, default suffix is 45 chars). |
 | **Lambda** | Either a static API key in `lambdaApiKeySecret`, or `lambdaWorkloadIdentity.identityLRN` — the ServiceAccount is annotated with `lambda.ai/identity-lrn` and the pod receives a short-lived token instead of a stored key. | Fully flexible. The identity is named by LRN, so no naming convention is enforced. |
+| **Akamai** | A static API token in `akamaiApiTokenSecret`, injected as `LINODE_TOKEN`. There is no workload identity, so the token is stored in the cluster. | Not applicable. Use a read-only token. |
 
 > **Recommendation for EKS users**: If your cluster name is longer than 19 characters, always set `aws.iamRoleName` explicitly and create the corresponding IAM role with that name. See [IAM Setup](../csp-health-monitor-iam.md) for detailed instructions.
 
