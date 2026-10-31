@@ -75,3 +75,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 062 | [Fault Quarantine — Release Quarantine Actions Only at Session End (proposed)](062-fault-quarantine-release-at-session-end.md) |
 | 063 | [Node Drainer — Owner Kinds in Pod Drain Policies (proposed)](063-pod-drain-policies-owner-kinds.md) |
 | 064 | [Configuration — Node and Device Selection in Each Component (proposed)](064-node-and-device-selection.md) |
+| 068 | [Datastore — Bounded Retention for the PostgreSQL Changelog (proposed)](068-postgresql-changelog-retention.md) |
