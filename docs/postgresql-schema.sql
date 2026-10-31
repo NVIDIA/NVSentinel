@@ -163,6 +163,10 @@ CREATE TABLE IF NOT EXISTS datastore_changelog (
 -- Index for change tracking
 CREATE INDEX IF NOT EXISTS idx_changelog_unprocessed ON datastore_changelog(changed_at) WHERE processed = FALSE;
 CREATE INDEX IF NOT EXISTS idx_changelog_table_record ON datastore_changelog(table_name, record_id);
+-- Index behind the change stream poll, which reads the rows of one table after its
+-- resume position in (changed_at, id) order. It is not partial, because the poll does
+-- not filter on processed. The components build it CONCURRENTLY on existing databases.
+CREATE INDEX IF NOT EXISTS idx_changelog_resume_all ON datastore_changelog(table_name, changed_at, id);
 
 -- ====================================================================
 -- RESUME TOKENS (For change stream compatibility)
