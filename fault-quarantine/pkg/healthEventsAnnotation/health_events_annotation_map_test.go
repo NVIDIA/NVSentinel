@@ -1012,6 +1012,108 @@ func TestAddOrUpdateEventFiltered_PartialEscalationSurvivesJSONRoundTrip(t *test
 	}
 }
 
+func TestAddOrUpdateEvent_PartialEscalationSurvivesJSONRoundTrip(t *testing.T) {
+	compound := &protos.HealthEvent{
+		Version: 1, Agent: "agent", ComponentClass: "GPU", CheckName: "check", NodeName: "node-a",
+		ErrorCode:         []string{"79"},
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "A"},
+			{EntityType: "GPU", EntityValue: "B"},
+		},
+	}
+	// The escalation arrives as its own event for GPU A only, through the unfiltered path.
+	escalated := proto.Clone(compound).(*protos.HealthEvent)
+	escalated.RecommendedAction = protos.RecommendedAction_CONTACT_SUPPORT
+	escalated.EntitiesImpacted = []*protos.Entity{{EntityType: "GPU", EntityValue: "A"}}
+
+	annotation := NewHealthEventsAnnotationMap()
+	require.True(t, annotation.AddOrUpdateEvent(compound))
+	require.True(t, annotation.AddOrUpdateEvent(escalated))
+
+	for range 20 {
+		encoded, err := json.Marshal(annotation)
+		require.NoError(t, err)
+		roundTripped := NewHealthEventsAnnotationMap()
+		require.NoError(t, json.Unmarshal(encoded, roundTripped))
+
+		require.Equal(t, 2, roundTripped.Count())
+		for key, event := range roundTripped.Events {
+			switch key.EntityValue {
+			case "A":
+				assert.Equal(t, protos.RecommendedAction_CONTACT_SUPPORT, event.GetRecommendedAction())
+			case "B":
+				assert.Equal(t, protos.RecommendedAction_COMPONENT_RESET, event.GetRecommendedAction())
+			default:
+				t.Fatalf("unexpected entity %q", key.EntityValue)
+			}
+		}
+		annotation = roundTripped
+	}
+}
+
+func TestReplacedGPURecoverySurvivesCompactionAndRoundTrip(t *testing.T) {
+	// A GPU_UUID fault that also carries its slot: the GPU index and PCI address.
+	fault := &protos.HealthEvent{
+		Version: 1, Agent: "gpu-health-monitor", ComponentClass: "GPU", CheckName: "GpuXidError", NodeName: "node-a",
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU_UUID", EntityValue: "GPU-old"},
+			{EntityType: "GPU", EntityValue: "0"},
+			{EntityType: "PCI", EntityValue: "0000:03:00"},
+		},
+	}
+	annotation := NewHealthEventsAnnotationMap()
+	require.True(t, annotation.AddOrUpdateEvent(fault))
+
+	// An escalation on the slot entities overwrites the GPU and PCI keys with a new action, so
+	// compaction projects the GPU_UUID entry down to the GPU_UUID key alone and drops the slot
+	// entities from its EntitiesImpacted.
+	escalated := &protos.HealthEvent{
+		Version: 1, Agent: "gpu-health-monitor", ComponentClass: "GPU", CheckName: "GpuXidError", NodeName: "node-a",
+		RecommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+			{EntityType: "PCI", EntityValue: "0000:03:00"},
+		},
+	}
+	require.True(t, annotation.AddOrUpdateEvent(escalated))
+
+	// Round trip: actions stay correct and the slot survives in metadata.
+	encoded, err := json.Marshal(annotation)
+	require.NoError(t, err)
+	roundTripped := NewHealthEventsAnnotationMap()
+	require.NoError(t, json.Unmarshal(encoded, roundTripped))
+
+	uuidKey := HealthEventKey{
+		Agent: "gpu-health-monitor", ComponentClass: "GPU", CheckName: "GpuXidError", NodeName: "node-a",
+		Version: 1, EntityType: "GPU_UUID", EntityValue: "GPU-old",
+	}
+	stored, ok := roundTripped.Events[uuidKey]
+	require.True(t, ok, "the GPU_UUID fault should still be present")
+	assert.Equal(t, protos.RecommendedAction_COMPONENT_RESET, stored.GetRecommendedAction())
+	assert.False(t, hasEntityType(stored, "GPU"),
+		"compaction should have projected the slot entities out of EntitiesImpacted")
+	require.Len(t, gpuSlotEntities(stored), 2, "the slot must survive compaction via metadata")
+
+	// A replaced GPU keeps its slot but gets a new UUID: a healthy event for the same slot clears
+	// the old UUID fault.
+	healthy := &protos.HealthEvent{
+		Version: 1, Agent: "gpu-health-monitor", ComponentClass: "GPU", CheckName: "GpuXidError", NodeName: "node-a",
+		IsHealthy: true,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU_UUID", EntityValue: "GPU-new"},
+			{EntityType: "GPU", EntityValue: "0"},
+			{EntityType: "PCI", EntityValue: "0000:03:00"},
+		},
+	}
+	require.Positive(t, roundTripped.RemoveEvent(healthy),
+		"the healthy event for the slot should clear the old UUID fault")
+
+	_, stillThere := roundTripped.Events[uuidKey]
+	assert.False(t, stillThere, "the old GPU_UUID fault should be cleared after the GPU is replaced")
+}
+
 func TestAddOrUpdateEventFiltered_CompoundEventsRemainCompact(t *testing.T) {
 	annotation := NewHealthEventsAnnotationMap()
 	for eventIndex := range 10 {
