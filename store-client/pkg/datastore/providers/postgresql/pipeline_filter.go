@@ -316,14 +316,10 @@ func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]
 			return !f.matchesEqual(actualValue, opValue)
 		case opEq:
 			return f.matchesEqual(actualValue, opValue)
-		case opGt:
-			return f.matchesGreaterThan(actualValue, opValue)
-		case opGte:
-			return f.matchesGreaterThanOrEqual(actualValue, opValue)
-		case opLt:
-			return f.matchesLessThan(actualValue, opValue)
-		case opLte:
-			return f.matchesLessThanOrEqual(actualValue, opValue)
+		case opGt, opGte, opLt, opLte:
+			return f.matchesComparison(op, actualValue, opValue)
+		case opExists:
+			return f.matchesExists(actualValue, opValue)
 		default:
 			slog.Warn("Unsupported operator", "operator", op)
 			return false
@@ -331,6 +327,22 @@ func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]
 	}
 
 	return true
+}
+
+// matchesComparison processes the numeric comparison operators $gt, $gte, $lt and $lte
+func (f *PipelineFilter) matchesComparison(op string, actualValue any, opValue any) bool {
+	switch op {
+	case opGt:
+		return f.matchesGreaterThan(actualValue, opValue)
+	case opGte:
+		return f.matchesGreaterThanOrEqual(actualValue, opValue)
+	case opLt:
+		return f.matchesLessThan(actualValue, opValue)
+	case opLte:
+		return f.matchesLessThanOrEqual(actualValue, opValue)
+	default:
+		return false
+	}
 }
 
 // matchesNestedFields checks if actualValue (as a map) contains expected fields
@@ -401,6 +413,19 @@ func (f *PipelineFilter) matchesIn(actualValue any, inArray any) bool {
 	}
 
 	return false
+}
+
+// matchesExists checks the $exists operator. getFieldValue returns nil for both a missing
+// field and a JSON null, so nil counts as missing. This matches the SQL filter, which
+// translates $exists to "IS NOT NULL" / "IS NULL" (see handleExistsOperator).
+func (f *PipelineFilter) matchesExists(actualValue any, opValue any) bool {
+	shouldExist, ok := opValue.(bool)
+	if !ok {
+		slog.Warn("$exists value must be boolean", "type", fmt.Sprintf("%T", opValue))
+		return false
+	}
+
+	return (actualValue != nil) == shouldExist
 }
 
 // matchesEqual checks if two values are equal
