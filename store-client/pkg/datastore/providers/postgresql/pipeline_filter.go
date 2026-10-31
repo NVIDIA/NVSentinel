@@ -306,27 +306,41 @@ func (f *PipelineFilter) matchesMapValue(actualValue any, expectedMap map[string
 	return true
 }
 
-// matchesOperators processes MongoDB operator expressions
+// matchesOperators processes MongoDB operator expressions. Like MongoDB and the
+// SQL filter, a field matches only when every one of its operators matches.
 func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]any) bool {
 	for op, opValue := range operators {
-		switch op {
-		case opIn:
-			return f.matchesIn(actualValue, opValue)
-		case opNe:
-			return !f.matchesEqual(actualValue, opValue)
-		case opEq:
-			return f.matchesEqual(actualValue, opValue)
-		case opGt, opGte, opLt, opLte:
-			return f.matchesComparison(op, actualValue, opValue)
-		case opExists:
-			return f.matchesExists(actualValue, opValue)
-		default:
+		matches, supported := f.matchesOperator(op, actualValue, opValue)
+		if !supported {
 			slog.Warn("Unsupported operator", "operator", op)
+			return false
+		}
+
+		if !matches {
 			return false
 		}
 	}
 
 	return true
+}
+
+// matchesOperator evaluates a single operator. supported is false for an operator
+// the filter does not implement.
+func (f *PipelineFilter) matchesOperator(op string, actualValue any, opValue any) (matches bool, supported bool) {
+	switch op {
+	case opIn:
+		return f.matchesIn(actualValue, opValue), true
+	case opNe:
+		return !f.matchesEqual(actualValue, opValue), true
+	case opEq:
+		return f.matchesEqual(actualValue, opValue), true
+	case opGt, opGte, opLt, opLte:
+		return f.matchesComparison(op, actualValue, opValue), true
+	case opExists:
+		return f.matchesExists(actualValue, opValue), true
+	default:
+		return false, false
+	}
 }
 
 // matchesComparison processes the numeric comparison operators $gt, $gte, $lt and $lte

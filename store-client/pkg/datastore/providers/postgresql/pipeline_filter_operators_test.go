@@ -55,6 +55,37 @@ func TestMatchesExists_FieldPresence_MatchesSQLFilter(t *testing.T) {
 	}
 }
 
+func TestMatchesOperators_MultipleOperators_AllMustMatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		actualValue any
+		operators   map[string]any
+		expected    bool
+	}{
+		{name: "inside a range", actualValue: float64(7), operators: map[string]any{"$gt": 5, "$lt": 10}, expected: true},
+		{name: "below a range", actualValue: float64(3), operators: map[string]any{"$gt": 5, "$lt": 10}, expected: false},
+		{name: "above a range", actualValue: float64(12), operators: map[string]any{"$gt": 5, "$lt": 10}, expected: false},
+		{name: "exists and equal", actualValue: float64(5), operators: map[string]any{"$exists": true, "$eq": 5}, expected: true},
+		{name: "exists but not equal", actualValue: float64(3), operators: map[string]any{"$exists": true, "$eq": 5},
+			expected: false},
+		{name: "missing but not equal", actualValue: nil, operators: map[string]any{"$exists": true, "$ne": "x"},
+			expected: false},
+		{name: "an unsupported operator never matches", actualValue: float64(5),
+			operators: map[string]any{"$eq": 5, "$regex": "5"}, expected: false},
+	}
+
+	f := &PipelineFilter{}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Map iteration order is random, so evaluate often enough to reach every order.
+			for range 50 {
+				require.Equal(t, tt.expected, f.matchesOperators(tt.actualValue, tt.operators))
+			}
+		})
+	}
+}
+
 func TestMatchesOperators_NumericComparisons_CompareAsFloat(t *testing.T) {
 	tests := []struct {
 		name        string
