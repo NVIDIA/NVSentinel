@@ -15,7 +15,7 @@ googleapis-common-protos = ">=1.56.0"
 structlog = ">=25.1,<27.0"
 
 [tool.poetry.group.dev.dependencies]
-grpcio-tools = "1.84.0"
+grpcio-tools = "1.85.0"
 black = "^26.3.1"
 coverage = "^7.13.5"
 pytest = "^9.0.3"
