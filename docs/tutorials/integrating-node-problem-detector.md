@@ -193,6 +193,8 @@ For custom condition policies:
 - Assign a unique error code and validate the policy in a non-production
   cluster before enabling downstream remediation.
 - Have NPD set the same condition to `False` only after recovery is validated.
+  If the monitor resets the condition on restart instead, add a
+  `recoveryPredicate` like the ones in `values-npd-remediation.yaml`.
 
 See [KOM policy configuration](../configuration/kubernetes-object-monitor.md)
 for more CEL expression examples.
@@ -321,9 +323,43 @@ kubectl wait --for=create pod \
 ```
 
 A `False` condition after restart only shows that the NPD process reset its
-state; it does not prove recovery from a real failure. Restarting NPD can also
-cause KOM to observe a healthy transition and cancel active break-fix
-processing, so limit this procedure to the test node after validation.
+state; it does not prove recovery from a real failure. The three policies in
+`values-npd-remediation.yaml` set `recoveryPredicate`, so KOM does not publish a
+healthy event for this reset: the node stays unhealthy, and any active
+break-fix processing continues. To release the test node, follow
+[Recover a node](#recover-a-node).
+
+### Recover a node
+
+KOM keeps a matched node unhealthy until the node is deleted, for example by
+`REPLACE_VM`, or until an operator records that recovery was verified. To
+recover a node without replacing it:
+
+1. Validate the repair, then restart NPD on the node as shown above so that
+   the source condition is `False`.
+2. Record the verification time on the node in UTC. Use the annotation key of
+   the matched policy:
+
+| KOM policy | Recovery annotation |
+| --- | --- |
+| `NPDXfsShutdown` | `recovery.nvsentinel.nvidia.com/npd-xfs-shutdown` |
+| `NPDCperHardwareErrorFatal` | `recovery.nvsentinel.nvidia.com/npd-cper-hardware-error-fatal` |
+| `NPDReadonlyFilesystem` | `recovery.nvsentinel.nvidia.com/npd-readonly-filesystem` |
+
+```bash
+kubectl annotate node "$NODE" \
+  recovery.nvsentinel.nvidia.com/npd-xfs-shutdown="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --overwrite
+```
+
+KOM publishes the healthy event when the recorded time is later than the
+condition's `lastTransitionTime`, that is, when the verification followed the
+NPD reset. A time at or before the reset is ignored. A value that is not an
+RFC 3339 timestamp keeps the node unhealthy and increments
+`k8s_object_monitor_policy_evaluation_errors_total` with reason
+`recovery_predicate_error`. The annotation may remain on the node: a later
+fault changes the condition's `lastTransitionTime` past the recorded time, so
+the old annotation cannot release it.
 
 ---
 

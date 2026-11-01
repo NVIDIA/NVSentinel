@@ -286,10 +286,38 @@ func (r *ResourceReconciler) reconcilePolicy(
 	}
 
 	if !matched && wasMatched {
-		return r.handleHealthyTransition(ctx, p, storedNodeName, stateKey, resourceInfo)
+		return r.handlePredicateCleared(ctx, p, obj, storedNodeName, stateKey, resourceInfo)
 	}
 
 	return nil
+}
+
+// handlePredicateCleared handles a matched resource whose predicate no longer
+// matches. It reports the resource healthy unless the policy's recovery
+// predicate holds the match.
+func (r *ResourceReconciler) handlePredicateCleared(
+	ctx context.Context,
+	p *config.Policy,
+	obj *unstructured.Unstructured,
+	nodeName string,
+	stateKey string,
+	resourceInfo *config.ResourceInfo,
+) error {
+	recovered, err := r.evaluator.EvaluateRecoveryPredicate(ctx, p.Name, obj)
+	if err != nil {
+		metrics.PolicyEvaluationErrors.WithLabelValues(p.Name, "recovery_predicate_error").Inc()
+
+		return fmt.Errorf("recovery predicate evaluation failed: %w", err)
+	}
+
+	if !recovered {
+		slog.Debug("Predicate no longer matches; keeping the match until the recovery predicate matches",
+			"policy", p.Name, "node", nodeName, "stateKey", stateKey)
+
+		return nil
+	}
+
+	return r.handleHealthyTransition(ctx, p, nodeName, stateKey, resourceInfo)
 }
 
 func (r *ResourceReconciler) handleUnhealthyTransition(

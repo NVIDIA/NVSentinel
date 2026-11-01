@@ -27,6 +27,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -898,6 +899,12 @@ func updateNodeStatus(t *testing.T, setup *testSetup, name string, readyStatus v
 func restartReconciler(t *testing.T, setup *testSetup) *testSetup {
 	t.Helper()
 
+	return restartReconcilerWithPolicies(t, setup, []config.Policy{defaultNodeNotReadyPolicy()})
+}
+
+func restartReconcilerWithPolicies(t *testing.T, setup *testSetup, policies []config.Policy) *testSetup {
+	t.Helper()
+
 	gvk := schema.GroupVersionKind{
 		Group:   "",
 		Version: "v1",
@@ -907,8 +914,6 @@ func restartReconciler(t *testing.T, setup *testSetup) *testSetup {
 	mockPub := &mockPublisher{
 		publishedEvents: []mockPublishedEvent{},
 	}
-
-	policies := []config.Policy{defaultNodeNotReadyPolicy()}
 
 	annotationMgr := annotations.NewManager(setup.k8sClient)
 
@@ -1242,4 +1247,147 @@ func TestRestoreState_SavedMatches_QueuesOnlyMatchesOfEnabledPolicies(t *testing
 			assert.ElementsMatch(t, tt.wantQueue, queued)
 		})
 	}
+}
+
+const npdRecoveryAnnotation = "recovery.nvsentinel.nvidia.com/npd-xfs-shutdown"
+
+// npdXfsShutdownPolicy mirrors the NPDXfsShutdown policy in
+// values-npd-remediation.yaml.
+func npdXfsShutdownPolicy() config.Policy {
+	return config.Policy{
+		Name:    "NPDXfsShutdown",
+		Enabled: true,
+		Resource: config.ResourceSpec{
+			Group:   "",
+			Version: "v1",
+			Kind:    "Node",
+		},
+		Predicate: config.PredicateSpec{
+			Expression: `resource.status.conditions.exists(c, c.type == "XfsShutdown" && c.status != "False")`,
+		},
+		RecoveryPredicate: &config.PredicateSpec{
+			Expression: `"` + npdRecoveryAnnotation + `" in resource.metadata.annotations &&
+				resource.status.conditions.exists(c,
+					c.type == "XfsShutdown" &&
+					c.status == "False" &&
+					timestamp(string(resource.metadata.annotations["` + npdRecoveryAnnotation + `"])) >
+						timestamp(c.lastTransitionTime))`,
+		},
+		HealthEvent: config.HealthEventSpec{
+			ComponentClass:    "Node",
+			IsFatal:           true,
+			Message:           "NPD reported an XFS filesystem shutdown",
+			RecommendedAction: "REPLACE_VM",
+			ErrorCode:         []string{"NPD_XFS_SHUTDOWN"},
+		},
+	}
+}
+
+func setNodeCondition(
+	t *testing.T,
+	setup *testSetup,
+	name string,
+	condType v1.NodeConditionType,
+	status v1.ConditionStatus,
+	transitioned time.Time,
+) {
+	t.Helper()
+
+	node := &v1.Node{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Name: name}, node))
+
+	node.Status.Conditions = []v1.NodeCondition{
+		{Type: v1.NodeReady, Status: v1.ConditionTrue},
+		{Type: condType, Status: status, LastTransitionTime: metav1.NewTime(transitioned)},
+	}
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, node))
+}
+
+func setNodeAnnotation(t *testing.T, setup *testSetup, name, key, value string) {
+	t.Helper()
+
+	node := &v1.Node{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Name: name}, node))
+
+	if node.Annotations == nil {
+		node.Annotations = map[string]string{}
+	}
+
+	node.Annotations[key] = value
+	require.NoError(t, setup.k8sClient.Update(setup.ctx, node))
+}
+
+func reconcileNode(t *testing.T, setup *testSetup, name string) {
+	t.Helper()
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{Name: name})
+	require.NoError(t, err)
+	require.Equal(t, ctrl.Result{}, result)
+}
+
+func TestReconciler_RecoveryPredicate_HoldsMatchUntilRecoveryRequested(t *testing.T) {
+	policies := []config.Policy{npdXfsShutdownPolicy()}
+	setup := setupTestWithPolicies(t, policies)
+	nodeName := "npd-node"
+	stateKey := "NPDXfsShutdown/" + nodeName
+	annotationMgr := annotations.NewManager(setup.k8sClient)
+	faultAt := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	resetAt := faultAt.Add(time.Hour)
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+
+	setNodeCondition(t, setup, nodeName, "XfsShutdown", v1.ConditionTrue, faultAt)
+	reconcileNode(t, setup, nodeName)
+	require.Len(t, setup.publisher.publishedEvents, 1)
+	require.False(t, setup.publisher.publishedEvents[0].isHealthy)
+
+	// An NPD restart resets the condition to False. The predicate stops
+	// matching, but the recovery predicate does not, so the match is kept.
+	setNodeCondition(t, setup, nodeName, "XfsShutdown", v1.ConditionFalse, resetAt)
+	reconcileNode(t, setup, nodeName)
+	require.Len(t, setup.publisher.publishedEvents, 1, "a reset condition must not publish a healthy event")
+
+	matches, err := annotationMgr.GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.Contains(t, matches, stateKey)
+
+	// The kept match survives a monitor restart.
+	setup = restartReconcilerWithPolicies(t, setup, policies)
+	reconcileNode(t, setup, nodeName)
+	require.Empty(t, setup.publisher.publishedEvents, "a restarted monitor must keep the match")
+
+	// A verification time that is not later than the reset does not recover.
+	setNodeAnnotation(t, setup, nodeName, npdRecoveryAnnotation, resetAt.Add(-time.Minute).Format(time.RFC3339))
+	reconcileNode(t, setup, nodeName)
+	require.Empty(t, setup.publisher.publishedEvents, "a stale recovery request must not publish a healthy event")
+
+	// A malformed request fails the recovery predicate and keeps the match.
+	errorsBefore := getCounterVecValue(t, metrics.PolicyEvaluationErrors, "NPDXfsShutdown", "recovery_predicate_error")
+	setNodeAnnotation(t, setup, nodeName, npdRecoveryAnnotation, "not-a-timestamp")
+	reconcileNode(t, setup, nodeName)
+	require.Empty(t, setup.publisher.publishedEvents, "a malformed recovery request must not publish a healthy event")
+	require.Equal(t, errorsBefore+1,
+		getCounterVecValue(t, metrics.PolicyEvaluationErrors, "NPDXfsShutdown", "recovery_predicate_error"))
+
+	// A verification time after the reset recovers the node.
+	setNodeAnnotation(t, setup, nodeName, npdRecoveryAnnotation, resetAt.Add(time.Minute).Format(time.RFC3339))
+	reconcileNode(t, setup, nodeName)
+	require.Len(t, setup.publisher.publishedEvents, 1)
+	require.True(t, setup.publisher.publishedEvents[0].isHealthy)
+	require.Equal(t, nodeName, setup.publisher.publishedEvents[0].nodeName)
+
+	matches, err = annotationMgr.GetMatches(setup.ctx, nodeName)
+	require.NoError(t, err)
+	require.NotContains(t, matches, stateKey)
+
+	// A retained request does not recover a later fault after the next reset.
+	setup.publisher.publishedEvents = nil
+	setNodeCondition(t, setup, nodeName, "XfsShutdown", v1.ConditionTrue, resetAt.Add(2*time.Hour))
+	reconcileNode(t, setup, nodeName)
+	require.Len(t, setup.publisher.publishedEvents, 1)
+	require.False(t, setup.publisher.publishedEvents[0].isHealthy)
+
+	setNodeCondition(t, setup, nodeName, "XfsShutdown", v1.ConditionFalse, resetAt.Add(3*time.Hour))
+	reconcileNode(t, setup, nodeName)
+	require.Len(t, setup.publisher.publishedEvents, 1, "a retained recovery request must not clear a later fault")
 }

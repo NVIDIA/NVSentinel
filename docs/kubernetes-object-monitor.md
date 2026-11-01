@@ -24,7 +24,7 @@ The monitor operates using policies that you define:
 1. **Watch resources**: Uses Kubernetes controllers to watch specified resource types (Nodes, Pods, Jobs, CRDs, etc.)
 2. **Evaluate health state**: Evaluates CEL expressions against resource state
 3. **Detect unhealthy state**: When a CEL expression evaluates to **true**, the resource is considered unhealthy and an unhealthy event is generated
-4. **Detect recovery**: When a CEL expression evaluates to **false**, the resource is considered healthy and a healthy event is automatically sent
+4. **Detect recovery**: When a CEL expression evaluates to **false**, the resource is considered healthy and a healthy event is automatically sent. A policy can set `recoveryPredicate` to require a further condition before the healthy event
 5. **Map to nodes**: Associates the health event with a specific node using CEL expressions
 6. **Publish events**: Sends health events to Platform Connectors for processing by NVSentinel core modules
 
@@ -113,6 +113,18 @@ Available variables in predicates:
 - `resource`: The Kubernetes resource being evaluated
 - `now`: Current timestamp
 - `lookup(version, kind, namespace, name)`: Fetch related resources
+
+#### Recovery Predicate (Optional)
+```yaml
+recoveryPredicate:
+  expression: |
+    # CEL expression evaluated after a matched resource's predicate turns false
+    # When true: healthy event is sent
+    # When false: the match is kept and no event is sent
+    "recovery.example.com/verified" in resource.metadata.annotations
+```
+
+Some sources report a fault once and later reset their signal without checking whether the fault was repaired. For example, an NPD `SystemLogMonitor` condition stays `True` until NPD restarts, and the restart sets it back to `False`. Without `recoveryPredicate`, KOM reads that reset as a recovery. With it, the match is kept until the recovery predicate is true or the resource is deleted. The match is saved in the node annotation, so it survives a monitor restart. The recovery predicate uses the same variables as the predicate, and the cache keeps the fields it reads.
 
 #### Node Association (Optional)
 ```yaml

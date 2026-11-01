@@ -87,6 +87,9 @@ kubernetes-object-monitor:
       predicate:
         expression: |
           resource.status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0
+      recoveryPredicate:  # Optional
+        expression: |
+          "recovery.example.com/verified" in resource.metadata.annotations
       nodeAssociation:
         expression: resource.spec.nodeName
       healthEvent:
@@ -130,6 +133,14 @@ CEL expression that evaluates to true when the resource is in an unhealthy state
 
 ##### expression
 CEL expression accessing the resource via `resource` variable.
+
+#### recoveryPredicate
+Optional. Gates the healthy event of a matched resource. When `predicate.expression` stops matching, the resource is reported healthy only if `recoveryPredicate.expression` evaluates to true; otherwise the match is kept, the node stays unhealthy, and the expression is evaluated again on the next change or resync. Deleting the resource still releases the match. When unset, the resource is reported healthy as soon as the predicate stops matching. An evaluation error keeps the match and increments `k8s_object_monitor_policy_evaluation_errors_total` with reason `recovery_predicate_error`.
+
+Use it for sources that reset their signal without proving repair, such as the NPD `SystemLogMonitor` conditions in `values-npd-remediation.yaml`.
+
+##### expression
+CEL expression with the same variables as `predicate.expression`, returning a boolean.
 
 #### nodeAssociation
 Optional CEL expression that maps the resource to a specific Kubernetes node name.
