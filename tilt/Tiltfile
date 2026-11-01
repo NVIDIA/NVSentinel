@@ -102,6 +102,11 @@ helm_resource(
 # --wait waits for the SchedulingShard to be ready, which KAI reports in the
 # standard way since v0.12.26 (kai-scheduler/KAI-Scheduler#1060). Releases from
 # then on are published under the kai-scheduler organization.
+# By default, the kai-scheduler admission webhook receives each pod create in all namespaces except
+# kube-system and kai-scheduler, and rejects it while its service is not ready. Only the preflight
+# E2E tests use kai-scheduler, in namespaces with the label below. So the namespace label selector
+# limits kai-scheduler to these namespaces, and pod creates in nvsentinel do not fail while
+# kai-scheduler installs.
 local_resource(
     'kai-scheduler',
     cmd='''
@@ -111,7 +116,8 @@ local_resource(
             kubectl delete validatingwebhookconfiguration kai-podgroup-validation-v2alpha2 kai-queue-validation-v2 validating-kai-admission --ignore-not-found
             kubectl delete mutatingwebhookconfiguration mutating-kai-admission --ignore-not-found
         fi
-        helm upgrade --install kai-scheduler oci://ghcr.io/kai-scheduler/kai-scheduler/kai-scheduler --version v0.12.26 --create-namespace -n kai-scheduler --wait
+        helm upgrade --install kai-scheduler oci://ghcr.io/kai-scheduler/kai-scheduler/kai-scheduler --version v0.12.26 --create-namespace -n kai-scheduler --wait \\
+            --set-string 'global.namespaceLabelSelector.nvsentinel\\.nvidia\\.com/preflight=enabled'
     ''',
     resource_deps=['remove-pending-helm-releases'],
     allow_parallel=True,
