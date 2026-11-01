@@ -24,11 +24,17 @@ The options considered are:
 
 ## Decision
 
-The store-client PostgreSQL provider runs a periodic, batched cleaner. It deletes a changelog row only when the row is older than the configured retention and before the oldest consumer position in `resume_tokens`, compared as `(changed_at, id)`. Every token counts in that bound, also a token that has not changed for a long time; such a token raises an alert, but it is never ignored. The cleaner is off by default in the release that adds it.
+The PostgreSQL provider runs a periodic, batched cleaner from both datastore and client-factory connections. It deletes a row only when the row is older than the retention and before the oldest `(changed_at, id)` position in `resume_tokens`. Every token counts, including stale tokens, which raise an alert. The cleaner is off by default.
+
+These bounds alone do not protect a recently committed row from a long write transaction. Maintainers must select a guard for that case before accepting an implementation that deletes rows. Without that guard, the cleaner must delete nothing. The Notes section describes this unresolved requirement.
 
 ## Implementation
 
-- **Where it runs.** `NewPostgreSQLStore` starts the cleaner after table setup when retention is set, and `Close` stops it. Fault Quarantine, Node Drainer, Fault Remediation and the Health Events Analyzer open the store this way. Platform connectors and the event exporter use the client factory, which does no table setup, so they do not run the cleaner. The event exporter's watcher saves a token like the others, so the bound includes it.
+- **Where it runs.** Both `NewPostgreSQLStore` and the PostgreSQL branch of `ClientFactory.CreateDatabaseClient` start the same provider-owned cleaner when retention is set. The store starts it after table setup; the factory starts it after connecting, without table setup or DDL. The object that owns the connection pool owns the cleaner, and its `Close(ctx)` cancels and waits for the cleaner before closing the pool. A client borrowed from a store must not start another cleaner. All queries honour cancellation.
+
+  Fault Quarantine, Node Drainer, Fault Remediation and the Health Events Analyzer use the store constructor. Platform connectors and the event exporter use the factory. Thus a deployment with only platform connectors still has a cleaner owner. Multiple owners coordinate through the advisory lock. The event exporter's saved token remains in the bound.
+
+  The chart passes the retention settings to both paths, including the platform connector DaemonSet and Deployment. Factory connections do not create missing tables or indexes. Missing prerequisites cause a reported, skipped run; operators must provision the schema and index from PR #2233 before enabling retention in a factory-only deployment.
 - **One run at a time.** A run reserves a connection and takes `pg_try_advisory_lock` on a key of its own, separate from the setup lock. If another session holds the lock, the run does nothing. The batches run on the reserved connection. The run releases the lock with a new, short context. If the release fails, it closes the session instead of returning the connection to the pool.
 - **The bound.** Each run reads all rows of `resume_tokens` and computes:
   - `cutoff = now() - retention`;
@@ -37,11 +43,13 @@ The store-client PostgreSQL provider runs a periodic, batched cleaner. It delete
   A row can be deleted only if `changed_at < cutoff` and `(changed_at, id) < oldest`. Both conditions are part of the delete statement itself, so every deleted row is checked.
 
   If a token cannot be parsed, the run deletes nothing and reports an error. If there are no tokens, only the age condition applies, because no consumer has a position to protect.
+
+  The long-transaction guard is required in both cases. A missing guard means no `DELETE`, including when there are no tokens.
 - **Stale tokens stay in the bound.** A token whose `last_updated` is older than the retention still counts in `oldest`. The cleaner still deletes the rows before it, and it reports the token in a metric and a warning that names the client.
   - An old `last_updated` does not prove that a consumer is gone. A consumer that is live but stalled, or that cannot save its token, needs every row after its position.
   - A removed component leaves its token, which holds back the cleanup from that position on. The operator deletes that row from `resume_tokens` only when the component is gone for good. The docs describe this step, and warn not to delete the token of a component that still runs.
 - **Legacy tokens.** A token in the old format, with an `eventID` and no `timestamp`, has no pair. The cleaner looks up the `changed_at` of that id. If the row does not exist, the run deletes nothing and reports an error.
-- **Batched deletes.** For each table that `createChangeTriggers` watches, the cleaner deletes in batches of 10,000 rows by default, with one transaction per batch:
+- **Batched deletes.** For each table that `createChangeTriggers` watches, the cleaner deletes in batches of 10,000 rows by default, with one transaction per batch. This query shows only the age and position bounds. The final query must also enforce the selected long-transaction guard; its cost is not yet measured.
 
   ```sql
   DELETE FROM datastore_changelog
@@ -72,6 +80,9 @@ The store-client PostgreSQL provider runs a periodic, batched cleaner. It delete
 - **Space.** A delete makes space reusable, but it does not shrink the table file. The cleaner relies on autovacuum and does not run `VACUUM`. `VACUUM` cannot run in a transaction, and only the table owner, the database owner or a superuser can run it. For an existing large table, the docs tell operators to run `pg_repack` once after they turn the cleaner on. `VACUUM FULL` also works, but it needs an exclusive lock and free disk space equal to the new table size, so it belongs in a maintenance window.
 - **Tests.**
   - With sqlmock, in the style of the setup-lock and index tests:
+    - the store and factory paths each start a cleaner when enabled and stop it before closing their pool;
+    - disabled retention starts no cleaner, and the factory path runs no setup DDL;
+    - a missing long-transaction guard means no `DELETE`;
     - the bound is the smallest token as a pair, not the smallest `eventID`;
     - a stale token still holds back the cleanup and is reported;
     - nothing older than the bound means no `DELETE` (the healthy case);
@@ -80,14 +91,16 @@ The store-client PostgreSQL provider runs a periodic, batched cleaner. It delete
   - Against a real PostgreSQL 16, because sqlmock does not check SQL semantics:
     - a row with a lower id but a newer `changed_at` than the cutoff stays;
     - a row after a consumer's position in `(changed_at, id)` order stays, even when its id is lower than the token's `eventID`;
+    - a recently committed row from a long write transaction stays, even when its pair precedes every saved position;
     - the query plan is an index range scan on a table with millions of rows.
+  - Render the chart with the store-owning components disabled. Check retention settings reach platform connectors in both DaemonSet and Deployment modes. Verify a factory-owned cleaner runs with the required schema, skips and reports missing prerequisites, and cancels on close.
 
 ## Rationale
 
 - **Protects every saved position.** Every deleted row is checked against both the age and the oldest saved position, in the same order the poll uses. Stale tokens stay in the bound, because NVSentinel cordons and drains nodes from these events, and a silent gap is worse than a larger table. The limits in the Notes section still apply.
 - **Bounded work.** Each batch and each run has a fixed upper limit, and the index range stops at the first row that is too new. A run with nothing to delete costs a short index range read for each watched table.
 - **Follows existing patterns.** The setup lock, the CONCURRENTLY index builds of ADR-052 and the `DATASTORE_*` variables already work this way in store-client. No module calls another module.
-- **Safe to upgrade.** It is off by default and adds new keys, metrics and variables only. Older components on the same database keep their tokens, so the bound protects them too.
+- **Upgrade compatibility.** It is off by default and adds new keys, metrics and variables only. Older components on the same database keep their tokens in the bound. The long-transaction guard must also cover writes from those components.
 
 ## Consequences
 
@@ -102,7 +115,9 @@ The store-client PostgreSQL provider runs a periodic, batched cleaner. It delete
 - The default does not fix the problem. Operators must turn the cleaner on.
 - One consumer that falls behind, or a token left by a removed component, holds back the cleanup for both tables until it catches up or an operator removes the token.
 - A consumer whose filter matches no new events does not save a new position, because empty polls do not save one (ADR-054 describes such quiet consumers). Its old position holds back the cleanup even while it is healthy and caught up.
-- Each component that opens the store tries the lock once per interval, though only one run does the work.
+- Each store or factory owner tries the lock once per interval, though only one run does the work.
+- A factory-only deployment must provision the schema and index before enabling cleanup. No constructor creates those prerequisites on the factory path.
+- The long-transaction guard remains unresolved. The proposed age and position bounds are insufficient without it.
 - The table file does not shrink without an operator step.
 - The cleaner depends on the index from PR #2233, and does nothing without it.
 
@@ -114,6 +129,8 @@ The store-client PostgreSQL provider runs a periodic, batched cleaner. It delete
 - The lock attempt is one cheap query per component per interval.
 - The docs describe the one-time `pg_repack` step.
 - The cleaner reports `skipped_no_index`, and the existing setup rebuilds the index at the next start.
+- Factory owners report missing prerequisites without running DDL. The docs give the schema provisioning steps for deployments without a store owner.
+- No implementation may delete rows until maintainers select and validate the long-transaction guard.
 
 ## Alternatives Considered
 
@@ -140,13 +157,13 @@ The store-client PostgreSQL provider runs a periodic, batched cleaner. It delete
 ## Notes
 
 - Limits of the bound:
-  - **Long write transactions.** `changed_at` is the start time of the writing transaction, not its commit time. A write transaction that stays open for longer than the retention commits a row that is already older than the retention, and possibly before every saved position. The poll does not return such a row today, but the NOTIFY path can still fetch it by id. The cleaner could delete it first. This needs a write transaction open for at least 24 hours, the minimum retention. The docs recommend `idle_in_transaction_session_timeout` and a statement timeout on the NVSentinel database role, which rule it out. This ADR accepts that risk; maintainers can reject that choice.
+  - **Long write transactions.** `changed_at` is the start time of the writing transaction, not its commit time. A transaction open longer than the retention can commit a row that is already old enough for cleanup and before every saved position. The poll can skip it, but the NOTIFY path can still fetch it by id. The cleaner could delete it before that fetch. `idle_in_transaction_session_timeout` bounds an idle period; `statement_timeout` bounds one statement. A transaction can keep executing short statements beyond both limits, so neither bounds its lifetime. This remains unresolved. Before deletion is implemented, maintainers must choose and validate a commit-time or transaction-age guard that protects recently committed rows. A check of currently open transactions alone is insufficient: an old transaction may have just committed. The guard must also cover older components during rolling upgrades, and missing or unreadable guard data must prevent deletion. `track_commit_timestamp` is a candidate to assess, not an accepted prerequisite or a complete solution.
   - **Saved positions are read positions.** A watcher advances its position in memory when it reads an event, before filtering and delivery. `MarkProcessed` saves the current position, which can be ahead of the event it acknowledges. So a saved position can be ahead of an event that is not yet handled, and a restart can skip or replay events today. The cleaner uses the saved positions as they are. It does not change this behaviour, and it does not make a saved position an acknowledgement.
 - Open questions for maintainers:
   - Should the cleaner be on by default, with a 7-day retention to match `cleanup_changelog()`? This ADR proposes off first.
   - Is "an operator removes the token" the right recovery for a removed component? Or should a component remove its own token when it is uninstalled?
   - Should a watcher save a position after an empty poll, so that a quiet consumer stops holding back the cleanup? This changes the checkpoint protocol of every PostgreSQL consumer.
-  - Is the long-transaction risk above acceptable with the recommended timeouts, or should the cleaner also require something stronger, such as `track_commit_timestamp`?
+  - Which commit-time or transaction-age guard protects recently committed rows from long transactions, including during rolling upgrades? This must be settled before implementing deletion.
 - Non-goal: the retention of the documents in `health_events` and `maintenance_events`. Only the change feed is in scope.
 - Dependency: the implementation lands after [PR #2233](https://github.com/NVIDIA/NVSentinel/pull/2233).
 
@@ -157,3 +174,6 @@ The store-client PostgreSQL provider runs a periodic, batched cleaner. It delete
 - [ADR-054](054-changestream-lag-metrics.md): change stream consumer lag metrics
 - [PR #1777](https://github.com/NVIDIA/NVSentinel/pull/1777): versioned PostgreSQL schema migrations
 - [PR #2233](https://github.com/NVIDIA/NVSentinel/pull/2233): changelog resume index and row comparison in the poll
+- [PostgreSQL 16 timeouts](https://www.postgresql.org/docs/16/runtime-config-client.html): statement and idle transaction timeouts have different scopes
+- [PostgreSQL 16 current date and time](https://www.postgresql.org/docs/16/functions-datetime.html#FUNCTIONS-DATETIME-CURRENT): `now()` returns the transaction start time
+- [PostgreSQL 16 NOTIFY](https://www.postgresql.org/docs/16/sql-notify.html): notifications are delivered after commit
