@@ -58,11 +58,6 @@ func (f *MongoWatcherFactory) CreateChangeStreamWatcher(
 	return watcher, nil
 }
 
-// SupportedProvider returns the provider this factory supports
-func (f *MongoWatcherFactory) SupportedProvider() datastore.DataStoreProvider {
-	return datastore.ProviderMongoDB
-}
-
 // init registers the MongoDB watcher factory
 func init() {
 	watcher.RegisterWatcherFactory(datastore.ProviderMongoDB, NewMongoWatcherFactory())

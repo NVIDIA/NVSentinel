@@ -54,17 +54,6 @@ func NewCRStatusChecker(
 	}
 }
 
-// ShouldSkipCRCreation returns true if an existing CR should suppress creation of a new CR. A CR that cannot be
-// read suppresses creation, since it may still be running.
-func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
-	state, err := c.GetCRState(ctx, actionName, crName)
-	if err != nil {
-		return true
-	}
-
-	return state == CRStateInProgress || state == CRStateSucceeded
-}
-
 // GetCRState returns the state of a maintenance CR. A CR that does not exist is CRStateNotFound. Any other read
 // error is returned, because it says nothing about the CR: treating it as missing would let a second CR be created
 // for the node, and treating it as in progress would report the node as remediated.

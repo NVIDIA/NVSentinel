@@ -51,7 +51,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
-	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 const (
@@ -215,24 +214,6 @@ func WithPrometheusMetrics() Option {
 	}
 }
 
-// WithPrometheusMetricsCtrlRuntime registers the Prometheus metrics handler at /metrics.
-// This uses the controller runtime Prometheus registry.
-//
-// Example:
-//
-//	srv := NewServer(
-//	    WithPort(2112),
-//	    WithPrometheusMetrics(),
-//	)
-func WithPrometheusMetricsCtrlRuntime() Option {
-	return func(s *server) {
-		s.mux.Handle("/metrics", promhttp.HandlerFor(
-			crmetrics.Registry,
-			promhttp.HandlerOpts{},
-		))
-	}
-}
-
 // WithSimpleHealth adds a simple health check endpoint at /healthz that always returns 200 OK.
 // This is suitable for stateless services or services that don't need complex health checks.
 // For services that need to verify dependencies, use WithHealthCheck instead.
@@ -333,24 +314,6 @@ func WithReadinessCheck(checker ReadinessChecker) Option {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
-	}
-}
-
-// WithTLS configures the server to use TLS/HTTPS with the provided certificate and key files.
-// The server will call ListenAndServeTLS instead of ListenAndServe.
-//
-// Example:
-//
-//	srv := NewServer(
-//	    WithPort(8443),
-//	    WithTLS(server.TLSConfig{
-//	        CertFile: "/path/to/cert.pem",
-//	        KeyFile:  "/path/to/key.pem",
-//	    }),
-//	)
-func WithTLS(cfg TLSConfig) Option {
-	return func(s *server) {
-		s.tlsConfig = &cfg
 	}
 }
 

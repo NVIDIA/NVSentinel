@@ -370,7 +370,3 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 
 	return outcomeStored, nil
 }
-
-func GenerateRandomObjectID() string {
-	return uuid.New().String()
-}

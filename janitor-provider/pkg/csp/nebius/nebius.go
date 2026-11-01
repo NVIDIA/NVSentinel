@@ -270,12 +270,5 @@ func getNodeFields(node corev1.Node) (*nebiusNodeFields, error) {
 	return nil, fmt.Errorf("invalid Nebius provider ID format: %s", providerID)
 }
 
-// WithInstanceService sets a custom instance service for testing.
-func WithInstanceService(svc InstanceService) func(*Client) {
-	return func(c *Client) {
-		c.instanceService = svc
-	}
-}
-
 // Ensure computev1.InstanceService satisfies our interface at compile time.
 var _ InstanceService = (computev1.InstanceService)(nil)

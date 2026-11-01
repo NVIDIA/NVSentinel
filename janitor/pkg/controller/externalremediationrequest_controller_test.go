@@ -17,7 +17,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -996,26 +995,6 @@ func findExtRRCondition(extrrObj *nvsentinelv1.ExternalRemediationRequest, condT
 	}
 
 	return nil
-}
-
-// snapshotConditions sidesteps proto-message equality quirks (sync.Mutex).
-func snapshotConditions(extrrObj *nvsentinelv1.ExternalRemediationRequest) string {
-	if extrrObj.Status == nil {
-		return ""
-	}
-
-	var parts []string
-
-	for _, c := range extrrObj.Status.Conditions {
-		var ts string
-		if c.LastTransitionTime != nil {
-			ts = c.LastTransitionTime.AsTime().Format(time.RFC3339Nano)
-		}
-
-		parts = append(parts, c.Type+"="+c.Status+":"+c.Reason+":"+c.Message+"@"+ts)
-	}
-
-	return strings.Join(parts, "|")
 }
 
 var _ = Describe("ExternalRemediationRequest Controller observability", func() {

@@ -119,6 +119,35 @@ nic-health-monitor:
 
 The hold-down applies only to port state. The `link_downed` counter (InfiniBandDegradationCheck) is fatal on any increase and stays latched until the counter resets or the host reboots, so a blip that bumps it still produces a fatal event. If you see blips there, you can disable that counter (see [Disable a noisy counter](#disable-a-noisy-counter)).
 
+## Reporting Ports Suppressed on the First Poll
+
+On the first poll, an unhealthy port is reported only with peer evidence that it should be up: its card has fewer active ports than the decisive mode of its role group. Otherwise the port is suppressed, because it may be uncabled or disabled by design. That happens when:
+
+- the card is at or above its group's mode, like the uncabled second port of a dual-port card. This is the most common case.
+- the card shares a PCI card with a management NIC, so it is left out of peer comparison.
+- the card is alone in its role group.
+- the group's vote is tied.
+- the group's mode is 0, because most of its cards are down.
+
+A suppressed port that never comes up is otherwise never reported. A node with half its compute links down from boot gives a tie and stays silent.
+
+`suppressedPortReportAfter` reports such a port once it has stayed unhealthy that long, but only on a compute card the peers gave no verdict on (a singleton group, a tie, or a mode of 0):
+
+```yaml
+nic-health-monitor:
+  suppressedPortReportAfter: "10m"
+```
+
+- **Off by default.** `"0s"` keeps suppressing the port. Leave it off if some compute ports are down by design, or exclude those devices with `nicExclusionRegex`.
+- **Compute cards only.** A card qualifies when at least one monitored device on it is classified as compute and has a port on the same link layer. Then every port on the card qualifies, also the ports of a device classified as storage. For example, a GB300 SMI device has no topology matrix entry, but it shares its card with a compute device. A port on a card with no compute device is never reported. Storage and frontend ports can be down by design with no peer to compare against, like the unused frontend aux port on OCI BM.GPU.H100.8.
+- **Healthy cards are never reported.** A port on a card at or above its group's mode, or on a card that shares a PCI card with a management NIC, is not reported however long it stays down. If a later poll finds the card at or above the mode, for example once its other ports finish training, the port is dropped.
+- **Unreadable devices.** While a device is unreadable the peer comparison does not run, so a port on a card with an active port waits for a complete poll: its card may be at its group's mode. A port on a card with no active port is reported, since no peer vote could find that card healthy, unless one of the card's own functions is unreadable. If the monitor cannot find the PCI card of an unreadable device, every card waits. A card with an unreadable function also keeps its ports even when no compute device was read on it, because the unreadable function can be its compute device.
+- **Severity.** An InfiniBand port still `DOWN` is fatal with `REPLACE_VM`, `Polling` included, the same result the homogeneity check gives a card below its mode. `INIT` and `ARMED` stay non-fatal, so a subnet manager outage at boot does not mark every node fatal. A RoCE port is reported only when `DOWN`, which is fatal.
+- **Ports still training at boot are not reported.** A port that comes up before the delay is dropped.
+- **Survives restarts.** The suppression time is kept in the state file, so a pod restart does not restart the wait. This includes a restart while the reboot baseline is still owed because a device is unreadable. A reboot or discovery-scope change resets it, and the next first poll decides again.
+- **Recorded while off.** The monitor saves the suppression time even when the option is off. If you turn the option on later, a port that has stayed down since its suppression is reported at the first poll after the delay, without a reboot.
+- **Upgrades.** Versions before this option did not save a suppression time. After an upgrade, a port suppressed by the older version is picked up only after the next reboot or discovery-scope change.
+
 ## Poll Stall Detection
 
 Reports when the monitor itself cannot observe NIC state. If a state or counter poll has been in flight for `pollStallDeadline`, the monitor publishes an unhealthy, non-fatal `NICPollStallCheck` event (recommended action `NONE`). Once no poll is stalled it publishes the healthy event. No check runs while a publish is waiting for the deployment platform connector, so a connector outage is not reported as a NIC stall. For the same condition as a metric, use `time() - nic_health_monitor_poll_cycle_last_completed_timestamp_seconds`. A stall event that fails to publish is retried until delivered, even if the poll has completed in the meantime, so the episode is still recorded. The first poll to complete after the monitor starts also publishes a healthy event, which closes a stall left open when the liveness probe restarted the container.

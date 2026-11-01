@@ -161,8 +161,3 @@ func init() {
 func IncActionCount(actionType, status, node string) {
 	GlobalMetrics.IncActionCount(actionType, status, node)
 }
-
-// RecordActionMTTR is a convenience function to record MTTR using the global instance
-func RecordActionMTTR(actionType string, duration time.Duration) {
-	GlobalMetrics.RecordActionMTTR(actionType, duration)
-}

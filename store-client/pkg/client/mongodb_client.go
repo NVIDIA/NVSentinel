@@ -283,17 +283,6 @@ func (e *mongoEvent) UnmarshalDocument(v any) error {
 // Legacy pipeline builders for backward compatibility
 // Deprecated: Use BuildInsertOnlyPipelineAgnostic() instead for database-agnostic support
 
-// BuildInsertOnlyPipeline creates a MongoDB-specific pipeline for insert operations
-//
-// Deprecated: Use BuildInsertOnlyPipelineAgnostic() instead
-func BuildInsertOnlyPipeline() any {
-	return mongo.Pipeline{
-		bson.D{{Key: opMatch, Value: bson.D{
-			{Key: fieldOperationType, Value: bson.D{{Key: opIn, Value: bson.A{opTypeInsert}}}},
-		}}},
-	}
-}
-
 // BuildQuarantineUpdatePipeline creates a MongoDB-specific pipeline for quarantine updates
 //
 // Deprecated: Use BuildQuarantineUpdatePipelineAgnostic() instead
@@ -309,19 +298,6 @@ func BuildQuarantineUpdatePipeline() any {
 				bson.D{{Key: fieldUpdatedFields,
 					Value: bson.D{{Key: nodeQuarantinedStatusField, Value: model.UnQuarantined}}}},
 			}},
-		}}},
-	}
-}
-
-// BuildNonFatalInsertPipeline creates a MongoDB-specific pipeline for non-fatal insert operations
-//
-// Deprecated: Use BuildNonFatalInsertPipelineAgnostic() instead
-func BuildNonFatalInsertPipeline() any {
-	return mongo.Pipeline{
-		bson.D{{Key: opMatch, Value: bson.D{
-			{Key: fieldOperationType, Value: opTypeInsert},
-			{Key: "fullDocument.healthevent.isfatal", Value: false},
-			{Key: "fullDocument.healthevent.ishealthy", Value: false},
 		}}},
 	}
 }
@@ -690,22 +666,6 @@ func (c *MongoDBClient) UpdateDocument(
 		func(ctx context.Context) (*mongo.UpdateResult, error) {
 			return c.mongoCol.UpdateOne(ctx, resolveMongoFilter(filter), mongoUpdate)
 		})
-}
-
-// InsertMany inserts multiple documents
-func (c *MongoDBClient) InsertMany(ctx context.Context, documents []any) (*InsertManyResult, error) {
-	result, err := c.mongoCol.InsertMany(ctx, documents)
-	if err != nil {
-		return nil, datastore.NewInsertError(
-			datastore.ProviderMongoDB,
-			"failed to insert documents",
-			err,
-		).WithMetadata("count", len(documents))
-	}
-
-	return &InsertManyResult{
-		InsertedIDs: result.InsertedIDs,
-	}, nil
 }
 
 // UpdateManyDocuments performs a general update operation on multiple documents

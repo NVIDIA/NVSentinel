@@ -73,6 +73,5 @@ func TestNewPostgreSQLStoreIntegration(t *testing.T) {
 	assert.True(t, ok, "datastore should be PostgreSQLDataStore type")
 
 	// Test basic functionality
-	assert.NotNil(t, ds.MaintenanceEventStore())
 	assert.NotNil(t, ds.HealthEventStore())
 }

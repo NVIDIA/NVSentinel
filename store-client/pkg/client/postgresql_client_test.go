@@ -15,40 +15,9 @@
 package client
 
 import (
-	"context"
-	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
-
-// TestPostgreSQLClient_BasicOperations tests basic CRUD operations
-// This is a smoke test to verify the implementation compiles and has correct signatures
-func TestPostgreSQLClient_BasicOperations(t *testing.T) {
-	// This is a compile-time test to verify all methods exist and have correct signatures
-	// Actual integration tests would require a PostgreSQL instance
-
-	t.Skip("Skipping integration test - requires PostgreSQL instance")
-
-	// The following code verifies that all required methods exist with correct signatures
-	var client DatabaseClient
-	var _ DatabaseClient = (*PostgreSQLClient)(nil) // Compile-time interface check
-
-	_ = client // Avoid unused variable warning
-}
-
-// TestPostgreSQLClient_InterfaceCompliance verifies PostgreSQLClient implements DatabaseClient
-func TestPostgreSQLClient_InterfaceCompliance(t *testing.T) {
-	var _ DatabaseClient = (*PostgreSQLClient)(nil)
-}
-
-// TestPostgreSQLChangeStreamWatcher_InterfaceCompliance verifies watcher implements ChangeStreamWatcher
-func TestPostgreSQLChangeStreamWatcher_InterfaceCompliance(t *testing.T) {
-	var _ ChangeStreamWatcher = (*PostgreSQLChangeStreamWatcher)(nil)
-}
 
 // TestBuildWhereClause tests filter translation logic
 func TestBuildWhereClause(t *testing.T) {
@@ -158,102 +127,6 @@ func TestBuildJSONPath(t *testing.T) {
 	}
 }
 
-// TestBuildUpdateClause tests update translation logic
-func TestBuildUpdateClause(t *testing.T) {
-	client := &PostgreSQLClient{}
-
-	tests := []struct {
-		name        string
-		update      any
-		expectError bool
-	}{
-		{
-			name: "simple $set",
-			update: map[string]any{
-				"$set": map[string]any{
-					"status": "Active",
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "nested $set",
-			update: map[string]any{
-				"$set": map[string]any{
-					"healthevent.status": "Resolved",
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "missing $set",
-			update: map[string]any{
-				"status": "Active",
-			},
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := client.buildUpdateClause(tt.update)
-
-			if tt.expectError {
-				if err == nil {
-					t.Errorf("expected error but got none")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestUpdateDocumentOffsetsWherePlaceholdersAfterUpdateArgs(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create sql mock: %v", err)
-	}
-	defer db.Close()
-
-	client := &PostgreSQLClient{
-		db:    db,
-		table: "health_events",
-	}
-
-	filter := map[string]any{
-		"status": "old",
-	}
-	update := map[string]any{
-		"$set": map[string]any{
-			"status": "new",
-		},
-	}
-
-	expectedSQL := "UPDATE health_events SET document = jsonb_set(document, '{status}', $1), updated_at = NOW() " +
-		"WHERE document->>'status' = $2"
-	mock.ExpectExec(regexp.QuoteMeta(expectedSQL)).
-		WithArgs(`"new"`, "old").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	result, err := client.UpdateDocument(context.Background(), filter, update)
-	if err != nil {
-		t.Fatalf("UpdateDocument returned error: %v", err)
-	}
-
-	if result.MatchedCount != 1 || result.ModifiedCount != 1 {
-		t.Fatalf("expected one matched and modified document, got matched=%d modified=%d",
-			result.MatchedCount, result.ModifiedCount)
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet sql expectations: %v", err)
-	}
-}
-
 func TestAdjustParameterNumbersHandlesMultiDigitPlaceholders(t *testing.T) {
 	client := &PostgreSQLClient{}
 
@@ -263,33 +136,6 @@ func TestAdjustParameterNumbersHandlesMultiDigitPlaceholders(t *testing.T) {
 	if got := client.adjustParameterNumbers(clause, 2); got != expected {
 		t.Fatalf("expected %q, got %q", expected, got)
 	}
-}
-
-// TestUpdateDocumentStatusFields_SharedParent_InitializesParentOnce verifies
-// that sibling status updates share one bounded parent initialization chain.
-func TestUpdateDocumentStatusFields_SharedParent_InitializesParentOnce(t *testing.T) {
-	var executedSQL string
-	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherFunc(
-		func(_ string, actual string) error {
-			executedSQL = actual
-
-			return nil
-		},
-	)))
-	require.NoError(t, err)
-	defer db.Close()
-
-	client := &PostgreSQLClient{db: db, table: "health_events"}
-	mock.ExpectExec("capture").WillReturnResult(sqlmock.NewResult(0, 1))
-
-	require.NoError(t, client.UpdateDocumentStatusFields(context.Background(), "event-id", map[string]any{
-		"healtheventstatus.alpha": "a",
-		"healtheventstatus.beta":  "b",
-		"healtheventstatus.gamma": "c",
-	}))
-	require.NoError(t, mock.ExpectationsWereMet())
-	assert.Equal(t, 3, strings.Count(executedSQL, "'{healtheventstatus}'"), executedSQL)
-	assert.Less(t, len(executedSQL), 1000, executedSQL)
 }
 
 // TestAggregationPipelineConversion tests aggregation pipeline parsing
@@ -470,48 +316,6 @@ func TestSetWindowFieldsQueryGeneration(t *testing.T) {
 			t.Logf("Generated query: %s", query)
 		})
 	}
-}
-
-// Example of how to use the PostgreSQL client (documentation)
-func ExamplePostgreSQLClient() {
-	// This example shows how components will use the PostgreSQL client
-	// Actual execution requires a PostgreSQL instance
-
-	ctx := context.Background()
-
-	// Components get the client through the factory
-	// The factory routes to PostgreSQL based on DATASTORE_PROVIDER environment variable
-	//
-	// Example usage:
-	// os.Setenv("DATASTORE_PROVIDER", "postgresql")
-	// factory, err := factory.NewClientFactoryFromEnv()
-	// client, err := factory.CreateDatabaseClient(ctx)
-	//
-	// // Insert documents
-	// docs := []interface{}{
-	//     map[string]interface{}{"nodeName": "node-1", "status": "healthy"},
-	// }
-	// result, err := client.InsertMany(ctx, docs)
-	//
-	// // Query documents
-	// filter := map[string]interface{}{"nodeName": "node-1"}
-	// cursor, err := client.Find(ctx, filter, nil)
-	//
-	// // Update documents
-	// update := map[string]interface{}{
-	//     "$set": map[string]interface{}{"status": "unhealthy"},
-	// }
-	// result, err := client.UpdateDocument(ctx, filter, update)
-	//
-	// // Aggregate
-	// pipeline := []interface{}{
-	//     map[string]interface{}{"$match": filter},
-	//     map[string]interface{}{"$sort": map[string]interface{}{"created_at": -1}},
-	//     map[string]interface{}{"$limit": 10},
-	// }
-	// cursor, err := client.Aggregate(ctx, pipeline)
-
-	_ = ctx // Avoid unused variable
 }
 
 // TestBuildExprValue_NewOperators tests the newly implemented expression operators

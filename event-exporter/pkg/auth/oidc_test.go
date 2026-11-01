@@ -20,10 +20,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -289,5 +291,41 @@ func TestGetToken_Caching(t *testing.T) {
 
 	if callCount != 2 {
 		t.Errorf("Server called %d times, want 2 (should refresh)", callCount)
+	}
+}
+
+func TestExecuteTokenRequest_ReusesConnection(t *testing.T) {
+	var newConns atomic.Int32
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tokenResponse{
+			AccessToken: "test-token",
+			ExpiresIn:   3600,
+		})
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+
+	provider := NewTokenProvider(server.URL, "test-client", "test-secret", "test-scope", false)
+
+	for range 5 {
+		req, err := provider.createTokenRequest(context.Background())
+		if err != nil {
+			t.Fatalf("createTokenRequest() error = %v", err)
+		}
+
+		if _, _, err := provider.executeTokenRequest(req); err != nil {
+			t.Fatalf("executeTokenRequest() error = %v", err)
+		}
+	}
+
+	if got := newConns.Load(); got != 1 {
+		t.Errorf("5 token requests opened %d connections, want 1", got)
 	}
 }

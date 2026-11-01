@@ -296,22 +296,6 @@ func TestPostgreSQLDataStore_Provider(t *testing.T) {
 	assert.Equal(t, datastore.ProviderPostgreSQL, provider)
 }
 
-func TestPostgreSQLDataStore_MaintenanceEventStore(t *testing.T) {
-	db, _, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	maintenanceStore := NewPostgreSQLMaintenanceEventStore(db)
-	ds := &PostgreSQLDataStore{
-		db:                    db,
-		maintenanceEventStore: maintenanceStore,
-	}
-
-	store := ds.MaintenanceEventStore()
-	assert.NotNil(t, store)
-	assert.IsType(t, &PostgreSQLMaintenanceEventStore{}, store)
-}
-
 func TestPostgreSQLDataStore_HealthEventStore(t *testing.T) {
 	db, _, err := sqlmock.New()
 	require.NoError(t, err)

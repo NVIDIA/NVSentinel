@@ -23,14 +23,6 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/watcher"
 )
 
-func TestPostgreSQLWatcherFactory_SupportedProvider(t *testing.T) {
-	factory := NewPostgreSQLWatcherFactory()
-
-	if factory.SupportedProvider() != datastore.ProviderPostgreSQL {
-		t.Errorf("expected provider PostgreSQL, got %v", factory.SupportedProvider())
-	}
-}
-
 func TestPostgreSQLWatcherFactory_CreateChangeStreamWatcher_WrongDatastoreType(t *testing.T) {
 	ctx := context.Background()
 	factory := NewPostgreSQLWatcherFactory()
@@ -98,10 +90,9 @@ func TestPostgreSQLWatcherFactory_CreateChangeStreamWatcher_PipelineWarning(t *t
 // mockDataStore is a mock implementation for testing wrong datastore type
 type mockDataStore struct{}
 
-func (m *mockDataStore) MaintenanceEventStore() datastore.MaintenanceEventStore { return nil }
-func (m *mockDataStore) HealthEventStore() datastore.HealthEventStore           { return nil }
-func (m *mockDataStore) Ping(ctx context.Context) error                         { return nil }
-func (m *mockDataStore) Close(ctx context.Context) error                        { return nil }
+func (m *mockDataStore) HealthEventStore() datastore.HealthEventStore { return nil }
+func (m *mockDataStore) Ping(ctx context.Context) error               { return nil }
+func (m *mockDataStore) Close(ctx context.Context) error              { return nil }
 func (m *mockDataStore) Provider() datastore.DataStoreProvider {
 	return datastore.DataStoreProvider("mock")
 }

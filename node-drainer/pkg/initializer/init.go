@@ -420,12 +420,6 @@ func (a *databaseClientAdapter) FindDocument(
 	return a.client.FindOne(ctx, filter, options)
 }
 
-func (a *databaseClientAdapter) FindDocuments(
-	ctx context.Context, filter any, options *client.FindOptions,
-) (client.Cursor, error) {
-	return a.client.Find(ctx, filter, options)
-}
-
 // configurePartialDrain logs the partial drain mode and registers the opt-in entity metric.
 func configurePartialDrain(ctx context.Context, tomlCfg *config.TomlConfig) {
 	if tomlCfg.PartialDrainEnabled {

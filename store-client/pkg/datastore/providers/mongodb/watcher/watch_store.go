@@ -912,7 +912,7 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) e
 
 	var err error
 
-	slog.Info("Attempting to store resume token", "client", w.clientName)
+	slog.Debug("Attempting to store resume token", "client", w.clientName)
 
 	for {
 		if time.Now().After(timeout) {
@@ -1267,66 +1267,6 @@ func constructStaticTLSConfig(mongoConfig MongoDBConfig) (*tls.Config, error) {
 			slog.Warn("Client certificate or key not found, using CA-only TLS (no mTLS)",
 				"certPath", mongoConfig.ClientTLSCertConfig.TlsCertPath,
 				"keyPath", mongoConfig.ClientTLSCertConfig.TlsKeyPath)
-
-			return &tls.Config{
-				RootCAs:    caCertPool,
-				MinVersion: tls.VersionTLS12,
-			}, nil
-		}
-
-		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
-	}
-
-	return &tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      caCertPool,
-		MinVersion:   tls.VersionTLS12,
-	}, nil
-}
-
-// ConstructClientTLSConfig builds a TLS configuration from certificates at the
-// given mount path. Returns (nil, nil) when clientCertMountPath is empty,
-// indicating TLS is intentionally disabled. Returns a non-nil *tls.Config with
-// RootCAs and client certificates when certs are found. Returns an error for
-// invalid cert paths, unreadable files, or malformed certificates.
-func ConstructClientTLSConfig(
-	totalCACertTimeoutSeconds int, intervalCACertSeconds int, clientCertMountPath string,
-) (*tls.Config, error) {
-	if clientCertMountPath == "" {
-		slog.Info("No client cert mount path configured, skipping TLS")
-		return nil, nil
-	}
-
-	clientCertPath := filepath.Join(clientCertMountPath, "tls.crt")
-	clientKeyPath := filepath.Join(clientCertMountPath, "tls.key")
-	mongoCACertPath := filepath.Join(clientCertMountPath, "ca.crt")
-
-	totalCertTimeout := time.Duration(totalCACertTimeoutSeconds) * time.Second
-	intervalCert := time.Duration(intervalCACertSeconds) * time.Second
-
-	// load CA certificate
-	caCert, err := pollTillCACertIsMountedSuccessfully(mongoCACertPath, totalCertTimeout, intervalCert)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CA certificate: %w", err)
-	}
-
-	// No CA cert available — TLS disabled
-	if caCert == nil {
-		return nil, nil
-	}
-
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		return nil, fmt.Errorf("failed to append CA certificate to pool")
-	}
-
-	// Load client certificate and key. If the files don't exist, fall back
-	// to CA-only TLS (server verification without client cert).
-	clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			slog.Warn("Client certificate or key not found, using CA-only TLS (no mTLS)",
-				"certPath", clientCertPath, "keyPath", clientKeyPath)
 
 			return &tls.Config{
 				RootCAs:    caCertPool,

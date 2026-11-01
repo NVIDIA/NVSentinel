@@ -159,16 +159,6 @@ func (d Document) ToMap() map[string]any {
 	return result
 }
 
-// FromMap creates a Document from a map[string]interface{}
-func FromMap(m map[string]any) Document {
-	doc := make(Document, 0, len(m))
-	for k, v := range m {
-		doc = append(doc, Element{Key: k, Value: v})
-	}
-
-	return doc
-}
-
 // ToPipeline converts a slice of Document operations into a Pipeline
 func ToPipeline(docs ...Document) Pipeline {
 	return Pipeline(docs)

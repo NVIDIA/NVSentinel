@@ -53,6 +53,8 @@ go_tools:
   setup_envtest: 'v0.25.2'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
   goimports: 'v0.52.0'
+  # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
+  deadcode: 'v0.52.0'
   # renovate: datasource=github-releases depName=google/go-containerregistry depType=go_tools
   crane: 'v0.22.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools depType=go_tools
@@ -95,27 +97,27 @@ container_tools:
 # Testing & E2E Tools
 testing_tools:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind depType=testing_tools
-  kind: '0.30.0'
+  kind: '0.33.0'
   # renovate: datasource=github-releases depName=helm/helm depType=testing_tools
-  helm: 'v3.19.2'
+  helm: 'v4.3.1'
   # renovate: datasource=github-releases depName=helm-unittest/helm-unittest depType=testing_tools
-  helm_unittest: 'v1.0.3'
+  helm_unittest: 'v1.2.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/kwok depType=testing_tools
   kwok: 'v0.8.0'
   # renovate: datasource=helm depName=kwok depType=testing_tools
   kwok_chart: '0.3.0'  # KWOK Helm chart version (different from app version); tilt/Tiltfile pins this
   # renovate: datasource=github-releases depName=tilt-dev/ctlptl depType=testing_tools
-  ctlptl: '0.8.43'
+  ctlptl: '0.9.6'
   # renovate: datasource=github-releases depName=tilt-dev/tilt depType=testing_tools
-  tilt: '0.35.2'
+  tilt: '0.37.8'
 
 # Cluster Dependencies
 cluster:
   # renovate: datasource=helm depName=kube-prometheus-stack depType=cluster
-  prometheus_operator: '92.10.1'
+  prometheus_operator: '92.14.0'
   # renovate: datasource=helm depName=gpu-operator depType=cluster
   gpu_operator: 'v26.7.2'
   # renovate: datasource=helm depName=cert-manager depType=cluster
-  cert_manager: '1.21.2'
+  cert_manager: '1.21.3'
   # renovate: datasource=helm depName=policy-controller depType=cluster
   policy_controller: '0.10.8'  # Sigstore Policy Controller Helm chart version

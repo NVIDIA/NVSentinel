@@ -182,45 +182,6 @@ func createStandardizedFactory(config DatastoreClientConfig) (*factory.ClientFac
 	return factory.NewClientFactoryFromEnv()
 }
 
-// NewDatabaseClientOnly creates just a database client (no change stream watcher)
-// This is a convenience function for modules that only need database operations
-func NewDatabaseClientOnly(ctx context.Context, moduleName string) (client.DatabaseClient, error) {
-	config := DatastoreClientConfig{
-		ModuleName: moduleName,
-		Pipeline:   nil, // No change stream watcher
-	}
-
-	bundle, err := NewDatastoreClient(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-
-	return bundle.DatabaseClient, nil
-}
-
-// NewChangeStreamWatcherOnly creates just a change stream watcher (no database client)
-// This is a convenience function for modules that only need event watching
-func NewChangeStreamWatcherOnly(
-	ctx context.Context, moduleName string, pipeline any,
-) (client.ChangeStreamWatcher, error) {
-	config := DatastoreClientConfig{
-		ModuleName: moduleName,
-		Pipeline:   pipeline,
-	}
-
-	bundle, err := NewDatastoreClient(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-
-	// Close the database client since we only want the watcher
-	if bundle.DatabaseClient != nil {
-		bundle.DatabaseClient.Close(ctx)
-	}
-
-	return bundle.ChangeStreamWatcher, nil
-}
-
 // NewDatastoreClientFromConfig creates a bundle from an explicit DataStoreConfig
 // This is useful when the config is loaded from a custom source (not environment)
 func NewDatastoreClientFromConfig(
@@ -230,20 +191,6 @@ func NewDatastoreClientFromConfig(
 		ModuleName:      moduleName,
 		DataStoreConfig: &dsConfig,
 		Pipeline:        pipeline,
-	}
-
-	return NewDatastoreClient(ctx, config)
-}
-
-// NewDatastoreClientWithCertPath creates a bundle with a custom certificate path
-// This is useful for modules that have specific certificate mount requirements
-func NewDatastoreClientWithCertPath(
-	ctx context.Context, moduleName string, certMountPath string, pipeline any,
-) (*DatastoreClientBundle, error) {
-	config := DatastoreClientConfig{
-		ModuleName:                  moduleName,
-		DatabaseClientCertMountPath: certMountPath,
-		Pipeline:                    pipeline,
 	}
 
 	return NewDatastoreClient(ctx, config)

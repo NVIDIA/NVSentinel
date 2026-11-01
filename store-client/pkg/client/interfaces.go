@@ -21,8 +21,6 @@ import (
 // DatabaseClient provides database-agnostic operations
 // This interface abstracts common database operations to allow for different database implementations
 type DatabaseClient interface {
-	// Document operations
-	InsertMany(ctx context.Context, documents []any) (*InsertManyResult, error)
 	// InsertManyIdempotent inserts documents in order and continues past a
 	// document that already exists under the idempotency index, so a resent
 	// batch stores only its missing events and a monitor's events land in the
@@ -199,14 +197,11 @@ type FilterBuilder interface {
 	Eq(field string, value any) FilterBuilder
 	Ne(field string, value any) FilterBuilder
 	Gt(field string, value any) FilterBuilder
-	Gte(field string, value any) FilterBuilder
-	Lt(field string, value any) FilterBuilder
 	Lte(field string, value any) FilterBuilder
 	In(field string, values any) FilterBuilder
 
 	// Logical operations
 	And(filters ...any) FilterBuilder
-	Or(filters ...any) FilterBuilder
 
 	// Build the final filter
 	Build() any

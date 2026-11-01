@@ -308,30 +308,6 @@ factory, err := storefactory.NewClientFactoryFromConnectionString(
 
 ### 4. Testing Patterns
 
-#### Unit Testing with Mocks
-
-```go
-func TestMyComponent(t *testing.T) {
-    // Use test utilities
-    mockWatcher := testutils.NewMockWatcher()
-
-    // Create test events
-    testEvent := testutils.NewTestEventBuilder().
-        WithNodeName("test-node").
-        WithCheckName("test-check").
-        WithHealthStatus(false, true).
-        Build()
-
-    // Send test event
-    mockWatcher.SendEvent(testEvent)
-
-    // Test your component
-    processor := NewMyProcessor(mockWatcher, mockDB)
-    err := processor.ProcessEvent(ctx, testEvent)
-    assert.NoError(t, err)
-}
-```
-
 #### Integration Testing
 
 ```go
@@ -899,19 +875,6 @@ if err != nil {
     return err
 }
 defer ds.Close(ctx)
-```
-
-#### Legacy Configuration (Backward Compatible)
-
-```go
-import "github.com/nvidia/nvsentinel/store-client/pkg/helper"
-
-// Helper packages automatically load configuration
-dbClient, err := helper.NewDatabaseClientOnly(ctx, "my-module")
-if err != nil {
-    return err
-}
-defer dbClient.Close(ctx)
 ```
 
 ## Summary and Recommendations

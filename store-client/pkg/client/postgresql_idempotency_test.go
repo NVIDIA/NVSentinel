@@ -126,80 +126,76 @@ func TestNormalizeIndexSQL_KeepsLiterals(t *testing.T) {
 	assert.NotEqual(t, normalizeIndexSQL("(document #>> '{a,b}')"), normalizeIndexSQL("(document #>> '{a,(b)}')"))
 }
 
-func TestPostgreSQLClientInsertManyIdempotent(t *testing.T) {
-	newClient := func(t *testing.T) (*PostgreSQLClient, sqlmock.Sqlmock) {
-		t.Helper()
-
-		db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
-		require.NoError(t, err)
-		t.Cleanup(func() { db.Close() })
-
-		return NewPostgreSQLClientFromDB(db, healthEventsTableName), mock
+func TestInsertManyIdempotentWith(t *testing.T) {
+	type answer struct {
+		id  string
+		err error
 	}
 
-	insertQuery := "INSERT INTO health_events (document) VALUES ($1) RETURNING id"
+	// newInsertOne answers each insert in turn with the next of answers and
+	// fails the test if more inserts are attempted than answers are given.
+	newInsertOne := func(t *testing.T, answers ...answer) (func(context.Context, any) (string, error), *int) {
+		t.Helper()
 
-	t.Run("a client for another table is refused before any insert", func(t *testing.T) {
-		db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
-		require.NoError(t, err)
-		t.Cleanup(func() { db.Close() })
+		calls := 0
 
-		_, err = NewPostgreSQLClientFromDB(db, "maintenance_events").InsertManyIdempotent(context.Background(),
-			[]any{map[string]any{"a": 1}})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), healthEventsTableName, "the index lives on the health events table")
-		assert.NoError(t, mock.ExpectationsWereMet(), "nothing was sent to the database")
-	})
+		return func(_ context.Context, _ any) (string, error) {
+			require.Less(t, calls, len(answers), "the insert must stop before this document")
+
+			a := answers[calls]
+			calls++
+
+			return a.id, a.err
+		}, &calls
+	}
 
 	t.Run("empty input returns empty result", func(t *testing.T) {
-		client, _ := newClient(t)
+		insertOne, calls := newInsertOne(t)
 
-		result, err := client.InsertManyIdempotent(context.Background(), []any{})
+		result, err := InsertManyIdempotentWith(context.Background(), []any{}, insertOne)
 		require.NoError(t, err)
 		assert.Empty(t, result.InsertedIDs)
+		assert.Zero(t, *calls)
 	})
 
 	t.Run("all documents inserted", func(t *testing.T) {
-		client, mock := newClient(t)
-		mock.ExpectQuery(insertQuery).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("id-1"))
-		mock.ExpectQuery(insertQuery).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("id-2"))
+		insertOne, _ := newInsertOne(t, answer{id: "id-1"}, answer{id: "id-2"})
 
-		result, err := client.InsertManyIdempotent(context.Background(),
-			[]any{map[string]any{"a": 1}, map[string]any{"b": 2}})
+		result, err := InsertManyIdempotentWith(context.Background(),
+			[]any{map[string]any{"a": 1}, map[string]any{"b": 2}}, insertOne)
 		require.NoError(t, err)
 		assert.Equal(t, []any{"id-1", "id-2"}, result.InsertedIDs)
-		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
 	t.Run("duplicate does not stop the remaining inserts", func(t *testing.T) {
-		client, mock := newClient(t)
-		mock.ExpectQuery(insertQuery).WillReturnError(&pq.Error{
-			Code:       pqerror.UniqueViolation,
-			Constraint: datastore.HealthEventIdempotencyIndexName,
-			Message:    "duplicate key value violates unique constraint",
-		})
-		mock.ExpectQuery(insertQuery).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("id-2"))
+		insertOne, _ := newInsertOne(t,
+			answer{err: &pq.Error{
+				Code:       pqerror.UniqueViolation,
+				Constraint: datastore.HealthEventIdempotencyIndexName,
+				Message:    "duplicate key value violates unique constraint",
+			}},
+			answer{id: "id-2"},
+		)
 
-		result, err := client.InsertManyIdempotent(context.Background(),
-			[]any{map[string]any{"a": 1}, map[string]any{"b": 2}})
+		result, err := InsertManyIdempotentWith(context.Background(),
+			[]any{map[string]any{"a": 1}, map[string]any{"b": 2}}, insertOne)
 		require.NoError(t, err, "a resend is a success, not a failure")
 		assert.Equal(t, []any{"id-2"}, result.InsertedIDs)
 		assert.Equal(t, 1, result.DuplicateCount)
-		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
 	t.Run("a server answer that is not a duplicate stops the insert so the retry stores the rest in order",
 		func(t *testing.T) {
-			client, mock := newClient(t)
-			mock.ExpectQuery(insertQuery).WillReturnError(&pq.Error{
-				Code:       pqerror.UniqueViolation,
-				Constraint: datastore.HealthEventIdempotencyIndexName,
-			})
-			mock.ExpectQuery(insertQuery).WillReturnError(&pq.Error{Code: "23514", Message: "check constraint violated"})
-			// No expectation for the third document: it must not be attempted.
+			insertOne, calls := newInsertOne(t,
+				answer{err: &pq.Error{
+					Code:       pqerror.UniqueViolation,
+					Constraint: datastore.HealthEventIdempotencyIndexName,
+				}},
+				answer{err: &pq.Error{Code: "23514", Message: "check constraint violated"}},
+			)
 
-			_, err := client.InsertManyIdempotent(context.Background(),
-				[]any{map[string]any{"a": 1}, map[string]any{"b": 2}, map[string]any{"c": 3}})
+			_, err := InsertManyIdempotentWith(context.Background(),
+				[]any{map[string]any{"a": 1}, map[string]any{"b": 2}, map[string]any{"c": 3}}, insertOne)
 			require.Error(t, err)
 
 			failure, ok := datastore.AsBulkWriteFailure(err)
@@ -209,34 +205,30 @@ func TestPostgreSQLClientInsertManyIdempotent(t *testing.T) {
 			assert.Equal(t, 1, failure.Failed.DocumentIndex)
 			assert.False(t, failure.Failed.Duplicate)
 			assert.Contains(t, err.Error(), "check constraint violated", "the server's answer survives into the error")
-			assert.NoError(t, mock.ExpectationsWereMet())
+			assert.Equal(t, 2, *calls, "the third document is not attempted")
 		})
 
 	t.Run("a transport failure fails the whole batch, as it does for MongoDB", func(t *testing.T) {
-		client, mock := newClient(t)
-		mock.ExpectQuery(insertQuery).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("id-1"))
-		mock.ExpectQuery(insertQuery).WillReturnError(errors.New("connection reset"))
-		// No expectation for the third document: it must not be attempted.
+		insertOne, calls := newInsertOne(t, answer{id: "id-1"}, answer{err: errors.New("connection reset")})
 
-		_, err := client.InsertManyIdempotent(context.Background(),
-			[]any{map[string]any{"a": 1}, map[string]any{"b": 2}, map[string]any{"c": 3}})
+		_, err := InsertManyIdempotentWith(context.Background(),
+			[]any{map[string]any{"a": 1}, map[string]any{"b": 2}, map[string]any{"c": 3}}, insertOne)
 		require.Error(t, err)
 
 		_, perDocument := datastore.AsBulkWriteFailure(err)
 		assert.False(t, perDocument, "not an answer about a document")
 		assert.Contains(t, err.Error(), "connection reset")
-		assert.NoError(t, mock.ExpectationsWereMet())
+		assert.Equal(t, 2, *calls, "the third document is not attempted")
 	})
 
 	t.Run("a duplicate on another unique index stops the insert", func(t *testing.T) {
-		client, mock := newClient(t)
-		mock.ExpectQuery(insertQuery).WillReturnError(&pq.Error{
+		insertOne, calls := newInsertOne(t, answer{err: &pq.Error{
 			Code:       pqerror.UniqueViolation,
 			Constraint: "health_events_pkey",
-		})
+		}})
 
-		_, err := client.InsertManyIdempotent(context.Background(),
-			[]any{map[string]any{"a": 1}, map[string]any{"b": 2}})
+		_, err := InsertManyIdempotentWith(context.Background(),
+			[]any{map[string]any{"a": 1}, map[string]any{"b": 2}}, insertOne)
 		require.Error(t, err)
 
 		failure, ok := datastore.AsBulkWriteFailure(err)
@@ -244,7 +236,7 @@ func TestPostgreSQLClientInsertManyIdempotent(t *testing.T) {
 		assert.True(t, failure.Failed.Duplicate)
 		assert.Equal(t, "health_events_pkey", failure.Failed.IndexName)
 		assert.Contains(t, err.Error(), `duplicate on index "health_events_pkey"`)
-		assert.NoError(t, mock.ExpectationsWereMet())
+		assert.Equal(t, 1, *calls, "the second document is not attempted")
 	})
 }
 

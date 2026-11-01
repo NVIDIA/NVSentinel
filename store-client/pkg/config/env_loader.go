@@ -85,29 +85,6 @@ const (
 	DefaultPostgreSQLCertMountPath   = "/etc/ssl/client-certs"
 )
 
-// GetCertMountPath returns the appropriate certificate mount path based on the provider.
-// For PostgreSQL, it checks POSTGRESQL_CLIENT_CERT_MOUNT_PATH first, then falls back to default.
-// For MongoDB, it checks MONGODB_CLIENT_CERT_MOUNT_PATH first, then falls back to default.
-func GetCertMountPath() string {
-	provider := os.Getenv("DATASTORE_PROVIDER")
-
-	switch provider {
-	case "postgresql":
-		if path := os.Getenv("POSTGRESQL_CLIENT_CERT_MOUNT_PATH"); path != "" {
-			return path
-		}
-
-		return DefaultPostgreSQLCertMountPath
-	default:
-		// MongoDB or default
-		if path := os.Getenv("MONGODB_CLIENT_CERT_MOUNT_PATH"); path != "" {
-			return path
-		}
-
-		return DefaultCertMountPath
-	}
-}
-
 // StandardDatabaseConfig implements DatabaseConfig for MongoDB with standard environment variables
 type StandardDatabaseConfig struct {
 	connectionURI  string

@@ -30,6 +30,7 @@ data:
 
     [stateCheck]
     portStateHoldDown = {{ .Values.portStateHoldDown | quote }}
+    suppressedPortReportAfter = {{ .Values.suppressedPortReportAfter | quote }}
 
     [counterDetection]
     enabled = {{ .Values.counterDetection.enabled }}

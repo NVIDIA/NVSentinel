@@ -119,26 +119,3 @@ func NewDataStore(ctx context.Context, config DataStoreConfig) (DataStore, error
 	factory := GetDefaultFactory()
 	return factory.NewDataStore(ctx, config)
 }
-
-// ValidateConfig validates datastore configuration
-func ValidateConfig(config DataStoreConfig) error {
-	if config.Provider == "" {
-		return fmt.Errorf("datastore provider is required")
-	}
-
-	if config.Connection.Host == "" {
-		return fmt.Errorf("connection host is required")
-	}
-
-	if config.Connection.Database == "" {
-		return fmt.Errorf("database name is required")
-	}
-
-	// Check if provider is registered
-	if GetProvider(config.Provider) == nil {
-		return fmt.Errorf("provider %s is not registered. Supported providers: %v",
-			config.Provider, SupportedProviders())
-	}
-
-	return nil
-}

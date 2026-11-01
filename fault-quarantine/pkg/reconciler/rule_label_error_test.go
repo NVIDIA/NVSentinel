@@ -44,9 +44,7 @@ func (s *stubRuleSetEvaluator) Evaluate(
 	return s.result, s.err
 }
 
-func (s *stubRuleSetEvaluator) GetName() string    { return s.name }
-func (s *stubRuleSetEvaluator) GetVersion() string { return "1" }
-func (s *stubRuleSetEvaluator) GetPriority() int   { return 0 }
+func (s *stubRuleSetEvaluator) GetName() string { return s.name }
 
 // TestApplyRuleActionsForEvent_EvaluationError_ContinuesToNextEvaluator verifies that later evaluators still apply labels.
 func TestApplyRuleActionsForEvent_EvaluationError_ContinuesToNextEvaluator(t *testing.T) {

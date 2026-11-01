@@ -17,7 +17,6 @@ package client
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -79,34 +78,6 @@ func (c *PostgreSQLClient) IdempotencyIndexBuildInProgress(ctx context.Context) 
 	}
 
 	return building, nil
-}
-
-// InsertManyIdempotent inserts documents one at a time, in order, through
-// InsertManyIdempotentWith. The idempotency index lives on the health events
-// table, so a client configured for any other table is refused: there a
-// resend would be stored again and reported as new.
-func (c *PostgreSQLClient) InsertManyIdempotent(ctx context.Context, documents []any) (*InsertManyResult, error) {
-	if c.table != healthEventsTableName {
-		return nil, fmt.Errorf("idempotent inserts are defined for the %s table only, which carries the idempotency index; "+
-			"this client writes to %s", healthEventsTableName, c.table)
-	}
-
-	//nolint:gosec // G201: table name from config, values are parameterized
-	query := fmt.Sprintf("INSERT INTO %s (document) VALUES ($1) RETURNING id", c.table)
-
-	return InsertManyIdempotentWith(ctx, documents, func(ctx context.Context, doc any) (string, error) {
-		docJSON, err := json.Marshal(doc)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal document: %w", err)
-		}
-
-		var id string
-		if err := c.db.QueryRowContext(ctx, query, docJSON).Scan(&id); err != nil {
-			return "", err
-		}
-
-		return id, nil
-	})
 }
 
 // InsertManyIdempotentWith inserts documents one at a time, in order, with

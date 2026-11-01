@@ -37,10 +37,9 @@ import (
 
 // PostgreSQLDataStore implements the DataStore interface for PostgreSQL
 type PostgreSQLDataStore struct {
-	db                    *sql.DB
-	connString            string // Connection string for creating LISTEN connections
-	maintenanceEventStore datastore.MaintenanceEventStore
-	healthEventStore      datastore.HealthEventStore
+	db               *sql.DB
+	connString       string // Connection string for creating LISTEN connections
+	healthEventStore datastore.HealthEventStore
 	// metricsRegisterer is where change stream metrics are registered; nil means the default
 	// Prometheus registry.
 	metricsRegisterer prometheus.Registerer
@@ -104,7 +103,6 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 		connString:        connectionString, // Store for LISTEN connections
 		metricsRegisterer: config.MetricsRegisterer,
 	}
-	store.maintenanceEventStore = NewPostgreSQLMaintenanceEventStore(db)
 	store.healthEventStore = NewPostgreSQLHealthEventStore(db)
 
 	slog.Info("Successfully connected to PostgreSQL database", "host", config.Connection.Host)
@@ -142,11 +140,6 @@ func resolveMaxOpenConns(options map[string]string) int {
 	}
 
 	return defaultMaxOpenConns
-}
-
-// MaintenanceEventStore returns the maintenance event store
-func (p *PostgreSQLDataStore) MaintenanceEventStore() datastore.MaintenanceEventStore {
-	return p.maintenanceEventStore
 }
 
 // HealthEventStore returns the health event store

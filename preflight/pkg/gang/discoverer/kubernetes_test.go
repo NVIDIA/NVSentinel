@@ -34,11 +34,6 @@ var (
 	podGroupV1beta1  = PodGroupGroupKind.WithVersion("v1beta1")  // K8s 1.37
 )
 
-//go:fix inline
-func stringPtr(s string) *string {
-	return new(s)
-}
-
 func makePodWithSchedulingGroup(ns, podGroup string) *corev1.Pod {
 	pod := &corev1.Pod{
 		Namespace: ns,

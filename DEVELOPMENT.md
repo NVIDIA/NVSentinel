@@ -51,6 +51,7 @@ make show-versions
 - [golangci-lint](https://golangci-lint.run/usage/install/)
 - [gotestsum](https://github.com/gotestyourself/gotestsum)
 - [gocover-cobertura](https://github.com/boumenot/gocover-cobertura)
+- [deadcode](https://pkg.go.dev/golang.org/x/tools/cmd/deadcode)
 - [addlicense](https://github.com/google/addlicense)
 - [Poetry](https://python-poetry.org/)
 - [shellcheck](https://github.com/koalaman/shellcheck)
@@ -203,6 +204,7 @@ export GO_CACHE_DIR=$(go env GOCACHE)
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 go install gotest.tools/gotestsum@latest
 go install github.com/boumenot/gocover-cobertura@latest
+go install golang.org/x/tools/cmd/deadcode@latest
 
 # For controller modules
 go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest

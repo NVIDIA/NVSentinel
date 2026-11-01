@@ -16,7 +16,9 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -327,8 +329,12 @@ func TestFetchAndProcessHealthMetric_ClientGoRetryExhaustion_PersistsRecovery(t 
 
 	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}})
 	recoveryFailures := 0
-	client.Fake.PrependReactor("update", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		updatedNode := action.(k8stesting.UpdateAction).GetObject().(*corev1.Node)
+	client.Fake.PrependReactor("*", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updatedNode, written := writtenNode(t, action)
+		if !written {
+			return false, nil, nil
+		}
+
 		condition, _, found := findNodeCondition(updatedNode, conditionType)
 		if found && condition.Status == corev1.ConditionFalse && recoveryFailures < clientretry.DefaultRetry.Steps {
 			recoveryFailures++
@@ -396,4 +402,86 @@ func TestFetchAndProcessHealthMetric_ClientGoRetryExhaustion_PersistsRecovery(t 
 	}
 
 	require.Equal(t, clientretry.DefaultRetry.Steps, recoveryFailures)
+}
+
+// writtenNode returns the node a fake client action writes: the object of an
+// update, or the conditions a JSON patch of the status sets.
+func writtenNode(t *testing.T, action k8stesting.Action) (*corev1.Node, bool) {
+	t.Helper()
+
+	switch a := action.(type) {
+	case k8stesting.UpdateAction:
+		return a.GetObject().(*corev1.Node), true
+	case k8stesting.PatchAction:
+		var ops []struct {
+			Op    string          `json:"op"`
+			Path  string          `json:"path"`
+			Value json.RawMessage `json:"value"`
+		}
+		require.NoError(t, json.Unmarshal(a.GetPatch(), &ops))
+
+		node := &corev1.Node{}
+		for _, op := range ops {
+			if op.Op == "add" && op.Path == "/status/conditions" {
+				require.NoError(t, json.Unmarshal(op.Value, &node.Status.Conditions))
+			}
+		}
+
+		return node, true
+	default:
+		return nil, false
+	}
+}
+
+// A conditions patch rejected with 422 is told apart by reading the node again.
+// That read's own error, not the 422, decides whether the write is retried.
+func TestConditionTestFailedAsConflict(t *testing.T) {
+	ctx := context.Background()
+	const readRV = "100"
+	read := []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
+	rejected := apierrors.NewInvalid(schema.GroupKind{Kind: "Node"}, "n", nil)
+
+	newConnector := func(resourceVersion string, conditions []corev1.NodeCondition, getErr error) *K8sConnector {
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n", ResourceVersion: resourceVersion}}
+		node.Status.Conditions = conditions
+		client := fake.NewSimpleClientset(node)
+		if getErr != nil {
+			client.PrependReactor("get", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, getErr
+			})
+		}
+
+		return NewK8sConnector(client, nil, make(chan struct{}), ctx, defaultConnectorConfig)
+	}
+
+	t.Run("conditions changed is a conflict", func(t *testing.T) {
+		changed := append(slices.Clone(read), corev1.NodeCondition{Type: "SysLogsXIDError", Status: corev1.ConditionTrue})
+		err := newConnector("101", changed, nil).conditionTestFailedAsConflict(ctx, "n", readRV, rejected)
+		require.True(t, apierrors.IsConflict(err), "got %v", err)
+	})
+
+	// Another writer changed a condition, failing the test, and a third write
+	// restored it before the node was read again.
+	t.Run("conditions changed and restored is a conflict", func(t *testing.T) {
+		err := newConnector("102", read, nil).conditionTestFailedAsConflict(ctx, "n", readRV, rejected)
+		require.True(t, apierrors.IsConflict(err), "got %v", err)
+	})
+
+	t.Run("node unchanged keeps the 422", func(t *testing.T) {
+		err := newConnector(readRV, read, nil).conditionTestFailedAsConflict(ctx, "n", readRV, rejected)
+		require.Same(t, rejected, err)
+	})
+
+	t.Run("transient read error is retried", func(t *testing.T) {
+		err := newConnector(readRV, read, apierrors.NewServiceUnavailable("unavailable")).
+			conditionTestFailedAsConflict(ctx, "n", readRV, rejected)
+		require.True(t, apierrors.IsServiceUnavailable(err), "got %v", err)
+		require.True(t, isTemporaryError(err))
+	})
+
+	t.Run("other errors pass through", func(t *testing.T) {
+		forbidden := apierrors.NewForbidden(schema.GroupResource{Resource: "nodes"}, "n", nil)
+		err := newConnector(readRV, read, nil).conditionTestFailedAsConflict(ctx, "n", readRV, forbidden)
+		require.Same(t, forbidden, err)
+	})
 }
