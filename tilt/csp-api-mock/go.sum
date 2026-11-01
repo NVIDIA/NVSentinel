@@ -1,7 +1,7 @@
 cloud.google.com/go/iam v1.14.0 h1:YRIB1/4xxwJ+NfI6RQr1WaOoHHeV0MizJEj940nBXJA=
 cloud.google.com/go/iam v1.14.0/go.mod h1:JTPZfbHdGXJrOYREtkRoFzCDGaBdbA7ILLKO/DDuav0=
-cloud.google.com/go/logging v1.20.0 h1:l7yzCB8/JSY5PHT9RsaqdT1jaBGbM6KlSJDX210HlXM=
-cloud.google.com/go/logging v1.20.0/go.mod h1:ALUaJQZM691Eeujy9kFx0xREq3AMPuGd+pTRZuTYv+w=
+cloud.google.com/go/logging v1.21.1 h1:fvlcl/l7d4b0f3T5Y7u37GeDEPeDEKXN/y/Xs+KluUE=
+cloud.google.com/go/logging v1.21.1/go.mod h1:SntfPM/4mHzQEd/LiOO9/IUclKaucFHLemeLBk/mcsA=
 cloud.google.com/go/longrunning v1.3.0 h1:lZ6c8SJJBmILp/Wnr3vGnBLa0q+cYfSHRCcUfVI2hpI=
 cloud.google.com/go/longrunning v1.3.0/go.mod h1:wpgLxCn+UA3/TZ1bj/fW39mfDpwVlMPu1xKJyoMt7V0=
 github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek=

@@ -1,5 +1,5 @@
-cel.dev/cel-go v0.32.0 h1:irvpFKr5EuGPyxeME03ERh0rii1TX+BDAnB9eL3IvNk=
-cel.dev/cel-go v0.32.0/go.mod h1:DnVip7tpJSsgZymwfT+m1tnEVy3ivAjSMXPx12YrMkU=
+cel.dev/cel-go v0.33.1 h1:xRL3XUfZ3DXxWFLUsM2uavmtRBwrhlBBc+GEL1b9CIQ=
+cel.dev/cel-go v0.33.1/go.mod h1:DnVip7tpJSsgZymwfT+m1tnEVy3ivAjSMXPx12YrMkU=
 cel.dev/expr v0.25.3 h1:A2jO8jwOugrrovveCWfj0KEZOfqiLgAcwjpHPhzIGw0=
 cel.dev/expr v0.25.3/go.mod h1:hrXvqGP6G6gyx8UAHSHJ5RGk//1Oj5nXQ2NI02Nrsg4=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
@@ -96,6 +96,8 @@ github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4 h1:9ZJYjPEJpcleIKcqysXOo1
 github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4/go.mod h1:0xydIeg2omQ9DH6zYMP24Kk57793rnLUvP8fwdbFvz8=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.32.0 h1:QMILzF8BA7xftE4zVORkRrlv08m12St3csK4RsyRgRs=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.32.0/go.mod h1:+ZQ6iUL8+ATyxGDQNuRKpNwJFdGDUi0e7E1QL9MvI7U=
+github.com/hashicorp/go-uuid v1.0.3 h1:2gKiV6YVmrJ1i2CKKa9obLvRieoRGviZFL26PcT/Co8=
+github.com/hashicorp/go-uuid v1.0.3/go.mod h1:6SBZvOh/SIDV7/2o3Jml5SYk/TvGqwFJ/bN7x4byOro=
 github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/joshdk/go-junit v1.0.0 h1:S86cUKIdwBHWwA6xCmFlf3RTLfVXYQfvanM5Uh+K6GE=
@@ -128,6 +130,8 @@ github.com/onsi/ginkgo/v2 v2.33.1 h1:62XfWJbEIjPSCSDYrsCPP/SHcmH7O0M8ne8zfqQ2iz4
 github.com/onsi/ginkgo/v2 v2.33.1/go.mod h1:+aXOY+vzZ5mu2iI2HpTZUPmM//oQfsNFX6gU9kNcA44=
 github.com/onsi/gomega v1.44.0 h1:eAiGl3Pw5jz5GQdDff0BcxYpAX1JxW8xD7mFUuwNfZQ=
 github.com/onsi/gomega v1.44.0/go.mod h1:e/C2HwaZ1DhvjzXXuFhcR7hY7Sh9pl7MmoWKEjzwcdA=
+github.com/pandatix/go-abnf v0.5.1 h1:iyLvSu2Aq12iE0r4n948Qw21BHDuckLq/8WIXAAF+HI=
+github.com/pandatix/go-abnf v0.5.1/go.mod h1:VBmbtpFgQNEaQpyAvmi+Ecd9wAYJKzA3TmiB3L93sVg=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
@@ -135,8 +139,8 @@ github.com/prometheus/client_golang v1.25.0 h1:cDtW1TcFsMi1RJc8khwCKB4VhzwV04aKq
 github.com/prometheus/client_golang v1.25.0/go.mod h1:j2X/4/kaQHLPnmyEU8zjmkndo1T317VpCIQEml8LTKk=
 github.com/prometheus/client_model v0.6.3 h1:O0jaTVAYNxTHYInEPFJt5I3+sN8zqBtVMPTB1qyxiEo=
 github.com/prometheus/client_model v0.6.3/go.mod h1:gpN5P9S7Rr6Yr92PiQ+Ixvhf6JZEkF1dnxsYL2aPBEM=
-github.com/prometheus/common v0.72.1 h1:ZAiQed/nk8IIcsdzb2TlJu23NEUDyDLQ9TXTN2WRK6Y=
-github.com/prometheus/common v0.72.1/go.mod h1:1IoBY4IRaJnhs2ESjNzjilP1cJ/P8pimGoomq7zRXrA=
+github.com/prometheus/common v0.73.0 h1:NGIOmVi8jrgiiPQgXxD6rP0FfxFsuZxnMQkel0qBy/g=
+github.com/prometheus/common v0.73.0/go.mod h1:Nt+CsVkf/mj4wDAmtSwq1HTPohHSX6fMr6+/f9B5UqM=
 github.com/prometheus/procfs v0.22.0 h1:6q9+/JL9IKAPbCmBrv9n5O5Ty3NKnciV5X7YGw0oics=
 github.com/prometheus/procfs v0.22.0/go.mod h1:CvmFr/GVhIjIvWJZW3tgkODBQMRIf0EyWMQLHCHab58=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
