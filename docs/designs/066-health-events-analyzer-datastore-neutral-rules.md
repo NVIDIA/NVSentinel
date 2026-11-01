@@ -22,16 +22,11 @@ The 22 default rules have five shapes. Each is scoped to the trigger's node and 
 | Solo: a GPU with no other active XID | 4 | 24 h |
 | Trigger only (register bits of the trigger) | 1 | none |
 
-Options considered:
-
-1. Extend the MongoDB-to-SQL translator until `stage` rules run on PostgreSQL.
-2. Keep one rule set per datastore.
-3. Fetch each node's history and evaluate the rules in memory with CEL.
-4. Replace the rule language with CEL filters and typed aggregates that each datastore compiles into a native query.
-
 ## Decision
 
-Option 4: replace the rule language, not the evaluation model. A portable rule states a CEL filter over stored events, one typed aggregate (`count`, `distinct`, `bursts` or `solo`) and a CEL `match` on the trigger and the aggregate's result. `match` also replaces `when`, because the analyzer derives the pre-query gate from it. The store-client compiles each rule into a native MongoDB or PostgreSQL query, so the work still runs in the database, as ADR-007 requires. The portable form replaces `stage`. During the migration, `stage` stays as a deprecated path on MongoDB only, so existing custom rules keep loading, and it is removed after a deprecation period. Kubernetes NodeHealth mode (proposed in [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) and change-stream behaviour are non-goals.
+Replace the rule language with CEL filters and typed aggregates that each datastore compiles into a native query. A portable rule states a CEL filter over stored events, one typed aggregate (`count`, `distinct`, `bursts` or `solo`) and a CEL `match` on the trigger and the aggregate's result. `match` also replaces `when`, because the analyzer derives the pre-query gate from it. The store-client compiles the filter and the aggregate into a native MongoDB or PostgreSQL query, so the history is still evaluated in the database, as ADR-007 requires. The analyzer evaluates only `match` in memory, on the trigger and the aggregate's result, as it evaluates `when` today.
+
+The portable form replaces `stage`. MongoDB keeps running `stage` rules, default and custom, unchanged until the default rules switch to the portable form (rollout step 4). From then, `stage` logs a deprecation warning, and it is removed after a deprecation period, proposed as two minor releases (step 5). Kubernetes NodeHealth mode (proposed in [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) and change-stream behaviour are non-goals.
 
 ## Implementation
 
@@ -78,9 +73,22 @@ Extend `commons/pkg/celevent` additively, so that the analyzer, platform-connect
 
 - Add `generatedTimestamp`, `processingStrategy` and `entitiesImpacted`, plus stored status on `e` only (`e.status.faultRemediated`).
 - Add entity helpers: `entities(type)` (all values of a type), `entity(type)` (the first value or null), and `register(name)` (the 32-character `REG0`–`REG6` string; the last value wins on duplicates).
-- Missing booleans read as `false`, a missing strategy as `UNSPECIFIED`, and a missing entity as null.
-- `errorCode[0]` reads as null when `errorCode` is missing or empty, on `e` and on `event`. Comparisons follow CEL exactly, so `null == null` is true. A null compared with a value is false for `==` and true for `!=`, and `null in [...]` is false for a list of strings. SQL renders `==` and `!=` as `IS NOT DISTINCT FROM` and `IS DISTINCT FROM`, and MongoDB compares a missing value as null.
-- One mapping in the store-client defines all of this for both datastores.
+- Missing booleans read as `false`, a missing strategy as `UNSPECIFIED`, and a missing entity or register as null.
+- In `history.filter` and the aggregate's parameters, `errorCode[0]` reads as null when `errorCode` is missing or empty, on `e` and on `event`, so it never fails.
+- In those parts, a null equals nothing, not even another null. `==` and `in` are false when either side is null, and `!=` is the negation of `==`. Only a comparison with the `null` literal tests for a missing value, as in `e.entity('NVLINK') == null`. So `e.entity('NVLINK') == event.entity('NVLINK')` is false when either event has no NVLINK entity, and a trigger without an error code matches no `target`. SQL wraps `==` and `in` in `COALESCE(…, false)`, so `!` and `||` keep two values. MongoDB's `$eq` and `$in` with a value never match a missing field, and an `event` value that is null makes an `==` or `in` term false.
+- `match` is plain CEL on the trigger. `event.errorCode[0]` on an empty list is an error there, which means no match, so rules keep the `size(event.errorCode) > 0` guard that `when` has today.
+
+One field table in the store-client maps each CEL field to its storage on each datastore, so rules never name a storage field. For example:
+
+| CEL | MongoDB | PostgreSQL |
+|---|---|---|
+| node (the implicit scope) | `healthevent.nodename` | `node_name` column |
+| `e.isHealthy` | `healthevent.ishealthy` | `document->'healthevent'->>'isHealthy'`, `false` when absent |
+| `e.errorCode[0]` | `healthevent.errorcode.0` | `document->'healthevent'->'errorCode'->>0` |
+| `e.status.faultRemediated` | `healtheventstatus.faultremediated` | `fault_remediated` column |
+| the trigger's record ID | `_id` | `id` column |
+
+Where PostgreSQL documents hold a key in lowercase or camelCase today, the table reads both, as `mongoFieldToJSONB` in `store-client/pkg/query/builder.go` does.
 
 ### Compiling the filter
 
@@ -697,17 +705,18 @@ The derived event does not change. Query time differs by datastore, so portable 
 
 ### Indexes and compatibility
 
-- PostgreSQL has no index on event time. It gets the MongoDB analyzer indexes of [#1901](https://github.com/NVIDIA/NVSentinel/pull/1901): node, `isHealthy` and event time; node, `faultRemediated`, `isFatal` and event time; and node and event time, which the existing GIN index on `document` joins for entity filters. Each index is on the `node_name` column plus expressions on the document paths that the compiled SQL reads, so no new column or backfill is needed. Both schema paths create them: the chart's `initdb` script for new databases, and the store's setup path for existing ones. The compiled SQL scopes the node with the `node_name` column, not the JSONB `nodename`, and uses the indexed expressions as written, so the indexes apply.
+- PostgreSQL has no index on event time. It gets the MongoDB analyzer indexes of [#1901](https://github.com/NVIDIA/NVSentinel/pull/1901): node, `isHealthy` and event time; node, `faultRemediated`, `isFatal` and event time; and node and event time, which the existing GIN index on `document` joins for entity filters. Each index uses the columns and document expressions of the field table above, so no new column or backfill is needed. Both schema paths create them: the chart's `initdb` script for new databases, and the store's setup path for existing ones. The compiled SQL scopes the node with the `node_name` column, not the JSONB `nodename`, and uses the indexed expressions as written, so the indexes apply.
 - During the migration, `stage` rules, defaults and custom, run on MongoDB unchanged. On PostgreSQL, a `stage` rule stops the analyzer at startup with an error that names it, for the same reason; today it fails on every event. After the default switches, `stage` logs a deprecation warning, and step 5 removes it with `when`.
 - The chart ports the 22 default rules. `healthEventsAnalyzer.ruleFormat` selects `stage` or `portable`. The default stays `stage` on MongoDB until the equivalence and benchmark gates pass, and PostgreSQL always uses `portable`. The toggle reports through `nvsentinel_feature_flag_enabled` (ADR-032).
-- The Go XID burst detector is removed once `bursts` runs on PostgreSQL. The ADR-059 recovery boundary becomes a `query.Condition`, so recovery can also run on PostgreSQL.
+- The Go XID burst detector is removed once `bursts` runs on PostgreSQL.
+- Annotation recovery (ADR-059, [#1706](https://github.com/NVIDIA/NVSentinel/pull/1706)) works the same for both rule forms, and `[rules.recovery]` does not change. Recovery requests read and publish the analyzer's own derived events, which the rule language does not touch. The history boundary that a `stage` rule gets in its first `$match` keeps only events with the recovered identity's entities that are newer than the verification time. For a portable rule, the store adds the same boundary as a `query.Condition` on the candidates. As today, it does not bound the `solo` look-up. Recovery stays MongoDB-only, as the startup check enforces today, until step 4 moves its derived-event reads to the store-client.
 
 ### Testing
 
 - Compiler: golden `ToMongo()` and `ToSQL()` output for each supported construct, and a load error for each unsupported one.
 - Conformance: one table of primitive cases (absent fields, missing and empty `errorCode`, duplicate registers, sticky XIDs, empty windows, events in the same second, an `others` that matches the trigger or another candidate, and a comparison with null on both sides) runs against an in-memory reference store, MongoDB and PostgreSQL in CI.
-- Equivalence: replay a recorded MongoDB dataset, in the style of #1901, through the `stage` and portable forms of every default rule. Zero differences are required, except the two solo-rule changes in Notes and differences that come from events in the same second, which have no defined order today. Each default rule must also give the same results with the gate turned off.
-- E2E: portable rule tests drop the `mongodb` build tag, and the 9 default rules without an E2E test get one.
+- Equivalence: replay a recorded MongoDB dataset, in the style of #1901, through the `stage` and portable forms of every default rule, with and without a recovery boundary. Zero differences are required, except the solo-rule and null-comparison changes in Notes and differences that come from events in the same second, which have no defined order today. Each default rule must also give the same results with the gate turned off.
+- E2E: portable rule tests drop the `mongodb` build tag, and the 9 default rules without an E2E test get one. `TestHealthEventsAnalyzerAnnotationRecovery` also runs with a portable rule.
 - Benchmarks: events/s per worker, ms per event, queries per event and database CPU per event, before and after, on both datastores, in the format of [#1912](https://github.com/NVIDIA/NVSentinel/pull/1912) and [#1913](https://github.com/NVIDIA/NVSentinel/pull/1913).
 
 ### Rollout
@@ -772,6 +781,7 @@ Each step is a separate PR, and MongoDB behaviour stays unchanged until step 4.
 
 - Non-goals: Kubernetes NodeHealth mode, change-stream and checkpoint behaviour, and PostgreSQL re-delivery of updates.
 - The solo rules change in two ways. Their look-up window ends at the trigger's time instead of `$$NOW`, so an event that is processed late, or replayed, is judged on the history around it. Their look-up also gets the base predicate, so the analyzer's own events and `STORE_ONLY` events no longer count as active codes.
+- A comparison where both sides are missing no longer matches. MongoDB treats two missing values as equal today, so an XID 74 register rule counts stored events without an NVLINK entity toward a trigger that has none.
 - The derived event keeps the trigger's entities. Reporting the matched identity, for example another GPU in a solo rule, is a separate decision.
 - Until step 3, `docs/postgresql-provider.md` must not claim full feature parity for the analyzer.
 
