@@ -37,8 +37,13 @@ COPY preflight-checks/nccl-loopback/go.mod preflight-checks/nccl-loopback/go.sum
 
 WORKDIR /go/src/preflight-checks/nccl-loopback
 
+# Retry go mod download, because proxy.golang.org can close the connection.
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+    for attempt in 1 2 3; do \
+      go mod download && break; \
+      [ "$attempt" -lt 3 ] || exit 1; \
+      sleep $((attempt * 10)); \
+    done
 
 # Copy source code after go mod download
 COPY preflight-checks/nccl-loopback/ .
