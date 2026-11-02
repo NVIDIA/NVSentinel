@@ -513,16 +513,6 @@ func withGPUSlotMetadata(event *protos.HealthEvent) *protos.HealthEvent {
 	return clone
 }
 
-func hasEntityType(event *protos.HealthEvent, entityType string) bool {
-	for _, e := range event.EntitiesImpacted {
-		if e.EntityType == entityType {
-			return true
-		}
-	}
-
-	return false
-}
-
 func countEntityType(event *protos.HealthEvent, entityType string) int {
 	count := 0
 

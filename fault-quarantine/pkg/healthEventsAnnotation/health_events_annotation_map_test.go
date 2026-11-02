@@ -1092,7 +1092,7 @@ func TestReplacedGPURecoverySurvivesCompactionAndRoundTrip(t *testing.T) {
 	stored, ok := roundTripped.Events[uuidKey]
 	require.True(t, ok, "the GPU_UUID fault should still be present")
 	assert.Equal(t, protos.RecommendedAction_COMPONENT_RESET, stored.GetRecommendedAction())
-	assert.False(t, hasEntityType(stored, "GPU"),
+	assert.Zero(t, countEntityType(stored, "GPU"),
 		"compaction should have projected the slot entities out of EntitiesImpacted")
 	require.Len(t, gpuSlotEntities(stored), 2, "the slot must survive compaction via metadata")
 
