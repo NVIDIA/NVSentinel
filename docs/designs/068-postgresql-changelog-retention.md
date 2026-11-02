@@ -39,7 +39,7 @@ Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers a
   The chart passes the retention settings to both paths, including the platform connector DaemonSet and Deployment. Factory connections do not create missing tables or indexes. Missing prerequisites cause a reported, skipped run; operators must provision the schema and index from PR #2233 before enabling retention in a factory-only deployment.
 - **One run at a time.** A run reserves a connection and takes `pg_try_advisory_lock` on a key of its own, separate from the setup lock. If another session holds the lock, the run does nothing. The batches run on the reserved connection. The run releases the lock with a new, short context. If the release fails, it closes the session instead of returning the connection to the pool.
 - **Guard lifecycle.** Under the advisory lock, read the previous guard. A run before one configured interval has elapsed skips without replacing it. Otherwise sample a new horizon and record its database observation time after sampling, before deletion. Use only the previous horizon for this run. Replacement owners use the same persisted record; a first run seeds it without deletion. Missing, invalid, future-dated or unusably old metadata means a reported seed-only run. A failed read or write means no deletion. Factory connections require separate provisioning of this table.
-- **Transaction-id comparison.** Row `xmin` is 32-bit; saved horizons use `xid8`. Validate the full horizon within the batch transaction's previous `2^31` ids before comparing relative ages. Strict inequality protects the boundary; retain ambiguous rows. The linked protocol specifies the SQL and wraparound/freeze acceptance tests.
+- **Transaction-id comparison.** Each batch uses repeatable read and assigns its xid before evaluating ages. Validate the previous `xid8` horizon within `2^31` ids. Delete snapshot-visible versions whose age is negative or strictly exceeds the horizon age. Concurrent changes roll back the batch; count only committed deletes.
 - **The bound.** Each run reads all rows of `resume_tokens` and computes:
   - `cutoff = now() - retention`;
   - `oldest`, the smallest `(timestamp, eventID)` among the tokens, compared as a pair.
@@ -91,7 +91,7 @@ Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers a
     - a row with a lower id but a newer `changed_at` than the cutoff stays;
     - a row after a consumer's position in `(changed_at, id)` order stays, even when its id is lower than the token's `eventID`;
     - a transaction active at the previous snapshot commits later: its row stays until a later eligible horizon;
-    - subtransactions, prepared transactions, concurrent processed updates, freezing and wraparound preserve the guard;
+    - subtransactions and prepared transactions preserve the guard; negative-age frozen prefixes advance; concurrent updates roll back the entire batch;
     - open, xid-less, prepared or hidden transactions prevent idle advancement; late commits remain readable after restart without NOTIFY;
     - quiet-consumer checkpoints survive restart without skipping in-flight deliveries;
     - the query plan is an index range scan on a table with millions of rows.

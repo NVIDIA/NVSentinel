@@ -20,13 +20,16 @@ A failed guard read or write means no deletion. A missing, invalid, future-dated
 
 Row `xmin` is a 32-bit `xid`; snapshot horizons are full `xid8` values. Do not compare their integer or text casts directly.
 
-Each delete batch starts a short transaction and first obtains `pg_current_xact_id()`. Validate that the previous full horizon is no later than this id and fewer than `2^31` transactions behind it. Otherwise delete nothing and reseed for a later run. With that checked window, use PostgreSQL's relative transaction ages:
+Each delete batch starts a new, short `REPEATABLE READ` transaction and first obtains `pg_current_xact_id()`. This fixes its snapshot and assigns the xid that anchors relative ages. The transaction only deletes changelog rows; it must not insert or update them. Validate that the previous full horizon is no later than this id and fewer than `2^31` transactions behind it. Otherwise delete nothing and reseed for a later run. With that checked window, use:
 
 ```sql
-age(row_version.xmin) > age($6::xid8::xid)
+(age(row_version.xmin) > age($6::xid8::xid)
+ OR age(row_version.xmin) < 0)
 ```
 
-The assigned batch transaction id anchors both ages consistently. Strict inequality protects the transaction at the snapshot boundary. Future-looking or ambiguous row ages stay protected. Old frozen rows may be retained conservatively; freezing does not justify a naive numeric comparison. Validate wraparound, freezing, subtransactions and long transactions against real PostgreSQL before release.
+Strict inequality protects the previous horizon. Frozen tuples can retain an original `xmin` more than `2^31` transactions old, whose signed age is negative. They must not permanently block the oldest candidate prefix. For versions visible to this fixed snapshot, negative age identifies old versions: later concurrent versions are invisible. The cleaner creates no newer target versions itself. This reasoning requires repeatable read; read committed can expose a later commit with negative age relative to the assigned batch xid.
+
+An update or delete after snapshot acquisition can cause SQLSTATE `40001`. Roll back the entire batch, report the conflict and end the run. Do not fall back to read committed or reuse an aborted transaction. Count deleted rows only after commit succeeds. A later scheduled run uses a fresh transaction. Validate freezing, signed-age boundaries, concurrent updates and long transactions before release; synthetic xid arithmetic alone does not prove physical wraparound behavior.
 
 ## Consumer bound and idle checkpoints
 
@@ -69,10 +72,11 @@ USING candidates
 WHERE row_version.id = candidates.id
   AND row_version.changed_at < $2
   AND (row_version.changed_at, row_version.id) < ($3, $4)
-  AND age(row_version.xmin) > age($6::xid8::xid);
+  AND (age(row_version.xmin) > age($6::xid8::xid)
+       OR age(row_version.xmin) < 0);
 ```
 
-Here `$6` is the previous full horizon, validated inside the batch transaction. With no consumer tokens, omit the pair conditions. Apply the guard to the current target row version, including after concurrent updates. The candidate limit bounds scans even when the guard protects many rows. Stop on a short or blocked batch, the batch-count limit, cancellation or error; do not spin on a protected prefix.
+Here `$6` is the previous full horizon, validated inside the repeatable-read batch. With no consumer tokens, omit the pair conditions. Both age branches remain subject to retention and consumer bounds. The guard applies to a snapshot-visible target version; concurrent changes must cause rollback, not a newer-version recheck under read committed. The candidate limit bounds scans even when the guard protects many rows. Stop on a short or blocked batch, the batch-count limit, cancellation or error; do not spin on a protected prefix.
 
 A processed-row update changes `xmin`, which may delay deletion conservatively. Earlier age-and-position benchmarks exclude the guard and do not establish the final query's performance.
 
@@ -87,3 +91,5 @@ A delete makes space reusable, but it does not shrink the table file. The cleane
 - [Freezing and wraparound](https://www.postgresql.org/docs/16/routine-vacuuming.html#VACUUM-FOR-WRAPAROUND)
 - [Fresh activity statistics and visibility](https://www.postgresql.org/docs/16/monitoring-stats.html#MONITORING-STATS-VIEWS)
 - [Prepared transactions](https://www.postgresql.org/docs/16/view-pg-prepared-xacts.html)
+- [Repeatable read and serialization failures](https://www.postgresql.org/docs/16/transaction-iso.html#XACT-REPEATABLE-READ)
+- [PostgreSQL signed xid-age implementation](https://github.com/postgres/postgres/blob/REL_16_STABLE/src/backend/utils/adt/xid.c)
