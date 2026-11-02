@@ -28,6 +28,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -377,8 +378,15 @@ func TestGPUResetScale(t *testing.T) {
 				assert.True(t, foundCompleteCondition, "Did not find Complete condition on CR", gpuReset.GetName())
 
 				if skipControllerFinalizer {
-					controllerutil.RemoveFinalizer(gpuReset, gpuResetFinalizer)
-					err := client.Resources().Update(ctx, gpuReset)
+					err := retry.RetryOnConflict(helpers.ConflictBackoff, func() error {
+						if err := client.Resources().Get(ctx, gpuReset.GetName(), gpuReset.GetNamespace(), gpuReset); err != nil {
+							return err
+						}
+
+						controllerutil.RemoveFinalizer(gpuReset, gpuResetFinalizer)
+
+						return client.Resources().Update(ctx, gpuReset)
+					})
 					assert.NoError(t, err, "failed to remove finalizer on CR", gpuReset.GetName())
 				}
 				err = helpers.DeleteCR(ctx, t, client, gpuReset, true)

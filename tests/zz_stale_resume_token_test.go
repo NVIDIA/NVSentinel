@@ -157,7 +157,7 @@ func triggerDeploymentRestart(
 ) error {
 	t.Helper()
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(helpers.ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := client.Resources().Get(ctx, name, namespace, deployment); err != nil {
 			return err
