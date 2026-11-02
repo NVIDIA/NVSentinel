@@ -99,6 +99,8 @@ jobs:
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
+          # Retries GitHub API calls that fail with a server error, such as HTTP 503.
+          retries: 3
           script: |
             const prNumber = Number(process.env.GITHUB_REF_NAME.replace('pull-request/', ''));
             const { data: pr } = await github.rest.pulls.get({
