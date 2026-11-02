@@ -55,7 +55,7 @@ Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers a
 - **Legacy tokens.** A token in the old format, with an `eventID` and no `timestamp`, has no pair. The cleaner looks up the `changed_at` of that id. If the row does not exist, the run deletes nothing and reports an error.
 - **Idle checkpoints.** Track deliveries before enqueueing; queued work counts as in flight. `MarkProcessed` must preserve the acknowledged delivery prefix rather than persist a later read head. An empty or unknown token cannot certify pending work. Serialize polling, delivery registration, acknowledgment and checkpoint writes; propagate persistence failures.
 
-  An empty SQL-filtered poll alone does not advance today's read position. Capture a table's newest unfiltered pair and prove there are no matching rows through it in one short, read-only repeatable-read transaction. Persist that boundary only after rechecking that no handed-out delivery remains unacknowledged. Never use wall-clock time as a read position. Coalesce writes to once per cleanup interval; refresh `last_updated` even for an unchanged idle position. Caller interfaces and `{timestamp, eventID}` stay unchanged; ADR-054's lag formula stays unchanged.
+  Empty snapshots cannot exclude later commits below their tail. The protocol requires fresh activity visibility, no other open or prepared transactions, then a new snapshot. Its candidate is an actual pair strictly before the inspection fence. Missing visibility or timestamp-ordering uncertainty defers advancement. Persist only after rechecking acknowledgments. Coalesce writes per cleanup interval; refresh `last_updated` for unchanged idle positions. Caller interfaces, token fields and ADR-054's lag formula stay unchanged.
 - **Batched deletes.** Use the [bounded candidate query](../postgresql-changelog-retention-protocol.md#bounded-deletes). Select at most 10,000 candidate rows before checking their current row versions' transaction ages. This bounds work even with a protected prefix. Stop on a short or blocked batch, at 100 batches per run, cancellation or error. Do not spin on a blocked prefix.
 
   The query uses `idx_changelog_resume_all (table_name, changed_at, id)` from PR #2233. A missing or invalid index prevents deletion. Earlier age-and-position measurements exclude the guard and do not establish the final query's performance.
@@ -92,7 +92,7 @@ Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers a
     - a row after a consumer's position in `(changed_at, id)` order stays, even when its id is lower than the token's `eventID`;
     - a transaction active at the previous snapshot commits later: its row stays until a later eligible horizon;
     - subtransactions, prepared transactions, concurrent processed updates, freezing and wraparound preserve the guard;
-    - empty filtered polls use a consistent snapshot and captured tail; concurrent matching inserts remain readable after that boundary;
+    - open, xid-less, prepared or hidden transactions prevent idle advancement; late commits remain readable after restart without NOTIFY;
     - quiet-consumer checkpoints survive restart without skipping in-flight deliveries;
     - the query plan is an index range scan on a table with millions of rows.
   - Render the chart with the store-owning components disabled. Check retention settings reach platform connectors in both DaemonSet and Deployment modes. Verify a factory-owned cleaner runs with the required schema, skips and reports missing prerequisites, and cancels on close.
@@ -117,6 +117,7 @@ Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers a
 - The default does not fix the problem. Operators must turn the cleaner on.
 - One consumer that falls behind, or a token left by a removed component, holds back the cleanup for both tables until it catches up or an operator removes the token.
 - Reader upgrades and an explicit rollout check are required before enabling cleanup. Older readers can persist a read head ahead of acknowledged work.
+- Busy databases or hidden activity can delay idle checkpoints.
 - Each store or factory owner tries the lock once per interval, though only one run does the work.
 - A factory-only deployment must provision the schema and index before enabling cleanup. No constructor creates those prerequisites on the factory path.
 - Guard warm-up delays cleanup by at least one interval. Long transactions, stale tokens or conservative frozen-row handling can hold it back.

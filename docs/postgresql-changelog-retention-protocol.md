@@ -34,7 +34,18 @@ A run computes `cutoff = now() - retention` and the smallest saved `(timestamp, 
 
 Track handed-out deliveries in the provider before enqueueing them. Queued events count as in flight. Interpret `MarkProcessed(token)` according to the existing cumulative delivery-prefix contract, without treating an id prefix as timestamp order. Later deliveries remain pending. Empty or unknown tokens cannot certify outstanding work. Acknowledgment persistence must not jump to the read head while later work remains pending. Propagate checkpoint write failures.
 
-When a filtered poll is empty, its existing read position may still be old. In one short, read-only repeatable-read transaction, capture the newest unfiltered pair for that table and verify that the pipeline has no matching rows through that pair. The shared index supports the tail lookup. Never substitute wall-clock time for a read boundary. A nonempty result follows normal delivery, not idle checkpointing.
+An empty filtered snapshot does not prove that its newest pair is safe. An older open transaction can later commit a matching row below that pair. The deletion guard preserves that row but does not make a restarted poll read it.
+
+Use a conservative idle-checkpoint fence on a dedicated connection:
+
+1. Outside the read transaction, clear any cached activity snapshot and record database `clock_timestamp()` as a fence time.
+2. Read fresh `pg_stat_activity` for every other session in this database. If any session has an open transaction, including one without an assigned xid, defer idle advancement. Include read-only and aborted transactions. Hidden activity, disabled tracking or a failed inspection also defers it. Full visibility requires a shared role or an operator-managed statistics privilege; never grant privileges automatically.
+3. After the activity inspection, read `pg_prepared_xacts`. Any prepared transaction in this database defers advancement. Its `prepared` time is not its transaction start. This order also covers a transaction that prepares during inspection.
+4. Only then start a new, short, read-only repeatable-read transaction. Select the newest actual table pair with `changed_at` strictly before the fence time. Verify that the pipeline has no matching rows between the current read position and that candidate. Save no newer boundary and never move backward. A nonempty result follows normal delivery.
+
+The fence time limits the candidate; it is never itself a resume token. Pre-fence transactions must have ended before inspection or block advancement. Transactions starting during inspection remain beyond the fence under the datastore's existing timestamp-ordering assumption. Database clock regressions or untrusted/custom `changed_at` values invalidate that assumption: defer idle advancement and report the condition; deployments that cannot ensure timestamp ordering need a separately accepted commit-ordered cursor design. A clock anomaly cannot be repaired by the `xmin` deletion guard.
+
+This conservative rule can defer idle progress on a busy database or behind one long transaction. Retry at the configured interval without spinning. Missing privileges or tracking prevent idle advancement, not ingestion or ordinary acknowledged delivery. Keep the old token, retain its cleanup bound and report the missing prerequisite. Release tests must cover hidden activity, xid-less transactions, prepare transitions, no-listener commits and restart.
 
 Serialize polling, delivery registration, acknowledgment and checkpoint selection. Persist the verified boundary only after all handed-out deliveries are acknowledged, rechecking under that serialization. A failed or ambiguous check leaves the durable position unchanged. Coalesce idle writes to at most once per cleanup interval per watcher. Refresh `last_updated` even when the pair is unchanged on an idle table.
 
@@ -74,3 +85,5 @@ A delete makes space reusable, but it does not shrink the table file. The cleane
 - [PostgreSQL snapshots and transaction ids](https://www.postgresql.org/docs/16/functions-info.html#FUNCTIONS-TXID-SNAPSHOT)
 - [System columns](https://www.postgresql.org/docs/16/ddl-system-columns.html)
 - [Freezing and wraparound](https://www.postgresql.org/docs/16/routine-vacuuming.html#VACUUM-FOR-WRAPAROUND)
+- [Fresh activity statistics and visibility](https://www.postgresql.org/docs/16/monitoring-stats.html#MONITORING-STATS-VIEWS)
+- [Prepared transactions](https://www.postgresql.org/docs/16/view-pg-prepared-xacts.html)
