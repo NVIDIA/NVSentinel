@@ -18,7 +18,7 @@
 #
 # Usage: scripts/retry.sh <command> [args...]
 #
-# RETRY_ATTEMPTS sets the number of attempts (default 3). RETRY_DELAY sets the wait in seconds
+# RETRY_ATTEMPTS sets the number of attempts, from 1 to 10 (default 3). RETRY_DELAY sets the wait in seconds
 # before the second attempt (default 10). The wait doubles after each failed attempt.
 # The script exits with the status of the last attempt.
 
@@ -32,8 +32,9 @@ fi
 attempts="${RETRY_ATTEMPTS:-3}"
 delay="${RETRY_DELAY:-10}"
 
-if ! [[ "${attempts}" =~ ^[1-9][0-9]{0,2}$ && "${delay}" =~ ^[0-9]{1,4}$ ]]; then
-  echo "retry: RETRY_ATTEMPTS must be from 1 to 999 and RETRY_DELAY from 0 to 9999" >&2
+# The delay doubles after each attempt, so the attempt limit keeps it far from an integer overflow.
+if ! [[ "${attempts}" =~ ^([1-9]|10)$ && "${delay}" =~ ^[0-9]{1,4}$ ]]; then
+  echo "retry: RETRY_ATTEMPTS must be from 1 to 10 and RETRY_DELAY from 0 to 9999" >&2
   exit 2
 fi
 
