@@ -54,8 +54,9 @@ runs:
     - name: Install base dependencies
       shell: bash
       run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq python3 python3-pip curl git wget unzip build-essential
+        # scripts/retry.sh tries again after a transient network or mirror error.
+        ./scripts/retry.sh sudo apt-get update -qq
+        ./scripts/retry.sh sudo apt-get install -y -qq python3 python3-pip curl git wget unzip build-essential
 
     - name: Set up Python
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
@@ -120,11 +121,11 @@ runs:
     - name: Install Go tools
       shell: bash
       run: |
-        go install github.com/boumenot/gocover-cobertura@${{ steps.versions.outputs.gocover_cobertura_version }}
-        go install gotest.tools/gotestsum@${{ steps.versions.outputs.gotestsum_version }}
+        ./scripts/retry.sh go install github.com/boumenot/gocover-cobertura@${{ steps.versions.outputs.gocover_cobertura_version }}
+        ./scripts/retry.sh go install gotest.tools/gotestsum@${{ steps.versions.outputs.gotestsum_version }}
         # Install golangci-lint from source to ensure it's built with the current Go version
         # Note: v2+ requires /v2 in the module path per Go modules versioning
-        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ steps.versions.outputs.golangci_lint_version }}
+        ./scripts/retry.sh go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ steps.versions.outputs.golangci_lint_version }}
 
     - name: Cache Protocol Buffers
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -154,9 +155,9 @@ runs:
           sudo cp -r protoc-${PROTOBUF_VERSION_NO_V}-linux-${ARCH}/include/google /usr/local/include/
           rm -rf protoc-${PROTOBUF_VERSION_NO_V}-linux-${ARCH}*
         fi
-        go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ steps.versions.outputs.protoc_gen_go_version }}
-        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ steps.versions.outputs.protoc_gen_go_grpc_version }}
-        pip install grpcio==${{ steps.versions.outputs.grpcio_tools_version }} grpcio-tools==${{ steps.versions.outputs.grpcio_tools_version }} black==${{ steps.versions.outputs.black_version }}
+        ./scripts/retry.sh go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ steps.versions.outputs.protoc_gen_go_version }}
+        ./scripts/retry.sh go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ steps.versions.outputs.protoc_gen_go_grpc_version }}
+        ./scripts/retry.sh pip install grpcio==${{ steps.versions.outputs.grpcio_tools_version }} grpcio-tools==${{ steps.versions.outputs.grpcio_tools_version }} black==${{ steps.versions.outputs.black_version }}
 
     - name: Cache shellcheck
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -183,14 +184,14 @@ runs:
     - name: Install additional Go tools
       shell: bash
       run: |
-        go install github.com/google/addlicense@${{ steps.versions.outputs.addlicense_version }}
+        ./scripts/retry.sh go install github.com/google/addlicense@${{ steps.versions.outputs.addlicense_version }}
         # Pin setup-envtest to avoid Go version compatibility issues
         # Using version from .versions.yaml
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ steps.versions.outputs.setup_envtest_version }}
-        go install golang.org/x/tools/cmd/goimports@${{ steps.versions.outputs.goimports_version }}
-        go install golang.org/x/tools/cmd/deadcode@${{ steps.versions.outputs.deadcode_version }}
-        go install github.com/google/go-containerregistry/cmd/crane@${{ steps.versions.outputs.crane_version }}
-        go install github.com/google/ko@${{ steps.versions.outputs.ko_version }}
+        ./scripts/retry.sh go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ steps.versions.outputs.setup_envtest_version }}
+        ./scripts/retry.sh go install golang.org/x/tools/cmd/goimports@${{ steps.versions.outputs.goimports_version }}
+        ./scripts/retry.sh go install golang.org/x/tools/cmd/deadcode@${{ steps.versions.outputs.deadcode_version }}
+        ./scripts/retry.sh go install github.com/google/go-containerregistry/cmd/crane@${{ steps.versions.outputs.crane_version }}
+        ./scripts/retry.sh go install github.com/google/ko@${{ steps.versions.outputs.ko_version }}
 
     - name: Set environment variables
       shell: bash
