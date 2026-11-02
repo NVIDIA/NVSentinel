@@ -152,10 +152,10 @@ jobs:
 
       - name: Configure Helm repositories
         run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo add bitnami https://charts.bitnami.com/bitnami
-          helm repo add jetstack https://charts.jetstack.io
-          helm repo update
+          ./scripts/retry.sh helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          ./scripts/retry.sh helm repo add bitnami https://charts.bitnami.com/bitnami
+          ./scripts/retry.sh helm repo add jetstack https://charts.jetstack.io
+          ./scripts/retry.sh helm repo update
 
       - name: Configure ctlptl registry authentication
         run: |

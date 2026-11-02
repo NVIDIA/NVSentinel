@@ -1,5 +1,7 @@
 # ADR-007: Intelligence — Health Event Correlation
 
+Status: Proposed to be superseded in part by [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md): the rule language only.
+
 ## Context
 
 Many hardware issues manifest initially as non-fatal events that become critical when repeated. For example:

@@ -36,7 +36,7 @@ func UpsertNodeCondition(
 	t.Helper()
 
 	require.Eventually(t, func() bool {
-		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		err := retry.RetryOnConflict(ConflictBackoff, func() error {
 			node, nodeErr := GetNodeByName(ctx, client, nodeName)
 			if nodeErr != nil {
 				return nodeErr

@@ -174,14 +174,25 @@ func (p *SidecarParser) Parse(message string) (*Response, error) {
 		return nil, fmt.Errorf("error decoding xid response: %w", err)
 	}
 
-	// if the side car returns the recommendation as is from the XID error message, then
-	// map it to well known resolutions string from the proto
-	switch xidResp.Result.Resolution {
-	case "GPU Reset Required", "Drain and Reset":
-		xidResp.Result.Resolution = "COMPONENT_RESET"
-	case "Node Reboot Required":
-		xidResp.Result.Resolution = "RESTART_BM"
-	}
+	xidResp.Result.Resolution = mapRecoveryActionWording(xidResp.Result.Resolution)
 
 	return &xidResp, nil
+}
+
+// mapRecoveryActionWording maps a recommendation that the side car returns as is from the XID
+// error message to a well known resolution string from the proto. Drivers up to R595 print
+// "GPU Reset Required" and "Node Reboot Required"; R610 and later print "PF FLR" and
+// "OS Reboot" for the same recovery actions. The other wordings map as in the CSV parser
+// (getRecommendedActionForXid in csv.go). Any other resolution is returned unchanged.
+func mapRecoveryActionWording(resolution string) string {
+	switch resolution {
+	case "GPU Reset Required", "PF FLR", "Drain and Reset":
+		return "COMPONENT_RESET"
+	case "Node Reboot Required", "OS Reboot", "Bus Reset", "System Reboot":
+		return "RESTART_BM"
+	case "Drain P2P", "Recover IMEX Domain":
+		return "CONTACT_SUPPORT"
+	default:
+		return resolution
+	}
 }
