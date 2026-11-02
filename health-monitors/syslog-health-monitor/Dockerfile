@@ -26,9 +26,14 @@ COPY health-monitors/syslog-health-monitor/go.mod health-monitors/syslog-health-
 COPY data-models/go.mod data-models/go.sum ./data-models/
 COPY commons/go.mod commons/go.sum ./commons/
 
-# Download dependencies
+# Download dependencies. Retry, because proxy.golang.org can close the connection.
 RUN --mount=type=cache,target=/go/pkg/mod \
-    cd health-monitors/syslog-health-monitor && go mod download
+    cd health-monitors/syslog-health-monitor && \
+    for attempt in 1 2 3; do \
+      go mod download && break; \
+      [ "$attempt" -lt 3 ] || exit 1; \
+      sleep $((attempt * 10)); \
+    done
 
 # Copy the source code
 COPY health-monitors/syslog-health-monitor/ health-monitors/syslog-health-monitor/
