@@ -658,14 +658,17 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 
 	// Base query: Timestamp-based with ID tie-breaking (like MongoDB)
 	// Server-side filter is appended if available
+	//
+	// The row comparison means changed_at > $2 OR (changed_at = $2 AND id > $3),
+	// but PostgreSQL can use it as a bound on idx_changelog_resume_all: the scan
+	// starts at the resume position and stops at the LIMIT. With the OR form the
+	// scan starts at the oldest row of the table, so a consumer that is behind
+	// reads every row before its position on each poll.
 	baseQuery := `
 		SELECT id, record_id, operation, old_values, new_values, changed_at
 		FROM datastore_changelog
 		WHERE table_name = $1
-		  AND (
-		      changed_at > $2
-		      OR (changed_at = $2 AND id > $3)
-		  )`
+		  AND (changed_at, id) > ($2, $3)`
 
 	// Append server-side filter if available
 	//nolint:gosec // G202 - sqlFilterClause uses parameterized $N placeholders, not raw user input

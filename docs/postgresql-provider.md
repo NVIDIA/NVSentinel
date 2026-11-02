@@ -246,6 +246,21 @@ Key indexes for performance:
 - `created_at` / `event_timestamp` - Time-based queries
 - `agent` / `csp` - Event source filtering
 - `is_fatal` - Fatal event queries
+- `idx_changelog_resume_all` on `datastore_changelog(table_name, changed_at, id)` - The change stream poll
+
+### Changelog Resume Index
+
+The change stream poll reads the changelog rows of one table after its resume position, in `(changed_at, id)` order. The `idx_changelog_resume_all` index serves this query. Without it, each poll reads and sorts all changelog rows of the table.
+
+Fault Quarantine, Node Drainer, Fault Remediation and the Health Events Analyzer create the index at start if it is missing. They build it with `CREATE INDEX CONCURRENTLY`, so changelog writes continue during the build. The components build it one at a time, under the setup lock.
+
+On an upgrade with a large `datastore_changelog` table, the build can take several minutes. Fault Quarantine, Node Drainer and Fault Remediation do not become ready until it is done, so the rollout takes longer, and `helm upgrade --wait` can reach its timeout. To prevent this, create the index before the upgrade:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_changelog_resume_all ON datastore_changelog (table_name, changed_at, id);
+```
+
+The components then find the index and skip the build.
 
 ### Query Optimization
 
