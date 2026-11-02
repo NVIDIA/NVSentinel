@@ -33,7 +33,7 @@ attempts="${RETRY_ATTEMPTS:-3}"
 delay="${RETRY_DELAY:-10}"
 
 # The delay doubles after each attempt, so the attempt limit keeps it far from an integer overflow.
-if ! [[ "${attempts}" =~ ^([1-9]|10)$ && "${delay}" =~ ^[0-9]{1,4}$ ]]; then
+if ! [[ "${attempts}" =~ ^([1-9]|10)$ && "${delay}" =~ ^(0|[1-9][0-9]{0,3})$ ]]; then
   echo "retry: RETRY_ATTEMPTS must be from 1 to 10 and RETRY_DELAY from 0 to 9999" >&2
   exit 2
 fi
