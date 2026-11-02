@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
@@ -215,28 +216,32 @@ func TestDryRunMode(t *testing.T) {
 		// so normal cleanup won't remove them
 		if testCtx != nil && testCtx.NodeName != "" {
 			t.Logf("Manually cleaning dry-run annotations from node: %s", testCtx.NodeName)
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err == nil && node.Annotations != nil {
-				annotationsToRemove := []string{
-					"quarantineHealthEvent",
-					"quarantineHealthEventAppliedTaints",
-					"quarantineHealthEventIsCordoned",
+			annotationsToRemove := []string{
+				"quarantineHealthEvent",
+				"quarantineHealthEventAppliedTaints",
+				"quarantineHealthEventIsCordoned",
+			}
+			err := retry.RetryOnConflict(helpers.ConflictBackoff, func() error {
+				node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+				if err != nil {
+					return err
 				}
 				annotationsRemoved := false
 				for _, key := range annotationsToRemove {
 					if _, exists := node.Annotations[key]; exists {
 						delete(node.Annotations, key)
 						annotationsRemoved = true
-						t.Logf("Removed annotation: %s", key)
 					}
 				}
-				if annotationsRemoved {
-					if err := client.Resources().Update(ctx, node); err != nil {
-						t.Logf("Warning: Failed to clean dry-run annotations: %v", err)
-					} else {
-						t.Log("Successfully cleaned dry-run annotations")
-					}
+				if !annotationsRemoved {
+					return nil
 				}
+				return client.Resources().Update(ctx, node)
+			})
+			if err != nil {
+				t.Logf("Warning: Failed to clean dry-run annotations: %v", err)
+			} else {
+				t.Log("Cleaned dry-run annotations")
 			}
 		}
 
