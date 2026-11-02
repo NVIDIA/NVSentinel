@@ -55,6 +55,8 @@ jobs:
       - name: Label by size
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
+          # Retries GitHub API calls that fail with a server error, such as HTTP 503.
+          retries: 3
           script: |
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,

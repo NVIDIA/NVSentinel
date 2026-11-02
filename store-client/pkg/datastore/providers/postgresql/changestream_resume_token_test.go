@@ -234,7 +234,7 @@ func TestResumeAfterRestartSkipsProcessedEvents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(5), watcher.lastEventID, "Should load last processed event ID")
 
-	// Mock fetchNewChanges query: should fetch WHERE (changed_at > $2 OR (changed_at = $2 AND id > $3))
+	// Mock fetchNewChanges query: should fetch WHERE (changed_at, id) > ($2, $3)
 	// Now uses timestamp-based resume (3 args: tableName, timestamp, eventID)
 	recordID := uuid.New()
 	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
@@ -1026,7 +1026,7 @@ func TestSimulateRealWorldCIScenario(t *testing.T) {
 		"lastEventID must advance to 928 to prevent re-fetching filtered events")
 
 	// Simulate next poll cycle (after 500ms)
-	// Query should use WHERE (changed_at > $2 OR (changed_at = $2 AND id > $3))
+	// Query should use WHERE (changed_at, id) > ($2, $3)
 	// This proves we won't re-fetch the same 11 events
 
 	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
