@@ -76,3 +76,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 063 | [Node Drainer — Owner Kinds in Pod Drain Policies (proposed)](063-pod-drain-policies-owner-kinds.md) |
 | 064 | [Configuration — Node and Device Selection in Each Component (proposed)](064-node-and-device-selection.md) |
 | 066 | [Health Events Analyzer — Datastore-Neutral Rules (proposed)](066-health-events-analyzer-datastore-neutral-rules.md) |
+| 067 | [Kubernetes-Native Remediation Without a Database (proposed)](067-nodehealth-remediation-without-a-database.md) |
