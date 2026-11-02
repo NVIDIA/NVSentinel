@@ -772,11 +772,6 @@ Each step is a separate PR, and MongoDB behaviour stays unchanged until step 4.
 ### Rules engine, scripting, or a MongoDB pipeline interpreter in Go
 **Rejected** because ADR-007 and ADR-003 rejected a rules engine and scripting, and an interpreter loads history into memory and reimplements about 40 MongoDB operators.
 
-## Open Questions
-
-1. Are the four primitives the right set? `solo` could instead be a general "newest state per key" primitive plus `count`.
-2. Should the PostgreSQL indexes go through the current setup path, or through the versioned migrations of [#1777](https://github.com/NVIDIA/NVSentinel/pull/1777)?
-
 ## Notes
 
 - Non-goals: Kubernetes NodeHealth mode, change-stream and checkpoint behaviour, and PostgreSQL re-delivery of updates.
