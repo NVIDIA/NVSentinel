@@ -49,6 +49,12 @@ func NewSlidingWindowBreaker(ctx context.Context, cfg Config) (CircuitBreaker, e
 		return nil, fmt.Errorf("validate circuit breaker bounds: %w", err)
 	}
 
+	// One bucket per second of the window: a non-positive window makes zero or a negative bucket count,
+	// which panics when the ring buffer is allocated or indexed on the first cordon event.
+	if cfg.Window <= 0 {
+		return nil, fmt.Errorf("circuit breaker window must be a positive duration, got %s", cfg.Window)
+	}
+
 	numBuckets := int((cfg.Window + time.Second - 1) / time.Second)
 	b := &slidingWindowBreaker{
 		cfg:          cfg,
