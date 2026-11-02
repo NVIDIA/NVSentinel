@@ -69,7 +69,7 @@ protobuf:
   # renovate: datasource=go depName=google.golang.org/grpc/cmd/protoc-gen-go-grpc depType=protobuf
   protoc_gen_go_grpc: 'v1.6.2'
   # renovate: datasource=pypi depName=grpcio-tools depType=protobuf
-  grpcio_tools: '1.84.0'
+  grpcio_tools: '1.85.0'
   # CRD/Protoc-gen-crd
   # renovate: datasource=github-tags depName=yandex/protoc-gen-crd depType=protobuf
   protoc_gen_crd: 'v1.1.0'
