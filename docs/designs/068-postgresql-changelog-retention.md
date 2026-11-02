@@ -4,7 +4,7 @@ Status: Proposed
 
 ## Context
 
-With the PostgreSQL datastore, triggers on `health_events` and `maintenance_events` write one row to `datastore_changelog` for every insert, update and delete. The change stream consumers read this table. Nothing deletes from it, so it grows without limit ([issue #2170](https://github.com/NVIDIA/NVSentinel/issues/2170)). The reporter's table, on a cluster of about 350 GPU nodes, grew by about 2.6M rows a day and reached about 42M rows and 90 GB. Change stream polls became slow. The Aurora instance ran out of memory and restarted while index builds ran alongside the changelog load.
+PostgreSQL triggers append health and maintenance changes to `datastore_changelog`. Nothing deletes its rows. [Issue #2170](https://github.com/NVIDIA/NVSentinel/issues/2170) reports 42M rows and 90 GB on about 350 nodes, growing by 2.6M rows daily. Polls slowed, and index builds alongside this load exhausted Aurora memory.
 
 `docs/postgresql-schema.sql` defines a `cleanup_changelog()` function that deletes processed rows older than 7 days. No component calls it. The components also do not create it, because `createTables` in store-client does not include it.
 
@@ -26,7 +26,9 @@ The options considered are:
 
 The PostgreSQL provider runs a periodic, batched cleaner from both datastore and client-factory connections. It deletes a row only when the row is older than the retention and before the oldest `(changed_at, id)` position in `resume_tokens`. Every token counts, including stale tokens, which raise an alert. The cleaner is off by default.
 
-These bounds alone do not protect a recently committed row from a long write transaction. Maintainers must select a guard for that case before accepting an implementation that deletes rows. Without that guard, the cleaner must delete nothing. The Notes section describes this unresolved requirement.
+Add a previous-snapshot guard: a row version's `xmin` must precede `pg_snapshot_xmin(pg_current_snapshot())` saved at least one cleanup interval earlier. Persist the full horizon and observation time in a new optional `changelog_cleanup_state` table, under the cleanup lock. The first run records a horizon and deletes nothing. Existing event and token schemas stay unchanged. No commit-timestamp server setting or writer change is required.
+
+Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers are normal (ADR-054), so an empty poll can advance a verified read position only after all handed-out deliveries are acknowledged. The [guard and checkpoint protocol](../postgresql-changelog-retention-protocol.md) specifies persistence, wraparound, snapshot boundaries and reader-upgrade prerequisites. Implementation still requires maintainer acceptance.
 
 ## Implementation
 
@@ -36,6 +38,8 @@ These bounds alone do not protect a recently committed row from a long write tra
 
   The chart passes the retention settings to both paths, including the platform connector DaemonSet and Deployment. Factory connections do not create missing tables or indexes. Missing prerequisites cause a reported, skipped run; operators must provision the schema and index from PR #2233 before enabling retention in a factory-only deployment.
 - **One run at a time.** A run reserves a connection and takes `pg_try_advisory_lock` on a key of its own, separate from the setup lock. If another session holds the lock, the run does nothing. The batches run on the reserved connection. The run releases the lock with a new, short context. If the release fails, it closes the session instead of returning the connection to the pool.
+- **Guard lifecycle.** Under the advisory lock, read the previous guard. A run before one configured interval has elapsed skips without replacing it. Otherwise sample a new horizon and record its database observation time after sampling, before deletion. Use only the previous horizon for this run. Replacement owners use the same persisted record; a first run seeds it without deletion. Missing, invalid, future-dated or unusably old metadata means a reported seed-only run. A failed read or write means no deletion. Factory connections require separate provisioning of this table.
+- **Transaction-id comparison.** Row `xmin` is 32-bit; saved horizons use `xid8`. Validate the full horizon within the batch transaction's previous `2^31` ids before comparing relative ages. Strict inequality protects the boundary; retain ambiguous rows. The linked protocol specifies the SQL and wraparound/freeze acceptance tests.
 - **The bound.** Each run reads all rows of `resume_tokens` and computes:
   - `cutoff = now() - retention`;
   - `oldest`, the smallest `(timestamp, eventID)` among the tokens, compared as a pair.
@@ -44,45 +48,40 @@ These bounds alone do not protect a recently committed row from a long write tra
 
   If a token cannot be parsed, the run deletes nothing and reports an error. If there are no tokens, only the age condition applies, because no consumer has a position to protect.
 
-  The long-transaction guard is required in both cases. A missing guard means no `DELETE`, including when there are no tokens.
+  The previous-snapshot guard is required in both cases. A missing or immature guard means no `DELETE`, including when there are no tokens.
 - **Stale tokens stay in the bound.** A token whose `last_updated` is older than the retention still counts in `oldest`. The cleaner still deletes the rows before it, and it reports the token in a metric and a warning that names the client.
   - An old `last_updated` does not prove that a consumer is gone. A consumer that is live but stalled, or that cannot save its token, needs every row after its position.
   - A removed component leaves its token, which holds back the cleanup from that position on. The operator deletes that row from `resume_tokens` only when the component is gone for good. The docs describe this step, and warn not to delete the token of a component that still runs.
 - **Legacy tokens.** A token in the old format, with an `eventID` and no `timestamp`, has no pair. The cleaner looks up the `changed_at` of that id. If the row does not exist, the run deletes nothing and reports an error.
-- **Batched deletes.** For each table that `createChangeTriggers` watches, the cleaner deletes in batches of 10,000 rows by default, with one transaction per batch. This query shows only the age and position bounds. The final query must also enforce the selected long-transaction guard; its cost is not yet measured.
+- **Idle checkpoints.** Track deliveries before enqueueing; queued work counts as in flight. `MarkProcessed` must preserve the acknowledged delivery prefix rather than persist a later read head. An empty or unknown token cannot certify pending work. Serialize polling, delivery registration, acknowledgment and checkpoint writes; propagate persistence failures.
 
-  ```sql
-  DELETE FROM datastore_changelog
-  WHERE id IN (
-    SELECT id FROM datastore_changelog
-    WHERE table_name = $1 AND changed_at < $2 AND (changed_at, id) < ($3, $4)
-    ORDER BY changed_at, id
-    LIMIT $5)
-  ```
+  An empty SQL-filtered poll alone does not advance today's read position. Capture a table's newest unfiltered pair and prove there are no matching rows through it in one short, read-only repeatable-read transaction. Persist that boundary only after rechecking that no handed-out delivery remains unacknowledged. Never use wall-clock time as a read position. Coalesce writes to once per cleanup interval; refresh `last_updated` even for an unchanged idle position. Caller interfaces and `{timestamp, eventID}` stay unchanged; ADR-054's lag formula stays unchanged.
+- **Batched deletes.** Use the [bounded candidate query](../postgresql-changelog-retention-protocol.md#bounded-deletes). Select at most 10,000 candidate rows before checking their current row versions' transaction ages. This bounds work even with a protected prefix. Stop on a short or blocked batch, at 100 batches per run, cancellation or error. Do not spin on a blocked prefix.
 
-  This is a range scan on `idx_changelog_resume_all (table_name, changed_at, id)` from [PR #2233](https://github.com/NVIDIA/NVSentinel/pull/2233). It starts at the oldest row of the table. It stops at the limit, or at the first row that is too new. When there is nothing to delete, it is a short index range read: 8 buffers on a 5M-row changelog in the measurement in the PR.
-
-  A run stops when a batch deletes fewer rows than the limit, when it reaches a limit on batches per run (100 by default), when the context ends, or when a batch fails.
-
-  If `idx_changelog_resume_all` is missing or INVALID, the run deletes nothing and reports it, instead of scanning the table. `ensureChangelogResumeIndex` from PR #2233 builds or repairs the index at the next start of a component.
+  The query uses `idx_changelog_resume_all (table_name, changed_at, id)` from PR #2233. A missing or invalid index prevents deletion. Earlier age-and-position measurements exclude the guard and do not establish the final query's performance.
 - **Configuration.** Store-client reads environment variables in the same way as `DATASTORE_MAX_CONNECTIONS`:
-  - `DATASTORE_CHANGELOG_RETENTION`: a duration. Unset or `0` turns the cleaner off. Values below `24h` are rejected at start.
+  - `DATASTORE_CHANGELOG_RETENTION`: a Go duration. Unset or `0` disables cleanup. Enabled values must be at least `24h`. Recommend `168h` for seven days; `7d` is invalid.
   - `DATASTORE_CHANGELOG_CLEANUP_INTERVAL`: default `1h`.
   - `DATASTORE_CHANGELOG_CLEANUP_BATCH_SIZE`: default `10000`.
   - `DATASTORE_CHANGELOG_CLEANUP_MAX_BATCHES`: default `100` per run.
 
+  Malformed, negative, overflowing or below-minimum retention values log a warning and disable the cleaner. Invalid intervals or non-positive batch settings also disable it. Report once at configuration load; never fail datastore construction, pod startup or ingestion. Explicitly disabled cleanup needs no warning. The interval must be positive.
+
   The chart sets them from new keys under `global.datastore.changelogCleanup`. These are new keys with defaults that keep current behaviour.
 - **Metrics.** The cleaner adds new metrics only:
   - `datastore_changelog_cleanup_deleted_rows_total`;
-  - `datastore_changelog_cleanup_runs_total` with a `result` label (`deleted`, `nothing_to_delete`, `skipped_locked`, `skipped_no_index`, `error`);
+  - `datastore_changelog_cleanup_runs_total` with a `result` label (`deleted`, `nothing_to_delete`, `skipped_locked`, `skipped_no_index`, `skipped_guard`, `error`);
   - `datastore_changelog_cleanup_last_success_timestamp_seconds`;
   - `datastore_changelog_cleanup_oldest_protected_age_seconds`, the age of `oldest`, with a `stale_tokens` gauge. An alert on these shows when one consumer holds back the cleanup.
-- **Space.** A delete makes space reusable, but it does not shrink the table file. The cleaner relies on autovacuum and does not run `VACUUM`. `VACUUM` cannot run in a transaction, and only the table owner, the database owner or a superuser can run it. For an existing large table, the docs tell operators to run `pg_repack` once after they turn the cleaner on. `VACUUM FULL` also works, but it needs an exclusive lock and free disk space equal to the new table size, so it belongs in a maintenance window.
+- **Space.** Deletes free reusable space without shrinking the table file. Use autovacuum and the [operator reclamation guidance](../postgresql-changelog-retention-protocol.md#space-reclamation); the cleaner runs no `VACUUM`.
 - **Tests.**
   - With sqlmock, in the style of the setup-lock and index tests:
     - the store and factory paths each start a cleaner when enabled and stop it before closing their pool;
     - disabled retention starts no cleaner, and the factory path runs no setup DDL;
-    - a missing long-transaction guard means no `DELETE`;
+    - warm-up, too-early runs, owner replacement and unreadable or unwritable guard state cannot cause premature deletion;
+    - invalid retention (`7d`, negative, below `24h`, malformed or overflowing) disables cleanup while startup and ingestion continue;
+    - explicit `0`, `24h` and `168h` have the documented behavior;
+    - queued work, prefix acknowledgments, delivery/empty-poll races, empty tokens and checkpoint write failure cannot advance past unacknowledged work;
     - the bound is the smallest token as a pair, not the smallest `eventID`;
     - a stale token still holds back the cleanup and is reported;
     - nothing older than the bound means no `DELETE` (the healthy case);
@@ -91,7 +90,10 @@ These bounds alone do not protect a recently committed row from a long write tra
   - Against a real PostgreSQL 16, because sqlmock does not check SQL semantics:
     - a row with a lower id but a newer `changed_at` than the cutoff stays;
     - a row after a consumer's position in `(changed_at, id)` order stays, even when its id is lower than the token's `eventID`;
-    - a recently committed row from a long write transaction stays, even when its pair precedes every saved position;
+    - a transaction active at the previous snapshot commits later: its row stays until a later eligible horizon;
+    - subtransactions, prepared transactions, concurrent processed updates, freezing and wraparound preserve the guard;
+    - empty filtered polls use a consistent snapshot and captured tail; concurrent matching inserts remain readable after that boundary;
+    - quiet-consumer checkpoints survive restart without skipping in-flight deliveries;
     - the query plan is an index range scan on a table with millions of rows.
   - Render the chart with the store-owning components disabled. Check retention settings reach platform connectors in both DaemonSet and Deployment modes. Verify a factory-owned cleaner runs with the required schema, skips and reports missing prerequisites, and cancels on close.
 
@@ -100,7 +102,7 @@ These bounds alone do not protect a recently committed row from a long write tra
 - **Protects every saved position.** Every deleted row is checked against both the age and the oldest saved position, in the same order the poll uses. Stale tokens stay in the bound, because NVSentinel cordons and drains nodes from these events, and a silent gap is worse than a larger table. The limits in the Notes section still apply.
 - **Bounded work.** Each batch and each run has a fixed upper limit, and the index range stops at the first row that is too new. A run with nothing to delete costs a short index range read for each watched table.
 - **Follows existing patterns.** The setup lock, the CONCURRENTLY index builds of ADR-052 and the `DATASTORE_*` variables already work this way in store-client. No module calls another module.
-- **Upgrade compatibility.** It is off by default and adds new keys, metrics and variables only. Older components on the same database keep their tokens in the bound. The long-transaction guard must also cover writes from those components.
+- **Upgrade compatibility.** Cleanup is off by default. The guard covers older writers without changing their events. All readers must use acknowledgment-safe checkpoints before cleanup is enabled. Disable cleanup before a reader downgrade; the unchanged token shape cannot identify an old reader automatically. Existing tokens remain in the bound and old components ignore the new optional guard table.
 
 ## Consequences
 
@@ -114,10 +116,10 @@ These bounds alone do not protect a recently committed row from a long write tra
 
 - The default does not fix the problem. Operators must turn the cleaner on.
 - One consumer that falls behind, or a token left by a removed component, holds back the cleanup for both tables until it catches up or an operator removes the token.
-- A consumer whose filter matches no new events does not save a new position, because empty polls do not save one (ADR-054 describes such quiet consumers). Its old position holds back the cleanup even while it is healthy and caught up.
+- Reader upgrades and an explicit rollout check are required before enabling cleanup. Older readers can persist a read head ahead of acknowledged work.
 - Each store or factory owner tries the lock once per interval, though only one run does the work.
 - A factory-only deployment must provision the schema and index before enabling cleanup. No constructor creates those prerequisites on the factory path.
-- The long-transaction guard remains unresolved. The proposed age and position bounds are insufficient without it.
+- Guard warm-up delays cleanup by at least one interval. Long transactions, stale tokens or conservative frozen-row handling can hold it back.
 - The table file does not shrink without an operator step.
 - The cleaner depends on the index from PR #2233, and does nothing without it.
 
@@ -125,18 +127,18 @@ These bounds alone do not protect a recently committed row from a long write tra
 
 - The docs and the PostgreSQL values file recommend a retention. A later release can change the default after this one has been used in practice.
 - The `oldest_protected_age_seconds` and `stale_tokens` metrics make a held-back cleanup visible, and the docs give the steps to find and remove the token of a removed component.
-- For quiet consumers, a follow-up can save a position after an empty poll, up to the newest row the poll has read. That changes the checkpoint protocol, so it is an open question below, not part of this decision.
+- Acknowledgment-safe idle checkpoints handle healthy quiet streams. Document reader rollout, coalesced writes and checkpoint failures; do not discard stale tokens automatically.
 - The lock attempt is one cheap query per component per interval.
 - The docs describe the one-time `pg_repack` step.
 - The cleaner reports `skipped_no_index`, and the existing setup rebuilds the index at the next start.
 - Factory owners report missing prerequisites without running DDL. The docs give the schema provisioning steps for deployments without a store owner.
-- No implementation may delete rows until maintainers select and validate the long-transaction guard.
+- Keep cleanup disabled until maintainer acceptance and the guard, idle-checkpoint and upgrade acceptance cases pass.
 
 ## Alternatives Considered
 
 ### Helm CronJob
 
-**Rejected** because the job would need its own image and schedule, plus a copy of the components' database connection, Secret and TLS settings in the chart, and those must stay in step for in-cluster and external databases. A job can run the same SQL, so this is a question of operations, not of correctness. The provider already has the connection, and its metrics come from the components that the consumers belong to.
+**Rejected** because it adds an image and schedule and duplicates connection, Secret and TLS configuration. A job could enforce the same safety conditions; the provider already owns connections and metrics.
 
 ### Call `cleanup_changelog()`
 
@@ -156,14 +158,12 @@ These bounds alone do not protect a recently committed row from a long write tra
 
 ## Notes
 
-- Limits of the bound:
-  - **Long write transactions.** `changed_at` is the start time of the writing transaction, not its commit time. A transaction open longer than the retention can commit a row that is already old enough for cleanup and before every saved position. The poll can skip it, but the NOTIFY path can still fetch it by id. The cleaner could delete it before that fetch. `idle_in_transaction_session_timeout` bounds an idle period; `statement_timeout` bounds one statement. A transaction can keep executing short statements beyond both limits, so neither bounds its lifetime. This remains unresolved. Before deletion is implemented, maintainers must choose and validate a commit-time or transaction-age guard that protects recently committed rows. A check of currently open transactions alone is insufficient: an old transaction may have just committed. The guard must also cover older components during rolling upgrades, and missing or unreadable guard data must prevent deletion. `track_commit_timestamp` is a candidate to assess, not an accepted prerequisite or a complete solution.
-  - **Saved positions are read positions.** A watcher advances its position in memory when it reads an event, before filtering and delivery. `MarkProcessed` saves the current position, which can be ahead of the event it acknowledges. So a saved position can be ahead of an event that is not yet handled, and a restart can skip or replay events today. The cleaner uses the saved positions as they are. It does not change this behaviour, and it does not make a saved position an acknowledgement.
+- **Long transactions.** The previous snapshot horizon protects transactions active at that observation, even when they commit old-looking rows later. The guard needs no server setting. Statement and idle timeouts still do not bound total transaction lifetime.
+- **Acknowledgments and upgrades.** This proposal includes the provider checkpoint change. Retention must remain disabled until all readers have it; older writers remain supported. No consumer API or token fields change. Acceptance tests must cover this rollout prerequisite.
+- **Existing delivery limits.** Late commits below a saved timestamp remain a polling limitation. The guard preserves NOTIFY's opportunity to deliver them for at least one interval; it does not promise exactly-once delivery across disconnections.
 - Open questions for maintainers:
   - Should the cleaner be on by default, with a 7-day retention to match `cleanup_changelog()`? This ADR proposes off first.
   - Is "an operator removes the token" the right recovery for a removed component? Or should a component remove its own token when it is uninstalled?
-  - Should a watcher save a position after an empty poll, so that a quiet consumer stops holding back the cleanup? This changes the checkpoint protocol of every PostgreSQL consumer.
-  - Which commit-time or transaction-age guard protects recently committed rows from long transactions, including during rolling upgrades? This must be settled before implementing deletion.
 - Non-goal: the retention of the documents in `health_events` and `maintenance_events`. Only the change feed is in scope.
 - Dependency: the implementation lands after [PR #2233](https://github.com/NVIDIA/NVSentinel/pull/2233).
 
@@ -177,3 +177,6 @@ These bounds alone do not protect a recently committed row from a long write tra
 - [PostgreSQL 16 timeouts](https://www.postgresql.org/docs/16/runtime-config-client.html): statement and idle transaction timeouts have different scopes
 - [PostgreSQL 16 current date and time](https://www.postgresql.org/docs/16/functions-datetime.html#FUNCTIONS-DATETIME-CURRENT): `now()` returns the transaction start time
 - [PostgreSQL 16 NOTIFY](https://www.postgresql.org/docs/16/sql-notify.html): notifications are delivered after commit
+
+- [Guard and idle-checkpoint protocol](../postgresql-changelog-retention-protocol.md): persisted snapshot guard, transaction-id comparisons and bounded SQL
+- [PostgreSQL snapshots and transaction ids](https://www.postgresql.org/docs/16/functions-info.html#FUNCTIONS-TXID-SNAPSHOT)
