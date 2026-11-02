@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 )
 
@@ -142,17 +143,19 @@ func isNodeAvailable(
 
 // annotateNodeAsUsed applies the usage annotations to a node.
 func annotateNodeAsUsed(ctx context.Context, client klient.Client, nodeName, testName string) error {
-	node, err := GetNodeByName(ctx, client, nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to get node %s: %w", nodeName, err)
-	}
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
+		node, err := GetNodeByName(ctx, client, nodeName)
+		if err != nil {
+			return err
+		}
 
-	if node.Annotations == nil {
-		node.Annotations = make(map[string]string)
-	}
+		if node.Annotations == nil {
+			node.Annotations = make(map[string]string)
+		}
 
-	node.Annotations[NodeUsedByAnnotation] = testName
-	node.Annotations[NodeUsedFromAnnotation] = fmt.Sprintf("%d", time.Now().Unix())
+		node.Annotations[NodeUsedByAnnotation] = testName
+		node.Annotations[NodeUsedFromAnnotation] = fmt.Sprintf("%d", time.Now().Unix())
 
-	return client.Resources().Update(ctx, node)
+		return client.Resources().Update(ctx, node)
+	})
 }

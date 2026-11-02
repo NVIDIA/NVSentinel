@@ -543,7 +543,7 @@ func RestoreFQDeployment(ctx context.Context, t *testing.T, client klient.Client
 	t.Helper()
 	t.Log("Restoring original fault-quarantine deployment")
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		current := &appsv1.Deployment{}
 		if err := client.Resources().Get(ctx, original.Name, original.Namespace, current); err != nil {
 			return err
@@ -568,7 +568,7 @@ func modifyFaultQuarantineDeploymentArgs(ctx context.Context, t *testing.T, clie
 
 	var originalDeployment *appsv1.Deployment
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := client.Resources().Get(ctx, "fault-quarantine", NVSentinelNamespace, deployment); err != nil {
 			return err
