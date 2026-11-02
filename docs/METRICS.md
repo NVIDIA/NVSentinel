@@ -403,12 +403,17 @@ consumer's name.
 `fault-remediation` serves only controller-runtime's registry, so it passes that registry
 explicitly; the others use the default registry.
 
+`datastore_connected` is the one exception in this table: it comes from `commons/pkg/server`
+rather than `store-client`, is exported only by `fault-quarantine`, `node-drainer` and
+`fault-remediation`, and carries no `client` label.
+
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `change_stream_lag_seconds` | Gauge | `client` | Seconds since this consumer last had evidence it was caught up with its own change stream, from either an empty batch or the server-side timestamp of the last event it read. Absent until one of those has been observed |
 | `change_stream_lag_known` | Gauge | `client` | 1 once `change_stream_lag_seconds` can be computed for this consumer, 0 before then |
 | `change_stream_resume_token_recoveries_total` | Counter | `client`, `phase` | Times a stale or invalid resume token was deleted, restarting the stream from the current position |
 | `change_stream_reopens_total` | Counter | `client`, `result` | Attempts to reopen the stream after a runtime failure. `success` is a disconnect that would previously have ended the stream permanently; `failure` is one attempt that did not get through; `exhausted` is the recovery budget running out, after which the watcher stops and the process is expected to exit so the pod restarts — pair it with `kube_pod_container_status_restarts_total` |
+| `datastore_connected` | Gauge | none | 1 once a change stream watcher has been handed to the readiness checker — after datastore initialisation, but before the watcher's event loop starts — and 0 before that. It latches: it does not return to 0 if the datastore is lost later, because that stops the component and the pod restarts instead — pair it with `kube_pod_container_status_restarts_total`. The name predates this behaviour and reads as live connectivity, which it is not. It is also the whole of these components' readiness check, so `kube_pod_status_ready` carries the same answer with pod labels and without depending on this endpoint being scrapable; prefer that unless you need a signal from the component's own registry |
 
 Lag is measured against the consumer's **own filtered stream**, so a module whose pipeline
 admits nothing still reports zero lag while it is caught up. See
