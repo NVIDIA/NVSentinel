@@ -87,6 +87,8 @@ jobs:
                   labels: [label],
                 });
                 await github.rest.issues.createComment({
+                  // A retried POST can post the comment twice.
+                  request: { retries: 0 },
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,

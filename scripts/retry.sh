@@ -32,6 +32,11 @@ fi
 attempts="${RETRY_ATTEMPTS:-3}"
 delay="${RETRY_DELAY:-10}"
 
+if ! [[ "${attempts}" =~ ^[1-9][0-9]{0,2}$ && "${delay}" =~ ^[0-9]{1,4}$ ]]; then
+  echo "retry: RETRY_ATTEMPTS must be from 1 to 999 and RETRY_DELAY from 0 to 9999" >&2
+  exit 2
+fi
+
 for ((attempt = 1; ; attempt++)); do
   "$@"
   status=$?
