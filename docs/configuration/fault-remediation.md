@@ -207,7 +207,7 @@ templates:
 
 ## Maximum Remediation Attempts
 
-Caps how many times fault-remediation attempts one equivalence group — `restart`, for example — within a single quarantine session.
+Caps how many times fault-remediation attempts one equivalence group — `restart`, for example — before the node returns to service.
 
 ```yaml
 fault-remediation:
@@ -216,7 +216,11 @@ fault-remediation:
 
 Attempts are counted, not retries: `1` allows one attempt and no retry, and `3` allows two retries after the first attempt. `0` is the default and removes the cap.
 
-When a node reaches the cap, fault-remediation sets its state label to `remediation-failed` and stops, leaving the node for an operator. This ends the remediation loop that a node repeats when remediation never fixes the underlying fault. The counter resets when the node leaves quarantine.
+When a node reaches the cap, fault-remediation sets its state label to `remediation-failed` and stops, leaving the node for an operator. This ends the remediation loop that a node repeats when remediation never fixes the underlying fault.
+
+With post-remediation validation, quarantine ends when fault-quarantine hands the node to validation, but the node stays out of service until validation passes. At the hand-off, fault-remediation keeps the spent counts bound to the ValidationRequests in the node's validation session. A fault found while one of those requests is still in the session continues the count, and the quarantine it starts keeps that count even if validation finishes later.
+
+When the quarantine ends with no request in the session, fault-remediation clears its state and the next fault starts from zero. This is the case after a quarantine without validation, and after a hand-off that fault-remediation processes before lifecycle-manager has registered the request. After validation has released the node, the next fault starts from zero as well; fault-remediation drops the kept counts at that fault, so the `latestFaultRemediationState` annotation stays on the node until then. Cancelling the quarantine resets the count immediately.
 
 After the cap, the health monitors can send more events for the same fault. Fault-remediation closes each of these events before the log collector starts, so a capped node gets no more log-collector Jobs.
 

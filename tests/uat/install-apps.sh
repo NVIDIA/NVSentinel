@@ -21,6 +21,8 @@ source "${SCRIPT_DIR}/common.sh"
 
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 VERSIONS_FILE="${REPO_ROOT}/.versions.yaml"
+# Runs the helm repo commands again after a transient network error.
+RETRY="${REPO_ROOT}/scripts/retry.sh"
 
 # Detect platform architecture
 ARCH=$(uname -m)
@@ -88,8 +90,8 @@ log ""
 install_prometheus_operator() {
     log "Installing Prometheus Operator (version $PROMETHEUS_OPERATOR_VERSION)..."
     
-    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-    helm repo update
+    "${RETRY}" helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+    "${RETRY}" helm repo update
     
     if ! helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
         --namespace monitoring \
@@ -106,8 +108,8 @@ install_prometheus_operator() {
 install_cert_manager() {
     log "Installing cert-manager (version $CERT_MANAGER_VERSION)..."
     
-    helm repo add jetstack https://charts.jetstack.io
-    helm repo update
+    "${RETRY}" helm repo add jetstack https://charts.jetstack.io
+    "${RETRY}" helm repo update
     
     if ! helm upgrade --install cert-manager jetstack/cert-manager \
         --namespace cert-manager \
@@ -134,8 +136,8 @@ install_cert_manager() {
 install_kwok() {
     log "Installing KWOK (app version: $KWOK_VERSION, chart version: $KWOK_CHART_VERSION)..."
     
-    helm repo add sigs-kwok https://kwok.sigs.k8s.io/charts/
-    helm repo update
+    "${RETRY}" helm repo add sigs-kwok https://kwok.sigs.k8s.io/charts/
+    "${RETRY}" helm repo update
     
     # kwok must NOT run with hostNetwork: it stamps its own pod IP on every
     # fake node, so with hostNetwork the fake nodes clone the host node's IP
@@ -183,8 +185,8 @@ create_fake_gpu_nodes() {
 install_gpu_operator() {
     log "Installing NVIDIA GPU Operator (version $GPU_OPERATOR_VERSION)..."
     
-    helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
-    helm repo update
+    "${RETRY}" helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+    "${RETRY}" helm repo update
     
     if [[ "$CSP" == "gcp" ]]; then
         log "Applying resource quota for GPU Operator on GCP..."
