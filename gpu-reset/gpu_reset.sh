@@ -39,9 +39,14 @@
 # NOTES:
 #   - Requires root
 #   - Supports x86_64 and aarch64
+#   - RESET_ATTEMPTS (default 3) sets how many times the script tries the reset, and
+#     RESET_RETRY_DELAY_SECONDS (default 10) sets the wait between attempts. The script writes one
+#     result after the last attempt.
 
 set -eou pipefail
 
+RESET_ATTEMPTS="${RESET_ATTEMPTS:-3}"
+RESET_RETRY_DELAY_SECONDS="${RESET_RETRY_DELAY_SECONDS:-10}"
 DRIVER_ROOT="${DRIVER_ROOT:-/}"
 # Optional directory inside DRIVER_ROOT that holds the driver binaries, for drivers installed
 # outside the default PATH.
@@ -56,6 +61,16 @@ BUG_REPORT_DIR="${BUG_REPORT_DIR:-/var/tmp}"
 log() {
   printf "(%s) %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
+
+if ! [[ "$RESET_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  log "ERROR: RESET_ATTEMPTS must be a positive integer, got '${RESET_ATTEMPTS}'."
+  exit 1
+fi
+
+if ! [[ "$RESET_RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+  log "ERROR: RESET_RETRY_DELAY_SECONDS must be a non-negative integer, got '${RESET_RETRY_DELAY_SECONDS}'."
+  exit 1
+fi
 
 # chroot looks up the command with PATH after it changes root, so DRIVER_BIN_PATH is resolved
 # inside DRIVER_ROOT.
@@ -171,16 +186,32 @@ echo "${TARGET_UUIDS}" | tr ',' '\n' | sed 's/^/  /'
 # RESET EXECUTION
 #----------------
 
-log "INFO: Resetting GPUs..."
+# After a failed reset, the driver can fail to start the GPU firmware ("WPR2 already up") and
+# nvidia-smi reports "Driver Not Loaded". Another reset usually recovers the GPU. So try the reset
+# again, and report only the result of the last attempt.
+for ((attempt = 1; attempt <= RESET_ATTEMPTS; attempt++)); do
+  log "INFO: Resetting GPUs (attempt ${attempt}/${RESET_ATTEMPTS})..."
 
-if nvidia_smi_helper --gpu-reset -i "${TARGET_UUIDS}" > "$RESET_OUTPUT_FILE" 2>&1; then
-  sed -e '/All done\./d' -e 's/\.$//' -e 's/^/  /' "$RESET_OUTPUT_FILE"
-  log "INFO: GPU reset complete."
-else
-  RESET_STATUS=$?
-  FINAL_EXIT_STATUS=$RESET_STATUS
-  log "ERROR: Reset failed. See details below:"
+  if nvidia_smi_helper --gpu-reset -i "${TARGET_UUIDS}" > "$RESET_OUTPUT_FILE" 2>&1; then
+    RESET_STATUS=0
+    sed -e '/All done\./d' -e 's/\.$//' -e 's/^/  /' "$RESET_OUTPUT_FILE"
+    log "INFO: GPU reset complete."
+    break
+  else
+    RESET_STATUS=$?
+  fi
+
+  log "ERROR: Reset failed (attempt ${attempt}/${RESET_ATTEMPTS}). See details below:"
   sed -e '/All done\./d' -e 's/\.$//' "$RESET_OUTPUT_FILE" | grep . || true
+
+  if [ "$attempt" -lt "$RESET_ATTEMPTS" ]; then
+    log "INFO: Trying the reset again in ${RESET_RETRY_DELAY_SECONDS}s."
+    sleep "$RESET_RETRY_DELAY_SECONDS"
+  fi
+done
+
+if [ "$RESET_STATUS" -ne 0 ]; then
+  FINAL_EXIT_STATUS=$RESET_STATUS
   collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 fi
 

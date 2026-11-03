@@ -233,8 +233,10 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	job := &batchv1.JobTemplateSpec{
 		Namespace: namespace,
 		Spec: batchv1.JobSpec{
-			ActiveDeadlineSeconds:   new(int64(300)),
-			BackoffLimit:            new(int32(2)),
+			ActiveDeadlineSeconds: new(int64(300)),
+			// gpu_reset.sh tries the reset again itself and writes one result to syslog. A Job retry
+			// would run the script again and write a second result, so the Job does not retry.
+			BackoffLimit:            new(int32(0)),
 			TTLSecondsAfterFinished: new(int32(86400)),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
