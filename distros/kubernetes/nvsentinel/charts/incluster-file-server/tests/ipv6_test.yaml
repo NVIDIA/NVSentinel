@@ -1,0 +1,95 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: global.ipv6.enabled (nginx listener)
+templates:
+  - templates/configmap-nginx.yaml
+tests:
+  - it: listens on IPv4 only when the flag is unset
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: data["default.conf"]
+          pattern: "(?m)^  listen 8080;$"
+      - notMatchRegex:
+          path: data["default.conf"]
+          pattern: "listen \\[::\\]"
+
+  - it: adds an IPv6 listener when the flag is on
+    documentIndex: 0
+    set:
+      global.ipv6.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["default.conf"]
+          pattern: "(?m)^  listen 8080;\\n  listen \\[::\\]:8080;$"
+
+  - it: listens on IPv4 only when the flag is the string "false"
+    documentIndex: 0
+    set:
+      global.ipv6.enabled: "false"
+    asserts:
+      - notMatchRegex:
+          path: data["default.conf"]
+          pattern: "listen \\[::\\]"
+---
+suite: global.ipv6.enabled (cleanup metrics bind)
+templates:
+  - templates/deployment.yaml
+  # deployment.yaml includes this file for its checksum/config annotation.
+  - templates/configmap-nginx.yaml
+tests:
+  - it: does not set a cleanup metrics bind address when the flag is unset
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      global.image.tag: test
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[?(@.name == "log-cleanup")].env
+          content:
+            name: CLEANUP_METRICS_ADDR
+            value: "::"
+
+  - it: binds cleanup metrics to all IPv6 addresses when the flag is on
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      global.image.tag: test
+      global.ipv6.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[?(@.name == "log-cleanup")].env
+          content:
+            name: CLEANUP_METRICS_ADDR
+            value: "::"
+
+  - it: does not set a cleanup metrics bind address when the flag is the string "false"
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      global.image.tag: test
+      global.ipv6.enabled: "false"
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[?(@.name == "log-cleanup")].env
+          content:
+            name: CLEANUP_METRICS_ADDR
+            value: "::"

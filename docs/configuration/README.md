@@ -75,6 +75,36 @@ fault-remediation:
     uploadURL: http://nvsentinel-incluster-file-server.nvsentinel.svc.example.local/upload
 ```
 
+### IPv6
+
+NVSentinel runs on IPv4, IPv6-only and dual-stack clusters. On an IPv6-only or dual-stack cluster, set `global.ipv6.enabled: true`. The default is `false`. With the default, the chart renders the same manifests as before.
+
+```yaml
+global:
+  ipv6:
+    enabled: true
+```
+
+When the flag is on, the chart makes these changes:
+
+| Component | Change |
+| --- | --- |
+| GPU health monitor | Binds the metrics server to `::`. If you set `global.metricsAddress` to a value other than `0.0.0.0`, the chart uses your value. |
+| MongoDB (Bitnami) | Sets `MONGODB_ENABLE_IPV6=yes`. `mongodb-store.mongodb.enableIPv6: true` also turns it on, with or without the flag. |
+| MongoDB (Percona) | Adds `net.ipv6: true` to the default `mongodb-store.psmdb-db.replsets.rs0.configuration`. If you replace that string, add `net.ipv6: true` to it yourself. |
+| In-cluster file server | Adds `listen [::]:8080;` to nginx. |
+
+Every node must boot with IPv6 on. On a node with `ipv6.disable=1`, the GPU health monitor cannot bind `::` and crash-loops.
+
+The flag does not change charts that NVSentinel does not ship. On an IPv6 cluster, the GPU Operator's DCGM host engine binds `0.0.0.0` by default. Then the labeler sets no DCGM version label, and the GPU health monitor schedules no pods. Set the bind address in the GPU Operator chart:
+
+```yaml
+dcgm:
+  args: ["-n", "-b", "::", "--log-level", "NONE", "-f", "-"]
+```
+
+Use GPU Operator v26.7.1 or later. Earlier versions do not support IPv6 for the DCGM service ([GPU Operator IPv6 guide](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/install-gpu-operator-ipv6.html)). NVSentinel was tested on IPv6 with GPU Operator v26.7.2.
+
 ### Change Stream Resume Tokens
 
 Watcher-based components persist change stream resume tokens so they can resume from the last processed event after a restart. To skip accumulated events and start from the current stream head, scale the component to zero, patch its key in the runtime resume-control ConfigMap from `RESUME` to `CREATE`, then restore its replicas. The component deletes only its own resume token, records a cold-start cutoff timestamp, skips startup cold-start recovery for that run, opens its watcher from the current stream head, and writes its key back to `RESUME`. Future restarts still run cold-start recovery, but only for records newer than the recorded cutoff.
