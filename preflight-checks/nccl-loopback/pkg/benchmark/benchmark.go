@@ -96,7 +96,10 @@ func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, err
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			slog.Error("NCCL benchmark timed out", "timeout", benchmarkTimeout)
+			slog.Error("NCCL benchmark timed out",
+				"timeout", benchmarkTimeout,
+				"stderr", stderr.String())
+
 			return nil, fmt.Errorf("all_reduce_perf timed out after %s", benchmarkTimeout)
 		}
 
@@ -115,6 +118,12 @@ func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, err
 
 	result, err := parseOutput(output, testSizeMB)
 	if err != nil {
+		// Logged rather than added to the error: the error becomes the health event message.
+		slog.Error("Failed to parse NCCL benchmark output",
+			"error", err,
+			"stdout", output,
+			"stderr", stderr.String())
+
 		return nil, fmt.Errorf("failed to parse output: %w", err)
 	}
 
