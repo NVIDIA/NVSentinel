@@ -527,7 +527,7 @@ func TestTimestampBasedResume_QueryUsesTimestamp(t *testing.T) {
 	watcher.lastEventID = 193
 
 	// Mock: Query should use timestamp-based WHERE clause
-	// The query should be: WHERE table_name = $1 AND (changed_at > $2 OR (changed_at = $2 AND id > $3))
+	// The query should be: WHERE table_name = $1 AND (changed_at, id) > ($2, $3)
 	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
 		WithArgs("health_events", watcher.lastTimestamp, watcher.lastEventID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}))
@@ -537,6 +537,28 @@ func TestTimestampBasedResume_QueryUsesTimestamp(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the query used timestamp-based parameters
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestFetchNewChanges_ResumePosition_BoundsTheIndexScan: the poll compares
+// (changed_at, id) as a row, which PostgreSQL can use as a bound on
+// idx_changelog_resume_all. The equivalent OR form makes the scan start at
+// the oldest row of the table, so a consumer that is behind reads every row
+// before its position on each poll.
+func TestFetchNewChanges_ResumePosition_BoundsTheIndexScan(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
+	watcher.lastTimestamp = time.Date(2024, 11, 24, 10, 0, 4, 0, time.UTC)
+	watcher.lastEventID = 193
+
+	mock.ExpectQuery(`WHERE table_name = \$1\s+AND \(changed_at, id\) > \(\$2, \$3\)\s+ORDER BY changed_at ASC, id ASC`).
+		WithArgs("health_events", watcher.lastTimestamp, watcher.lastEventID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}))
+
+	require.NoError(t, watcher.fetchNewChanges(context.Background()))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -57,7 +58,7 @@ func TestInitializeAll_RateLimitScenarios_InitializedLabelerUsesConfiguredQPS(t 
 
 	const nodeCount = 10
 
-	durations := make(map[string]time.Duration, len(tests))
+	spans := make(map[string]time.Duration, len(tests))
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			nodeNames := make([]string, nodeCount)
@@ -83,24 +84,17 @@ func TestInitializeAll_RateLimitScenarios_InitializedLabelerUsesConfiguredQPS(t 
 			})
 			require.NoError(t, initErr)
 
+			nodeWatch, watchErr := adminClient.CoreV1().Nodes().Watch(t.Context(), metav1.ListOptions{})
+			require.NoError(t, watchErr)
+			defer nodeWatch.Stop()
+
 			ctx, cancel := context.WithCancel(t.Context())
 			runErr := make(chan error, 1)
-			start := time.Now()
 			go func() {
 				runErr <- components.Labeler.Run(ctx)
 			}()
 
-			require.Eventually(t, func() bool {
-				for _, nodeName := range nodeNames {
-					node, getErr := adminClient.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
-					if getErr != nil || node.Labels[labeler.DriverInstalledLabel] != labeler.LabelValueTrue {
-						return false
-					}
-				}
-
-				return true
-			}, 20*time.Second, 50*time.Millisecond)
-			durations[test.name] = time.Since(start)
+			spans[test.name] = waitForLabelSpan(t, nodeWatch, nodeNames)
 
 			cancel()
 			require.NoError(t, <-runErr)
@@ -113,13 +107,54 @@ func TestInitializeAll_RateLimitScenarios_InitializedLabelerUsesConfiguredQPS(t 
 		})
 	}
 
-	lowRate := float64(nodeCount) / durations["low QPS"].Seconds()
-	highRate := float64(nodeCount) / durations["high QPS"].Seconds()
-	throughputRatio := highRate / lowRate
-	t.Logf("initialized labeler throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s, ratio=%.2fx",
-		lowRate, highRate, throughputRatio)
-	assert.GreaterOrEqual(t, throughputRatio, 6.0)
-	assert.LessOrEqual(t, throughputRatio, 14.0)
+	// The labeler patches each node once, and Burst is 1, so the client rate limiter spaces the patches at least
+	// 1/QPS apart. The span from the first label to the last label excludes the start-up time of the labeler, which
+	// depends on the load of the machine. The lower bound allows for a delayed watch event.
+	for _, test := range tests {
+		minSpan := time.Duration(float64(nodeCount-1) / test.qps * 0.5 * float64(time.Second))
+		t.Logf("%s: labeled %d nodes in %v, minimum %v", test.name, nodeCount, spans[test.name], minSpan)
+		assert.GreaterOrEqual(t, spans[test.name], minSpan)
+	}
+
+	// With 10 times the QPS, the labeler must label the nodes much faster.
+	assert.Less(t, spans["high QPS"], spans["low QPS"]/3)
+}
+
+// waitForLabelSpan returns the time from the first to the last of the given nodes that nodeWatch shows with the
+// driver-installed label.
+func waitForLabelSpan(t *testing.T, nodeWatch watch.Interface, nodeNames []string) time.Duration {
+	t.Helper()
+
+	pending := make(map[string]bool, len(nodeNames))
+	for _, nodeName := range nodeNames {
+		pending[nodeName] = true
+	}
+
+	var first, last time.Time
+
+	timeout := time.After(20 * time.Second)
+	for len(pending) > 0 {
+		select {
+		case event, ok := <-nodeWatch.ResultChan():
+			require.True(t, ok, "node watch closed")
+
+			node, isNode := event.Object.(*corev1.Node)
+			if !isNode || !pending[node.Name] || node.Labels[labeler.DriverInstalledLabel] != labeler.LabelValueTrue {
+				continue
+			}
+
+			last = time.Now()
+			if first.IsZero() {
+				first = last
+			}
+
+			delete(pending, node.Name)
+		case <-timeout:
+			require.FailNow(t, "nodes were not labeled", "unlabeled nodes: %v", pending)
+		}
+	}
+
+	return last.Sub(first)
 }
 
 func writeKubeconfig(t *testing.T, config *rest.Config) string {

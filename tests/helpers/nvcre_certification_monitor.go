@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 )
 
@@ -374,22 +375,24 @@ func GetCertificationAnnotation(
 // ClearNVCRENodeState removes the monitor's annotation and label from the
 // node so a test leaves no trace behind.
 func ClearNVCRENodeState(ctx context.Context, c klient.Client, nodeName string) error {
-	node, err := GetNodeByName(ctx, c, nodeName)
-	if err != nil {
-		return err
-	}
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			return err
+		}
 
-	_, hasAnn := node.Annotations[NVCRECertFailuresAnnotationKey]
-	_, hasLabel := node.Labels[NVCRECertFailureLabelKey]
+		_, hasAnn := node.Annotations[NVCRECertFailuresAnnotationKey]
+		_, hasLabel := node.Labels[NVCRECertFailureLabelKey]
 
-	if !hasAnn && !hasLabel {
-		return nil
-	}
+		if !hasAnn && !hasLabel {
+			return nil
+		}
 
-	delete(node.Annotations, NVCRECertFailuresAnnotationKey)
-	delete(node.Labels, NVCRECertFailureLabelKey)
+		delete(node.Annotations, NVCRECertFailuresAnnotationKey)
+		delete(node.Labels, NVCRECertFailureLabelKey)
 
-	return c.Resources().Update(ctx, node)
+		return c.Resources().Update(ctx, node)
+	})
 }
 
 // NodeHasNVCRETaint reports whether the node carries the fault-quarantine

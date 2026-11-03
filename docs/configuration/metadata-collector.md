@@ -227,6 +227,18 @@ metadata-collector:
 
 The poll period is 30 seconds, so the default rides out five minutes of failures — long enough to outlast a credential rotation or a kubelet restart, short enough to fail loudly when the collector is genuinely broken. The minimum is `1`, which exits on the first failed poll. This value sets the `--pod-mapper-max-consecutive-failures` flag described in [Startup and failure handling](#startup-and-failure-handling).
 
+## Disabling the Pod Mapper
+
+The pod device mapper writes the `dgxc.nvidia.com/devices` annotation on GPU pods. Partial drains in the node-drainer need that annotation. Disable the mapper only where it cannot work, for example when the pods that the kubelet reports are not the pods that the collector sees through the Kubernetes API.
+
+```yaml
+metadata-collector:
+  podMapper:
+    enabled: false
+```
+
+With the mapper disabled, the collector still writes the GPU metadata file and then keeps running without polling the kubelet. Pods get no device annotations, so keep `node-drainer.partialDrainEnabled` set to `false`: a partial drain fails for a GPU pod without the annotation. Full drains still detect GPU pods from their container limits and DRA claims. This value sets the `--pod-mapper-enabled` flag.
+
 ## Host-native authentication
 
 Use two explicit kubeconfigs when the collector runs outside a pod:
@@ -265,7 +277,7 @@ Without an explicit kubelet kubeconfig, the transport rereads the projected Serv
 
 ### Startup and failure handling
 
-Hardware inventory and pod-to-GPU mapping remain enabled. PodResources socket handling is unchanged. The kubelet socket must exist and be accessible when the mapper starts.
+Hardware inventory remains enabled. Pod-to-GPU mapping remains enabled unless `--pod-mapper-enabled=false` turns it off, see [Disabling the Pod Mapper](#disabling-the-pod-mapper). PodResources socket handling is unchanged. When the mapper is enabled, the kubelet socket must exist and be accessible when the mapper starts.
 
 The existing 30-second poll period and `--pod-mapper-max-consecutive-failures` limit remain unchanged. The default limit is 10 failed polls. Persistent authentication, authorization, or socket failures remain errors; the collector does not report them as successful mapping.
 

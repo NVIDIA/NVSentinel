@@ -490,7 +490,8 @@ func (i *Informers) filterPodsUsingEntity(ctx context.Context, pods []*v1.Pod, p
 			}
 
 			if isPodRequestingDevices {
-				return nil, fmt.Errorf("pod %s is requesting devices but is missing device annotation", pod.Name)
+				return nil, fmt.Errorf("pod %s is requesting devices but is missing device annotation; "+
+					"partial drains need the metadata-collector pod device mapper (podMapper.enabled)", pod.Name)
 			}
 
 			continue
@@ -624,9 +625,14 @@ func (i *Informers) filterEvictablePods(pods []*v1.Pod, partialDrainEntity *prot
 			continue
 		}
 
+		// Completed pods hold no devices and are never evicted or waited for. Evicted pods can
+		// stay on a node by the hundred, and this runs on every scan, so keep it at debug level.
 		if pod.Status.Phase == v1.PodSucceeded || pod.Status.Phase == v1.PodFailed {
-			slog.Info("Ignoring completed pod %s in namespace %s on node %s (status: %s) during eviction check",
-				pod.Name, pod.Namespace, pod.Spec.NodeName, pod.Status.Phase)
+			slog.Debug("Ignoring completed pod during eviction check",
+				"pod", pod.Name,
+				"namespace", pod.Namespace,
+				"node", pod.Spec.NodeName,
+				"phase", pod.Status.Phase)
 
 			continue
 		}
