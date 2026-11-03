@@ -16,12 +16,17 @@ FROM public.ecr.aws/docker/library/golang:1.27.3-trixie@sha256:fbb7ae40b62ff8afe
 
 WORKDIR /app
 COPY go.mod go.sum ./
+# Retry go mod download, because proxy.golang.org can close the connection.
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+    for attempt in 1 2 3; do \
+      go mod download && break; \
+      [ "$attempt" -lt 3 ] || exit 1; \
+      sleep $((attempt * 10)); \
+    done
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o csp-api-mock .
 
-FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS runtime
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS runtime
 
 COPY --from=builder /app/csp-api-mock /app/csp-api-mock
 

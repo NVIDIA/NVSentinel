@@ -36,13 +36,13 @@ helm install prometheus prometheus-community/kube-prometheus-stack \
 ```bash
 # Install with default configuration
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.29.0 \
+  --version v1.30.0 \
   --namespace nvsentinel \
   --create-namespace
 
 # Upgrade to a new version
 helm upgrade nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.29.0 \
+  --version v1.30.0 \
   --namespace nvsentinel
 
 # Uninstall
@@ -260,9 +260,10 @@ janitor:
         enabled: true
         timeout: "25m"
 
+janitor-provider:
   # Cloud provider configuration
   csp:
-    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci
+    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, akamai
 ```
 
 ##### AWS Configuration
@@ -316,6 +317,26 @@ janitor:
       principalId: "ocid1.principal.oc1..aaa..."
 ```
 
+##### Akamai Configuration
+
+The Akamai provider reads the Akamai Cloud API token from a Kubernetes Secret. The token needs the `linodes:read_write` scope to reboot and delete instances and the `lke:read_write` scope to recycle LKE nodes. A restricted identity that Akamai limits by permission needs `view_linode` to read the instance, and then `reboot_linode`, `delete_linode` and the `lkecluster_admin` role for the three operations. The janitor and the janitor provider are both off by default, so the example turns them on. Create the Secret in the release namespace before the install. See the [janitor-provider configuration](../../docs/configuration/janitor-provider.md) for details.
+
+```yaml
+global:
+  janitor:
+    enabled: true
+  janitorProvider:
+    enabled: true
+
+janitor-provider:
+  csp:
+    provider: "akamai"
+    akamai:
+      apiTokenSecretRef:
+        name: "akamai-api-token"
+        key: "LINODE_TOKEN"
+```
+
 ##### Label provider
 
 Requests reboot and terminate by labeling the Node. An external controller running on the Kubernetes control plane can watch those labels and perform the required action. After reboot completion, that controller **MUST** remove the reboot label.
@@ -339,5 +360,5 @@ For detailed documentation of all available configuration options, see:
 To view all options from the published chart:
 
 ```bash
-helm show values oci://ghcr.io/nvidia/nvsentinel --version v1.29.0
+helm show values oci://ghcr.io/nvidia/nvsentinel --version v1.30.0
 ```

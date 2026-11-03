@@ -1431,6 +1431,52 @@ func splitIdentityAndDiagnostic(beforeRA string) (string, string) {
 	return strings.Join(tokens[:identityEnd], " "), strings.Join(tokens[identityEnd:], " ")
 }
 
+// shortIdentityUUIDLen is how many characters of a GPU_UUID value an entry keeps
+// when it is shrunk to make room. Recovery matching relies on the GPU index
+// and PCI address; the shortened UUID preserves the token used by deduplication.
+const shortIdentityUUIDLen = 8
+
+// shortenIdentityForSpace rewrites a complete entry to the shortest form that a
+// recovery event and the identity match still recognise: the ErrorCode and entity
+// tokens, the GPU_UUID value cut to shortIdentityUUIDLen characters plus the
+// truncation suffix when the entry also names a GPU index or PCI address (the
+// tokens recoveryEntities matches on), no diagnostic text, and the Recommended
+// Action. Entries without the Recommended Action marker, or whose rewritten
+// form saves no space, are returned unchanged.
+func shortenIdentityForSpace(msg string) string {
+	raIdx := strings.LastIndex(msg, recommendedActionMarker)
+	if raIdx < 0 {
+		return msg
+	}
+
+	identity, _ := splitIdentityAndDiagnostic(strings.TrimRight(msg[:raIdx], " "))
+	tokens := strings.Fields(identity)
+
+	if len(tokens) == 0 {
+		return msg
+	}
+
+	hasStableGPUIdentity := slices.ContainsFunc(tokens, func(tok string) bool {
+		return strings.HasPrefix(tok, "GPU:") || strings.HasPrefix(tok, "PCI:")
+	})
+
+	for i, tok := range tokens {
+		value, isUUID := strings.CutPrefix(tok, "GPU_UUID:")
+		if !hasStableGPUIdentity || !isUUID || len(value) <= shortIdentityUUIDLen+len(truncationSuffix) {
+			continue
+		}
+
+		tokens[i] = "GPU_UUID:" + value[:shortIdentityUUIDLen] + truncationSuffix
+	}
+
+	shortened := strings.Join(tokens, " ") + " " + truncationSuffix + " " + msg[raIdx:]
+	if len(shortened) >= len(msg) {
+		return msg
+	}
+
+	return shortened
+}
+
 func truncateWithSuffix(text string, maxLen int) string {
 	if maxLen <= len(truncationSuffix) {
 		return truncationSuffix
@@ -1486,10 +1532,13 @@ func compactMessageField(msg string, maxLen int) string {
 }
 
 // truncateNodeConditionMessage builds the node condition message while respecting the max node condition
-// message length. It applies two tiers of truncation:
+// message length. It applies three tiers of truncation:
 //  1. If full messages exceed the limit, compact each message's free-text diagnostic field
 //     to compactMessageFieldLen bytes, preserving entity identifiers needed for recovery.
-//  2. If compacted messages still exceed the limit, truncate the last entry at the byte level
+//  2. If compacted messages still exceed the limit, shrink every entry to its identity (ErrorCode
+//     and entity tokens with a shortened GPU_UUID, no diagnostic text) so that each fault keeps
+//     the tokens a recovery event matches on.
+//  3. If the shrunk messages still exceed the limit, truncate the last entry at the byte level
 //     to fill the remaining space.
 func (r *K8sConnector) truncateNodeConditionMessage(messages []string) string {
 	maxLen := int(r.config.MaxNodeConditionMessageLength)
@@ -1507,7 +1556,18 @@ func (r *K8sConnector) truncateNodeConditionMessage(messages []string) string {
 		messages = compacted
 	}
 
-	// Tier 2: build the result, truncating at byte level if compacted messages still don't fit.
+	// Tier 2: a byte-level cut below would leave a fragment that no recovery event can match,
+	// so first shrink every entry to its identity while the list still does not fit.
+	if totalMessageLength(messages) > maxLen {
+		shortened := make([]string, len(messages))
+		for i, msg := range messages {
+			shortened[i] = shortenIdentityForSpace(msg)
+		}
+
+		messages = shortened
+	}
+
+	// Tier 3: build the result, truncating at byte level if the messages still don't fit.
 	var result strings.Builder
 
 	truncated := false

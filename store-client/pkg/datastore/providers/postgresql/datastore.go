@@ -462,8 +462,12 @@ func createTables(ctx context.Context, db *sql.DB) error {
 		// Changelog Indexes
 		`CREATE INDEX IF NOT EXISTS idx_changelog_unprocessed ON datastore_changelog(changed_at) WHERE processed = FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_changelog_table_record ON datastore_changelog(table_name, record_id)`,
-		// Composite index for timestamp-based resume (like MongoDB)
-		// Supports: WHERE changed_at > $1 OR (changed_at = $1 AND id > $2)
+		// The change stream poll cannot use this partial index, because it
+		// does not filter on processed; ensureChangelogResumeIndex builds the
+		// index it does use. This one stays: MarkProcessed and
+		// GetUnprocessedEventCount filter on processed = FALSE, and a component
+		// that still runs an older version would build it again without
+		// CONCURRENTLY, which blocks the changelog writes.
 		`CREATE INDEX IF NOT EXISTS idx_changelog_resume
 			ON datastore_changelog(table_name, changed_at, id)
 			WHERE processed = FALSE`,
@@ -496,6 +500,13 @@ func createTables(ctx context.Context, db *sql.DB) error {
 	if err := ensureIdempotencyIndex(ctx, db); err != nil {
 		slog.Error("Failed to ensure the health event idempotency index; the deployment platform connector "+
 			"stays unready until it exists", "index", datastore.HealthEventIdempotencyIndexName, "error", err)
+	}
+
+	// Not fatal: without the index the change stream still works, but each
+	// poll scans and sorts the changelog rows of its table.
+	if err := ensureChangelogResumeIndex(ctx, db); err != nil {
+		slog.Error("Failed to ensure the changelog resume index; change stream polls stay slow until it exists",
+			"index", changelogResumeIndexName, "error", err)
 	}
 
 	// Create change tracking triggers
@@ -783,4 +794,140 @@ func ensureIdempotencyIndexOnce(ctx context.Context, db *sql.DB) error {
 	}
 
 	return c.VerifyHealthEventIdempotencyIndex(ctx)
+}
+
+// changelogResumeIndexName is the index that the change stream poll in
+// fetchNewChanges uses: WHERE table_name = $1 AND (changed_at, id) after the
+// resume position, ORDER BY changed_at, id. It is not partial, because the
+// poll does not filter on processed: one consumer marks rows processed for
+// every consumer of the table, so the poll cannot skip them.
+const (
+	changelogResumeIndexName = "idx_changelog_resume_all"
+	changelogTable           = "datastore_changelog"
+)
+
+const (
+	// createChangelogResumeIndexStatement builds the index without blocking
+	// the changelog writes of the health event triggers, as the changelog of
+	// a running cluster can hold millions of rows. CONCURRENTLY must run
+	// outside a transaction block.
+	createChangelogResumeIndexStatement = "CREATE INDEX CONCURRENTLY IF NOT EXISTS " + changelogResumeIndexName +
+		" ON " + changelogTable + " (table_name, changed_at, id)"
+	dropChangelogResumeIndexStatement = "DROP INDEX CONCURRENTLY IF EXISTS " + changelogResumeIndexName
+)
+
+// changelogResumeIndexBuildAttempts and changelogResumeIndexRetryDelay bound
+// how often a build of the changelog resume index is tried again after
+// PostgreSQL aborted it as a deadlock victim.
+const changelogResumeIndexBuildAttempts = 3
+
+var changelogResumeIndexRetryDelay = 2 * time.Second
+
+// ensureChangelogResumeIndex creates the changelog resume index, or repairs
+// it, in the same way as ensureIdempotencyIndex: CONCURRENTLY, a build in
+// progress is left alone, an INVALID leftover of a failed build is dropped
+// and built again, and a build that PostgreSQL aborted as a deadlock victim
+// is tried again.
+func ensureChangelogResumeIndex(ctx context.Context, db *sql.DB) error {
+	for attempt := 1; ; attempt++ {
+		err := ensureChangelogResumeIndexOnce(ctx, db)
+		if err == nil || attempt == changelogResumeIndexBuildAttempts || !isDeadlockVictim(err) {
+			return err
+		}
+
+		slog.Warn("Building the changelog resume index was chosen as a deadlock victim; trying again",
+			"index", changelogResumeIndexName, "attempt", attempt, "error", err)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(changelogResumeIndexRetryDelay):
+		}
+	}
+}
+
+// ensureChangelogResumeIndexOnce is one pass of ensureChangelogResumeIndex.
+func ensureChangelogResumeIndexOnce(ctx context.Context, db *sql.DB) error {
+	exists, valid, err := changelogResumeIndexState(ctx, db)
+	if err != nil {
+		return err
+	}
+
+	if valid {
+		return nil
+	}
+
+	if exists {
+		building, err := changelogResumeIndexBuildInProgress(ctx, db)
+		if err != nil {
+			return err
+		}
+
+		if building {
+			slog.Info("Changelog resume index is being built by another session; leaving it alone",
+				"index", changelogResumeIndexName)
+
+			return nil
+		}
+
+		if _, err := db.ExecContext(ctx, dropChangelogResumeIndexStatement); err != nil {
+			return fmt.Errorf("dropping the invalid changelog resume index: %w", err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, createChangelogResumeIndexStatement); err != nil {
+		return fmt.Errorf("building the changelog resume index: %w", err)
+	}
+
+	if _, valid, err = changelogResumeIndexState(ctx, db); err != nil {
+		return err
+	}
+
+	if !valid {
+		return fmt.Errorf("changelog resume index %s is not valid after the build", changelogResumeIndexName)
+	}
+
+	return nil
+}
+
+// changelogResumeIndexState reports whether the changelog resume index exists
+// and whether it is valid. A failed CONCURRENTLY build leaves an INVALID index
+// behind, which CREATE INDEX IF NOT EXISTS would then skip. Only the name is
+// checked, not the definition: no other code creates an index of this name.
+func changelogResumeIndexState(ctx context.Context, db *sql.DB) (exists bool, valid bool, err error) {
+	query := `
+		SELECT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class idx ON idx.oid = i.indexrelid
+		WHERE idx.relname = $1 AND i.indrelid = to_regclass($2)`
+
+	err = db.QueryRowContext(ctx, query, changelogResumeIndexName, changelogTable).Scan(&valid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+
+	if err != nil {
+		return false, false, fmt.Errorf("checking the changelog resume index: %w", err)
+	}
+
+	return true, valid, nil
+}
+
+// changelogResumeIndexBuildInProgress reports whether a session is building
+// the changelog resume index now.
+func changelogResumeIndexBuildInProgress(ctx context.Context, db *sql.DB) (bool, error) {
+	query := `
+		SELECT EXISTS (
+		    SELECT 1
+		    FROM pg_stat_progress_create_index p
+		    JOIN pg_class idx ON idx.oid = p.index_relid
+		    WHERE idx.relname = $1 AND p.relid = to_regclass($2))`
+
+	var building bool
+
+	if err := db.QueryRowContext(ctx, query, changelogResumeIndexName, changelogTable).Scan(&building); err != nil {
+		return false, fmt.Errorf("checking whether the changelog resume index is being built: %w", err)
+	}
+
+	return building, nil
 }

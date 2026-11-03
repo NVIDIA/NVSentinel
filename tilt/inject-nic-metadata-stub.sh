@@ -82,9 +82,11 @@ EOF
     rm -f "$tmpfile"
 
     echo "Waiting for inject pod to complete on $node"
+    # The pod can wait for an image pull while Tilt builds and pushes images at the same time.
     if ! kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
-        pod/"$pod_name" -n "$NAMESPACE" --timeout=60s 2>/dev/null; then
+        pod/"$pod_name" -n "$NAMESPACE" --timeout=180s; then
         echo "ERROR: inject pod failed on $node" >&2
+        kubectl describe pod "$pod_name" -n "$NAMESPACE" || true
         kubectl logs "$pod_name" -n "$NAMESPACE" 2>/dev/null || true
         failed=1
     fi

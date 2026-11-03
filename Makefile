@@ -775,6 +775,9 @@ CTLPTL_CONFIG_FILE ?= .ctlptl.yaml
 CLUSTER_NAME ?= kind-nvsentinel
 REGISTRY_NAME ?= ctlptl-registry
 REGISTRY_PORT ?= 5001
+# Resources that tilt-ci builds and deploys at the same time. With 16, the image builds that
+# start first leave free slots for short steps on the critical path, such as cert-manager.
+TILT_MAX_PARALLEL_UPDATES ?= 16
 
 # Tilt development targets
 .PHONY: tilt-up
@@ -805,7 +808,7 @@ tilt-ci: ## Run Tilt in CI mode (no UI, waits for all resources)
 	@echo "Starting Tilt with SKIP_KWOK_NODES_IN_TILT=1 (with retry logic)..."
 	@for i in 1 2 3; do \
 		echo "Attempt $$i of 3..."; \
-		if SKIP_KWOK_NODES_IN_TILT=1 tilt ci -f tilt/Tiltfile --timeout=10m; then \
+		if SKIP_KWOK_NODES_IN_TILT=1 TILT_MAX_PARALLEL_UPDATES=$(TILT_MAX_PARALLEL_UPDATES) tilt ci -f tilt/Tiltfile --timeout=10m; then \
 			echo "Tilt CI succeeded on attempt $$i"; \
 			break; \
 		else \
@@ -886,7 +889,19 @@ cluster-create: ## Create local ctlptl-managed Kind cluster with registry
 		echo "Error: ctlptl config file $(CTLPTL_CONFIG_FILE) not found"; \
 		exit 1; \
 	fi
-	ctlptl apply -f $(CTLPTL_CONFIG_FILE)
+	@# kind's load balancer sends traffic to control planes that are not up yet
+	@# while fewer than half are healthy, so joining one can fail at random.
+	@# kind deletes the nodes of a cluster it fails to create, so try again.
+	@for attempt in 1 2 3; do \
+		if ctlptl apply -f $(CTLPTL_CONFIG_FILE); then \
+			break; \
+		fi; \
+		if [ $$attempt -eq 3 ]; then \
+			echo "Error: cluster creation failed after $$attempt attempts"; \
+			exit 1; \
+		fi; \
+		echo "Cluster creation failed on attempt $$attempt, retrying..."; \
+	done
 	@echo "Waiting for all nodes to be ready..."
 	@kubectl wait --for=condition=ready nodes --all --timeout=300s
 	@echo "Raising kindnet memory limit"

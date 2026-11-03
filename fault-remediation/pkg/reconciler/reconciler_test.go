@@ -250,6 +250,12 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 	return annotationState, m.node(), nil
 }
 
+func (m *MockNodeAnnotationManager) PrepareRemediationAttempt(ctx context.Context,
+	nodeName string) (*annotation.RemediationStateAnnotation, error) {
+	state, _, err := m.GetRemediationState(ctx, nodeName)
+	return state, err
+}
+
 func (m *MockNodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
 	group string, crName string, actionName string) error {
 	if m.existingCRs == nil {
@@ -283,6 +289,12 @@ func (m *MockNodeAnnotationManager) ClearRemediationState(ctx context.Context, n
 	m.attemptCounts = nil
 
 	return nil
+}
+
+// KeepAttemptsForValidation mirrors a node that validation does not hold: the next fault starts a
+// fresh budget.
+func (m *MockNodeAnnotationManager) KeepAttemptsForValidation(ctx context.Context, nodeName string) error {
+	return m.ClearRemediationState(ctx, nodeName)
 }
 
 // RemoveGroupsFromState mirrors the real manager: the CR reference is dropped but the attempt

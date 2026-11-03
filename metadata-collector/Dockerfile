@@ -25,7 +25,12 @@ COPY data-models/ data-models/
 
 COPY metadata-collector/go.mod metadata-collector/go.sum metadata-collector/
 WORKDIR /workspace/metadata-collector
-RUN go mod download
+# Retry go mod download, because proxy.golang.org can close the connection.
+RUN for attempt in 1 2 3; do \
+      go mod download && break; \
+      [ "$attempt" -lt 3 ] || exit 1; \
+      sleep $((attempt * 10)); \
+    done
 
 COPY metadata-collector/ .
 
