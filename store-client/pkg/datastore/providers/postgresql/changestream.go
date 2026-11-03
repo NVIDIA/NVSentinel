@@ -256,7 +256,11 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 	// MarkProcessed calls cannot persist an older bookmark after a newer one.
 	w.mu.Lock()
 
-	if processedEventID > w.lastEventID {
+	// Never move the cursor back in (changed_at, id) order. An acknowledged row can have a
+	// higher id than the cursor and an earlier changed_at, and the next poll would then read
+	// the rows after it again.
+	if processedEventID > w.lastEventID &&
+		positionAfter(timestamp, processedEventID, w.lastTimestamp, w.lastEventID) {
 		w.lastEventID = processedEventID
 		w.lastTimestamp = timestamp
 	}
@@ -504,16 +508,18 @@ func (w *PostgreSQLChangeStreamWatcher) handleNotification(ctx context.Context, 
 	lastEventID := w.lastEventID
 	w.mu.RUnlock()
 
+	// The cursor follows (changed_at, id), so a row already read can have a higher id than the
+	// cursor. Skip any row read recently, whatever its id.
+	if w.hasRecentlySeenEventID(payload.ID) {
+		slog.Debug("Skipping already-processed event from NOTIFY",
+			"client", w.clientName,
+			"notifiedID", payload.ID,
+			"lastEventID", lastEventID)
+
+		return nil
+	}
+
 	if payload.ID <= lastEventID {
-		if w.hasRecentlySeenEventID(payload.ID) {
-			slog.Debug("Skipping already-processed event from NOTIFY",
-				"client", w.clientName,
-				"notifiedID", payload.ID,
-				"lastEventID", lastEventID)
-
-			return nil
-		}
-
 		slog.Debug("Recovering out-of-order NOTIFY below current bookmark",
 			"client", w.clientName,
 			"notifiedID", payload.ID,
@@ -1188,7 +1194,13 @@ func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWit
 	w.mu.Lock()
 	w.recordRecentEventIDLocked(eventID, time.Now())
 
-	if eventID > w.lastEventID {
+	// The poll reads rows in (changed_at, id) order, so the cursor has to move in that order.
+	// A row can have a higher id and an earlier changed_at than rows read after it: changed_at
+	// is when its transaction started and the id is taken when its statement ends. Moving by id
+	// alone pinned the cursor on such a row, and every later poll read the same rows again.
+	// A row behind the cursor, such as a late commit fetched from its NOTIFY, is still
+	// delivered but does not move the cursor back.
+	if positionAfter(eventTimestamp, eventID, w.lastTimestamp, w.lastEventID) {
 		w.lastEventID = eventID
 		w.lastTimestamp = eventTimestamp
 	}
@@ -1198,6 +1210,16 @@ func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWit
 	slog.Debug("Advanced position before filtering", "client", w.clientName, "eventID", eventID)
 
 	return eventID
+}
+
+// positionAfter reports whether (ts, id) comes after (otherTS, otherID) in the order the poll
+// reads the changelog: changed_at first, then id.
+func positionAfter(ts time.Time, id int64, otherTS time.Time, otherID int64) bool {
+	if c := ts.Compare(otherTS); c != 0 {
+		return c > 0
+	}
+
+	return id > otherID
 }
 
 func (w *PostgreSQLChangeStreamWatcher) hasRecentlySeenEventID(eventID int64) bool {
