@@ -75,6 +75,7 @@ Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers a
   - `datastore_changelog_cleanup_oldest_protected_age_seconds`, the age of `oldest`, with a `stale_tokens` gauge. An alert on these shows when one consumer holds back the cleanup.
 - **Space.** Deletes free reusable space without shrinking the table file. Use autovacuum and the [operator reclamation guidance](../postgresql-changelog-retention-protocol.md#space-reclamation); the cleaner runs no `VACUUM`.
 - **Tests.**
+  - Cover the protocol's [checkpoint acceptance cases](../postgresql-changelog-retention-protocol.md#checkpoint-acceptance-criteria).
   - With sqlmock, in the style of the setup-lock and index tests:
     - the store and factory paths each start a cleaner when enabled and stop it before closing their pool;
     - disabled retention starts no cleaner, and the factory path runs no setup DDL;
