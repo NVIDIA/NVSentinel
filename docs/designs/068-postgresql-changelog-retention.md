@@ -46,9 +46,9 @@ Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers a
 
   A row can be deleted only if `changed_at < cutoff` and `(changed_at, id) < oldest`. Both conditions are part of the delete statement itself, so every deleted row is checked.
 
-  If a token cannot be parsed, the run deletes nothing and reports an error. If there are no tokens, only the age condition applies, because no consumer has a position to protect.
+  Unreadable or absent tokens prevent deletion. The [checkpoint requirements and acceptance criteria](../postgresql-changelog-retention-protocol.md#consumer-bound-and-idle-checkpoints) require verified acknowledgment timestamps and initial positions before reading.
 
-  The previous-snapshot guard is required in both cases. A missing or immature guard means no `DELETE`, including when there are no tokens.
+  The age and previous-snapshot guards remain required. A missing or immature guard means no `DELETE`.
 - **Stale tokens stay in the bound.** A token whose `last_updated` is older than the retention still counts in `oldest`. The cleaner still deletes the rows before it, and it reports the token in a metric and a warning that names the client.
   - An old `last_updated` does not prove that a consumer is gone. A consumer that is live but stalled, or that cannot save its token, needs every row after its position.
   - A removed component leaves its token, which holds back the cleanup from that position on. The operator deletes that row from `resume_tokens` only when the component is gone for good. The docs describe this step, and warn not to delete the token of a component that still runs.
@@ -102,7 +102,7 @@ Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers a
 - **Protects every saved position.** Every deleted row is checked against both the age and the oldest saved position, in the same order the poll uses. Stale tokens stay in the bound, because NVSentinel cordons and drains nodes from these events, and a silent gap is worse than a larger table. The limits in the Notes section still apply.
 - **Bounded work.** Each batch and each run has a fixed upper limit, and the index range stops at the first row that is too new. A run with nothing to delete costs a short index range read for each watched table.
 - **Follows existing patterns.** The setup lock, the CONCURRENTLY index builds of ADR-052 and the `DATASTORE_*` variables already work this way in store-client. No module calls another module.
-- **Upgrade compatibility.** Cleanup is off by default. The guard covers older writers without changing their events. All readers must use acknowledgment-safe checkpoints before cleanup is enabled. Disable cleanup before a reader downgrade; the unchanged token shape cannot identify an old reader automatically. Existing tokens remain in the bound and old components ignore the new optional guard table.
+- **Upgrade compatibility.** Cleanup is off by default. The guard covers older writers without changing their events. All store-owning components must support verified initial and acknowledgment checkpoints before enabling cleanup. Disable cleanup before a reader downgrade; the unchanged token shape cannot identify an old reader automatically. Existing tokens remain in the bound and old components ignore the new optional guard table.
 
 ## Consequences
 

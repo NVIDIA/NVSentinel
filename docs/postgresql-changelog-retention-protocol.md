@@ -33,7 +33,11 @@ An update or delete after snapshot acquisition can cause SQLSTATE `40001`. Roll 
 
 ## Consumer bound and idle checkpoints
 
-A run computes `cutoff = now() - retention` and the smallest saved `(timestamp, eventID)` pair across all clients. Every saved position counts, including stale ones. An unreadable token prevents deletion. For a legacy token with only `eventID`, obtain its timestamp from the changelog; a missing row prevents deletion. With no tokens, omit only the consumer-position bound; retain the age and previous-snapshot guard.
+A run computes `cutoff = now() - retention` and the smallest saved `(timestamp, eventID)` pair across all clients. Every saved position counts, including stale ones. An unreadable token prevents deletion. For a legacy token with only `eventID`, obtain its timestamp from the changelog; a missing row prevents deletion. An empty or incomplete token table does not authorize deletion. With no tokens, defer cleanup. Every active consumer must have a saved position before reading begins. If any active consumer lacks one, defer cleanup; retain the age and previous-snapshot guards unchanged.
+
+When retention is enabled, `Start` must persist a new watcher's initial `(timestamp, eventID)` start pair before its first poll or delivery. Use the same pair that initializes its read position. If persistence fails, return the error and do not start reading. Existing watchers retain their saved positions. The startup invariant ensures every active consumer contributes a row, without inferring consumer absence from missing tokens.
+
+When retention is enabled, `MarkProcessed` must verify the acknowledged event's `changed_at` before checkpoint persistence. A lookup error or missing row must return an error and write no checkpoint. Never substitute `time.Now()` or derive an acknowledgment position from a missing row. These are required, backward-compatible runtime changes for the implementation PR. The caller API and token schema remain unchanged.
 
 Track handed-out deliveries in the provider before enqueueing them. Queued events count as in flight. Interpret `MarkProcessed(token)` according to the existing cumulative delivery-prefix contract, without treating an id prefix as timestamp order. Later deliveries remain pending. Empty or unknown tokens cannot certify outstanding work. Acknowledgment persistence must not jump to the read head while later work remains pending. Propagate checkpoint write failures.
 
@@ -54,7 +58,7 @@ Serialize polling, delivery registration, acknowledgment and checkpoint selectio
 
 This changes only provider bookkeeping; the caller API and `{timestamp, eventID}` token shape stay unchanged. Existing consumer lag semantics from ADR-054 stay unchanged. Stale tokens then identify missing checkpoint progress, not normal filtering, though database or checkpoint failures can also cause it. Keep them in the cleanup bound and alert; only an operator can remove a retired consumer's token.
 
-Enable cleanup only after every consumer uses acknowledgment-safe checkpointing. Older writers remain supported by the `xmin` guard, but older readers can still persist a read head ahead of work. Disable cleanup before downgrading a reader. Operators must confirm reader rollout; the unchanged token format cannot identify an old reader automatically. This prerequisite must appear in upgrade documentation and acceptance tests. Default-disabled retention preserves existing operation.
+Keep cleanup disabled until all store-owning components run the new version with initial-position persistence and verified, acknowledgment-safe checkpointing. Confirm every active watcher has saved its position before enabling deletion. Old-version watchers can lack an initial row or persist a read head ahead of work. An existing token table cannot prove rollout completeness. Older writers remain supported by the `xmin` guard. Disable cleanup before downgrading a reader. Operators must confirm reader rollout; the unchanged token format cannot identify an old reader automatically. This prerequisite must appear in upgrade documentation and acceptance tests. Default-disabled retention preserves existing operation.
 
 ## Bounded deletes
 
@@ -76,9 +80,21 @@ WHERE row_version.id = candidates.id
        OR age(row_version.xmin) < 0);
 ```
 
-Here `$6` is the previous full horizon, validated inside the repeatable-read batch. With no consumer tokens, omit the pair conditions. Both age branches remain subject to retention and consumer bounds. The guard applies to a snapshot-visible target version; concurrent changes must cause rollback, not a newer-version recheck under read committed. The candidate limit bounds scans even when the guard protects many rows. Stop on a short or blocked batch, the batch-count limit, cancellation or error; do not spin on a protected prefix.
+Here `$6` is the previous full horizon, validated inside the repeatable-read batch. With no consumer tokens, execute no delete; never omit the pair conditions. Both age branches remain subject to retention and consumer bounds. The guard applies to a snapshot-visible target version; concurrent changes must cause rollback, not a newer-version recheck under read committed. The candidate limit bounds scans even when the guard protects many rows. Stop on a short or blocked batch, the batch-count limit, cancellation or error; do not spin on a protected prefix.
 
 A processed-row update changes `xmin`, which may delay deletion conservatively. Earlier age-and-position benchmarks exclude the guard and do not establish the final query's performance.
+
+## Checkpoint acceptance criteria
+
+The implementation PR must add these tests before retention can be released:
+
+- With retention enabled, a failed `changed_at` lookup returns an error and writes no checkpoint. Cover both database errors and missing rows. Assert the previous durable position remains unchanged.
+- A new watcher saves its exact start pair before its first poll or delivery, including when no events are acknowledged. Restart resumes from that saved pair.
+- A failed initial-position write returns an error and prevents polling and delivery.
+- Empty token tables cause no deletion. An active consumer without a saved position prevents cleanup, even when other consumers have tokens.
+- A consumer that starts before its first acknowledgment still protects unread rows with its initial position. Verify the age and previous-snapshot guards remain required.
+- Cleanup remains disabled during mixed-version rollout, including old watchers without initial rows. Enable it only after all store-owning components support these rules and active watchers have saved positions. Disable cleanup before a reader downgrade.
+- Retention disabled preserves existing behavior. Existing token schemas and caller interfaces remain compatible.
 
 ## Space reclamation
 
