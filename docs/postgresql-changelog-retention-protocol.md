@@ -35,11 +35,23 @@ An update or delete after snapshot acquisition can cause SQLSTATE `40001`. Roll 
 
 A run computes `cutoff = now() - retention` and the smallest saved `(timestamp, eventID)` pair across all clients. Every saved position counts, including stale ones. An unreadable token prevents deletion. For a legacy token with only `eventID`, obtain its timestamp from the changelog; a missing row prevents deletion. An empty token table defers cleanup. The cleaner has no consumer registry and cannot detect missing consumer rows in a nonempty table. Protection therefore requires the startup invariant and operator rollout gate below. The age and previous-snapshot guards remain unchanged.
 
-When retention is enabled, initialize positions in `PostgreSQLWatcherFactory.CreateChangeStreamWatcher` and `PostgreSQLDataStore.NewChangeStreamWatcher` before returning a watcher. Both construction paths already return errors. Move resume-position initialization out of `Start` for this mode. `Start(ctx)` keeps its existing signature and uses the prepared position without reloading it. An uninitialized watcher must report the failure and launch no polling or notification readers.
+When retention is enabled, every error-returning PostgreSQL watcher construction path must initialize its position before returning a watcher. This includes all three paths:
+
+- `PostgreSQLWatcherFactory.CreateChangeStreamWatcher` in `watcher_factory.go`;
+- `PostgreSQLDataStore.NewChangeStreamWatcher` in `datastore.go`;
+- `PostgreSQLDatabaseClient.NewChangeStreamWatcher` in `database_client.go`.
+
+Use one shared initialization helper so these paths cannot diverge. Constructors return initialization errors. Move resume-position initialization out of `Start` for this mode. `Start(ctx)` keeps its existing signature and has no return value. It uses the prepared position without reloading it. `Start` performs no new checkpoint writes. An uninitialized watcher must report the failure. It must launch no polling or notification readers.
+
+Where supported, run `ResetResumeTokenOnStartIfConfigured` before position initialization. A successful reset removes the old token first. The absent-row initialization then saves a fresh pair before the watcher can poll. A reset failure returns from the constructor without starting readers. `PostgreSQLDatabaseClient.NewChangeStreamWatcher` currently does not invoke this reset helper. Its initialization requirement still applies.
 
 A new watcher means no saved row exists for its client name. Only `sql.ErrNoRows` from the token-row lookup permits an initial write. Reserve a database connection for initialization. Read `clock_timestamp()` on that connection and pair it with `eventID` 0. Persist this exact pair on the same connection before returning the watcher. Use the persisted pair as its read position. Never use the application clock for this initial timestamp. If a concurrent insert wins, load and validate that row instead of overwriting it. Clock-read or persistence failures return through the construction path and prevent reading.
 
 Load, parse or legacy-token conversion failures must return through the construction path when retention is enabled. They must prevent reading and leave existing tokens unchanged. In particular, `convertOldTokenToTimestamp` must propagate lookup failures, including missing changelog rows. It must never replace a legacy token with `(time.Now(), 0)`. The preserved legacy token keeps cleanup blocked under the missing-row rule above.
+
+Legacy conversion failures recur on each restart until an operator repairs or resets the token. Report the failure in a log that names the client. The cleanup warning for an unresolved legacy token must also name the client. The stale-token metric and warning identify missing checkpoint progress after the configured threshold. Cleanup remains blocked while the unresolved token persists.
+
+For recovery, disable cleanup before removing an active client's token. Use the existing reset-on-start configuration where supported, or delete that client's `resume_tokens` row. Restart the consumer through enabled initialization. Accept that it resumes from the new database-clock start pair. This can skip events after its old position and before the new pair. Verify its fresh saved row before re-enabling cleanup. Keep the rollout gate satisfied for every other consumer. The database-client path requires manual deletion unless its caller already provides a reset mechanism. The shared reset helper skips `event-exporter`.
 
 Initial rows with `eventID` 0 use the same `last_updated` stale-token threshold as other rows. Initial persistence does not establish lag evidence; ADR-054 lag stays unknown until a poll records progress or an empty batch.
 
@@ -95,7 +107,8 @@ A processed-row update changes `xmin`, which may delay deletion conservatively. 
 The implementation PR must add these tests before retention can be released:
 
 - With retention enabled, a failed `changed_at` lookup returns an error and writes no checkpoint. Cover both database errors and missing rows. Assert the previous durable position remains unchanged.
-- Both construction paths save a new client's exact database-clock start pair before returning the watcher. Cover application-clock skew and `eventID` 0. Restart resumes from the saved pair without resetting it in `Start` or waiting for an acknowledgment.
+- Test each of the three named construction paths for initial persistence and failure propagation. Include the database-client path used through `ClientFactory`. Each path saves the exact database-clock start pair before returning the watcher. Cover application-clock skew and `eventID` 0. Restart resumes from the saved pair. `Start` neither resets it nor writes a new checkpoint. No acknowledgment is required for initial persistence.
+- Where supported, reset-on-start runs before absent-row initialization. The reset consumer has a fresh saved pair before its first poll. A failed reset returns a construction error. Verify recovery by manual token deletion where reset-on-start is unsupported.
 - Failed clock reads or initial-position writes return construction errors and prevent polling and delivery. An uninitialized `Start` launches no readers. Concurrent initial inserts preserve the winning row.
 - Only a missing token row permits initial insertion. Load errors, malformed tokens and legacy conversion failures return construction errors without reading or writing checkpoints. Cover missing legacy changelog rows and verify existing tokens remain unchanged. The preserved legacy token blocks cleanup.
 - Empty token tables cause no deletion. A nonempty table does not certify rollout completeness; verify the operator prerequisite in upgrade documentation.
