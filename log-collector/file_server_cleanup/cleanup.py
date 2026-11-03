@@ -89,9 +89,12 @@ def main(metrics_port=None, retention_days=None, sleep_interval=None, target_dir
         f"Starting File Server Cleanup Service - Port: {metrics_port}, Retention: {retention_days} days, Interval: {sleep_interval}s"
     )
 
+    # "::" serves IPv4 and IPv6 on a dual-stack host. The chart sets it only when global.ipv6.enabled is true.
+    metrics_addr = os.getenv("CLEANUP_METRICS_ADDR", "0.0.0.0")
+
     try:
-        start_http_server(metrics_port)
-        logger.info(f"Metrics server started on port {metrics_port}")
+        start_http_server(metrics_port, addr=metrics_addr)
+        logger.info(f"Metrics server started on {metrics_addr} port {metrics_port}")
     except Exception as e:
         logger.error(f"Failed to start metrics server: {e}")
         return 1
