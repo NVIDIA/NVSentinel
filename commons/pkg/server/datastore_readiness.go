@@ -34,13 +34,19 @@ type LagStateProvider interface {
 	LagState() (lastEmptyBatch, lastEventRead time.Time)
 }
 
+// ReadinessStateProvider reports whether a watcher can currently process database events.
+type ReadinessStateProvider interface {
+	IsReady() bool
+}
+
 // DatastoreReadinessChecker reports readiness based on change stream watcher lag state.
 // It implements ReadinessChecker for server.WithReadinessCheck, controller-runtime healthz.Checker
 // for mgr.AddReadyzCheck, and prometheus.Collector for exporting the datastore_connected gauge.
 type DatastoreReadinessChecker struct {
-	mu       sync.RWMutex
-	provider LagStateProvider
-	desc     *prometheus.Desc
+	mu                sync.RWMutex
+	provider          LagStateProvider
+	readinessProvider ReadinessStateProvider
+	desc              *prometheus.Desc
 }
 
 // NewDatastoreReadinessChecker creates a DatastoreReadinessChecker and registers the
@@ -52,7 +58,7 @@ func NewDatastoreReadinessChecker(reg prometheus.Registerer) *DatastoreReadiness
 
 	desc := prometheus.NewDesc(
 		DatastoreConnectedMetricName,
-		"Reports 1 if the datastore watcher has connected, 0 otherwise.",
+		"Reports 1 when the datastore watcher can process events, 0 otherwise.",
 		nil,
 		nil,
 	)
@@ -81,6 +87,7 @@ func (c *DatastoreReadinessChecker) SetLagProvider(provider LagStateProvider) {
 	defer c.mu.Unlock()
 
 	c.provider = provider
+	c.readinessProvider, _ = provider.(ReadinessStateProvider)
 }
 
 // SetWatcher sets the watcher, extracting its LagStateProvider.
@@ -94,15 +101,19 @@ func (c *DatastoreReadinessChecker) SetWatcher(watcher any) {
 	}
 }
 
-// Ready implements ReadinessChecker. It reports ready once the datastore watcher
-// has established connection.
+// Ready implements ReadinessChecker. It reports ready once the datastore watcher can process events.
 func (c *DatastoreReadinessChecker) Ready(_ context.Context) error {
 	c.mu.RLock()
 	provider := c.provider
+	readinessProvider := c.readinessProvider
 	c.mu.RUnlock()
 
 	if provider == nil {
 		return errors.New("datastore watcher initializing")
+	}
+
+	if readinessProvider != nil && !readinessProvider.IsReady() {
+		return errors.New("datastore watcher not ready")
 	}
 
 	return nil
