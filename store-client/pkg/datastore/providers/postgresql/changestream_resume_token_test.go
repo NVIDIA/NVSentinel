@@ -97,10 +97,6 @@ func TestResumeTokenAdvancedOnSend(t *testing.T) {
 		assert.Equal(t, []byte("1"), event.ResumeToken)
 
 		// Now simulate the application calling MarkProcessed
-		mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
-			WithArgs(int64(1)).
-			WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(watcher.lastTimestamp))
-
 		mock.ExpectExec("UPDATE datastore_changelog SET processed").
 			WithArgs(int64(1), tableName).
 			WillReturnResult(sqlmock.NewResult(0, 1))
@@ -390,9 +386,6 @@ func TestConcurrentClientsWithDifferentFilters(t *testing.T) {
 
 	// Now simulate each client calling MarkProcessed for their respective events
 	// Client 1 marks event 1
-	mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
-		WithArgs(int64(1)).
-		WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(watcher1.lastTimestamp))
 	mock.ExpectExec("UPDATE datastore_changelog SET processed").
 		WithArgs(int64(1), tableName).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -404,9 +397,6 @@ func TestConcurrentClientsWithDifferentFilters(t *testing.T) {
 	assert.Equal(t, int64(2), watcher1.lastEventID, "Client 1 should retain bookmark advanced through filtered event 2")
 
 	// Client 2 marks event 2
-	mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
-		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(watcher2.lastTimestamp))
 	mock.ExpectExec("UPDATE datastore_changelog SET processed").
 		WithArgs(int64(2), tableName).
 		WillReturnResult(sqlmock.NewResult(0, 1))
