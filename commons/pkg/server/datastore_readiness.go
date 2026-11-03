@@ -34,7 +34,10 @@ type LagStateProvider interface {
 	LagState() (lastEmptyBatch, lastEventRead time.Time)
 }
 
-// DatastoreReadinessChecker reports readiness based on change stream watcher lag state.
+// DatastoreReadinessChecker reports whether a change stream watcher has been constructed and
+// handed to it. That precedes the watcher's event loop starting: node-drainer hands it over at
+// main.go:150 and starts it at :270, and fault-remediation hands it over before the reconciler
+// calls Watcher.Start.
 // It implements ReadinessChecker for server.WithReadinessCheck, controller-runtime healthz.Checker
 // for mgr.AddReadyzCheck, and prometheus.Collector for exporting the datastore_connected gauge.
 type DatastoreReadinessChecker struct {
@@ -52,7 +55,10 @@ func NewDatastoreReadinessChecker(reg prometheus.Registerer) *DatastoreReadiness
 
 	desc := prometheus.NewDesc(
 		DatastoreConnectedMetricName,
-		"Reports 1 if the datastore watcher has connected, 0 otherwise.",
+		"1 once a change stream watcher has been handed to the readiness checker, which happens "+
+			"after datastore initialisation and before the watcher's event loop starts; 0 before "+
+			"that. It does not return to 0 if the datastore is lost later: that stops the "+
+			"component, so the pod restarts instead.",
 		nil,
 		nil,
 	)
@@ -75,7 +81,8 @@ func NewDatastoreReadinessChecker(reg prometheus.Registerer) *DatastoreReadiness
 	return checker
 }
 
-// SetLagProvider sets the LagStateProvider used to determine datastore connectivity.
+// SetLagProvider records the watcher, whose presence is what makes this checker ready.
+// Only whether it is set is consulted -- Ready does not call LagState.
 func (c *DatastoreReadinessChecker) SetLagProvider(provider LagStateProvider) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
