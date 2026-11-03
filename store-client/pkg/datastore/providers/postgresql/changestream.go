@@ -133,9 +133,10 @@ func (w *PostgreSQLChangeStreamWatcher) Start(ctx context.Context) {
 	// Load last processed event ID
 	if err := w.loadResumePosition(ctx); err != nil {
 		slog.Error("Failed to load resume position", "client", w.clientName, "error", err)
+	}
 
-		// Readers require a valid position. In particular, (zero timestamp, old ID)
-		// can repeatedly fetch older rows without advancing the stream.
+	// Preserve replay after load errors; only cancellation prevents startup.
+	if ctx.Err() != nil {
 		return
 	}
 
@@ -1331,6 +1332,10 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumePosition(ctx context.Context) 
 	// Backward compatibility: convert old ID-based token to timestamp
 	if w.lastTimestamp.IsZero() && w.lastEventID > 0 {
 		if err := w.convertOldTokenToTimestamp(ctx); err != nil {
+			// Conversion retries while the context is live. If it still fails,
+			// clear the ID so readers can replay and advance from (zero, 0).
+			w.lastEventID = 0
+
 			return fmt.Errorf("failed to convert old resume token: %w", err)
 		}
 	}
@@ -1365,7 +1370,11 @@ func (w *PostgreSQLChangeStreamWatcher) handleNoResumeToken(err error) error {
 func (w *PostgreSQLChangeStreamWatcher) convertOldTokenToTimestamp(ctx context.Context) error {
 	oldEventID := w.lastEventID
 
-	changedAt, err := w.lookupLegacyTimestamp(ctx, oldEventID)
+	query := `SELECT changed_at FROM datastore_changelog WHERE id = $1`
+
+	var changedAt time.Time
+
+	err := w.queryLegacyTimestamp(ctx, query, oldEventID, &changedAt)
 	if err == nil {
 		w.lastTimestamp = changedAt
 
@@ -1388,7 +1397,7 @@ func (w *PostgreSQLChangeStreamWatcher) convertOldTokenToTimestamp(ctx context.C
 
 	var nextTimestamp sql.NullTime
 
-	if err := w.db.QueryRowContext(ctx, fallbackQuery, oldEventID).Scan(&nextTimestamp); err != nil {
+	if err := w.queryLegacyTimestamp(ctx, fallbackQuery, oldEventID, &nextTimestamp); err != nil {
 		return fmt.Errorf("failed to find timestamp after old event %d: %w", oldEventID, err)
 	}
 
@@ -1409,9 +1418,11 @@ func (w *PostgreSQLChangeStreamWatcher) convertOldTokenToTimestamp(ctx context.C
 	return nil
 }
 
-// lookupLegacyTimestamp retries database errors until the row is found, is absent,
-// or the caller cancels. Missing rows use the existing fallback without retrying.
-func (w *PostgreSQLChangeStreamWatcher) lookupLegacyTimestamp(ctx context.Context, eventID int64) (time.Time, error) {
+// queryLegacyTimestamp retries either legacy timestamp query until success,
+// a missing row, or cancellation. The caller handles missing rows and NULL timestamps.
+func (w *PostgreSQLChangeStreamWatcher) queryLegacyTimestamp(
+	ctx context.Context, query string, eventID int64, timestamp any,
+) error {
 	interval := w.resumeRetryInterval
 	if interval <= 0 {
 		interval = client.DefaultRetryDelay
@@ -1419,18 +1430,15 @@ func (w *PostgreSQLChangeStreamWatcher) lookupLegacyTimestamp(ctx context.Contex
 
 	backoff := wait.Backoff{Duration: interval, Factor: 2, Jitter: 0.2, Steps: 32, Cap: resumeRetryMaxDelay}
 	delay := backoff.DelayFunc()
-	query := `SELECT changed_at FROM datastore_changelog WHERE id = $1`
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return time.Time{}, fmt.Errorf("legacy timestamp lookup cancelled: %w", err)
+			return fmt.Errorf("legacy timestamp lookup cancelled: %w", err)
 		}
 
-		var changedAt time.Time
-
-		err := w.db.QueryRowContext(ctx, query, eventID).Scan(&changedAt)
+		err := w.db.QueryRowContext(ctx, query, eventID).Scan(timestamp)
 		if err == nil || errors.Is(err, sql.ErrNoRows) {
-			return changedAt, err
+			return err
 		}
 
 		retryDelay := min(delay(), resumeRetryMaxDelay)
@@ -1439,7 +1447,7 @@ func (w *PostgreSQLChangeStreamWatcher) lookupLegacyTimestamp(ctx context.Contex
 
 		select {
 		case <-ctx.Done():
-			return time.Time{}, fmt.Errorf("legacy timestamp lookup cancelled: %w", ctx.Err())
+			return fmt.Errorf("legacy timestamp lookup cancelled: %w", ctx.Err())
 		case <-time.After(retryDelay):
 		}
 	}
