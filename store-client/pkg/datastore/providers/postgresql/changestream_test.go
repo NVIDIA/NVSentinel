@@ -763,3 +763,147 @@ func TestTimestampBasedResume_MongoDBEquivalence(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
+
+func TestMarkProcessed_TimestampLookupFailure_PreservesResumePosition(t *testing.T) {
+	for _, lookupErr := range []error{sql.ErrConnDone, sql.ErrNoRows} {
+		t.Run(lookupErr.Error(), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
+			previous := time.Date(2024, 11, 24, 10, 0, 0, 0, time.UTC)
+			watcher.lastTimestamp = previous
+			watcher.lastEventID = 192
+			mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
+				WithArgs(int64(193)).WillReturnError(lookupErr)
+
+			err = watcher.MarkProcessed(context.Background(), []byte("193"))
+			t.Logf("lookup error=%v; MarkProcessed error=%v; resume timestamp=%s eventID=%d; previous=%s",
+				lookupErr, err, watcher.lastTimestamp.Format(time.RFC3339Nano), watcher.lastEventID,
+				previous.Format(time.RFC3339Nano))
+			assert.ErrorIs(t, err, lookupErr)
+			assert.Equal(t, previous, watcher.lastTimestamp)
+			assert.Equal(t, int64(192), watcher.lastEventID)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestLoadResumePosition_LegacyLookupTransientError_DoesNotAdvance(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
+	mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
+		WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow([]byte(`{"eventID":193}`)))
+	mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
+		WithArgs(int64(193)).WillReturnError(sql.ErrConnDone)
+
+	err = watcher.loadResumePosition(context.Background())
+	t.Logf("load error=%v; resume timestamp=%s eventID=%d", err,
+		watcher.lastTimestamp.Format(time.RFC3339Nano), watcher.lastEventID)
+	assert.ErrorIs(t, err, sql.ErrConnDone)
+	assert.True(t, watcher.lastTimestamp.IsZero(), "failed load must permit replay from the beginning")
+	assert.Equal(t, int64(193), watcher.lastEventID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMarkProcessed_VerifiedTimestamp_PersistsResumePosition(t *testing.T) {
+	for _, token := range []string{"193", ""} {
+		t.Run("token="+token, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
+			changedAt := time.Date(2024, 11, 24, 10, 0, 4, 0, time.UTC)
+			if token == "" {
+				watcher.lastTimestamp = changedAt
+				watcher.lastEventID = 193
+			} else {
+				mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
+					WithArgs(int64(193)).WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(changedAt))
+			}
+
+			tokenJSON, err := json.Marshal(map[string]any{
+				"timestamp": changedAt.Format(time.RFC3339Nano), "eventID": int64(193),
+			})
+			require.NoError(t, err)
+			mock.ExpectExec("UPDATE datastore_changelog").
+				WithArgs(int64(193), "health_events").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("INSERT INTO resume_tokens").
+				WithArgs("test-client", tokenJSON).WillReturnResult(sqlmock.NewResult(0, 1))
+
+			require.NoError(t, watcher.MarkProcessed(context.Background(), []byte(token)))
+			assert.Equal(t, changedAt, watcher.lastTimestamp)
+			assert.Equal(t, int64(193), watcher.lastEventID)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestLoadResumePosition_LegacyRowMissing_UsesSafeFallback(t *testing.T) {
+	earliest := time.Date(2024, 11, 24, 10, 0, 5, 0, time.UTC)
+	tests := []struct {
+		name      string
+		timestamp any
+		lookupErr error
+	}{
+		{name: "remaining rows", timestamp: earliest},
+		{name: "no remaining rows"},
+		{name: "fallback query fails", lookupErr: sql.ErrConnDone},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
+			mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
+				WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow([]byte(`{"eventID":193}`)))
+			mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
+				WithArgs(int64(193)).WillReturnError(sql.ErrNoRows)
+			fallback := mock.ExpectQuery(`SELECT MIN\(changed_at\) FROM datastore_changelog WHERE id > \$1`).
+				WithArgs(int64(193))
+			if tt.lookupErr != nil {
+				fallback.WillReturnError(tt.lookupErr)
+			} else {
+				fallback.WillReturnRows(sqlmock.NewRows([]string{"min"}).AddRow(tt.timestamp))
+			}
+
+			beforeLoad := time.Now()
+			err = watcher.loadResumePosition(context.Background())
+			afterLoad := time.Now()
+
+			if tt.lookupErr != nil {
+				require.ErrorIs(t, err, tt.lookupErr)
+				assert.True(t, watcher.lastTimestamp.IsZero())
+				assert.Equal(t, int64(193), watcher.lastEventID)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, int64(0), watcher.lastEventID)
+
+				if tt.timestamp == nil {
+					assert.False(t, watcher.lastTimestamp.Before(beforeLoad))
+					assert.False(t, watcher.lastTimestamp.After(afterLoad))
+				} else {
+					assert.Equal(t, earliest, watcher.lastTimestamp)
+					// The tuple bound must include rows at the earliest timestamp.
+					mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
+						WithArgs("health_events", earliest, int64(0)).
+						WillReturnRows(sqlmock.NewRows([]string{
+							"id", "record_id", "operation", "old_values", "new_values", "changed_at",
+						}).AddRow(194, "uuid-194", "INSERT", nil, `{"document":{}}`, earliest))
+					require.NoError(t, watcher.fetchNewChanges(context.Background()))
+					assert.Len(t, watcher.events, 1)
+				}
+			}
+
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}

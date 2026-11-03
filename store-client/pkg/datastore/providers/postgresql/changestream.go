@@ -225,12 +225,7 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 		`
 
 		if err := w.db.QueryRowContext(ctx, timestampQuery, eventID).Scan(&timestamp); err != nil {
-			slog.Warn("Failed to get timestamp for event, using current time",
-				"client", w.clientName,
-				"eventID", eventID,
-				"error", err)
-
-			timestamp = time.Now()
+			return fmt.Errorf("failed to get timestamp for event %d: %w", eventID, err)
 		}
 	}
 
@@ -1309,7 +1304,9 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumePosition(ctx context.Context) 
 
 	// Backward compatibility: convert old ID-based token to timestamp
 	if w.lastTimestamp.IsZero() && w.lastEventID > 0 {
-		w.convertOldTokenToTimestamp(ctx)
+		if err := w.convertOldTokenToTimestamp(ctx); err != nil {
+			return fmt.Errorf("failed to convert old resume token: %w", err)
+		}
 	}
 
 	slog.Info("Loaded resume position",
@@ -1339,30 +1336,54 @@ func (w *PostgreSQLChangeStreamWatcher) handleNoResumeToken(err error) error {
 }
 
 // convertOldTokenToTimestamp queries the database to get timestamp for an old ID-based token.
-func (w *PostgreSQLChangeStreamWatcher) convertOldTokenToTimestamp(ctx context.Context) {
+func (w *PostgreSQLChangeStreamWatcher) convertOldTokenToTimestamp(ctx context.Context) error {
 	query := `SELECT changed_at FROM datastore_changelog WHERE id = $1`
+	oldEventID := w.lastEventID
 
 	var changedAt time.Time
 
-	err := w.db.QueryRowContext(ctx, query, w.lastEventID).Scan(&changedAt)
+	err := w.db.QueryRowContext(ctx, query, oldEventID).Scan(&changedAt)
 	if err == nil {
 		w.lastTimestamp = changedAt
 
 		slog.Info("Converted old ID-based token to timestamp",
 			"client", w.clientName,
-			"eventID", w.lastEventID,
+			"eventID", oldEventID,
 			"timestamp", w.lastTimestamp)
 
-		return
+		return nil
 	}
 
-	// Can't find the event - start from current time
-	w.lastTimestamp = time.Now()
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("failed to get timestamp for old event %d: %w", oldEventID, err)
+	}
+
+	// The old row may have expired. Start at the earliest remaining timestamp after
+	// its ID, with ID zero to include every row at that timestamp. Replaying is safer
+	// than using the current time, which would skip events accumulated before restart.
+	fallbackQuery := `SELECT MIN(changed_at) FROM datastore_changelog WHERE id > $1`
+
+	var nextTimestamp sql.NullTime
+
+	if err := w.db.QueryRowContext(ctx, fallbackQuery, oldEventID).Scan(&nextTimestamp); err != nil {
+		return fmt.Errorf("failed to find timestamp after old event %d: %w", oldEventID, err)
+	}
+
+	if nextTimestamp.Valid {
+		w.lastTimestamp = nextTimestamp.Time
+	} else {
+		// No later rows remain; preserve the existing current-time startup behavior.
+		w.lastTimestamp = time.Now()
+	}
+
 	w.lastEventID = 0
 
-	slog.Warn("Could not find event for old token, starting from current time",
+	slog.Warn("Could not find event for old token, using fallback timestamp",
 		"client", w.clientName,
-		"oldEventID", w.lastEventID)
+		"oldEventID", oldEventID,
+		"timestamp", w.lastTimestamp)
+
+	return nil
 }
 
 // saveResumePosition saves the resume position to the resume tokens table
