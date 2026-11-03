@@ -33,8 +33,13 @@ COPY tilt/simple-health-client/go.mod tilt/simple-health-client/go.sum ./tilt/si
 
 WORKDIR /go/src/tilt/simple-health-client
 
+# Retry go mod download, because proxy.golang.org can close the connection.
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+    for attempt in 1 2 3; do \
+      go mod download && break; \
+      [ "$attempt" -lt 3 ] || exit 1; \
+      sleep $((attempt * 10)); \
+    done
 
 # Copy the source code after go mod download
 COPY tilt/simple-health-client/ .
