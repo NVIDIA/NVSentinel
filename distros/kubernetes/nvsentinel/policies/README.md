@@ -269,7 +269,7 @@ When you need to test without blocking images:
 
 ## Additional Resources
 
-- [NVSentinel Security Documentation](../../../SECURITY.md)
+- [NVSentinel Security Documentation](../../../../SECURITY.md)
 - [NVSentinel Attestations](https://github.com/NVIDIA/NVSentinel/attestations)
 - [Sigstore Policy Controller Documentation](https://docs.sigstore.dev/policy-controller/overview/)
 - [ClusterImagePolicy API Reference](https://github.com/sigstore/policy-controller/blob/main/docs/api-types/index-v1beta1.md)
