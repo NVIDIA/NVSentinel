@@ -32,7 +32,8 @@ import (
 )
 
 const (
-	resultError = "error"
+	resultError   = "error"
+	resultSuccess = "success"
 )
 
 var (
@@ -323,8 +324,7 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	}
 
 	if totalNodes == 0 {
-		slog.ErrorContext(ctx, "Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes")
-		return false, fmt.Errorf("total nodes is 0 after retries")
+		return b.isTrippedWithoutGPUNodes(ctx)
 	}
 
 	now := time.Now()
@@ -462,11 +462,19 @@ func (b *slidingWindowBreaker) getTotalNodesWithRetry(ctx context.Context) (int,
 		}
 
 		if totalNodes > 0 {
-			result = "success"
+			b.noGPUNodes.Store(false)
+
+			result = resultSuccess
 
 			metrics.FaultQuarantineGetTotalNodesRetryAttempts.Observe(float64(attempt))
 
 			return b.handleSuccessfulNodeCount(totalNodes, attempt)
+		}
+
+		if b.noGPUNodes.Load() {
+			result = resultSuccess
+
+			return 0, nil
 		}
 
 		if attempt == 0 {
@@ -484,11 +492,17 @@ func (b *slidingWindowBreaker) getTotalNodesWithRetry(ctx context.Context) (int,
 		}
 	}
 
-	// All retries exhausted
-	result = resultError
-	errorType = "zero_nodes"
+	totalNodes, err := b.resolveRetriesExhausted(ctx, maxRetries, initialDelay, maxDelay)
+	if err != nil {
+		result = resultError
+		errorType = "zero_nodes"
 
-	return 0, b.logRetriesExhausted(ctx, maxRetries, initialDelay, maxDelay)
+		return 0, err
+	}
+
+	result = resultSuccess
+
+	return totalNodes, nil
 }
 
 // getRetryConfig extracts and validates retry configuration with defaults
@@ -570,10 +584,12 @@ func (b *slidingWindowBreaker) calculateBackoffDelay(attempt int,
 	return delay
 }
 
-// logRetriesExhausted logs a summary when all retries are exhausted.
-// Returns ErrRetryExhausted wrapped with context for pod restart.
-func (b *slidingWindowBreaker) logRetriesExhausted(ctx context.Context, maxRetries int,
-	initialDelay, maxDelay time.Duration) error {
+// resolveRetriesExhausted reads the node count once more after every retry returned zero.
+// GetTotalNodes only succeeds on a synced cache, so a successful zero means the cluster has
+// no GPU nodes. That is recorded and returned without error so fault-quarantine keeps
+// running. A failed read is returned as ErrRetryExhausted so the pod restarts.
+func (b *slidingWindowBreaker) resolveRetriesExhausted(ctx context.Context, maxRetries int,
+	initialDelay, maxDelay time.Duration) (int, error) {
 	actualNodes, err := b.cfg.K8sClient.GetTotalNodes(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx,
@@ -581,20 +597,49 @@ func (b *slidingWindowBreaker) logRetriesExhausted(ctx context.Context, maxRetri
 			"maxRetries", maxRetries,
 			"error", err,
 			"initialDelay", initialDelay,
-			"totalClusterNodes", actualNodes,
 			"maxDelay", maxDelay)
 
-		return fmt.Errorf("%w: failed to get node count: %w", ErrRetryExhausted, err)
+		return 0, fmt.Errorf("%w: failed to get node count: %w", ErrRetryExhausted, err)
 	}
 
-	slog.ErrorContext(ctx, "Circuit breaker: All retry attempts exhausted",
-		"maxRetries", maxRetries,
-		"actualNodes", actualNodes,
-		"initialDelay", initialDelay,
-		"maxDelay", maxDelay,
-		"message",
-		"Found total nodes but GetTotalNodes still returning 0. NodeInformer cache sync issues. Pod will restart.")
+	if actualNodes > 0 {
+		return b.handleSuccessfulNodeCount(actualNodes, maxRetries)
+	}
 
-	return fmt.Errorf("%w: NodeInformer cache sync failed after %d retries (actualNodes=%d but GetTotalNodes returning 0)",
-		ErrRetryExhausted, maxRetries, actualNodes)
+	b.noGPUNodes.Store(true)
+
+	slog.WarnContext(ctx,
+		"Circuit breaker: no GPU nodes found; staying CLOSED. If this cluster has GPU nodes, check gpuNodeLabel",
+		"maxRetries", maxRetries)
+
+	return 0, nil
+}
+
+// isTrippedWithoutGPUNodes decides the breaker state when the cluster has no GPU nodes.
+// There is nothing to protect, so the breaker stays CLOSED. A cordon recorded in the window
+// while no GPU nodes are counted means the GPU node label does not match the nodes being
+// quarantined, so the breaker trips rather than letting quarantines run without a bound.
+func (b *slidingWindowBreaker) isTrippedWithoutGPUNodes(ctx context.Context) (bool, error) {
+	b.mu.Lock()
+	b.slideWindow(time.Now())
+	recentCordonedNodes := b.sumBuckets()
+	b.mu.Unlock()
+
+	if recentCordonedNodes == 0 {
+		metrics.SetFaultQuarantineBreakerUtilization(0)
+		metrics.SetFaultQuarantineBreakerState(string(StateClosed))
+
+		return false, nil
+	}
+
+	slog.ErrorContext(ctx, "Circuit breaker: nodes were cordoned but no GPU nodes are counted; tripping",
+		"recentCordonedNodes", recentCordonedNodes)
+
+	if err := b.ForceState(ctx, StateTripped); err != nil {
+		return true, fmt.Errorf("error forcing circuit breaker state to TRIPPED: %w", err)
+	}
+
+	metrics.SetFaultQuarantineBreakerState(string(StateTripped))
+
+	return true, nil
 }

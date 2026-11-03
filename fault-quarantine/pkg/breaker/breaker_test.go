@@ -1100,3 +1100,87 @@ func TestBreakerStateGauge_FollowsTripAndForceState(t *testing.T) {
 	require.NoError(t, b.ForceState(ctx, StateClosed))
 	assert.Equal(t, map[string]float64{string(StateClosed): 1}, breakerStateSeries(t))
 }
+
+func newNoGPUNodeBreaker(t *testing.T, ctx context.Context) *slidingWindowBreaker {
+	t.Helper()
+
+	k8sClient := setupTestClient(t)
+
+	require.Eventually(t, func() bool {
+		actualNodes, err := k8sClient.GetTotalNodes(ctx)
+		return err == nil && actualNodes == 0
+	}, 5*time.Second, 50*time.Millisecond, "NodeInformer should see no nodes")
+
+	configMapName := "test-breaker-" + generateTestID()[:8]
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().ConfigMaps("default").Delete(context.Background(), configMapName, metav1.DeleteOptions{})
+	})
+
+	b, err := NewSlidingWindowBreaker(ctx, Config{
+		Window:             time.Minute,
+		TripPercentage:     50,
+		K8sClient:          k8sClient,
+		ConfigMapName:      configMapName,
+		ConfigMapNamespace: "default",
+		MaxRetries:         2,
+		InitialRetryDelay:  time.Millisecond,
+		MaxRetryDelay:      time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	return b.(*slidingWindowBreaker)
+}
+
+func TestIsTripped_NoGPUNodes_StaysClosed(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+
+	for range 2 {
+		tripped, err := b.IsTripped(ctx)
+		require.NoError(t, err, "a cluster without GPU nodes must not fail the breaker check")
+		require.False(t, tripped)
+	}
+
+	require.Equal(t, StateClosed, b.CurrentState())
+	require.True(t, b.noGPUNodes.Load(), "the zero count is remembered so later checks skip the retries")
+}
+
+func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+
+	b.AddCordonEvent("node-outside-gpu-label")
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.True(t, tripped, "a cordon while no GPU nodes are counted must trip the breaker")
+	require.Equal(t, StateTripped, b.CurrentState())
+}
+
+func TestIsTripped_GPUNodeJoinsAfterZero_UsesNodeCount(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, tripped)
+	require.True(t, b.noGPUNodes.Load())
+
+	nodeName := "test-node-joins-" + generateTestID()[:6]
+	createTestNode(ctx, t, nodeName)
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	})
+
+	require.Eventually(t, func() bool {
+		n, err := b.getTotalNodesWithRetry(ctx)
+		return err == nil && n == 1
+	}, 5*time.Second, 50*time.Millisecond, "the joined node should be counted")
+
+	require.False(t, b.noGPUNodes.Load(), "a non-zero count clears the remembered zero")
+
+	tripped, err = b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, tripped, "no cordons on a one-node fleet should not trip")
+}

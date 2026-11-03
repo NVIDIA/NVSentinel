@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -219,4 +220,8 @@ type slidingWindowBreaker struct {
 	// state is the current breaker state (CLOSED or TRIPPED)
 	// Can be manually forced via ForceState() or automatically set by IsTripped()
 	state State
+
+	// noGPUNodes is set once a synced node cache has reported zero GPU nodes for a full
+	// round of retries, so later checks skip the retry backoff until a GPU node appears.
+	noGPUNodes atomic.Bool
 }
