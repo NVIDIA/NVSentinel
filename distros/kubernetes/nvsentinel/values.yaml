@@ -34,6 +34,14 @@ global:
   # janitor.config.cspProviderHost and fault-remediation.logCollector.uploadURL.
   # See docs/configuration/README.md#cluster-domain.
   clusterDomain: cluster.local
+  # IPv6 switch for NVSentinel's own charts. Set enabled: true on an IPv6-only
+  # or dual-stack cluster. It binds the GPU health monitor metrics server to "::"
+  # (unless metricsAddress is set to something other than "0.0.0.0"), turns on
+  # IPv6 in Bitnami and Percona MongoDB, and adds an IPv6 listener to the
+  # in-cluster file server. Every node must boot with IPv6 on. The GPU Operator
+  # needs its own setting. See docs/configuration/README.md#ipv6.
+  ipv6:
+    enabled: false
   # Default Kubernetes API client limits for core controllers. Components can
   # override these with their own qps and burst values.
   # qps: positive values throttle requests, 0 uses the client-go default,
