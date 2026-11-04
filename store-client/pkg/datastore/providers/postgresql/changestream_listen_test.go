@@ -281,3 +281,70 @@ func TestFetchNotifiedRows_AfterDroppedIDs_DeliversOnlyRowsBehindPosition(t *tes
 	assert.Equal(t, int64(30), watcher.lastEventID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// Two reads from the same position deliver the same rows twice. The fallback poller and the
+// fetch loop both read the changelog, so a read that starts while another one is delivering has
+// to wait for it and then read from where it stopped.
+func TestFetchNewChanges_OverlappingReads_DeliverEachRowOnce(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.MatchExpectationsInOrder(false)
+
+	ctx := context.Background()
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base
+	// Unbuffered, so each delivery waits for the test to take it.
+	watcher.events = make(chan datastore.EventWithToken)
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base, int64(0)).
+		WillReturnRows(listenTestRows(base, 1, 2, 3))
+	// A second read that starts while the first one is delivering row 1 reads from row 1.
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(time.Second), int64(1)).
+		WillReturnRows(listenTestRows(base, 2, 3))
+	// A second read that waits for the first one reads from row 3.
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(3*time.Second), int64(3)).
+		WillReturnRows(changelogRows())
+
+	done := make(chan error, 2)
+
+	go func() { done <- watcher.fetchNewChanges(ctx) }()
+
+	require.Eventually(t, func() bool {
+		watcher.mu.RLock()
+		defer watcher.mu.RUnlock()
+
+		return watcher.lastEventID == 1
+	}, 5*time.Second, time.Millisecond, "the first read must reach row 1")
+
+	go func() { done <- watcher.fetchNewChanges(ctx) }()
+
+	require.Never(t, func() bool {
+		watcher.mu.RLock()
+		defer watcher.mu.RUnlock()
+
+		return watcher.lastEventID != 1
+	}, 300*time.Millisecond, time.Millisecond, "a read must wait while another one is delivering")
+
+	var tokens []string
+
+	for finished := 0; finished < 2; {
+		select {
+		case event := <-watcher.events:
+			tokens = append(tokens, string(event.ResumeToken))
+		case err := <-done:
+			require.NoError(t, err)
+
+			finished++
+		case <-time.After(5 * time.Second):
+			t.Fatalf("reads did not finish, delivered %v", tokens)
+		}
+	}
+
+	assert.Equal(t, []string{"1", "2", "3"}, tokens)
+}

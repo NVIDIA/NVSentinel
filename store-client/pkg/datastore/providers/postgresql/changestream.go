@@ -107,6 +107,11 @@ type PostgreSQLChangeStreamWatcher struct {
 	notifiedIDs []int64            // notified ids in the order they arrived, at most notifiedIDLimit
 	unreadIDs   map[int64]struct{} // the notified ids no read has returned yet
 	droppedIDs  int                // notified ids not kept since the last pass, because notifiedIDs was full
+
+	// fetchMu lets one goroutine read the changelog and deliver what it read at a time. The
+	// fallback poller and the fetch loop would otherwise read the same rows from the same
+	// position and deliver them twice.
+	fetchMu sync.Mutex
 }
 
 // LagState reports when this poller last saw a poll return no rows and the changed_at of the
@@ -717,6 +722,22 @@ func (w *PostgreSQLChangeStreamWatcher) fetchLoop(ctx context.Context) {
 // unless ids were dropped since the last pass: the position could then step over a dropped row
 // that no poll would return, so only rows at or behind it are delivered and the polls read the rest.
 func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRows(ctx context.Context) error {
+	fetched, err := w.fetchNotifiedRowsByID(ctx)
+	if err != nil || !fetched {
+		return err
+	}
+
+	return w.fetchNewChanges(ctx)
+}
+
+// fetchNotifiedRowsByID is the lookup part of fetchNotifiedRows. It reports whether there was
+// any id to look up.
+func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRowsByID(ctx context.Context) (bool, error) {
+	// Taking the ids and fetching them is one read: a poll in between could deliver a taken row
+	// that the lookup then delivers again.
+	w.fetchMu.Lock()
+	defer w.fetchMu.Unlock()
+
 	ids, dropped := w.takeNotifiedIDs()
 
 	fetch := w.fetchChangeByID
@@ -727,21 +748,17 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRows(ctx context.Context) e
 			"client", w.clientName, "dropped", dropped, "limit", notifiedIDLimit)
 	}
 
-	if len(ids) == 0 {
-		return nil
-	}
-
 	for _, id := range ids {
 		if err := fetch(ctx, id); err != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return true, ctx.Err()
 			}
 
 			slog.Error("Failed to fetch notified changelog row", "client", w.clientName, "eventID", id, "error", err)
 		}
 	}
 
-	return w.fetchNewChanges(ctx)
+	return len(ids) > 0, nil
 }
 
 // adaptiveFallbackPoller implements adaptive polling based on NOTIFY health
@@ -821,6 +838,16 @@ func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Conte
 // 1. Server-side: SQL WHERE clause reduces volume at the database level
 // 2. Application-side: PipelineFilter handles edge cases (in sendEventsToChannel)
 func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) error {
+	w.fetchMu.Lock()
+	defer w.fetchMu.Unlock()
+
+	// A reader that waited for another one must not start a read after Close.
+	select {
+	case <-w.stopCh:
+		return nil
+	default:
+	}
+
 	w.mu.RLock()
 	lastTimestamp := w.lastTimestamp
 	lastEventID := w.lastEventID
