@@ -113,12 +113,6 @@ The GPUReset CRD, its conditions and reasons, the reconcile steps and the protob
 
 **Rejected** because the deployment then maintains a full copy of the template, and later changes to the built-in template, for example #1813 and #2013, do not apply to it. The existing `resetJob` keys have no effect while a replacement is set.
 
-### Validate the fields that janitor builds
-
-Reject a patch that changes the privileged setting, the built-in toleration, or the volumes, mounts and environment variables of `gpu-reset`, and create the Job with `dryRun: All` at startup.
-
-**Not chosen** because a patch can still change the command of `gpu-reset`, so the checks cannot make sure that the reset runs.
-
 ### Patch only the pod template (`podTemplateOverride`, as #1782 proposed)
 
 **Rejected** because it cannot change `activeDeadlineSeconds` (300 seconds) or `backoffLimit`.
