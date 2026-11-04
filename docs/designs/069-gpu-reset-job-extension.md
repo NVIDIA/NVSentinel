@@ -111,9 +111,9 @@ The GPUReset CRD, its conditions and reasons, the reconcile steps and the protob
 
 **Rejected** because it cannot change `activeDeadlineSeconds` (300 seconds) or `backoffLimit`.
 
-### A typed key for each addition
+### Individual settings for the host paths (suggested in #1782)
 
-**Rejected** because #1782 needs about eight keys (`extraVolumes`, `extraVolumeMounts`, `extraEnv`, `initContainers`, `serviceAccountName`, `activeDeadlineSeconds`, `backoffLimit` and a command), and each new need adds a key and a code change.
+**Rejected** because #1782 also needs init containers, a service account, a command and a longer deadline, which host path settings do not cover.
 
 ### gRPC calls that delegate the reset to a provider (as #1782 first proposed)
 
