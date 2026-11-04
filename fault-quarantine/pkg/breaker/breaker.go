@@ -30,9 +30,12 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 )
 
+// nodeCountResult is the result label on the get_total_nodes duration metric.
+type nodeCountResult string
+
 const (
-	resultError   = "error"
-	resultSuccess = "success"
+	nodeCountSuccess nodeCountResult = "success"
+	nodeCountError   nodeCountResult = "error"
 )
 
 // NewSlidingWindowBreaker creates a new sliding window circuit breaker for fault quarantine.
@@ -317,7 +320,7 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	}
 
 	if totalNodes == 0 {
-		return b.isTrippedWithoutGPUNodes(ctx)
+		return b.isTrippedByRecentCordons(ctx)
 	}
 
 	now := time.Now()
@@ -428,15 +431,15 @@ func (b *slidingWindowBreaker) SetCursorMode(ctx context.Context, mode CursorMod
 // getTotalNodes reads the GPU node count from the synced NodeInformer cache.
 func (b *slidingWindowBreaker) getTotalNodes(ctx context.Context) (int, error) {
 	startTime := time.Now()
-	result := resultSuccess
+	result := nodeCountSuccess
 
 	defer func() {
-		metrics.FaultQuarantineGetTotalNodesDuration.WithLabelValues(result).Observe(time.Since(startTime).Seconds())
+		metrics.FaultQuarantineGetTotalNodesDuration.WithLabelValues(string(result)).Observe(time.Since(startTime).Seconds())
 	}()
 
 	totalNodes, err := b.cfg.K8sClient.GetTotalNodes(ctx)
 	if err != nil {
-		result = resultError
+		result = nodeCountError
 
 		metrics.FaultQuarantineGetTotalNodesErrors.WithLabelValues("api_error").Inc()
 
@@ -446,11 +449,10 @@ func (b *slidingWindowBreaker) getTotalNodes(ctx context.Context) (int, error) {
 	return totalNodes, nil
 }
 
-// isTrippedWithoutGPUNodes decides the breaker state when the cluster has no GPU nodes.
-// There is nothing to protect, so the breaker stays CLOSED. A cordon recorded in the window
-// while no GPU nodes are counted means the GPU node label does not match the nodes being
-// quarantined, so the breaker trips rather than letting quarantines run without a bound.
-func (b *slidingWindowBreaker) isTrippedWithoutGPUNodes(ctx context.Context) (bool, error) {
+// isTrippedByRecentCordons is called when no GPU nodes are counted. It trips if the window
+// holds any cordon, since that means gpuNodeLabel does not match the nodes being
+// quarantined. Otherwise the breaker stays CLOSED.
+func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bool, error) {
 	b.mu.Lock()
 	b.slideWindow(time.Now())
 	recentCordonedNodes := b.sumBuckets()
