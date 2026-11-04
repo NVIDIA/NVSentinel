@@ -1797,7 +1797,7 @@ health-events-analyzer:
               "$map": {
                 "input": {
                   "$filter": {
-                    "input": "$healthevent.entitiesimpacted",
+                    "input": "this.healthevent.entitiesimpacted",
                     "cond": {
                       "$in": ["$$this.entitytype", ["REG0", "REG1", "REG2", "REG3", "REG4", "REG5", "REG6"]]
                     }
@@ -1851,7 +1851,7 @@ health-events-analyzer:
                 "$map": {
                   "input": {
                     "$filter": {
-                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "input": {"$ifNull": ["this.healthevent.entitiesimpacted", []]},
                       "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
                     }
                   },
@@ -1872,7 +1872,6 @@ health-events-analyzer:
         "$lookup": {
           "from": "HealthEvents",
           "let": {
-            "currentEventId": "$_id",
             "currentNodeName": "$healthevent.nodename",
             "gpuUuid": {
               "$arrayElemAt": [
@@ -1880,7 +1879,7 @@ health-events-analyzer:
                   "$map": {
                     "input": {
                       "$filter": {
-                        "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                        "input": {"$ifNull": ["this.healthevent.entitiesimpacted", []]},
                         "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
                       }
                     },
@@ -1902,7 +1901,6 @@ health-events-analyzer:
                         {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 60]}
                       ]
                     },
-                    {"$ne": ["$_id", "$$currentEventId"]},
                     {"$eq": ["$healthevent.nodename", "$$currentNodeName"]},
                     {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "74"]},
                     {
@@ -2332,7 +2330,7 @@ health-events-analyzer:
               "$map": {
                 "input": {
                   "$filter": {
-                    "input": "$healthevent.entitiesimpacted",
+                    "input": "this.healthevent.entitiesimpacted",
                     "cond": {
                       "$in": ["$$this.entitytype", ["REG0", "REG1", "REG2", "REG3", "REG4", "REG5", "REG6"]]
                     }
@@ -2386,7 +2384,7 @@ health-events-analyzer:
                 "$map": {
                   "input": {
                     "$filter": {
-                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "input": {"$ifNull": ["this.healthevent.entitiesimpacted", []]},
                       "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
                     }
                   },
@@ -2407,7 +2405,6 @@ health-events-analyzer:
         "$lookup": {
           "from": "HealthEvents",
           "let": {
-            "currentEventId": "$_id",
             "currentNodeName": "$healthevent.nodename",
             "gpuUuid": {
               "$arrayElemAt": [
@@ -2415,7 +2412,7 @@ health-events-analyzer:
                   "$map": {
                     "input": {
                       "$filter": {
-                        "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                        "input": {"$ifNull": ["this.healthevent.entitiesimpacted", []]},
                         "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
                       }
                     },
@@ -2437,7 +2434,6 @@ health-events-analyzer:
                         {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 90]}
                       ]
                     },
-                    {"$ne": ["$_id", "$$currentEventId"]},
                     {"$eq": ["$healthevent.nodename", "$$currentNodeName"]},
                     {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "74"]},
                     {
@@ -3219,7 +3215,7 @@ health-events-analyzer:
               "$map": {
                 "input": {
                   "$filter": {
-                    "input": "$healthevent.entitiesimpacted",
+                    "input": "this.healthevent.entitiesimpacted",
                     "cond": {
                       "$in": ["$$this.entitytype", ["REG0", "REG1", "REG2", "REG3", "REG4", "REG5", "REG6"]]
                     }
@@ -3273,7 +3269,7 @@ health-events-analyzer:
                 "$map": {
                   "input": {
                     "$filter": {
-                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "input": {"$ifNull": ["this.healthevent.entitiesimpacted", []]},
                       "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
                     }
                   },
@@ -3294,7 +3290,6 @@ health-events-analyzer:
         "$lookup": {
           "from": "HealthEvents",
           "let": {
-            "currentEventId": "$_id",
             "currentNodeName": "$healthevent.nodename",
             "gpuUuid": {
               "$arrayElemAt": [
@@ -3302,7 +3297,7 @@ health-events-analyzer:
                   "$map": {
                     "input": {
                       "$filter": {
-                        "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                        "input": {"$ifNull": ["this.healthevent.entitiesimpacted", []]},
                         "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
                       }
                     },
@@ -3324,7 +3319,6 @@ health-events-analyzer:
                         {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 90]}
                       ]
                     },
-                    {"$ne": ["$_id", "$$currentEventId"]},
                     {"$eq": ["$healthevent.nodename", "$$currentNodeName"]},
                     {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "74"]},
                     {
@@ -3442,7 +3436,7 @@ health-events-analyzer:
               "$map": {
                 "input": {
                   "$filter": {
-                    "input": "$healthevent.entitiesimpacted",
+                    "input": "this.healthevent.entitiesimpacted",
                     "cond": {
                       "$in": ["$$this.entitytype", ["REG0", "REG1", "REG2", "REG3", "REG4", "REG5", "REG6"]]
                     }
@@ -3491,7 +3485,7 @@ health-events-analyzer:
                 "$map": {
                   "input": {
                     "$filter": {
-                      "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                      "input": {"$ifNull": ["this.healthevent.entitiesimpacted", []]},
                       "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
                     }
                   },
@@ -3512,7 +3506,6 @@ health-events-analyzer:
         "$lookup": {
           "from": "HealthEvents",
           "let": {
-            "currentEventId": "$_id",
             "currentNodeName": "$healthevent.nodename",
             "gpuUuid": {
               "$arrayElemAt": [
@@ -3520,7 +3513,7 @@ health-events-analyzer:
                   "$map": {
                     "input": {
                       "$filter": {
-                        "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
+                        "input": {"$ifNull": ["this.healthevent.entitiesimpacted", []]},
                         "cond": {"$eq": ["$$this.entitytype", "GPU_UUID"]}
                       }
                     },
@@ -3542,7 +3535,6 @@ health-events-analyzer:
                         {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 90]}
                       ]
                     },
-                    {"$ne": ["$_id", "$$currentEventId"]},
                     {"$eq": ["$healthevent.nodename", "$$currentNodeName"]},
                     {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "74"]},
                     {
