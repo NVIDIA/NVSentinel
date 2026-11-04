@@ -917,6 +917,78 @@ func TestFetchNewChanges_HighIDEarlyRow_CursorFollowsPollOrder(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// A full batch of rows behind a high-id early row is what stalled the stream for good. With the
+// old id rule the cursor stayed on row 151, the next batch was rows 1 to 100, all with lower ids,
+// and every poll after that returned the same 100 rows, so rows 101 to 150 were never delivered.
+// Each poll here gets what the real query returns for the position the watcher asks from: the
+// first 100 rows after it in (changed_at, id) order.
+func TestFetchNewChanges_FullBatchBehindHighIDRow_StreamDrains(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	const pollLimit = 100 // the LIMIT in fetchNewChanges
+
+	type position struct {
+		changedAt time.Time
+		id        int64
+	}
+
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+	watcher.lastTimestamp = base
+
+	// The changelog in poll order: row 151 has the earliest changed_at, then rows 1 to 150.
+	at := func(id int64) time.Time { return base.Add(time.Duration(id) * time.Second) }
+	changelog := []position{{changedAt: base.Add(500 * time.Millisecond), id: 151}}
+
+	for id := int64(1); id <= 150; id++ {
+		changelog = append(changelog, position{changedAt: at(id), id: id})
+	}
+
+	var (
+		polledFrom []position
+		delivered  []string
+	)
+
+	for range 3 {
+		from := position{changedAt: watcher.lastTimestamp, id: watcher.lastEventID}
+		polledFrom = append(polledFrom, from)
+
+		batch, n := changelogRows(), 0
+
+		for _, row := range changelog {
+			afterFrom := row.changedAt.After(from.changedAt) ||
+				(row.changedAt.Equal(from.changedAt) && row.id > from.id)
+			if afterFrom && n < pollLimit {
+				healthEventRow(batch, row.id, row.changedAt)
+				n++
+			}
+		}
+
+		mock.ExpectQuery(changelogQuery).
+			WithArgs(healthEventsTable, from.changedAt, from.id).
+			WillReturnRows(batch)
+
+		require.NoError(t, watcher.fetchNewChanges(context.Background()))
+
+		delivered = append(delivered, drainTokens(watcher)...)
+	}
+
+	// The first batch is row 151 and rows 1 to 99, so the next poll starts after row 99. The
+	// second batch is rows 100 to 150, and the third poll finds nothing after row 150.
+	assert.Equal(t, []position{{base, 0}, {at(99), 99}, {at(150), 150}}, polledFrom)
+
+	unique := make(map[string]struct{}, len(delivered))
+	for _, token := range delivered {
+		unique[token] = struct{}{}
+	}
+
+	assert.Equal(t, len(changelog), len(unique), "rows delivered")
+	assert.Equal(t, len(changelog), len(delivered), "deliveries")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // Rows that share a changed_at move the cursor by id, and one with the same changed_at and a
 // lower id, delivered late from its NOTIFY, does not move it back.
 func TestAdvancePosition_EqualChangedAt_OrdersByID(t *testing.T) {
