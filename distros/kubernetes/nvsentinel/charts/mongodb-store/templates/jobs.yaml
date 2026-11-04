@@ -74,12 +74,14 @@ metadata:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   ttlSecondsAfterFinished: 86400
-  {{- if hasKey .Values.job "activeDeadlineSeconds" }}
-  {{- if .Values.job.activeDeadlineSeconds }}
-  activeDeadlineSeconds: {{ int .Values.job.activeDeadlineSeconds }}
+  {{- $deadline := 1800 }}
+  {{- with .Values.job }}
+  {{- if hasKey . "activeDeadlineSeconds" }}
+  {{- $deadline = int .activeDeadlineSeconds }}
   {{- end }}
-  {{- else }}
-  activeDeadlineSeconds: 1800
+  {{- end }}
+  {{- if $deadline }}
+  activeDeadlineSeconds: {{ $deadline }}
   {{- end }}
   template:
     spec:

@@ -53,3 +53,24 @@ tests:
     asserts:
       - notExists:
           path: spec.activeDeadlineSeconds
+
+  - it: omits the init Job deadline when given the string "0"
+    set:
+      mongodb-store.job.activeDeadlineSeconds: "0"
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - notExists:
+          path: spec.activeDeadlineSeconds
+
+  - it: keeps the default deadline when the job map is null
+    set:
+      mongodb-store.job: null
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 1800

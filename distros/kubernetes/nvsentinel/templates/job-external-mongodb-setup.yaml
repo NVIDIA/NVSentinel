@@ -83,12 +83,12 @@ spec:
   {{- with (index .Values "mongodb-store") }}
   {{- with .job }}
   {{- if hasKey . "activeDeadlineSeconds" }}
-  {{- $deadline = .activeDeadlineSeconds }}
+  {{- $deadline = int .activeDeadlineSeconds }}
   {{- end }}
   {{- end }}
   {{- end }}
   {{- if $deadline }}
-  activeDeadlineSeconds: {{ int $deadline }}
+  activeDeadlineSeconds: {{ $deadline }}
   {{- end }}
   template:
     spec:

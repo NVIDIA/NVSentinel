@@ -96,3 +96,10 @@ tests:
     asserts:
       - notExists:
           path: spec.activeDeadlineSeconds
+
+  - it: omits the deadline when given the string "0"
+    set:
+      mongodb-store.job.activeDeadlineSeconds: "0"
+    asserts:
+      - notExists:
+          path: spec.activeDeadlineSeconds
