@@ -67,6 +67,10 @@ const (
 	// notifiedIDLimit bounds the notified changelog ids kept between two passes of the fetch
 	// loop. Ids that arrive while the list is full are dropped, see fetchNotifiedRows.
 	notifiedIDLimit = 1000
+	// fetchRetryDelay is how long the fetch loop waits before it makes a failed pass again. It
+	// bounds how long a late row waits after a transient read error, and keeps the error logs to
+	// one failed pass a second while the database is unhealthy.
+	fetchRetryDelay = time.Second
 )
 
 // PostgreSQLChangeStreamWatcher implements ChangeStreamWatcher for PostgreSQL
@@ -114,6 +118,9 @@ type PostgreSQLChangeStreamWatcher struct {
 	// fallback poller and the fetch loop would otherwise read the same rows from the same
 	// position and deliver them twice.
 	fetchMu sync.Mutex
+
+	// retryDelay is fetchRetryDelay, which tests shorten.
+	retryDelay time.Duration
 }
 
 // LagState reports when this poller last saw a poll return no rows and the changed_at of the
@@ -138,6 +145,7 @@ func NewPostgreSQLChangeStreamWatcher(
 		pollInterval:   10 * time.Millisecond, // Aggressive poll interval (used in polling and fallback modes)
 		recentEventIDs: make(map[int64]time.Time),
 		wake:           make(chan struct{}, 1),
+		retryDelay:     fetchRetryDelay,
 	}
 }
 
@@ -701,8 +709,16 @@ func (w *PostgreSQLChangeStreamWatcher) startFetchLoop(ctx context.Context) func
 
 // fetchLoop makes a pass right away and then whenever it is woken: by handleNotification, or by
 // a poll that read a full batch. A consumer that is slow to take events slows this loop down,
-// while the LISTEN connection keeps being read.
+// while the LISTEN connection keeps being read. After a failed pass it makes another one after
+// retryDelay unless it is woken sooner: a late row is only delivered by the lookup of its
+// notified id, and on a quiet table no other notification may come.
 func (w *PostgreSQLChangeStreamWatcher) fetchLoop(ctx context.Context) {
+	// retry is stopped until a pass fails.
+	retry := time.NewTimer(w.retryDelay)
+	retry.Stop()
+
+	defer retry.Stop()
+
 	for {
 		// The first pass reads what was committed before LISTEN was acknowledged, which no
 		// notification announces. Catching up before the lookup also keeps a notified row past
@@ -710,9 +726,11 @@ func (w *PostgreSQLChangeStreamWatcher) fetchLoop(ctx context.Context) {
 		if err := w.catchUp(ctx); err != nil {
 			if ctx.Err() == nil {
 				slog.Error("Failed to catch up on the changelog", "client", w.clientName, "error", err)
+				retry.Reset(w.retryDelay)
 			}
 		} else if err := w.fetchNotifiedRows(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("Failed to read notified changelog rows", "client", w.clientName, "error", err)
+			retry.Reset(w.retryDelay)
 		}
 
 		select {
@@ -721,6 +739,8 @@ func (w *PostgreSQLChangeStreamWatcher) fetchLoop(ctx context.Context) {
 		case <-w.stopCh:
 			return
 		case <-w.wake:
+			retry.Stop()
+		case <-retry.C:
 		}
 	}
 }

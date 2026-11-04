@@ -16,6 +16,7 @@ package postgresql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -506,4 +507,112 @@ func TestListenLoop_NotifiedRowPastBacklog_DoesNotSkipBacklog(t *testing.T) {
 	assert.Equal(t, tokensFor(rowRange(1, 151)), takeTokens(t, watcher, 151, 5*time.Second))
 	assert.Never(t, func() bool { return len(watcher.events) > 0 }, 300*time.Millisecond, 10*time.Millisecond,
 		"no row may be delivered twice")
+}
+
+// A late row behind the read position is only delivered by the lookup of its notified id. When the
+// pass that would look it up fails, nothing may wake the fetch loop again on a quiet table, so the
+// loop makes another pass after retryDelay instead of waiting for an unrelated notification.
+func TestFetchLoop_FailedPass_RetriesWithoutNotification(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base.Add(20 * time.Second)
+	watcher.lastEventID = 20
+	watcher.retryDelay = 10 * time.Millisecond
+
+	// Row 15 committed after the position passed it. Its notification woke the loop for the
+	// pass that fails, and no other notification comes.
+	watcher.addNotifiedID(15)
+	<-watcher.wake
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+		WillReturnError(errors.New("connection reset by peer"))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+		WillReturnRows(changelogRows())
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(15)).
+		WillReturnRows(listenTestRows(base, 15))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+		WillReturnRows(changelogRows())
+
+	stopFetchLoop := watcher.startFetchLoop(context.Background())
+	defer stopFetchLoop()
+
+	select {
+	case event := <-watcher.events:
+		assert.Equal(t, []byte("15"), event.ResumeToken)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the late row must be delivered by another pass after the failed one")
+	}
+
+	assert.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, 5*time.Second, 10*time.Millisecond)
+	assert.Empty(t, watcher.events, "nothing else may be delivered")
+}
+
+// Once the watcher is closed or its context is cancelled, the fetch loop returns at once and makes
+// no other pass, even with a retry pending after a failed one.
+func TestFetchLoop_FailedPass_DoesNotRetryAfterStop(t *testing.T) {
+	tests := []struct {
+		name         string
+		closeWatcher bool
+	}{
+		{name: "Close", closeWatcher: true},
+		{name: "context cancelled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+			watcher.lastTimestamp = base.Add(20 * time.Second)
+			watcher.lastEventID = 20
+			watcher.retryDelay = 50 * time.Millisecond
+
+			watcher.addNotifiedID(15)
+			<-watcher.wake
+
+			mock.ExpectQuery(changelogQuery).
+				WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+				WillReturnError(errors.New("connection reset by peer"))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			done := make(chan struct{})
+
+			go func() {
+				defer close(done)
+
+				watcher.fetchLoop(ctx)
+			}()
+
+			require.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, 5*time.Second, time.Millisecond,
+				"the first pass must fail")
+
+			if tt.closeWatcher {
+				require.NoError(t, watcher.Close(context.Background()))
+			} else {
+				cancel()
+			}
+
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the fetch loop must return instead of waiting to retry")
+			}
+
+			ids, _ := watcher.takeNotifiedIDs()
+			assert.Equal(t, []int64{15}, ids, "no pass may look up the notified row after the stop")
+		})
+	}
 }
