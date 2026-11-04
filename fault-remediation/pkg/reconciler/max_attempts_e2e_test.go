@@ -231,6 +231,18 @@ func TestRunLogCollectorAndRemediate_GroupAtCap_SkipsLogCollector(t *testing.T) 
 				require.NoError(t, err)
 			}
 
+			// The cap check reads the node from the informer cache. Wait until the cache has the
+			// recorded attempts, or the check sees a lower count than the test recorded.
+			require.Eventually(t, func() bool {
+				state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+				if err != nil {
+					return false
+				}
+
+				return state.EquivalenceGroups["restart"].AttemptCount == tt.priorAttempts
+			}, 10*time.Second, 50*time.Millisecond, "the informer cache never showed %d recorded attempts",
+				tt.priorAttempts)
+
 			require.NoError(t, reconcileQuarantineEvent(ctx, t, r, nodeName, "capped-log-collector-event"))
 
 			jobs, err := testClient.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{

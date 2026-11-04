@@ -52,6 +52,10 @@ func TestFatalHealthEvent(t *testing.T) {
 		assert.NoError(t, err, "failed to get real node")
 		t.Logf("Selected real node for smoke test: %s", nodeName)
 
+		// Other tests can leave uncordon labels on this node. Remove them, so that the test checks its own uncordon.
+		err = helpers.RemoveNodeUncordonLabels(ctx, client, nodeName, "", helpers.LifecycleManagerLabelPrefix)
+		assert.NoError(t, err, "failed to remove uncordon labels from node")
+
 		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		assert.NoError(t, err, "failed to create workloads namespace")
 
@@ -241,11 +245,12 @@ func TestFatalHealthEvent(t *testing.T) {
 		t.Logf("Waiting for node %s to be uncordoned", nodeName)
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, false)
 
+		// The ValidationRequest succeeded, so lifecycle-manager uncordoned the node, not fault-quarantine.
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")
-		assert.Equal(t, "NVSentinel", node.Labels["uncordon-by"])
-		assert.NotEmpty(t, node.Labels["uncordon-reason"])
-		assert.NotEmpty(t, node.Labels["uncordon-timestamp"])
+		assert.Equal(t, "NVSentinel", node.Labels[helpers.LifecycleManagerLabelPrefix+"uncordon-by"])
+		assert.Equal(t, "ValidationSucceeded", node.Labels[helpers.LifecycleManagerLabelPrefix+"uncordon-reason"])
+		assert.NotEmpty(t, node.Labels[helpers.LifecycleManagerLabelPrefix+"uncordon-timestamp"])
 
 		return ctx
 	})
@@ -308,6 +313,10 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		nodeName, err := helpers.GetRealNodeName(ctx, client)
 		assert.NoError(t, err, "failed to get real node")
 		t.Logf("Selected real node for smoke test: %s", nodeName)
+
+		// Other tests can leave uncordon labels on this node. Remove them, so that the test checks its own uncordon.
+		err = helpers.RemoveNodeUncordonLabels(ctx, client, nodeName, "", helpers.LifecycleManagerLabelPrefix)
+		assert.NoError(t, err, "failed to remove uncordon labels from node")
 
 		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		assert.NoError(t, err, "failed to create workloads namespace")

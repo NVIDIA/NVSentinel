@@ -378,12 +378,18 @@ psmdb-db:
       name: rs0
       size: 3
       # Must match mongodb-store.oplogSizeMB. The operator merges this into
-      # mongod.conf. Overriding this block replaces the whole string.
+      # mongod.conf. Overriding this block replaces the whole string; on an
+      # IPv6 cluster, a custom string must also set net.ipv6: true.
+      # global.ipv6.enabled adds net.ipv6 here.
       configuration: |
         replication:
           oplogSizeMB: 990
         setParameter:
           authenticationMechanisms: "MONGODB-X509,SCRAM-SHA-256,SCRAM-SHA-1"
+        {{- if eq (toString (dig "ipv6" "enabled" false (.Values.global | default dict))) "true" }}
+        net:
+          ipv6: true
+        {{- end }}
       replsetOverrides:
         mongodb-rs0-0:
           priority: 3  # Preferred primary

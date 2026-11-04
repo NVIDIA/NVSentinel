@@ -26,9 +26,14 @@ COPY health-monitors/syslog-health-monitor/go.mod health-monitors/syslog-health-
 COPY data-models/go.mod data-models/go.sum ./data-models/
 COPY commons/go.mod commons/go.sum ./commons/
 
-# Download dependencies
+# Download dependencies. Retry, because proxy.golang.org can close the connection.
 RUN --mount=type=cache,target=/go/pkg/mod \
-    cd health-monitors/syslog-health-monitor && go mod download
+    cd health-monitors/syslog-health-monitor && \
+    for attempt in 1 2 3; do \
+      go mod download && break; \
+      [ "$attempt" -lt 3 ] || exit 1; \
+      sleep $((attempt * 10)); \
+    done
 
 # Copy the source code
 COPY health-monitors/syslog-health-monitor/ health-monitors/syslog-health-monitor/
@@ -49,7 +54,7 @@ RUN cd health-monitors/syslog-health-monitor && \
     CGO_ENABLED=1 go build -tags "${BUILD_TAGS}" -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o syslog-health-monitor main.go
 
 # Runtime stage - using Debian slim for systemd journal support
-FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS runtime
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS runtime
 
 # Install required system libraries for systemd journal
 RUN apt-get update && apt-get install -y --no-install-recommends \

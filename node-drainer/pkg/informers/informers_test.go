@@ -331,7 +331,8 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 	}
 
 	const (
-		missingAnnotation = "is requesting devices but is missing device annotation"
+		missingAnnotation = "is requesting devices but is missing device annotation; " +
+			"partial drains need the metadata-collector pod device mapper (podMapper.enabled)"
 		noClaimNeeded     = "-" // bind the claim status entry with a nil ResourceClaimName
 	)
 

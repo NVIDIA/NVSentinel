@@ -27,7 +27,7 @@ COPY data-models/ data-models/
 RUN cd demos/local-custom-remediation-demo/memory-pressure-monitor && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o memory-pressure-monitor main.go
 
-FROM gcr.io/distroless/static-debian13:latest@sha256:15f8637509792e05b97d83451b0b6ccfa4abd548f997e406ac1e72c87fe1fa78
+FROM gcr.io/distroless/static-debian13:latest@sha256:448810357cc8e67b7208988abdba0f5ec3d3aebee0a5b13eb624979792cffc0f
 
 COPY --from=builder /go/src/nvsentinel/demos/local-custom-remediation-demo/memory-pressure-monitor/memory-pressure-monitor /memory-pressure-monitor
 

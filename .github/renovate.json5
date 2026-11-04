@@ -14,7 +14,8 @@
   // limitations under the License.
 
   // Renovate updates only what Dependabot cannot: the tool versions in
-  // .versions.yaml. Dependabot keeps gomod, pip, docker and github-actions.
+  // .versions.yaml and the Fern CLI version in fern/fern.config.json.
+  // Dependabot keeps gomod, pip, docker and github-actions.
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: ["config:recommended"],
   // Its monorepo groups would split protoc from its plugins; see packageRules.
@@ -40,6 +41,16 @@
       matchStrings: [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) depType=(?<depType>\\S+)\\s*\\n\\s*\\S+:\\s*['\"](?<currentValue>[^'\":]+)['\"]",
       ],
+    },
+    {
+      // The Fern CLI reads its version from fern/fern.config.json, and the docs
+      // workflows install that version, so the pin stays in that file.
+      customType: "regex",
+      managerFilePatterns: ["/^fern/fern\\.config\\.json$/"],
+      matchStrings: ["\"version\":\\s*\"(?<currentValue>[^\"]+)\""],
+      datasourceTemplate: "npm",
+      depNameTemplate: "fern-api",
+      depTypeTemplate: "docs_tools",
     },
   ],
 
@@ -84,6 +95,11 @@
       matchManagers: ["custom.regex"],
       matchDepTypes: ["cluster"],
       groupName: "cluster charts",
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["docs_tools"],
+      groupName: "docs tools",
     },
     {
       // These pins drop the leading v that the upstream tags carry.

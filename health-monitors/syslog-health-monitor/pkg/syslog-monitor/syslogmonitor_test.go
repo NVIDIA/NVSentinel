@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -1716,6 +1717,102 @@ func TestExecuteCheck_RejectedEventIsSkippedNotRetried(t *testing.T) {
 	assert.Len(t, client.RecordedHealthEvents, publishedBefore+1,
 		"the rejected batch is skipped and the next one is published")
 	assert.Equal(t, "cursor-3", sm.checkLastCursors[check.Name], "the cursor moves past the rejected entry")
+}
+
+// marshallingPlatformConnectorClient encodes each batch the way the gRPC
+// client does before sending it, and fails the same way when the batch cannot
+// be encoded. Batches that encode are recorded like mockPlatformConnectorClient.
+type marshallingPlatformConnectorClient struct {
+	mockPlatformConnectorClient
+}
+
+func (m *marshallingPlatformConnectorClient) HealthEventOccurredV1(
+	ctx context.Context, events *pb.HealthEvents, opts ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	if _, err := proto.Marshal(events); err != nil {
+		return nil, status.Errorf(codes.Internal, "grpc: error while marshaling: %v", err)
+	}
+
+	return m.mockPlatformConnectorClient.HealthEventOccurredV1(ctx, events, opts...)
+}
+
+// TestExecuteCheck_InvalidUTF8Line_DoesNotStopTheCheck: journald hands MESSAGE
+// over as raw bytes, and the task name in a kernel XID line can be bytes that
+// are not UTF-8. A health event holding them cannot be encoded (proto3 strings
+// must be UTF-8), so the pass used to stop at that entry on every poll and no
+// later XID was reported. The line is published with those bytes replaced and
+// the pass goes on.
+func TestExecuteCheck_InvalidUTF8Line_DoesNotStopTheCheck(t *testing.T) {
+	const xid13Line = "NVRM: Xid (PCI:0000:3b:00): 13, pid=4242, name=%s, " +
+		"Graphics SM Warp Exception on (GPC 0, TPC 0, SM 0): Out Of Range Address"
+
+	const xid79Line = "NVRM: Xid (PCI:0000:3b:00): 79, pid=0, name=, GPU has fallen off the bus."
+
+	tests := []struct {
+		name     string
+		taskName string
+		want     string
+	}{
+		{
+			name:     "valid UTF-8 task name is kept",
+			taskName: "\u8BAD\u7EC3\u4EFB\u52A1",
+			want:     "\u8BAD\u7EC3\u4EFB\u52A1",
+		},
+		{
+			name:     "task name with bytes that are not UTF-8",
+			taskName: "\xff\xfejob",
+			want:     "\uFFFDjob",
+		},
+		{
+			// The kernel keeps the first 15 bytes of a task name, so a UTF-8
+			// name can end inside a character: "a" and five three-byte
+			// characters are 16 bytes.
+			name:     "UTF-8 task name cut at 15 bytes",
+			taskName: "a\u8BAD\u7EC3\u4EFB\u52A1\u4E94"[:15],
+			want:     "a\u8BAD\u7EC3\u4EFB\u52A1\uFFFD",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			check := CheckDefinition{Name: XIDErrorCheck, JournalPath: TEST_JOURNAL_PATH}
+
+			fakeJournal := NewFakeJournal()
+			fakeJournal.AddEntryWithMessage("nothing", "cursor-1")
+
+			fakeJournalFactory := NewFakeJournalFactory()
+			fakeJournalFactory.AddJournal(check.JournalPath, fakeJournal)
+
+			client := &marshallingPlatformConnectorClient{}
+			sm, err := NewSyslogMonitorWithFactory(TEST_NODE, []CheckDefinition{check}, client,
+				TEST_AGENT, TEST_COMPONENT, "60s", dir+"/state.json", fakeJournalFactory,
+				"", dir+"/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+				"", "", nil, "tcp://test", 30*time.Minute)
+			require.NoError(t, err)
+
+			require.NoError(t, sm.executeCheck(check), "first run initializes the cursor")
+
+			fakeJournal.AddEntryWithMessage(fmt.Sprintf(xid13Line, tt.taskName), "cursor-2")
+			fakeJournal.AddEntryWithMessage(xid79Line, "cursor-3")
+
+			require.NoError(t, sm.executeCheck(check))
+
+			var errorCodes, messages []string
+
+			for _, batch := range client.RecordedHealthEvents {
+				for _, event := range batch.GetEvents() {
+					errorCodes = append(errorCodes, event.GetErrorCode()...)
+					messages = append(messages, event.GetMessage())
+				}
+			}
+
+			assert.Equal(t, []string{"13", "79"}, errorCodes, "both XIDs are published")
+			assert.Equal(t, []string{fmt.Sprintf(xid13Line, tt.want), xid79Line}, messages,
+				"bytes that are not UTF-8 are replaced and valid text is kept")
+			assert.Equal(t, "cursor-3", sm.checkLastCursors[check.Name], "the cursor moves past both entries")
+		})
+	}
 }
 
 // TestBootIDChange_RejectedFlushDoesNotBlockTheChecks: the post-reboot flush

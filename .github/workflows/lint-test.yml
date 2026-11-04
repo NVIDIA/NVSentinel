@@ -90,6 +90,13 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
+      # protos-lint installs protoc-gen-crd and vendors data-models, which download Go modules.
+      - name: Download Go modules
+        if: matrix.component == 'protos'
+        run: |
+          ./scripts/retry.sh make -C data-models install-plugin-remote
+          (cd data-models && ../scripts/retry.sh go mod download)
+
       - name: ${{ matrix.step_name }}
         run: ${{ matrix.make_command }}
 
@@ -137,6 +144,11 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
+      - name: Download Go modules
+        if: hashFiles(format('health-monitors/{0}/go.mod', matrix.component)) != ''
+        working-directory: health-monitors/${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
+
       - name: Run lint and test
         run: make -C health-monitors/${{ matrix.component }} lint-test
 
@@ -164,6 +176,11 @@ jobs:
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
+
+      - name: Download Go modules
+        if: hashFiles(format('preflight-checks/{0}/go.mod', matrix.component)) != ''
+        working-directory: preflight-checks/${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
 
       - name: Run lint and test
         run: make -C preflight-checks/${{ matrix.component }} lint-test
@@ -196,6 +213,10 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
+      - name: Download Go modules
+        working-directory: ${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
+
       - name: Run lint and test
         run: make -C ${{ matrix.component }} lint-test
 
@@ -222,6 +243,10 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
+      - name: Download Go modules
+        working-directory: ${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
+
       - name: Run lint and test
         run: make -C ${{ matrix.component }} lint-test
 
@@ -247,6 +272,10 @@ jobs:
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
+
+      - name: Download Go modules
+        working-directory: ${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
 
       - name: Run lint and test
         run: make -C ${{ matrix.component }} lint-test

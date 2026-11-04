@@ -775,6 +775,9 @@ CTLPTL_CONFIG_FILE ?= .ctlptl.yaml
 CLUSTER_NAME ?= kind-nvsentinel
 REGISTRY_NAME ?= ctlptl-registry
 REGISTRY_PORT ?= 5001
+# Resources that tilt-ci builds and deploys at the same time. With 16, the image builds that
+# start first leave free slots for short steps on the critical path, such as cert-manager.
+TILT_MAX_PARALLEL_UPDATES ?= 16
 
 # Tilt development targets
 .PHONY: tilt-up
@@ -805,7 +808,7 @@ tilt-ci: ## Run Tilt in CI mode (no UI, waits for all resources)
 	@echo "Starting Tilt with SKIP_KWOK_NODES_IN_TILT=1 (with retry logic)..."
 	@for i in 1 2 3; do \
 		echo "Attempt $$i of 3..."; \
-		if SKIP_KWOK_NODES_IN_TILT=1 tilt ci -f tilt/Tiltfile --timeout=10m; then \
+		if SKIP_KWOK_NODES_IN_TILT=1 TILT_MAX_PARALLEL_UPDATES=$(TILT_MAX_PARALLEL_UPDATES) tilt ci -f tilt/Tiltfile --timeout=10m; then \
 			echo "Tilt CI succeeded on attempt $$i"; \
 			break; \
 		else \

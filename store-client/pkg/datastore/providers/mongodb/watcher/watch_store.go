@@ -912,7 +912,7 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) e
 
 	var err error
 
-	slog.Info("Attempting to store resume token", "client", w.clientName)
+	slog.Debug("Attempting to store resume token", "client", w.clientName)
 
 	for {
 		if time.Now().After(timeout) {
