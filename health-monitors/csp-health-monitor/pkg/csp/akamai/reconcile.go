@@ -17,6 +17,7 @@ package akamai
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"time"
@@ -240,9 +241,11 @@ func cancelledEvent(stored model.MaintenanceEvent, now time.Time) model.Maintena
 	cancelled.CSPStatus = model.ProviderStatus(eventpkg.AkamaiStatusCanceled)
 	cancelled.LastUpdatedTimestamp = now
 
-	cancelled.Metadata = make(map[string]string, len(stored.Metadata)+2)
-	for k, v := range stored.Metadata {
-		cancelled.Metadata[k] = v
+	// Clone copies the map, so the stored event's metadata is never changed. It
+	// returns nil for a nil map, which a stored event may carry.
+	cancelled.Metadata = maps.Clone(stored.Metadata)
+	if cancelled.Metadata == nil {
+		cancelled.Metadata = make(map[string]string, 2)
 	}
 
 	cancelled.Metadata[model.ProviderLastUpdatedKey] =

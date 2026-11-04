@@ -331,3 +331,20 @@ func TestCancelledEvent_StoredMetadata_IsNotMutated(t *testing.T) {
 	assert.Equal(t, "scheduled|power_off_on", stored.Metadata[model.ProviderLastUpdatedKey])
 	assert.NotContains(t, stored.Metadata, cancellationReasonKey)
 }
+
+// TestCancelledEvent_StoredEventWithoutMetadata_StillRecordsCancellation pins that an event
+// stored with no metadata map does not panic and still carries the cancellation
+// fields.
+func TestCancelledEvent_StoredEventWithoutMetadata_StillRecordsCancellation(t *testing.T) {
+	stored := storedEvent("akamai-1", "scheduled")
+	stored.Metadata = nil
+
+	var cancelled model.MaintenanceEvent
+
+	require.NotPanics(t, func() { cancelled = cancelledEvent(stored, time.Now()) })
+
+	assert.Nil(t, stored.Metadata, "the stored event must stay as it was")
+	assert.Equal(t, model.StatusCancelled, cancelled.Status)
+	assert.Equal(t, cancellationReason, cancelled.Metadata[cancellationReasonKey])
+	assert.Equal(t, eventpkg.AkamaiStatusCanceled+"|", cancelled.Metadata[model.ProviderLastUpdatedKey])
+}
