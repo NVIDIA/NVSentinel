@@ -1647,8 +1647,8 @@ func (r *GPUResetReconciler) listAppPods(
 	return pods, selector, nil
 }
 
-// reconcileTerminalFailure updates the GPUReset status to a terminal failed state
-// and sets the CompletionTime.
+// reconcileTerminalFailure updates the GPUReset status to a terminal failed state,
+// Complete=False with the failure reason, and sets the CompletionTime.
 //
 // It also records all failure-related metrics, ensuring to decrement the 'pending' count
 // or reset the 'active' gauge to zero.
@@ -1687,7 +1687,7 @@ func (r *GPUResetReconciler) reconcileTerminalFailure(
 		updatedGR.Status.CompletionTime = &now
 		updatedGR.Status.Phase = v1alpha1.ResetFailed
 
-		completeCond := NewCondition(v1alpha1.Complete, metav1.ConditionTrue, reason, message)
+		completeCond := NewCondition(v1alpha1.Complete, metav1.ConditionFalse, reason, message)
 		meta.SetStatusCondition(&updatedGR.Status.Conditions, completeCond)
 
 		if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {

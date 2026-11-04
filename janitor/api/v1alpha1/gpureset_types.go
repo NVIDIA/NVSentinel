@@ -44,7 +44,8 @@ const (
 	ResetJobCompleted GPUResetConditionType = "ResetJobCompleted"
 	ServicesRestored  GPUResetConditionType = "ServicesRestored"
 	Terminating       GPUResetConditionType = "Terminating"
-	Complete          GPUResetConditionType = "Complete"
+	// Complete is set once the reset is over: True when it succeeded, False when it failed; the reason names the outcome.
+	Complete GPUResetConditionType = "Complete"
 )
 
 const (

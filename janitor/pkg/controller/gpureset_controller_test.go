@@ -327,6 +327,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 				condition := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Complete))
 				require.NotNil(t, condition)
+				assert.Equal(t, metav1.ConditionFalse, condition.Status)
 				assert.Equal(t, string(v1alpha1.ReasonGPUAlreadyUnderMaintenance), condition.Reason)
 				assert.Equal(t, fmt.Sprintf("GPUReset/%s is active for this node", holder.Name), condition.Message)
 			},
@@ -1001,7 +1002,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 			var updatedReset v1alpha1.GPUReset
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
-			Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
+			Expect(meta.IsStatusConditionFalse(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete)).Reason).To(Equal(string(v1alpha1.NodeNotFound)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
 		})
@@ -1039,7 +1040,7 @@ var _ = Describe("GPUReset Controller", func() {
 			By("Verifying final state")
 			var updatedReset v1alpha1.GPUReset
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
-			Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
+			Expect(meta.IsStatusConditionFalse(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			failedCond := meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete))
 			Expect(failedCond.Reason).To(Equal(string(v1alpha1.ReasonServiceTeardownTimeoutExceeded)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
@@ -1120,7 +1121,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Verifying final state")
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
-			Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
+			Expect(meta.IsStatusConditionFalse(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			failedCond := meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete))
 			Expect(failedCond.Reason).To(Equal(string(v1alpha1.ReasonRestoreTimeoutExceeded)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
@@ -1170,7 +1171,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Verifying final state")
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
-			Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
+			Expect(meta.IsStatusConditionFalse(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			failedCond := meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete))
 			Expect(failedCond.Reason).To(Equal(string(v1alpha1.ReasonResetJobNotFound)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
@@ -1225,7 +1226,7 @@ var _ = Describe("GPUReset Controller", func() {
 			By("Verifying final state")
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
 			Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesRestored))).To(BeTrue())
-			Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
+			Expect(meta.IsStatusConditionFalse(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete)).Reason).To(Equal(string(v1alpha1.ReasonResetJobFailed)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
 		})
@@ -2071,6 +2072,7 @@ var _ = Describe("GPUReset Controller", func() {
 				reconcileTimes(1)
 				g.Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
 			}, "10s", "100ms").Should(Succeed())
+			Expect(meta.IsStatusConditionFalse(getReset().Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonServiceTeardownTimeoutExceeded)))
 			Expect(getReset().Status.ManagedServices).To(BeNil())
 			Expect(getNodeLabels()).To(Equal(heldLabels))
@@ -2091,6 +2093,7 @@ var _ = Describe("GPUReset Controller", func() {
 				reconcileTimes(1)
 				g.Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
 			}, "10s", "100ms").Should(Succeed())
+			Expect(meta.IsStatusConditionFalse(getReset().Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonRestoreTimeoutExceeded)))
 
 			heldLabels := devicePluginDeployLabels()
@@ -2196,6 +2199,7 @@ var _ = Describe("GPUReset Controller", func() {
 				reconcileTimes(1)
 				g.Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
 			}, "10s", "100ms").Should(Succeed())
+			Expect(meta.IsStatusConditionFalse(getReset().Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonResetJobCreationFailed)))
 
 			Eventually(func(g Gomega) {
@@ -2222,6 +2226,7 @@ var _ = Describe("GPUReset Controller", func() {
 			}, "10s", "100ms").Should(Succeed())
 
 			updatedReset := getReset()
+			Expect(meta.IsStatusConditionFalse(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.NodeNotFound)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
 			Expect(updatedReset.Status.ManagedServices).To(BeNil())

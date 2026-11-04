@@ -249,7 +249,7 @@ janitor:
               memory: "128Mi"
 ```
 
-Handles `GPUReset` CRs. Before issuing the GPU reset, the controller removes the GPU Operator operands that hold device handles from the node by setting their `nvidia.com/gpu.deploy.*` node labels to `false`, waits for the pods to leave, runs the reset Job, then sets the labels back to `true` and waits for the pods to be Ready.
+Handles `GPUReset` CRs. Before issuing the GPU reset, the controller removes the GPU Operator operands that hold device handles from the node by setting their `nvidia.com/gpu.deploy.*` node labels to `false`, waits for the pods to leave, runs the reset Job, then sets the labels back to `true` and waits for the pods to be Ready. A finished GPUReset carries a `Complete` condition: `True` with the reason `GPUResetSucceeded` when the reset succeeded, `False` with the failure reason when it failed. fault-remediation reads this condition (`completeConditionType: "Complete"`) to decide whether the remediation succeeded or is retried.
 
 ### serviceManager.name
 Name of the built-in GPU services manager. Use `gpu-operator` for the NVIDIA GPU Operator.
