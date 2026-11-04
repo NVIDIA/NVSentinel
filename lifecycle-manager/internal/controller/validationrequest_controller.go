@@ -16,7 +16,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -560,38 +559,33 @@ their failed session entry and their scheduling gate until an equivalent request
 func (r *ValidationRequestReconciler) releaseNodesOnCompletion(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest, phase v1alpha1.Phase) (v1alpha1.Phase, error) {
 	if phase == v1alpha1.PhaseSucceeded {
-		err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest,
+		violations, err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest,
 			resolveValidationRequestTests(validationRequest, r.Config))
-		if err == nil {
-			return phase, nil
-		}
-
-		var blocked *releaseBlockedError
-		if !errors.As(err, &blocked) {
+		if err != nil {
 			return phase, err
 		}
 
+		if len(violations) == 0 {
+			return phase, nil
+		}
+
 		slog.WarnContext(ctx, "Node failed readiness criteria before validation release; failing the request",
-			"validationRequest", validationRequest.Name, "violations", blocked.message())
-		setReleaseBlockedCondition(validationRequest, blocked)
+			"validationRequest", validationRequest.Name, "violations", violations.message())
+		setReleaseBlockedCondition(validationRequest, violations)
 
 		phase = v1alpha1.PhaseFailed
 	}
 
-	if err := r.releaseNodesFromFailedRequest(ctx, validationRequest); err != nil {
-		return phase, err
-	}
-
-	return phase, nil
+	return phase, r.releaseNodesFromFailedRequest(ctx, validationRequest)
 }
 
-func setReleaseBlockedCondition(validationRequest *v1alpha1.ValidationRequest, blocked *releaseBlockedError) {
+func setReleaseBlockedCondition(validationRequest *v1alpha1.ValidationRequest, violations readinessViolations) {
 	meta.SetStatusCondition(&validationRequest.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeReleaseBlocked,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: validationRequest.Generation,
 		Reason:             string(v1alpha1.FailureReasonNodeReadinessViolation),
-		Message:            blocked.message(),
+		Message:            violations.message(),
 	})
 }
 

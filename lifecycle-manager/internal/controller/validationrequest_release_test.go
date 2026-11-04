@@ -24,7 +24,7 @@ import (
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 )
 
-func TestReleaseBlockedError_Message_NamesEveryViolationInOrder(t *testing.T) {
+func TestReadinessViolations_Message_NamesEveryViolationInOrder(t *testing.T) {
 	tests := []struct {
 		name       string
 		violations []readinessViolation
@@ -48,18 +48,14 @@ func TestReleaseBlockedError_Message_NamesEveryViolationInOrder(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := &releaseBlockedError{violations: tt.violations}
-			require.Equal(t, tt.want, err.message())
-			require.Equal(t, "validation release blocked: "+tt.want, err.Error())
+			require.Equal(t, tt.want, readinessViolations(tt.violations).message())
 		})
 	}
 }
 
 func TestSetReleaseBlockedCondition_RecordsReasonAndMessage(t *testing.T) {
 	vr := &v1alpha1.ValidationRequest{ObjectMeta: metav1.ObjectMeta{Name: "vr", Generation: 3}}
-	blocked := &releaseBlockedError{violations: []readinessViolation{{node: "node-a", criterion: "node-ready"}}}
-
-	setReleaseBlockedCondition(vr, blocked)
+	setReleaseBlockedCondition(vr, readinessViolations{{node: "node-a", criterion: "node-ready"}})
 
 	cond := meta.FindStatusCondition(vr.Status.Conditions, conditionTypeReleaseBlocked)
 	require.NotNil(t, cond)
@@ -70,9 +66,7 @@ func TestSetReleaseBlockedCondition_RecordsReasonAndMessage(t *testing.T) {
 	require.False(t, cond.LastTransitionTime.IsZero())
 
 	// A second evaluation replaces the message instead of adding a condition.
-	setReleaseBlockedCondition(vr, &releaseBlockedError{
-		violations: []readinessViolation{{node: "node-a", criterion: "not-under-quarantine"}},
-	})
+	setReleaseBlockedCondition(vr, readinessViolations{{node: "node-a", criterion: "not-under-quarantine"}})
 	require.Len(t, vr.Status.Conditions, 1)
 	require.Equal(t, `node "node-a" failed readiness criterion "not-under-quarantine"`, vr.Status.Conditions[0].Message)
 }

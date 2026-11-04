@@ -2288,7 +2288,9 @@ var _ = Describe("ValidationRequest Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "vr-" + suffix},
 				Spec:       v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
 			}
-			Expect(reconciler.releaseNodesFromSuccessfulRequest(ctx, vr, nil)).To(Succeed())
+			violations, err := reconciler.releaseNodesFromSuccessfulRequest(ctx, vr, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(violations).To(BeEmpty())
 
 			node := getNode(ctx, nodeName)
 			Expect(node.Spec.Unschedulable).To(BeTrue())

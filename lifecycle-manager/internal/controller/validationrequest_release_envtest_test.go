@@ -257,22 +257,6 @@ func clearQuarantine(nodeName string) {
 	Expect(k8sClient.Update(ctx, &node)).To(Succeed())
 }
 
-// recreateQuarantinedNode replaces the node with a new Node of the same name that is cordoned, tainted and under
-// quarantine, and carries no validation session.
-func recreateQuarantinedNode(ctx context.Context, nodeName string) error {
-	if err := k8sClient.Delete(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}); err != nil {
-		return err
-	}
-	return k8sClient.Create(ctx, &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        nodeName,
-			Labels:      map[string]string{"ready": "true"},
-			Annotations: map[string]string{releaseQuarantineAnnotation: releaseQuarantineEvent},
-		},
-		Spec: corev1.NodeSpec{Unschedulable: true, Taints: []corev1.Taint{releaseGateTaint}},
-	})
-}
-
 func expectGateRetained(nodeName string) {
 	GinkgoHelper()
 	node := getNode(ctx, nodeName)
@@ -305,7 +289,7 @@ func expectReleaseBlocked(vr v1alpha1.ValidationRequest, violations ...readiness
 	Expect(cond).NotTo(BeNil(), "the ReleaseBlocked condition explains the failed request")
 	Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	Expect(cond.Reason).To(Equal(string(v1alpha1.FailureReasonNodeReadinessViolation)))
-	Expect(cond.Message).To(Equal((&releaseBlockedError{violations: violations}).message()))
+	Expect(cond.Message).To(Equal(readinessViolations(violations).message()))
 }
 
 func expectAttemptFailedReadiness(vr v1alpha1.ValidationRequest, nodeNames ...string) {
@@ -627,27 +611,6 @@ var _ = Describe("Validation release readiness check", func() {
 		entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
 		Expect(err).NotTo(HaveOccurred())
 		Expect(entries).To(ConsistOf(sessionEntry{Name: pending.Name, Tests: []string{"basic"}}))
-	})
-
-	It("skips a node recreated under the same name, which holds no session entry, at release", func() {
-		nodeA, nodeB := "release-recreate-a", "release-recreate-b"
-		fixture := newReleaseFixture("release-recreate", releaseFixtureOptions{}, nodeA, nodeB)
-		vr := fixture.running()
-		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
-		fired := fixture.afterTestDeleted(func(ctx context.Context) error {
-			return recreateQuarantinedNode(ctx, nodeB)
-		})
-
-		vr = reconcileUntilPhase(ctx, fixture.reconciler, fixture.request, v1alpha1.PhaseSucceeded,
-			maxReconcileIterations)
-		Expect(*fired).To(BeTrue())
-		Expect(releaseBlockedCondition(vr)).To(BeNil())
-		expectGateReleased(nodeA)
-		// The replacement belongs to no request: it keeps its own cordon and taint and gains no session.
-		expectGateRetained(nodeB)
-		node := getNode(ctx, nodeB)
-		Expect(node.Annotations).NotTo(HaveKey(annotationValidationSession))
-		Expect(node.Annotations).To(HaveKeyWithValue(releaseQuarantineAnnotation, releaseQuarantineEvent))
 	})
 
 	It("completes the deletion and retains the gate when a readiness criterion cannot be evaluated", func() {
