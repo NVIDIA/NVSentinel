@@ -50,8 +50,7 @@ config:
                         mountPath: /run/systemd
 ```
 
-- The key is empty by default. An empty patch leaves the Job unchanged.
-- The chart takes structured YAML and renders it into the janitor ConfigMap as a string with `toYaml`. Janitor reads a string because viper changes map keys to lowercase (`volumeMounts` becomes `volumemounts`) and does not change strings.
+The key is empty by default. An empty patch leaves the Job unchanged.
 
 ### Order
 
