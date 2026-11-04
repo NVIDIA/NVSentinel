@@ -18,7 +18,7 @@ Issue #1782 describes a deployment that resets GPUs on Blackwell bare metal acro
 
 ## Decision
 
-Add an optional key, `config.controllers.gpuReset.resetJob.jobTemplatePatch`, that janitor applies as a strategic merge patch to the built-in reset Job template. The patch can add fields, and it can change fields that janitor does not build. It cannot change or remove what janitor builds.
+Add an optional key, `config.controllers.gpuReset.resetJob.jobTemplatePatch`, that janitor applies as a strategic merge patch to the built-in reset Job template. The patch can add fields and change most fields, for example the deadline, the backoff limit and the command. It cannot change the fields that the reset depends on or that a `resetJob` key sets. [Validation at startup](#validation-at-startup) lists these fields.
 
 ## Implementation
 
@@ -67,19 +67,22 @@ Janitor rejects the configuration at startup when:
 - The patch does not decode strictly into `batchv1.JobTemplateSpec`.
 - The patch sets `metadata.name`, `metadata.generateName`, `metadata.namespace` or `spec.template.spec.nodeName`.
 - The result has no `gpu-reset` container, for example after `$patch: delete`.
+- The `gpu-reset` container is not `privileged: true`.
 - The result changes or removes the image, image pull secrets, resources, RuntimeClass, volumes, volume mounts or environment variables that janitor builds for `gpu-reset`. If a `resetJob` key sets the value, the error names the key.
-- The result does not contain the built-in toleration `operator: Exists`.
+- The result does not contain the built-in toleration: `operator: Exists` with an empty key, value and effect, and no `tolerationSeconds`. A toleration with an effect, for example `effect: NoSchedule`, does not count.
+
+The patch can change the other fields that janitor builds: `activeDeadlineSeconds`, `backoffLimit`, `ttlSecondsAfterFinished`, `restartPolicy`, and the `imagePullPolicy`, `command` and `args` of `gpu-reset`.
 
 The last two checks cover two strategic merge rules, which were checked against the built-in template:
 
 - `volumeMounts` merge on `mountPath`. A patch that changes the `mountPath` of `driver-root` adds a second mount and does not move the first. PR #1803 reported this case.
-- `tolerations` has no merge key, so a patch replaces the list. Without `operator: Exists`, a `NoExecute` taint can evict the reset pod.
+- `tolerations` has no merge key, so a patch replaces the list. Without the built-in toleration, a `NoExecute` taint can evict the reset pod.
 
-Janitor then creates the resolved Job once with `dryRun: All` and a placeholder node name, so that the API server validates the full spec at startup.
+Janitor then creates the resolved Job once with `dryRun: All` and a placeholder node name. The API server validates the Job, including its pod template, and runs the admission for Jobs. It does not check that the objects that the pod refers to exist, for example the ServiceAccount or an image pull secret. Admission checks these when the Job controller creates the pod.
 
 ### Changes
 
-- `janitor/pkg/config`: the `JobTemplatePatch` field on `ResetJobConfig`, the patch, the validation, and table tests for each rejected case.
+- `janitor/pkg/config`: the `JobTemplatePatch` field on `ResetJobConfig`, the patch, the validation, and table tests for each rejected case, including a toleration with `effect: NoSchedule`.
 - `janitor/go.mod`: `sigs.k8s.io/yaml` changes from an indirect to a direct dependency. `strategicpatch` is part of `k8s.io/apimachinery`, which janitor already uses.
 - Janitor startup: the dry-run.
 - `newGpuResetJob`: `NVIDIA_GPU_RESETS` in each init container.
@@ -101,11 +104,12 @@ The GPUReset CRD, its conditions and reasons, the reconcile steps and the protob
 
 - The GPU reset Job can be changed without a fork of janitor.
 - The default Job, the CRD, the protobufs and the reconcile steps do not change.
-- Configuration errors fail at startup instead of during a reset.
+- Most configuration errors fail at startup instead of during a reset.
 
 ### Negative
 
-- The patch can set most fields of the Job, and janitor validates only the fields that it builds.
+- The patch can set most fields of the Job, and janitor validates only the fields in [Validation at startup](#validation-at-startup).
+- A missing ServiceAccount or image pull secret passes the startup checks. The reset pod then does not start, and the first reset fails when the Job deadline expires.
 - Janitor does not restore host changes that the patched Job makes. If the reset fails after a step stops a host service, janitor restores only the services that it manages through node labels.
 - The patch can add host paths and set a service account. The reset Job is already privileged.
 - The merge rules differ from list to list.
