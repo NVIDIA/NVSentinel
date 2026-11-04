@@ -1123,9 +1123,6 @@ func newNoGPUNodeBreaker(t *testing.T, ctx context.Context) *slidingWindowBreake
 		K8sClient:          k8sClient,
 		ConfigMapName:      configMapName,
 		ConfigMapNamespace: "default",
-		MaxRetries:         2,
-		InitialRetryDelay:  time.Millisecond,
-		MaxRetryDelay:      time.Millisecond,
 	})
 	require.NoError(t, err)
 
@@ -1143,7 +1140,6 @@ func TestIsTripped_NoGPUNodes_StaysClosed(t *testing.T) {
 	}
 
 	require.Equal(t, StateClosed, b.CurrentState())
-	require.True(t, b.noGPUNodes.Load(), "the zero count is remembered so later checks skip the retries")
 }
 
 func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {
@@ -1165,7 +1161,6 @@ func TestIsTripped_GPUNodeJoinsAfterZero_UsesNodeCount(t *testing.T) {
 	tripped, err := b.IsTripped(ctx)
 	require.NoError(t, err)
 	require.False(t, tripped)
-	require.True(t, b.noGPUNodes.Load())
 
 	nodeName := "test-node-joins-" + generateTestID()[:6]
 	createTestNode(ctx, t, nodeName)
@@ -1174,11 +1169,9 @@ func TestIsTripped_GPUNodeJoinsAfterZero_UsesNodeCount(t *testing.T) {
 	})
 
 	require.Eventually(t, func() bool {
-		n, err := b.getTotalNodesWithRetry(ctx)
+		n, err := b.getTotalNodes(ctx)
 		return err == nil && n == 1
 	}, 5*time.Second, 50*time.Millisecond, "the joined node should be counted")
-
-	require.False(t, b.noGPUNodes.Load(), "a non-zero count clears the remembered zero")
 
 	tripped, err = b.IsTripped(ctx)
 	require.NoError(t, err)

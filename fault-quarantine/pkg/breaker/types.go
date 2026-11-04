@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -126,18 +125,6 @@ type Config struct {
 
 	// ConfigMapNamespace is the namespace of the ConfigMap
 	ConfigMapNamespace string
-
-	// MaxRetries is the maximum number of retry attempts when GetTotalNodes returns 0
-	// Default: 10 retries (allows ~30 seconds for cache sync with exponential backoff)
-	MaxRetries int
-
-	// InitialRetryDelay is the base delay for the first retry attempt
-	// Default: 100ms, exponentially increases with each retry
-	InitialRetryDelay time.Duration
-
-	// MaxRetryDelay caps the maximum delay between retry attempts
-	// Default: 5 seconds (prevents excessive delays)
-	MaxRetryDelay time.Duration
 }
 
 // validatePercentageBound rejects percentage values that would misbehave inside
@@ -220,8 +207,4 @@ type slidingWindowBreaker struct {
 	// state is the current breaker state (CLOSED or TRIPPED)
 	// Can be manually forced via ForceState() or automatically set by IsTripped()
 	state State
-
-	// noGPUNodes is set once a synced node cache has reported zero GPU nodes for a full
-	// round of retries, so later checks skip the retry backoff until a GPU node appears.
-	noGPUNodes atomic.Bool
 }
