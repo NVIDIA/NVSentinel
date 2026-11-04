@@ -78,7 +78,7 @@ The last two checks cover two strategic merge rules, which were checked against 
 - `volumeMounts` merge on `mountPath`. A patch that changes the `mountPath` of `driver-root` adds a second mount and does not move the first. PR #1803 reported this case.
 - `tolerations` has no merge key, so a patch replaces the list. Without the built-in toleration, a `NoExecute` taint can evict the reset pod.
 
-Janitor then creates a Job from the resolved template once with `dryRun: All`. It sets the fields that `newGpuResetJob` sets, with `metadata.generateName: gpu-reset-validation-`, a placeholder node name and no owner reference, because no GPUReset owns this Job. The API server validates the Job, including its pod template, and runs the admission for Jobs. It does not check that the objects that the pod refers to exist, for example the ServiceAccount or an image pull secret. Admission checks these when the Job controller creates the pod.
+Janitor then creates a Job from the resolved template once with `dryRun: All`. It sets the fields that `newGpuResetJob` sets, with `metadata.generateName: gpu-reset-validation-`, a placeholder node name and no owner reference, because no GPUReset owns this Job. The API server validates the Job, including its pod template, and runs the admission for Jobs. It does not check that the ServiceAccount or the image pull secrets exist. When the Job controller creates the pod, ServiceAccount admission rejects the pod if its ServiceAccount does not exist. No admission checks the image pull secrets: the kubelet uses them when it pulls the image, so a missing secret causes an image pull error.
 
 ### Changes
 
@@ -109,7 +109,7 @@ The GPUReset CRD, its conditions and reasons, the reconcile steps and the protob
 ### Negative
 
 - The patch can set most fields of the Job, and janitor validates only the fields in [Validation at startup](#validation-at-startup).
-- A missing ServiceAccount or image pull secret passes the startup checks. The reset pod then does not start, and the first reset fails when the Job deadline expires.
+- A missing ServiceAccount or image pull secret passes the startup checks. With a missing ServiceAccount, admission rejects the reset pod. With a missing image pull secret, the image pull fails if the registry requires that secret. In both cases, the first reset fails when the Job deadline expires.
 - Janitor does not restore host changes that the patched Job makes. If the reset fails after a step stops a host service, janitor restores only the services that it manages through node labels.
 - The patch can add host paths and set a service account. The reset Job is already privileged.
 - The merge rules differ from list to list.
