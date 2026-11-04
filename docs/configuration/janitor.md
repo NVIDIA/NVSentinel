@@ -296,7 +296,7 @@ A GPU client is a pod that holds the GPUs open, but that the GPU Operator does n
 
 GPU Operator 26.7 and later sets the `nvidia.com/gpu.deploy.client=true` node label on each GPU node. A GPU client selects this label in its `nodeSelector`. The NVSentinel metadata collector selects it in its required node affinity. With `stopGPUClients: true`, the controller does these steps:
 
-1. When the teardown starts, the controller reads `nvidia.com/gpu.deploy.client` on the node. The controller stops the GPU clients only when the label is `true`.
+1. When the teardown starts, the controller reads `nvidia.com/gpu.deploy.client` on the node. The controller stops the GPU clients only when the label is `true` and at least one GPU client pod runs on the node.
 2. The controller sets the label to `false`, and records it in `status.managedServices.nodeLabels`. The DaemonSet controller then removes the GPU client pods from the node.
 3. The controller waits until no GPU client pod runs on the node. A GPU client pod is a pod in any namespace that selects the label in its `nodeSelector` or in a term of its required node affinity. A pod that has finished is not a GPU client pod.
 4. After the reset, the controller sets the label back to `true`. It does not wait for the GPU client pods to be Ready.
@@ -305,6 +305,7 @@ The controller does not change the label in these cases:
 
 - The node has no label. GPU Operator versions before 26.7, and `GPUCluster` mode, do not set it.
 - The label is `false`. No GPU client runs on the node.
+- The label is `true`, but no GPU client pod runs on the node.
 - The label has another value, for example `paused-for-driver-upgrade`. The GPU Operator holds the label during a driver upgrade or a MIG change. The controller waits, as for an operand label.
 
 Know these limits:
