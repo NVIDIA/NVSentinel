@@ -57,14 +57,14 @@ config:
 
 1. Janitor builds the built-in template and applies the existing `resetJob` keys.
 2. Janitor applies the patch with `strategicpatch.StrategicMergePatch`, with `batchv1.JobTemplateSpec` as the schema. Where the patch and a `resetJob` key set the same field, the patch value is used.
-3. Janitor decodes the result strictly into `batchv1.JobTemplateSpec` and stores it as `ResolvedJobTemplate`. A misspelled field name stops janitor at startup. Janitor decodes the result and not the patch, because a patch can contain strategic merge directives such as `$patch`, which are not fields of the type. The merge keeps unknown fields, so the strict decode of the result finds them.
+3. Janitor decodes the result strictly into `batchv1.JobTemplateSpec` and stores it as `ResolvedJobTemplate`. A misspelled field name stops janitor at startup. Janitor decodes the merged result, not the patch, because a patch can contain directives such as `$patch`.
 4. For each reset, `newGpuResetJob` sets its fields as it does now, over any value from the patch. It also adds `NVIDIA_GPU_RESETS` to each init container, so that a step before the reset can find the GPUs that janitor resets.
 
 ### Merge rules
 
-Two strategic merge rules can give a Job that the API server accepts but that fails on the node. Both were checked against the built-in template, and the documentation describes them:
+Two strategic merge rules can give a Job that the API server accepts but that fails on the node. The documentation describes them:
 
-- `volumeMounts` merge on `mountPath`. A patch that changes the `mountPath` of `driver-root` adds a second mount and does not move the first. PR #1803 reported this case. The `hostDriverRootPath` and `driverRoot` keys set the driver paths instead.
+- `volumeMounts` merge on `mountPath`. A patch that changes the `mountPath` of `driver-root` adds a second mount and does not move the first. The `hostDriverRootPath` and `driverRoot` keys set the driver paths instead.
 - `tolerations` has no merge key, so a patch replaces the list. Without `operator: Exists` and an empty effect, a `NoExecute` taint can evict the reset pod.
 
 ### Changes
@@ -96,9 +96,9 @@ The GPUReset CRD, its conditions and reasons, the reconcile steps and the protob
 
 - A patch can break the reset, for example through one of the [merge rules](#merge-rules). The error shows only when a reset runs, on a node that is already cordoned and drained.
 - Janitor uses the Job result as the reset result. A patch that removes or replaces the reset step makes the reset report success without a reset.
-- A missing ServiceAccount or image pull secret shows only when a reset runs. ServiceAccount admission rejects a pod whose ServiceAccount does not exist, and the kubelet fails the image pull if the registry requires the missing secret. The reset then fails when the Job deadline expires.
+- A missing ServiceAccount or image pull secret shows only when a reset runs, and the reset fails when the Job deadline expires.
 - Janitor does not restore host changes that the patched Job makes. If the reset fails after a step stops a host service, janitor restores only the services that it manages through node labels.
-- The patch can add host paths and set a service account. The reset Job is already privileged.
+- The patch can add host paths and set a service account.
 - `LoadConfig` rejects unknown keys, so an earlier janitor image does not start with a ConfigMap that contains `jobTemplatePatch`.
 
 ### Mitigations
@@ -111,13 +111,13 @@ The GPUReset CRD, its conditions and reasons, the reconcile steps and the protob
 
 ### Replace the whole Job template (PR #1803)
 
-**Rejected** because the deployment then maintains a full copy of the template, and later changes to the built-in template, for example #1813 and #2013, do not apply to it. The existing `resetJob` keys have no effect while a replacement is set. The driver root case that PR #1803 gave against a patch is covered by the dedicated driver path keys.
+**Rejected** because the deployment then maintains a full copy of the template, and later changes to the built-in template, for example #1813 and #2013, do not apply to it. The existing `resetJob` keys have no effect while a replacement is set.
 
 ### Validate the fields that janitor builds
 
 Reject a patch that changes the privileged setting, the built-in toleration, or the volumes, mounts and environment variables of `gpu-reset`, and create the Job with `dryRun: All` at startup.
 
-**Not chosen** because a patch can still change the command of `gpu-reset`, so the checks cannot make sure that the reset runs. They also add rules that each patch author must learn.
+**Not chosen** because a patch can still change the command of `gpu-reset`, so the checks cannot make sure that the reset runs.
 
 ### Patch only the pod template (`podTemplateOverride`, as #1782 proposed)
 
@@ -131,13 +131,12 @@ Reject a patch that changes the privileged setting, the built-in toleration, or 
 
 Delegate the reset to a provider service, as [ADR-017](017-remediation-plugins.md) does for reboot and terminate.
 
-**Not chosen** because the steps that #1782 needs can run inside the reset Job, and each deployment would have to deploy and operate a provider service. A later ADR can propose the calls if a reset cannot run in a Job.
+**Not chosen** because the steps that #1782 needs can run inside the reset Job, and each deployment would have to deploy and operate a provider service.
 
 ## Notes
 
 - Non-goals: custom GPUReset conditions or reasons, hooks that janitor calls, and changes to the reset steps.
 - The chart renders `gpuReset.cspProviderHost`, but no GPU reset code reads it. Its removal is a separate change.
-- The merge behaviour above was checked with `strategicpatch.StrategicMergePatch` against `getDefaultGPUResetJobTemplate` at commit `e21aa579`.
 
 ## References
 
