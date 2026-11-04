@@ -241,11 +241,11 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 
 	processedEventID := eventID
 
-	// Mark all events up to and including this eventID as processed
-	// This is safe because:
-	// 1. The application only calls MarkProcessed after successfully processing an event
-	// 2. Events are delivered in order (by ID)
-	// 3. If an event is filtered by the pipeline, we never send it, so MarkProcessed is never called for it
+	// Mark rows up to and including this id as processed. Rows are delivered in (changed_at, id)
+	// order, not by id, so with out-of-order rows this can also mark a lower-id row that hasn't
+	// been delivered yet. Today that only skews GetUnprocessedEventCount, because
+	// cleanup_changelog() is never called (#2170) and ADR-068 doesn't delete by this flag.
+	// Retention must not delete by processed without revisiting this.
 	query := `
 		UPDATE datastore_changelog
 		SET processed = TRUE
@@ -261,11 +261,11 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 	// MarkProcessed calls cannot persist an older bookmark after a newer one.
 	w.mu.Lock()
 
-	// Never move the cursor back in (changed_at, id) order. An acknowledged row can have a
-	// higher id than the cursor and an earlier changed_at, and the next poll would then read
-	// the rows after it again.
-	if processedEventID > w.lastEventID &&
-		positionAfter(timestamp, processedEventID, w.lastTimestamp, w.lastEventID) {
+	// Move the cursor only forward in (changed_at, id) order. The id alone isn't enough, since a
+	// row can have a higher id than the cursor and an earlier changed_at. advancePosition has
+	// already put the cursor at or past every row this watcher delivered, so an ack only moves it
+	// for a row the watcher never delivered, such as one from before a restart.
+	if positionAfter(timestamp, processedEventID, w.lastTimestamp, w.lastEventID) {
 		w.lastEventID = processedEventID
 		w.lastTimestamp = timestamp
 	}
