@@ -267,6 +267,10 @@ type E2EReconcilerConfig struct {
 	// EventWatcher, when set, is attached before the node informer starts, so the
 	// stale-state checks it runs on ADD can reach it.
 	EventWatcher eventwatcher.EventWatcherInterface
+	// Clientset, when set, replaces the envtest client for the API calls
+	// fault-quarantine makes. The node informer still watches through the
+	// envtest client.
+	Clientset kubernetes.Interface
 }
 
 // setupE2EReconciler creates a test reconciler with mock watcher
@@ -300,8 +304,13 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 	)
 	require.NoError(t, err)
 
+	var clientset kubernetes.Interface = e2eTestClient
+	if cfg.Clientset != nil {
+		clientset = cfg.Clientset
+	}
+
 	fqClient := &informer.FaultQuarantineClient{
-		Clientset:     e2eTestClient,
+		Clientset:     clientset,
 		DynamicClient: e2eTestDynamicClient,
 		DryRunMode:    cfg.DryRun,
 		NodeInformer:  nodeInformer,
