@@ -637,11 +637,16 @@ func (w *PostgreSQLChangeStreamWatcher) deliverChangeByID(
 }
 
 // addNotifiedID records a notified changelog id for the fetch loop and wakes it. It never blocks.
-// When notifiedIDLimit ids are already waiting, the id is dropped and counted instead.
+// When notifiedIDLimit ids are already waiting, the id is dropped and counted instead. A row a
+// poll has read by now is left out, under the lock the read is recorded with, so no pass looks it
+// up and delivers it a second time.
 func (w *PostgreSQLChangeStreamWatcher) addNotifiedID(id int64) {
 	w.mu.Lock()
 
-	if _, waiting := w.unreadIDs[id]; !waiting {
+	_, read := w.recentEventIDs[id]
+	_, waiting := w.unreadIDs[id]
+
+	if !read && !waiting {
 		if len(w.notifiedIDs) < notifiedIDLimit {
 			if w.unreadIDs == nil {
 				w.unreadIDs = make(map[int64]struct{})

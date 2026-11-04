@@ -178,6 +178,7 @@ func TestHandleNotification_RecordsIDForFetchLoop(t *testing.T) {
 	tests := []struct {
 		name        string
 		extra       string
+		readID      int64
 		full        bool
 		wantIDs     []int64
 		wantDropped int
@@ -192,6 +193,14 @@ func TestHandleNotification_RecordsIDForFetchLoop(t *testing.T) {
 		{
 			name:  "row read recently is skipped",
 			extra: `{"id":20,"table":"health_events","operation":"INSERT"}`,
+		},
+		{
+			// The poll read the row before its NOTIFY arrived, so the position already covers
+			// it. Looking it up would deliver it twice.
+			name:     "row past the position that a poll read is skipped",
+			extra:    `{"id":21,"table":"health_events","operation":"INSERT"}`,
+			readID:   21,
+			wantWake: true,
 		},
 		{
 			name:  "row of another table is ignored",
@@ -215,6 +224,10 @@ func TestHandleNotification_RecordsIDForFetchLoop(t *testing.T) {
 			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
 			watcher.lastEventID = 20
 			watcher.recordRecentEventIDLocked(20, time.Now())
+
+			if tt.readID != 0 {
+				watcher.recordRecentEventIDLocked(tt.readID, time.Now())
+			}
 
 			if tt.full {
 				for id := int64(1000); len(watcher.notifiedIDs) < notifiedIDLimit; id++ {
