@@ -81,13 +81,9 @@ RUN rm -f /usr/local/bin/uv /usr/local/bin/uvx
 #   - compute_90: H100, H200 (Hopper)
 #   - compute_100: GB200, B100, B200 (Blackwell) - requires CUDA 12.8+
 #   - compute_120: RTX Pro 6000 (Blackwell) - requires CUDA 12.8+
-# The check runs only all_reduce_perf, so only that test is built. EXTRA_BIN_FILES= stops the
-# Makefile from adding comm_ops_perf when the bundled NCCL is new enough.
 RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git /opt/nccl-tests \
     && cd /opt/nccl-tests \
     && make -j$(nproc) \
-        BIN_FILES_LIST=all_reduce \
-        EXTRA_BIN_FILES= \
         CUDA_HOME=/usr/local/cuda \
         NVCC_GENCODE="-gencode=arch=compute_80,code=sm_80 \
                       -gencode=arch=compute_89,code=sm_89 \
