@@ -39,19 +39,19 @@
 # NOTES:
 #   - Requires root
 #   - Supports x86_64 and aarch64
-#   - RESET_ATTEMPTS (default 3) sets how many times the script tries the reset, and
-#     RESET_RETRY_DELAY_SECONDS (default 10) sets the wait between attempts. The script writes one
-#     result after the last attempt.
+#   - With RESET_RUN_COUNT_FILE and RESET_MAX_RUNS set, the script counts its runs in the file and
+#     writes a failed result to syslog only in run RESET_MAX_RUNS. A run after that exits without a
+#     reset. Without them, every run writes its result.
 
 set -eou pipefail
 
-RESET_ATTEMPTS="${RESET_ATTEMPTS:-3}"
-RESET_RETRY_DELAY_SECONDS="${RESET_RETRY_DELAY_SECONDS:-10}"
 DRIVER_ROOT="${DRIVER_ROOT:-/}"
 # Optional directory inside DRIVER_ROOT that holds the driver binaries, for drivers installed
 # outside the default PATH.
 DRIVER_BIN_PATH="${DRIVER_BIN_PATH:-}"
 NODE_NAME="${NODE_NAME:-unknown-node}"
+RESET_RUN_COUNT_FILE="${RESET_RUN_COUNT_FILE:-}"
+RESET_MAX_RUNS="${RESET_MAX_RUNS:-}"
 START_TIME=$(date +%s.%N)
 BUG_REPORT_TIMESTAMP="${BUG_REPORT_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
 # With DRIVER_ROOT=/run/nvidia/driver, this writes to that HostPath mount. The report
@@ -62,14 +62,51 @@ log() {
   printf "(%s) %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-if ! [[ "$RESET_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
-  log "ERROR: RESET_ATTEMPTS must be a positive integer, got '${RESET_ATTEMPTS}'."
-  exit 1
-fi
+# The reset Job runs this script again after a failed run. A failed result in syslog makes the node
+# reboot, but a later run can still reset the GPU. So only the last run writes a failed result.
+# RUN stays 0 when the runs are not counted, and every run then writes its result.
+RUN=0
 
-if ! [[ "$RESET_RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
-  log "ERROR: RESET_RETRY_DELAY_SECONDS must be a non-negative integer, got '${RESET_RETRY_DELAY_SECONDS}'."
-  exit 1
+count_run() {
+  local previous=0
+
+  if [ -z "$RESET_RUN_COUNT_FILE" ] || [ -z "$RESET_MAX_RUNS" ]; then
+    return 0
+  fi
+
+  if ! [[ "$RESET_MAX_RUNS" =~ ^[1-9][0-9]*$ ]]; then
+    log "WARN: RESET_MAX_RUNS must be a positive integer, got '${RESET_MAX_RUNS}'. Every run writes its result."
+    return 0
+  fi
+
+  if [ -f "$RESET_RUN_COUNT_FILE" ]; then
+    previous=$(cat "$RESET_RUN_COUNT_FILE" 2>/dev/null || true)
+
+    if ! [[ "$previous" =~ ^[0-9]+$ ]]; then
+      log "WARN: Run count file ${RESET_RUN_COUNT_FILE} holds '${previous}'. Every run writes its result."
+      return 0
+    fi
+  fi
+
+  if ! printf "%s\n" "$((previous + 1))" > "$RESET_RUN_COUNT_FILE"; then
+    log "WARN: Failed to write run count file ${RESET_RUN_COUNT_FILE}. Every run writes its result."
+    return 0
+  fi
+
+  RUN=$((previous + 1))
+}
+
+count_run
+
+if [ "$RUN" -gt 0 ]; then
+  log "INFO: Run ${RUN} of ${RESET_MAX_RUNS}."
+
+  # With restartPolicy OnFailure, the Job fails when the container restart count reaches the backoff
+  # limit, which can be after this run has started. The last run has already written the result.
+  if [ "$RUN" -gt "$RESET_MAX_RUNS" ]; then
+    log "INFO: The reset Job has no runs left. Exiting without a reset."
+    exit 1
+  fi
 fi
 
 # chroot looks up the command with PATH after it changes root, so DRIVER_BIN_PATH is resolved
@@ -186,32 +223,16 @@ echo "${TARGET_UUIDS}" | tr ',' '\n' | sed 's/^/  /'
 # RESET EXECUTION
 #----------------
 
-# After a failed reset, the driver can fail to start the GPU firmware ("WPR2 already up") and
-# nvidia-smi reports "Driver Not Loaded". Another reset usually recovers the GPU. So try the reset
-# again, and report only the result of the last attempt.
-for ((attempt = 1; attempt <= RESET_ATTEMPTS; attempt++)); do
-  log "INFO: Resetting GPUs (attempt ${attempt}/${RESET_ATTEMPTS})..."
+log "INFO: Resetting GPUs..."
 
-  if nvidia_smi_helper --gpu-reset -i "${TARGET_UUIDS}" > "$RESET_OUTPUT_FILE" 2>&1; then
-    RESET_STATUS=0
-    sed -e '/All done\./d' -e 's/\.$//' -e 's/^/  /' "$RESET_OUTPUT_FILE"
-    log "INFO: GPU reset complete."
-    break
-  else
-    RESET_STATUS=$?
-  fi
-
-  log "ERROR: Reset failed (attempt ${attempt}/${RESET_ATTEMPTS}). See details below:"
-  sed -e '/All done\./d' -e 's/\.$//' "$RESET_OUTPUT_FILE" | grep . || true
-
-  if [ "$attempt" -lt "$RESET_ATTEMPTS" ]; then
-    log "INFO: Trying the reset again in ${RESET_RETRY_DELAY_SECONDS}s."
-    sleep "$RESET_RETRY_DELAY_SECONDS"
-  fi
-done
-
-if [ "$RESET_STATUS" -ne 0 ]; then
+if nvidia_smi_helper --gpu-reset -i "${TARGET_UUIDS}" > "$RESET_OUTPUT_FILE" 2>&1; then
+  sed -e '/All done\./d' -e 's/\.$//' -e 's/^/  /' "$RESET_OUTPUT_FILE"
+  log "INFO: GPU reset complete."
+else
+  RESET_STATUS=$?
   FINAL_EXIT_STATUS=$RESET_STATUS
+  log "ERROR: Reset failed. See details below:"
+  sed -e '/All done\./d' -e 's/\.$//' "$RESET_OUTPUT_FILE" | grep . || true
   collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 fi
 
@@ -249,7 +270,9 @@ else
   SYSLOG_SUCCESS="true"
 fi
 
-if [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ]; then
+if [ "$SYSLOG_SUCCESS" = "false" ] && [ "$RUN" -gt 0 ] && [ "$RUN" -lt "$RESET_MAX_RUNS" ]; then
+  log "Skipping writing the failed reset result to syslog: the reset Job runs the script again (run ${RUN} of ${RESET_MAX_RUNS})"
+elif [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ]; then
   ORIGINAL_IFS=$IFS
   IFS=','
   for UUID in $TARGET_UUIDS; do
