@@ -21,7 +21,6 @@ on:
   push:
     branches:
       - main
-      - pull-request/2254
 
 permissions:
   contents: read
@@ -111,7 +110,7 @@ jobs:
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             SAFE_REF="${{ github.ref_name }}"
-          elif [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == pull-request/* ]]; then
+          elif [[ "${{ github.ref_name }}" == "main" ]]; then
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
             SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
           else
