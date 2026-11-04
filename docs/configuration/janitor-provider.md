@@ -87,7 +87,7 @@ List of accepted token audiences. Must include the value set in `janitor.config.
 ```yaml
 janitor-provider:
   csp:
-    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, generic, label
+    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, akamai, generic, label
 ```
 
 Only one provider is active at a time. `kind` and `kwok` are for development only; they simulate reboots without contacting any cloud API.
@@ -376,6 +376,36 @@ The identity is attached when the pod is created, so it only appears on pods cre
 Expect `authMode=workload-identity`. If it says `api-key`, the pod never received an identity — check that the annotation is on the ServiceAccount and that the pod was created after it landed.
 
 Failures in the exchange itself surface on the first remediation, not at startup, because the token is minted lazily. When the exchange endpoint rejects the token it returns `401` with no detail by design, so an unauthenticated caller cannot probe for which identities exist; that means a missing trust, a wrong identity LRN and a disabled account all look identical from the client. Check the trust and the identity LRN first.
+
+## Akamai
+
+Reboot maps to the Linode reboot operation. Terminate recycles the node through LKE when the instance belongs to an LKE cluster, which deletes it and provisions a replacement so the node pool keeps its size, and deletes the instance directly otherwise. Nodes must carry `spec.providerID` in the form `linode://<instanceID>`, which the Linode cloud controller manager sets on LKE nodes.
+
+**Warning:** a terminate replaces the node, so everything on the node's own disk is lost. This includes `hostPath` and `emptyDir` volumes and local PersistentVolumes. Move any data you need off the node before you let the janitor terminate it.
+
+Authenticate with a static API token. A reboot is reported complete only when both conditions hold: the instance reports `running`, and the kubelet's `bootID` differs from the one recorded before the reboot. The `bootID` check is the one that matters, because the instance can still read `running` for a while after the API accepts the request.
+
+```yaml
+global:
+  janitor:
+    enabled: true
+  janitorProvider:
+    enabled: true
+
+janitor-provider:
+  csp:
+    provider: "akamai"
+    akamai:
+      apiTokenSecretRef:
+        name: "akamai-api-token"
+        key: "LINODE_TOKEN"
+```
+
+### apiEndpoint
+Optional. Overrides the base URL of the Akamai Cloud API, passed as `AKAMAI_API_ENDPOINT`. Defaults to `https://api.linode.com/v4` when unset. Must be https, and must not carry userinfo, a query string, or a fragment. The host must be `api.linode.com` and the path must be `/v4`, so any other host or path fails at startup rather than on the first remediation.
+
+### apiTokenSecretRef
+Secret holding the Akamai Cloud API token, injected as `LINODE_TOKEN`, the variable the Linode CLI and SDKs read. `name` is required when `csp.provider` is `akamai`; the install fails without it. `key` defaults to `LINODE_TOKEN`. The token needs the `linodes:read_write` scope to reboot and delete instances and the `lke:read_write` scope to recycle LKE nodes. A recycle also reads the instance, so `lke:read_write` alone is not enough: the token needs a `linodes` scope as well, and `linodes:read_write` covers it. A restricted identity that Akamai limits by permission needs `view_linode`, because the provider reads the instance before every reboot, delete and recycle and again while it waits for a reboot to finish, and then `reboot_linode` for reboots, `delete_linode` to delete an instance that is not an LKE node, and the `lkecluster_admin` role to recycle LKE nodes. The scopes were checked against the live API. The permission and role names come from the Akamai API reference and were not tested. The pod reads the token from its environment when it starts, so after you rotate the Secret, restart the janitor-provider pods, for example with `kubectl rollout restart deployment/janitor-provider -n nvsentinel`. The CSP Health Monitor reads the same variable but only lists maintenance events, so give it its own read-only token rather than sharing this one.
 
 ## Generic / Bare-Metal
 
