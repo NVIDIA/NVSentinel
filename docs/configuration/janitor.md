@@ -304,7 +304,7 @@ GPU Operator 26.7 and later sets the `nvidia.com/gpu.deploy.client=true` node la
 The controller does not change the label in these cases:
 
 - The node has no label. GPU Operator versions before 26.7, and `GPUCluster` mode, do not set it.
-- The label is `false`. No GPU client runs on the node.
+- The label is `false`. The controller does not wait for GPU client pods. A GPU client pod that a DaemonSet does not own, for example a Deployment or Job pod, can still run on the node and keep the GPU open.
 - The label is `true`, but no GPU client pod runs on the node.
 - The label has another value, for example `paused-for-driver-upgrade`. The GPU Operator holds the label during a driver upgrade or a MIG change. The controller waits, as for an operand label.
 
