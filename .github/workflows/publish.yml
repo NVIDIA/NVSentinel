@@ -20,7 +20,6 @@ on:
       - 'v*'
     branches:
       - main
-      - pull-request/2254
   workflow_dispatch:
     inputs:
       tag:
