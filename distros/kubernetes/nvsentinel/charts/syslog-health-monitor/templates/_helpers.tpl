@@ -280,7 +280,11 @@ spec:
         # Regular mode: Mount journal from user-defined host path
         - name: var-log-vol
           hostPath:
-            path: {{ $root.Values.journalDirectoryHostPath | default $root.Values.journalHostPath }}
+            {{- if $root.Values.journalDirectoryHostPath }}
+            path: {{ $root.Values.journalDirectoryHostPath | quote }}
+            {{- else }}
+            path: {{ $root.Values.journalHostPath }}
+            {{- end }}
             type: Directory
         {{- end }}
         - name: sys-vol

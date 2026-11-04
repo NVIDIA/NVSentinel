@@ -80,6 +80,19 @@ tests:
             mountPath: /nvsentinel/var/log
             readOnly: true
 
+  - it: journalDirectoryHostPath is rendered verbatim, not cut at a YAML comment marker
+    template: templates/daemonset-regular.yaml
+    set:
+      journalDirectoryHostPath: "/srv/journal #2"
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: var-log-vol
+            hostPath:
+              path: "/srv/journal #2"
+              type: Directory
+
   - it: kata mode ignores journalDirectoryHostPath
     template: templates/daemonset-kata.yaml
     set:
