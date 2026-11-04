@@ -1277,6 +1277,48 @@ func TestIsStaleBootEntry(t *testing.T) {
 	}
 }
 
+// TestIsStaleBootEntry_RealJournalFormat_MatchesTheCurrentBoot: a real journal
+// returns "_BOOT_ID=<id>" with the ID written without dashes, while the
+// monitor reads its own boot ID from /proc/sys/kernel/random/boot_id, which
+// has them. An entry from this boot must not be taken for one from an older
+// boot.
+func TestIsStaleBootEntry_RealJournalFormat_MatchesTheCurrentBoot(t *testing.T) {
+	const (
+		currentBootID  = "127f6599-4adc-4c6f-955a-3217bb8bb2e3"
+		previousBootID = "0d9ea1b2-c3d4-4e5f-8a6b-7c8d9e0f1a2b"
+	)
+
+	tests := []struct {
+		name          string
+		entryBootID   string
+		withFieldName bool
+		want          bool
+	}{
+		{"this boot, whole data object", currentBootID, true, false},
+		{"previous boot, whole data object", previousBootID, true, true},
+		{"this boot, value only", currentBootID, false, false},
+		{"previous boot, value only", previousBootID, false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// journald writes _BOOT_ID as 32 hex digits, without dashes.
+			journaldForm := strings.ReplaceAll(tt.entryBootID, "-", "")
+
+			journal := &MockJournal{
+				Entries: []MockJournalEntry{
+					{Message: "test", Cursor: "c1", Fields: map[string]string{FieldBootID: journaldForm}},
+				},
+				CurrentPosition:   0,
+				DataWithFieldName: tt.withFieldName,
+			}
+
+			sm := &SyslogMonitor{currentBootID: currentBootID}
+			assert.Equal(t, tt.want, sm.isStaleBootEntry(journal))
+		})
+	}
+}
+
 func TestSkipStaleBootEntry(t *testing.T) {
 	t.Run("normal advance", func(t *testing.T) {
 		journal := &MockJournal{
