@@ -435,6 +435,12 @@ func TestMarkProcessedUpdatesResumeToken(t *testing.T) {
 		lastEventID: 0,
 	}
 
+	// Verify the event timestamp before updating the checkpoint.
+	mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(
+			time.Date(2025, 1, 1, 0, 0, 42, 0, time.UTC)))
+
 	// Mock the UPDATE datastore_changelog query
 	mock.ExpectExec("UPDATE datastore_changelog SET processed = TRUE").
 		WithArgs(int64(42), tableName).
