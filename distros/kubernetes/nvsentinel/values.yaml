@@ -228,6 +228,8 @@ global:
   #     x509DgxcopsUserDN: ""
   #
   #   # --- Database setup job ---
+  #   # mongodb-store.job.activeDeadlineSeconds also controls this Job (default 1800 seconds).
+  #   # Set 0 to omit the deadline. Unset/null uses 1800. Must be a non-negative integer.
   #   # The setup job creates required collections and indexes in the external MongoDB.
   #   # It runs once on install/upgrade when using an external DB.
   #   setupJob:

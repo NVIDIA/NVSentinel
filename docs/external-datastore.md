@@ -222,6 +222,10 @@ kubectl get job -n nvsentinel -l app.kubernetes.io/component=mongodb-init
 kubectl logs -n nvsentinel -l app.kubernetes.io/component=mongodb-init
 ```
 
+Set `mongodb-store.job.activeDeadlineSeconds` to control the setup deadline, including scheduling and image pulls. The default is `1800` seconds (30 minutes). Set `0` to omit the deadline. Unset or null uses `1800`. Other values must be non-negative integers. This value applies even when `global.mongodbStore.enabled` is `false`. Changing it leaves the Job name and pod template unchanged.
+
+A Job that fails with `DeadlineExceeded` stays failed under plain Helm. Wait for MongoDB to become ready. Delete the failed Job with `kubectl delete job -n nvsentinel -l app.kubernetes.io/name=external-mongodb-setup`. Re-run the same `helm upgrade` with the desired deadline. Check that the new Job completes. Argo CD retains its `Force=true,Replace=true` sync behavior.
+
 The Job completes even when documents share an idempotency key; the log shows that error. To run the Job again, delete it and upgrade.
 
 All you need is a cluster endpoint and a database user with read/write access.

@@ -1,0 +1,137 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The Job calls umbrella helpers, as in deployed_crversion_test.yaml.
+suite: bitnami mongodb initialization Job deadline
+templates:
+  - charts/mongodb-store/templates/jobs.yaml
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+set:
+  global.mongodbStore.enabled: true
+  mongodb-store.useBitnami: true
+  mongodb-store.usePerconaOperator: false
+tests:
+  - it: uses a 30 minute deadline by default
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 1800
+      - equal:
+          path: metadata.name
+          value: create-mongodb-database-2592000-19c13973
+      - notExists:
+          path: metadata.annotations["helm.sh/hook"]
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Force=true,Replace=true
+  - it: renders a custom deadline
+    documentSelector:
+      path: kind
+      value: Job
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 3600
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 3600
+      - equal:
+          path: metadata.name
+          value: create-mongodb-database-2592000-19c13973
+      - notExists:
+          path: metadata.annotations["helm.sh/hook"]
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Force=true,Replace=true
+  - it: retains the default for null
+    documentSelector:
+      path: kind
+      value: Job
+    set:
+      mongodb-store.job.activeDeadlineSeconds: null
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 1800
+      - equal:
+          path: metadata.name
+          value: create-mongodb-database-2592000-19c13973
+      - notExists:
+          path: metadata.annotations["helm.sh/hook"]
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Force=true,Replace=true
+  - it: omits the deadline for zero
+    documentSelector:
+      path: kind
+      value: Job
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 0
+    asserts:
+      - notExists:
+          path: spec.activeDeadlineSeconds
+      - equal:
+          path: metadata.name
+          value: create-mongodb-database-2592000-19c13973
+      - notExists:
+          path: metadata.annotations["helm.sh/hook"]
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Force=true,Replace=true
+  - it: rejects a negative deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: -1
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+  - it: rejects a fractional deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 1.5
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+  - it: rejects a quoted deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: "1800"
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+  - it: rejects a boolean deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: true
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+  - it: rejects a empty string deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+  - it: rejects a list deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: []
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+  - it: rejects a mapping deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: {}
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)

@@ -78,7 +78,9 @@ metadata:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 600
+  {{- with include "nvsentinel.mongoJobActiveDeadlineSeconds" . }}
+  activeDeadlineSeconds: {{ . }}
+  {{- end }}
   template:
     spec:
       {{- with .Values.global.imagePullSecrets }}

@@ -69,8 +69,12 @@ scramAppUser:
   passwordKey: "mongodb-root-password"
 
 # Common Job configuration (applies to both Bitnami and Percona)
-# If not set, falls back to mongodb.jobTolerations and mongodb.nodeSelector for backward compatibility
+# Placement falls back to mongodb.jobTolerations and mongodb.nodeSelector for backward compatibility
 job:
+  # Deadline in seconds for the bundled or external MongoDB initialization Job.
+  # Includes scheduling, image pulls, and setup. Default 1800 (30 minutes) allows slow image-pull queues.
+  # Set 0 to omit the deadline. Unset/null uses 1800. Must be a non-negative integer.
+  activeDeadlineSeconds: 1800
   nodeSelector: {}
   tolerations: []
 

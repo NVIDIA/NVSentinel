@@ -188,6 +188,7 @@ The Percona components use their own scheduling keys. Values under `mongodb-stor
 ```yaml
 mongodb-store:
   job:
+    activeDeadlineSeconds: 1800
     nodeSelector: {}
     tolerations: []
   psmdb-operator:
@@ -460,18 +461,27 @@ Key inside that Secret holding the password.
 
 This only provisions the user. To use it, build `MONGODB_URI` from the username, the resolved password, and the host and database — creating the user does not change what the modules connect with.
 
-### Initialization Job Placement
+<a id="initialization-job-placement"></a>
 
-Configures node placement for initialization jobs (applies to both backends).
+### Initialization Job Configuration
+
+Configures the deadline and node placement for initialization jobs. Both backends use these settings.
 
 ```yaml
 mongodb-store:
   job:
+    activeDeadlineSeconds: 1800
     nodeSelector: {}
     tolerations: []
 ```
 
 #### Parameters
+
+##### activeDeadlineSeconds
+
+Sets the Job deadline in seconds. The default is `1800` (30 minutes). The deadline includes scheduling, image pulls, and setup. This allows approximately 20 minutes for queued image pulls, plus 10 minutes for startup and setup. Both bundled backends and the external MongoDB setup Job use this value. Set `0` to omit `spec.activeDeadlineSeconds`. Unset or null uses `1800`. Other values must be non-negative integers.
+
+Changing this value leaves the Job name and pod template unchanged. Plain Helm can update an existing completed Job without recreating it. Argo CD retains the existing `Force=true,Replace=true` sync behavior. Both Jobs remain plain resources without Helm hooks. A Failed Job stays failed under plain Helm. Follow the [recovery steps](../runbooks/mongodb-bitnami-to-percona-migration.md#troubleshooting) before upgrading again.
 
 ##### nodeSelector
 Node selector for scheduling MongoDB initialization jobs.

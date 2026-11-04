@@ -267,3 +267,22 @@ staged upgrade Percona requires.
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/* Job deadline in seconds. Unset/null uses 30 minutes; zero omits the field. */}}
+{{- define "mongodb-store.jobActiveDeadlineSeconds" -}}
+{{- $raw := (.Values.job | default dict).activeDeadlineSeconds -}}
+{{- if kindIs "invalid" $raw -}}
+{{- $raw = 1800 -}}
+{{- end -}}
+{{- $message := "mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)" -}}
+{{- if not (or (kindIs "float64" $raw) (kindIs "int" $raw) (kindIs "int64" $raw)) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- $seconds := int64 $raw -}}
+{{- if or (lt $seconds 0) (ne (float64 $raw) (float64 $seconds)) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- if gt $seconds 0 -}}
+{{- $seconds -}}
+{{- end -}}
+{{- end }}

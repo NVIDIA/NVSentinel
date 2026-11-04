@@ -996,3 +996,23 @@ Matching volume.
         path: ca.crt
 {{- end -}}
 {{- end -}}
+
+{{/* Also used for external MongoDB, when the mongodb-store subchart is disabled. */}}
+{{- define "nvsentinel.mongoJobActiveDeadlineSeconds" -}}
+{{- $store := index .Values "mongodb-store" | default dict -}}
+{{- $raw := ($store.job | default dict).activeDeadlineSeconds -}}
+{{- if kindIs "invalid" $raw -}}
+{{- $raw = 1800 -}}
+{{- end -}}
+{{- $message := "mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)" -}}
+{{- if not (or (kindIs "float64" $raw) (kindIs "int" $raw) (kindIs "int64" $raw)) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- $seconds := int64 $raw -}}
+{{- if or (lt $seconds 0) (ne (float64 $raw) (float64 $seconds)) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- if gt $seconds 0 -}}
+{{- $seconds -}}
+{{- end -}}
+{{- end }}

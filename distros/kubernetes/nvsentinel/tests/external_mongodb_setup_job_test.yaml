@@ -75,3 +75,125 @@ tests:
       - matchRegex:
           path: metadata.name
           pattern: ^customer-production-gpu-external-mongodb-setup-[0-9]+-[0-9a-f]{8}$
+
+  - it: uses a 30 minute deadline by default
+    release:
+      name: nvsentinel
+      namespace: nvsentinel
+    asserts:
+      - equal:
+          path: metadata.name
+          value: nvsentinel-external-mongodb-setup-2592000-4e5b3c3e
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 1800
+      - notExists:
+          path: metadata.annotations["helm.sh/hook"]
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Force=true,Replace=true
+
+  - it: renders a custom deadline
+    release:
+      name: nvsentinel
+      namespace: nvsentinel
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 3600
+    asserts:
+      - equal:
+          path: metadata.name
+          value: nvsentinel-external-mongodb-setup-2592000-4e5b3c3e
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 3600
+      - notExists:
+          path: metadata.annotations["helm.sh/hook"]
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Force=true,Replace=true
+
+  - it: retains the default for null
+    release:
+      name: nvsentinel
+      namespace: nvsentinel
+    set:
+      mongodb-store.job.activeDeadlineSeconds: null
+    asserts:
+      - equal:
+          path: metadata.name
+          value: nvsentinel-external-mongodb-setup-2592000-4e5b3c3e
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 1800
+      - notExists:
+          path: metadata.annotations["helm.sh/hook"]
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Force=true,Replace=true
+
+  - it: omits the deadline for zero
+    release:
+      name: nvsentinel
+      namespace: nvsentinel
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: nvsentinel-external-mongodb-setup-2592000-4e5b3c3e
+      - notExists:
+          path: spec.activeDeadlineSeconds
+      - notExists:
+          path: metadata.annotations["helm.sh/hook"]
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Force=true,Replace=true
+
+  - it: rejects a negative deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: -1
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+
+  - it: rejects a fractional deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 1.5
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+
+  - it: rejects a quoted deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: "1800"
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+
+  - it: rejects a boolean deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: true
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+
+  - it: rejects a empty string deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+
+  - it: rejects a list deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: []
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
+
+  - it: rejects a mapping deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: {}
+    asserts:
+      - failedTemplate:
+          errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
