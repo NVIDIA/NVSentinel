@@ -247,6 +247,158 @@ func TestProcess_ExpiredAfterClockAdvance(t *testing.T) {
 	assert.Equal(t, ActionExpired, result.Action)
 }
 
+// TestProcess_AfterCompletion covers the completion gate used for kinds whose
+// TTL must not start until they finish (ExternalRemediationRequest).
+func TestProcess_AfterCompletion(t *testing.T) {
+	completedAt := fixedNow.Add(-30 * time.Minute)
+	longAgo := fixedNow.Add(-48 * time.Hour)
+	expiredAnnotation := fixedNow.Add(-5 * time.Minute).Format(time.RFC3339)
+
+	cases := []struct {
+		name           string
+		initialAnnots  map[string]string
+		completedAt    *time.Time
+		defaultTTL     time.Duration
+		expectedAction Action
+		expectedChange bool
+		// expectedAnnots, if non-nil, must equal the annotations after Process.
+		expectedAnnots map[string]string
+	}{
+		{
+			name:           "in progress with an expired expiry → Noop, annotations untouched",
+			initialAnnots:  map[string]string{TTLAnnotation: "1h", ExpiryAnnotation: expiredAnnotation},
+			completedAt:    nil,
+			defaultTTL:     time.Hour,
+			expectedAction: ActionNoop,
+			expectedAnnots: map[string]string{TTLAnnotation: "1h", ExpiryAnnotation: expiredAnnotation},
+		},
+		{
+			name:           "in progress without annotations → Noop, default TTL not written",
+			completedAt:    nil,
+			defaultTTL:     time.Hour,
+			expectedAction: ActionNoop,
+		},
+		{
+			name:           "completed recently → expiry calculated from completion",
+			completedAt:    &completedAt,
+			defaultTTL:     time.Hour,
+			expectedAction: ActionRequeue,
+			expectedChange: true,
+			expectedAnnots: map[string]string{
+				TTLAnnotation:    "1h0m0s",
+				ExpiryAnnotation: completedAt.Add(time.Hour).Format(time.RFC3339),
+			},
+		},
+		{
+			name:           "completed longer ago than the TTL → Expired",
+			completedAt:    &longAgo,
+			defaultTTL:     time.Hour,
+			expectedAction: ActionExpired,
+			expectedChange: true,
+		},
+		{
+			name: "expiry written before completion is recomputed from completion",
+			initialAnnots: map[string]string{
+				TTLAnnotation:    "336h",
+				ExpiryAnnotation: completedAt.Add(-time.Hour).Format(time.RFC3339),
+			},
+			completedAt:    &completedAt,
+			expectedAction: ActionRequeue,
+			expectedChange: true,
+			expectedAnnots: map[string]string{
+				TTLAnnotation:    "336h",
+				ExpiryAnnotation: completedAt.Add(336 * time.Hour).Format(time.RFC3339),
+			},
+		},
+		{
+			name: "first-reconcile expiry later than completion is recomputed from completion",
+			initialAnnots: map[string]string{
+				TTLAnnotation:    "336h",
+				ExpiryAnnotation: completedAt.Add(time.Minute).Format(time.RFC3339),
+			},
+			completedAt:    &completedAt,
+			expectedAction: ActionRequeue,
+			expectedChange: true,
+			expectedAnnots: map[string]string{
+				TTLAnnotation:    "336h",
+				ExpiryAnnotation: completedAt.Add(336 * time.Hour).Format(time.RFC3339),
+			},
+		},
+		{
+			name: "expiry equal to completion + ttl is kept",
+			initialAnnots: map[string]string{
+				TTLAnnotation:    "336h",
+				ExpiryAnnotation: completedAt.Add(336 * time.Hour).Format(time.RFC3339),
+			},
+			completedAt:    &completedAt,
+			expectedAction: ActionRequeue,
+			expectedChange: false,
+		},
+		{
+			name: "ttl shortened after completion → expiry follows the new ttl",
+			initialAnnots: map[string]string{
+				TTLAnnotation:    "24h",
+				ExpiryAnnotation: longAgo.Add(336 * time.Hour).Format(time.RFC3339),
+			},
+			completedAt:    &longAgo,
+			expectedAction: ActionExpired,
+			expectedChange: true,
+			expectedAnnots: map[string]string{
+				TTLAnnotation:    "24h",
+				ExpiryAnnotation: longAgo.Add(24 * time.Hour).Format(time.RFC3339),
+			},
+		},
+		{
+			name: "preserve annotation wins over completion",
+			initialAnnots: map[string]string{
+				TTLAnnotation:      "1h",
+				ExpiryAnnotation:   expiredAnnotation,
+				PreserveAnnotation: "true",
+			},
+			completedAt:    &longAgo,
+			expectedAction: ActionNoop,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := newRebootNode("gated")
+			obj.Annotations = tc.initialAnnots
+
+			result, err := Process(context.Background(), obj, tc.defaultTTL, newClock(), AfterCompletion(tc.completedAt))
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedAction, result.Action)
+			assert.Equal(t, tc.expectedChange, result.Changed)
+
+			if tc.expectedAnnots != nil {
+				assert.Equal(t, tc.expectedAnnots, obj.Annotations)
+			}
+
+			if tc.completedAt == nil {
+				assert.Equal(t, tc.initialAnnots, obj.Annotations, "an in-progress object must not be mutated")
+			}
+		})
+	}
+}
+
+// TestProcess_AfterCompletion_StableAcrossReconciles guards against an update
+// loop: recalculating from a sub-second completion time must produce the same
+// stored expiry on the next call.
+func TestProcess_AfterCompletion_StableAcrossReconciles(t *testing.T) {
+	completedAt := fixedNow.Add(-10*time.Minute + 750*time.Millisecond)
+	obj := newRebootNode("stable")
+
+	first, err := Process(context.Background(), obj, time.Hour, newClock(), AfterCompletion(&completedAt))
+	require.NoError(t, err)
+	require.True(t, first.Changed)
+
+	second, err := Process(context.Background(), obj, time.Hour, newClock(), AfterCompletion(&completedAt))
+	require.NoError(t, err)
+	assert.Equal(t, ActionRequeue, second.Action)
+	assert.False(t, second.Changed, "expiry must not be recomputed on the next call")
+}
+
 // TestKindFromType confirms the reflect-based kind extraction works for
 // both our CRDs and standard core/v1 types, guarding against a future
 // refactor that accidentally breaks the helper.

@@ -1316,7 +1316,11 @@ func (sm *SyslogMonitor) getJournalMessage(journal Journal, checkName string) (s
 		// Try to read the message
 		message, err = journal.GetData(FieldMessage)
 		if err == nil {
-			return message, nil
+			// journald returns MESSAGE as raw bytes, and a kernel line can hold
+			// bytes that are not UTF-8, such as a task name. A health event
+			// built from them cannot be encoded (proto3 strings must be UTF-8),
+			// so the check would stop at this entry on every poll.
+			return strings.ToValidUTF8(message, "\uFFFD"), nil
 		}
 
 		// If it's not a retryable error, return immediately
