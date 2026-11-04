@@ -307,11 +307,9 @@ func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to construct GPU service manager: %w", err)
 	}
 
-	if r.Config.StopGPUClients {
-		gpuServiceManager = gpuservices.WithGPUClients(gpuServiceManager)
-	}
-
-	r.serviceManager = gpuServiceManager
+	// The teardown also stops the GPU client pods outside the service manager. It changes the GPU clients node
+	// label only on a node where the label is "true" and a GPU client pod runs.
+	r.serviceManager = gpuservices.WithGPUClients(gpuServiceManager)
 
 	if r.Config.ResolvedJobTemplate == nil {
 		return fmt.Errorf("failed to get valid reset job template")

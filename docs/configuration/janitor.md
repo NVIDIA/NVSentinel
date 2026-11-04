@@ -231,7 +231,6 @@ janitor:
         timeout: "25m"
         serviceManager:
           name: "gpu-operator"
-        stopGPUClients: false
         resetJob:
           writeSysLogEvent: true
           runtimeClassName: "nvidia"
@@ -288,13 +287,13 @@ The controller finds the operands only one time, when the teardown starts. An op
 
 The built-in `gpu-operator` service manager and the `/run/nvidia/driver` driver paths work unchanged on ClusterPolicy and `GPUCluster` (DRA) clusters. The one value that differs is `resetJob.runtimeClassName`, which must be `""` together with `global.gpuDraEnabled: true`. Set `serviceManager.spec` only for a GPU services manager other than the GPU Operator, or to stop a GPU Operator operand that the built-in entry does not cover, as in the [host-installed driver example](#example-host-installed-driver-on-gke). The spec replaces the built-in entry completely, including its mode detection, so list every operand to stop.
 
-### stopGPUClients
+#### GPU clients
 
-When `true`, the controller also stops the GPU client pods before the reset. Defaults to `false`.
+The controller also stops the GPU client pods before the reset. It does this with every service manager, and also when no service manager is set.
 
 A GPU client is a pod that holds the GPUs open, but that the GPU Operator does not manage. For example, a monitoring agent or a health agent. If a GPU client runs on the node, `nvidia-smi --gpu-reset` fails with `In use by another client`. GPU clients can run in any namespace, so the `serviceManager` cannot stop them.
 
-GPU Operator 26.7 and later sets the `nvidia.com/gpu.deploy.client=true` node label on each GPU node. A GPU client selects this label in its `nodeSelector`. The NVSentinel metadata collector selects it in its required node affinity. With `stopGPUClients: true`, the controller does these steps:
+GPU Operator 26.7 and later sets the `nvidia.com/gpu.deploy.client=true` node label on each GPU node. A GPU client selects this label in its `nodeSelector`. The NVSentinel metadata collector selects it in its required node affinity. The controller does these steps:
 
 1. When the teardown starts, the controller reads `nvidia.com/gpu.deploy.client` on the node. The controller stops the GPU clients only when the label is `true` and at least one GPU client pod runs on the node.
 2. The controller sets the label to `false`, and records it in `status.managedServices.nodeLabels`. The DaemonSet controller then removes the GPU client pods from the node.

@@ -2331,11 +2331,7 @@ var _ = Describe("GPUReset Controller", func() {
 			})
 
 			DescribeTable("should not change the GPU clients label or wait for the client pods",
-				func(stopGPUClients bool, nodeLabels map[string]string) {
-					if !stopGPUClients {
-						reconciler.serviceManager = gpuOperatorServiceManager
-					}
-
+				func(nodeLabels map[string]string) {
 					createNodeWithOperandPods(nodeLabels, nil)
 					createClientPod("client-selector", nodeName, bySelector)
 					createReset()
@@ -2350,9 +2346,8 @@ var _ = Describe("GPUReset Controller", func() {
 						Expect(observed).To(HaveEach(Not(HaveKey(gpuservices.GPUClientsNodeLabel))))
 					}
 				},
-				Entry("when the node has no GPU clients label, as before GPU Operator 26.7", true, devicePluginDeployLabels()),
-				Entry("when the GPU clients label holds the disabled value", true, withClientsLabel("false")),
-				Entry("when stopGPUClients is off", false, withClientsLabel("true")),
+				Entry("when the node has no GPU clients label, as before GPU Operator 26.7", devicePluginDeployLabels()),
+				Entry("when the GPU clients label holds the disabled value", withClientsLabel("false")),
 			)
 
 			It("should wait while another controller holds the GPU clients label, without changing it", func() {

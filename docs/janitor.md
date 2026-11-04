@@ -53,7 +53,7 @@ Runs a privileged Kubernetes Job on the target node that performs an in-place GP
 
 GPUReset supports both GPU Operator modes: device plugin and DRA. Refer to [GPU Operator modes](configuration/janitor.md#gpu-operator-modes).
 
-GPU clients outside the GPU Operator, in any namespace, can also hold the GPUs open. To stop them before the reset, refer to [stopGPUClients](configuration/janitor.md#stopgpuclients).
+GPU clients outside the GPU Operator, in any namespace, can also hold the GPUs open. The controller also stops them before the reset. Refer to [GPU clients](configuration/janitor.md#gpu-clients).
 
 ## Configuration
 
