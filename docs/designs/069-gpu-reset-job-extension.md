@@ -64,7 +64,7 @@ config:
 
 Janitor rejects the configuration at startup when:
 
-- The patch does not decode strictly into `batchv1.JobTemplateSpec`.
+- The merged result does not decode strictly into `batchv1.JobTemplateSpec`, for example because of a misspelled field name. Janitor decodes the result and not the patch, because a patch can contain strategic merge directives such as `$patch`, which are not fields of the type. The merge keeps unknown fields, so the strict decode of the result finds them.
 - The patch sets `metadata.name`, `metadata.generateName`, `metadata.namespace` or `spec.template.spec.nodeName`.
 - The result has no `gpu-reset` container, for example after `$patch: delete`.
 - The `gpu-reset` container is not `privileged: true`.
@@ -78,7 +78,7 @@ The last two checks cover two strategic merge rules, which were checked against 
 - `volumeMounts` merge on `mountPath`. A patch that changes the `mountPath` of `driver-root` adds a second mount and does not move the first. PR #1803 reported this case.
 - `tolerations` has no merge key, so a patch replaces the list. Without the built-in toleration, a `NoExecute` taint can evict the reset pod.
 
-Janitor then creates the resolved Job once with `dryRun: All` and a placeholder node name. The API server validates the Job, including its pod template, and runs the admission for Jobs. It does not check that the objects that the pod refers to exist, for example the ServiceAccount or an image pull secret. Admission checks these when the Job controller creates the pod.
+Janitor then creates a Job from the resolved template once with `dryRun: All`. It sets the fields that `newGpuResetJob` sets, with `metadata.generateName: gpu-reset-validation-`, a placeholder node name and no owner reference, because no GPUReset owns this Job. The API server validates the Job, including its pod template, and runs the admission for Jobs. It does not check that the objects that the pod refers to exist, for example the ServiceAccount or an image pull secret. Admission checks these when the Job controller creates the pod.
 
 ### Changes
 
