@@ -616,3 +616,144 @@ func TestFetchLoop_FailedPass_DoesNotRetryAfterStop(t *testing.T) {
 		})
 	}
 }
+
+// A late row is only ever delivered by the lookup of its notified id. When that lookup fails,
+// the id has to stay pending so the pass that runs again after the failure delivers it.
+func TestFetchLoop_FailedLookup_DeliversTheRowOnTheRetry(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base.Add(20 * time.Second)
+	watcher.lastEventID = 20
+	watcher.retryDelay = 10 * time.Millisecond
+
+	// Rows 15 and 16 committed after the position passed them. Only their lookups deliver them.
+	watcher.addNotifiedID(15)
+	watcher.addNotifiedID(16)
+	<-watcher.wake
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+		WillReturnRows(changelogRows())
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(15)).
+		WillReturnError(errors.New("connection reset by peer"))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+		WillReturnRows(changelogRows())
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(15)).
+		WillReturnRows(listenTestRows(base, 15))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(16)).
+		WillReturnRows(listenTestRows(base, 16))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+		WillReturnRows(changelogRows())
+
+	stopFetchLoop := watcher.startFetchLoop(context.Background())
+	defer stopFetchLoop()
+
+	assert.Equal(t, tokensFor([]int64{15, 16}), takeTokens(t, watcher, 2, 5*time.Second),
+		"both late rows must be delivered by the pass after the failed one, in order")
+	assert.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, 5*time.Second, 10*time.Millisecond)
+	assert.Empty(t, watcher.events, "nothing else may be delivered")
+}
+
+// A failed lookup keeps that id and the ones after it pending, in front of ids notified since,
+// lists an id notified again once, and keeps the dropped count.
+func TestFetchNotifiedRows_FailedLookup_KeepsTheRestPending(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base.Add(20 * time.Second)
+	watcher.lastEventID = 20
+	// Unbuffered, so the pass waits in the delivery of row 15 until the test takes it.
+	watcher.events = make(chan datastore.EventWithToken)
+
+	watcher.addNotifiedID(15)
+	watcher.addNotifiedID(16)
+	watcher.addNotifiedID(17)
+	watcher.droppedIDs = 2
+
+	// Row 15 is looked up and delivered, the lookup of row 16 fails.
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(15)).
+		WillReturnRows(listenTestRows(base, 15))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(16)).
+		WillReturnError(errors.New("connection reset by peer"))
+
+	done := make(chan error, 1)
+
+	go func() { done <- watcher.fetchNotifiedRows(context.Background()) }()
+
+	// While the pass waits to deliver row 15, row 16 is notified a second time and row 18 for the
+	// first time.
+	require.Eventually(t, func() bool {
+		watcher.mu.RLock()
+		defer watcher.mu.RUnlock()
+
+		_, delivering := watcher.recentEventIDs[15]
+
+		return delivering
+	}, 5*time.Second, time.Millisecond)
+	watcher.addNotifiedID(16)
+	watcher.addNotifiedID(18)
+
+	assert.Equal(t, []byte("15"), (<-watcher.events).ResumeToken)
+
+	err = <-done
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "notified changelog row 16")
+	assert.ErrorContains(t, err, "connection reset by peer")
+
+	ids, dropped := watcher.takeNotifiedIDs()
+	assert.Equal(t, []int64{17, 16, 18}, ids,
+		"the id after the failed one goes in front, the failed id is already listed again, then the new one")
+	assert.Equal(t, 2, dropped, "the dropped count is kept for the retry")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The pending list stays bounded when a failed pass puts ids back. The ids that do not fit are
+// counted as dropped along with the pass's own count, and leave the unread set.
+func TestKeepNotifiedIDs_OverTheLimit_CutsAndCountsTheCutAsDropped(t *testing.T) {
+	watcher := NewPostgreSQLChangeStreamWatcher(nil, "test-client", healthEventsTable, "", ModeHybrid)
+
+	for id := int64(1); id <= notifiedIDLimit; id++ {
+		watcher.addNotifiedID(id)
+	}
+
+	ids, dropped := watcher.takeNotifiedIDs()
+	require.Len(t, ids, notifiedIDLimit)
+	require.Zero(t, dropped)
+
+	// Ten more ids are notified during the pass, and the pass fails at its third id.
+	for id := int64(notifiedIDLimit + 1); id <= notifiedIDLimit+10; id++ {
+		watcher.addNotifiedID(id)
+	}
+
+	watcher.keepNotifiedIDs(ids[2:], 4)
+
+	want := append(append([]int64{}, ids[2:]...), notifiedIDLimit+1, notifiedIDLimit+2)
+
+	watcher.mu.Lock()
+	assert.Len(t, watcher.unreadIDs, notifiedIDLimit)
+
+	for _, id := range want {
+		_, unread := watcher.unreadIDs[id]
+		assert.True(t, unread, "id %d must stay unread", id)
+	}
+
+	watcher.mu.Unlock()
+
+	got, gotDropped := watcher.takeNotifiedIDs()
+	assert.Equal(t, want, got, "the oldest ids are kept, the newest eight are cut")
+	assert.Equal(t, 4+8, gotDropped, "the pass's dropped count plus the cut")
+}

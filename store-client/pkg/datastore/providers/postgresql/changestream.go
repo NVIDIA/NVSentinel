@@ -805,17 +805,58 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRowsByID(ctx context.Contex
 			"client", w.clientName, "dropped", dropped, "limit", notifiedIDLimit)
 	}
 
-	for _, id := range ids {
+	for i, id := range ids {
 		if err := fetch(ctx, id); err != nil {
 			if ctx.Err() != nil {
 				return true, ctx.Err()
 			}
 
-			slog.Error("Failed to fetch notified changelog row", "client", w.clientName, "eventID", id, "error", err)
+			// The pass is retried, so this id and the ones after it stay pending. A late row is
+			// only ever delivered by its lookup, so dropping it here would lose it.
+			w.keepNotifiedIDs(ids[i:], dropped)
+
+			return true, fmt.Errorf("failed to fetch notified changelog row %d: %w", id, err)
 		}
 	}
 
 	return len(ids) > 0, nil
+}
+
+// keepNotifiedIDs puts the ids a failed pass did not look up back in front of the ones notified
+// since, and adds the pass's dropped count back, so the retry sees the same state. An id notified
+// again in the meantime is listed once, and the list is cut at notifiedIDLimit as before.
+func (w *PostgreSQLChangeStreamWatcher) keepNotifiedIDs(ids []int64, dropped int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.unreadIDs == nil {
+		w.unreadIDs = make(map[int64]struct{})
+	}
+
+	kept := make([]int64, 0, len(ids)+len(w.notifiedIDs))
+
+	for _, id := range ids {
+		if _, waiting := w.unreadIDs[id]; waiting {
+			continue
+		}
+
+		kept = append(kept, id)
+		w.unreadIDs[id] = struct{}{}
+	}
+
+	kept = append(kept, w.notifiedIDs...)
+
+	if len(kept) > notifiedIDLimit {
+		for _, id := range kept[notifiedIDLimit:] {
+			delete(w.unreadIDs, id)
+		}
+
+		dropped += len(kept) - notifiedIDLimit
+		kept = kept[:notifiedIDLimit]
+	}
+
+	w.notifiedIDs = kept
+	w.droppedIDs += dropped
 }
 
 // adaptiveFallbackPoller implements adaptive polling based on NOTIFY health
