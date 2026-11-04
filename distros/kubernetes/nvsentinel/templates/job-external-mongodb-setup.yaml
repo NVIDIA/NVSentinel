@@ -78,7 +78,7 @@ metadata:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   ttlSecondsAfterFinished: 86400
-  {{- /* Same value as the bundled Job: mongodb-store.job.activeDeadlineSeconds. The subchart is not loaded in this mode, so its default is repeated here. 0 omits the deadline. */}}
+  {{- /* Reads mongodb-store.job.activeDeadlineSeconds when set; the subchart is not loaded in this mode, so this Job keeps its previous 600s default. 0 omits the deadline. */}}
   {{- $deadline := 600 }}
   {{- with (index .Values "mongodb-store") }}
   {{- with .job }}
