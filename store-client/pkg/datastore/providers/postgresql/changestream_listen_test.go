@@ -271,6 +271,9 @@ func TestFetchNotifiedRows_AfterDroppedIDs_DeliversOnlyRowsBehindPosition(t *tes
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
 		WillReturnRows(listenTestRows(base, 30))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(30*time.Second), int64(30)).
+		WillReturnRows(changelogRows())
 
 	require.NoError(t, watcher.fetchNotifiedRows(context.Background()))
 
@@ -347,4 +350,160 @@ func TestFetchNewChanges_OverlappingReads_DeliverEachRowOnce(t *testing.T) {
 	}
 
 	assert.Equal(t, []string{"1", "2", "3"}, tokens)
+}
+
+// rowRange returns the ids from first to last.
+func rowRange(first, last int64) []int64 {
+	ids := make([]int64, 0, last-first+1)
+
+	for id := first; id <= last; id++ {
+		ids = append(ids, id)
+	}
+
+	return ids
+}
+
+// takeTokens takes n events from the watcher and returns their tokens, or fails after timeout.
+func takeTokens(t *testing.T, watcher *PostgreSQLChangeStreamWatcher, n int, timeout time.Duration) []string {
+	t.Helper()
+
+	tokens := make([]string, 0, n)
+	deadline := time.After(timeout)
+
+	for len(tokens) < n {
+		select {
+		case event := <-watcher.events:
+			tokens = append(tokens, string(event.ResumeToken))
+		case <-deadline:
+			t.Fatalf("got %d of %d events", len(tokens), n)
+		}
+	}
+
+	return tokens
+}
+
+func tokensFor(ids []int64) []string {
+	tokens := make([]string, 0, len(ids))
+
+	for _, id := range ids {
+		tokens = append(tokens, fmt.Sprint(id))
+	}
+
+	return tokens
+}
+
+// Rows committed before LISTEN was acknowledged are announced by no notification. They are read
+// as soon as the LISTEN loop starts, and a full batch is followed by the next poll right away
+// instead of the next fallback tick (#2171).
+func TestListenLoop_Startup_ReadsBacklogWithoutWaiting(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base, int64(0)).
+		WillReturnRows(listenTestRows(base, rowRange(1, 100)...))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(100*time.Second), int64(100)).
+		WillReturnRows(listenTestRows(base, rowRange(101, 150)...))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(150*time.Second), int64(150)).
+		WillReturnRows(changelogRows())
+
+	startTestListenLoop(t, watcher)
+
+	assert.Equal(t, tokensFor(rowRange(1, 150)), takeTokens(t, watcher, 150, 5*time.Second))
+	assert.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, 5*time.Second, 10*time.Millisecond)
+}
+
+// A poll that reads a full batch, such as the fallback poller's, wakes the fetch loop, which reads
+// the rest. A short batch does not, and neither does a full batch that left the read position
+// where it was: it would only come back, and waking on it would redeliver it in a loop.
+func TestFetchNewChanges_FullBatch_WakesFetchLoop(t *testing.T) {
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		position int64
+		rows     []int64
+		wantWake bool
+	}{
+		{name: "full batch", rows: rowRange(1, changelogBatchSize), wantWake: true},
+		{name: "short batch", rows: rowRange(1, changelogBatchSize-1)},
+		{name: "full batch that does not move the position", position: 200, rows: rowRange(1, changelogBatchSize)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+			watcher.lastTimestamp = base.Add(time.Duration(tt.position) * time.Second)
+			watcher.lastEventID = tt.position
+			watcher.events = make(chan datastore.EventWithToken, changelogBatchSize)
+
+			mock.ExpectQuery(changelogQuery).
+				WithArgs(healthEventsTable, watcher.lastTimestamp, tt.position).
+				WillReturnRows(listenTestRows(base, tt.rows...))
+
+			require.NoError(t, watcher.fetchNewChanges(context.Background()))
+			assert.Equal(t, tt.wantWake, len(watcher.wake) == 1)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+// A notification for a new row must not move the read position past older rows that nothing has
+// read yet, such as a backlog the watcher restarted behind. The rows are read in order first.
+func TestListenLoop_NotifiedRowPastBacklog_DoesNotSkipBacklog(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.MatchExpectationsInOrder(false)
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base, int64(0)).
+		WillReturnRows(listenTestRows(base, rowRange(1, 100)...))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(100*time.Second), int64(100)).
+		WillReturnRows(listenTestRows(base, rowRange(101, 151)...))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(151*time.Second), int64(151)).
+		WillReturnRows(changelogRows())
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(151)).
+		WillReturnRows(listenTestRows(base, 151))
+
+	listener := &pq.Listener{Notify: make(chan *pq.Notification, 32)}
+	listener.Notify <- testNotification(151)
+	watcher.listener = listener
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		watcher.listenLoop(ctx)
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	assert.Equal(t, tokensFor(rowRange(1, 151)), takeTokens(t, watcher, 151, 5*time.Second))
+	assert.Never(t, func() bool { return len(watcher.events) > 0 }, 300*time.Millisecond, 10*time.Millisecond,
+		"no row may be delivered twice")
 }
