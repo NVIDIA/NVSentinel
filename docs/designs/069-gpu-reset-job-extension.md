@@ -92,18 +92,14 @@ The GPUReset CRD, its conditions and reasons, the reconcile steps and the protob
 
 ### Negative
 
-- A patch can break the reset, for example through one of the [merge rules](#merge-rules). The error shows only when a reset runs, on a node that is already cordoned and drained.
-- Janitor uses the Job result as the reset result. A patch that removes or replaces the reset step makes the reset report success without a reset.
-- A missing ServiceAccount or image pull secret shows only when a reset runs, and the reset fails when the Job deadline expires.
-- Janitor does not restore host changes that the patched Job makes. If the reset fails after a step stops a host service, janitor restores only the services that it manages through node labels.
-- The patch can add host paths and set a service account.
-- `LoadConfig` rejects unknown keys, so an earlier janitor image does not start with a ConfigMap that contains `jobTemplatePatch`.
+- A patch can break the reset, for example through one of the [merge rules](#merge-rules) or a missing ServiceAccount. The error shows only when a reset runs, on a node that is already cordoned and drained.
+- Janitor uses the Job result as the reset result, so a patch that removes or replaces the reset step makes the reset report success without a reset.
+- Janitor does not restore host changes that the patched Job makes.
 
 ### Mitigations
 
 - Janitor logs the resolved template at startup at debug level.
 - `docs/configuration/janitor.md` gives the merge key of each list in the reset Job: `containers`, `initContainers`, `volumes` and `env` merge on `name`, `volumeMounts` on `mountPath`, and `tolerations` is replaced. It also states that janitor does not restore host changes that the Job makes.
-- A Helm rollback reverts the ConfigMap and the image together.
 
 ## Alternatives Considered
 
