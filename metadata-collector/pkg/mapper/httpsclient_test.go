@@ -20,9 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +32,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/transport"
 
@@ -500,7 +504,13 @@ func TestListPods(t *testing.T) {
 	client := newTestKubeletHTTPSClient(http.StatusOK, podJson)
 	pods, err := client.ListPods()
 	assert.NoError(t, err)
-	assert.Equal(t, 2, len(pods))
+	require.Equal(t, 2, len(pods))
+
+	assert.Equal(t, "gpu-job-xkbmx", pods[0].Name)
+	assert.Equal(t, "default", pods[0].Namespace)
+	assert.Equal(t, "node-debugger-10.0.12.244-2x8vm", pods[1].Name)
+	assert.Equal(t, "default", pods[1].Namespace)
+	assert.Nil(t, pods[1].Annotations)
 
 	// ensure that we can extract the devices annotation
 	expectedDeviceAnnotation := model.DeviceAnnotation{
@@ -510,12 +520,13 @@ func TestListPods(t *testing.T) {
 			},
 		},
 	}
-	deviceAnnotation, ok := pods[0].GetAnnotations()[model.PodDeviceAnnotationName]
+	deviceAnnotation, ok := pods[0].Annotations[model.PodDeviceAnnotationName]
 	assert.True(t, ok)
 	var actualDeviceAnnotation model.DeviceAnnotation
 	err = json.Unmarshal([]byte(deviceAnnotation), &actualDeviceAnnotation)
 	assert.NoError(t, err)
 	assert.Equal(t, expectedDeviceAnnotation, actualDeviceAnnotation)
+	assert.Len(t, pods[0].Annotations, 1, "only the device annotation is kept")
 }
 
 func TestListPodsWithReadFileError(t *testing.T) {
@@ -763,4 +774,224 @@ func TestProjectedTokenFile_RereadsFileAndDoesNotRetainRemovedToken(t *testing.T
 	require.NoError(t, os.Remove(tokenPath))
 	_, err = source.Token()
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestListPods_LargePodSpec_KeepsNameNamespaceAndDeviceAnnotation(t *testing.T) {
+	client := newTestKubeletHTTPSClientWithBodies(largePodListJSON(t, 3, 1<<20))
+
+	pods, err := client.ListPods()
+	require.NoError(t, err)
+	require.Len(t, pods, 3)
+
+	for i, pod := range pods {
+		assert.Equal(t, KubeletPod{
+			Name:      fmt.Sprintf("large-pod-%d", i),
+			Namespace: "default",
+			Annotations: map[string]string{
+				model.PodDeviceAnnotationName: fmt.Sprintf(`{"devices":{"nvidia.com/gpu":["GPU-%d"]}}`, i),
+			},
+		}, pod)
+	}
+}
+
+// Other annotations can be as large as the pod, so only the device annotation is kept. Present
+// but empty must stay distinct from missing: the mapper removes only an annotation that exists.
+func TestListPods_Annotations_KeepsOnlyTheDeviceAnnotation(t *testing.T) {
+	body := `{"items":[
+		{"metadata":{"name":"both","namespace":"ns","annotations":{
+			"kubectl.kubernetes.io/last-applied-configuration":"{\"spec\":{}}",
+			"dgxc.nvidia.com/devices":"devices"}}},
+		{"metadata":{"name":"empty","namespace":"ns","annotations":{"dgxc.nvidia.com/devices":""}}},
+		{"metadata":{"name":"other","namespace":"ns","annotations":{"example.com/owner":"team-a"}}},
+		{"metadata":{"name":"none","namespace":"ns"}}
+	]}`
+	client := newTestKubeletHTTPSClientWithBodies(body)
+
+	pods, err := client.ListPods()
+	require.NoError(t, err)
+	assert.Equal(t, []KubeletPod{
+		{Name: "both", Namespace: "ns", Annotations: map[string]string{model.PodDeviceAnnotationName: "devices"}},
+		{Name: "empty", Namespace: "ns", Annotations: map[string]string{model.PodDeviceAnnotationName: ""}},
+		{Name: "other", Namespace: "ns"},
+		{Name: "none", Namespace: "ns"},
+	}, pods)
+}
+
+// A body cut off anywhere inside the list must fail rather than return the pods read so far,
+// or the mapper would skip the rest of the node's pods for that cycle.
+func TestListPods_TruncatedResponse_ReturnsErrorAndNoPods(t *testing.T) {
+	const (
+		podA = `{"metadata":{"name":"a","namespace":"ns"}}`
+		podB = `{"metadata":{"name":"b","namespace":"ns"}}`
+	)
+
+	tests := map[string]string{
+		"empty body":            "",
+		"before the items":      `{"kind":"PodList",`,
+		"inside a pod":          `{"kind":"PodList","items":[` + podA + `,{"metadata":{"na`,
+		"between pods":          `{"kind":"PodList","items":[` + podA + `,`,
+		"after the items":       `{"kind":"PodList","items":[` + podA + `,` + podB + `]`,
+		"inside the last field": `{"kind":"PodList","items":[` + podA + `],"metadata":{`,
+	}
+
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			client := newTestKubeletHTTPSClientWithBodies(body)
+
+			pods, err := client.ListPods()
+			// Depending on where the body stops, the decoder reports io.ErrUnexpectedEOF or a
+			// *json.SyntaxError, so only the decode failure itself is asserted.
+			require.ErrorContains(t, err, "got an error decoding response from /pods endpoint")
+			assert.Nil(t, pods)
+		})
+	}
+}
+
+// A retry starts a new request and reads it from the first pod, so pods from the failed
+// attempt are neither kept nor duplicated.
+func TestListPods_TruncatedThenComplete_ReturnsOnlyTheRetriedList(t *testing.T) {
+	const (
+		podA = `{"metadata":{"name":"a","namespace":"ns"}}`
+		podB = `{"metadata":{"name":"b","namespace":"ns"}}`
+	)
+
+	client := newTestKubeletHTTPSClientWithBodies(
+		`{"items":[`+podA+`,{"metadata":`,
+		`{"items":[`+podA+`,`+podB+`]}`,
+	)
+
+	pods, err := client.ListPods()
+	require.NoError(t, err)
+	assert.Equal(t, []KubeletPod{{Name: "a", Namespace: "ns"}, {Name: "b", Namespace: "ns"}}, pods)
+}
+
+func TestListPods_ResponseShape(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "trailing whitespace", body: "{\"items\":[]} \n\t"},
+		{name: "null items", body: `{"items":null}`},
+		{name: "no items field", body: `{"kind":"PodList","metadata":{}}`},
+		{name: "text after the list", body: `{"items":[]} extra text`, wantErr: true},
+		{name: "second document after the list", body: `{"items":[]}{"items":[]}`, wantErr: true},
+		{name: "not an object", body: `[]`, wantErr: true},
+		{name: "items not an array", body: `{"items":{}}`, wantErr: true},
+		{name: "pod not an object", body: `{"items":[1]}`, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newTestKubeletHTTPSClientWithBodies(tc.body)
+
+			pods, err := client.ListPods()
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, pods)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Empty(t, pods)
+		})
+	}
+}
+
+// Reading the whole response, or decoding whole pods, allocates at least the response size.
+// Streaming holds about one pod at a time, so half the response is a loose bound that only a
+// return to whole-response reads would cross.
+func TestListPods_LargePods_AllocatesLessThanHalfTheResponse(t *testing.T) {
+	body := largePodListJSON(t, 20, 1<<20)
+	client := newTestKubeletHTTPSClientWithBodies(body)
+
+	// TotalAlloc counts every allocation in the process, so other activity can only add to a
+	// run. The smallest of several runs is the one closest to ListPods' own cost.
+	allocated := uint64(math.MaxUint64)
+
+	for range 3 {
+		allocated = min(allocated, allocatedByListPods(t, client))
+	}
+
+	assert.Less(t, allocated, uint64(len(body)/2),
+		"ListPods allocated %d bytes for a %d byte response", allocated, len(body))
+}
+
+func allocatedByListPods(t *testing.T, client *kubeletHTTPSClient) uint64 {
+	t.Helper()
+
+	var before, after runtime.MemStats
+
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	pods, err := client.ListPods()
+	runtime.ReadMemStats(&after)
+
+	require.NoError(t, err)
+	require.Len(t, pods, 20)
+
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// Sized like the nodes in #2176: bare pods holding about 1MB of inline command each.
+func BenchmarkListPods_LargePods(b *testing.B) {
+	body := largePodListJSON(b, 20, 1<<20)
+	client := newTestKubeletHTTPSClientWithBodies(body)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+
+	for b.Loop() {
+		_, err := client.ListPods()
+		require.NoError(b, err)
+	}
+}
+
+// newTestKubeletHTTPSClientWithBodies answers attempt n with bodies[n] and repeats the last body
+// after that. Each attempt gets a fresh reader, as a real retry gets a fresh response.
+func newTestKubeletHTTPSClientWithBodies(bodies ...string) *kubeletHTTPSClient {
+	attempt := 0
+
+	return &kubeletHTTPSClient{
+		ctx: context.Background(),
+		httpRoundTripper: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			body := bodies[min(attempt, len(bodies)-1)]
+			attempt++
+
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+		}),
+		listPodsURI:     "https://localhost:10250/pods",
+		listPodsBackoff: fastTestBackoff,
+		listPodsTimeout: testCallTimeout,
+	}
+}
+
+// largePodListJSON builds a /pods response of finished bare pods whose container command is
+// commandBytes long. Every pod carries a device annotation.
+func largePodListJSON(tb testing.TB, podCount, commandBytes int) string {
+	tb.Helper()
+
+	pods := make([]corev1.Pod, podCount)
+	for i := range pods {
+		pods[i] = corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("large-pod-%d", i),
+				Namespace: "default",
+				Annotations: map[string]string{
+					model.PodDeviceAnnotationName: fmt.Sprintf(`{"devices":{"nvidia.com/gpu":["GPU-%d"]}}`, i),
+				},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name:    "workload",
+				Command: []string{strings.Repeat("x", commandBytes)},
+			}}},
+			Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
+		}
+	}
+
+	body, err := json.Marshal(corev1.PodList{Items: pods})
+	require.NoError(tb, err)
+
+	return string(body)
 }

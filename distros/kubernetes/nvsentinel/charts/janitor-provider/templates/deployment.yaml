@@ -208,6 +208,20 @@ spec:
                    volume are injected by lambda-pod-identity-webhook, keyed off
                    the ServiceAccount annotation, so nothing is declared here. */}}
             {{- end }}
+            {{- if eq (lower (.Values.csp.provider | default "kind")) "akamai" }}
+            # Akamai-specific environment variables
+            {{- if .Values.csp.akamai.apiEndpoint }}
+            # Validated in code against a fixed host allowlist, an unapproved
+            # host fails at startup rather than on the first remediation.
+            - name: AKAMAI_API_ENDPOINT
+              value: {{ .Values.csp.akamai.apiEndpoint | quote }}
+            {{- end }}
+            - name: LINODE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "csp.akamai.apiTokenSecretRef.name must be set when csp.provider=akamai" .Values.csp.akamai.apiTokenSecretRef.name }}
+                  key: {{ .Values.csp.akamai.apiTokenSecretRef.key | default "LINODE_TOKEN" }}
+            {{- end }}
             {{- if .Values.tls.enabled }}
             - name: TLS_CERT_PATH
               value: "{{ .Values.tls.certDir }}/tls.crt"
