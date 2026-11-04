@@ -297,7 +297,7 @@ GPU Operator 26.7 and later sets the `nvidia.com/gpu.deploy.client=true` node la
 
 1. When the teardown starts, the controller reads `nvidia.com/gpu.deploy.client` on the node. The controller stops the GPU clients only when the label is `true` and at least one GPU client pod runs on the node.
 2. The controller sets the label to `false`, and records it in `status.managedServices.nodeLabels`. The DaemonSet controller then removes the GPU client pods from the node.
-3. The controller waits until no GPU client pod runs on the node. A GPU client pod is a pod in any namespace that selects the label in its `nodeSelector` or in a term of its required node affinity. A pod that has finished is not a GPU client pod.
+3. The controller waits until no GPU client pod runs on the node. A GPU client pod is a pod in any namespace that selects the label in its `nodeSelector` or in a term of its required node affinity. For a DaemonSet pod, the controller also checks the pod template of the DaemonSet, because the DaemonSet controller replaces the required node affinity of the pod with a term on the node name. A pod that has finished is not a GPU client pod.
 4. After the reset, the controller sets the label back to `true`. It does not wait for the GPU client pods to be Ready.
 
 The controller does not change the label in these cases:
@@ -311,7 +311,7 @@ Know these limits:
 
 - The controller does not delete pods. Only the DaemonSet controller removes a pod when the label changes. A Deployment, StatefulSet or Job pod stays on the node. The teardown then fails with the reason `ServiceTeardownTimeoutExceeded`, and the controller logs the names of the GPU client pods that still run.
 - The controller does not stop processes that run on the host outside Kubernetes, for example `nvidia-persistenced` or a host DCGM.
-- The controller reads the GPU client pods from the API server, not from the janitor Pod cache. Each check lists the pods of one node.
+- The controller reads the GPU client pods from the API server, not from the janitor Pod cache. Each check lists the pods of one node, and reads the DaemonSet of each DaemonSet pod that does not select the label itself.
 - If you roll janitor back to an earlier version during a reset, the earlier version does not restore this label. Set the label back to `true` by hand: `kubectl label node <node> nvidia.com/gpu.deploy.client=true --overwrite`.
 
 Before GPU Operator 26.7, put the GPU client on a node label that the `gpu-operator` service manager already sets to `false`, for example `nvidia.com/gpu.deploy.dcgm=true`.

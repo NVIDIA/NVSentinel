@@ -28,12 +28,14 @@ import (
 
 	"log/slog"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -115,6 +117,7 @@ type GPUResetReconciler struct {
 
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get
 // +kubebuilder:rbac:groups="coordination.k8s.io",resources=leases,verbs=get;list;watch;create;delete
 
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete;patch
@@ -1727,6 +1730,8 @@ func (r *GPUResetReconciler) listGPUClientPods(ctx context.Context, nodeName str
 	}
 
 	clients := &corev1.PodList{}
+	// templates holds the pod template of each DaemonSet that this call reads, or nil for a DaemonSet that is gone.
+	templates := make(map[types.NamespacedName]*corev1.PodSpec)
 
 	for i := range nodePods.Items {
 		pod := &nodePods.Items[i]
@@ -1734,7 +1739,12 @@ func (r *GPUResetReconciler) listGPUClientPods(ctx context.Context, nodeName str
 			continue
 		}
 
-		if selectsNodeLabel(pod, gpuservices.GPUClientsNodeLabel) {
+		isClient, err := r.isGPUClientPod(ctx, pod, templates)
+		if err != nil {
+			return nil, err
+		}
+
+		if isClient {
 			clients.Items = append(clients.Items, *pod)
 		}
 	}
@@ -1742,20 +1752,61 @@ func (r *GPUResetReconciler) listGPUClientPods(ctx context.Context, nodeName str
 	return clients, nil
 }
 
-// selectsNodeLabel reports whether the pod selects the node label in its nodeSelector or in a term of its required
-// node affinity. The GPU Operator driver manager looks only at the nodeSelector. The required node affinity is also
-// checked, because the NVSentinel metadata collector selects the GPU clients label there.
-func selectsNodeLabel(pod *corev1.Pod, label string) bool {
-	if _, ok := pod.Spec.NodeSelector[label]; ok {
+// isGPUClientPod reports whether the pod, or the pod template of the DaemonSet that controls it, selects the GPU
+// clients node label. The DaemonSet controller replaces the required node affinity of each DaemonSet pod with a term
+// on the node name, so a DaemonSet that selects the label only in its required node affinity, as the NVSentinel
+// metadata collector does, shows the label only in its pod template. The nodeSelector stays on the pod.
+func (r *GPUResetReconciler) isGPUClientPod(
+	ctx context.Context,
+	pod *corev1.Pod,
+	templates map[types.NamespacedName]*corev1.PodSpec,
+) (bool, error) {
+	if selectsNodeLabel(&pod.Spec, gpuservices.GPUClientsNodeLabel) {
+		return true, nil
+	}
+
+	owner := metav1.GetControllerOf(pod)
+	if owner == nil || owner.Kind != "DaemonSet" || owner.APIVersion != appsv1.SchemeGroupVersion.String() {
+		return false, nil
+	}
+
+	key := types.NamespacedName{Namespace: pod.Namespace, Name: owner.Name}
+
+	template, read := templates[key]
+	if !read {
+		daemonSet := &appsv1.DaemonSet{}
+
+		err := r.APIReader.Get(ctx, key, daemonSet)
+
+		switch {
+		case apierrors.IsNotFound(err):
+			// The garbage collector deletes the pods of a deleted DaemonSet. Only the pod spec counts.
+		case err != nil:
+			return false, fmt.Errorf("failed to get DaemonSet %s of pod %s: %w", key, pod.Name, err)
+		case daemonSet.UID == owner.UID:
+			template = &daemonSet.Spec.Template.Spec
+		}
+
+		templates[key] = template
+	}
+
+	return template != nil && selectsNodeLabel(template, gpuservices.GPUClientsNodeLabel), nil
+}
+
+// selectsNodeLabel reports whether the pod spec selects the node label in its nodeSelector or in a term of its
+// required node affinity. The GPU Operator driver manager looks only at the nodeSelector. The required node affinity
+// is also checked, because the NVSentinel metadata collector selects the GPU clients label there.
+func selectsNodeLabel(spec *corev1.PodSpec, label string) bool {
+	if _, ok := spec.NodeSelector[label]; ok {
 		return true
 	}
 
-	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil ||
-		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+	if spec.Affinity == nil || spec.Affinity.NodeAffinity == nil ||
+		spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
 		return false
 	}
 
-	for _, term := range pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+	for _, term := range spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
 		for _, expr := range term.MatchExpressions {
 			if expr.Key == label {
 				return true

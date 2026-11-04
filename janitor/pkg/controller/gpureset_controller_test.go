@@ -30,6 +30,7 @@ import (
 	prmproto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -2283,6 +2284,49 @@ var _ = Describe("GPUReset Controller", func() {
 				}}
 			}
 
+			// createDaemonSetPod creates a DaemonSet with the pod template that mutate gives, and a pod that the
+			// DaemonSet controls. As the DaemonSet controller does, the pod keeps the nodeSelector of the template,
+			// but its required node affinity has only a term on the node name.
+			createDaemonSetPod := func(name string, mutate func(*corev1.Pod)) *corev1.Pod {
+				template := &corev1.Pod{Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "client", Image: "client:test"}},
+				}}
+				if mutate != nil {
+					mutate(template)
+				}
+
+				labels := map[string]string{"app": name}
+				daemonSet := &appsv1.DaemonSet{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: clientsNamespace},
+					Spec: appsv1.DaemonSetSpec{
+						Selector: &metav1.LabelSelector{MatchLabels: labels},
+						Template: corev1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{Labels: labels},
+							Spec:       template.Spec,
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, daemonSet)).To(Succeed())
+				DeferCleanup(func() {
+					Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, daemonSet))).To(Succeed())
+				})
+
+				return createClientPod(name+"-pod", nodeName, func(pod *corev1.Pod) {
+					pod.Labels = labels
+					pod.OwnerReferences = []metav1.OwnerReference{
+						*metav1.NewControllerRef(daemonSet, appsv1.SchemeGroupVersion.WithKind("DaemonSet")),
+					}
+					pod.Spec.NodeSelector = template.Spec.NodeSelector
+					pod.Spec.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+							NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchFields: []corev1.NodeSelectorRequirement{{
+								Key: metav1.ObjectNameField, Operator: corev1.NodeSelectorOpIn, Values: []string{nodeName},
+							}}}},
+						},
+					}}
+				})
+			}
+
 			withClientsLabel := func(value string) map[string]string {
 				nodeLabels := devicePluginDeployLabels()
 				nodeLabels[gpuservices.GPUClientsNodeLabel] = value
@@ -2326,6 +2370,31 @@ var _ = Describe("GPUReset Controller", func() {
 				By("Reconciling until the reset is complete, without waiting for client pods to come back")
 				reconcileUntil(v1alpha1.Complete)
 				Expect(getConditionReason(v1alpha1.ServicesRestored)).To(Equal(string(v1alpha1.ReasonServiceRestoreSucceeded)))
+				Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+				Expect(getNodeLabels()).To(Equal(nodeLabels))
+			})
+
+			It("should stop a DaemonSet client that selects the label only in the node affinity of its pod template", func() {
+				nodeLabels := withClientsLabel("true")
+				createNodeWithOperandPods(nodeLabels, nil)
+				clientPod := createDaemonSetPod("affinity-client", byAffinity)
+				createDaemonSetPod("not-a-client", nil)
+				createReset()
+
+				By("Reconciling until the GPU clients label holds the disabled value")
+				reconcileUntilClientsLabel("false")
+				Expect(getReset().Status.ManagedServices.NodeLabels).To(ConsistOf(gpuservices.GPUClientsNodeLabel))
+
+				By("Verifying that the teardown waits while the DaemonSet client pod runs")
+				reconcileTimes(3)
+				Expect(getConditionReason(v1alpha1.ServicesTornDown)).To(Equal(string(v1alpha1.ReasonTearingDownServices)))
+				Expect(getReset().Status.JobRef).To(BeNil())
+
+				By("Removing the DaemonSet client pod, as the DaemonSet controller does")
+				Expect(k8sClient.Delete(ctx, clientPod, client.GracePeriodSeconds(0))).To(Succeed())
+
+				By("Reconciling until the reset is complete, without waiting for the other DaemonSet pod")
+				reconcileUntil(v1alpha1.Complete)
 				Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
 				Expect(getNodeLabels()).To(Equal(nodeLabels))
 			})
@@ -2779,7 +2848,7 @@ func TestSelectsNodeLabel(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, selectsNodeLabel(&corev1.Pod{Spec: tc.spec}, label))
+			assert.Equal(t, tc.want, selectsNodeLabel(&tc.spec, label))
 		})
 	}
 }
