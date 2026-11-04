@@ -109,6 +109,47 @@ if [ "$RUN" -gt 0 ]; then
   fi
 fi
 
+TARGET_UUIDS="${NVIDIA_GPU_RESETS:-}"
+RESET_OUTPUT_FILE=$(mktemp)
+HEALTH_CHECK_OUTPUT_FILE=$(mktemp)
+RESULT_WRITTEN=false
+EXIT_STATUS=0
+
+# write_result writes the reset result of each target GPU to syslog.
+write_result() {
+  local success="$1"
+  local uuid
+  local original_ifs=$IFS
+
+  IFS=','
+  for uuid in $TARGET_UUIDS; do
+    # Trim leading/trailing whitespace from UUID
+    uuid=$(echo "$uuid" | xargs)
+
+    if [ -z "$uuid" ]; then
+      continue
+    fi
+
+    log "Writing reset result for ${uuid} to syslog (success: ${success})"
+    logger -t nvsentinel-gpu-reset -p daemon.err \
+      "GPU reset executed: ${uuid}, success: ${success}"
+  done
+  IFS=$original_ifs
+
+  RESULT_WRITTEN=true
+}
+
+# The last run must report a failed reset also when it exits early, for example when the nvidia-smi version
+# check fails under set -e. Without the report, the node is not rebooted. An earlier run does not report,
+# because the reset Job runs the script again.
+trap 'EXIT_STATUS=$?
+rm -f -- "$RESET_OUTPUT_FILE" "$HEALTH_CHECK_OUTPUT_FILE"
+if [ "$EXIT_STATUS" -ne 0 ] && [ "$RESULT_WRITTEN" = "false" ] && [ "$RUN" -gt 0 ] &&
+  [ "$RUN" -eq "$RESET_MAX_RUNS" ] && [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ] && [ -n "$TARGET_UUIDS" ]; then
+  log "ERROR: The last run exited with status ${EXIT_STATUS} before it wrote the reset result."
+  write_result false
+fi' EXIT
+
 # chroot looks up the command with PATH after it changes root, so DRIVER_BIN_PATH is resolved
 # inside DRIVER_ROOT.
 run_in_driver_root() {
@@ -191,9 +232,6 @@ nvidia_smi_helper --version
 
 RESET_STATUS=0
 FINAL_EXIT_STATUS=0
-RESET_OUTPUT_FILE=$(mktemp)
-HEALTH_CHECK_OUTPUT_FILE=$(mktemp)
-trap 'rm -f -- "$RESET_OUTPUT_FILE" "$HEALTH_CHECK_OUTPUT_FILE"' EXIT
 
 log "INFO: Starting GPU reset workflow..."
 
@@ -272,22 +310,7 @@ fi
 if [ "$SYSLOG_SUCCESS" = "false" ] && [ "$RUN" -gt 0 ] && [ "$RUN" -lt "$RESET_MAX_RUNS" ]; then
   log "Skipping writing the failed reset result to syslog: the reset Job runs the script again (run ${RUN} of ${RESET_MAX_RUNS})"
 elif [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ]; then
-  ORIGINAL_IFS=$IFS
-  IFS=','
-  for UUID in $TARGET_UUIDS; do
-    # Trim leading/trailing whitespace from UUID
-    UUID=$(echo "$UUID" | xargs)
-
-    if [ -z "$UUID" ]; then
-      continue
-    fi
-
-    log "Writing reset result for ${UUID} to syslog (success: ${SYSLOG_SUCCESS})"
-    logger -t nvsentinel-gpu-reset -p daemon.err \
-      "GPU reset executed: ${UUID}, success: ${SYSLOG_SUCCESS}"
-
-  done
-  IFS=$ORIGINAL_IFS
+  write_result "$SYSLOG_SUCCESS"
 else
   log "Skipping writing reset result (success: ${SYSLOG_SUCCESS}) to syslog: WRITE_SYSLOG_EVENT is not true"
 fi
