@@ -727,6 +727,9 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 				mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
 					WithArgs(tableName, int64(452)).
 					WillReturnRows(rows)
+				mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
+					WithArgs(tableName, changedAt.Add(time.Second), int64(453)).
+					WillReturnRows(sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}))
 			},
 		},
 		{
@@ -763,6 +766,8 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 				Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
 			})
 			require.NoError(t, err)
+			// handleNotification only records the id; the fetch loop fetches the row.
+			require.NoError(t, watcher.fetchNotifiedRows(ctx))
 
 			select {
 			case event := <-watcher.events:
@@ -824,6 +829,8 @@ func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *t
 		Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
 	})
 	require.NoError(t, err)
+	// handleNotification only records the id; the fetch loop fetches the row.
+	require.NoError(t, watcher.fetchNotifiedRows(ctx))
 
 	select {
 	case event := <-watcher.events:

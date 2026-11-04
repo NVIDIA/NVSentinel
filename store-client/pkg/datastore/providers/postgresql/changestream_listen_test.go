@@ -24,6 +24,8 @@ import (
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // startTestListenLoop runs listenLoop on a LISTEN connection the test feeds, until the test
@@ -118,4 +120,164 @@ func TestListenLoop_LateNotifiedRow_IsDeliveredOnce(t *testing.T) {
 
 	assert.Equal(t, base.Add(20*time.Second), watcher.lastTimestamp, "the late row must not move the position back")
 	assert.Equal(t, int64(20), watcher.lastEventID)
+}
+
+// A consumer that stops taking events must not stop the LISTEN connection from being read. When
+// the loop stopped reading, lib/pq's buffers filled and PostgreSQL blocked in ClientWrite while
+// delivering notifications, holding a snapshot open for as long as the consumer stayed behind
+// (#2171).
+func TestListenLoop_StalledConsumer_KeepsReadingNotifications(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.MatchExpectationsInOrder(false)
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base
+
+	// The consumer took nothing, so the next delivery blocks.
+	watcher.events = make(chan datastore.EventWithToken, 1)
+	watcher.events <- datastore.EventWithToken{ResumeToken: []byte("0")}
+
+	// Whatever reads the changelog first gets row 1 and then waits to deliver it.
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(1)).
+		WillReturnRows(listenTestRows(base, 1))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(listenTestRows(base, 1))
+
+	notify := startTestListenLoop(t, watcher)
+
+	// Far more notifications than the connection's buffers hold.
+	sent := make(chan struct{})
+
+	go func() {
+		defer close(sent)
+
+		for id := int64(1); id <= 1000; id++ {
+			notify <- testNotification(id)
+		}
+	}()
+
+	select {
+	case <-sent:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the LISTEN loop stopped reading notifications while the consumer was stalled")
+	}
+
+	assert.Eventually(t, func() bool { return len(notify) == 0 }, 5*time.Second, 10*time.Millisecond,
+		"every notification must be read")
+}
+
+func TestHandleNotification_RecordsIDForFetchLoop(t *testing.T) {
+	tests := []struct {
+		name        string
+		extra       string
+		full        bool
+		wantIDs     []int64
+		wantDropped int
+		wantWake    bool
+	}{
+		{
+			name:     "new row is recorded and wakes the fetch loop",
+			extra:    `{"id":21,"table":"health_events","operation":"INSERT"}`,
+			wantIDs:  []int64{21},
+			wantWake: true,
+		},
+		{
+			name:  "row read recently is skipped",
+			extra: `{"id":20,"table":"health_events","operation":"INSERT"}`,
+		},
+		{
+			name:  "row of another table is ignored",
+			extra: `{"id":22,"table":"maintenance_events","operation":"INSERT"}`,
+		},
+		{
+			name:        "full list drops the id and counts it",
+			extra:       `{"id":23,"table":"health_events","operation":"INSERT"}`,
+			full:        true,
+			wantDropped: 1,
+			wantWake:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+			watcher.lastEventID = 20
+			watcher.recordRecentEventIDLocked(20, time.Now())
+
+			if tt.full {
+				for id := int64(1000); len(watcher.notifiedIDs) < notifiedIDLimit; id++ {
+					watcher.addNotifiedID(id)
+				}
+
+				<-watcher.wake
+			}
+
+			require.NoError(t, watcher.handleNotification(context.Background(), &pq.Notification{Extra: tt.extra}))
+
+			ids, dropped := watcher.takeNotifiedIDs()
+			if tt.full {
+				ids = ids[notifiedIDLimit:]
+			}
+
+			assert.Equal(t, tt.wantIDs, nilIfEmpty(ids))
+			assert.Equal(t, tt.wantDropped, dropped)
+			assert.Equal(t, tt.wantWake, len(watcher.wake) == 1)
+			assert.NoError(t, mock.ExpectationsWereMet(), "the LISTEN loop must not query the database")
+		})
+	}
+}
+
+func nilIfEmpty(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	return ids
+}
+
+// After ids were dropped, a pass must not move the read position forward to a notified row: it
+// could step over a dropped row that no poll would return then. It delivers the rows at or behind
+// the position, and the poll reads the rest in order.
+func TestFetchNotifiedRows_AfterDroppedIDs_DeliversOnlyRowsBehindPosition(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base.Add(20 * time.Second)
+	watcher.lastEventID = 20
+
+	watcher.addNotifiedID(15)
+	watcher.addNotifiedID(30)
+	watcher.droppedIDs = 1
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(15)).
+		WillReturnRows(listenTestRows(base, 15))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(30)).
+		WillReturnRows(listenTestRows(base, 30))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+		WillReturnRows(listenTestRows(base, 30))
+
+	require.NoError(t, watcher.fetchNotifiedRows(context.Background()))
+
+	assert.Equal(t, []byte("15"), (<-watcher.events).ResumeToken, "the late row comes from its lookup")
+	assert.Equal(t, []byte("30"), (<-watcher.events).ResumeToken, "the row past the position comes from the poll")
+	assert.Empty(t, watcher.events)
+	assert.Equal(t, base.Add(30*time.Second), watcher.lastTimestamp)
+	assert.Equal(t, int64(30), watcher.lastEventID)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
