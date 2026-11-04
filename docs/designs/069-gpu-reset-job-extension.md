@@ -4,7 +4,7 @@ Status: Proposed (tracking issue [#1782](https://github.com/NVIDIA/NVSentinel/is
 
 ## Context
 
-Janitor resets GPUs with a Kubernetes Job ([ADR-019](019-janitor-gpu-reset.md)) that it builds in `getDefaultGPUResetJobTemplate` (`janitor/pkg/config/default.go`). The `config.controllers.gpuReset.resetJob` keys set `image`, `resources`, `runtimeClassName`, `hostDriverRootPath`, `driverRoot`, `driverBinPath`, `writeSysLogEvent` and `uploadURL`. The other fields are fixed:
+Janitor resets GPUs with a Kubernetes Job ([ADR-019](019-janitor-gpu-reset.md)) that it builds in `getDefaultGPUResetJobTemplate` (`janitor/pkg/config/default.go`). The `config.controllers.gpuReset.resetJob` keys set `image`, `resources`, `runtimeClassName`, `hostDriverRootPath`, `driverRoot`, `driverBinPath`, `writeSysLogEvent` and `uploadURL`. Janitor builds the other fields in code, and no key changes them:
 
 - `activeDeadlineSeconds: 300`, `backoffLimit: 2` and `ttlSecondsAfterFinished: 86400`.
 - Four host path volumes and their mounts: `host-dev`, `dev-log`, `driver-root` and `host-sys`.
@@ -14,7 +14,7 @@ Janitor resets GPUs with a Kubernetes Job ([ADR-019](019-janitor-gpu-reset.md)) 
 
 For each reset, `newGpuResetJob` sets the Job name, namespace and owner labels, `nodeName` and the owner reference, and adds `NVIDIA_GPU_RESETS` to each container. The Job result is the reset result.
 
-Issue #1782 describes a deployment that resets GPUs on Blackwell bare metal across four infrastructure providers. It maintains a fork of janitor to mount provider-specific host services in the reset Job, to stop provider-owned DaemonSets before the reset, and to run a client barrier, a timeout latch and host-service restoration around the reset. These steps can run inside the reset Job if the Job can be changed. Each step adds to the Job, and none changes what janitor builds.
+Issue #1782 describes a deployment that resets GPUs on Blackwell bare metal across four infrastructure providers. It maintains a fork of janitor to mount provider-specific host services in the reset Job, to stop provider-owned DaemonSets before the reset, and to run a client barrier, a timeout latch and host-service restoration around the reset. These steps can run inside the reset Job if the Job can be changed.
 
 ## Decision
 
