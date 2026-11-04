@@ -745,6 +745,10 @@ func (r *Reconciler) handleEvent(
 		return nil, errors.Join(evaluationErr, err)
 	}
 
+	// Drop taints the node already carries with the same key and effect but a different value, so a fresh
+	// quarantine does not overwrite an operator's own taint and then delete it at unquarantine.
+	taintsToBeApplied = markPreExistingTaints(node, taintsToBeApplied)
+
 	annotationsMap := r.prepareAnnotations(ctx, node, taintsToBeApplied, labelsToBeApplied, &labelsMap, &isCordoned)
 
 	isNodeQuarantined := len(taintsToBeApplied) > 0 || len(labelsToBeApplied) > 0 || isCordoned.Load()
@@ -1200,8 +1204,6 @@ func (r *Reconciler) prepareAnnotations(
 	annotationsMap := map[string]string{}
 
 	if len(taintsToBeApplied) > 0 {
-		markPreExistingTaints(node, taintsToBeApplied)
-
 		taintsJsonStr, err := json.Marshal(taintsToBeApplied)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to marshal taints for annotation", "error", err)
@@ -1245,17 +1247,35 @@ func (r *Reconciler) prepareAnnotations(
 }
 
 // markPreExistingTaints sets PreExisting on any taint that already exists with the same key, value, and effect.
-func markPreExistingTaints(node *corev1.Node, taintsToBeApplied []config.Taint) {
-	existingTaints := make(map[config.Taint]bool, len(node.Spec.Taints))
+// markPreExistingTaints reconciles the taints to apply with the node's current taints and returns the
+// set to apply:
+//   - A taint already on the node with the same key, value and effect is kept and marked PreExisting, so
+//     the session-end release leaves it in place.
+//   - A taint whose key and effect are already on the node with a different value is dropped, so
+//     applyTaints does not overwrite an operator's own taint and removeTaints does not delete it at
+//     unquarantine. This matches sessionTaintsToAdd on the already-quarantined path.
+func markPreExistingTaints(node *corev1.Node, taintsToBeApplied []config.Taint) []config.Taint {
+	onNodeValue := make(map[keyEffectTaint]string, len(node.Spec.Taints))
 	for _, t := range node.Spec.Taints {
-		existingTaints[config.Taint{Key: t.Key, Value: t.Value, Effect: string(t.Effect)}] = true
+		onNodeValue[keyEffectTaint{Key: t.Key, Effect: string(t.Effect)}] = t.Value
 	}
 
-	for i, t := range taintsToBeApplied {
-		if existingTaints[config.Taint{Key: t.Key, Value: t.Value, Effect: t.Effect}] {
-			taintsToBeApplied[i].PreExisting = true
+	taints := make([]config.Taint, 0, len(taintsToBeApplied))
+
+	for _, t := range taintsToBeApplied {
+		value, exists := onNodeValue[keyEffectTaint{Key: t.Key, Effect: t.Effect}]
+		if exists && value != t.Value {
+			continue
 		}
+
+		if exists {
+			t.PreExisting = true
+		}
+
+		taints = append(taints, t)
 	}
+
+	return taints
 }
 
 // applyQuarantine applies quarantine actions to a node (taints, cordon, annotations)
