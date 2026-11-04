@@ -57,7 +57,7 @@ The key is empty by default. An empty patch leaves the Job unchanged.
 1. Janitor builds the built-in template and applies the existing `resetJob` keys.
 2. Janitor applies the patch with `strategicpatch.StrategicMergePatch`, with `batchv1.JobTemplateSpec` as the schema. Where the patch and a `resetJob` key set the same field, the patch value is used.
 3. Janitor decodes the result strictly into `batchv1.JobTemplateSpec` and stores it as `ResolvedJobTemplate`. A misspelled field name stops janitor at startup. Janitor decodes the merged result, not the patch, because a patch can contain directives such as `$patch`.
-4. For each reset, `newGpuResetJob` sets its fields as it does now, over any value from the patch. It also adds `NVIDIA_GPU_RESETS` to each init container, so that a step before the reset can find the GPUs that janitor resets.
+4. For each reset, `newGpuResetJob` sets the fields listed in [Context](#context), over any value from the patch. It also adds `NVIDIA_GPU_RESETS` to each init container, so that a step before the reset can find the GPUs that janitor resets.
 
 ### Merge rules
 
