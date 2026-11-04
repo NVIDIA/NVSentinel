@@ -2496,6 +2496,15 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		return r.handleDryRunQuarantineOnNodeChange(ctx, nodeName, annotations)
 	}
 
+	// A cordon that was on the node before the session is not fault-quarantine's, so its removal is not a manual
+	// uncordon while the session is active. Dry run never cordons, so there it stays a manual uncordon.
+	_, preExisting := annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey]
+	_, sessionActive := annotations[common.QuarantineHealthEventAnnotationKey]
+
+	if preExisting && sessionActive && !r.config.DryRun {
+		return r.cordonAfterPreExistingCordonRemoved(ctx, nodeName)
+	}
+
 	// Remove the applied taints annotation (but keep the taints themselves on the node).
 	annotationsToRemove := appendIfPresent(annotations, nil, manualUnquarantineAnnotationKeys...)
 	labelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
@@ -2625,6 +2634,46 @@ func (r *Reconciler) handleDryRunQuarantineOnNodeChange(
 		slog.ErrorContext(ctx, "Failed to cancel dry-run quarantining events", "node", nodeName, "error", err)
 		metrics.ProcessingErrors.WithLabelValues("mongodb_cancel_quarantine_error").Inc()
 	}
+
+	return nil
+}
+
+// cordonAfterPreExistingCordonRemoved handles the removal of a cordon that was on the node before the session
+// started. The session's rule sets required a cordon, so fault-quarantine applies its own and drops the
+// pre-existing marker in the same patch. From here the cordon is fault-quarantine's: the session-end release
+// removes it, and the next uncordon is a manual uncordon. If the patch fails, the marker stays, so the stale-state
+// check on the next restart retries this.
+func (r *Reconciler) cordonAfterPreExistingCordonRemoved(ctx context.Context, nodeName string) error {
+	slog.InfoContext(ctx, "Pre-existing cordon removed from quarantined node; cordoning node", "node", nodeName)
+
+	updateFn := func(node *corev1.Node) error {
+		// The session may have ended between the uncordon and this patch; a released node is left alone.
+		if _, sessionActive := node.Annotations[common.QuarantineHealthEventAnnotationKey]; !sessionActive {
+			return nil
+		}
+
+		node.Spec.Unschedulable = true
+		delete(node.Annotations, common.QuarantineHealthEventCordonPreExistingAnnotationKey)
+
+		if node.Labels == nil {
+			node.Labels = map[string]string{}
+		}
+
+		if _, exists := node.Labels[r.cordonedByLabelKey]; !exists {
+			node.Labels[r.cordonedByLabelKey] = cordonlabels.ServiceName
+		}
+
+		node.Labels[r.cordonedTimestampLabelKey] = time.Now().UTC().Format(cordonlabels.TimestampFormat)
+
+		return nil
+	}
+
+	if err := r.k8sClient.UpdateNode(ctx, nodeName, updateFn); err != nil {
+		metrics.ProcessingErrors.WithLabelValues("preexisting_cordon_removed_error").Inc()
+		return fmt.Errorf("failed to cordon node %s after its pre-existing cordon was removed: %w", nodeName, err)
+	}
+
+	metrics.CordonsApplied.Inc()
 
 	return nil
 }

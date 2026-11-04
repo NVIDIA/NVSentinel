@@ -3802,6 +3802,346 @@ func TestE2E_PreExistingCordon(t *testing.T) {
 
 }
 
+// cordonOnlyTestConfig is a rule set that cordons without tainting, as the chart defaults do, so the cordon is the
+// node's only isolation.
+func cordonOnlyTestConfig() config.TomlConfig {
+	return config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+}
+
+// uncordonE2ETestNode uncordons the node through the API server, as kubectl uncordon does.
+func uncordonE2ETestNode(ctx context.Context, t *testing.T, nodeName string) {
+	t.Helper()
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	node.Spec.Unschedulable = false
+	_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+}
+
+// cancelTrackingEventWatcher records the nodes whose quarantining events were cancelled.
+func cancelTrackingEventWatcher() (*MockEventWatcher, func() []string) {
+	var (
+		mu        sync.Mutex
+		cancelled []string
+	)
+
+	watcher := &MockEventWatcher{
+		CancelLatestQuarantiningEventsFn: func(_ context.Context, node string, _ string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			cancelled = append(cancelled, node)
+
+			return nil
+		},
+	}
+
+	return watcher, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return append([]string(nil), cancelled...)
+	}
+}
+
+// TestE2E_PreExistingCordonRemovedWithoutSession_IsManualUncordon verifies that the pre-existing marker alone
+// does not make fault-quarantine cordon a node: with no active session the uncordon takes the existing manual
+// uncordon cleanup, which removes the stale annotations and leaves the node schedulable.
+func TestE2E_PreExistingCordonRemovedWithoutSession_IsManualUncordon(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-preexisting-cordon-no-session-" + generateShortTestID()
+
+	// Stale session markers from a release that did not finish, with no quarantineHealthEvent annotation.
+	createE2ETestNode(ctx, t, nodeName, map[string]string{
+		common.QuarantineHealthEventIsCordonedAnnotationKey:        common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+		common.QuarantineHealthEventCordonPreExistingAnnotationKey: common.QuarantineHealthEventCordonPreExistingAnnotationValue,
+	}, nil, nil, true)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{TomlConfig: cordonOnlyTestConfig()})
+
+	beforeCordonsApplied := getCounterValue(t, metrics.CordonsApplied)
+
+	t.Log("Remove the cordon - no session, so this is a manual uncordon and the stale markers are cleaned up")
+	uncordonE2ETestNode(ctx, t, nodeName)
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, isCordoned := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+		_, preExisting := node.Annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey]
+
+		return !node.Spec.Unschedulable && !isCordoned && !preExisting
+	}, eventuallyTimeout, eventuallyPollInterval, "stale cordon markers should be removed and the node left schedulable")
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "True", node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey],
+		"quarantinedNodeUncordonedManually should be set by the existing cleanup")
+	assert.Equal(t, beforeCordonsApplied, getCounterValue(t, metrics.CordonsApplied),
+		"CordonsApplied should not change: fault-quarantine did not cordon")
+}
+
+// TestE2E_PreExistingCordonRemovedMidSession_FaultQuarantineCordons verifies that removing a cordon that was on
+// the node before the session started does not cancel the session: the session's rule set requires a cordon, so
+// fault-quarantine applies its own and drops the pre-existing marker. The next uncordon removes fault-quarantine's
+// cordon and cancels the session, as for any cordon fault-quarantine applied.
+func TestE2E_PreExistingCordonRemovedMidSession_FaultQuarantineCordons(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-preexisting-cordon-removed-" + generateShortTestID()
+
+	// Cordoned by someone else before the fault.
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, true)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	eventWatcher, cancelledNodes := cancelTrackingEventWatcher()
+
+	_, mockWatcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig:   cordonOnlyTestConfig(),
+		EventWatcher: eventWatcher,
+	})
+
+	beforeManualUncordon := getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName)
+
+	t.Log("Send unhealthy event - the session records the cordon as pre-existing")
+	unhealthyEventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(unhealthyEventID, nodeName,
+		"GpuXidError", false, true, []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(unhealthyEventID)
+		return status != nil && *status == model.Quarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be Quarantined")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey] ==
+			common.QuarantineHealthEventCordonPreExistingAnnotationValue
+	}, eventuallyTimeout, eventuallyPollInterval, "quarantineHealthEventCordonPreExisting should be True")
+
+	beforeCordonsApplied := getCounterValue(t, metrics.CordonsApplied)
+
+	t.Log("Remove the pre-existing cordon - fault-quarantine should apply its own cordon and keep the session")
+	uncordonE2ETestNode(ctx, t, nodeName)
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, preExisting := node.Annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey]
+
+		return node.Spec.Unschedulable && !preExisting
+	}, eventuallyTimeout, eventuallyPollInterval,
+		"fault-quarantine should cordon the node and drop quarantineHealthEventCordonPreExisting")
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	verifyHealthEventInAnnotation(t, node, "GpuXidError", "gpu-health-monitor", "GPU", "GPU", "0")
+	assert.Equal(t, common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+		node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey],
+		"quarantineHealthEventIsCordoned should stay True")
+	assert.Empty(t, node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey],
+		"removing a pre-existing cordon is not a manual uncordon")
+	assert.Equal(t, common.ServiceName, node.Labels["k8s.nvidia.com/cordon-by"], "cordon-by label should be set")
+	assert.NotEmpty(t, node.Labels["k8s.nvidia.com/cordon-timestamp"], "cordon-timestamp should be set")
+	assert.Equal(t, string(statemanager.QuarantinedLabelValue), node.Labels[statemanager.NVSentinelStateLabelKey],
+		"nvsentinel-state label should stay quarantined")
+	assert.Empty(t, cancelledNodes(), "the session's events should not be cancelled")
+	assert.Equal(t, beforeManualUncordon, getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName),
+		"TotalNodesManuallyUncordoned should not change")
+	assert.Equal(t, beforeCordonsApplied+1, getCounterValue(t, metrics.CordonsApplied),
+		"CordonsApplied should count the cordon fault-quarantine applied")
+
+	t.Log("Uncordon again - this cordon is fault-quarantine's, so the session is cancelled")
+	uncordonE2ETestNode(ctx, t, nodeName)
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		return node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] ==
+			common.QuarantinedNodeUncordonedManuallyAnnotationValue &&
+			node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon should clean up the session annotations")
+
+	require.Eventually(t, func() bool {
+		return len(cancelledNodes()) == 1
+	}, eventuallyTimeout, eventuallyPollInterval, "Manual uncordon should cancel the session's events")
+
+	node, err = e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.False(t, node.Spec.Unschedulable, "the node should stay uncordoned after a manual uncordon")
+	assert.Empty(t, node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey])
+	assert.Equal(t, []string{nodeName}, cancelledNodes())
+	verifyQuarantineLabelsAbsent(t, node)
+	assert.Equal(t, beforeManualUncordon+1, getCounterVecValue(t, metrics.TotalNodesManuallyUncordoned, nodeName),
+		"TotalNodesManuallyUncordoned should increment once")
+}
+
+// TestE2E_PreExistingCordonRemovedWhileDown_FaultQuarantineCordonsOnRestart verifies the same for a pre-existing
+// cordon removed while fault-quarantine was down: the stale-state check on restart applies fault-quarantine's
+// cordon instead of cancelling the session, and the session-end release then uncordons the node.
+func TestE2E_PreExistingCordonRemovedWhileDown_FaultQuarantineCordonsOnRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-preexisting-cordon-restart-" + generateShortTestID()
+
+	// Cordoned by someone else before the fault.
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, true)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := cordonOnlyTestConfig()
+
+	t.Log("Quarantine the pre-cordoned node, then stop fault-quarantine")
+	runReconcilerAndQuarantineNode(t, ctx, nodeName, tomlConfig, func(_ *testing.T, node *corev1.Node) bool {
+		return node.Annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey] ==
+			common.QuarantineHealthEventCordonPreExistingAnnotationValue
+	})
+
+	t.Log("Remove the pre-existing cordon while fault-quarantine is down")
+	uncordonE2ETestNode(ctx, t, nodeName)
+
+	eventWatcher, cancelledNodes := cancelTrackingEventWatcher()
+
+	t.Log("Restart fault-quarantine - it should apply its own cordon and keep the session")
+	_, mockWatcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig:   tomlConfig,
+		EventWatcher: eventWatcher,
+	})
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, preExisting := node.Annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey]
+
+		return node.Spec.Unschedulable && !preExisting
+	}, eventuallyTimeout, eventuallyPollInterval,
+		"fault-quarantine should cordon the node on restart and drop quarantineHealthEventCordonPreExisting")
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	verifyHealthEventInAnnotation(t, node, "GpuXidError", "gpu-health-monitor", "GPU", "GPU", "0")
+	assert.Empty(t, node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey],
+		"removing a pre-existing cordon is not a manual uncordon")
+	assert.Equal(t, common.ServiceName, node.Labels["k8s.nvidia.com/cordon-by"], "cordon-by label should be set")
+	assert.Empty(t, cancelledNodes(), "the session's events should not be cancelled")
+
+	t.Log("Recovery releases fault-quarantine's cordon at session end")
+	healthyEventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(healthyEventID, nodeName,
+		"GpuXidError", true, false, []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(healthyEventID)
+		return status != nil && *status == model.UnQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && !node.Spec.Unschedulable && node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+	}, eventuallyTimeout, eventuallyPollInterval, "the cordon fault-quarantine applied should be released")
+
+	node, err = e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey])
+	assert.Empty(t, node.Annotations[common.QuarantineHealthEventCordonPreExistingAnnotationKey])
+	verifyUnquarantineLabels(t, node)
+	assert.Empty(t, cancelledNodes(), "a recovery is not a cancellation")
+}
+
+// TestE2E_PreExistingCordonRemovedInDryRun_DoesNotCordon verifies that dry run never cordons: a session quarantined
+// for real before dry run was switched on keeps the existing manual-uncordon handling when its pre-existing cordon
+// is removed.
+func TestE2E_PreExistingCordonRemovedInDryRun_DoesNotCordon(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-preexisting-cordon-dryrun-" + generateShortTestID()
+
+	existingEvent := &protos.HealthEvent{
+		NodeName:         nodeName,
+		Agent:            "gpu-health-monitor",
+		CheckName:        "GpuXidError",
+		ComponentClass:   "GPU",
+		Version:          1,
+		IsHealthy:        false,
+		EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+	}
+
+	existingMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	existingMap.AddOrUpdateEvent(existingEvent)
+	existingBytes, err := json.Marshal(existingMap)
+	require.NoError(t, err)
+
+	// A live session on a pre-cordoned node, with no dry-run marker.
+	annotations := map[string]string{
+		common.QuarantineHealthEventAnnotationKey:                  string(existingBytes),
+		common.QuarantineHealthEventIsCordonedAnnotationKey:        common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+		common.QuarantineHealthEventCordonPreExistingAnnotationKey: common.QuarantineHealthEventCordonPreExistingAnnotationValue,
+	}
+
+	createE2ETestNode(ctx, t, nodeName, annotations, nil, nil, true)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	_, _, _, _ = setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig: cordonOnlyTestConfig(),
+		DryRun:     true,
+	})
+
+	t.Log("Remove the pre-existing cordon - dry run must not cordon the node")
+	uncordonE2ETestNode(ctx, t, nodeName)
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] ==
+			common.QuarantinedNodeUncordonedManuallyAnnotationValue
+	}, eventuallyTimeout, eventuallyPollInterval, "the uncordon should be handled as a manual uncordon")
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.False(t, node.Spec.Unschedulable, "dry run must not cordon the node")
+	assert.NotContains(t, node.Labels, "k8s.nvidia.com/cordon-by", "dry run must not label the node")
+}
+
 func TestE2E_NodeAlreadyQuarantinedStillUnhealthy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()

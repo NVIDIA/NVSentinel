@@ -34,6 +34,8 @@ NVSentinel detects the uncordon and immediately:
 
 The node can schedule new workloads right away. If the health issue happens again later, NVSentinel will treat it as a new incident.
 
+If you cordoned the node yourself before the fault was detected, the first uncordon removes your cordon and NVSentinel applies its own, so uncordon a second time to cancel the workflow; to keep NVSentinel off a node you are working on, opt it out before the fault (see below).
+
 ### Checking Cancellation Status
 
 See if a node was manually uncordoned:
