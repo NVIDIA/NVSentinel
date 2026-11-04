@@ -233,7 +233,6 @@ else
   FINAL_EXIT_STATUS=$RESET_STATUS
   log "ERROR: Reset failed. See details below:"
   sed -e '/All done\./d' -e 's/\.$//' "$RESET_OUTPUT_FILE" | grep . || true
-  collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 fi
 
 #------------------------
@@ -291,6 +290,12 @@ elif [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ]; then
   IFS=$ORIGINAL_IFS
 else
   log "Skipping writing reset result (success: ${SYSLOG_SUCCESS}) to syslog: WRITE_SYSLOG_EVENT is not true"
+fi
+
+# The bug report upload can take up to 2 minutes. Collect the report after the result is written, so that the
+# deadline of the reset Job cannot stop the last run before it reports a failed reset.
+if [ "$RESET_STATUS" -ne 0 ]; then
+  collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 fi
 
 exit "$FINAL_EXIT_STATUS"
