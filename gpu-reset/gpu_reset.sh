@@ -294,6 +294,14 @@ else
   log "WARN: Post-reset health check skipped."
 fi
 
+# Set the outcome before anything else can fail, so that the EXIT trap does not report a failed reset after
+# a successful one.
+if [ "$FINAL_EXIT_STATUS" -ne 0 ]; then
+  SYSLOG_SUCCESS="false"
+else
+  SYSLOG_SUCCESS="true"
+fi
+
 #------------------------
 # SUMMARY
 #------------------------
@@ -304,10 +312,8 @@ DURATION=$(printf "%.3f" "$DURATION_RAW")
 
 if [ "$FINAL_EXIT_STATUS" -ne 0 ]; then
   log "FAILED: GPU reset workflow failed in ${DURATION}s."
-  SYSLOG_SUCCESS="false"
 else
   log "SUCCESS: GPU reset workflow completed in ${DURATION}s."
-  SYSLOG_SUCCESS="true"
 fi
 
 if [ "$SYSLOG_SUCCESS" = "false" ] && [ "$RUN" -gt 0 ] && [ "$RUN" -lt "$RESET_MAX_RUNS" ]; then
