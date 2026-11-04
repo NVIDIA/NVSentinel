@@ -1177,3 +1177,22 @@ func TestIsTripped_GPUNodeJoinsAfterZero_UsesNodeCount(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, tripped, "no cordons on a one-node fleet should not trip")
 }
+
+type failingTotalNodesClient struct {
+	K8sClientOperations
+}
+
+func (c *failingTotalNodesClient) GetTotalNodes(ctx context.Context) (int, error) {
+	return 0, fmt.Errorf("node informer cache not synced yet")
+}
+
+func TestIsTripped_NodeCountError_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+	b.cfg.K8sClient = &failingTotalNodesClient{K8sClientOperations: b.cfg.K8sClient}
+
+	tripped, err := b.IsTripped(ctx)
+	require.Error(t, err)
+	require.False(t, tripped)
+	require.Equal(t, StateClosed, b.CurrentState())
+}
