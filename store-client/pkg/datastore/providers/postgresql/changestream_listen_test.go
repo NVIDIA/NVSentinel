@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -756,4 +757,111 @@ func TestKeepNotifiedIDs_OverTheLimit_CutsAndCountsTheCutAsDropped(t *testing.T)
 	got, gotDropped := watcher.takeNotifiedIDs()
 	assert.Equal(t, want, got, "the oldest ids are kept, the newest eight are cut")
 	assert.Equal(t, 4+8, gotDropped, "the pass's dropped count plus the cut")
+}
+
+// rejectAllFilter is a pipeline filter no event matches. Delivery runs the position update before
+// the filter, so a lookup that wrongly runs still shows in the watcher's state and nothing is sent.
+func rejectAllFilter() *PipelineFilter {
+	return &PipelineFilter{stages: []filterStage{{matchConditions: map[string]any{"operationType": "none"}}}}
+}
+
+// Close closes the events channel without waiting for the fetch loop. A pass that starts after
+// Close must look nothing up and deliver nothing, the same as fetchNewChanges already does.
+func TestFetchNotifiedRows_AfterClose_LooksNothingUp(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base.Add(20 * time.Second)
+	watcher.lastEventID = 20
+	watcher.pipelineFilter = rejectAllFilter()
+
+	watcher.addNotifiedID(15)
+	watcher.droppedIDs = 1
+
+	// The row is there so that a lookup that wrongly runs is seen: it would take the id off the
+	// pending list.
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(15)).
+		WillReturnRows(listenTestRows(base, 15))
+
+	require.NoError(t, watcher.Close(context.Background()))
+	require.NoError(t, watcher.fetchNotifiedRows(context.Background()))
+
+	ids, dropped := watcher.takeNotifiedIDs()
+	assert.Equal(t, []int64{15}, ids, "nothing may be looked up after Close")
+	assert.Equal(t, 1, dropped)
+}
+
+// holdFirstQuery matches queries the way sqlmock does by default and holds the first query it
+// sees until the test releases it, so the test can act while that query is in flight.
+type holdFirstQuery struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newHoldFirstQuery() *holdFirstQuery {
+	return &holdFirstQuery{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (h *holdFirstQuery) Match(expectedSQL, actualSQL string) error {
+	h.once.Do(func() {
+		close(h.started)
+		<-h.release
+	})
+
+	return sqlmock.QueryMatcherRegexp.Match(expectedSQL, actualSQL)
+}
+
+// The watcher is closed while a failed pass's retry is pending. Whether the loop returns on the
+// stop or runs one more pass first, that pass must look nothing up.
+func TestFetchLoop_ClosedWhileRetryPending_LooksNothingUp(t *testing.T) {
+	hold := newHoldFirstQuery()
+
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(hold))
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base.Add(20 * time.Second)
+	watcher.lastEventID = 20
+	watcher.retryDelay = 0
+	watcher.pipelineFilter = rejectAllFilter()
+
+	watcher.addNotifiedID(15)
+	<-watcher.wake
+
+	// The first poll is held until Close has happened, then fails, so the retry is ready at the
+	// same time as the stop. The row is there so that a lookup that wrongly runs is seen.
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+		WillReturnError(errors.New("connection reset by peer"))
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, int64(15)).
+		WillReturnRows(listenTestRows(base, 15))
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		watcher.fetchLoop(context.Background())
+	}()
+
+	<-hold.started
+	require.NoError(t, watcher.Close(context.Background()))
+	close(hold.release)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fetch loop must return after Close")
+	}
+
+	ids, _ := watcher.takeNotifiedIDs()
+	assert.Equal(t, []int64{15}, ids, "no pass may look up the notified row after Close")
 }

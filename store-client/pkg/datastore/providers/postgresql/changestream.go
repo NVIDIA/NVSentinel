@@ -795,6 +795,14 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRowsByID(ctx context.Contex
 	w.fetchMu.Lock()
 	defer w.fetchMu.Unlock()
 
+	// Close does not wait for the fetch loop, and the loop can still start a pass when a wake
+	// or the retry is ready together with the stop. Nothing may be looked up or delivered then.
+	select {
+	case <-w.stopCh:
+		return false, nil
+	default:
+	}
+
 	ids, dropped := w.takeNotifiedIDs()
 
 	fetch := w.fetchChangeByID
