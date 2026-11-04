@@ -114,6 +114,8 @@ RESET_OUTPUT_FILE=$(mktemp)
 HEALTH_CHECK_OUTPUT_FILE=$(mktemp)
 RESULT_WRITTEN=false
 EXIT_STATUS=0
+# SYSLOG_SUCCESS is the outcome of the reset and the health check. It is empty until the summary.
+SYSLOG_SUCCESS=""
 
 # write_result writes the reset result of each target GPU to syslog.
 write_result() {
@@ -141,10 +143,11 @@ write_result() {
 
 # The last run must report a failed reset also when it exits early, for example when the nvidia-smi version
 # check fails under set -e. Without the report, the node is not rebooted. An earlier run does not report,
-# because the reset Job runs the script again.
+# because the reset Job runs the script again. After a successful reset, a failure to write the result must
+# not report a failed reset.
 trap 'EXIT_STATUS=$?
 rm -f -- "$RESET_OUTPUT_FILE" "$HEALTH_CHECK_OUTPUT_FILE"
-if [ "$EXIT_STATUS" -ne 0 ] && [ "$RESULT_WRITTEN" = "false" ] && [ "$RUN" -gt 0 ] &&
+if [ "$EXIT_STATUS" -ne 0 ] && [ "$RESULT_WRITTEN" = "false" ] && [ "$SYSLOG_SUCCESS" != "true" ] && [ "$RUN" -gt 0 ] &&
   [ "$RUN" -eq "$RESET_MAX_RUNS" ] && [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ] && [ -n "$TARGET_UUIDS" ]; then
   log "ERROR: The last run exited with status ${EXIT_STATUS} before it wrote the reset result."
   write_result false
