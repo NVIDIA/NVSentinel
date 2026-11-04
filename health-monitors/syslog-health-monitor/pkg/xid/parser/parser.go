@@ -35,7 +35,6 @@ type Response struct {
 
 // XIDDetails contains the parsed XID information
 type XIDDetails struct {
-	Comments            string            `json:"comments,omitempty"`
 	Context             string            `json:"context"`
 	DecodedXIDStr       string            `json:"decoded_xid_string"`
 	Driver              string            `json:"driver"`

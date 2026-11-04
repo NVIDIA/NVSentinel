@@ -247,7 +247,6 @@ The sidecar should listen on `localhost:8080` as it runs in the same pod as the 
 - `context` (string) - Additional context about the error
 - `resolution` (string) - Recommended resolution action that should be performed by the system
 - `investigatory_action` (string) - Steps to investigate the error
-- `comments` (string, optional) - Additional decode comments, appended to the health event message when provided
 - `pcie_bdf` (string) - PCIe Bus:Device.Function identifier
 - `driver` (string) - Driver version
 - `machine` (string) - Machine architecture

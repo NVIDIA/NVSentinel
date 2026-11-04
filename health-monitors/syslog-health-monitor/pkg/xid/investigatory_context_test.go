@@ -31,47 +31,40 @@ import (
 func TestProcessLine_SidecarGuidance_PreservesRecoveryBehavior(t *testing.T) {
 	testCases := []struct {
 		name       string
+		message    string
 		fields     string
 		wantSuffix string
 	}{
 		{
-			name: "action and comment",
-			fields: `,"investigatory_action":"Check device diagnostics",` +
-				`"comments":"Additional diagnostic context"`,
-			wantSuffix: "\nInvestigatory Action=Check device diagnostics" +
-				"\nDecode Comment=Additional diagnostic context",
-		},
-		{
-			name:       "action only",
+			name:       "action supplied",
 			fields:     `,"investigatory_action":"Check device diagnostics"`,
-			wantSuffix: "\nInvestigatory Action=Check device diagnostics",
+			wantSuffix: ", Investigatory Action=Check device diagnostics",
 		},
 		{
-			name:       "comment only",
-			fields:     `,"comments":"Additional diagnostic context"`,
-			wantSuffix: "\nDecode Comment=Additional diagnostic context",
+			name: "missing action",
 		},
 		{
-			name: "missing fields",
+			name:   "null action",
+			fields: `,"investigatory_action":null`,
 		},
 		{
-			name:   "null fields",
-			fields: `,"investigatory_action":null,"comments":null`,
+			name:   "empty action",
+			fields: `,"investigatory_action":""`,
 		},
 		{
-			name:   "empty fields",
-			fields: `,"investigatory_action":"","comments":""`,
+			name:   "blank action",
+			fields: `,"investigatory_action":" \t\n "`,
 		},
 		{
-			name:   "blank fields",
-			fields: `,"investigatory_action":" \t ","comments":" \n "`,
+			name:       "padded action",
+			fields:     `,"investigatory_action":" \nCheck device diagnostics\t "`,
+			wantSuffix: ", Investigatory Action=Check device diagnostics",
 		},
 		{
-			name: "padded fields",
-			fields: `,"investigatory_action":" Check device diagnostics ",` +
-				`"comments":" Additional diagnostic context "`,
-			wantSuffix: "\nInvestigatory Action=Check device diagnostics" +
-				"\nDecode Comment=Additional diagnostic context",
+			name:       "original message preserved",
+			message:    "Synthetic XID message\n",
+			fields:     `,"investigatory_action":"Check device diagnostics"`,
+			wantSuffix: ", Investigatory Action=Check device diagnostics",
 		},
 	}
 
@@ -133,7 +126,10 @@ func TestProcessLine_SidecarGuidance_PreservesRecoveryBehavior(t *testing.T) {
 					server.URL, "test-node", func() string { return "580.173.02" },
 				)
 
-				const original = "Synthetic XID message\n"
+				original := tc.message
+				if original == "" {
+					original = "Synthetic XID message"
+				}
 
 				events, err := handler.ProcessLine(original)
 				require.NoError(t, err)

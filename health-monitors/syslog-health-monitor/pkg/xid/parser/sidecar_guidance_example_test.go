@@ -34,8 +34,7 @@ func TestSidecarParser_Parse_XID149ExamplePreservesGuidance(t *testing.T) {
 	// this verifies transport and field preservation, not a catalog decision.
 	const response = `{"success":true,"result":{` +
 		`"number":149,"decoded_xid_string":"149","pcie_bdf":"0008:06:00",` +
-		`"resolution":"NONE","investigatory_action":"Example investigation",` +
-		`"comments":"Example decode comment"}}`
+		`"resolution":"NONE","investigatory_action":"Example investigation"}}`
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
@@ -70,5 +69,4 @@ func TestSidecarParser_Parse_XID149ExamplePreservesGuidance(t *testing.T) {
 	assert.Equal(t, "0008:06:00", result.Result.PCIE)
 	assert.Equal(t, "NONE", result.Result.Resolution)
 	assert.Equal(t, "Example investigation", result.Result.InvestigatoryAction)
-	assert.Equal(t, "Example decode comment", result.Result.Comments)
 }
