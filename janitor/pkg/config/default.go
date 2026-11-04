@@ -50,11 +50,7 @@ const (
 	// Job controller fails the Job when the container restart count reaches backoffLimit, so a backoffLimit
 	// of ResetJobMaxRuns gives ResetJobMaxRuns full runs. The next run can start before the Job fails; the
 	// script then exits without a reset.
-	ResetJobMaxRuns = 3
-	// resetJobActiveDeadlineSeconds bounds all the runs of the reset Job. A failed run takes about 90s:
-	// nvidia-smi --gpu-reset returns after about 80s, then the script collects nvidia-bug-report. With the
-	// container restart delays of 10s and 20s, three failed runs take about 300s.
-	resetJobActiveDeadlineSeconds = 600
+	ResetJobMaxRuns = 2
 	// ContainerDriverRoot is the driverRoot that makes the reset command chroot into the reset
 	// container itself instead of into the mounted driver filesystem.
 	ContainerDriverRoot = "/"
@@ -246,7 +242,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	job := &batchv1.JobTemplateSpec{
 		Namespace: namespace,
 		Spec: batchv1.JobSpec{
-			ActiveDeadlineSeconds:   new(int64(resetJobActiveDeadlineSeconds)),
+			ActiveDeadlineSeconds:   new(int64(300)),
 			BackoffLimit:            new(int32(ResetJobMaxRuns)),
 			TTLSecondsAfterFinished: new(int32(86400)),
 			Template: corev1.PodTemplateSpec{

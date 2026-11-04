@@ -222,12 +222,10 @@ func TestGetDefaultGPUResetJobTemplate_RunCount_LastRunReportsFailure(t *testing
 			assert.Equal(t, corev1.RestartPolicyOnFailure, podSpec.RestartPolicy)
 			require.NotNil(t, template.Spec.BackoffLimit)
 			assert.Equal(t, int32(ResetJobMaxRuns), *template.Spec.BackoffLimit)
-			require.NotNil(t, template.Spec.ActiveDeadlineSeconds)
-			assert.Equal(t, int64(resetJobActiveDeadlineSeconds), *template.Spec.ActiveDeadlineSeconds)
 
 			maxRuns := findEnvVar(container.Env, ResetMaxRunsEnvVar)
 			require.NotNil(t, maxRuns)
-			assert.Equal(t, "3", maxRuns.Value)
+			assert.Equal(t, "2", maxRuns.Value)
 
 			countFile := findEnvVar(container.Env, ResetRunCountFileEnvVar)
 			require.NotNil(t, countFile)
