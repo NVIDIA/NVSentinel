@@ -38,7 +38,8 @@ const (
 	ExtRRResultSuccess         = "success"
 	ExtRRResultOperatorDeleted = "operator_deleted"
 	// ExtRRResultNodeDeleted is recorded when an open ExtRR is deleted and its
-	// target Node is gone or was replaced by a Node with a different UID.
+	// target Node is gone, is terminating, or was replaced by a Node with a
+	// different UID.
 	ExtRRResultNodeDeleted = "node_deleted"
 	// ExtRRResultNodeNotFound is recorded when the apply path fails because
 	// the target Node is absent or was replaced. Terminal — no retry.
