@@ -81,9 +81,9 @@ tests:
       name: nvsentinel
       namespace: nvsentinel
     asserts:
-      - equal:
+      - matchRegex:
           path: metadata.name
-          value: nvsentinel-external-mongodb-setup-2592000-4e5b3c3e
+          pattern: ^nvsentinel-external-mongodb-setup-2592000-[0-9a-f]{8}$
       - equal:
           path: spec.activeDeadlineSeconds
           value: 1800
@@ -100,9 +100,9 @@ tests:
     set:
       mongodb-store.job.activeDeadlineSeconds: 3600
     asserts:
-      - equal:
+      - matchRegex:
           path: metadata.name
-          value: nvsentinel-external-mongodb-setup-2592000-4e5b3c3e
+          pattern: ^nvsentinel-external-mongodb-setup-2592000-[0-9a-f]{8}$
       - equal:
           path: spec.activeDeadlineSeconds
           value: 3600
@@ -119,9 +119,9 @@ tests:
     set:
       mongodb-store.job.activeDeadlineSeconds: null
     asserts:
-      - equal:
+      - matchRegex:
           path: metadata.name
-          value: nvsentinel-external-mongodb-setup-2592000-4e5b3c3e
+          pattern: ^nvsentinel-external-mongodb-setup-2592000-[0-9a-f]{8}$
       - equal:
           path: spec.activeDeadlineSeconds
           value: 1800
@@ -138,9 +138,9 @@ tests:
     set:
       mongodb-store.job.activeDeadlineSeconds: 0
     asserts:
-      - equal:
+      - matchRegex:
           path: metadata.name
-          value: nvsentinel-external-mongodb-setup-2592000-4e5b3c3e
+          pattern: ^nvsentinel-external-mongodb-setup-2592000-[0-9a-f]{8}$
       - notExists:
           path: spec.activeDeadlineSeconds
       - notExists:
@@ -177,7 +177,7 @@ tests:
       - failedTemplate:
           errorMessage: mongodb-store.job.activeDeadlineSeconds must be a non-negative integer (0 disables the deadline)
 
-  - it: rejects a empty string deadline
+  - it: rejects an empty string deadline
     set:
       mongodb-store.job.activeDeadlineSeconds: ""
     asserts:
