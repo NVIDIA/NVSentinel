@@ -268,7 +268,7 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 		ComponentClass:     xidHandler.defaultComponentClass,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		EntitiesImpacted:   entities,
-		Message:            message,
+		Message:            appendInvestigatoryGuidance(message, xidResp.Result),
 		IsFatal:            xidHandler.determineFatality(recommendedAction),
 		IsHealthy:          false,
 		NodeName:           xidHandler.nodeName,
@@ -291,6 +291,18 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 		Version: 1,
 		Events:  events,
 	}
+}
+
+func appendInvestigatoryGuidance(message string, details parser.XIDDetails) string {
+	if action := strings.TrimSpace(details.InvestigatoryAction); action != "" {
+		message += "\nInvestigatory Action=" + action
+	}
+
+	if comment := strings.TrimSpace(details.Comments); comment != "" {
+		message += "\nDecode Comment=" + comment
+	}
+
+	return message
 }
 
 // buildHealthyRecoveryEvent creates an unscoped healthy event for the same

@@ -107,6 +107,8 @@ Optional XID analyzer sidecar allows injecting custom logic for XID analysis:
 
 When enabled, the sidecar receives XID messages and can return custom recommended actions, allowing you to tailor remediation to your environment without modifying the main monitor.
 
+The monitor appends non-empty `investigatory_action` and `comments` values from the analyzer to the health event message. These appear after the original XID message as `Investigatory Action=...` and `Decode Comment=...`. These details support investigation and do not change the recommended recovery action. Messages remain unchanged when both fields are absent or empty. Kubernetes node condition messages can truncate diagnostic details when they exceed the configured length limits.
+
 ### Driver Watcher
 Separate sidecar monitors NVIDIA driver pod logs for driver-specific issues.
 
