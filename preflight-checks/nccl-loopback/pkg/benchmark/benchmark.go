@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -76,6 +77,12 @@ func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, err
 		"-g", strconv.Itoa(numGPUs),
 	)
 
+	// all_reduce_perf prints each result row in two parts around the collective, and NCCL
+	// logs to stdout by default, so with an inherited NCCL_DEBUG=INFO a log line lands in
+	// the middle of the row parseOutput reads. Send NCCL's log to stderr instead; it is
+	// still captured and logged if the benchmark fails. The last duplicate key in Env wins.
+	cmd.Env = append(os.Environ(), "NCCL_DEBUG_FILE=/dev/stderr")
+
 	var stdout, stderr bytes.Buffer
 
 	cmd.Stdout = &stdout
@@ -89,7 +96,10 @@ func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, err
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			slog.Error("NCCL benchmark timed out", "timeout", benchmarkTimeout)
+			slog.Error("NCCL benchmark timed out",
+				"timeout", benchmarkTimeout,
+				"stderr", stderr.String())
+
 			return nil, fmt.Errorf("all_reduce_perf timed out after %s", benchmarkTimeout)
 		}
 
@@ -108,6 +118,12 @@ func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, err
 
 	result, err := parseOutput(output, testSizeMB)
 	if err != nil {
+		// Logged rather than added to the error: the error becomes the health event message.
+		slog.Error("Failed to parse NCCL benchmark output",
+			"error", err,
+			"stdout", output,
+			"stderr", stderr.String())
+
 		return nil, fmt.Errorf("failed to parse output: %w", err)
 	}
 
