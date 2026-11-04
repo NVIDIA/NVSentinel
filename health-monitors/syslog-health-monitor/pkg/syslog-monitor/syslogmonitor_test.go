@@ -82,6 +82,9 @@ type MockJournal struct {
 	SeekHeadCalled       bool
 	LastSeekRealtimeUsec uint64
 	SeekRealtimeCalled   bool
+	// DataWithFieldName makes GetData return "FIELD=value", the whole data
+	// object, as sd_journal_get_data does on a real journal.
+	DataWithFieldName bool
 }
 
 // AddMatch adds a match filter for journal entries
@@ -168,13 +171,19 @@ func (j *MockJournal) GetData(field string) (string, error) {
 		return "", fmt.Errorf("invalid cursor position")
 	}
 
-	if field == "MESSAGE" {
-		return j.Entries[j.CurrentPosition].Message, nil
+	value := j.Entries[j.CurrentPosition].Message
+
+	if field != "MESSAGE" {
+		var ok bool
+
+		value, ok = j.Entries[j.CurrentPosition].Fields[field]
+		if !ok {
+			return "", fmt.Errorf("field not found: %s", field)
+		}
 	}
 
-	value, ok := j.Entries[j.CurrentPosition].Fields[field]
-	if !ok {
-		return "", fmt.Errorf("field not found: %s", field)
+	if j.DataWithFieldName {
+		return field + "=" + value, nil
 	}
 
 	return value, nil
