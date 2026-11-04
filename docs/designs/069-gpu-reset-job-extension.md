@@ -70,7 +70,6 @@ Two strategic merge rules can give a Job that the API server accepts but that fa
 ### Changes
 
 - `janitor/pkg/config`: the `JobTemplatePatch` field on `ResetJobConfig`, the patch, the strict decode, and tests for an added container, a misspelled field and the two merge rules.
-- `janitor/go.mod`: `sigs.k8s.io/yaml` changes from an indirect to a direct dependency. `strategicpatch` is part of `k8s.io/apimachinery`, which janitor already uses.
 - `newGpuResetJob`: `NVIDIA_GPU_RESETS` in each init container.
 - The janitor chart: the value, the ConfigMap rendering and a helm-unittest.
 - `docs/configuration/janitor.md`: the key, the order, the merge rules, the fields that `newGpuResetJob` sets, and an example.
