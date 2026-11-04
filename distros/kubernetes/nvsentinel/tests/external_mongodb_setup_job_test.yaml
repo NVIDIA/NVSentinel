@@ -75,3 +75,24 @@ tests:
       - matchRegex:
           path: metadata.name
           pattern: ^customer-production-gpu-external-mongodb-setup-[0-9]+-[0-9a-f]{8}$
+
+  - it: gives the Job a 10 minute deadline by default
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 600
+
+  - it: takes the deadline from mongodb-store.job.activeDeadlineSeconds
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 3600
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 3600
+
+  - it: omits the deadline when set to 0
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 0
+    asserts:
+      - notExists:
+          path: spec.activeDeadlineSeconds

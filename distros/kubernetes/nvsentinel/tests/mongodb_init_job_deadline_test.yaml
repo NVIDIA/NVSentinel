@@ -43,3 +43,13 @@ tests:
       - equal:
           path: spec.activeDeadlineSeconds
           value: 3600
+
+  - it: omits the init Job deadline when set to 0
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 0
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - notExists:
+          path: spec.activeDeadlineSeconds
