@@ -83,7 +83,10 @@ type runningAppsFn func(
 // GPUResetReconciler reconciles a GPUReset object
 type GPUResetReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	// APIReader reads from the API server without the cache. The GPU client pods can be in any namespace, and the
+	// pod cache holds only the pods of the service manager namespace.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 	// FieldIndexer enables client-side field indexing, allowing for  mocking in tests.
 	FieldIndexer client.FieldIndexer
 	// Config holds controller-specific configuration.
@@ -304,10 +307,18 @@ func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to construct GPU service manager: %w", err)
 	}
 
+	if r.Config.StopGPUClients {
+		gpuServiceManager = gpuservices.WithGPUClients(gpuServiceManager)
+	}
+
 	r.serviceManager = gpuServiceManager
 
 	if r.Config.ResolvedJobTemplate == nil {
 		return fmt.Errorf("failed to get valid reset job template")
+	}
+
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
 	}
 	// Assign the manager's field indexer, which can be overridden in tests.
 	r.FieldIndexer = mgr.GetFieldIndexer()
@@ -708,7 +719,7 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 			return ctrl.Result{}, fmt.Errorf("failed to get node %s for service teardown: %w", gr.Spec.NodeName, err)
 		}
 
-		running, err := r.runningAppsFn(ctx, gr.Spec.NodeName, r.serviceManager.Spec.Apps)
+		running, err := r.runningAppsFn(ctx, gr.Spec.NodeName, teardownCandidates(r.serviceManager.Spec.Apps, node.Labels))
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to find %s managed services on node %s: %w",
 				managerName, gr.Spec.NodeName, err)
@@ -737,6 +748,38 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 
 	return ctrl.Result{}, r.updateCondition(ctx, grWithServices, v1alpha1.ServicesTornDown, metav1.ConditionFalse,
 		v1alpha1.ReasonTearingDownServices, fmt.Sprintf("Removing %s managed services", managerName))
+}
+
+// teardownCandidates returns the apps that the teardown can stop on the node. The GPU clients are a candidate only
+// when their node label holds the enabled value. GPU Operator versions before 26.7, and GPUCluster mode, do not set
+// the label. The restore sets a stopped app's label to the enabled value, so it must not stop the GPU clients when
+// the label is absent: it would add a label that was not there. A label that holds the disabled value has no client
+// pods to stop.
+func teardownCandidates(apps []gpuservices.AppSpec, nodeLabels map[string]string) []gpuservices.AppSpec {
+	candidates := make([]gpuservices.AppSpec, 0, len(apps))
+
+	for _, app := range apps {
+		if app.IsGPUClients() && nodeLabels[app.NodeLabel] != app.EnabledValue {
+			continue
+		}
+
+		candidates = append(candidates, app)
+	}
+
+	return candidates
+}
+
+// withoutGPUClients returns the apps without the GPU clients.
+func withoutGPUClients(apps []gpuservices.AppSpec) []gpuservices.AppSpec {
+	operands := make([]gpuservices.AppSpec, 0, len(apps))
+
+	for _, app := range apps {
+		if !app.IsGPUClients() {
+			operands = append(operands, app)
+		}
+	}
+
+	return operands
 }
 
 // managedApps returns the managed services that the controller stops and restores for the GPUReset: the ones
@@ -845,7 +888,8 @@ func (r *GPUResetReconciler) ensureManagedServicesRecord(ctx context.Context, gr
 	}
 
 	log := log.FromContext(ctx)
-	configured := r.serviceManager.Spec.Apps
+	// A janitor version without the record did not stop the GPU clients.
+	configured := withoutGPUClients(r.serviceManager.Spec.Apps)
 	nodeLabels := make([]string, 0, len(configured))
 
 	node, err := r.getNode(ctx, gr.Spec.NodeName)
@@ -1545,14 +1589,30 @@ func (r *GPUResetReconciler) checkPodsTerminated(
 		}
 
 		if len(pods.Items) > 0 {
-			log.V(1).Info("Managed service pod still running on node", "node", nodeName, "manager", managerName,
-				"count", len(pods.Items), "selector", selector)
+			if app.IsGPUClients() {
+				// The DaemonSet controller removes its pods when the label changes. Other pods stay until someone
+				// deletes them, so name them: the teardown times out on them.
+				log.Info("GPU client pods still running on node", "node", nodeName, "pods", podNames(pods.Items))
+			} else {
+				log.V(1).Info("Managed service pod still running on node", "node", nodeName, "manager", managerName,
+					"count", len(pods.Items), "selector", selector)
+			}
 
 			return false, nil
 		}
 	}
 
 	return true, nil
+}
+
+// podNames returns the namespace/name of each pod.
+func podNames(pods []corev1.Pod) []string {
+	names := make([]string, 0, len(pods))
+	for i := range pods {
+		names = append(names, pods[i].Namespace+"/"+pods[i].Name)
+	}
+
+	return names
 }
 
 // checkPodsReady verifies that all pods belonging to the given managed services
@@ -1566,6 +1626,12 @@ func (r *GPUResetReconciler) checkPodsReady(
 	managerName := r.serviceManager.Name
 
 	for _, app := range apps {
+		// The GPU client pods belong to other teams, and a pod that no DaemonSet owns does not come back. The
+		// restore gives their node label back and does not wait for them.
+		if app.IsGPUClients() {
+			continue
+		}
+
 		pods, selector, err := r.listAppPods(ctx, nodeName, app)
 		if err != nil {
 			return false, fmt.Errorf("failed to list %s managed service pods for ready check for node %s: %w",
@@ -1631,6 +1697,12 @@ func (r *GPUResetReconciler) listAppPods(
 	nodeName string,
 	app gpuservices.AppSpec,
 ) (*corev1.PodList, map[string]string, error) {
+	if app.IsGPUClients() {
+		pods, err := r.listGPUClientPods(ctx, nodeName)
+
+		return pods, nil, err
+	}
+
 	selector := make(map[string]string)
 	maps.Copy(selector, r.serviceManager.Spec.ManagerSelector)
 	maps.Copy(selector, app.AppSelector)
@@ -1645,6 +1717,55 @@ func (r *GPUResetReconciler) listAppPods(
 	}
 
 	return pods, selector, nil
+}
+
+// listGPUClientPods lists the GPU client pods on the target node: the pods in any namespace that select the GPU
+// clients node label and have not finished. It reads from the API server, because the pod cache holds only the pods
+// of the service manager namespace. The spec.nodeName field selector limits the request to the pods of one node.
+func (r *GPUResetReconciler) listGPUClientPods(ctx context.Context, nodeName string) (*corev1.PodList, error) {
+	nodePods := &corev1.PodList{}
+	if err := r.APIReader.List(ctx, nodePods, client.MatchingFields{"spec.nodeName": nodeName}); err != nil {
+		return nil, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+	}
+
+	clients := &corev1.PodList{}
+
+	for i := range nodePods.Items {
+		pod := &nodePods.Items[i]
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+
+		if selectsNodeLabel(pod, gpuservices.GPUClientsNodeLabel) {
+			clients.Items = append(clients.Items, *pod)
+		}
+	}
+
+	return clients, nil
+}
+
+// selectsNodeLabel reports whether the pod selects the node label in its nodeSelector or in a term of its required
+// node affinity. The GPU Operator driver manager looks only at the nodeSelector. The required node affinity is also
+// checked, because the NVSentinel metadata collector selects the GPU clients label there.
+func selectsNodeLabel(pod *corev1.Pod, label string) bool {
+	if _, ok := pod.Spec.NodeSelector[label]; ok {
+		return true
+	}
+
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil ||
+		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		return false
+	}
+
+	for _, term := range pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+		for _, expr := range term.MatchExpressions {
+			if expr.Key == label {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // reconcileTerminalFailure updates the GPUReset status to a terminal failed state

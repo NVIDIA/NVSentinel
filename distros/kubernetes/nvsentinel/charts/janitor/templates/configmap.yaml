@@ -124,3 +124,4 @@ data:
       serviceManager:
         {{- toYaml .Values.config.controllers.gpuReset.serviceManager | nindent 8 }}
       {{- end }}
+      stopGPUClients: {{ .Values.config.controllers.gpuReset.stopGPUClients | default false }}

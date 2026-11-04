@@ -104,6 +104,9 @@ type GPUResetControllerConfig struct {
 	Exclusions      []metav1.LabelSelector `mapstructure:"exclusions" json:"exclusions"`
 	CSPProviderHost string                 `mapstructure:"cspProviderHost" json:"cspProviderHost"`
 	ServiceManager  gpuservices.Manager    `mapstructure:"serviceManager" json:"serviceManager"`
+	// StopGPUClients also stops, before the reset, the GPU client pods that select the
+	// nvidia.com/gpu.deploy.client node label, in any namespace. It needs GPU Operator 26.7 or later.
+	StopGPUClients bool `mapstructure:"stopGPUClients" json:"stopGPUClients"`
 	// reset ResetJob will be used to construct the ResolvedJobTemplate from the default Job template
 	ResetJob            ResetJobConfig `mapstructure:"resetJob" json:"resetJob"`
 	ResolvedJobTemplate *batchv1.JobTemplateSpec

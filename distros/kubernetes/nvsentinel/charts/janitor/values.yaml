@@ -170,6 +170,12 @@ config:
       timeout: "25m"
       serviceManager:
         name: "gpu-operator"
+      # Also stop the GPU client pods in any namespace before the reset: the pods
+      # that select the nvidia.com/gpu.deploy.client node label in their
+      # nodeSelector or required node affinity. Needs GPU Operator 26.7 or later,
+      # which sets the label. On a node without the label, the reset does not
+      # change it.
+      stopGPUClients: false
       resetJob:
         writeSysLogEvent: true
         # RuntimeClass for the reset Job. Must be "" when global.gpuDraEnabled is
