@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -268,4 +269,118 @@ func TestSettled_ConfigValidation(t *testing.T) {
 			t.Context(), node, []*corev1.Node{node.DeepCopy()}, nil))
 		require.NotContains(t, node.Labels, testGPUCountExpectedLabel)
 	})
+}
+
+// settledGateConfig loads a class without sources, grouped by instance type,
+// with the given currentExpression and settledExpression from TOML.
+func settledGateConfig(t *testing.T, currentExpression, settledExpression string) Config {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "expected-device-counts.toml")
+	require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, `enabled = true
+
+[[classes]]
+name = "gpu"
+enabled = true
+groupingLabels = [%q]
+currentExpression = '''%s'''
+settledExpression = '''%s'''
+
+[classes.labels]
+current = %q
+expected = %q
+`, testInstanceType, currentExpression, settledExpression, testGPUCountCurrentLabel, testGPUCountExpectedLabel),
+		0o600))
+
+	config, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	return config
+}
+
+// A node that is not settled teaches nobody, also when it has no count. Its
+// expected label of 8 does not raise the other node of its partition, whether
+// its count source is missing or its count expression returns -1, and its own
+// labels are left as they are. A settled node without a count still raises its
+// partition through its label, as before. In a class with sources a node
+// without a count has no partition, so it was never a peer.
+func TestSettled_NodeWithoutACountTeachesNothingWhileNotSettled(t *testing.T) {
+	const notReconfiguring = "!('example.com/reconfiguring' in node.metadata.labels)"
+
+	labelCount := "'example.com/count' in node.metadata.labels ? int(node.metadata.labels['example.com/count']) : -1"
+
+	tests := []struct {
+		name      string
+		config    func(*testing.T) Config
+		settled   bool
+		peerLabel string
+		slices    map[string][]*resourcev1.ResourceSlice
+		want      string
+	}{
+		{
+			name:   "missing count source",
+			config: func(t *testing.T) Config { return settledGateConfig(t, testDRAGPUCurrentExpression, notReconfiguring) },
+			slices: map[string][]*resourcev1.ResourceSlice{
+				"node-b": {testGPUSlice("gpu", "node-b", 1, 1, testGPUDevices(4, testH100ProductName)...)},
+			},
+			want: "4",
+		},
+		{
+			name:      "count expression returns -1",
+			config:    func(t *testing.T) Config { return settledGateConfig(t, labelCount, notReconfiguring) },
+			peerLabel: "4",
+			want:      "4",
+		},
+		{
+			name:      "a settled node without a count still counts its label",
+			config:    func(t *testing.T) Config { return settledGateConfig(t, labelCount, notReconfiguring) },
+			settled:   true,
+			peerLabel: "4",
+			want:      "8",
+		},
+		{
+			name: "a class with sources gives a node without a count no partition",
+			config: func(t *testing.T) Config {
+				config := ratchetRelearnConfig(t, "")
+				config.Classes[0].SettledExpression = notReconfiguring
+
+				return config
+			},
+			want: "4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := newTestManager(t, tt.config(t))
+
+			unsettled := testNode("node-a", map[string]string{
+				testInstanceType:          "gb200",
+				testGFDGPUProduct:         ratchetPlainProduct,
+				testGPUCountExpectedLabel: "8",
+			})
+			if !tt.settled {
+				unsettled.Labels["example.com/reconfiguring"] = "true"
+			}
+
+			peer := testNode("node-b", map[string]string{testInstanceType: "gb200"})
+			if tt.peerLabel != "" {
+				peer.Labels["example.com/count"] = tt.peerLabel
+			}
+
+			// The peer of the class with sources counts through the gfd source.
+			ratchetSetGFD(peer, ratchetPlainProduct, 4)
+
+			cache := manager.NewReconcileCache([]*corev1.Node{unsettled, peer},
+				func(node *corev1.Node) []*resourcev1.ResourceSlice { return tt.slices[node.Name] })
+
+			updated := unsettled.DeepCopy()
+			require.False(t, cache.CalculateAndSetDeviceCountLabels(t.Context(), updated))
+			require.Equal(t, unsettled.Labels, updated.Labels, "the node without a count keeps its labels")
+
+			updated = peer.DeepCopy()
+			cache.CalculateAndSetDeviceCountLabels(t.Context(), updated)
+			require.Equal(t, tt.want, updated.Labels[testGPUCountExpectedLabel])
+		})
+	}
 }

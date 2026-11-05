@@ -47,7 +47,12 @@ func (m *Manager) observe(
 	resourceSlices []*resourcev1.ResourceSlice,
 ) countObservation {
 	observation := m.observeCount(ctx, class, node, resourceSlices)
-	if observation.missingSource || observation.err != nil {
+
+	// A node with neither a count nor a partition is not written and is no
+	// node's peer, so the gate cannot change anything for it. A node without a
+	// count can still have a partition, in a class without sources, and then
+	// its expected label teaches the partition unless the gate says otherwise.
+	if !observation.hasPartition && (observation.missingSource || observation.err != nil) {
 		return observation
 	}
 
@@ -55,7 +60,10 @@ func (m *Manager) observe(
 	// currentExpression failed, and it teaches nobody.
 	settled, err := class.settled(ctx, node, resourceSlices)
 	if err != nil {
-		observation.err = err
+		if observation.err == nil {
+			observation.err = err
+		}
+
 		observation.unsettled = true
 
 		return observation

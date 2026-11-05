@@ -196,6 +196,8 @@ type partitionExpectedKey struct {
 // failed, in which case err is set too. The devices of the node may be in the
 // middle of a change, so neither its count nor its expected label may raise
 // another node's expected count, and its own expected label is left as it is.
+// The gate also applies to a node without a count that has a partition, whose
+// expected label would otherwise still count for its peers.
 //
 // partitionKey is meaningful only when hasPartition is true. A node without a
 // partition learns its expected count only from itself and is never a peer.
