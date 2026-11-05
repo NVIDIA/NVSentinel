@@ -31,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celfields"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
@@ -136,13 +137,41 @@ func NodeToUnstructured(node *corev1.Node) (map[string]any, error) {
 	}, nil
 }
 
-func compile(variable, expression string) (cel.Program, error) {
+// NodeFieldPaths returns the paths of the node a Node rule reads, parsed in the
+// environment the rule compiles in. isComplete is false when the expression uses
+// the node in a way no set of paths describes.
+func NodeFieldPaths(expression string) (fieldPaths [][]string, isComplete bool, err error) {
+	env, err := newEnv(NodeVar)
+	if err != nil {
+		return nil, false, err
+	}
+
+	ast, issues := env.Parse(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, false, fmt.Errorf("failed to parse expression: %w", issues.Err())
+	}
+
+	fieldPaths, isComplete = celfields.FieldPaths(ast, NodeVar)
+
+	return fieldPaths, isComplete, nil
+}
+
+func newEnv(variable string) (*cel.Env, error) {
 	env, err := cel.NewEnv(
 		cel.Variable(variable, cel.AnyType),
 		ext.Strings(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+	}
+
+	return env, nil
+}
+
+func compile(variable, expression string) (cel.Program, error) {
+	env, err := newEnv(variable)
+	if err != nil {
+		return nil, err
 	}
 
 	ast, issues := env.Parse(expression)

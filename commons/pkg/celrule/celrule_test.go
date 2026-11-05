@@ -96,6 +96,24 @@ func TestNodeRule_EmptyMaps_EvaluateGuards(t *testing.T) {
 	require.True(t, matched)
 }
 
+func TestNodeFieldPaths(t *testing.T) {
+	paths, isComplete, err := NodeFieldPaths(
+		`node.metadata.labels["environment"] == "production" && node.spec.unschedulable`)
+	require.NoError(t, err)
+	require.True(t, isComplete)
+	require.ElementsMatch(t, [][]string{
+		{"metadata", "labels", "environment"},
+		{"spec", "unschedulable"},
+	}, paths)
+
+	_, isComplete, err = NodeFieldPaths(`has(node.metadata) && size(node) > 0`)
+	require.NoError(t, err)
+	require.False(t, isComplete)
+
+	_, _, err = NodeFieldPaths("node.metadata ==")
+	require.ErrorContains(t, err, "failed to parse expression")
+}
+
 func TestEvaluate(t *testing.T) {
 	expression := "event.agent == 'GPU' && event.checkName == 'XidError' && ('31' in event.errorCode || '42' in event.errorCode)"
 	rule, err := NewHealthEventRule(expression)

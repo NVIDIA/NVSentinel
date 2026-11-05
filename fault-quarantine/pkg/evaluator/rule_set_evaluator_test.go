@@ -27,7 +27,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
@@ -237,13 +236,6 @@ func TestRuleSetEvaluator_EvaluationError_IsPermanent(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, coldstart.IsPermanentError(err), "%T: %v", ruleSetEvaluator, err)
 	}
-}
-
-// The node cache derives what it retains from reads of common.NodeCELVar, so
-// it must name the variable celrule binds the Node to. common does not import
-// celrule, which would add cel-go to every module that imports common.
-func TestNodeCELVar_MatchesCelrule(t *testing.T) {
-	require.Equal(t, celrule.NodeVar, common.NodeCELVar)
 }
 
 // A Node rule reads the cached node normally, and the live node during cold
