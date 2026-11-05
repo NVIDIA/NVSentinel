@@ -16,6 +16,8 @@ package devicecounts
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -24,13 +26,54 @@ import (
 
 // These tests play #1914 with the GPU class as the labeler chart ships it: a
 // fleet of 287 GB200 nodes whose device plugin and GFD report 4 GPUs, two of
-// which are switched to MIG, where GFD reports 8.
+// which are switched to MIG, where GFD reports 8. Each test ends with the
+// operator's relearn from ADR-070.
 
 const (
 	ratchetFleetSize    = 287
 	ratchetPlainProduct = "NVIDIA-GB200"
 	ratchetMIGProduct   = "NVIDIA-GB200-MIG-3g.93gb"
+	ratchetRelearnID    = "2026-11-05-mig"
+	ratchetAnnotation   = "nvsentinel.dgxc.nvidia.com/gpu.count.relearn"
 )
+
+// ratchetRelearnConfig returns the GPU class with a relearn ID, loaded from the
+// TOML file that the labeler chart renders.
+func ratchetRelearnConfig(t *testing.T, relearnID string) Config {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "expected-device-counts.toml")
+	require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, `enabled = true
+
+[[classes]]
+name = "gpu"
+enabled = true
+relearnID = %q
+
+[classes.labels]
+current = %q
+expected = %q
+
+[[classes.sources]]
+name = "dra"
+resourceSliceDriver = %q
+groupingLabels = [%q]
+currentExpression = '''%s'''
+groupingExpression = '''%s'''
+
+[[classes.sources]]
+name = "gfd"
+groupingLabels = [%q, %q]
+currentExpression = '''%s'''
+`, relearnID, testGPUCountCurrentLabel, testGPUCountExpectedLabel, testGPUDRADriver, testInstanceType,
+		testDRAGPUCurrentExpression, testDRAGPUGroupingExpression, testInstanceType, testGFDGPUProduct,
+		testGFDGPUCurrentExpression), 0o600))
+
+	config, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	return config
+}
 
 // ratchetFleet returns ClusterPolicy-mode nodes as the gfd source sees them.
 func ratchetFleet(size, count int) []*corev1.Node {
@@ -118,7 +161,7 @@ func ratchetRegroupedFleet(t *testing.T) []*corev1.Node {
 	return nodes
 }
 
-func TestExpectedCountRatchet_MIGRegroupKeepsTheHigherCount(t *testing.T) {
+func TestExpectedCountRatchet_MIGRegroupKeepsTheHigherCountUntilARelearn(t *testing.T) {
 	nodes := ratchetRegroupedFleet(t)
 
 	require.Equal(t, ratchetFleetSize-2, ratchetMismatches(nodes))
@@ -132,13 +175,35 @@ func TestExpectedCountRatchet_MIGRegroupKeepsTheHigherCount(t *testing.T) {
 		require.Equal(t, "4", node.Labels[testGPUCountCurrentLabel], node.Name)
 		require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel], node.Name)
 	}
+
+	// The operator sets a relearn ID. One reconcile of the fleet relearns the
+	// plain partition from current counts, the MIG nodes keep 8, and every
+	// node records the ID with its value.
+	manager := newTestManager(t, ratchetRelearnConfig(t, ratchetRelearnID))
+	nodes = ratchetSweep(t, manager, nodes)
+
+	require.Zero(t, ratchetMismatches(nodes))
+	require.Equal(t, "8", nodes[0].Labels[testGPUCountExpectedLabel])
+	require.Equal(t, "4", nodes[2].Labels[testGPUCountExpectedLabel])
+
+	for _, node := range nodes {
+		require.Equal(t, ratchetRelearnID+"/"+node.Labels[testGPUCountExpectedLabel],
+			node.Annotations[ratchetAnnotation], node.Name)
+	}
+
+	// A restart with the same ID changes nothing.
+	cache := newTestManager(t, ratchetRelearnConfig(t, ratchetRelearnID)).NewReconcileCache(nodes, nil)
+	for _, node := range nodes {
+		require.False(t, cache.CalculateAndSetDeviceCountLabels(t.Context(), node.DeepCopy()), node.Name)
+	}
 }
 
 // Removing the expected label is the relearn path ADR-043 names. The labeler
 // does not reconcile a node for a change to a label it manages, and the
 // node's next reconcile takes the old value back from the other nodes, so the
-// labels cannot be cleared one node at a time.
-func TestExpectedCountRatchet_RemovedLabelIsRestoredByTheOtherNodes(t *testing.T) {
+// labels cannot be cleared one node at a time. Under a relearn ID the old
+// labels of the other nodes no longer count.
+func TestExpectedCountRatchet_RemovedLabelIsRestoredUntilARelearn(t *testing.T) {
 	nodes := ratchetRegroupedFleet(t)
 	manager := newTestManager(t, testGPUSourcesConfig())
 
@@ -152,12 +217,25 @@ func TestExpectedCountRatchet_RemovedLabelIsRestoredByTheOtherNodes(t *testing.T
 	}
 
 	require.Equal(t, ratchetFleetSize-2, ratchetMismatches(nodes))
+
+	// Each node reconciled on its own while 275 others still read 8 gets the
+	// count of its partition, and keeps it on its next reconcile.
+	manager = newTestManager(t, ratchetRelearnConfig(t, ratchetRelearnID))
+
+	for range 2 {
+		for i := 2; i < 12; i++ {
+			nodes[i] = ratchetReconcileOne(t, manager, nodes, i)
+			require.Equal(t, "4", nodes[i].Labels[testGPUCountExpectedLabel], nodes[i].Name)
+		}
+	}
+
+	require.Equal(t, ratchetFleetSize-12, ratchetMismatches(nodes))
 }
 
 // No transient is needed. When MIG is turned off cleanly, the two nodes bring
 // their expected count of 8 into the plain partition and it spreads to every
 // node there.
-func TestExpectedCountRatchet_CleanMIGDisableSpreadsTheMIGCount(t *testing.T) {
+func TestExpectedCountRatchet_CleanMIGDisableSpreadsTheMIGCountUntilARelearn(t *testing.T) {
 	nodes := ratchetFleet(ratchetFleetSize, 4)
 	for _, node := range nodes[:2] {
 		ratchetSetGFD(node, ratchetMIGProduct, 8)
@@ -180,4 +258,8 @@ func TestExpectedCountRatchet_CleanMIGDisableSpreadsTheMIGCount(t *testing.T) {
 		require.Equal(t, "4", node.Labels[testGPUCountCurrentLabel], node.Name)
 		require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel], node.Name)
 	}
+
+	nodes = ratchetSweep(t, newTestManager(t, ratchetRelearnConfig(t, ratchetRelearnID)), nodes)
+
+	require.Zero(t, ratchetMismatches(nodes))
 }

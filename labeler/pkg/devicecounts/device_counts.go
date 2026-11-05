@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -58,6 +59,10 @@ type ClassConfig struct {
 	ExpectedCountOverrides []ExpectedCountOverride `toml:"expectedCountOverrides"`
 	CurrentExpression      string                  `toml:"currentExpression"`
 	Sources                []SourceConfig          `toml:"sources"`
+	// RelearnID asks the labeler to relearn the expected counts of the class
+	// once from current counts. Set a new value for each relearn and keep it
+	// set; the labeler relearns each node once per ID (ADR-070).
+	RelearnID string `toml:"relearnID"`
 }
 
 // SourceConfig describes one way to count a class's devices on a node.
@@ -95,6 +100,9 @@ type compiledClass struct {
 	ClassConfig
 	program cel.Program
 	sources []compiledSource
+	// relearnAnnotation is the annotation that certifies the expected label
+	// while RelearnID is set, and empty otherwise.
+	relearnAnnotation string
 }
 
 type compiledSource struct {
@@ -225,6 +233,12 @@ func NewManager(config Config) (*Manager, error) {
 			continue
 		}
 
+		if compiledClass.relearnAnnotation != "" &&
+			slices.Contains(manager.RelearnAnnotationKeys(), compiledClass.relearnAnnotation) {
+			return nil, fmt.Errorf("device-count class at index %d: another class already uses relearn annotation %q",
+				i, compiledClass.relearnAnnotation)
+		}
+
 		manager.addClass(compiledClass)
 	}
 
@@ -326,7 +340,6 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 		current := observation.count
 		expected := p.expectedDeviceCount(ctx, classIndex, class, node, observation)
 		currentValue := strconv.Itoa(current)
-		expectedValue := strconv.Itoa(expected)
 
 		metrics.CurrentDeviceCount.WithLabelValues(node.Name, class.Name).Set(float64(current))
 
@@ -339,8 +352,7 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 			needsUpdate = true
 		}
 
-		if node.Labels[class.Labels.Expected] != expectedValue {
-			node.Labels[class.Labels.Expected] = expectedValue
+		if class.setExpected(node, expected) {
 			needsUpdate = true
 		}
 	}
@@ -453,8 +465,9 @@ func compileDeviceCountClass(
 		}
 
 		return compiledClass{
-			ClassConfig: classConfig,
-			sources:     sources,
+			ClassConfig:       classConfig,
+			sources:           sources,
+			relearnAnnotation: relearnAnnotation(classConfig),
 		}, true, nil
 	}
 
@@ -465,8 +478,9 @@ func compileDeviceCountClass(
 	}
 
 	return compiledClass{
-		ClassConfig: classConfig,
-		program:     program,
+		ClassConfig:       classConfig,
+		program:           program,
+		relearnAnnotation: relearnAnnotation(classConfig),
 	}, true, nil
 }
 
@@ -580,6 +594,10 @@ func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
 
 	if err := validateDeviceCountClassForm(index, classConfig); err != nil {
 		return fmt.Errorf("validate class form: %w", err)
+	}
+
+	if err := validateRelearnID(index, classConfig); err != nil {
+		return fmt.Errorf("validate relearn ID: %w", err)
 	}
 
 	for j, override := range classConfig.ExpectedCountOverrides {
@@ -813,7 +831,8 @@ func (p *ReconcileCache) expectedDeviceCount(
 
 	// Learned expected counts can rise from current observations or previously
 	// written labels, but they must not fall automatically when devices vanish.
-	expected := maxCountLabel(observation.count, node.Labels[class.Labels.Expected])
+	// Under a relearn ID only a label the labeler certified counts.
+	expected := maxCountLabel(observation.count, class.expectedEvidence(node))
 
 	// Without a partition the node cannot tell which peers have the same
 	// hardware, so it learns only from itself rather than risk a higher count.
@@ -863,7 +882,7 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 			continue
 		}
 
-		expected = maxCountLabel(expected, peer.Labels[class.Labels.Expected])
+		expected = maxCountLabel(expected, class.expectedEvidence(peer))
 
 		peerCurrent, ok := usablePeerCount(class, node.Name, peer.Name, peerObservation)
 		if ok && peerCurrent > expected {

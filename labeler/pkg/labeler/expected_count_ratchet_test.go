@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -46,6 +47,8 @@ const (
 	ratchetInstanceLabel = "node.kubernetes.io/instance-type"
 	ratchetPlain         = "NVIDIA-GB200"
 	ratchetMIG           = "NVIDIA-GB200-MIG-3g.93gb"
+	ratchetRelearnID     = "2026-11-05-mig"
+	ratchetAnnotation    = "nvsentinel.dgxc.nvidia.com/gpu.count.relearn"
 
 	// Every informer Add event also reconciles its node with a fresh cache over
 	// all nodes, so a small fleet keeps the startup work short.
@@ -56,13 +59,13 @@ const (
 )
 
 // ratchetGPUConfigTOML is the GPU class of the labeler chart's values.yaml as
-// the chart's ConfigMap renders it.
+// the chart's ConfigMap renders it, with a place for the relearn ID.
 const ratchetGPUConfigTOML = `enabled = true
 
 [[classes]]
 name = "gpu"
 enabled = true
-
+%s
 [classes.labels]
 current = "nvsentinel.dgxc.nvidia.com/gpu.count.current"
 expected = "nvsentinel.dgxc.nvidia.com/gpu.count.expected"
@@ -114,11 +117,16 @@ node.status.allocatable.exists(r,
 
 // ratchetGPUConfig loads the GPU class the way the labeler loads its mounted
 // configuration file.
-func ratchetGPUConfig(t *testing.T) devicecounts.Config {
+func ratchetGPUConfig(t *testing.T, relearnID string) devicecounts.Config {
 	t.Helper()
 
+	relearn := ""
+	if relearnID != "" {
+		relearn = fmt.Sprintf("relearnID = %q\n", relearnID)
+	}
+
 	path := filepath.Join(t.TempDir(), "expected-device-counts.toml")
-	require.NoError(t, os.WriteFile(path, []byte(ratchetGPUConfigTOML), 0o600))
+	require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, ratchetGPUConfigTOML, relearn), 0o600))
 
 	config, err := devicecounts.LoadConfig(path)
 	require.NoError(t, err)
@@ -250,6 +258,39 @@ func ratchetWaitFor(t *testing.T, cli kubernetes.Interface, what string, ok func
 	}
 }
 
+// ratchetRecordWrites records every version of every node written from now on,
+// until the returned function is called.
+func ratchetRecordWrites(t *testing.T, cli kubernetes.Interface) func() map[string][]*corev1.Node {
+	t.Helper()
+
+	nodes, err := cli.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+
+	watcher, err := cli.CoreV1().Nodes().Watch(context.Background(),
+		metav1.ListOptions{ResourceVersion: nodes.ResourceVersion})
+	require.NoError(t, err)
+
+	writes := map[string][]*corev1.Node{}
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		for event := range watcher.ResultChan() {
+			if node, ok := event.Object.(*corev1.Node); ok && event.Type == watch.Modified {
+				writes[node.Name] = append(writes[node.Name], node)
+			}
+		}
+	}()
+
+	return func() map[string][]*corev1.Node {
+		watcher.Stop()
+		<-done
+
+		return writes
+	}
+}
+
 // ratchetStart starts a labeler, runs its startup reconcile, and lets the
 // reconciles of the informer Add events finish before the test goes on.
 func ratchetStart(t *testing.T, cli kubernetes.Interface, config devicecounts.Config) (*Labeler, func()) {
@@ -267,11 +308,16 @@ func ratchetStart(t *testing.T, cli kubernetes.Interface, config devicecounts.Co
 // partition, every plain node keeps an expected count of 8 across another
 // restart. Removing the label from one node is not reconciled, and the node's
 // next input event takes 8 back from the other nodes.
-func TestExpectedCountRatchet_Envtest_MIGRegroup(t *testing.T) {
+//
+// The operator then sets a relearn ID. The startup reconcile after the restart
+// relearns every node in one patch each, a foreign write is repaired, a GPU
+// lost on every plain node is not absorbed, and a restart with the same ID
+// writes nothing.
+func TestExpectedCountRatchet_Envtest_MIGRegroupUntilARelearn(t *testing.T) {
 	cli := ratchetEnvtestClient(t)
 	ratchetCreateFleet(t, cli)
 
-	_, stop := ratchetStart(t, cli, ratchetGPUConfig(t))
+	_, stop := ratchetStart(t, cli, ratchetGPUConfig(t, ""))
 	ratchetWaitFor(t, cli, "every node learns 4", func(c ratchetTally) bool {
 		return c.plain["4/4"] == ratchetFleetSize
 	})
@@ -283,7 +329,7 @@ func TestExpectedCountRatchet_Envtest_MIGRegroup(t *testing.T) {
 	ratchetWaitFor(t, cli, "the two nodes learn 8", func(c ratchetTally) bool { return c.plain["8/8"] == 2 })
 
 	stop()
-	_, stop = ratchetStart(t, cli, ratchetGPUConfig(t))
+	_, stop = ratchetStart(t, cli, ratchetGPUConfig(t, ""))
 	ratchetWaitFor(t, cli, "the startup reconcile spreads 8", func(c ratchetTally) bool {
 		return c.plain["4/8"] == ratchetPlains && c.plain["8/8"] == 2
 	})
@@ -295,7 +341,7 @@ func TestExpectedCountRatchet_Envtest_MIGRegroup(t *testing.T) {
 	ratchetWaitFor(t, cli, "the MIG nodes keep 8", func(c ratchetTally) bool { return c.mig["8/8"] == 2 })
 
 	stop()
-	ratchetStart(t, cli, ratchetGPUConfig(t))
+	_, stop = ratchetStart(t, cli, ratchetGPUConfig(t, ""))
 
 	require.Equal(t, ratchetTally{plain: map[string]int{"4/8": ratchetPlains}, mig: map[string]int{"8/8": 2}},
 		ratchetCount(t, cli))
@@ -308,4 +354,57 @@ func TestExpectedCountRatchet_Envtest_MIGRegroup(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return ratchetNode(t, cli, ratchetNodeName(10)).Labels[ratchetExpectedLabel] == "8"
 	}, ratchetWait, 200*time.Millisecond)
+
+	// The operator sets a relearn ID, and the new configuration restarts the
+	// labeler. One reconcile later every plain node expects 4 and the MIG
+	// nodes keep 8. Each node was written once, its label and its annotation
+	// in the same patch.
+	stop()
+
+	stopRecording := ratchetRecordWrites(t, cli)
+	labeler, stop := ratchetStart(t, cli, ratchetGPUConfig(t, ratchetRelearnID))
+	writes := stopRecording()
+
+	require.Equal(t, ratchetTally{plain: map[string]int{"4/4": ratchetPlains}, mig: map[string]int{"8/8": 2}},
+		ratchetCount(t, cli))
+	require.Len(t, writes, ratchetFleetSize)
+
+	for name, versions := range writes {
+		require.Len(t, versions, 1, name)
+		require.Equal(t, ratchetRelearnID+"/"+versions[0].Labels[ratchetExpectedLabel],
+			versions[0].Annotations[ratchetAnnotation], name)
+	}
+
+	require.Eventually(t, func() bool {
+		cached, err := labeler.getNodeFromCache(ratchetNodeName(5))
+		return err == nil && cached.Annotations[ratchetAnnotation] == ratchetRelearnID+"/4"
+	}, ratchetWait, 200*time.Millisecond, "the node cache keeps the annotation")
+
+	// A write of 8 by someone else, such as an older labeler during a rollout,
+	// is repaired with no other change to the node.
+	ratchetPatchLabels(t, cli, ratchetNodeName(10), map[string]any{ratchetExpectedLabel: "8"})
+	require.Eventually(t, func() bool {
+		return ratchetNode(t, cli, ratchetNodeName(10)).Labels[ratchetExpectedLabel] == "4"
+	}, ratchetWait, 200*time.Millisecond)
+
+	// Every plain node loses a GPU. The relearn has been applied, so the
+	// expected count stays at 4.
+	for i := 2; i < ratchetFleetSize; i++ {
+		ratchetSetGFD(t, cli, ratchetNodeName(i), ratchetPlain, 3)
+	}
+
+	ratchetWaitFor(t, cli, "every plain node reports 3", func(c ratchetTally) bool {
+		return c.plain["3/4"] == ratchetPlains
+	})
+
+	// A restart with the same ID writes nothing and lowers nothing.
+	time.Sleep(ratchetSettle)
+	stop()
+
+	stopRecording = ratchetRecordWrites(t, cli)
+	ratchetStart(t, cli, ratchetGPUConfig(t, ratchetRelearnID))
+
+	require.Empty(t, stopRecording())
+	require.Equal(t, ratchetTally{plain: map[string]int{"3/4": ratchetPlains}, mig: map[string]int{"8/8": 2}},
+		ratchetCount(t, cli))
 }
