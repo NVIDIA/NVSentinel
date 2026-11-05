@@ -277,6 +277,14 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 	//
 	// IMPORTANT: When nodeQuarantined is NULL, we need to pass it differently to avoid
 	// "inconsistent types deduced for parameter" errors.
+	//
+	// Each query merges decisionsPatch into healtheventstatus first. The patch has only the
+	// decisions that are set, so an update without a decision keeps the recorded one.
+	decisionsPatch, err := statusDecisionsPatch(status)
+	if err != nil {
+		return err
+	}
+
 	var query string
 
 	var params []any
@@ -301,7 +309,11 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			            jsonb_set(
 			                jsonb_set(
 			                    jsonb_set(
-			                        document,
+			                        jsonb_set(
+			                            document,
+			                            '{healtheventstatus}',
+			                            COALESCE(document->'healtheventstatus', '{}'::jsonb) || $10::jsonb
+			                        ),
 			                        '{healtheventstatus,nodequarantined}',
 			                        to_jsonb($1::text)
 			                    ),
@@ -330,6 +342,7 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			timestampToTime(status.LastRemediationTimestamp),
 			id,
 			lastRemediationJSON,
+			decisionsPatch,
 		}
 	case status.UserPodsEvictionStatus.Status != "":
 		// NodeQuarantined is NULL but UserPodsEvictionStatus is set - update eviction + remediation fields only.
@@ -347,7 +360,11 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			        jsonb_set(
 			            jsonb_set(
 			                jsonb_set(
-			                    document,
+			                    jsonb_set(
+			                        document,
+			                        '{healtheventstatus}',
+			                        COALESCE(document->'healtheventstatus', '{}'::jsonb) || $9::jsonb
+			                    ),
 			                    '{healtheventstatus,userpodsevictionstatus,status}',
 			                    to_jsonb($2::text)
 			                ),
@@ -372,6 +389,7 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			timestampToTime(status.LastRemediationTimestamp),
 			id,
 			lastRemediationJSON,
+			decisionsPatch,
 		}
 	default:
 		// NodeQuarantined is NULL and UserPodsEvictionStatus is empty (e.g. FR-only update):
@@ -384,7 +402,11 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			    last_remediation_timestamp = $2::timestamp,
 			    document = jsonb_set(
 			        jsonb_set(
-			            document,
+			            jsonb_set(
+			                document,
+			                '{healtheventstatus}',
+			                COALESCE(document->'healtheventstatus', '{}'::jsonb) || $5::jsonb
+			            ),
 			            '{healtheventstatus,faultremediated}',
 			            jsonb_build_object('value', $1::boolean)
 			        ),
@@ -399,6 +421,7 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			timestampToTime(status.LastRemediationTimestamp),
 			lastRemediationJSON,
 			id,
+			decisionsPatch,
 		}
 	}
 
@@ -423,6 +446,27 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 	slog.Debug("Successfully updated health event status", "id", id)
 
 	return nil
+}
+
+// statusDecisionsPatch returns the JSON object that UpdateHealthEventStatus merges into
+// healtheventstatus: each decision that is set, or {} when none is set.
+func statusDecisionsPatch(status datastore.HealthEventStatus) (string, error) {
+	patch := map[string]any{}
+
+	if status.DrainDecision != nil {
+		patch["draindecision"] = status.DrainDecision
+	}
+
+	if status.RemediationDecision != nil {
+		patch["remediationdecision"] = status.RemediationDecision
+	}
+
+	data, err := json.Marshal(patch)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal health event status decisions: %w", err)
+	}
+
+	return string(data), nil
 }
 
 // FindHealthEventsByFilter finds health events based on filter criteria

@@ -27,6 +27,7 @@ health monitor is represented as a `HealthEvent`, and every downstream module
 - [Entity (Impacted Resources)](#entity-impacted-resources)
 - [Storage Wrapper: HealthEventWithStatus](#storage-wrapper-healtheventwithstatus)
 - [HealthEventStatus Lifecycle](#healtheventstatus-lifecycle)
+- [Drain and Remediation Decisions](#drain-and-remediation-decisions)
 - [CRD Projection: HealthEventResource](#crd-projection-healtheventresource)
 - [External Remediation Request](#external-remediation-request)
 - [Tracing Correlation](#tracing-correlation)
@@ -243,6 +244,8 @@ message HealthEventStatus {
   google.protobuf.BoolValue faultRemediated = 5;
   google.protobuf.Timestamp lastRemediationTimestamp = 6;
   map<string, string> spanIds = 7;
+  DrainDecision drainDecision = 8;
+  RemediationDecision remediationDecision = 9;
 }
 ```
 
@@ -257,6 +260,18 @@ Each field is written by a specific module at a specific pipeline stage:
 | `faultRemediated` | **fault-remediation** | `BoolValue` — `nil` (absent) = not yet processed; `true` = repair CR created and confirmed; `false` = repair failed or skipped |
 | `lastRemediationTimestamp` | **fault-remediation** | When the remediation CR was last created |
 | `spanIds` | **all modules** | Distributed tracing span IDs per service (e.g. `{"platform-connector": "abc123", "fault-quarantine": "def456"}`) |
+| `drainDecision` | **node-drainer** | The drain method chosen for the event. No module writes this field yet. See [ADR-064](designs/064-node-and-device-selection.md) |
+| `remediationDecision` | **fault-remediation** | The remediation action chosen for the event. No module writes this field yet. See [ADR-064](designs/064-node-and-device-selection.md) |
+
+### Drain and Remediation Decisions
+
+`drainDecision` records the drain method for one event. `method` is `BuiltIn` or `Custom`. `stopped` is true when the drain does not run. `scope` names the entity of a partial drain, and it is empty for a drain of the full node. `reusedFrom` names the event whose method this event uses. `ruleSet` names the rule set that selected the method, and it is empty for the default.
+
+`remediationDecision` records the remediation action for one event. `action` is an entry of `maintenance.actions`. `stopped` is true when no maintenance CR is created. `ruleSet` names the rule set that won, and it is empty when no rule set matched.
+
+A status update that omits a decision does not change the saved decision. Omit means the field is nil. A present decision replaces the saved decision. Each module sends only the fields it owns.
+
+The datastore stores these field names in lowercase, for example `draindecision` and `ruleset`. The partial-drain scope uses `entityType` and `entityValue` in PostgreSQL, because the query builder rewrites those two names to camel case.
 
 ### OperationStatus values (`userPodsEvictionStatus.status`)
 
