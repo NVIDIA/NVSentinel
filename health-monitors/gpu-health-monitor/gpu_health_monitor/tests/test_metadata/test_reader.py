@@ -607,6 +607,7 @@ WRONG_SHAPE_COPIES = [
     pytest.param('{"version": "1.0", "gpus": "abc"}', id="gpus_is_a_string"),
     pytest.param('{"version": "1.0", "gpus": [1]}', id="gpu_entry_is_a_number"),
     pytest.param('{"version": "1.0", "gpus": {}}', id="gpus_is_an_object"),
+    pytest.param('{"version": "1.0"}', id="gpus_key_missing"),
 ]
 
 

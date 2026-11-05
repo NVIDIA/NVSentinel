@@ -49,10 +49,14 @@ def _checked_gpus(metadata: object) -> list:
     json.load only checks the syntax. A copy that parsed but holds something other
     than an object with a list of objects under "gpus" would replace the last good
     copy and make every lookup raise, so it is rejected like an unparsable one.
+    metadata-collector writes the key on every copy, an empty list when it found
+    no GPU, so a copy without the key did not come from it and is rejected too.
     """
     if not isinstance(metadata, dict):
         raise ValueError(f"expected a JSON object, got {type(metadata).__name__}")
-    gpus = metadata.get("gpus", [])
+    if "gpus" not in metadata:
+        raise ValueError("no gpus key")
+    gpus = metadata["gpus"]
     if not isinstance(gpus, list):
         raise ValueError(f"expected a list under gpus, got {type(gpus).__name__}")
     for i, gpu in enumerate(gpus):
