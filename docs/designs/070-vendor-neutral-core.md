@@ -11,11 +11,13 @@ Status: Proposed (tracking issue [#2247](https://github.com/NVIDIA/NVSentinel/is
      - [Core components contain GPU logic](#core-components-contain-gpu-logic)
      - [Core defaults expect the GPU Operator](#core-defaults-expect-the-gpu-operator)
      - [Datastore and licenses](#datastore-and-licenses)
+     - [Core dependencies beyond the datastore](#core-dependencies-beyond-the-datastore)
    - [Existing extension points](#existing-extension-points)
 2. [Decision](#decision)
    - [Core and plugins](#core-and-plugins)
    - [One dependency direction](#one-dependency-direction)
    - [Versioned contracts](#versioned-contracts)
+   - [Core dependencies](#core-dependencies)
    - [Recovery policy as configuration](#recovery-policy-as-configuration)
      - [Custom actions in overrides](#custom-actions-in-overrides)
      - [Escalation ladder](#escalation-ladder)
@@ -61,7 +63,7 @@ NVSentinel started as a tool for NVIDIA GPU nodes that run the GPU Operator. Mos
 
 ### Gaps
 
-The gaps are in five areas.
+The gaps are in six areas.
 
 #### Recovery policy is not fully configurable
 
@@ -94,6 +96,20 @@ metadata-collector has a fixed nodeSelector on `nvidia.com/gpu.present` (`charts
 
 The chart can install MongoDB or Percona Server for MongoDB from a bundled subchart. Both use the SSPL. The subchart is off by default. Core modules link four MPL-2.0 libraries: `hashicorp/go-multierror` and `hashicorp/errwrap` (fault-quarantine, node-drainer, health-events-analyzer), `hashicorp/golang-lru/v2`, and `hashicorp/go-uuid` (indirect, through `prometheus/common`). metadata-collector builds on the `nvcr.io/nvidia/cuda` base image and compiles in the NVML header from `go-nvml`. Both use NVIDIA licenses.
 
+#### Core dependencies beyond the datastore
+
+The core needs more than Kubernetes and a datastore:
+
+| Dependency | Needed when | Behaviour that only it has |
+|---|---|---|
+| Prometheus Operator CRDs | Always, at install time. The umbrella chart creates a `PodMonitor` by default (`podMonitor.enabled: true`). No core component queries Prometheus | none |
+| cert-manager | The datastore is PostgreSQL with client certificates, which is the default when no password secret is set | `Certificate` and `Issuer` resources |
+| cert-manager | The deployment platform connector runs with `tls.mode: required`, the default | Publishers trust the `ca.crt` key that cert-manager writes into the server secret |
+| cert-manager or the OpenShift service CA | lifecycle-manager or the preflight webhook is enabled | The `cert-manager.io/inject-ca-from` annotation sets the webhook CA bundle |
+| OpenTelemetry collector | Tracing is enabled | none |
+
+No chart accepts certificates from another source, for example a Secret that the user creates or a managed certificate service.
+
 ### Existing extension points
 
 NVSentinel already has these extension points:
@@ -113,7 +129,7 @@ NVSentinel already has these extension points:
 
 fault-remediation maps each action to a CR only through configuration (`fault-remediation/pkg/config/config.go:31-84`).
 
-These extension points let a vendor add code, but they do not remove vendor code from the core components. The five gaps remain.
+These extension points let a vendor add code, but they do not remove vendor code from the core components. The six gaps remain.
 
 ## Decision
 
@@ -176,6 +192,10 @@ A plugin uses only these contracts. They are versioned, and they change only by 
 - The HealthEvent gRPC API, for detection.
 - CR templates, for remediation, custom drain, and validation.
 - Configuration: CEL rules, event overrides, analyzer rules, the entity-type map ([Device scope from configuration](#device-scope-from-configuration)), and the device selection of [ADR-064](064-node-and-device-selection.md).
+
+### Core dependencies
+
+The core requires only Kubernetes and a datastore. cert-manager, the Prometheus Operator, and an OpenTelemetry collector are optional. Each TLS path of the core accepts a certificate from any source: a Secret with `tls.crt` and `tls.key`, and a CA bundle given as a value. With cert-manager, the charts create these as at this time. No core component relies on behaviour that only cert-manager has, such as the CA injector or the `ca.crt` key.
 
 ### Recovery policy as configuration
 
@@ -244,6 +264,7 @@ Write a page in `docs/` that lists the extension points, with one example for ea
 - Add the entity-type map ([Device scope from configuration](#device-scope-from-configuration)). Move the GPU recovery cases in fault-quarantine and platform-connectors to it.
 - Make the metadata-collector nodeSelector and the labeler driver informer configurable. Each default stays the same.
 - Let overrides set `customRecommendedAction` ([Custom actions in overrides](#custom-actions-in-overrides)).
+- Add a `certProvider` option for certificates that the user supplies to the webhooks, the deployment platform connector, and PostgreSQL ([Core dependencies](#core-dependencies)). cert-manager stays the default.
 - Replace `go-multierror` and `errwrap` with `errors.Join` from the standard library. Review the other MPL-2.0 items in [Datastore and licenses](#datastore-and-licenses).
 
 Each PR that changes remediation or drain adds a test that proves it does not act in the healthy case.
@@ -260,7 +281,7 @@ Write a follow-up ADR for each of these:
 
 Move each "moves to a plugin" item into its own module and chart. When a module is split, add a lint rule that stops the core part from importing the plugin module. The umbrella chart installs the NVIDIA plugins by default, so existing installations keep their behaviour. Their images and subcharts change.
 
-A new core-only profile installs no plugin and no MongoDB subchart. It uses the PostgreSQL subchart, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or an external PostgreSQL or MongoDB database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer. The CI job in [Core works without vendor software](#core-works-without-vendor-software) installs this profile.
+A new core-only profile installs no plugin, no MongoDB subchart, and no `PodMonitor`. It uses the PostgreSQL subchart, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or an external PostgreSQL or MongoDB database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer. The CI job in [Core works without vendor software](#core-works-without-vendor-software) installs this profile.
 
 #### Phase 5: Remove deprecated names
 
