@@ -193,6 +193,13 @@ type QuarantineSetupOptions struct {
 	CircuitBreakerCursorMode string
 	DryRun                   *bool
 	SkipRestart              bool
+
+	// NodeLabels are applied to the test node before fault-quarantine
+	// restarts, so its initial list already carries them. Use this for
+	// labels a rule reads from the informer cache (for example
+	// k8saas.nvidia.com/ManagedByNVSentinel): setting the label after
+	// the restart races the first event.
+	NodeLabels               map[string]string
 }
 
 // SetupQuarantineTestWithOptions sets up a quarantine test with additional configuration options.
@@ -240,13 +247,30 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 		}
 	}
 
+	// When the test needs node labels in place before fault-quarantine
+	// starts, select the node and apply them first: the restarted
+	// deployment's initial list then already carries the labels, so a
+	// rule reading them from the informer cache cannot miss them.
+	nodeName := ""
+	if opts != nil && len(opts.NodeLabels) > 0 {
+		nodeName = SelectTestNodeFromUnusedPool(ctx, t, client)
+
+		for key, value := range opts.NodeLabels {
+			err = SetNodeLabel(ctx, client, nodeName, key, value)
+			require.NoError(t, err)
+		}
+	}
+
 	if opts == nil || !opts.SkipRestart {
 		t.Log("Restarting fault-quarantine deployment to load all configuration changes")
 		err = RestartDeployment(ctx, t, client, "fault-quarantine", NVSentinelNamespace)
 		require.NoError(t, err)
 	}
 
-	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
+	if nodeName == "" {
+		nodeName = SelectTestNodeFromUnusedPool(ctx, t, client)
+	}
+
 	testCtx.NodeName = nodeName
 	ctx = context.WithValue(ctx, CELKeyNodeName, nodeName)
 	ctx = context.WithValue(ctx, CELKeyConfigMapBackup, testCtx.ConfigMapBackup)
