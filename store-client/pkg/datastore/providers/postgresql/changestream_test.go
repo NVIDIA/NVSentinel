@@ -955,6 +955,7 @@ func TestMarkProcessed_PurgedRowBehindReadPosition_UpdatesAndSaves(t *testing.T)
 			changedAt := time.Date(2024, 11, 24, 10, 0, 4, 0, time.UTC)
 			watcher.lastTimestamp = changedAt
 			watcher.lastEventID = 194
+			watcher.highestReadEventID = 194
 			tokenJSON, err := json.Marshal(map[string]any{
 				"timestamp": changedAt.Format(time.RFC3339Nano), "eventID": int64(194),
 			})
