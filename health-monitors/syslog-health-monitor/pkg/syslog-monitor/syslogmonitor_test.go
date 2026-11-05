@@ -82,6 +82,9 @@ type MockJournal struct {
 	SeekHeadCalled       bool
 	LastSeekRealtimeUsec uint64
 	SeekRealtimeCalled   bool
+	// DataWithFieldName makes GetData return "FIELD=value", the whole data
+	// object, as sd_journal_get_data does on a real journal.
+	DataWithFieldName bool
 }
 
 // AddMatch adds a match filter for journal entries
@@ -168,13 +171,19 @@ func (j *MockJournal) GetData(field string) (string, error) {
 		return "", fmt.Errorf("invalid cursor position")
 	}
 
-	if field == "MESSAGE" {
-		return j.Entries[j.CurrentPosition].Message, nil
+	value := j.Entries[j.CurrentPosition].Message
+
+	if field != "MESSAGE" {
+		var ok bool
+
+		value, ok = j.Entries[j.CurrentPosition].Fields[field]
+		if !ok {
+			return "", fmt.Errorf("field not found: %s", field)
+		}
 	}
 
-	value, ok := j.Entries[j.CurrentPosition].Fields[field]
-	if !ok {
-		return "", fmt.Errorf("field not found: %s", field)
+	if j.DataWithFieldName {
+		return field + "=" + value, nil
 	}
 
 	return value, nil
@@ -963,6 +972,98 @@ func TestBootIDChange_SecondPollResumesFromCursor(t *testing.T) {
 		"second Run must process only new entries after the saved cursor")
 }
 
+// TestBootIDChange_RealJournalFormat_ReportsCurrentBootXIDsOnce runs the
+// post-reboot scan over data shaped the way a real journal returns it:
+// "FIELD=value" from GetData and _BOOT_ID without dashes. The XIDs this boot
+// logged before the monitor started are published, the previous boot's XID
+// is not, and the next poll publishes only what is new.
+func TestBootIDChange_RealJournalFormat_ReportsCurrentBootXIDsOnce(t *testing.T) {
+	const (
+		previousBootID = "0d9ea1b2-c3d4-4e5f-8a6b-7c8d9e0f1a2b"
+		currentBootID  = "127f6599-4adc-4c6f-955a-3217bb8bb2e3"
+	)
+
+	// journald writes _BOOT_ID as 32 hex digits, without dashes.
+	journaldFields := func(bootID string) map[string]string {
+		return map[string]string{FieldBootID: strings.ReplaceAll(bootID, "-", "")}
+	}
+
+	dir := t.TempDir()
+	stateFilePath := dir + "/state.json"
+	check := CheckDefinition{Name: XIDErrorCheck, JournalPath: TEST_JOURNAL_PATH}
+
+	mockJournal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "NVRM: Xid (PCI:0000:3b:00): 48, pid=0, name=, An uncorrectable double bit error (DBE) " +
+				"has been detected on GPU in the framebuffer at partition 0, subpartition 0.",
+				Cursor: "cursor-0", Fields: journaldFields(previousBootID)},
+			{Message: "NVRM: Xid (PCI:0000:3b:00): 79, pid=0, name=, GPU has fallen off the bus.",
+				Cursor: "cursor-1", Fields: journaldFields(currentBootID)},
+			{Message: "NVRM: Xid (PCI:0000:3b:00): 13, pid=4242, name=python3, Graphics SM Warp Exception " +
+				"on (GPC 0, TPC 0, SM 0): Out Of Range Address",
+				Cursor: "cursor-2", Fields: journaldFields(currentBootID)},
+		},
+		CurrentPosition:   -1,
+		TestBootID:        strings.ReplaceAll(currentBootID, "-", ""),
+		DataWithFieldName: true,
+	}
+
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+
+	// The state file survived the reboot, so it still names the previous boot.
+	stateData, err := json.Marshal(syslogMonitorState{
+		Version:           stateFileVersion,
+		BootID:            previousBootID,
+		CheckLastCursors:  map[string]string{check.Name: "cursor-from-the-previous-boot"},
+		BootStartScanDone: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(stateFilePath, stateData, 0o600))
+
+	client := &mockPlatformConnectorClient{}
+	sm, err := NewSyslogMonitorWithFactory(TEST_NODE, []CheckDefinition{check}, client,
+		TEST_AGENT, TEST_COMPONENT, "60s", stateFilePath, mockFactory,
+		"", dir+"/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "", nil, "tcp://test", 30*time.Minute)
+	require.NoError(t, err)
+	require.True(t, sm.postRebootInit, "the boot ID change starts the boot-start scan")
+
+	// What fetchCurrentBootID returns on the node, whatever machine runs the test.
+	sm.currentBootID = currentBootID
+
+	publishedXIDs := func() []string {
+		var codes []string
+
+		for _, batch := range client.RecordedHealthEvents {
+			for _, event := range batch.GetEvents() {
+				if !event.GetIsHealthy() {
+					codes = append(codes, event.GetErrorCode()...)
+				}
+			}
+		}
+
+		return codes
+	}
+
+	require.NoError(t, sm.Run(context.Background()))
+	assert.Equal(t, []string{"79", "13"}, publishedXIDs(),
+		"the scan publishes this boot's XIDs and skips the previous boot's")
+	assert.Equal(t, "cursor-2", sm.checkLastCursors[check.Name])
+	assert.False(t, sm.postRebootInit, "the scan is done after one successful run")
+
+	mockJournal.Entries = append(mockJournal.Entries, MockJournalEntry{
+		Message: "NVRM: Xid (PCI:0000:3b:00): 31, pid=4242, name=python3, Ch 00000008, intr 10000000. " +
+			"MMU Fault: ENGINE GRAPHICS GPCCLIENT_T1_0 faulted @ 0x7f2b_00000000. Fault is of type FAULT_PDE",
+		Cursor: "cursor-3", Fields: journaldFields(currentBootID),
+	})
+	mockJournal.Closed = false
+
+	require.NoError(t, sm.Run(context.Background()))
+	assert.Equal(t, []string{"79", "13", "31"}, publishedXIDs(), "the next poll publishes only the new XID")
+	assert.Equal(t, "cursor-3", sm.checkLastCursors[check.Name])
+}
+
 // TestNoBootChange_StillSeeksTail verifies that on first install (no
 // boot-ID change, no saved cursor), the monitor still seeks to the
 // journal tail and does NOT process historical entries.
@@ -1264,6 +1365,48 @@ func TestIsStaleBootEntry(t *testing.T) {
 			sm := &SyslogMonitor{currentBootID: tt.currentBootID}
 			got := sm.isStaleBootEntry(journal)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestIsStaleBootEntry_RealJournalFormat_MatchesTheCurrentBoot: a real journal
+// returns "_BOOT_ID=<id>" with the ID written without dashes, while the
+// monitor reads its own boot ID from /proc/sys/kernel/random/boot_id, which
+// has them. An entry from this boot must not be taken for one from an older
+// boot.
+func TestIsStaleBootEntry_RealJournalFormat_MatchesTheCurrentBoot(t *testing.T) {
+	const (
+		currentBootID  = "127f6599-4adc-4c6f-955a-3217bb8bb2e3"
+		previousBootID = "0d9ea1b2-c3d4-4e5f-8a6b-7c8d9e0f1a2b"
+	)
+
+	tests := []struct {
+		name          string
+		entryBootID   string
+		withFieldName bool
+		want          bool
+	}{
+		{"this boot, whole data object", currentBootID, true, false},
+		{"previous boot, whole data object", previousBootID, true, true},
+		{"this boot, value only", currentBootID, false, false},
+		{"previous boot, value only", previousBootID, false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// journald writes _BOOT_ID as 32 hex digits, without dashes.
+			journaldForm := strings.ReplaceAll(tt.entryBootID, "-", "")
+
+			journal := &MockJournal{
+				Entries: []MockJournalEntry{
+					{Message: "test", Cursor: "c1", Fields: map[string]string{FieldBootID: journaldForm}},
+				},
+				CurrentPosition:   0,
+				DataWithFieldName: tt.withFieldName,
+			}
+
+			sm := &SyslogMonitor{currentBootID: currentBootID}
+			assert.Equal(t, tt.want, sm.isStaleBootEntry(journal))
 		})
 	}
 }
