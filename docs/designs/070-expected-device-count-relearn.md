@@ -38,6 +38,8 @@ The relearn therefore needs state that survives restarts and tells a value writt
 
 Add an optional `relearnID` to each device count class. A new value asks the labeler to relearn that class once from current counts. Under an ID the labeler records every expected value it writes in a node annotation, `nvsentinel.dgxc.nvidia.com/<class>.count.relearn: "<relearnID>/<value>"`, in the same patch as the label, and an expected label counts as evidence for its node and for the other nodes of its partition only when that annotation records the configured ID and the label's value. Without an ID nothing changes.
 
+To keep a wrong count from reaching a partition again, every expected label also records the partition it was learned in and counts only there, and a class can declare when a node is not settled, so that a node in the middle of a reconfiguration teaches nothing. [Prevention](#prevention) describes both.
+
 ## Implementation
 
 ### Configuration
@@ -71,7 +73,7 @@ The startup reconcile of every node uses one shared `ReconcileCache` and relearn
 1. Before setting an ID, compare the current and expected labels of each partition, for example with `kubectl get nodes -L` and the class labels and grouping labels. A relearn sets each partition to the highest current count among its nodes, so a partition where every node reports less than its expected count goes down. Pin with an override any partition that has really lost devices.
 2. Set a new `relearnID` on the class and upgrade the release.
 3. Check that every node of the class carries the annotation with the new ID. A node without it has no count or failed to patch.
-4. Leave the ID in place. Removing it makes every old label count again, including any that a node without a count still carries. Use a new ID for the next relearn, for example after the next MIG change.
+4. Leave the ID in place. Removing it makes every old label count again, including any that a node without a count still carries. Use a new ID for the next relearn.
 
 ### Compatibility
 
@@ -86,6 +88,96 @@ The evidence rule is a pure function of a node and the class configuration, used
 - Unit tests on the `devicecounts` manager with the shipped GPU class and the reported fleet of 287 nodes: the regrouped fleet, a label removed from one node, a clean MIG disable, a relearn that stops halfway and restarts, event reconciles against old labels, a node missing a GPU during a relearn, a uniform loss after a relearn, a foreign write, a node without a count source, overrides, and configuration validation.
 - An envtest test with the running labeler that plays the reported scenario, sets an ID, restarts with the same ID, and checks that a lost GPU is not absorbed after the relearn.
 - A Helm unit test for the rendered field.
+
+## Prevention
+
+The relearn repairs a partition after a wrong count has reached it. Two further rules keep a wrong count from reaching a partition. #1914 shows two paths by which a count learned on one node ends up in a partition where it does not belong:
+
+1. A label carried across partitions. A node's expected label moves with the node when its grouping labels change, and the maximum of its new partition takes it. A node that leaves MIG brings the 8 it learned as a MIG node into the plain partition. A node relabeled with another instance type does the same.
+2. A node in the middle of a reconfiguration. While the GPU Operator MIG manager changes the MIG layout of a node, the counts and the grouping labels of the node can disagree, and a count observed then raises the partition that the node still belongs to.
+
+The issue attributes the 8 to the second path: the two nodes reported 8 GPUs while they still carried the plain product. The order in which the labels changed on that fleet is not known. The first rule below closes the first path whatever the order was. The second rule keeps a node that is marked as being reconfigured from teaching others, but under the GPU Operator it does not cover the transient the issue describes, as explained below.
+
+### Evidence stays in the partition it was learned in
+
+With every expected label it writes, the labeler writes the partition key of the node into the annotation `nvsentinel.dgxc.nvidia.com/<class>.count.partition`, in the same patch, for example `source=gfd|node.kubernetes.io/instance-type=gb200|nvidia.com/gpu.product=NVIDIA-GB200`. An expected label counts as evidence, for its node and for the other nodes of the partition, only while the node is in the partition that the annotation names. A node whose partition changed learns its expected count again from its own current count and from the other nodes of its new partition. The labeler logs that with the label and both partition keys. Each time it computes the maximum of a partition, it counts the labels it leaves out of that maximum in `labeler_device_count_skipped_updates_total` with the reason `partition_changed`. A node's own label is counted that way too, through the copy of the node in the node cache, and not a second time when the node itself is reconciled.
+
+This closes the first path. Every enabled class writes the annotation, with or without a relearn ID. Under an ID the relearn rule applies on top, so a label must also be certified.
+
+- A change between two sources of a class is not a change of partition. The partition key starts with the source name, so a GPU Operator mode change changes it, and #2108 keeps the expected count across that change on purpose (`TestDeviceCountSources_ModeChange_KeepsExpectedCount`). A label recorded by another source of the class still counts.
+- A node without a partition, because its grouping expression fails, learns only from itself as before. Its label still counts for it, and its annotation stays as it is.
+- A label without the annotation, written before this change, still counts. The labeler adds the annotation at the next reconcile of the node.
+- The node cache keeps the annotation of every class. The labeler checks at startup that every enabled class name forms a valid annotation key and that no two classes share one.
+- A change to the annotation alone does not trigger a reconcile. The partition of a node changes only with its labels or its ResourceSlices, which already trigger one, and the labeler's own writes must not. A label whose annotation someone changed by hand stops counting until the next reconcile of the node relearns it.
+
+### A node that is not settled teaches nothing
+
+A class can set `settledExpression`, a CEL expression that returns a bool. It sees `node` and `resourceSlices` like `currentExpression`, with every ResourceSlice of the node, also in a class with sources. While it returns false for a node, the node is not settled. Neither its current count nor its expected label raises the expected count of another node. For the node itself the labeler writes the current label and leaves the expected label and both annotations as they are, so an override or a new relearn ID reaches the node once it is settled again. The labeler logs each such reconcile and counts it, and each node it leaves out of a partition, with the reason `unsettled`. A failed evaluation leaves the labels of the node as they are, as a failed `currentExpression` does, and the node teaches nobody, as when it is not settled. An expression that does not compile, or that CEL can tell returns something other than a bool, stops the labeler at startup.
+
+The chart sets it for the GPU class from the state label of the MIG manager:
+
+```text
+!('nvidia.com/mig.config.state' in node.metadata.labels) ||
+node.metadata.labels['nvidia.com/mig.config.state'] == 'success'
+```
+
+The MIG manager of the GPU Operator (`pkg/mig/reconfigure/reconfigure.go` in mig-parted) sets the state to `pending`, stops the device plugin and GFD through their `nvidia.com/gpu.deploy.*` labels and waits up to five minutes for their pods to be gone, sets `rebooting` when it has to reboot the node, applies the layout, starts the device plugin and GFD again, and then sets `success`. When the change does not work it starts them again and then sets `failed`. A node in `failed` stays unsettled, with its expected count unchanged, until the MIG manager succeeds.
+
+What the default covers follows from that order. While a node is `pending` or `rebooting`, its device plugin and GFD are not running. GFD in its file mode removes its features file when it stops, so its labels go with it, and the labels and allocatable resources of the new layout arrive only after `success`. A transient like the one #1914 describes therefore cannot come from these components while the node is `pending`, and the default does not cover it. The default matters for a node in `failed`, whose device plugin and GFD run again before that state is written, and for any count source that the MIG manager does not stop. The rule itself is general: an operator points `settledExpression` at whatever marks their nodes as being in the middle of a change.
+
+After `success`, a count and a grouping label that come from different writers can still disagree for a while. A `currentExpression` that counts from allocatable resources while the grouping label comes from GFD is the case to know about, because the device plugin can register the new layout before GFD relabels the node. With the gfd source of the chart the count and the product both come from GFD, which writes them in one features file that NFD applies in one node update. Which mechanism produced the reported state is not known, and the relearn remains the way back from it.
+
+### Why the relearn is still needed
+
+Prevention starts with the upgrade. A fleet that already carries a wrong count, such as the 285 nodes at 8 in #1914, keeps it, because a label written before the annotation existed still counts, and only a relearn lowers it. A cause that neither rule foresees still raises a partition: a `currentExpression` that counts from allocatable resources while the grouping label comes from GFD, after the MIG manager reports `success`, a device plugin or driver that briefly reports more devices, a label written by hand. For those the explicit relearn stays the way down that ADR-043 names.
+
+### Upgrade
+
+The first reconcile of each node after the upgrade writes its partition annotations, which is one extra patch per node at the client rate limit of the labeler. It changes no label, because labels without the annotation still count. A node that has no count, or is not settled, at that reconcile keeps its label without the annotation, and that label counts in any partition. If the node changes partition before the labeler counts it again, for example because the upgrade fell in the middle of a MIG change, its old count reaches the new partition and spreads there. The docs therefore advise upgrading outside MIG changes and checking afterwards that every node with an expected label carries the annotation, with `kubectl get nodes -l nvsentinel.dgxc.nvidia.com/gpu.count.expected -o custom-columns='NAME:.metadata.name,PARTITION:.metadata.annotations.nvsentinel\.dgxc\.nvidia\.com/gpu\.count\.partition'`. A labeler without this change ignores the annotations.
+
+### Consequences of prevention
+
+Positive:
+
+- A node that leaves MIG or changes instance type no longer raises its new partition, and a MIG change no longer needs a new relearn ID.
+- A count observed while the MIG manager reports a node as `pending`, `rebooting` or `failed` raises no other node. Under the GPU Operator that is a count from a source the MIG manager does not stop, or the first reports after a failed change.
+- No learned count falls because devices vanished. A node that changes partition still gets the higher count of the other nodes of its new partition.
+
+Negative:
+
+- A node whose partition changes is relearned from current counts. Alone in its new partition and missing a device at that moment, it accepts the loss.
+- A change of the partition key format, or of the grouping itself, such as new grouping labels or their order, a renamed source, or a product name that a new GFD or driver release reports differently, changes the key of every node once. Every node then relearns from current counts once, as in a relearn. The current counts of the other nodes of a partition still carry the higher value, unless every node of the partition lost devices at that same moment, which is the case ADR-043 protects against, for example a driver release that renames the product and hides a GPU at once.
+- A node that changes source and partition in one step still carries its count, because a change of source is not a change of partition. A MIG node at 8 whose cluster moves to GPUCluster mode keeps 8 in its DRA partition.
+- A node whose MIG change failed keeps its expected count until the MIG manager succeeds.
+- A node without a count, or not settled, at its first reconcile after the upgrade keeps a label without the annotation that counts in any partition until the labeler counts the node again.
+- Every enabled class adds an annotation to every node, and a class name that cannot form the annotation key stops the labeler at startup.
+
+Mitigations:
+
+- The labeler logs every node it relearns after a partition change, with both partition keys, and every expected count it lowers.
+- An override pins a partition across a planned change of the grouping, and a relearn ID remains for any other cause.
+
+### Alternatives considered for prevention
+
+#### Raise a learned count only after it persisted for some time
+
+**Rejected** because a transient longer than the window still raises the partition, a window long enough to cover a MIG reboot delays every real rise as long, and the labeler would need durable state for every pending value. It does nothing for a label carried across partitions.
+
+#### Compare the GFD count label with the allocatable resources
+
+**Rejected** as a built-in rule. The device plugin advertises MIG devices under different resource names for each MIG strategy, either side can lag the other after a change, and a disagreement does not tell which side is right. A deployment that wants the check can write it as a `settledExpression`.
+
+#### Count MIG devices differently
+
+**Deferred.** Under the single MIG strategy GFD sets `nvidia.com/gpu.count` to the number of MIG devices, so the GPU class changes its unit with the MIG mode. Counting physical GPUs on MIG nodes would give the class one unit in every mode. It changes what the GPU class reports, needs a source of physical GPU counts on MIG nodes in ClusterPolicy mode, and is a separate decision. Both rules here still apply under it, since partitions change and nodes are reconfigured without MIG too.
+
+### Validation of prevention
+
+- Unit tests on the `devicecounts` manager: a node leaving MIG, a node moved to another instance type in a class without sources, a label without the annotation, the label and both annotations changing in one update, a mode change between sources, a node without a partition, the states of the MIG manager, a pending node whose count source still reports 8 GPUs under the plain product, a node that is not settled under a relearn ID, a failed `settledExpression` whose node teaches nothing, the inputs it makes the labeler watch, and configuration validation for both rules.
+- The ratchet story of #1914 goes on with the two nodes leaving MIG again under the same relearn ID, with and without the MIG manager keeping them pending.
+- Envtest tests with the running labeler and 40 nodes: a MIG toggle with no relearn ID, and the same toggle while the MIG manager reports `pending` and a count source that it does not stop reports 8 GPUs under the plain product, with a restart while the nodes are pending. No node that stays plain is written in either, and a restart afterwards writes nothing.
+- A test that the expected label and both annotations reach the API server in one patch, and that the node cache keeps the partition annotation.
+- Helm unit tests for the rendered `settledExpression` and for the ResourceSlice access it can need.
 
 ## Rationale
 
@@ -108,14 +200,14 @@ The evidence rule is a pure function of a node and the class configuration, used
 - A node that has no count when the labeler reaches it, because its device plugin or ResourceSlice is down or it is opted out, keeps its uncertified label and is relearned from whatever it reports once its count returns. A device lost in between is accepted without a new ID. The procedure therefore avoids a relearn during a driver or device plugin upgrade, checks afterwards that every node carries the annotation, and pins a node still without one before its count returns.
 - Every node of the class is patched once to carry the annotation, even where the value does not change.
 - The ID stays in the configuration, and each class with an ID adds one annotation to each node.
-- It repairs a baseline and does not prevent the next one. A node that leaves MIG carries its MIG-era expected count into the plain partition, and the next reconcile spreads it, so after such a change the operator sets a new ID.
+- It repairs a baseline and does not prevent the next one on its own. [Prevention](#prevention) closes the two paths seen in #1914, and a cause outside them still needs a new ID.
 
 ### Mitigations
 
 - The procedure shows every decrease before it happens, an override can hold any partition, and the labeler logs every node it lowers.
 - Keeping the same ID never relearns again; only a new ID does.
 - The annotation on each node shows which nodes the relearn has reached.
-- Prevention is left to a separate decision (see Notes).
+- [Prevention](#prevention) keeps every expected count in the partition it was learned in and learns nothing from a node that is not settled.
 
 ## Alternatives Considered
 
@@ -141,12 +233,12 @@ The evidence rule is a pure function of a node and the class configuration, used
 
 ### Tie the annotation to the partition
 
-**Deferred.** It would stop a node from carrying its expected count into another partition, for example out of MIG. But #2108 deliberately keeps the expected count across a change between the DRA and GFD sources (`TestDeviceCountSources_ModeChange_KeepsExpectedCount`), and that change also changes the partition key.
+**Adopted in another form.** It stops a node from carrying its expected count into another partition, for example out of MIG. #2108 deliberately keeps the expected count across a change between the DRA and GFD sources (`TestDeviceCountSources_ModeChange_KeepsExpectedCount`), and that change also changes the partition key. [Prevention](#prevention) therefore records the partition in a separate annotation that every class writes, with or without a relearn ID, and does not treat a change of source as a change of partition.
 
 ## Notes
 
-- Non-goals: automatic prevention of MIG-related changes to a partition's count, a relearn of part of a class, a progress metric, and Kubernetes Events, which need new RBAC. A relearn limited to one partition can be added later with `matchLabels` restricted to grouping labels of every source of the class.
-- In the reported fleet the MIG nodes report 8 GPUs on 4-GPU hardware. The GFD count there follows MIG devices rather than physical GPUs, so its unit changes with the MIG mode. Both ways the higher count reaches the plain partition start from that, so it belongs with the prevention question.
+- Non-goals: a relearn of part of a class, a progress metric, and Kubernetes Events, which need new RBAC. A relearn limited to one partition can be added later with `matchLabels` restricted to grouping labels of every source of the class.
+- In the reported fleet the MIG nodes report 8 GPUs on 4-GPU hardware. The GFD count there follows MIG devices rather than physical GPUs, so its unit changes with the MIG mode. [Prevention](#prevention) keeps that count out of the plain partition, and counting physical GPUs on MIG nodes is listed there as a separate decision.
 
 ## References
 
@@ -155,4 +247,5 @@ The evidence rule is a pure function of a node and the class configuration, used
 - Issue [#1846](https://github.com/NVIDIA/NVSentinel/issues/1846): parallel startup sweep of the labeler
 - PR [#2108](https://github.com/NVIDIA/NVSentinel/pull/2108): GPU count in both GPU Operator modes
 - [ADR-059: Operator Recovery of Derived Conditions](059-derived-condition-recovery.md)
+- [NVIDIA mig-parted](https://github.com/NVIDIA/mig-parted): the MIG manager of the GPU Operator and its `nvidia.com/mig.config.state` label
 - [Labeler configuration](../configuration/labeler.md)
