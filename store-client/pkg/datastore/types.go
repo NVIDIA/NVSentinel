@@ -121,12 +121,9 @@ type RemediationDecision struct {
 }
 
 // Entity identifies an impacted hardware entity, such as a GPU.
-//
-// The PostgreSQL query builder rewrites the path segments entitytype and entityvalue to
-// camelCase, so the JSON keys are camelCase, as they are in healthevent.entitiesimpacted.
 type Entity struct {
-	EntityType  string `json:"entityType" bson:"entitytype"`
-	EntityValue string `json:"entityValue" bson:"entityvalue"`
+	EntityType  string `json:"entitytype" bson:"entitytype"`
+	EntityValue string `json:"entityvalue" bson:"entityvalue"`
 }
 
 // HealthEventWithStatus wraps a health event with status information

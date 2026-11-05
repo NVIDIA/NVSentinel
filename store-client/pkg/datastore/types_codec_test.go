@@ -239,9 +239,9 @@ func TestHealthEventStatus_DecisionsRoundTrip(t *testing.T) {
 
 		scope, ok := drain["scope"].(map[string]any)
 		require.True(t, ok, "scope should be an object, got %T", drain["scope"])
-		assert.Equal(t, "GPU", scope["entityType"])
-		assert.Equal(t, "0", scope["entityValue"])
-		assert.NotContains(t, scope, "entitytype")
+		assert.Equal(t, "GPU", scope["entitytype"])
+		assert.Equal(t, "0", scope["entityvalue"])
+		assert.NotContains(t, scope, "entityType")
 
 		var decoded HealthEventStatus
 		require.NoError(t, json.Unmarshal(data, &decoded))

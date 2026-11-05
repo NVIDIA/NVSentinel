@@ -265,13 +265,23 @@ Each field is written by a specific module at a specific pipeline stage:
 
 ### Drain and Remediation Decisions
 
-`drainDecision` records the drain method for one event. `method` is `BuiltIn` or `Custom`. `stopped` is true when the drain does not run. `scope` names the entity of a partial drain, and it is empty for a drain of the full node. `reusedFrom` names the event whose method this event uses. `ruleSet` names the rule set that selected the method, and it is empty for the default.
+`drainDecision` is the drain decision that node-drainer records for an event before it acts:
 
-`remediationDecision` records the remediation action for one event. `action` is an entry of `maintenance.actions`. `stopped` is true when no maintenance CR is created. `ruleSet` names the rule set that won, and it is empty when no rule set matched.
+- `ruleSet`: the rule set that applies, which is the winner or the rule set of the `reusedFrom` event. Empty for the default.
+- `method`: `BuiltIn` or `Custom`. Empty when stopped.
+- `stopped`: true when a stop rule set matched.
+- `scope`: the entity type and value of a partial drain. Empty for a drain of the full node.
+- `reusedFrom`: the event of the quarantine session whose method this event uses. Empty when this event selected it.
+
+`remediationDecision` is the remediation decision that fault-remediation records for an event before it acts:
+
+- `ruleSet`: the rule set that won. Empty when no rule set matched.
+- `action`: an entry of `maintenance.actions`. Empty when stopped.
+- `stopped`: true when a stop rule set matched.
 
 A status update that omits a decision does not change the saved decision. Omit means the field is nil. A present decision replaces the saved decision. Each module sends only the fields it owns.
 
-The datastore stores these field names in lowercase, for example `draindecision` and `ruleset`. The partial-drain scope uses `entityType` and `entityValue` in PostgreSQL, because the query builder rewrites those two names to camel case.
+MongoDB and PostgreSQL store these field names in lowercase, as they store the other status fields. For example, the keys are `draindecision`, `ruleset` and `scope.entitytype`.
 
 ### OperationStatus values (`userPodsEvictionStatus.status`)
 

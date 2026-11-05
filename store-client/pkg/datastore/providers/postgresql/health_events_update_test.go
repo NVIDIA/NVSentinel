@@ -48,7 +48,7 @@ func TestStatusDecisionsPatch(t *testing.T) {
 		{
 			name:   "drain decision only",
 			status: datastore.HealthEventStatus{DrainDecision: drain},
-			want:   `{"draindecision":{"method":"Custom","ruleset":"slurm","scope":{"entityType":"GPU","entityValue":"0"},"stopped":true}}`,
+			want:   `{"draindecision":{"method":"Custom","ruleset":"slurm","scope":{"entitytype":"GPU","entityvalue":"0"},"stopped":true}}`,
 		},
 		{
 			name: "both decisions",
@@ -56,7 +56,7 @@ func TestStatusDecisionsPatch(t *testing.T) {
 				DrainDecision:       drain,
 				RemediationDecision: remediation,
 			},
-			want: `{"draindecision":{"method":"Custom","ruleset":"slurm","scope":{"entityType":"GPU","entityValue":"0"},"stopped":true},"remediationdecision":{"action":"REPLACE_VM","ruleset":"vm-replace"}}`,
+			want: `{"draindecision":{"method":"Custom","ruleset":"slurm","scope":{"entitytype":"GPU","entityvalue":"0"},"stopped":true},"remediationdecision":{"action":"REPLACE_VM","ruleset":"vm-replace"}}`,
 		},
 	}
 
