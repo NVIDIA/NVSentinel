@@ -1,0 +1,84 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: global.ipv6.enabled (metrics bind address)
+# configmap.yaml is listed because the DaemonSet checksums it via $.Template.BasePath,
+# so it has to be parseable; assertions are scoped to the DaemonSet.
+templates:
+  - templates/daemonset-dcgm-4.x.yaml
+  - templates/configmap.yaml
+tests:
+  - it: binds 0.0.0.0 when the flag is unset
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      global.metricsAddress: "0.0.0.0"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "0.0.0.0"
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: "::"
+
+  - it: "binds :: when the flag is on and metricsAddress is the default"
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      global.metricsAddress: "0.0.0.0"
+      global.ipv6.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "::"
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: "0.0.0.0"
+
+  # --set-string passes the flag as a string; a non-empty string is truthy in Go templates.
+  - it: binds 0.0.0.0 when the flag is the string "false"
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      global.metricsAddress: "0.0.0.0"
+      global.ipv6.enabled: "false"
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: "::"
+
+  - it: keeps an explicit metricsAddress when the flag is on
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      global.metricsAddress: "10.0.0.5"
+      global.ipv6.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "10.0.0.5"
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: "::"
+
+  - it: "keeps an explicit :: when the flag is off"
+    template: templates/daemonset-dcgm-4.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      global.metricsAddress: "::"
+      global.ipv6.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "::"
