@@ -37,7 +37,7 @@
 # get all-or-nothing gang scheduling behavior). Kubernetes 1.37 removed
 # that gate and folded it into GenericWorkload, so do not set it there.
 # A cluster admin has to enable these; they aren't a Helm value, and some
-# managed Kubernetes offerings won't let you turn on alpha gates at all.
+# managed Kubernetes offerings won't let you turn on these gates at all.
 # Check what your cluster actually exposes before relying on this:
 #   kubectl api-resources --api-group=scheduling.k8s.io
 #
