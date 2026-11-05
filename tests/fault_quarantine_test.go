@@ -41,7 +41,9 @@ func TestDontCordonIfEventDoesntMatchCELExpression(t *testing.T) {
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "data/managed-by-nvsentinel-configmap.yaml")
+		newCtx, testCtx, _ = helpers.SetupQuarantineTestWithOptions(ctx, t, c, "data/managed-by-nvsentinel-configmap.yaml", &helpers.QuarantineSetupOptions{
+			NodeLabels: map[string]string{"k8saas.nvidia.com/ManagedByNVSentinel": "false"},
+		})
 		return newCtx
 	})
 
@@ -66,9 +68,6 @@ func TestDontCordonIfEventDoesntMatchCELExpression(t *testing.T) {
 
 	feature.Assess("node with ManagedByNVSentinel=false label ignored by CEL", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testCtx.NodeName, false)
 		require.NoError(t, err)
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
