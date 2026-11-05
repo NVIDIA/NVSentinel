@@ -279,14 +279,19 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 		t.Cleanup(func() {
 			for key := range opts.NodeLabels {
 				var restoreErr error
-				if originalPresent[key] {
+				if originalPresent[key] && originalLabels[key] == "" {
+					// SetNodeLabel treats an empty value as "delete
+					// the key", so restore a pre-existing empty-valued
+					// label directly to preserve its presence.
+					restoreErr = setNodeLabelAllowEmpty(ctx, client, labelledNode, key)
+				} else if originalPresent[key] {
 					restoreErr = SetNodeLabel(ctx, client, labelledNode, key, originalLabels[key])
 				} else {
 					// An empty value deletes the label.
 					restoreErr = SetNodeLabel(ctx, client, labelledNode, key, "")
 				}
 				if restoreErr != nil {
-					t.Logf("Failed to restore original label %s on node %s: %v", key, labelledNode, restoreErr)
+					t.Errorf("Failed to restore original label %s on node %s: %v", key, labelledNode, restoreErr)
 				}
 			}
 		})
