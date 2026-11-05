@@ -254,6 +254,42 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 	nodeName := ""
 	if opts != nil && len(opts.NodeLabels) > 0 {
 		nodeName = SelectTestNodeFromUnusedPool(ctx, t, client)
+		labelledNode := nodeName
+
+		// Capture the node's original values for the labels before
+		// writing any of them, and register a cleanup that restores
+		// them. Feature teardown does not run if setup fails (for
+		// example, the deployment restart below fails), so without
+		// this a failed setup would leave the labels on the node and
+		// later tests could select it with events filtered unexpectedly.
+		// The cleanup also runs on the success path, after teardown,
+		// leaving the node exactly as it was found.
+		node, err := GetNodeByName(ctx, client, labelledNode)
+		require.NoError(t, err)
+		originalLabels := make(map[string]string, len(opts.NodeLabels))
+		originalPresent := make(map[string]bool, len(opts.NodeLabels))
+		for key := range opts.NodeLabels {
+			if node.Labels != nil {
+				if value, ok := node.Labels[key]; ok {
+					originalLabels[key] = value
+					originalPresent[key] = true
+				}
+			}
+		}
+		t.Cleanup(func() {
+			for key := range opts.NodeLabels {
+				var restoreErr error
+				if originalPresent[key] {
+					restoreErr = SetNodeLabel(ctx, client, labelledNode, key, originalLabels[key])
+				} else {
+					// An empty value deletes the label.
+					restoreErr = SetNodeLabel(ctx, client, labelledNode, key, "")
+				}
+				if restoreErr != nil {
+					t.Logf("Failed to restore original label %s on node %s: %v", key, labelledNode, restoreErr)
+				}
+			}
+		})
 
 		for key, value := range opts.NodeLabels {
 			err = SetNodeLabel(ctx, client, nodeName, key, value)
