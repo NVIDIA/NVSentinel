@@ -135,7 +135,7 @@ The core installs and runs on a cluster with no vendor software and with a datas
 
 ### One dependency direction
 
-Plugins depend on the core. The core never imports plugin code, and it has no vendor resource names, labels, namespaces, or tool names in code. A vendor default moves to the plugin chart when it changes behaviour on a cluster without that vendor's software, for example a nodeSelector on `nvidia.com/gpu.present`. A vendor default that has no effect there, such as an entry in a label allowlist, can stay in the core chart.
+Plugins depend on the core. The core never imports plugin code, and it has no vendor resource names, labels, namespaces, or tool names in code. Each vendor default moves to the plugin chart, also when it has no effect on a cluster without that vendor's software, for example an entry in a label allowlist. The core chart has only vendor-neutral defaults.
 
 ### Versioned contracts
 
@@ -190,23 +190,23 @@ Each plugin has its own Go module or image, and its own chart. The NVIDIA plugin
 
 | Component | Class | Moves to a plugin | Stays in the core |
 |---|---|---|---|
-| platform-connectors | Core | Replaced-GPU recovery (becomes entity-type configuration) | gRPC ingest, transformers, node conditions |
+| platform-connectors | Core | Replaced-GPU recovery (becomes entity-type configuration), `nvidia.com/cuda.*` and cloud entries in `allowedLabels`, `SysLogsXIDError` and `SysLogsSXIDError` in the deduplication `includeChecks` | gRPC ingest, transformers, node conditions |
 | store-client | Core | none | MongoDB provider (Apache-2.0 driver; the user supplies the server) and PostgreSQL provider |
 | fault-quarantine | Core | Replaced-GPU recovery (becomes entity-type configuration), `gpuNodeLabel` default | CEL rule sets, circuit breaker |
-| node-drainer | Core | `GPU_UUID` partial drain (becomes the entity-type map, see [Device scope from configuration](#device-scope-from-configuration)) | Eviction, custom drain, pod policies |
+| node-drainer | Core | `GPU_UUID` partial drain (becomes the entity-type map, see [Device scope from configuration](#device-scope-from-configuration)), `gpu-operator`, `network-operator`, `skyhook`, and `gmp-system` in `systemNamespaces` | Eviction, custom drain, pod policies |
 | fault-remediation | Core | Log-collector Job template and its GPU Operator settings | Action templates, equivalence groups, `CUSTOM` |
 | health-events-analyzer | Core | XID burst detector, XID/SXID/NVLink default rules, `RepeatedNICDriverError`, GPU entity metric allowlist | Engine, `MultipleRemediations`, `RepeatedNICDegradation` |
 | kubernetes-object-monitor, slurm-drain-monitor | Core | none | All |
 | event-exporter | Core | none | All |
 | lifecycle-manager | Core | DCGM readiness probe default | Validation providers and tests |
 | janitor | Split | `GPUReset` controller, `gpuservices`, `gpu-reset` image | `RebootNode`, `TerminateNode`, `ExternalRemediationRequest`, node lock, TTL |
-| janitor-provider | Split | Cloud clients (AWS, GCP, Azure, OCI, Nebius, Lambda, Akamai) and `commons/pkg/{akamai,lambda}` | gRPC contract, `generic`, `label`, `kind` |
+| janitor-provider | Split | Cloud clients (AWS, GCP, Azure, OCI, Nebius, Lambda, Akamai), `commons/pkg/{akamai,lambda}`, the `nke.nvidia.com/*` default keys of the `label` provider | gRPC contract, `generic`, `label`, `kind` |
 | csp-health-monitor | Split | Cloud clients (AWS, GCP, Lambda) | Monitor interface, trigger engine |
 | syslog-health-monitor | Split | `xid`, `sxid`, `gpufallen`, `nicdriver` handlers, the XID catalog, the `GPU` default component class | journald reader, cursors, check dispatch, cancellation |
-| nic-health-monitor | Split | Mellanox vendor gate, BlueField IDs, GPU-to-NIC topology | sysfs link state and counter checks, after NIC roles come from configuration. At this time the monitor stops without the GPU metadata file (`topology.go:91-101`) |
+| nic-health-monitor | Split | Mellanox vendor gate, BlueField IDs, GPU-to-NIC topology, `mlx5` `hw_counters` defaults | sysfs link state and counter checks. In the core profile, `nicInclusionRegexOverride` selects the NICs to monitor: matched NICs skip the vendor gate and the GPU topology (`main.go:315-337`). Without the override or the GPU metadata file, the monitor does not start, so it cannot act on a management NIC |
 | labeler | Split | `dcgm.version`, `driver.installed`, GPU Operator pod discovery, `nvidia.com/*` count classes | Device-count engine, Kata detection, `managed` opt-out |
 | metadata-collector | Split | NVML and `nvidia-smi` collection, `gpu_metadata.json` schema, the NVIDIA DRA device name format `gpu-%d` | Pod-to-device mapper (kubelet PodResources API) with configured resource names and DRA device names |
-| preflight | Split | `nvidia.com/gpu` and `gpu.nvidia.com` defaults, NCCL injection, `dcgm-diag` and `nccl-*` checks | Webhook, gang discovery, check injection |
+| preflight | Split | `nvidia.com/gpu` and `gpu.nvidia.com` defaults, vendor entries in `networkResourceNames`, NCCL injection, `dcgm-diag` and `nccl-*` checks | Webhook, gang discovery, check injection |
 | gpu-health-monitor, gpu-reset, nvcre-certification-monitor, log-collector GPU steps, `api/proto/device/v1alpha1` | NVIDIA plugin | All | none |
 
 The issues that implement each row will name file paths. The rows are the scope of this ADR.
@@ -222,7 +222,8 @@ Write a page in `docs/` that lists the extension points, with one example for ea
 #### Phase 2: Make hardcoded logic configurable
 
 - Add the entity-type map ([Device scope from configuration](#device-scope-from-configuration)). Move the GPU recovery cases in fault-quarantine and platform-connectors to it.
-- Make the metadata-collector nodeSelector, the NIC vendor list, the NIC roles, and the labeler driver informer configurable. Each default stays the same.
+- Make the metadata-collector nodeSelector, the NIC vendor list, and the labeler driver informer configurable. Each default stays the same.
+- Document `nicInclusionRegexOverride` as the NIC selection of the core profile. At this time the code describes it as a fallback for a broken GPU stack.
 - Let overrides set `customRecommendedAction` ([Custom actions in overrides](#custom-actions-in-overrides)).
 - Document the `metadata` keys of each monitor, and add the raw check values that a policy needs ([Raw check values](#raw-check-values)).
 - Replace `go-multierror` and `errwrap` with `errors.Join` from the standard library. Review the other MPL-2.0 and LGPL items in [Datastore and licenses](#datastore-and-licenses).
@@ -242,7 +243,7 @@ Write a follow-up ADR for each of these:
 
 Move each "moves to a plugin" item into its own module and chart. When a module is split, add a lint rule that stops the core part from importing the plugin module. The umbrella chart installs the NVIDIA plugins by default, so existing installations keep their behaviour. Their images and subcharts change.
 
-A new core-only profile installs no plugin and no MongoDB subchart. It uses PostgreSQL, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or a database that the user supplies. MongoDB stays a supported datastore. The profile includes the analyzer after ADR-066 is implemented ([Health-events-analyzer in the core](#health-events-analyzer-in-the-core)). The [test with no vendor software](#test-with-no-vendor-software) uses this profile.
+A new core-only profile installs no plugin and no MongoDB subchart. It uses PostgreSQL, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or a database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer ([Health-events-analyzer in the core](#health-events-analyzer-in-the-core)). The [test with no vendor software](#test-with-no-vendor-software) uses this profile.
 
 #### Phase 5: Remove deprecated names
 
@@ -254,7 +255,8 @@ After the deprecation period, maintainers decide whether to remove the old names
 |---|---|
 | Protobuf | Only new optional fields. `RUN_FIELDDIAG` and `RUN_DCGMEUD` keep their numbers and meaning |
 | CRDs | The current groups continue to be served until a later ADR removes them. That ADR includes a migration for objects in etcd |
-| Labels, annotations, conditions, metrics, and CloudEvent types | Components write the old name and the new name, and read both, during the deprecation period |
+| Labels, annotations, conditions, and metrics | Components write the old name and the new name, and read both, during the deprecation period |
+| CloudEvent type | event-exporter sends one event for each health event, with one type. The type becomes configurable, and the default stays `com.nvidia.nvsentinel.health.v1` until the deprecation period ends. A consumer that expects the new type changes the configuration. event-exporter never sends two events for one health event |
 | Helm values | No key is renamed or removed. Vendor defaults move to the plugin charts, and the umbrella chart sets them for existing installations |
 | Images | The current images continue to contain the plugins until phase 4. Then the umbrella chart installs the plugin images in their place |
 
