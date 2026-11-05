@@ -10,13 +10,13 @@ Status: Proposed (tracking issue [#2247](https://github.com/NVIDIA/NVSentinel/is
      - [Public surfaces carry NVIDIA names](#public-surfaces-carry-nvidia-names)
      - [Core components contain GPU logic](#core-components-contain-gpu-logic)
      - [Defaults expect the GPU Operator](#defaults-expect-the-gpu-operator)
-     - [Fault scope is one node](#fault-scope-is-one-node)
      - [Datastore and licenses](#datastore-and-licenses)
    - [Existing extension points](#existing-extension-points)
 2. [Decision](#decision)
-   - [Test with no vendor software](#test-with-no-vendor-software)
    - [One dependency direction](#one-dependency-direction)
    - [Versioned contracts](#versioned-contracts)
+   - [Separate plugin builds](#separate-plugin-builds)
+   - [Health-events-analyzer in the core](#health-events-analyzer-in-the-core)
    - [Recovery policy as configuration](#recovery-policy-as-configuration)
      - [Custom actions in overrides](#custom-actions-in-overrides)
      - [Escalation ladder](#escalation-ladder)
@@ -24,8 +24,7 @@ Status: Proposed (tracking issue [#2247](https://github.com/NVIDIA/NVSentinel/is
    - [Device scope from configuration](#device-scope-from-configuration)
    - [No new vendor actions in the enum](#no-new-vendor-actions-in-the-enum)
    - [Public names change by addition](#public-names-change-by-addition)
-   - [Health-events-analyzer in the core](#health-events-analyzer-in-the-core)
-   - [Separate plugin builds](#separate-plugin-builds)
+   - [Core works without vendor software](#core-works-without-vendor-software)
 3. [Implementation](#implementation)
    - [Component classification](#component-classification)
    - [Phases](#phases)
@@ -66,7 +65,7 @@ NVSentinel started as a tool for NVIDIA GPU nodes that run the GPU Operator. Mos
 
 ### Gaps
 
-The gaps are in six areas.
+The gaps are in five areas.
 
 #### Recovery policy is not fully configurable
 
@@ -88,14 +87,11 @@ The charts define five CRD groups: `janitor.dgxc.nvidia.com`, `nvsentinel.dgxc.n
 - The fault-quarantine circuit breaker counts the nodes with `nvidia.com/gpu.present` (configurable with `gpuNodeLabel`).
 - The health-events-analyzer runs a Go XID burst detector on PostgreSQL for every unhealthy `GPU` event with an error code. It counts DCGM error codes as XIDs (`health-events-analyzer/pkg/reconciler/reconciler.go:737-745`).
 - janitor contains the GPU reset. It sets `nvidia.com/gpu.deploy.*` labels to stop GPU Operator pods, sets `NVIDIA_VISIBLE_DEVICES=void`, and runs `nvidia-smi --gpu-reset` (`janitor/pkg/gpuservices/manager.go:85-134`, `gpu-reset/gpu_reset.sh`). The reset fails when components that the GPU Operator does not manage keep the GPU open.
+- nic-health-monitor needs the `nvidia-smi topo -m` matrix from metadata-collector to start (`health-monitors/nic-health-monitor/pkg/topology/topology.go:112-119`), and it monitors only NICs with the Mellanox PCI vendor ID `0x15b3` (`health-monitors/nic-health-monitor/pkg/discovery/discovery.go:45`).
 
 #### Defaults expect the GPU Operator
 
 The DCGM endpoint is `nvidia-dcgm.gpu-operator.svc`. The labeler reads the DCGM version from the image tag (`.*dcgm:4\..*`). metadata-collector has a fixed nodeSelector on `nvidia.com/gpu.present` (`charts/metadata-collector/templates/daemonset.yaml:134`). Monitors use affinity on `nvidia.com/gpu.deploy.client` and the `nvidia` RuntimeClass. The log collector runs `nvidia-bug-report.sh` in the driver pod. Most of these are values that an operator can change, but the change is necessary on each non-GPU-Operator cluster.
-
-#### Fault scope is one node
-
-Each fault, remediation CR, janitor lock, and provider call applies to one node. No component can treat a group of nodes, such as an NVLink domain or a TPU slice, as one fault scope. NIC topology comes only from `nvidia-smi topo -m`. The NIC monitor accepts only the Mellanox PCI vendor ID `0x15b3` (`health-monitors/nic-health-monitor/pkg/discovery/discovery.go:45`).
 
 #### Datastore and licenses
 
@@ -123,15 +119,11 @@ NVSentinel already has these extension points:
 
 fault-remediation maps each action to a CR only through configuration (`fault-remediation/pkg/config/config.go:31-84`). kubernetes-object-monitor and slurm-drain-monitor are generic.
 
-These extension points let a vendor add code, but they do not remove vendor code from the core components. The six gaps remain.
+These extension points let a vendor add code, but they do not remove vendor code from the core components. The five gaps remain.
 
 ## Decision
 
 NVSentinel separates a **vendor-neutral core** from **vendor plugins**. The core detects through public interfaces, quarantines, drains, remediates, and correlates events. A plugin contains each part that knows a specific accelerator, driver stack, NIC, cloud API, or diagnostic tool. The core does not import plugin code and does not contain vendor names. Plugins connect to the core only through versioned contracts. Existing users keep their behaviour: the change is additive, and old names continue to work.
-
-### Test with no vendor software
-
-The core installs and runs on a cluster with no vendor software and with a datastore that the user supplies. It then detects, quarantines, drains, and remediates a fault. A CI job proves this with the `kind` remediation provider and a monitor that needs no vendor software.
 
 ### One dependency direction
 
@@ -145,6 +137,16 @@ A plugin uses only these contracts. They are versioned, and they change only by 
 - CR templates, for remediation, custom drain, and validation.
 - The remediation provider gRPC API (`api/proto/csp/v1alpha1`).
 - Configuration: CEL rules, event overrides, analyzer rules, the entity-type map ([Device scope from configuration](#device-scope-from-configuration)), and the device selection of [ADR-064](064-node-and-device-selection.md).
+
+### Separate plugin builds
+
+Each plugin has its own Go module or image, and its own chart. The NVIDIA plugins continue to install by default from the current chart, so an upgrade does not change behaviour. This ADR does not decide the repository layout.
+
+### Health-events-analyzer in the core
+
+The health-events-analyzer is part of the core when its rules are datastore-neutral. The engine and the rule `MultipleRemediations` are vendor-neutral. `MultipleRemediations` stops remediation loops on a node, so a core without it is less safe. The XID, SXID, and NVLink default rules, the XID burst detector, `RepeatedNICDriverError`, and the GPU entity metric allowlist move to the NVIDIA plugin.
+
+At this time the rules are MongoDB aggregation stages, and most of them run correctly only on MongoDB, which uses the SSPL. [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md) replaces them with CEL rules that run on MongoDB and PostgreSQL. Until ADR-066 is implemented, a core installation without MongoDB runs without the analyzer. A core installation that uses only the Kubernetes datastore always runs without the analyzer. Without the analyzer, `maxRemediationAttempts` in fault-remediation is the only protection against remediation loops.
 
 ### Recovery policy as configuration
 
@@ -174,15 +176,9 @@ A partial drain evicts only the pods that use the failed device, and a scoped re
 
 A follow-up ADR selects one neutral domain for CRD groups, labels, and annotations, and the migration for each surface. The old names continue to work for at least two minor releases. Removal is a separate maintainer decision.
 
-### Health-events-analyzer in the core
+### Core works without vendor software
 
-The health-events-analyzer is part of the core when its rules are datastore-neutral. The engine and the rule `MultipleRemediations` are vendor-neutral. `MultipleRemediations` stops remediation loops on a node, so a core without it is less safe. The XID, SXID, and NVLink default rules, the XID burst detector, `RepeatedNICDriverError`, and the GPU entity metric allowlist move to the NVIDIA plugin.
-
-At this time the rules are MongoDB aggregation stages, and most of them run correctly only on MongoDB, which uses the SSPL. [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md) replaces them with CEL rules that run on MongoDB and PostgreSQL. Until ADR-066 is implemented, a core installation without MongoDB runs without the analyzer. A core installation that uses only the Kubernetes datastore always runs without the analyzer. Without the analyzer, `maxRemediationAttempts` in fault-remediation is the only protection against remediation loops.
-
-### Separate plugin builds
-
-Each plugin has its own Go module or image, and its own chart. The NVIDIA plugins continue to install by default from the current chart, so an upgrade does not change behaviour. This ADR does not decide the repository layout.
+The core installs and runs on a cluster with no vendor software and with a datastore that the user supplies. It then detects, quarantines, drains, and remediates a fault. A CI job proves this with the `kind` remediation provider and a monitor that needs no vendor software.
 
 ## Implementation
 
@@ -237,14 +233,13 @@ Write a follow-up ADR for each of these:
 - The [escalation ladder](#escalation-ladder).
 - The neutral domain and the migration of names ([Public names change by addition](#public-names-change-by-addition)).
 - A reset contract for a component that a vendor implements in place of `GPUReset`. This builds on [ADR-069](https://github.com/NVIDIA/NVSentinel/pull/2281).
-- Fault scope for a group of hosts.
 - A remediation provider operation for repair types other than reboot and terminate.
 
 #### Phase 4: Move vendor code
 
 Move each "moves to a plugin" item into its own module and chart. When a module is split, add a lint rule that stops the core part from importing the plugin module. The umbrella chart installs the NVIDIA plugins by default, so existing installations keep their behaviour. Their images and subcharts change.
 
-A new core-only profile installs no plugin and no MongoDB subchart. It uses PostgreSQL, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or a database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer ([Health-events-analyzer in the core](#health-events-analyzer-in-the-core)). The [test with no vendor software](#test-with-no-vendor-software) uses this profile.
+A new core-only profile installs no plugin and no MongoDB subchart. It uses PostgreSQL, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or a database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer ([Health-events-analyzer in the core](#health-events-analyzer-in-the-core)). The CI job in [Core works without vendor software](#core-works-without-vendor-software) installs this profile.
 
 #### Phase 5: Remove deprecated names
 
@@ -299,7 +294,7 @@ Most of the work is already done. The [existing extension points](#existing-exte
 
 - Phase 4 keeps the umbrella chart, so the number of charts that an operator installs does not change.
 - The follow-up ADR for names ([Public names change by addition](#public-names-change-by-addition)) limits the dual writes to the surfaces that external automation reads, and gives a removal release.
-- After each split, the import lint rule and the [test with no vendor software](#test-with-no-vendor-software) stop new vendor coupling in the core.
+- After each split, the import lint rule and the core-only CI job ([Core works without vendor software](#core-works-without-vendor-software)) stop new vendor coupling in the core.
 
 ## Alternatives Considered
 
@@ -335,7 +330,7 @@ Add a vendor-neutral fault class to `HealthEvent`, and make each monitor map its
 
 ### Non-goals
 
-This ADR does not remove NVIDIA support, and does not select the repository layout or the neutral domain.
+This ADR does not remove NVIDIA support, and does not select the repository layout or the neutral domain. It does not add a fault scope larger than one node, such as an NVLink domain or a TPU slice. That is a new feature for its own issue.
 
 ### Default mapping of COMPONENT_RESET
 
