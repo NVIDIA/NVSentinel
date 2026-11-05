@@ -196,7 +196,7 @@ For classes without a matching override, the expected value is learned as the ma
 An expected label counts only in the partition where the labeler learned it. With every expected label it writes, the labeler writes the annotation `nvsentinel.dgxc.nvidia.com/<class>.count.partition` with the partition key of the node, for example `source=gfd|node.kubernetes.io/instance-type=gb200|nvidia.com/gpu.product=NVIDIA-GB200`, in the same patch. When the grouping of a node changes, for example when MIG is turned off and `nvidia.com/gpu.product` loses its MIG suffix, or when the node gets another instance type, its old expected label no longer counts, neither for the node nor for the other nodes of its new partition. The node learns its expected count again from its own current count and from the other nodes of its new partition, and the labeler logs that at Info level. Each time it computes the expected count of a partition, the labeler counts the labels it leaves out this way in the `labeler_device_count_skipped_updates_total` counter with `reason="partition_changed"`.
 
 - A change between the sources of a class, such as a move between GPU Operator modes, is not a partition change. The node keeps its expected count, as described in [Grouping with sources](#grouping-with-sources).
-- Labels written before the annotation existed still count, and the labeler adds the annotation to each node at its next reconcile, which is one extra patch per node. A node that has no count at that reconcile, for example because its device plugin is not running, keeps its old label without the annotation, and that label counts in any partition. If the node changes partition before the labeler counts it again, its old count reaches the new partition. Upgrade the labeler outside MIG changes, and check afterwards that every node with an expected label carries the annotation:
+- Labels written before the annotation existed still count, and the labeler adds the annotation to each node at its next reconcile, which is one extra patch per node. A node that has no count at that reconcile, for example because its device plugin is not running, or that is [not settled](#nodes-whose-devices-are-being-reconfigured), keeps its old label without the annotation, and that label counts in any partition. If the node changes partition before the labeler counts it again, its old count reaches the new partition. Upgrade the labeler outside MIG changes, and check afterwards that every node with an expected label carries the annotation:
 
   ```bash
   kubectl get nodes -l nvsentinel.dgxc.nvidia.com/gpu.count.expected -o custom-columns='NAME:.metadata.name,PARTITION:.metadata.annotations.nvsentinel\.dgxc\.nvidia\.com/gpu\.count\.partition'
@@ -234,10 +234,35 @@ The new value changes the configuration checksum, which restarts the labeler. It
   kubectl get nodes -l nvsentinel.dgxc.nvidia.com/gpu.count.expected -o custom-columns='NAME:.metadata.name,RELEARN:.metadata.annotations.nvsentinel\.dgxc\.nvidia\.com/gpu\.count\.relearn'
   ```
 
-  A node without it had no count, because its count source is missing or its expression failed, or its patch failed. It keeps its labels, and its old label does not count for the other nodes. The labeler relearns it once it has a count again, and retries a failed patch at the node's next reconcile or the next restart. If such a node should not be relearned from the count it comes back with, pin it with an override before then.
+  A node without it had no count, because its count source is missing or its expression failed, it was [not settled](#nodes-whose-devices-are-being-reconfigured), or its patch failed. It keeps its labels, and its old label does not count for the other nodes. The labeler relearns it once it has a count again, and retries a failed patch at the node's next reconcile or the next restart. If such a node should not be relearned from the count it comes back with, pin it with an override before then.
 - **Keep the ID:** leave `relearnID` set. Removing it makes every old label count again, including one that a node without a count still carries. Use a new value for the next relearn and never reuse an old one: the annotations stay on the nodes after the ID is cleared, so a reused ID treats unchanged nodes as already relearned. Do not remove the annotation by hand either, since without it the node's label stops counting and the node is relearned at its next reconcile, and note that renaming a class with an ID set relearns the whole class, because the annotation key carries the class name.
 
 `relearnID` must be a valid label value: at most 63 characters of letters, digits, `-`, `_` and `.`, starting and ending with a letter or digit. Quote it in YAML, since an unquoted number such as 20261105 is rendered as a float and rejected. The labeler does not start with an invalid value. The default, an empty value, changes nothing.
+
+### Nodes Whose Devices Are Being Reconfigured
+
+While the devices of a node are being reconfigured, its counts and its grouping labels can disagree. A class can set `settledExpression`, a CEL expression that returns `false` while such a change is going on. It sees `node` and `resourceSlices` like `currentExpression`, with every ResourceSlice of the node, also in a class with sources. Point it at whatever marks your nodes as being in the middle of a change. The default GPU class reads the state label of the GPU Operator MIG manager:
+
+```yaml
+settledExpression: |
+  !('nvidia.com/mig.config.state' in node.metadata.labels) ||
+  node.metadata.labels['nvidia.com/mig.config.state'] == 'success'
+```
+
+While the expression returns `false` for a node:
+
+- The labeler still writes the current label of the class, so the node shows what it reports.
+- It leaves the expected label and both annotations of the class as they are, even when an override matches the node or a new `relearnID` is set. They are written once the node is settled.
+- Neither the current count nor the expected label of the node raises the expected count of another node. The `labeler_device_count_skipped_updates_total` counter with `reason="unsettled"` counts the skipped updates and the nodes left out of a partition this way.
+- The labeler logs each reconcile that leaves the expected label alone at Info level.
+
+When the expression returns `true` again, the node is reconciled like any other. If its partition changed meanwhile, for example because it now carries the MIG product, it learns its expected count in the new partition.
+
+What the default covers follows from how the MIG manager works. It sets `nvidia.com/mig.config.state=pending`, stops the device plugin and GFD and waits until their pods are gone, changes the MIG layout, sets `rebooting` if it has to reboot the node, starts the device plugin and GFD again, and then sets `success`. If the change fails, it starts them again and then sets `failed`. While a node is `pending` or `rebooting`, the device plugin and GFD of the GPU Operator therefore report nothing about the new layout, which they report only after `success`. The default matters for a node whose MIG change failed, which reports again while its state is `failed` and keeps its expected count until the MIG manager succeeds, and for any count source that the MIG manager does not stop. It does not cover what GFD and the device plugin report after `success`.
+
+If the expression fails, for example because it reads a label that the node does not have, or returns something other than a bool, the labeler leaves the labels of the class on the node as they are, as for a failed `currentExpression`, logs a warning, and uses neither the count nor the expected label of the node for other nodes. The labeler does not start with an expression that does not compile, or that CEL can tell returns something other than a bool.
+
+Change the expression if other tooling reconfigures devices and marks the nodes it works on, or set it to an empty string to treat every node as settled, which is the default for a class without it. [ADR-070](../designs/070-expected-device-count-relearn.md) describes what is left to the relearn.
 
 ### Device-Count Sources
 

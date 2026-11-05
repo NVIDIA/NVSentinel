@@ -1412,7 +1412,9 @@ labeler:
   # resourceSliceDriver applies when the node has ResourceSlices from that driver. All sources
   # of a class must count the same unit. See the labeler chart values.yaml for details.
   # Learned expected counts never go down on their own. Set relearnID on a class to a new value
-  # to relearn it once from current counts, and keep it set (ADR-070).
+  # to relearn it once from current counts, and keep it set (ADR-070). A node for which
+  # settledExpression returns false, such as one whose MIG configuration is changing, teaches
+  # no other node and keeps its expected count until it is settled again.
   expectedDeviceCounts:
     enabled: true
     classes:
@@ -1425,6 +1427,13 @@ labeler:
           expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
         expectedCountOverrides: []
         relearnID: ""
+        # Not settled while nvidia.com/mig.config.state, which the GPU Operator MIG manager sets,
+        # is pending, rebooting or failed. The MIG manager stops GFD and the device plugin while it
+        # works, so this matters most for a node whose MIG change failed and for count sources it
+        # does not pause. See docs/configuration/labeler.md.
+        settledExpression: |
+          !('nvidia.com/mig.config.state' in node.metadata.labels) ||
+          node.metadata.labels['nvidia.com/mig.config.state'] == 'success'
         sources:
           - name: dra
             resourceSliceDriver: gpu.nvidia.com

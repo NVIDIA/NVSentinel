@@ -46,7 +46,7 @@ const (
 )
 
 // ratchetRelearnConfig returns the GPU class with a relearn ID, loaded from the
-// TOML file that the labeler chart renders.
+// TOML file that the labeler chart renders, settledExpression included.
 func ratchetRelearnConfig(t *testing.T, relearnID string) Config {
 	t.Helper()
 
@@ -57,6 +57,7 @@ func ratchetRelearnConfig(t *testing.T, relearnID string) Config {
 name = "gpu"
 enabled = true
 relearnID = %q
+settledExpression = '''%s'''
 
 [classes.labels]
 current = %q
@@ -73,7 +74,8 @@ groupingExpression = '''%s'''
 name = "gfd"
 groupingLabels = [%q, %q]
 currentExpression = '''%s'''
-`, relearnID, testGPUCountCurrentLabel, testGPUCountExpectedLabel, testGPUDRADriver, testInstanceType,
+`, relearnID, testGPUSettledExpression, testGPUCountCurrentLabel, testGPUCountExpectedLabel, testGPUDRADriver,
+		testInstanceType,
 		testDRAGPUCurrentExpression, testDRAGPUGroupingExpression, testInstanceType, testGFDGPUProduct,
 		testGFDGPUCurrentExpression), 0o600))
 
@@ -141,9 +143,9 @@ func ratchetMismatches(nodes []*corev1.Node) int {
 }
 
 // ratchetRegroupedFleet returns the fleet as #1914 reports it. Two nodes report
-// 8 GPUs while they still carry the plain product, as GFD does halfway through
-// a switch to MIG, then move to their MIG partition. The labeler restarts and
-// reconciles the fleet three more times.
+// 8 GPUs while they still carry the plain product, as the reporter saw partway
+// through a switch to MIG, then move to their MIG partition. The labeler
+// restarts and reconciles the fleet three more times.
 func ratchetRegroupedFleet(t *testing.T) []*corev1.Node {
 	t.Helper()
 
@@ -292,6 +294,53 @@ func TestExpectedCountRatchet_CleanMIGDisableKeepsTheMIGCountInItsPartition(t *t
 	require.Equal(t, ratchetMIGPartition, learnedIn)
 
 	for _, node := range nodes {
+		require.Equal(t, ratchetPlainPartition, node.Annotations[ratchetPartitionAnnotation], node.Name)
+	}
+}
+
+// The same story with the MIG manager. It marks the two nodes pending while it
+// switches them back to the plain product, and a count source that it does not
+// pause briefly reports 8 GPUs under the plain product. GFD under the GPU
+// Operator would be stopped at that point. Nothing is learned from the two
+// nodes until the manager reports success, and then the 8 they carry stays in
+// their MIG partition. The two nodes relearn 4 under the same ID and no other
+// node moves.
+func TestExpectedCountRatchet_MIGDisableWhilePendingNeedsNoNewID(t *testing.T) {
+	manager := newTestManager(t, ratchetRelearnConfig(t, ratchetRelearnID))
+	nodes := ratchetSweep(t, manager, ratchetRegroupedFleet(t))
+	require.Zero(t, ratchetMismatches(nodes))
+
+	for _, node := range nodes[:2] {
+		node.Labels[testMIGConfigState] = "pending"
+		ratchetSetGFD(node, ratchetPlainProduct, 8)
+	}
+
+	nodes = ratchetSweep(t, newTestManager(t, ratchetRelearnConfig(t, ratchetRelearnID)), nodes)
+
+	for _, node := range nodes[2:] {
+		require.Equal(t, "4", node.Labels[testGPUCountExpectedLabel], node.Name)
+	}
+
+	for _, node := range nodes[:2] {
+		require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel], node.Name)
+		require.Equal(t, ratchetMIGPartition, node.Annotations[ratchetPartitionAnnotation], node.Name)
+		ratchetSetGFD(node, ratchetPlainProduct, 4)
+	}
+
+	nodes = ratchetSweep(t, manager, nodes)
+	require.Equal(t, 2, ratchetMismatches(nodes), "the two nodes report 4 and keep 8 while they are pending")
+
+	for _, node := range nodes[:2] {
+		node.Labels[testMIGConfigState] = "success"
+	}
+
+	nodes = ratchetSweep(t, manager, nodes)
+
+	require.Zero(t, ratchetMismatches(nodes))
+
+	for _, node := range nodes {
+		require.Equal(t, "4", node.Labels[testGPUCountExpectedLabel], node.Name)
+		require.Equal(t, ratchetRelearnID+"/4", node.Annotations[ratchetAnnotation], node.Name)
 		require.Equal(t, ratchetPlainPartition, node.Annotations[ratchetPartitionAnnotation], node.Name)
 	}
 }

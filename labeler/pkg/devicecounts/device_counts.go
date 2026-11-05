@@ -63,6 +63,12 @@ type ClassConfig struct {
 	// once from current counts. Set a new value for each relearn and keep it
 	// set; the labeler relearns each node once per ID (ADR-070).
 	RelearnID string `toml:"relearnID"`
+	// SettledExpression returns false while the devices of a node are being
+	// reconfigured, for example while the MIG manager changes its MIG layout.
+	// It sees the node and all of its ResourceSlices. Such a node teaches no
+	// other node, and its own expected label is left as it is until it is
+	// settled again (ADR-070). Empty means always settled.
+	SettledExpression string `toml:"settledExpression"`
 }
 
 // SourceConfig describes one way to count a class's devices on a node.
@@ -100,6 +106,8 @@ type compiledClass struct {
 	ClassConfig
 	program cel.Program
 	sources []compiledSource
+	// settledProgram is the compiled SettledExpression, or nil without one.
+	settledProgram cel.Program
 	// partitionAnnotation is the annotation that records the partition in
 	// which the expected label was learned.
 	partitionAnnotation string
@@ -184,6 +192,11 @@ type partitionExpectedKey struct {
 //   - err is non-nil when CEL evaluation failed; or
 //   - count is valid when missingSource is false and err is nil.
 //
+// unsettled is true when the class's settledExpression returned false, or
+// failed, in which case err is set too. The devices of the node may be in the
+// middle of a change, so neither its count nor its expected label may raise
+// another node's expected count, and its own expected label is left as it is.
+//
 // partitionKey is meaningful only when hasPartition is true. A node without a
 // partition learns its expected count only from itself and is never a peer.
 // For a class without sources, the partition comes from node labels alone and
@@ -195,6 +208,7 @@ type countObservation struct {
 	count         int
 	missingSource bool
 	err           error
+	unsettled     bool
 	source        *compiledSource
 	partitionKey  string
 	hasPartition  bool
@@ -324,45 +338,69 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 	resourceSlices := p.cachedResourceSlicesForNode(node)
 
 	for classIndex, class := range p.manager.classes {
-		observation := p.manager.observe(ctx, class, node, resourceSlices)
-		recordDeviceCountSource(class, node.Name, observation)
-
-		// Do not turn a missing source into current=0. The labels keep their
-		// last values until a source is available again.
-		if observation.missingSource {
-			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
-			slog.Warn("Skipping device count label update because no device count source is available on the node",
-				"node", node.Name, "class", class.Name)
-
-			continue
-		}
-
-		if observation.err != nil {
-			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
-			slog.Warn("Skipping device count label update after current count evaluation failed",
-				"node", node.Name, "class", class.Name, "error", observation.err)
-
-			continue
-		}
-
-		current := observation.count
-		expected := p.expectedDeviceCount(ctx, classIndex, class, node, observation)
-		currentValue := strconv.Itoa(current)
-
-		metrics.CurrentDeviceCount.WithLabelValues(node.Name, class.Name).Set(float64(current))
-
-		if observation.hasPartition {
-			metrics.ExpectedDeviceCount.WithLabelValues(class.Name, observation.partitionKey).Set(float64(expected))
-		}
-
-		if node.Labels[class.Labels.Current] != currentValue {
-			node.Labels[class.Labels.Current] = currentValue
+		if p.calculateAndSetClassLabels(ctx, classIndex, class, node, resourceSlices) {
 			needsUpdate = true
 		}
+	}
 
-		if class.setExpected(node, expected, observation) {
-			needsUpdate = true
-		}
+	return needsUpdate
+}
+
+// calculateAndSetClassLabels evaluates one class and writes its labels onto
+// node.
+func (p *ReconcileCache) calculateAndSetClassLabels(
+	ctx context.Context,
+	classIndex int,
+	class compiledClass,
+	node *corev1.Node,
+	resourceSlices []*resourcev1.ResourceSlice,
+) bool {
+	observation := p.manager.observe(ctx, class, node, resourceSlices)
+	recordDeviceCountSource(class, node.Name, observation)
+
+	// Do not turn a missing source into current=0. The labels keep their
+	// last values until a source is available again.
+	if observation.missingSource {
+		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
+		slog.Warn("Skipping device count label update because no device count source is available on the node",
+			"node", node.Name, "class", class.Name)
+
+		return false
+	}
+
+	if observation.err != nil {
+		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
+		slog.Warn("Skipping device count label update after current count evaluation failed",
+			"node", node.Name, "class", class.Name, "error", observation.err)
+
+		return false
+	}
+
+	current := observation.count
+
+	metrics.CurrentDeviceCount.WithLabelValues(node.Name, class.Name).Set(float64(current))
+
+	// While its devices are being reconfigured the node reports what it has,
+	// but its expected label and annotations stay as they are until it settles.
+	if observation.unsettled {
+		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonUnsettled).Inc()
+		slog.Info("Leaving the expected device count unchanged while the node is not settled",
+			"node", node.Name, "class", class.Name, "current", current,
+			"expected", node.Labels[class.Labels.Expected])
+
+		return class.setCurrent(node, current)
+	}
+
+	expected := p.expectedDeviceCount(ctx, classIndex, class, node, observation)
+
+	if observation.hasPartition {
+		metrics.ExpectedDeviceCount.WithLabelValues(class.Name, observation.partitionKey).Set(float64(expected))
+	}
+
+	needsUpdate := class.setCurrent(node, current)
+
+	if class.setExpected(node, expected, observation) {
+		needsUpdate = true
 	}
 
 	return needsUpdate
@@ -466,6 +504,11 @@ func compileDeviceCountClass(
 
 	prefix := fmt.Sprintf("expectedDeviceCounts.classes[%d] (%s)", index, classConfig.Name)
 
+	settledProgram, err := compileSettledExpression(env, prefix, classConfig.SettledExpression)
+	if err != nil {
+		return compiledClass{}, false, fmt.Errorf("compile class settled expression: %w", err)
+	}
+
 	if len(classConfig.Sources) > 0 {
 		sources, err := compileDeviceCountSources(env, prefix, classConfig)
 		if err != nil {
@@ -475,6 +518,7 @@ func compileDeviceCountClass(
 		return compiledClass{
 			ClassConfig:         classConfig,
 			sources:             sources,
+			settledProgram:      settledProgram,
 			partitionAnnotation: PartitionAnnotationKey(classConfig.Name),
 			relearnAnnotation:   relearnAnnotation(classConfig),
 		}, true, nil
@@ -489,6 +533,7 @@ func compileDeviceCountClass(
 	return compiledClass{
 		ClassConfig:         classConfig,
 		program:             program,
+		settledProgram:      settledProgram,
 		partitionAnnotation: PartitionAnnotationKey(classConfig.Name),
 		relearnAnnotation:   relearnAnnotation(classConfig),
 	}, true, nil
@@ -916,13 +961,19 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 
 // peerEvidence returns the highest count that a peer in the same partition
 // contributes to the partition maximum: its expected label, when it counts, and
-// its current count, when it is usable.
+// its current count, when it is usable. A peer that is not settled contributes
+// neither.
 func peerEvidence(
 	class compiledClass,
 	reconciledNodeName string,
 	peer *corev1.Node,
 	observation countObservation,
 ) int {
+	if observation.unsettled {
+		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonUnsettled).Inc()
+		return 0
+	}
+
 	label, otherPartition := class.expectedEvidence(peer, observation)
 	if otherPartition {
 		// The peer moved here with a label it learned elsewhere. It is
@@ -1015,6 +1066,19 @@ func parseCountLabel(raw string) (int, bool) {
 	return value, true
 }
 
+// setCurrent writes the current label of the class and reports whether it
+// changed.
+func (class compiledClass) setCurrent(node *corev1.Node, current int) bool {
+	value := strconv.Itoa(current)
+	if node.Labels[class.Labels.Current] == value {
+		return false
+	}
+
+	node.Labels[class.Labels.Current] = value
+
+	return true
+}
+
 func (class compiledClass) expectedOverride(node *corev1.Node) (int, bool) {
 	for _, override := range class.ExpectedCountOverrides {
 		if matchLabels(node.Labels, override.MatchLabels) {
@@ -1066,9 +1130,9 @@ func (class compiledClass) referencesNodeResources() bool {
 	return false
 }
 
-// expressions returns the class-level expression and every source expression.
+// expressions returns the class-level expressions and every source expression.
 func (class compiledClass) expressions() []string {
-	expressions := []string{class.CurrentExpression}
+	expressions := []string{class.CurrentExpression, class.SettledExpression}
 	for _, source := range class.Sources {
 		expressions = append(expressions, source.CurrentExpression, source.GroupingExpression)
 	}

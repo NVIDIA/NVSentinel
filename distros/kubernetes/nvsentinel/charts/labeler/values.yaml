@@ -82,6 +82,11 @@ requireDCGMReadyForBootstrap: true
 # counts of its nodes, for example after a MIG change, set relearnID on the class to a new value,
 # such as a date and a reason, quoted so that YAML keeps it a string, and keep it set. A new value restarts the labeler, which relearns
 # every node of the class once. See docs/configuration/labeler.md and ADR-070.
+#
+# An expected count only counts in the partition where it was learned. A class can also set
+# settledExpression, a CEL expression over the node and its ResourceSlices that returns false
+# while the devices of a node are being reconfigured. Such a node teaches no other node, and its own
+# expected count is left as it is until the expression returns true again.
 expectedDeviceCounts:
   enabled: true
   classes:
@@ -94,6 +99,13 @@ expectedDeviceCounts:
         expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
       expectedCountOverrides: []
       relearnID: ""
+      # Not settled while nvidia.com/mig.config.state, which the GPU Operator MIG manager sets,
+      # is pending, rebooting or failed. The MIG manager stops GFD and the device plugin while it
+      # works, so this matters most for a node whose MIG change failed and for count sources it
+      # does not pause. See docs/configuration/labeler.md.
+      settledExpression: |
+        !('nvidia.com/mig.config.state' in node.metadata.labels) ||
+        node.metadata.labels['nvidia.com/mig.config.state'] == 'success'
       sources:
         - name: dra
           resourceSliceDriver: gpu.nvidia.com

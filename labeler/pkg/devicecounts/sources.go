@@ -38,8 +38,36 @@ const (
 	partitionKeySeparator = "|"
 )
 
-// observe evaluates one class for one node.
+// observe evaluates one class for one node: its count, its partition, and
+// whether the node is settled.
 func (m *Manager) observe(
+	ctx context.Context,
+	class compiledClass,
+	node *corev1.Node,
+	resourceSlices []*resourcev1.ResourceSlice,
+) countObservation {
+	observation := m.observeCount(ctx, class, node, resourceSlices)
+	if observation.missingSource || observation.err != nil {
+		return observation
+	}
+
+	// A node that cannot tell whether it is settled is skipped like one whose
+	// currentExpression failed, and it teaches nobody.
+	settled, err := class.settled(ctx, node, resourceSlices)
+	if err != nil {
+		observation.err = err
+		observation.unsettled = true
+
+		return observation
+	}
+
+	observation.unsettled = !settled
+
+	return observation
+}
+
+// observeCount evaluates the count and the partition of one class for one node.
+func (m *Manager) observeCount(
 	ctx context.Context,
 	class compiledClass,
 	node *corev1.Node,

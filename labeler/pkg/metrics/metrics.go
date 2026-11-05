@@ -30,6 +30,9 @@ const (
 	// SkipReasonPartitionChanged counts expected labels left out of a
 	// partition maximum because they were learned in another partition.
 	SkipReasonPartitionChanged = "partition_changed"
+	// SkipReasonUnsettled counts expected label updates skipped, and peers
+	// left out of a partition maximum, because a node was not settled.
+	SkipReasonUnsettled = "unsettled"
 )
 
 var (

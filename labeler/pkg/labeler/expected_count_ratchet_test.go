@@ -49,6 +49,7 @@ const (
 	ratchetMIG           = "NVIDIA-GB200-MIG-3g.93gb"
 	ratchetRelearnID     = "2026-11-05-mig"
 	ratchetAnnotation    = "nvsentinel.dgxc.nvidia.com/gpu.count.relearn"
+	ratchetMIGState      = "nvidia.com/mig.config.state"
 
 	// The partition annotation and the partitions of the gfd source for the
 	// plain and the MIG product.
@@ -73,7 +74,11 @@ const ratchetGPUConfigTOML = `enabled = true
 [[classes]]
 name = "gpu"
 enabled = true
-%s
+%ssettledExpression = '''
+!('nvidia.com/mig.config.state' in node.metadata.labels) ||
+node.metadata.labels['nvidia.com/mig.config.state'] == 'success'
+'''
+
 [classes.labels]
 current = "nvsentinel.dgxc.nvidia.com/gpu.count.current"
 expected = "nvsentinel.dgxc.nvidia.com/gpu.count.expected"
@@ -310,9 +315,9 @@ func ratchetStart(t *testing.T, cli kubernetes.Interface, config devicecounts.Co
 	return labeler, stop
 }
 
-// Two nodes of a GB200 partition are switched to MIG. GFD reports 8 GPUs on
-// them before it reports the MIG product, and the labeler restarts while that
-// is visible, as on an upgrade. After the two nodes move to their MIG
+// Two nodes of a GB200 partition are switched to MIG. Their count rises to 8
+// before their product changes, as the reporter of #1914 saw, and the labeler
+// restarts while that is visible, as on an upgrade. After the two nodes move to their MIG
 // partition, every plain node keeps an expected count of 8 across another
 // restart. Removing the label from one node is not reconciled, and the node's
 // next input event takes 8 back from the other nodes.
@@ -502,6 +507,106 @@ func TestExpectedCountRatchet_Envtest_MIGToggleKeepsEachCountInItsPartition(t *t
 		cached, err := labeler.getNodeFromCache(ratchetNodeName(0))
 		return err == nil && cached.Annotations[ratchetPartitionAnnotation] == ratchetPlainPartition
 	}, ratchetWait, 200*time.Millisecond, "the node cache keeps the partition annotation")
+
+	stop()
+
+	stopRecording = ratchetRecordWrites(t, cli)
+	ratchetStart(t, cli, ratchetGPUConfig(t, ""))
+
+	require.Empty(t, stopRecording(), "a restart writes nothing")
+	require.Equal(t, ratchetTally{plain: map[string]int{"4/4": ratchetFleetSize}, mig: map[string]int{}},
+		ratchetCount(t, cli))
+}
+
+// ratchetMIGManager sets nvidia.com/mig.config.state on a node as the GPU
+// Operator MIG manager does. The tests write the count labels themselves while
+// a node is pending, which models a count source that the MIG manager does not
+// pause. Under the GPU Operator, GFD and the device plugin are stopped then.
+func ratchetMIGManager(t *testing.T, cli kubernetes.Interface, name, state string) {
+	t.Helper()
+
+	ratchetPatchLabels(t, cli, name, map[string]any{ratchetMIGState: state})
+}
+
+// The labeler learns nothing from a node while its MIG manager state is not
+// success. Two nodes of the GB200 fleet are switched to MIG and back while they
+// are pending, each time through a count of 8 GPUs under the plain product, as
+// a count source that the MIG manager does not pause could report it, and the
+// labeler restarts while they are pending. No node that stays plain is written
+// at any point, the two nodes learn 8 in their MIG partition and 4 again when
+// they come back, and no relearn ID is ever set.
+func TestExpectedCountRatchet_Envtest_MIGChangesWhilePendingTeachNothing(t *testing.T) {
+	cli := ratchetEnvtestClient(t)
+	ratchetCreateFleet(t, cli)
+
+	_, stop := ratchetStart(t, cli, ratchetGPUConfig(t, ""))
+	ratchetWaitFor(t, cli, "every node learns 4", func(c ratchetTally) bool {
+		return c.plain["4/4"] == ratchetFleetSize
+	})
+
+	stopRecording := ratchetRecordWrites(t, cli)
+
+	for i := range 2 {
+		ratchetMIGManager(t, cli, ratchetNodeName(i), "pending")
+		ratchetSetGFD(t, cli, ratchetNodeName(i), ratchetPlain, 8)
+	}
+
+	ratchetWaitFor(t, cli, "the two pending nodes report 8 and keep 4", func(c ratchetTally) bool {
+		return c.plain["8/4"] == 2 && c.plain["4/4"] == ratchetPlains
+	})
+
+	stop()
+	_, stop = ratchetStart(t, cli, ratchetGPUConfig(t, ""))
+	require.Equal(t, ratchetTally{plain: map[string]int{"8/4": 2, "4/4": ratchetPlains}, mig: map[string]int{}},
+		ratchetCount(t, cli), "a restart while the two nodes are pending spreads nothing")
+
+	for i := range 2 {
+		ratchetSetGFD(t, cli, ratchetNodeName(i), ratchetMIG, 8)
+		ratchetMIGManager(t, cli, ratchetNodeName(i), "success")
+	}
+
+	ratchetWaitFor(t, cli, "the MIG nodes learn 8 in their partition", func(c ratchetTally) bool {
+		return c.mig["8/8"] == 2 && c.plain["4/4"] == ratchetPlains
+	})
+
+	for i := range 2 {
+		ratchetMIGManager(t, cli, ratchetNodeName(i), "pending")
+		ratchetSetGFD(t, cli, ratchetNodeName(i), ratchetPlain, 8)
+		ratchetSetGFD(t, cli, ratchetNodeName(i), ratchetPlain, 4)
+	}
+
+	ratchetWaitFor(t, cli, "the two pending nodes report 4 and keep 8", func(c ratchetTally) bool {
+		return c.plain["4/8"] == 2 && c.plain["4/4"] == ratchetPlains
+	})
+
+	for i := range 2 {
+		ratchetMIGManager(t, cli, ratchetNodeName(i), "success")
+	}
+
+	ratchetWaitFor(t, cli, "the two nodes relearn 4", func(c ratchetTally) bool {
+		return c.plain["4/4"] == ratchetFleetSize
+	})
+	time.Sleep(ratchetSettle)
+
+	writes := stopRecording()
+
+	for i := 2; i < ratchetFleetSize; i++ {
+		require.NotContains(t, writes, ratchetNodeName(i), "a node that stayed plain is written")
+	}
+
+	learnedIn := map[string]string{"8": ratchetMIGPartition, "4": ratchetPlainPartition}
+
+	for name, versions := range writes {
+		require.Contains(t, []string{ratchetNodeName(0), ratchetNodeName(1)}, name)
+
+		for _, version := range versions {
+			expected := version.Labels[ratchetExpectedLabel]
+			require.Equal(t, learnedIn[expected], version.Annotations[ratchetPartitionAnnotation],
+				"%s: expected=%s", name, expected)
+		}
+	}
+
+	ratchetRequirePartitions(t, cli, nil)
 
 	stop()
 

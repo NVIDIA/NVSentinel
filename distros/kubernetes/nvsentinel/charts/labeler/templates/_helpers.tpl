@@ -13,7 +13,7 @@ Whether expected device-count configuration needs ResourceSlice access.
 {{- if .Values.expectedDeviceCounts.enabled -}}
 {{- range .Values.expectedDeviceCounts.classes }}
 {{- if .enabled -}}
-{{- if contains "resourceSlices" (default "" .currentExpression) -}}
+{{- if or (contains "resourceSlices" (default "" .currentExpression)) (contains "resourceSlices" (default "" .settledExpression)) -}}
 {{- $requires = true -}}
 {{- end -}}
 {{- range .sources }}
@@ -110,6 +110,11 @@ currentExpression = '''
 {{- else if .currentExpression }}
 currentExpression = '''
 {{ trimSuffix "\n" .currentExpression }}
+'''
+{{- end }}
+{{- with .settledExpression }}
+settledExpression = '''
+{{ trimSuffix "\n" . }}
 '''
 {{- end }}
 
