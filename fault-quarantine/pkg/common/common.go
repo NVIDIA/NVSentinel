@@ -14,10 +14,7 @@
 
 package common
 
-import (
-	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-)
+import "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 
 // As part of the quarantineValidationHealthEvent annotation, we keep track of HealthEvents which contributed the
 // tests and the tests themselves. We will use the HealthEvent ID to check if the node was fully drained as part
@@ -62,7 +59,7 @@ const (
 	// a name the rules do not use yields no field paths, so every node prunes to
 	// the operational keys alone and the opt-out rules stop seeing the labels
 	// they read.
-	NodeCELVar = celrule.NodeVar
+	NodeCELVar = "node"
 )
 
 // QuarantineAnnotationKeys are every annotation key fault-quarantine reads off

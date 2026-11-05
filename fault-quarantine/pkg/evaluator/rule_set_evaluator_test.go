@@ -231,6 +231,13 @@ func TestRuleSetEvaluator_EvaluationError_IsPermanent(t *testing.T) {
 	}
 }
 
+// The node cache derives what it retains from reads of common.NodeCELVar, so
+// it must name the variable celrule binds the Node to. common does not import
+// celrule, which would add cel-go to every module that imports common.
+func TestNodeCELVar_MatchesCelrule(t *testing.T) {
+	require.Equal(t, celrule.NodeVar, common.NodeCELVar)
+}
+
 func TestInitializeRuleSetEvaluators(t *testing.T) {
 	mockRule1 := config.Rule{
 		Kind:       "HealthEvent",
