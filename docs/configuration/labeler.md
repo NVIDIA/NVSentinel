@@ -241,7 +241,7 @@ The new value changes the configuration checksum, which restarts the labeler. It
 
 ### Nodes Whose Devices Are Being Reconfigured
 
-While the devices of a node are being reconfigured, its counts and its grouping labels can disagree. A class can set `settledExpression`, a CEL expression that returns `false` while such a change is going on. It sees `node` and `resourceSlices` like `currentExpression`, with every ResourceSlice of the node, also in a class with sources. Point it at whatever marks your nodes as being in the middle of a change. The default GPU class reads the state label of the GPU Operator MIG manager:
+While the devices of a node are being reconfigured, its counts and its grouping labels can disagree. A class can set `settledExpression`, a CEL expression that returns `false` while such a change is going on. It sees `node` and `resourceSlices` like `currentExpression`, with every ResourceSlice of the node, also in a class with sources. Point it at whatever marks your nodes as being in the middle of a change. It is empty by default, so every node counts as settled. Under the GPU Operator, the chart values show this expression for the GPU class as an opt-in, and it is the recommended setting there. It reads the state label of the MIG manager:
 
 ```yaml
 settledExpression: |
@@ -258,11 +258,11 @@ While the expression returns `false` for a node:
 
 When the expression returns `true` again, the node is reconciled like any other. If its partition changed meanwhile, for example because it now carries the MIG product, it learns its expected count in the new partition.
 
-What the default covers follows from how the MIG manager works. It sets `nvidia.com/mig.config.state=pending`, stops the device plugin and GFD and waits until their pods are gone, changes the MIG layout, sets `rebooting` if it has to reboot the node, starts the device plugin and GFD again, and then sets `success`. If the change fails, it starts them again and then sets `failed`. While a node is `pending` or `rebooting`, the device plugin and GFD of the GPU Operator therefore report nothing about the new layout, which they report only after `success`. The default matters for a node whose MIG change failed, which reports again while its state is `failed` and keeps its expected count until the MIG manager succeeds, and for any count source that the MIG manager does not stop. It does not cover what GFD and the device plugin report after `success`.
+What this expression covers follows from how the MIG manager works. It sets `nvidia.com/mig.config.state=pending`, stops the device plugin and GFD and waits until their pods are gone, changes the MIG layout, sets `rebooting` if it has to reboot the node, starts the device plugin and GFD again, and then sets `success`. If the change fails, it starts them again and then sets `failed`. While a node is `pending` or `rebooting`, the device plugin and GFD of the GPU Operator therefore report nothing about the new layout, which they report only after `success`. It matters for a node whose MIG change failed, which reports again while its state is `failed` and keeps its expected count until the MIG manager succeeds, and for any count source that the MIG manager does not stop. It does not cover what GFD and the device plugin report after `success`. The chart leaves it unset because it changes what the labeler does for a node in `failed`: its expected label stays as it is, overrides included, until the MIG manager succeeds.
 
 If the expression fails, for example because it reads a label that the node does not have, or returns something other than a bool, the labeler leaves the labels of the class on the node as they are, as for a failed `currentExpression`, logs a warning, and uses neither the count nor the expected label of the node for other nodes. The labeler does not start with an expression that does not compile, or that CEL can tell returns something other than a bool.
 
-Change the expression if other tooling reconfigures devices and marks the nodes it works on, or set it to an empty string to treat every node as settled, which is the default for a class without it. [ADR-070](../designs/070-expected-device-count-relearn.md) describes what is left to the relearn.
+Write your own expression if other tooling reconfigures devices and marks the nodes it works on. An empty string, the default, treats every node as settled. [ADR-070](../designs/070-expected-device-count-relearn.md) describes what is left to the relearn.
 
 ### Device-Count Sources
 

@@ -17,14 +17,42 @@ templates:
   - templates/configmap.yaml
   - templates/clusterrole.yaml
 tests:
-  # The labeler reads settledExpression as a key of the class, so it has to come
-  # before the class's [classes.labels] table.
-  - it: renders the settledExpression of the GPU class by default
+  # The chart leaves it empty, so the default changes nothing for a node whose
+  # MIG change failed.
+  - it: renders no settledExpression by default
     template: templates/configmap.yaml
+    asserts:
+      - notMatchRegex:
+          path: data["expected-device-counts.toml"]
+          pattern: settledExpression
+
+  # The labeler reads settledExpression as a key of the class, so it has to come
+  # after relearnID and before the class's [classes.labels] table.
+  - it: renders the MIG opt-in on the GPU class when it is set
+    template: templates/configmap.yaml
+    set:
+      expectedDeviceCounts:
+        enabled: true
+        classes:
+          - name: gpu
+            enabled: true
+            relearnID: "2026-11-05-mig"
+            settledExpression: |
+              !('nvidia.com/mig.config.state' in node.metadata.labels) ||
+              node.metadata.labels['nvidia.com/mig.config.state'] == 'success'
+            labels:
+              current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+              expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+            sources:
+              - name: gfd
+                groupingLabels:
+                  - node.kubernetes.io/instance-type
+                  - nvidia.com/gpu.product
+                currentExpression: int(node.metadata.labels['nvidia.com/gpu.count'])
     asserts:
       - matchRegex:
           path: data["expected-device-counts.toml"]
-          pattern: '\[\[classes\]\]\s+name = "gpu"\s+enabled = true\s+settledExpression = ''{3}\n!\(''nvidia\.com/mig\.config\.state'' in node\.metadata\.labels\) \|\|\nnode\.metadata\.labels\[''nvidia\.com/mig\.config\.state''\] == ''success''\n''{3}\s+\[classes\.labels\]'
+          pattern: '\[\[classes\]\]\s+name = "gpu"\s+enabled = true\s+relearnID = "2026-11-05-mig"\s+settledExpression = ''{3}\n!\(''nvidia\.com/mig\.config\.state'' in node\.metadata\.labels\) \|\|\nnode\.metadata\.labels\[''nvidia\.com/mig\.config\.state''\] == ''success''\n''{3}\s+\[classes\.labels\]'
       - notMatchRegex:
           path: data["expected-device-counts.toml"]
           pattern: '(?s)settledExpression.*settledExpression'

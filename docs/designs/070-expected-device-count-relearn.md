@@ -114,7 +114,7 @@ This closes the first path. Every enabled class writes the annotation, with or w
 
 A class can set `settledExpression`, a CEL expression that returns a bool. It sees `node` and `resourceSlices` like `currentExpression`, with every ResourceSlice of the node, also in a class with sources. While it returns false for a node, the node is not settled. Neither its current count nor its expected label raises the expected count of another node. For the node itself the labeler writes the current label and leaves the expected label and both annotations as they are, so an override or a new relearn ID reaches the node once it is settled again. The labeler logs each such reconcile and counts it, and each node it leaves out of a partition, with the reason `unsettled`. A failed evaluation leaves the labels of the node as they are, as a failed `currentExpression` does, and the node teaches nobody, as when it is not settled. An expression that does not compile, or that CEL can tell returns something other than a bool, stops the labeler at startup.
 
-The chart sets it for the GPU class from the state label of the MIG manager:
+The chart leaves it empty, so by default every node is settled and a node whose MIG change failed is treated as before. The chart values document this expression for the GPU class as an opt-in and recommend it under the GPU Operator:
 
 ```text
 !('nvidia.com/mig.config.state' in node.metadata.labels) ||
@@ -123,7 +123,7 @@ node.metadata.labels['nvidia.com/mig.config.state'] == 'success'
 
 The MIG manager of the GPU Operator (`pkg/mig/reconfigure/reconfigure.go` in mig-parted) sets the state to `pending`, stops the device plugin and GFD through their `nvidia.com/gpu.deploy.*` labels and waits up to five minutes for their pods to be gone, sets `rebooting` when it has to reboot the node, applies the layout, starts the device plugin and GFD again, and then sets `success`. When the change does not work it starts them again and then sets `failed`. A node in `failed` stays unsettled, with its expected count unchanged, until the MIG manager succeeds.
 
-What the default covers follows from that order. While a node is `pending` or `rebooting`, its device plugin and GFD are not running. GFD in its file mode removes its features file when it stops, so its labels go with it, and the labels and allocatable resources of the new layout arrive only after `success`. A transient like the one #1914 describes therefore cannot come from these components while the node is `pending`, and the default does not cover it. The default matters for a node in `failed`, whose device plugin and GFD run again before that state is written, and for any count source that the MIG manager does not stop. The rule itself is general: an operator points `settledExpression` at whatever marks their nodes as being in the middle of a change.
+What this expression covers follows from that order. While a node is `pending` or `rebooting`, its device plugin and GFD are not running. GFD in its file mode removes its features file when it stops, so its labels go with it, and the labels and allocatable resources of the new layout arrive only after `success`. A transient like the one #1914 describes therefore cannot come from these components while the node is `pending`, and the expression does not cover it. It matters for a node in `failed`, whose device plugin and GFD run again before that state is written, and for any count source that the MIG manager does not stop. The rule itself is general: an operator points `settledExpression` at whatever marks their nodes as being in the middle of a change.
 
 After `success`, a count and a grouping label that come from different writers can still disagree for a while. A `currentExpression` that counts from allocatable resources while the grouping label comes from GFD is the case to know about, because the device plugin can register the new layout before GFD relabels the node. With the gfd source of the chart the count and the product both come from GFD, which writes them in one features file that NFD applies in one node update. Which mechanism produced the reported state is not known, and the relearn remains the way back from it.
 
@@ -140,7 +140,7 @@ The first reconcile of each node after the upgrade writes its partition annotati
 Positive:
 
 - A node that leaves MIG or changes instance type no longer raises its new partition, and a MIG change no longer needs a new relearn ID.
-- A count observed while the MIG manager reports a node as `pending`, `rebooting` or `failed` raises no other node. Under the GPU Operator that is a count from a source the MIG manager does not stop, or the first reports after a failed change.
+- With the MIG expression set, a count observed while the MIG manager reports a node as `pending`, `rebooting` or `failed` raises no other node. Under the GPU Operator that is a count from a source the MIG manager does not stop, or the first reports after a failed change.
 - No learned count falls because devices vanished. A node that changes partition still gets the higher count of the other nodes of its new partition.
 
 Negative:
@@ -148,7 +148,7 @@ Negative:
 - A node whose partition changes is relearned from current counts. Alone in its new partition and missing a device at that moment, it accepts the loss.
 - A change of the partition key format, or of the grouping itself, such as new grouping labels or their order, a renamed source, or a product name that a new GFD or driver release reports differently, changes the key of every node once. Every node then relearns from current counts once, as in a relearn. The current counts of the other nodes of a partition still carry the higher value, unless every node of the partition lost devices at that same moment, which is the case ADR-043 protects against, for example a driver release that renames the product and hides a GPU at once.
 - A node that changes source and partition in one step still carries its count, because a change of source is not a change of partition. A MIG node at 8 whose cluster moves to GPUCluster mode keeps 8 in its DRA partition.
-- A node whose MIG change failed keeps its expected count until the MIG manager succeeds.
+- With the MIG expression set, a node whose MIG change failed keeps its expected count, overrides included, until the MIG manager succeeds. This is why the chart leaves it unset by default.
 - A node without a count, or not settled, at its first reconcile after the upgrade keeps a label without the annotation that counts in any partition until the labeler counts the node again.
 - Every enabled class adds an annotation to every node, and a class name that cannot form the annotation key stops the labeler at startup.
 
