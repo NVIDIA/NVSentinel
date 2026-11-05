@@ -78,3 +78,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 066 | [Health Events Analyzer — Datastore-Neutral Rules (proposed)](066-health-events-analyzer-datastore-neutral-rules.md) |
 | 068 | [Datastore — Bounded Retention for the PostgreSQL Changelog (proposed)](068-postgresql-changelog-retention.md) |
 | 069 | [Janitor — Extend the GPU Reset Job with a Strategic Merge Patch (proposed)](069-gpu-reset-job-extension.md) |
+| 070 | [Labeler - Explicit Relearn of Expected Device Counts (proposed)](070-expected-device-count-relearn.md) |
