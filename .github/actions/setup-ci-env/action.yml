@@ -58,7 +58,47 @@ runs:
         ./scripts/retry.sh sudo apt-get update -qq
         ./scripts/retry.sh sudo apt-get install -y -qq python3 python3-pip curl git wget unzip build-essential
 
+    # The self-hosted runners start with an empty tool cache, so setup-python downloads Python from
+    # GitHub release assets, which answer HTTP 429 when many jobs start at the same time. The Actions
+    # cache gives setup-python the Python of an earlier run instead. Only main saves the cache, and
+    # other branches restore it, because the repository Actions cache has a size limit.
+    - name: Find the OS version
+      id: os
+      shell: bash
+      run: |
+        echo "version_id=$(. /etc/os-release && echo "$VERSION_ID")" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Python
+      if: github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/Python
+        key: ${{ runner.os }}-${{ steps.os.outputs.version_id }}-${{ runner.arch }}-python-${{ steps.versions.outputs.python_version }}
+
+    - name: Restore cached Python
+      if: github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/Python
+        key: ${{ runner.os }}-${{ steps.os.outputs.version_id }}-${{ runner.arch }}-python-${{ steps.versions.outputs.python_version }}
+
     - name: Set up Python
+      id: setup-python
+      continue-on-error: true
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+      with:
+        python-version: ${{ steps.versions.outputs.python_version }}
+        cache: 'pip'
+
+    # setup-python tries the download three times within about 30 seconds. After a cache miss, for
+    # example after a Python version change, wait and try once more.
+    - name: Wait before setting up Python again
+      if: steps.setup-python.outcome == 'failure'
+      shell: bash
+      run: sleep 60
+
+    - name: Set up Python again
+      if: steps.setup-python.outcome == 'failure'
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
       with:
         python-version: ${{ steps.versions.outputs.python_version }}
@@ -113,10 +153,39 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
       with:
         go-version: ${{ steps.versions.outputs.go_version }}
-        cache: true
-        cache-dependency-path: |
-          **/go.sum
-          **/go.mod
+        cache: false
+
+    # The Go cache is about 1.7 GB for each architecture. When every branch saves its own copy, the
+    # repository Actions cache is full, and other caches are removed. So only main saves the Go cache,
+    # and other branches restore the cache of main.
+    - name: Find the Go cache paths
+      id: go-cache
+      shell: bash
+      run: |
+        echo "modcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "buildcache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Go modules and build output
+      if: github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: |
+          ${{ steps.go-cache.outputs.modcache }}
+          ${{ steps.go-cache.outputs.buildcache }}
+        key: ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-${{ hashFiles('**/go.sum', '**/go.mod') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-
+
+    - name: Restore cached Go modules and build output
+      if: github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: |
+          ${{ steps.go-cache.outputs.modcache }}
+          ${{ steps.go-cache.outputs.buildcache }}
+        key: ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-${{ hashFiles('**/go.sum', '**/go.mod') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-
 
     - name: Install Go tools
       shell: bash
