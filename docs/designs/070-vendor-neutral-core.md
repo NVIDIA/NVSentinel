@@ -170,7 +170,7 @@ A follow-up ADR selects one neutral domain for CRD groups, labels, and annotatio
 
 ### Core works without vendor software
 
-The core installs and runs on a cluster with no vendor software and with a datastore that the user supplies. It then detects, quarantines, drains, and remediates a fault. A CI job proves this with the `kind` remediation provider and a monitor that needs no vendor software.
+The core installs and runs with its default values on a cluster with no vendor software and with a datastore that the user supplies. It then detects, quarantines, drains, and remediates a fault. A CI job proves this with the `kind` remediation provider and a monitor that needs no vendor software.
 
 ## Implementation
 
@@ -281,7 +281,7 @@ Most of the work is already done. The [existing extension points](#existing-exte
 - During the deprecation period, components write two names for each label and annotation. This adds API writes and code paths.
 - The contracts become public API. A change to them needs the same care as the HealthEvent proto.
 - The split takes several releases. Until phase 4, the code and this ADR describe different layouts.
-- A core installation without the analyzer, for example on the Kubernetes datastore, has only `maxRemediationAttempts` in fault-remediation as protection against remediation loops.
+- A core installation without the analyzer, for example on the Kubernetes datastore, has no protection against remediation loops unless `maxRemediationAttempts` in fault-remediation is above 0. Its default is 0, which sets no limit.
 
 ### Mitigations
 
