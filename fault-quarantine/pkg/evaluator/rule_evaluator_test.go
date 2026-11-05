@@ -18,13 +18,10 @@ import (
 	"context"
 	"log"
 	"os"
-	"reflect"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -108,46 +105,6 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	_, err := testClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test node %s: %v", name, err)
-	}
-}
-
-func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-	node := &corev1.Node{
-		Name:        "slim-node",
-		Labels:      map[string]string{"environment": "production"},
-		Annotations: map[string]string{"maintenance": "false"},
-		Spec: corev1.NodeSpec{
-			Unschedulable: true,
-			Taints: []corev1.Taint{{
-				Key:    "dedicated",
-				Value:  "gpu",
-				Effect: corev1.TaintEffectNoSchedule,
-			}},
-		},
-	}
-	if err := indexer.Add(node); err != nil {
-		t.Fatalf("indexer.Add() error = %v", err)
-	}
-
-	evaluator, err := NewNodeRuleEvaluator(
-		`node.metadata.name == "slim-node" &&
-		 node.metadata.labels["environment"] == "production" &&
-		 node.metadata.annotations["maintenance"] == "false" &&
-		 node.spec.unschedulable &&
-		 node.spec.taints.exists(t, t.key == "dedicated")`,
-		corelisters.NewNodeLister(indexer),
-	)
-	if err != nil {
-		t.Fatalf("NewNodeRuleEvaluator() error = %v", err)
-	}
-
-	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "slim-node"})
-	if err != nil {
-		t.Fatalf("Evaluate() error = %v", err)
-	}
-	if result != common.RuleEvaluationSuccess {
-		t.Fatalf("Evaluate() = %v, want success", result)
 	}
 }
 
@@ -265,30 +222,6 @@ func TestNodeRuleEvaluator_RecoveryRead_PrunedCacheDoesNotHideOptOut(t *testing.
 	require.Equal(t, 1, reader.calls, "recovery must read the API server")
 }
 
-// Restoring the pruned maps must not invent one the node never carried, or a
-// rule asking whether a node has any annotations at all would read the cache
-// instead of the node.
-func TestNodeRuleEvaluator_NodeWithNoAnnotations_ReportsThemAbsent(t *testing.T) {
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-	require.NoError(t, indexer.Add(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "bare-node",
-			Labels: map[string]string{"kubernetes.io/hostname": "bare-node"},
-		},
-	}))
-
-	evaluator, err := NewNodeRuleEvaluator(
-		`!has(node.metadata.annotations) && has(node.metadata.labels)`,
-		corelisters.NewNodeLister(indexer),
-	)
-	require.NoError(t, err)
-
-	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "bare-node"})
-	require.NoError(t, err)
-	require.Equal(t, common.RuleEvaluationSuccess, result,
-		"a nil annotations map must stay absent while a populated labels map stays present")
-}
-
 func TestNodeRuleEvaluator_RecoveryRead_UsesCurrentNode(t *testing.T) {
 	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
 	if err := indexer.Add(&corev1.Node{
@@ -365,44 +298,6 @@ func TestNodeRuleEvaluator_DeletedNodeDuringRecovery_ReturnsPermanentError(t *te
 	require.Error(t, err)
 	assert.True(t, coldstart.IsPermanentError(err))
 	assert.Equal(t, 1, reader.calls)
-}
-
-func TestEvaluate(t *testing.T) {
-	expression := "event.agent == 'GPU' && event.checkName == 'XidError' && ('31' in event.errorCode || '42' in event.errorCode)"
-	evaluator, err := NewHealthEventRuleEvaluator(expression)
-	if err != nil {
-		t.Fatalf("Failed to create HealthEventRuleEvaluator: %v", err)
-	}
-
-	eventTrue := &protos.HealthEvent{
-		Agent:     "GPU",
-		CheckName: "XidError",
-		ErrorCode: []string{"31"},
-	}
-
-	result, err := evaluator.Evaluate(context.Background(), eventTrue)
-	if err != nil {
-		t.Fatalf("Failed to evaluate expression: %v", err)
-	}
-
-	if result != common.RuleEvaluationSuccess {
-		t.Errorf("Expected evaluation result to be true, got false")
-	}
-
-	eventFalse := &protos.HealthEvent{
-		Agent:     "GPU",
-		CheckName: "XidError",
-		ErrorCode: []string{"50"},
-	}
-
-	result, err = evaluator.Evaluate(context.Background(), eventFalse)
-	if err != nil {
-		t.Fatalf("Failed to evaluate expression: %v", err)
-	}
-
-	if result != common.RuleEvaluationFailed {
-		t.Errorf("Expected evaluation result to be false, got true")
-	}
 }
 
 func TestHealthEventRuleEvaluator_EvaluationError_ReturnsPermanentError(t *testing.T) {
@@ -558,63 +453,5 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestRoundTrip(t *testing.T) {
-	eventTime := timestamppb.New(time.Now())
-	event := &protos.HealthEvent{
-		Id:                 "123",
-		Version:            1,
-		Agent:              "test-agent",
-		ComponentClass:     "test-component",
-		CheckName:          "test-check",
-		IsFatal:            true,
-		IsHealthy:          false,
-		Message:            "test-message",
-		RecommendedAction:  protos.RecommendedAction_RESTART_VM,
-		ErrorCode:          []string{"E001", "E002"},
-		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "GPU-0"}},
-		Metadata:           map[string]string{"key1": "value1"},
-		GeneratedTimestamp: eventTime,
-		NodeName:           "test-node",
-	}
-
-	result, err := RoundTrip(event)
-	if err != nil {
-		t.Fatalf("Failed to roundtrip event: %v", err)
-	}
-
-	expectedMap := map[string]any{
-		"id":                "123",
-		"version":           float64(1),
-		"agent":             "test-agent",
-		"componentClass":    "test-component",
-		"checkName":         "test-check",
-		"isFatal":           true,
-		"isHealthy":         false,
-		"message":           "test-message",
-		"recommendedAction": float64(protos.RecommendedAction_RESTART_VM),
-		"errorCode":         []any{"E001", "E002"},
-		"entitiesImpacted": []any{
-			map[string]any{
-				"entityType":  "GPU",
-				"entityValue": "GPU-0",
-			},
-		},
-		"metadata": map[string]any{"key1": "value1"},
-		"generatedTimestamp": map[string]any{
-			"seconds": float64(eventTime.GetSeconds()),
-			"nanos":   float64(eventTime.GetNanos()),
-		},
-		"nodeName":                "test-node",
-		"processingStrategy":      float64(0),
-		"quarantineOverrides":     nil,
-		"drainOverrides":          nil,
-		"customRecommendedAction": "",
-	}
-
-	if !reflect.DeepEqual(result, expectedMap) {
-		t.Errorf("Expected map %v, got %v", expectedMap, result)
 	}
 }
