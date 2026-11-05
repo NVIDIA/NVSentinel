@@ -51,3 +51,8 @@ data:
     apiEndpoint = {{ .Values.configToml.lambda.apiEndpoint | default "" | quote }}
     workspaceId = {{ .Values.configToml.lambda.workspaceId | default "" | quote }}
     pollingIntervalSeconds = {{ .Values.configToml.lambda.pollingIntervalSeconds | default 30 }}
+
+    [akamai]
+    enabled = {{ eq .Values.cspName "akamai" }}
+    apiEndpoint = {{ (.Values.configToml.akamai).apiEndpoint | default "" | quote }}
+    pollingIntervalSeconds = {{ (.Values.configToml.akamai).pollingIntervalSeconds | default 60 }}

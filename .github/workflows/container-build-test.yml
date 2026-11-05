@@ -47,11 +47,27 @@ permissions:
 jobs:
   container-build-test:
     if: github.repository == 'nvidia/nvsentinel'
-    runs-on: linux-amd64-cpu32
+    name: container-build-test (${{ matrix.component }}, ${{ matrix.arch }})
+    # Each architecture builds on a runner of that architecture. An arm64 build on an amd64 runner runs
+    # in QEMU emulation, where compiling nccl-tests alone takes about 25 minutes.
+    runs-on: ${{ matrix.arch == 'arm64' && 'linux-arm64-cpu32' || 'linux-amd64-cpu32' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false  # Continue testing other containers even if one fails
       matrix:
+        arch: [amd64, arm64]
+        component:
+          - gpu-health-monitor-dcgm3
+          - gpu-health-monitor-dcgm4
+          - syslog-health-monitor
+          - log-collector
+          - file-server-cleanup
+          - preflight-dcgm-diag
+          - preflight-nccl-allreduce
+          - preflight-nccl-loopback
+          - metadata-collector
+          - gpu-reset
+        # Each entry adds the make command to both architectures of its component.
         include:
           # Health Monitors (Docker-based)
           - component: gpu-health-monitor-dcgm3
@@ -105,6 +121,8 @@ jobs:
           DISABLE_REGISTRY_CACHE: 'true'
           # Disable --load flag in CI builds (causes issues with multi-platform builds)
           DOCKER_LOAD_ARG: ''
+          # Build only the architecture of this runner.
+          PLATFORMS: linux/${{ matrix.arch }}
         with:
           make_command: ${{ matrix.make_command }}
 

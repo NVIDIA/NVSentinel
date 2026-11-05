@@ -42,6 +42,15 @@ const (
 	NodeNameEnvVar            = "NODE_NAME"
 	UploadURLBaseEnvVar       = "UPLOAD_URL_BASE"
 	DriverBinPathEnvVar       = "DRIVER_BIN_PATH"
+	ResetStateVolumeName      = "reset-state"
+	ResetStateMountPath       = "/run/nvsentinel-gpu-reset"
+	ResetRunCountFileEnvVar   = "RESET_RUN_COUNT_FILE"
+	ResetMaxRunsEnvVar        = "RESET_MAX_RUNS"
+	// ResetJobMaxRuns is how many times the reset Job runs gpu_reset.sh. With restartPolicy OnFailure, the
+	// Job controller fails the Job when the container restart count reaches backoffLimit, so a backoffLimit
+	// of ResetJobMaxRuns gives ResetJobMaxRuns full runs. The next run can start before the Job fails; the
+	// script then exits without a reset.
+	ResetJobMaxRuns = 2
 	// ContainerDriverRoot is the driverRoot that makes the reset command chroot into the reset
 	// container itself instead of into the mounted driver filesystem.
 	ContainerDriverRoot = "/"
@@ -234,7 +243,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 		Namespace: namespace,
 		Spec: batchv1.JobSpec{
 			ActiveDeadlineSeconds:   new(int64(300)),
-			BackoffLimit:            new(int32(2)),
+			BackoffLimit:            new(int32(ResetJobMaxRuns)),
 			TTLSecondsAfterFinished: new(int32(86400)),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -261,6 +270,14 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 							Name: HostSysVolumeName,
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: HostSysPath,
+							},
+						},
+						{
+							// gpu_reset.sh counts its runs here. An emptyDir outlives a container restart, and
+							// each new pod starts from zero.
+							Name: ResetStateVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
 							},
 						},
 					},
@@ -295,6 +312,14 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 									Name:  UploadURLBaseEnvVar,
 									Value: uploadURL,
 								},
+								{
+									Name:  ResetRunCountFileEnvVar,
+									Value: filepath.Join(ResetStateMountPath, "run-count"),
+								},
+								{
+									Name:  ResetMaxRunsEnvVar,
+									Value: strconv.Itoa(ResetJobMaxRuns),
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -312,6 +337,10 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								{
 									Name:      HostSysVolumeName,
 									MountPath: filepath.Join(driverRoot, HostSysPath),
+								},
+								{
+									Name:      ResetStateVolumeName,
+									MountPath: ResetStateMountPath,
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{
