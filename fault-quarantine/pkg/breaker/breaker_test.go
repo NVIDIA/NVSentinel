@@ -1053,8 +1053,15 @@ func TestIsTripped_StandingPercentageNotReached_DoesNotTrip(t *testing.T) {
 func breakerStateSeries(t *testing.T) map[string]float64 {
 	t.Helper()
 
+	return gaugeSeries(t, metrics.FaultQuarantineBreakerState)
+}
+
+// gaugeSeries returns every series of a single-label gauge vector by its label value.
+func gaugeSeries(t *testing.T, vec *prometheus.GaugeVec) map[string]float64 {
+	t.Helper()
+
 	ch := make(chan prometheus.Metric, 8)
-	metrics.FaultQuarantineBreakerState.Collect(ch)
+	vec.Collect(ch)
 	close(ch)
 
 	series := map[string]float64{}
@@ -1133,6 +1140,8 @@ func TestIsTripped_NoGPUNodes_StaysClosed(t *testing.T) {
 	ctx := context.Background()
 	b := newNoGPUNodeBreaker(t, ctx)
 
+	metrics.SetFaultQuarantineBreakerThresholdNodes(5, string(boundMaxNodes))
+
 	for range 2 {
 		tripped, err := b.IsTripped(ctx)
 		require.NoError(t, err, "a cluster without GPU nodes must not fail the breaker check")
@@ -1140,6 +1149,9 @@ func TestIsTripped_NoGPUNodes_StaysClosed(t *testing.T) {
 	}
 
 	require.Equal(t, StateClosed, b.CurrentState())
+	assert.Equal(t, map[string]float64{string(boundPercentage): 0},
+		gaugeSeries(t, metrics.FaultQuarantineBreakerThresholdNodes),
+		"the threshold gauge must not keep a value from a nonzero node count")
 }
 
 func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {

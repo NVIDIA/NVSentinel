@@ -456,7 +456,10 @@ func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bo
 	b.mu.Lock()
 	b.slideWindow(time.Now())
 	recentCordonedNodes := b.sumBuckets()
+	threshold, bindingBound := b.tripThreshold(0)
 	b.mu.Unlock()
+
+	metrics.SetFaultQuarantineBreakerThresholdNodes(float64(threshold), string(bindingBound))
 
 	if recentCordonedNodes == 0 {
 		metrics.SetFaultQuarantineBreakerUtilization(0)
@@ -471,8 +474,6 @@ func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bo
 	if err := b.ForceState(ctx, StateTripped); err != nil {
 		return true, fmt.Errorf("error forcing circuit breaker state to TRIPPED: %w", err)
 	}
-
-	metrics.SetFaultQuarantineBreakerState(string(StateTripped))
 
 	return true, nil
 }
