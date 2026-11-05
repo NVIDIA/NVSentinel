@@ -839,3 +839,49 @@ func TestFetchAndProcessHealthMetric_ContextCanceledDuringRetry_DropsTheBatchAtE
 	require.Len(t, inserts.get(), 1, "no retry after the context was canceled")
 	require.Contains(t, logs.String(), `level=ERROR msg="Stopped before the batch was stored`)
 }
+
+// TestFetchAndProcessHealthMetric_WriteThatCannotSucceed_IsNotRetried: a batch
+// that duplicates a document under another unique index gets the same answer
+// on every attempt, so it is dropped at once, at Error, instead of holding the
+// batches behind it through the whole backoff. A replay whose events are
+// already stored under the idempotency index is a success and is not retried
+// either.
+func TestFetchAndProcessHealthMetric_WriteThatCannotSucceed_IsNotRetried(t *testing.T) {
+	logs := captureLogs(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testWriteThatCannotSucceed", ctx,
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	inserts := &insertedMessages{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, error(&datastore.BulkWriteFailure{
+		Failed: datastore.BulkDocumentError{
+			DocumentIndex: 0, Duplicate: true, IndexName: "some_other_unique_index", Message: "E11000 duplicate key",
+		},
+	})).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{}, DuplicateCount: 1}, nil).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{"id"}}, nil)
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	for _, message := range []string{"foreign duplicate", "replay", "next"} {
+		ringBuffer.Enqueue(batchWithMessage(message, false))
+	}
+
+	exited := runLoop(ctx, connector)
+
+	require.Eventually(t, func() bool { return len(inserts.get()) == 3 }, 5*time.Second, 5*time.Millisecond,
+		"a batch was held for a retry")
+
+	ringBuffer.ShutDownHealthMetricQueue()
+	requireClosed(t, exited, "the loop did not return after the queue was shut down")
+
+	require.Equal(t, []string{"foreign duplicate", "replay", "next"}, inserts.get())
+	require.Contains(t, logs.String(), `level=ERROR msg="Batch cannot be stored as sent, dropping health events permanently"`)
+}

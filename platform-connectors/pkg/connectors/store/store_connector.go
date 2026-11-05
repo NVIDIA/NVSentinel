@@ -159,12 +159,7 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 					attribute.String("platform_connector.store.status", "failed"),
 				)
 
-				message := "Max retries exceeded, dropping health events permanently"
-				if ctx.Err() != nil {
-					message = "Stopped before the batch was stored, dropping health events permanently"
-				}
-
-				slog.ErrorContext(batchCtx, message,
+				slog.ErrorContext(batchCtx, dropMessage(ctx, err),
 					"error", err,
 					"retryCount", retryCount,
 					"maxRetries", r.maxRetries,
@@ -195,7 +190,9 @@ func (r *DatabaseStoreConnector) insertWithRetry(
 
 	for retries := 0; ; retries++ {
 		outcome, err := r.insertHealthEvents(ctx, healthEvents, batchKey)
-		if err == nil || retries >= r.maxRetries || ctx.Err() != nil {
+		// A duplicate under another unique index gets the same answer on
+		// every attempt, so retrying it would only hold the queue.
+		if err == nil || retries >= r.maxRetries || ctx.Err() != nil || foreignDuplicate(err) != nil {
 			return outcome, retries, err
 		}
 
@@ -218,6 +215,19 @@ func (r *DatabaseStoreConnector) insertWithRetry(
 		}
 
 		delay = min(delay*2, maxDelay)
+	}
+}
+
+// dropMessage says why the loop drops a batch: it was stopped first, the
+// datastore gave an answer no retry can change, or the retries ran out.
+func dropMessage(ctx context.Context, err error) string {
+	switch {
+	case ctx.Err() != nil:
+		return "Stopped before the batch was stored, dropping health events permanently"
+	case foreignDuplicate(err) != nil:
+		return "Batch cannot be stored as sent, dropping health events permanently"
+	default:
+		return "Max retries exceeded, dropping health events permanently"
 	}
 }
 
@@ -279,14 +289,27 @@ func (r *DatabaseStoreConnector) ProcessBatch(ctx context.Context, healthEvents 
 // as it is and answered with a retryable status: a document error can also be
 // the server stepping down in the middle of the batch, which a resend cures.
 func terminalIfDocumentError(err error) error {
-	var failure *datastore.BulkWriteFailure
-	if !errors.As(err, &failure) || !failure.Failed.Duplicate {
+	failure := foreignDuplicate(err)
+	if failure == nil {
 		return err
 	}
 
 	return status.Errorf(codes.InvalidArgument,
 		"event %d duplicates a document already stored under index %q, so the batch cannot be stored as sent: %s",
 		failure.Failed.DocumentIndex, failure.Failed.IndexName, failure.Failed.Message)
+}
+
+// foreignDuplicate returns the failure when err is a duplicate on a unique
+// index other than the idempotency index, the one answer about a document that
+// a resend can never change, and nil otherwise. A duplicate on the idempotency
+// index never gets here: the insert skips it as an event already stored.
+func foreignDuplicate(err error) *datastore.BulkWriteFailure {
+	var failure *datastore.BulkWriteFailure
+	if errors.As(err, &failure) && failure.Failed.Duplicate {
+		return failure
+	}
+
+	return nil
 }
 
 // insertHealthEvents writes one batch: in order, past the documents that
