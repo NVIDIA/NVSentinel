@@ -279,7 +279,8 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 	// "inconsistent types deduced for parameter" errors.
 	//
 	// Each query merges decisionsPatch into healtheventstatus first. The patch has only the
-	// decisions that are set, so an update without a decision keeps the recorded one.
+	// decisions that are set, so an update without a decision keeps the recorded one. An update
+	// with only decisions uses its own query, so it does not overwrite the remediation fields.
 	decisionsPatch, err := statusDecisionsPatch(status)
 	if err != nil {
 		return err
@@ -391,8 +392,25 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			lastRemediationJSON,
 			decisionsPatch,
 		}
+	case status.FaultRemediated == nil && status.LastRemediationTimestamp == nil:
+		// No quarantine, eviction or remediation field is set (e.g. a decision-only update):
+		// merge only the decisions, preserve every other stored field.
+		query = `
+			UPDATE health_events
+			SET document = jsonb_set(
+			        document,
+			        '{healtheventstatus}',
+			        COALESCE(document->'healtheventstatus', '{}'::jsonb) || $1::jsonb
+			    ),
+			    updated_at = NOW()
+			WHERE id = $2::uuid
+		`
+		params = []any{
+			decisionsPatch,
+			id,
+		}
 	default:
-		// NodeQuarantined is NULL and UserPodsEvictionStatus is empty (e.g. FR-only update):
+		// NodeQuarantined is NULL, UserPodsEvictionStatus is empty and a remediation field is set (FR-only update):
 		// only update fault_remediated and last_remediation_timestamp, preserve existing eviction status.
 		lastRemediationJSON := formatTimestampAsProtobufJSON(status.LastRemediationTimestamp)
 		//nolint:dupword // SQL query uses nested jsonb_set
