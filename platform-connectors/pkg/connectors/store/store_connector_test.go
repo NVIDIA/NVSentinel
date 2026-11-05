@@ -15,11 +15,15 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -615,4 +619,223 @@ func TestProcessBatch_OnlyAForeignDuplicateIsNotRetried(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, codes.Unknown, status.Code(err), "a transport failure is a plain error, retried by the caller")
 	mockClient.AssertExpectations(t)
+}
+
+// insertedMessages records, in call order, the message of the first event of
+// each batch the mock datastore is asked to insert.
+type insertedMessages struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (m *insertedMessages) record(args mock.Arguments) {
+	docs := args.Get(1).([]any)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.messages = append(m.messages, docs[0].(model.HealthEventWithStatus).HealthEvent.GetMessage())
+}
+
+func (m *insertedMessages) get() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]string(nil), m.messages...)
+}
+
+// batchWithMessage builds a one-event batch told apart by its message.
+func batchWithMessage(message string, healthy bool) *ringbuffer.QueuedHealthEvents {
+	return ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{Events: []*protos.HealthEvent{{
+		NodeName:           "gpu-node-1",
+		CheckName:          "GpuXidError",
+		Message:            message,
+		IsHealthy:          healthy,
+		IsFatal:            !healthy,
+		GeneratedTimestamp: timestamppb.Now(),
+	}}})
+}
+
+// runLoop starts the processing loop; the channel is closed when it returns.
+func runLoop(ctx context.Context, connector *DatabaseStoreConnector) <-chan struct{} {
+	exited := make(chan struct{})
+
+	go func() {
+		defer close(exited)
+
+		connector.FetchAndProcessHealthMetric(ctx)
+	}()
+
+	return exited
+}
+
+func requireClosed(t *testing.T, ch <-chan struct{}, msg string) {
+	t.Helper()
+
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal(msg)
+	}
+}
+
+// queueRetries reads the retries series of the ring buffer named queue.
+func queueRetries(t *testing.T, queue string) float64 {
+	t.Helper()
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+
+	for _, family := range families {
+		if family.GetName() == "platform_connector_workqueue_retries_total_"+queue {
+			return family.GetMetric()[0].GetCounter().GetValue()
+		}
+	}
+
+	return 0
+}
+
+// syncBuffer is a log sink a test can read while a loop may still write to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// captureLogs sends the default logger to a buffer until the test ends.
+func captureLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+
+	logs := &syncBuffer{}
+	previous := slog.Default()
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	return logs
+}
+
+// TestFetchAndProcessHealthMetric_FailedInsert_RetriesBeforeTheNextBatch: a
+// batch whose insert fails is retried before the loop takes the next one, so
+// a fault and the recovery queued behind it are stored in the order the
+// monitor sent them. Requeued behind the recovery, the fault would be stored
+// last, and the consumers of the store would see the node fail again after it
+// recovered.
+func TestFetchAndProcessHealthMetric_FailedInsert_RetriesBeforeTheNextBatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testRetryBeforeNextBatch", ctx,
+		ringbuffer.WithRetryConfig(20*time.Millisecond, 20*time.Millisecond))
+	inserts := &insertedMessages{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, errors.New("not primary")).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{"id"}}, nil)
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+	retriesBefore := queueRetries(t, "testRetryBeforeNextBatch")
+
+	ringBuffer.Enqueue(batchWithMessage("fault", false))
+	ringBuffer.Enqueue(batchWithMessage("recovery", true))
+
+	exited := runLoop(ctx, connector)
+
+	require.Eventually(t, func() bool { return len(inserts.get()) == 3 }, 5*time.Second, 5*time.Millisecond)
+
+	ringBuffer.ShutDownHealthMetricQueue()
+	requireClosed(t, exited, "the loop did not return after the queue was shut down")
+
+	require.Equal(t, []string{"fault", "fault", "recovery"}, inserts.get(),
+		"the failed fault is retried before the recovery queued behind it is stored")
+	require.Equal(t, 1.0, queueRetries(t, "testRetryBeforeNextBatch")-retriesBefore,
+		"the retry counts in the queue's retries series, as the requeue did")
+}
+
+// TestFetchAndProcessHealthMetric_QueueShutDownDuringRetry_StoresTheBatch: a
+// batch waiting for its retry when the queue is shut down is still retried and
+// stored, and the loop returns only once the batch queued behind it is stored
+// too. Both were acknowledged to the monitor when they were queued.
+func TestFetchAndProcessHealthMetric_QueueShutDownDuringRetry_StoresTheBatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testShutDownDuringRetry", ctx,
+		ringbuffer.WithRetryConfig(50*time.Millisecond, 50*time.Millisecond))
+	inserts := &insertedMessages{}
+	firstFailed := make(chan struct{})
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			inserts.record(args)
+			close(firstFailed)
+		}).Return(nil, errors.New("not primary")).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{"id"}}, nil)
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	ringBuffer.Enqueue(batchWithMessage("first", false))
+	ringBuffer.Enqueue(batchWithMessage("second", false))
+
+	exited := runLoop(ctx, connector)
+
+	requireClosed(t, firstFailed, "the first insert was never attempted")
+	ringBuffer.ShutDownHealthMetricQueue()
+	requireClosed(t, exited, "the loop did not return after the queue was shut down")
+
+	require.Equal(t, []string{"first", "first", "second"}, inserts.get(),
+		"the batch waiting for its retry at shutdown is stored, and so is the one behind it")
+}
+
+// TestFetchAndProcessHealthMetric_ContextCanceledDuringRetry_DropsTheBatchAtError:
+// canceling the loop's context ends the wait for the next retry at once, as
+// shutdown does when the datastore stays down, and the batch that was not
+// stored is logged at Error rather than dropped silently.
+func TestFetchAndProcessHealthMetric_ContextCanceledDuringRetry_DropsTheBatchAtError(t *testing.T) {
+	logs := captureLogs(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The buffer outlives the loop's context, as the process context
+	// outlives the loop at shutdown.
+	ringBuffer := ringbuffer.NewRingBuffer("testCancelDuringRetry", context.Background(),
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	t.Cleanup(ringBuffer.ShutDownHealthMetricQueue)
+
+	inserts := &insertedMessages{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, errors.New("no reachable servers"))
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	ringBuffer.Enqueue(batchWithMessage("fault", false))
+
+	exited := runLoop(ctx, connector)
+
+	require.Eventually(t, func() bool { return len(inserts.get()) == 1 }, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	requireClosed(t, exited, "the loop kept waiting out the retry delay after its context was canceled")
+
+	require.Len(t, inserts.get(), 1, "no retry after the context was canceled")
+	require.Contains(t, logs.String(), `level=ERROR msg="Stopped before the batch was stored`)
 }

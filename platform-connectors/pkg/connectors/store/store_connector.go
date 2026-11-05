@@ -146,49 +146,83 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 
 			eventCount := len(healthEvents.GetEvents())
 
-			outcome, err := r.insertHealthEvents(batchCtx, healthEvents, r.batchKey(queuedHealthEvents))
+			// The batch is retried here, before the next one is taken, so a
+			// monitor's batches are stored in the order it sent them even
+			// when a write fails.
+			outcome, retryCount, err := r.insertWithRetry(batchCtx, healthEvents, r.batchKey(queuedHealthEvents))
 			if err != nil {
-				retryCount := r.ringBuffer.NumRequeues(queuedHealthEvents)
-
 				tracing.RecordError(span, err)
 				span.SetAttributes(
 					attribute.String("platform_connector.store.error", err.Error()),
 					attribute.Int("platform_connector.store.retry_count", retryCount),
 					attribute.Int("platform_connector.store.max_retries", r.maxRetries),
+					attribute.String("platform_connector.store.status", "failed"),
 				)
 
-				if retryCount < r.maxRetries {
-					slog.WarnContext(batchCtx, "Error inserting health events, will retry with exponential backoff",
-						"error", err,
-						"retryCount", retryCount,
-						"maxRetries", r.maxRetries,
-						"eventCount", eventCount)
-
-					r.ringBuffer.AddRateLimited(queuedHealthEvents)
-				} else {
-					span.SetAttributes(attribute.String("platform_connector.store.status", "failed"))
-					slog.ErrorContext(batchCtx, "Max retries exceeded, dropping health events permanently",
-						"error", err,
-						"retryCount", retryCount,
-						"maxRetries", r.maxRetries,
-						"eventCount", eventCount,
-						"firstEventNodeName", healthEvents.GetEvents()[0].GetNodeName(),
-						"firstEventCheckName", healthEvents.GetEvents()[0].GetCheckName())
-					r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
+				message := "Max retries exceeded, dropping health events permanently"
+				if ctx.Err() != nil {
+					message = "Stopped before the batch was stored, dropping health events permanently"
 				}
+
+				slog.ErrorContext(batchCtx, message,
+					"error", err,
+					"retryCount", retryCount,
+					"maxRetries", r.maxRetries,
+					"eventCount", eventCount,
+					"firstEventNodeName", healthEvents.GetEvents()[0].GetNodeName(),
+					"firstEventCheckName", healthEvents.GetEvents()[0].GetCheckName())
 			} else {
 				batchesWritten.WithLabelValues(outcome).Inc()
 				span.SetAttributes(attribute.String("platform_connector.store.status", "inserted"))
-				r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
 			}
+
+			r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
 
 			span.End()
 		}
 	}
 }
 
+// insertWithRetry writes one batch and, after a failed write, retries it in
+// place with exponential backoff, up to maxRetries times. The loop holds the
+// batch meanwhile, so no later batch is stored ahead of it. The backoff is the
+// one the ring buffer was configured with, and a canceled context ends the
+// retries. It returns the outcome and the number of retries made.
+func (r *DatabaseStoreConnector) insertWithRetry(
+	ctx context.Context, healthEvents *protos.HealthEvents, batchKey string,
+) (string, int, error) {
+	delay, maxDelay := r.ringBuffer.RetryDelays()
+
+	for retries := 0; ; retries++ {
+		outcome, err := r.insertHealthEvents(ctx, healthEvents, batchKey)
+		if err == nil || retries >= r.maxRetries || ctx.Err() != nil {
+			return outcome, retries, err
+		}
+
+		slog.WarnContext(ctx, "Error inserting health events, will retry in place with exponential backoff",
+			"error", err,
+			"retryCount", retries+1,
+			"maxRetries", r.maxRetries,
+			"retryDelay", delay,
+			"eventCount", len(healthEvents.GetEvents()))
+		r.ringBuffer.CountRetry()
+
+		timer := time.NewTimer(delay)
+
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+
+			return "", retries, err
+		case <-timer.C:
+		}
+
+		delay = min(delay*2, maxDelay)
+	}
+}
+
 // batchKey returns the idempotency key prefix of a queued batch, chosen on
-// its first write attempt and kept on the item: a batch requeued after a
+// its first write attempt and kept on the item: a batch retried after a
 // failed write carries the same per-event keys, so its next attempt stores
 // only what the first one did not, instead of storing the documents before
 // the failure a second time.
