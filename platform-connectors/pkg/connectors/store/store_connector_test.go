@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -922,4 +923,44 @@ func TestFetchAndProcessHealthMetric_StoppedWithBatchesQueued_LogsThemAtError(t 
 	require.Contains(t, logs.String(), `level=ERROR msg="Stopped before the batch was stored`)
 	require.Contains(t, logs.String(),
 		`level=ERROR msg="Context canceled with batches still queued, dropping them permanently" batchCount=2`)
+}
+
+// TestInsertWithRetry_DefaultBackoff_KeepsRetryCountAndTiming: with the
+// default backoff a failing batch is tried once and then StoreConnectorMaxRetries
+// more times, 0.5, 1, 2 and then 3 s apart, the schedule the ring buffer's rate
+// limiter gave a requeued batch. The fake clock checks the timing without
+// waiting for it.
+func TestInsertWithRetry_DefaultBackoff_KeepsRetryCountAndTiming(t *testing.T) {
+	ringBuffer := ringbuffer.NewRingBuffer("testDefaultBackoff", context.Background())
+
+	for _, test := range []struct {
+		name        string
+		maxRetries  int
+		wantCalls   int
+		wantElapsed time.Duration
+	}{
+		{name: "no retries", maxRetries: 0, wantCalls: 1, wantElapsed: 0},
+		{name: "chart default", maxRetries: 3, wantCalls: 4, wantElapsed: 3500 * time.Millisecond},
+		{name: "past the longest delay", maxRetries: 5, wantCalls: 6, wantElapsed: 9500 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				mockClient := &mockDatabaseClient{}
+				mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+					Return(nil, errors.New("no reachable servers"))
+
+				connector := &DatabaseStoreConnector{
+					databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: test.maxRetries,
+				}
+
+				start := time.Now()
+				_, retries, err := connector.insertWithRetry(context.Background(), simpleHealthEvents(), "inst#1")
+
+				require.Error(t, err)
+				require.Equal(t, test.maxRetries, retries)
+				mockClient.AssertNumberOfCalls(t, "InsertManyIdempotent", test.wantCalls)
+				require.Equal(t, test.wantElapsed, time.Since(start))
+			})
+		})
+	}
 }
