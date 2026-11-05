@@ -26,9 +26,9 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
@@ -212,13 +212,12 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				t.Fatalf("NodeInformer failed to sync")
 			}
 
-			rules, err := createRules([]config.Rule{{Kind: "Node", Expression: tt.expression}}, nodeInformer)
+			evaluator, err := celrule.NewNodeRule(tt.expression, celrule.NodeGetterFunc(nodeInformer.GetRuleNode))
 			if err != nil && !tt.expectError {
-				t.Fatalf("Failed to create Node rule: %v", err)
+				t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
 			}
-			if len(rules) > 0 {
-				evaluator := NewAllRuleSetEvaluator(rules, config.RuleSetMeta{Name: tt.name})
-				isEvaluated, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{
+			if evaluator != nil {
+				isEvaluated, err := evaluateRule(context.Background(), evaluator, &protos.HealthEvent{
 					NodeName: nodeName,
 				})
 				if (err != nil) != tt.expectError {

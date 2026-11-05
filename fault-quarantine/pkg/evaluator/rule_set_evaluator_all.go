@@ -25,7 +25,7 @@ import (
 )
 
 type AllRuleSetEvaluator struct {
-	rules []Rule
+	evaluators []RuleEvaluator
 	baseRuleSetEvaluator
 }
 
@@ -35,25 +35,25 @@ func (allEval *AllRuleSetEvaluator) Evaluate(
 ) (common.RuleEvaluationResult, error) {
 	var errs *multierror.Error
 
-	for _, rule := range allEval.rules {
-		matched, err := evaluateRule(ctx, rule, healthEvent)
+	for _, evaluator := range allEval.evaluators {
+		ruleEvaluatedResult, err := evaluateRule(ctx, evaluator, healthEvent)
 		if err != nil {
 			errs = multierror.Append(errs, err)
 		}
 
-		if !matched {
-			return common.RuleEvaluationFailed, errs.ErrorOrNil()
+		if ruleEvaluatedResult != common.RuleEvaluationSuccess {
+			return ruleEvaluatedResult, errs.ErrorOrNil()
 		}
 	}
 
 	return common.RuleEvaluationSuccess, errs.ErrorOrNil()
 }
 
-func NewAllRuleSetEvaluator(rules []Rule, ruleset config.RuleSetMeta) *AllRuleSetEvaluator {
+func NewAllRuleSetEvaluator(evaluators []RuleEvaluator, ruleset config.RuleSetMeta) *AllRuleSetEvaluator {
 	return &AllRuleSetEvaluator{
-		Name:     ruleset.Name,
-		Version:  ruleset.Version,
-		Priority: ruleset.Priority,
-		rules:    rules,
+		Name:       ruleset.Name,
+		Version:    ruleset.Version,
+		Priority:   ruleset.Priority,
+		evaluators: evaluators,
 	}
 }

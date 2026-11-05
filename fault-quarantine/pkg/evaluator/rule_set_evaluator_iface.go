@@ -23,20 +23,28 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 )
 
-// Rule is a compiled rule from commons/pkg/celrule.
-type Rule interface {
+// RuleEvaluator is a compiled rule from commons/pkg/celrule.
+type RuleEvaluator interface {
 	Evaluate(context.Context, *protos.HealthEvent) (bool, error)
 }
 
-// evaluateRule evaluates one rule of a rule set. An error in the expression is
+// evaluateRule converts a celrule result. An error in the expression is
 // permanent for the event, so cold start does not retry it.
-func evaluateRule(ctx context.Context, rule Rule, event *protos.HealthEvent) (bool, error) {
-	matched, err := rule.Evaluate(ctx, event)
+func evaluateRule(
+	ctx context.Context,
+	evaluator RuleEvaluator,
+	event *protos.HealthEvent,
+) (common.RuleEvaluationResult, error) {
+	matched, err := evaluator.Evaluate(ctx, event)
 	if celrule.IsEvaluationError(err) {
-		return false, coldstart.PermanentError(err)
+		err = coldstart.PermanentError(err)
 	}
 
-	return matched, err
+	if matched {
+		return common.RuleEvaluationSuccess, err
+	}
+
+	return common.RuleEvaluationFailed, err
 }
 
 // Interfaces and base structs
