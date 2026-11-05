@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
 )
@@ -229,7 +230,7 @@ func (f *releaseFixture) beforeSessionPatch(nodeName string, fn func(ctx context
 	fired := false
 	f.client.beforePatch = func(ctx context.Context, obj client.Object) error {
 		node, ok := obj.(*corev1.Node)
-		if fired || !ok || node.Name != nodeName || len(node.Annotations[annotationValidationSession]) == 0 {
+		if fired || !ok || node.Name != nodeName || len(node.Annotations[annotationutil.ValidationSessionKey]) == 0 {
 			return nil
 		}
 		fired = true
@@ -269,7 +270,7 @@ func expectGateReleased(nodeName string) {
 	node := getNode(ctx, nodeName)
 	Expect(node.Spec.Unschedulable).To(BeFalse(), "node %q must be uncordoned", nodeName)
 	Expect(node.Spec.Taints).NotTo(ContainElement(releaseGateTaint))
-	Expect(node.Annotations).NotTo(HaveKey(annotationValidationSession))
+	Expect(node.Annotations).NotTo(HaveKey(annotationutil.ValidationSessionKey))
 }
 
 func releaseBlockedCondition(vr v1alpha1.ValidationRequest) *metav1.Condition {
@@ -558,7 +559,7 @@ var _ = Describe("Validation release readiness check", func() {
 			&v1alpha1.ValidationRequest{}))).To(BeTrue())
 		node := getNode(ctx, nodeName)
 		Expect(node.Annotations).To(HaveKeyWithValue(releaseQuarantineAnnotation, releaseQuarantineEvent))
-		Expect(node.Annotations).NotTo(HaveKey(annotationValidationSession))
+		Expect(node.Annotations).NotTo(HaveKey(annotationutil.ValidationSessionKey))
 		Expect(node.Annotations).NotTo(HaveKey(annotationActiveValidationRequest))
 		Expect(node.Labels).NotTo(HaveKey(validationStateLabelKey))
 		expectGateRetained(nodeName)
@@ -608,9 +609,9 @@ var _ = Describe("Validation release readiness check", func() {
 		expectGateRetained(nodeName)
 		node := getNode(ctx, nodeName)
 		Expect(node.Annotations).NotTo(HaveKey(annotationActiveValidationRequest))
-		entries, err := parseSessionAnnotation(node.Annotations[annotationValidationSession])
+		entries, err := annotationutil.ParseValidationSession(node.Annotations[annotationutil.ValidationSessionKey])
 		Expect(err).NotTo(HaveOccurred())
-		Expect(entries).To(ConsistOf(sessionEntry{Name: pending.Name, Tests: []string{"basic"}}))
+		Expect(entries).To(ConsistOf(annotationutil.ValidationSessionEntry{Name: pending.Name, Tests: []string{"basic"}}))
 	})
 
 	It("completes the deletion and retains the gate when a readiness criterion cannot be evaluated", func() {
@@ -626,7 +627,7 @@ var _ = Describe("Validation release readiness check", func() {
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, fixture.request.NamespacedName,
 			&v1alpha1.ValidationRequest{}))).To(BeTrue())
 		node := getNode(ctx, nodeName)
-		Expect(node.Annotations).NotTo(HaveKey(annotationValidationSession))
+		Expect(node.Annotations).NotTo(HaveKey(annotationutil.ValidationSessionKey))
 		Expect(node.Annotations).NotTo(HaveKey(annotationActiveValidationRequest))
 		expectGateRetained(nodeName)
 	})
