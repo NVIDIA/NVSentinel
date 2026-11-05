@@ -600,3 +600,50 @@ def test_rereads_after_the_file_went_missing(tmp_path: Path, sample_metadata: di
     sample_metadata["gpus"][0]["uuid"] = "GPU-written-again-later"
     write_like_metadata_collector(path, sample_metadata)
     assert reader.get_gpu_uuid(0) == "GPU-written-again-later"
+
+
+WRONG_SHAPE_COPIES = [
+    pytest.param('"abc"', id="string_instead_of_object"),
+    pytest.param('{"version": "1.0", "gpus": "abc"}', id="gpus_is_a_string"),
+    pytest.param('{"version": "1.0", "gpus": [1]}', id="gpu_entry_is_a_number"),
+    pytest.param('{"version": "1.0", "gpus": {}}', id="gpus_is_an_object"),
+]
+
+
+@pytest.mark.parametrize("contents", WRONG_SHAPE_COPIES)
+def test_wrong_shape_rewrite_keeps_the_last_good_metadata(tmp_path: Path, sample_metadata: dict, contents: str) -> None:
+    """A copy that parses as JSON but has the wrong shape is rejected like one that doesn't parse, so
+    lookups keep the identities read before instead of raising on every poll."""
+    path = str(tmp_path / "gpu_metadata.json")
+    write_like_metadata_collector(path, sample_metadata)
+    reader = MetadataReader(path)
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+
+    bad_copy = path + ".tmp"
+    with open(bad_copy, "w") as f:
+        f.write(contents)
+    os.rename(bad_copy, path)
+
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+    assert reader.get_pci_address(1) == "0001:00:00.0"
+    assert reader.get_chassis_serial() == "CHASSIS-12345"
+
+    sample_metadata["gpus"][0]["uuid"] = "GPU-after-the-wrong-shape"
+    write_like_metadata_collector(path, sample_metadata)
+    assert reader.get_gpu_uuid(0) == "GPU-after-the-wrong-shape"
+
+
+@pytest.mark.parametrize("contents", WRONG_SHAPE_COPIES)
+def test_wrong_shape_first_copy_reads_as_empty_until_a_good_one(
+    tmp_path: Path, sample_metadata: dict, contents: str
+) -> None:
+    """A first copy with the wrong shape serves empty metadata, without raising, until a good copy is written."""
+    path = tmp_path / "gpu_metadata.json"
+    path.write_text(contents)
+    reader = MetadataReader(str(path))
+    assert reader.get_gpu_uuid(0) is None
+    assert reader.get_pci_address(0) is None
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
+
+    write_like_metadata_collector(str(path), sample_metadata)
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"

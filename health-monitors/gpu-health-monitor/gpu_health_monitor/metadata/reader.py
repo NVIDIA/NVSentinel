@@ -43,6 +43,24 @@ def _version_of(st: os.stat_result) -> tuple[int, int, int, int]:
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
+def _checked_gpus(metadata: object) -> list:
+    """The gpus list of a parsed copy, or a ValueError when the copy has the wrong shape.
+
+    json.load only checks the syntax. A copy that parsed but holds something other
+    than an object with a list of objects under "gpus" would replace the last good
+    copy and make every lookup raise, so it is rejected like an unparsable one.
+    """
+    if not isinstance(metadata, dict):
+        raise ValueError(f"expected a JSON object, got {type(metadata).__name__}")
+    gpus = metadata.get("gpus", [])
+    if not isinstance(gpus, list):
+        raise ValueError(f"expected a list under gpus, got {type(gpus).__name__}")
+    for i, gpu in enumerate(gpus):
+        if not isinstance(gpu, dict):
+            raise ValueError(f"expected an object at gpus[{i}], got {type(gpu).__name__}")
+    return gpus
+
+
 class MetadataReader:
     """Lazy-loading, thread-safe GPU metadata reader.
 
@@ -109,7 +127,7 @@ class MetadataReader:
                     # Stat the open file, so the version always matches what was read.
                     version = _version_of(os.fstat(f.fileno()))
                     metadata = json.load(f)
-                gpu_count = len(metadata.get("gpus", []))
+                gpu_count = len(_checked_gpus(metadata))
                 chassis = metadata.get("chassis_serial")
                 reloaded = self._loaded
                 self._metadata = metadata
@@ -135,7 +153,8 @@ class MetadataReader:
                 # Intentionally do NOT set self._loaded = True, so the next access retries.
                 return
             except Exception as e:
-                # Handles JSON decode errors, permission errors, etc. The version is kept,
+                # Handles JSON decode errors, a copy with the wrong shape, permission errors,
+                # etc. The version is kept,
                 # so this copy is not read again but the next one is. Only a copy that
                 # parsed counts as loaded, and it stays in use until a good one replaces it.
                 self._file_version = version
