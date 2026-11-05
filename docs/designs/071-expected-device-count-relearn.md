@@ -1,4 +1,4 @@
-# ADR-070: Labeler - Explicit Relearn of Expected Device Counts
+# ADR-071: Labeler - Explicit Relearn of Expected Device Counts
 
 Status: Proposed (tracking issue [#1914](https://github.com/NVIDIA/NVSentinel/issues/1914))
 

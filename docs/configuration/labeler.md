@@ -208,7 +208,7 @@ An expected label counts only in the partition where the labeler learned it. Wit
 
 ### Relearning Expected Counts
 
-A learned expected count never goes down on its own, so that a node or a whole partition that loses devices keeps being reported ([ADR-043](../designs/043-expected-device-count-labels.md)). After a change that lowers the count on purpose, the labeler can relearn a class once from the current counts of its nodes ([ADR-070](../designs/070-expected-device-count-relearn.md)). For example, two nodes switched to MIG can report more GPUs while they still carry the plain product label, which raises the expected count of every node in the plain partition. The [partition annotation](#expected-counts-stay-in-their-partition) keeps a count from moving to another partition, but it does not repair a count that is already wrong, such as one raised before an upgrade to a labeler that writes the annotation.
+A learned expected count never goes down on its own, so that a node or a whole partition that loses devices keeps being reported ([ADR-043](../designs/043-expected-device-count-labels.md)). After a change that lowers the count on purpose, the labeler can relearn a class once from the current counts of its nodes ([ADR-071](../designs/071-expected-device-count-relearn.md)). For example, two nodes switched to MIG can report more GPUs while they still carry the plain product label, which raises the expected count of every node in the plain partition. The [partition annotation](#expected-counts-stay-in-their-partition) keeps a count from moving to another partition, but it does not repair a count that is already wrong, such as one raised before an upgrade to a labeler that writes the annotation.
 
 To relearn a class, set `relearnID` on it to a new value, such as a date and a reason:
 
@@ -262,7 +262,7 @@ What this expression covers follows from how the MIG manager works. It sets `nvi
 
 If the expression fails, for example because it reads a label that the node does not have, or returns something other than a bool, the labeler leaves the labels of the class on the node as they are, as for a failed `currentExpression`, logs a warning, and uses neither the count nor the expected label of the node for other nodes. The labeler does not start with an expression that does not compile, or that CEL can tell returns something other than a bool.
 
-Write your own expression if other tooling reconfigures devices and marks the nodes it works on. An empty string, the default, treats every node as settled. [ADR-070](../designs/070-expected-device-count-relearn.md) describes what is left to the relearn.
+Write your own expression if other tooling reconfigures devices and marks the nodes it works on. An empty string, the default, treats every node as settled. [ADR-071](../designs/071-expected-device-count-relearn.md) describes what is left to the relearn.
 
 ### Device-Count Sources
 

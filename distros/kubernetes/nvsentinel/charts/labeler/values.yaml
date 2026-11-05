@@ -81,7 +81,7 @@ requireDCGMReadyForBootstrap: true
 # Learned expected counts never go down on their own. To relearn a class once from the current
 # counts of its nodes, for example after a MIG change, set relearnID on the class to a new value,
 # such as a date and a reason, quoted so that YAML keeps it a string, and keep it set. A new value restarts the labeler, which relearns
-# every node of the class once. See docs/configuration/labeler.md and ADR-070.
+# every node of the class once. See docs/configuration/labeler.md and ADR-071.
 #
 # An expected count only counts in the partition where it was learned. A class can also set
 # settledExpression, a CEL expression over the node and its ResourceSlices that returns false

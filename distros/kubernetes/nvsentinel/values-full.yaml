@@ -1412,7 +1412,7 @@ labeler:
   # resourceSliceDriver applies when the node has ResourceSlices from that driver. All sources
   # of a class must count the same unit. See the labeler chart values.yaml for details.
   # Learned expected counts never go down on their own. Set relearnID on a class to a new value
-  # to relearn it once from current counts, and keep it set (ADR-070). A node for which
+  # to relearn it once from current counts, and keep it set (ADR-071). A node for which
   # settledExpression returns false, such as one whose MIG configuration is changing, teaches
   # no other node and keeps its expected count until it is settled again. It is empty by
   # default; the GPU class below shows the opt-in for the GPU Operator.

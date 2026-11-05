@@ -61,13 +61,13 @@ type ClassConfig struct {
 	Sources                []SourceConfig          `toml:"sources"`
 	// RelearnID asks the labeler to relearn the expected counts of the class
 	// once from current counts. Set a new value for each relearn and keep it
-	// set; the labeler relearns each node once per ID (ADR-070).
+	// set; the labeler relearns each node once per ID (ADR-071).
 	RelearnID string `toml:"relearnID"`
 	// SettledExpression returns false while the devices of a node are being
 	// reconfigured, for example while the MIG manager changes its MIG layout.
 	// It sees the node and all of its ResourceSlices. Such a node teaches no
 	// other node, and its own expected label is left as it is until it is
-	// settled again (ADR-070). Empty means always settled.
+	// settled again (ADR-071). Empty means always settled.
 	SettledExpression string `toml:"settledExpression"`
 }
 

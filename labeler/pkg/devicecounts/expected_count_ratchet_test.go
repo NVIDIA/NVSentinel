@@ -27,7 +27,7 @@ import (
 // These tests play #1914 with the GPU class as the labeler chart ships it: a
 // fleet of 287 GB200 nodes whose device plugin and GFD report 4 GPUs, two of
 // which are switched to MIG, where GFD reports 8. A test that needs a relearn
-// ends with the operator's relearn from ADR-070.
+// ends with the operator's relearn from ADR-071.
 
 const (
 	ratchetFleetSize    = 287
