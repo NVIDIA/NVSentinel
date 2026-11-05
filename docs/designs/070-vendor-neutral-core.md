@@ -148,7 +148,7 @@ A plugin uses only these contracts. They are versioned, and they change only by 
 
 ### Recovery policy as configuration
 
-`checkName`, `errorCode`, `componentClass`, and `entitiesImpacted` identify the fault. `recommendedAction` is the default that the monitor suggests. A platform replaces the default with the overrides of [ADR-021](021-health-event-property-overrides.md) for the full cluster, and with the rule sets of [ADR-064](064-node-and-device-selection.md) for each node group. A platform does not change monitor code or monitor mappings. Three additive changes close the gaps in [Recovery policy is not fully configurable](#recovery-policy-is-not-fully-configurable).
+`checkName`, `errorCode`, `componentClass`, and `entitiesImpacted` identify the fault. `recommendedAction` is the default that the monitor suggests. A platform replaces the default with the overrides of [ADR-021](021-health-event-property-overrides.md) for the full cluster, and with the rule sets of [ADR-064](064-node-and-device-selection.md) for each node group. A platform does not change monitor code or monitor mappings. Three additive changes close the first three gaps in [Recovery policy is not fully configurable](#recovery-policy-is-not-fully-configurable). The fourth gap stays open: a provider repair of a type other than reboot or terminate uses a custom CR or `ExternalRemediationRequest`, until a follow-up ADR adds a provider operation for it.
 
 #### Custom actions in overrides
 
@@ -176,7 +176,7 @@ A follow-up ADR selects one neutral domain for CRD groups, labels, and annotatio
 
 ### Health-events-analyzer in the core
 
-The health-events-analyzer is part of the core when its rules are datastore-neutral. The engine and the rule `MultipleRemediations` are vendor-neutral. `MultipleRemediations` stops remediation loops on a node, so a core without it is less safe. The XID, SXID, and NVLink rules, and the XID burst detector, move to the NVIDIA plugin.
+The health-events-analyzer is part of the core when its rules are datastore-neutral. The engine and the rule `MultipleRemediations` are vendor-neutral. `MultipleRemediations` stops remediation loops on a node, so a core without it is less safe. The XID, SXID, and NVLink default rules, the XID burst detector, `RepeatedNICDriverError`, and the GPU entity metric allowlist move to the NVIDIA plugin.
 
 At this time the rules are MongoDB aggregation stages, and most of them run correctly only on MongoDB, which uses the SSPL. [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md) replaces them with CEL rules that run on MongoDB and PostgreSQL. Until ADR-066 is implemented, a core installation without MongoDB runs without the analyzer. A core installation that uses only the Kubernetes datastore always runs without the analyzer. Without the analyzer, `maxRemediationAttempts` in fault-remediation is the only protection against remediation loops.
 
@@ -238,6 +238,7 @@ Write a follow-up ADR for each of these:
 - The neutral domain and the migration of names ([Public names change by addition](#public-names-change-by-addition)).
 - A reset contract for a component that a vendor implements in place of `GPUReset`. This builds on [ADR-069](https://github.com/NVIDIA/NVSentinel/pull/2281).
 - Fault scope for a group of hosts.
+- A remediation provider operation for repair types other than reboot and terminate.
 
 #### Phase 4: Move vendor code
 
@@ -314,7 +315,7 @@ Keep all code in place and add a value for each vendor assumption.
 
 ### Move the health-events-analyzer to the NVIDIA plugin
 
-**Rejected** because: the engine is vendor-neutral, and `MultipleRemediations` is the core protection against remediation loops. Only the XID rules and the XID burst detector are NVIDIA-specific.
+**Rejected** because: the engine is vendor-neutral, and `MultipleRemediations` is the core protection against remediation loops. The NVIDIA-specific parts are the XID, SXID, and NVLink default rules, the XID burst detector, `RepeatedNICDriverError`, and the GPU entity metric allowlist. These parts move to the NVIDIA plugin.
 
 ### Add a fault taxonomy to the event
 
