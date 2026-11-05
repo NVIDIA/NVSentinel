@@ -129,6 +129,7 @@ flowchart LR
         nic["nic-health-monitor"]
         csp["csp-health-monitor"]
         checks["preflight checks"]
+        topo["GPU topology collection<br/>(metadata-collector)"]
         neutral["kubernetes-object-monitor<br/>slurm-drain-monitor<br/>(vendor-neutral)"]
     end
 
@@ -139,7 +140,7 @@ flowchart LR
         nd["node-drainer"]
         fr["fault-remediation"]
         hea["health-events-analyzer"]
-        aux["metadata-collector, labeler,<br/>preflight webhook, lifecycle-manager,<br/>event-exporter"]
+        aux["pod-to-device mapper (metadata-collector)<br/>device counts (labeler)<br/>preflight webhook, lifecycle-manager,<br/>event-exporter"]
         pc --> store
         store --> fq
         store --> nd
@@ -160,8 +161,8 @@ flowchart LR
     nd -- "custom drain CR" --> drain
 ```
 
-- **Detection plugins** read a device or a system and publish health events. They can be vendor-specific. kubernetes-object-monitor and slurm-drain-monitor are vendor-neutral detection plugins.
-- **The core** stores events, quarantines, drains, decides the remediation, and correlates events. It also includes the components that support every plugin: metadata-collector, labeler, the preflight webhook, lifecycle-manager, and event-exporter.
+- **Detection plugins** read a device or a system and publish health events. They can be vendor-specific. kubernetes-object-monitor and slurm-drain-monitor are vendor-neutral detection plugins. The GPU topology collection of metadata-collector serves only the detection plugins, so it moves to the NVIDIA plugin.
+- **The core** stores events, quarantines, drains, decides the remediation, and correlates events. It also includes the pod-to-device mapper of metadata-collector, the device counts of the labeler, the preflight webhook, lifecycle-manager, and event-exporter.
 - **Remediation plugins** repair the node. They can be vendor-specific. janitor and janitor-provider are remediation plugins, so the GPU reset and the cloud clients stay in them.
 
 ### One dependency direction
