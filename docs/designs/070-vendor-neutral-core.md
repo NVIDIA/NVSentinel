@@ -16,7 +16,6 @@ Status: Proposed (tracking issue [#2247](https://github.com/NVIDIA/NVSentinel/is
    - [One dependency direction](#one-dependency-direction)
    - [Versioned contracts](#versioned-contracts)
    - [Separate plugin builds](#separate-plugin-builds)
-   - [Health-events-analyzer in the core](#health-events-analyzer-in-the-core)
    - [Recovery policy as configuration](#recovery-policy-as-configuration)
      - [Custom actions in overrides](#custom-actions-in-overrides)
      - [Escalation ladder](#escalation-ladder)
@@ -46,7 +45,6 @@ Status: Proposed (tracking issue [#2247](https://github.com/NVIDIA/NVSentinel/is
 6. [Alternatives Considered](#alternatives-considered)
    - [Configuration only](#configuration-only)
    - [Rename all vendor names in one release](#rename-all-vendor-names-in-one-release)
-   - [Move the health-events-analyzer to the NVIDIA plugin](#move-the-health-events-analyzer-to-the-nvidia-plugin)
    - [Add a fault taxonomy to the event](#add-a-fault-taxonomy-to-the-event)
    - [Escalation ladder only in fault-remediation configuration](#escalation-ladder-only-in-fault-remediation-configuration)
    - [A separate fork for each vendor](#a-separate-fork-for-each-vendor)
@@ -142,12 +140,6 @@ A plugin uses only these contracts. They are versioned, and they change only by 
 
 Each plugin has its own Go module or image, and its own chart. The NVIDIA plugins continue to install by default from the current chart, so an upgrade does not change behaviour. This ADR does not decide the repository layout.
 
-### Health-events-analyzer in the core
-
-The health-events-analyzer is part of the core when its rules are datastore-neutral. The engine and the rule `MultipleRemediations` are vendor-neutral. `MultipleRemediations` stops remediation loops on a node, so a core without it is less safe. The XID, SXID, and NVLink default rules, the XID burst detector, `RepeatedNICDriverError`, and the GPU entity metric allowlist move to the NVIDIA plugin.
-
-At this time the rules are MongoDB aggregation stages, and most of them run correctly only on MongoDB, which uses the SSPL. [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md) replaces them with CEL rules that run on MongoDB and PostgreSQL. Until ADR-066 is implemented, a core installation without MongoDB runs without the analyzer. A core installation that uses only the Kubernetes datastore always runs without the analyzer. Without the analyzer, `maxRemediationAttempts` in fault-remediation is the only protection against remediation loops.
-
 ### Recovery policy as configuration
 
 `checkName`, `errorCode`, `componentClass`, and `entitiesImpacted` identify the fault. `recommendedAction` is the default that the monitor suggests. A platform replaces the default with the overrides of [ADR-021](021-health-event-property-overrides.md) for the full cluster, and with the rule sets of [ADR-064](064-node-and-device-selection.md) for each node group. A platform does not change monitor code or monitor mappings. Three additive changes close the first three gaps in [Recovery policy is not fully configurable](#recovery-policy-is-not-fully-configurable). The fourth gap stays open: a provider repair of a type other than reboot or terminate uses a custom CR or `ExternalRemediationRequest`, until a follow-up ADR adds a provider operation for it.
@@ -239,7 +231,7 @@ Write a follow-up ADR for each of these:
 
 Move each "moves to a plugin" item into its own module and chart. When a module is split, add a lint rule that stops the core part from importing the plugin module. The umbrella chart installs the NVIDIA plugins by default, so existing installations keep their behaviour. Their images and subcharts change.
 
-A new core-only profile installs no plugin and no MongoDB subchart. It uses the PostgreSQL subchart, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or an external PostgreSQL or MongoDB database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer ([Health-events-analyzer in the core](#health-events-analyzer-in-the-core)). The CI job in [Core works without vendor software](#core-works-without-vendor-software) installs this profile.
+A new core-only profile installs no plugin and no MongoDB subchart. It uses the PostgreSQL subchart, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or an external PostgreSQL or MongoDB database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer. The CI job in [Core works without vendor software](#core-works-without-vendor-software) installs this profile.
 
 #### Phase 5: Remove deprecated names
 
@@ -289,6 +281,7 @@ Most of the work is already done. The [existing extension points](#existing-exte
 - During the deprecation period, components write two names for each label and annotation. This adds API writes and code paths.
 - The contracts become public API. A change to them needs the same care as the HealthEvent proto.
 - The split takes several releases. Until phase 4, the code and this ADR describe different layouts.
+- A core installation without the analyzer, for example on the Kubernetes datastore, has only `maxRemediationAttempts` in fault-remediation as protection against remediation loops.
 
 ### Mitigations
 
@@ -307,10 +300,6 @@ Keep all code in place and add a value for each vendor assumption.
 ### Rename all vendor names in one release
 
 **Rejected** because: NVSentinel upgrades with a rolling Helm release. Old and new components run together and read data that the previous version wrote. External automation reads the labels and conditions. A rename in one release breaks both.
-
-### Move the health-events-analyzer to the NVIDIA plugin
-
-**Rejected** because: the engine is vendor-neutral, and `MultipleRemediations` is the core protection against remediation loops. The NVIDIA-specific parts are the XID, SXID, and NVLink default rules, the XID burst detector, `RepeatedNICDriverError`, and the GPU entity metric allowlist. These parts move to the NVIDIA plugin.
 
 ### Add a fault taxonomy to the event
 
