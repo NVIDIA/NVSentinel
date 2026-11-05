@@ -9,17 +9,17 @@ Status: Proposed (tracking issue [#2247](https://github.com/NVIDIA/NVSentinel/is
      - [Recovery policy is not fully configurable](#recovery-policy-is-not-fully-configurable)
      - [Public surfaces carry NVIDIA names](#public-surfaces-carry-nvidia-names)
      - [Core components contain GPU logic](#core-components-contain-gpu-logic)
-     - [Defaults expect the GPU Operator](#defaults-expect-the-gpu-operator)
+     - [Core defaults expect the GPU Operator](#core-defaults-expect-the-gpu-operator)
      - [Datastore and licenses](#datastore-and-licenses)
    - [Existing extension points](#existing-extension-points)
 2. [Decision](#decision)
+   - [Core and plugins](#core-and-plugins)
    - [One dependency direction](#one-dependency-direction)
    - [Versioned contracts](#versioned-contracts)
-   - [Separate plugin builds](#separate-plugin-builds)
    - [Recovery policy as configuration](#recovery-policy-as-configuration)
      - [Custom actions in overrides](#custom-actions-in-overrides)
      - [Escalation ladder](#escalation-ladder)
-     - [Raw check values](#raw-check-values)
+     - [Raw check results](#raw-check-results)
    - [Device scope from configuration](#device-scope-from-configuration)
    - [No new vendor actions in the enum](#no-new-vendor-actions-in-the-enum)
    - [Public names change by addition](#public-names-change-by-addition)
@@ -43,6 +43,7 @@ Status: Proposed (tracking issue [#2247](https://github.com/NVIDIA/NVSentinel/is
    - [Negative](#negative)
    - [Mitigations](#mitigations)
 6. [Alternatives Considered](#alternatives-considered)
+   - [Vendor-neutral monitors and remediation plugins](#vendor-neutral-monitors-and-remediation-plugins)
    - [Configuration only](#configuration-only)
    - [Rename all vendor names in one release](#rename-all-vendor-names-in-one-release)
    - [Add a fault taxonomy to the event](#add-a-fault-taxonomy-to-the-event)
@@ -50,16 +51,13 @@ Status: Proposed (tracking issue [#2247](https://github.com/NVIDIA/NVSentinel/is
    - [A separate fork for each vendor](#a-separate-fork-for-each-vendor)
 7. [Notes](#notes)
    - [Non-goals](#non-goals)
-   - [Default mapping of COMPONENT_RESET](#default-mapping-of-component_reset)
 8. [Open Questions](#open-questions)
-   - [Where do the vendor checks of the health monitors go?](#where-do-the-vendor-checks-of-the-health-monitors-go)
-   - [Where do the cloud clients go?](#where-do-the-cloud-clients-go)
    - [Who owns the escalation ladder?](#who-owns-the-escalation-ladder)
 9. [References](#references)
 
 ## Context
 
-NVSentinel started as a tool for NVIDIA GPU nodes that run the GPU Operator. Most of the pipeline does not depend on that hardware: the gRPC event API, the CEL quarantine rules, the drain, the remediation templates, and the analyzer engine work for any fault. But vendor assumptions are spread through the components that every cluster runs. A platform with a different accelerator, a managed driver stack, or its own recovery policy must fork NVSentinel or work around it ([#2247](https://github.com/NVIDIA/NVSentinel/issues/2247)).
+NVSentinel started as a tool for NVIDIA GPU nodes that run the GPU Operator. Most of the pipeline does not depend on that hardware: the gRPC event API, the CEL quarantine rules, the drain, the remediation templates, and the analyzer engine work for any fault. But vendor assumptions are spread through the components between detection and remediation. A platform with a different accelerator, a managed driver stack, or its own recovery policy must fork NVSentinel or work around it ([#2247](https://github.com/NVIDIA/NVSentinel/issues/2247)).
 
 ### Gaps
 
@@ -69,14 +67,13 @@ The gaps are in five areas.
 
 - An override ([ADR-021](021-health-event-property-overrides.md)) can set only a value of the `RecommendedAction` enum (`platform-connectors/pkg/transformers/overrides/config.go:99-113`). It cannot set `customRecommendedAction`, so a platform cannot send a fault to an action of its own.
 - An event has one action. No component tries a different action when the first action does not repair the fault, for example a host repair after a reboot. fault-remediation stops at `maxRemediationAttempts` and labels the node `remediation-failed` (`fault-remediation/pkg/reconciler/reconciler.go:1321`).
-- Monitors put raw check values, such as counter values and diagnostic results, only in the text of `message`. Monitors do not fill the `metadata` map. A controller that a platform writes for a check with no recommended action, or with `CONTACT_SUPPORT`, has no structured data for its decision.
-- The remediation provider API has three operations: `SendRebootSignal`, `IsNodeReady`, and `SendTerminateSignal` (`api/proto/csp/v1alpha1`). A provider repair of a different type, such as a host repair, must use a custom CR or `ExternalRemediationRequest`.
+- `HealthEvent` has no field for raw check results, such as counter values and diagnostic results. Monitors put them only in the text of `message`. A controller that a platform writes for a check with no recommended action, or with `CONTACT_SUPPORT`, has no structured data for its decision.
 
 #### Public surfaces carry NVIDIA names
 
 `RecommendedAction` contains `RUN_FIELDDIAG = 6` and `RUN_DCGMEUD = 26`, which are names of NVIDIA tools (`data-models/protobufs/health_event.proto:79,83`). Nothing in the repository emits `RUN_FIELDDIAG`. Two default analyzer rules emit `RUN_DCGMEUD` (`charts/health-events-analyzer/values.yaml:421,773`). No default remediation template maps either action.
 
-The charts define five CRD groups: `janitor.dgxc.nvidia.com`, `nvsentinel.dgxc.nvidia.com`, `healthevents.dgxc.nvidia.com`, `nvsentinel.nvidia.com`, and `preflight.nvsentinel.nvidia.com`. Node labels and annotations use four prefixes: `nvsentinel.dgxc.nvidia.com/`, `dgxc.nvidia.com/`, `nvsentinel.nvidia.com/`, and the cordon label prefix `k8saas.nvidia.com/`. Node condition types are the check names of the monitors, for example `SysLogsXIDError`. Some metrics have vendor names, for example `dcgm_health_active_events` and `gpu_reset_*`. event-exporter sends the CloudEvent type `com.nvidia.nvsentinel.health.v1`. External automation reads all of these.
+The core charts define four CRD groups: `nvsentinel.dgxc.nvidia.com`, `healthevents.dgxc.nvidia.com`, `nvsentinel.nvidia.com`, and `preflight.nvsentinel.nvidia.com`. Core components write node labels and annotations with four prefixes: `nvsentinel.dgxc.nvidia.com/`, `dgxc.nvidia.com/`, `nvsentinel.nvidia.com/`, and the cordon label prefix `k8saas.nvidia.com/`. event-exporter sends the CloudEvent type `com.nvidia.nvsentinel.health.v1`. External automation reads all of these.
 
 #### Core components contain GPU logic
 
@@ -84,18 +81,18 @@ The charts define five CRD groups: `janitor.dgxc.nvidia.com`, `nvsentinel.dgxc.n
 - fault-quarantine and platform-connectors have recovery code for replaced GPUs that matches `componentClass == "GPU"` and the `GPU_UUID` and `PCI` entities (`fault-quarantine/pkg/healthEventsAnnotation/health_events_annotation_map.go:446-552`, `platform-connectors/pkg/connectors/kubernetes/process_node_events.go:356-391`).
 - The fault-quarantine circuit breaker counts the nodes with `nvidia.com/gpu.present` (configurable with `gpuNodeLabel`).
 - The health-events-analyzer runs a Go XID burst detector on PostgreSQL for every unhealthy `GPU` event with an error code. It counts DCGM error codes as XIDs (`health-events-analyzer/pkg/reconciler/reconciler.go:737-745`).
-- janitor contains the GPU reset. It sets `nvidia.com/gpu.deploy.*` labels to stop GPU Operator pods, sets `NVIDIA_VISIBLE_DEVICES=void`, and runs `nvidia-smi --gpu-reset` (`janitor/pkg/gpuservices/manager.go:85-134`, `gpu-reset/gpu_reset.sh`). The reset fails when components that the GPU Operator does not manage keep the GPU open.
-- nic-health-monitor needs the `nvidia-smi topo -m` matrix from metadata-collector to start, unless `nicInclusionRegexOverride` is set (`health-monitors/nic-health-monitor/pkg/topology/topology.go:112-119`). It monitors only NICs with the Mellanox PCI vendor ID `0x15b3` (`health-monitors/nic-health-monitor/pkg/discovery/discovery.go:45`). Its built-in counter catalog includes `mlx5` driver counters under `hw_counters/` (`health-monitors/nic-health-monitor/pkg/config/config.go`).
+- metadata-collector collects GPU and NIC topology with NVML and `nvidia-smi`. Its pod-to-device mapper hardcodes the NVIDIA resource names and the NVIDIA DRA device name format `gpu-%d` (`metadata-collector/pkg/mapper/grpcclient.go:38-42`).
+- The labeler reads the DCGM version from the DCGM image tag (`.*dcgm:4\..*`) and detects the driver from GPU Operator pods (`labeler/pkg/labeler/labeler.go:56-69`). Only the detection plugins read these labels. Its device-count engine is vendor-neutral.
 
-#### Defaults expect the GPU Operator
+#### Core defaults expect the GPU Operator
 
-The DCGM endpoint is `nvidia-dcgm.gpu-operator.svc`. The labeler reads the DCGM version from the image tag (`.*dcgm:4\..*`). metadata-collector has a fixed nodeSelector on `nvidia.com/gpu.present` (`charts/metadata-collector/templates/daemonset.yaml:134`). Monitors use affinity on `nvidia.com/gpu.deploy.client` and the `nvidia` RuntimeClass. The log collector runs `nvidia-bug-report.sh` in the driver pod. Most of these are values that an operator can change, but the change is necessary on each non-GPU-Operator cluster.
+metadata-collector has a fixed nodeSelector on `nvidia.com/gpu.present` (`charts/metadata-collector/templates/daemonset.yaml:134`) and runs with the `nvidia` RuntimeClass. The log-collector Job that fault-remediation starts runs `nvidia-bug-report.sh` in the driver pod and reads the `gpu-operator` namespace. Core chart defaults also name vendor values, for example `nvidia.com/cuda.*` in the platform-connectors label allowlist and `gpu-operator` in the node-drainer system namespaces. An operator can change most of these values, but the change is necessary on each non-GPU-Operator cluster.
 
 #### Datastore and licenses
 
 [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md) makes the analyzer rules run on MongoDB and PostgreSQL. It makes the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)) a non-goal, so the analyzer cannot run in that mode.
 
-The chart can install MongoDB or Percona Server for MongoDB from a bundled subchart. Both use the SSPL. The subchart is off by default. Core modules also link four MPL-2.0 libraries: `hashicorp/go-multierror` and `hashicorp/errwrap` (fault-quarantine, node-drainer, health-events-analyzer), `hashicorp/golang-lru/v2`, and `hashicorp/go-uuid` (indirect, through `prometheus/common`). syslog-health-monitor loads `libsystemd` (LGPL-2.1) at run time. The NVIDIA images use NVIDIA container licenses: the DCGM, CUDA, and PyTorch base images, and the NVML header that `go-nvml` compiles into metadata-collector. Python runtime dependencies have permissive licenses.
+The chart can install MongoDB or Percona Server for MongoDB from a bundled subchart. Both use the SSPL. The subchart is off by default. Core modules link four MPL-2.0 libraries: `hashicorp/go-multierror` and `hashicorp/errwrap` (fault-quarantine, node-drainer, health-events-analyzer), `hashicorp/golang-lru/v2`, and `hashicorp/go-uuid` (indirect, through `prometheus/common`). metadata-collector builds on the `nvcr.io/nvidia/cuda` base image and compiles in the NVML header from `go-nvml`. Both use NVIDIA licenses.
 
 ### Existing extension points
 
@@ -106,7 +103,6 @@ NVSentinel already has these extension points:
 | HealthEvent gRPC API for monitors in any language | [ADR-001](001-health-event-detection-interface.md) |
 | CEL quarantine rule sets | [ADR-003](003-rule-based-node-quarantine.md) |
 | Custom drain CR, with the Slurm drainer as a plugin | [ADR-015](015-custom-drain-extensibility.md) |
-| Remediation provider over gRPC. janitor dials `cspProviderHost`, so an out-of-tree provider needs no rebuild | [ADR-017](017-remediation-plugins.md) |
 | Event overrides and `STORE_ONLY` | [ADR-021](021-health-event-property-overrides.md) |
 | `CUSTOM` action with a free action name | [ADR-036](036-custom-remediation-actions.md) |
 | `ExternalRemediationRequest`: an external system repairs the node | [ADR-040](040-external-remediation-request.md) |
@@ -115,13 +111,58 @@ NVSentinel already has these extension points:
 | Datastore-neutral analyzer rules | [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md) |
 | Kubernetes as a datastore, with no database | [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015) (proposed) |
 
-fault-remediation maps each action to a CR only through configuration (`fault-remediation/pkg/config/config.go:31-84`). kubernetes-object-monitor and slurm-drain-monitor are generic.
+fault-remediation maps each action to a CR only through configuration (`fault-remediation/pkg/config/config.go:31-84`).
 
 These extension points let a vendor add code, but they do not remove vendor code from the core components. The five gaps remain.
 
 ## Decision
 
-NVSentinel separates a **vendor-neutral core** from **vendor plugins**. The core detects through public interfaces, quarantines, drains, remediates, and correlates events. A plugin contains each part that knows a specific accelerator, driver stack, NIC, cloud API, or diagnostic tool. The core does not import plugin code and does not contain vendor names. Plugins connect to the core only through versioned contracts. Existing users keep their behaviour: the change is additive, and old names continue to work.
+NVSentinel separates a **vendor-neutral core** from **vendor plugins** at the two ends of the pipeline. Detection plugins and remediation plugins can contain vendor logic. The core between them cannot. Plugins connect to the core only through versioned contracts. Existing users keep their behaviour: the change is additive, and old names continue to work.
+
+### Core and plugins
+
+```mermaid
+flowchart LR
+    subgraph detection["Detection plugins: can be vendor-specific"]
+        gpu["gpu-health-monitor"]
+        syslog["syslog-health-monitor"]
+        nic["nic-health-monitor"]
+        csp["csp-health-monitor"]
+        checks["preflight checks"]
+        neutral["kubernetes-object-monitor<br/>slurm-drain-monitor<br/>(vendor-neutral)"]
+    end
+
+    subgraph core["Vendor-neutral core"]
+        pc["platform-connectors"]
+        store[("datastore")]
+        fq["fault-quarantine"]
+        nd["node-drainer"]
+        fr["fault-remediation"]
+        hea["health-events-analyzer"]
+        aux["metadata-collector, labeler,<br/>preflight webhook, lifecycle-manager,<br/>event-exporter"]
+        pc --> store
+        store --> fq
+        store --> nd
+        store --> fr
+        store --> hea
+    end
+
+    subgraph remediation["Remediation plugins: can be vendor-specific"]
+        janitor["janitor and janitor-provider"]
+        external["external controllers<br/>(ExternalRemediationRequest, custom CRs)"]
+        drain["custom drain controllers<br/>(slinky-drainer)"]
+    end
+
+    detection -- "HealthEvent gRPC" --> pc
+    hea -- "HealthEvent gRPC" --> pc
+    fr -- "CR templates" --> janitor
+    fr -- "CR templates" --> external
+    nd -- "custom drain CR" --> drain
+```
+
+- **Detection plugins** read a device or a system and publish health events. They can be vendor-specific. kubernetes-object-monitor and slurm-drain-monitor are vendor-neutral detection plugins.
+- **The core** stores events, quarantines, drains, decides the remediation, and correlates events. It also includes the components that support every plugin: metadata-collector, labeler, the preflight webhook, lifecycle-manager, and event-exporter.
+- **Remediation plugins** repair the node. They can be vendor-specific. janitor and janitor-provider are remediation plugins, so the GPU reset and the cloud clients stay in them.
 
 ### One dependency direction
 
@@ -133,16 +174,11 @@ A plugin uses only these contracts. They are versioned, and they change only by 
 
 - The HealthEvent gRPC API, for detection.
 - CR templates, for remediation, custom drain, and validation.
-- The remediation provider gRPC API (`api/proto/csp/v1alpha1`).
 - Configuration: CEL rules, event overrides, analyzer rules, the entity-type map ([Device scope from configuration](#device-scope-from-configuration)), and the device selection of [ADR-064](064-node-and-device-selection.md).
-
-### Separate plugin builds
-
-Each plugin has its own Go module or image, and its own chart. The NVIDIA plugins continue to install by default from the current chart, so an upgrade does not change behaviour. This ADR does not decide the repository layout.
 
 ### Recovery policy as configuration
 
-`checkName`, `errorCode`, `componentClass`, and `entitiesImpacted` identify the fault. `recommendedAction` is the default that the monitor suggests. A platform replaces the default with the overrides of [ADR-021](021-health-event-property-overrides.md) for the full cluster, and with the rule sets of [ADR-064](064-node-and-device-selection.md) for each node group. A platform does not change monitor code or monitor mappings. Three additive changes close the first three gaps in [Recovery policy is not fully configurable](#recovery-policy-is-not-fully-configurable). The fourth gap stays open: a provider repair of a type other than reboot or terminate uses a custom CR or `ExternalRemediationRequest`, until a follow-up ADR adds a provider operation for it.
+`checkName`, `errorCode`, `componentClass`, and `entitiesImpacted` identify the fault. `recommendedAction` is the default that the monitor suggests. A platform replaces the default with the overrides of [ADR-021](021-health-event-property-overrides.md) for the full cluster, and with the rule sets of [ADR-064](064-node-and-device-selection.md) for each node group. A platform does not change monitor code or monitor mappings. Three additive changes close the gaps in [Recovery policy is not fully configurable](#recovery-policy-is-not-fully-configurable).
 
 #### Custom actions in overrides
 
@@ -152,9 +188,9 @@ An override can set `CUSTOM` and `customRecommendedAction`. A platform can then 
 
 A follow-up ADR adds an optional, ordered list of actions to `HealthEvent`. `recommendedAction` stays the first step, so current consumers do not change. The follow-up ADR defines when fault-remediation moves to the next step. An override can replace the list, so the platform, not the monitor, owns the final policy.
 
-#### Raw check values
+#### Raw check results
 
-Each monitor puts the values that a policy needs, such as counter values and diagnostic results, in `metadata` under documented keys. A check with no recommended action, or with `CONTACT_SUPPORT`, then gives a platform controller the data for its own decision. This needs no proto change.
+A follow-up ADR adds an optional field to `HealthEvent` for raw check results, such as counter values and diagnostic results. A check with no recommended action, or with `CONTACT_SUPPORT`, then gives a platform controller the data for its own decision.
 
 ### Device scope from configuration
 
@@ -166,36 +202,31 @@ A partial drain evicts only the pods that use the failed device, and a scoped re
 
 ### Public names change by addition
 
-A follow-up ADR selects one neutral domain for CRD groups, labels, and annotations, and the migration for each surface. The old names continue to work for at least two minor releases. Removal is a separate maintainer decision.
+A follow-up ADR selects one neutral domain for the CRD groups, labels, and annotations of the core, and the migration for each surface. The old names continue to work for at least two minor releases. Removal is a separate maintainer decision.
 
 ### Core works without vendor software
 
-The core installs and runs with its default values on a cluster with no vendor software and with a datastore that the user supplies. It then detects, quarantines, drains, and remediates a fault. A CI job proves this with the `kind` remediation provider and a monitor that needs no vendor software.
+The core installs and runs with its default values on a cluster with no vendor software and with a datastore that the user supplies. It then detects, quarantines, drains, and remediates a fault. A CI job proves this with a vendor-neutral detection plugin, such as kubernetes-object-monitor, and a vendor-neutral remediation plugin, such as the janitor `kind` provider.
 
 ## Implementation
 
 ### Component classification
 
-| Component | Class | Moves to a plugin | Stays in the core |
-|---|---|---|---|
-| platform-connectors | Core | Replaced-GPU recovery (becomes entity-type configuration), `nvidia.com/cuda.*` and cloud entries in `allowedLabels`, `SysLogsXIDError` and `SysLogsSXIDError` in the deduplication `includeChecks` | gRPC ingest, transformers, node conditions |
-| store-client | Core | none | MongoDB provider (Apache-2.0 driver; the user supplies the server) and PostgreSQL provider |
-| fault-quarantine | Core | Replaced-GPU recovery (becomes entity-type configuration), `gpuNodeLabel` default | CEL rule sets, circuit breaker |
-| node-drainer | Core | `GPU_UUID` partial drain (becomes the entity-type map, see [Device scope from configuration](#device-scope-from-configuration)), `gpu-operator`, `network-operator`, `skyhook`, and `gmp-system` in `systemNamespaces` | Eviction, custom drain, pod policies |
-| fault-remediation | Core | Log-collector Job template and its GPU Operator settings | Action templates, equivalence groups, `CUSTOM` |
-| health-events-analyzer | Core | XID burst detector, XID/SXID/NVLink default rules, `RepeatedNICDriverError`, GPU entity metric allowlist | Engine, `MultipleRemediations`, `RepeatedNICDegradation` |
-| kubernetes-object-monitor, slurm-drain-monitor | Core | none | All |
-| event-exporter | Core | none | All |
-| lifecycle-manager | Core | DCGM readiness probe default | Validation providers and tests |
-| janitor | Split | `GPUReset` controller, `gpuservices`, `gpu-reset` image | `RebootNode`, `TerminateNode`, `ExternalRemediationRequest`, node lock, TTL |
-| janitor-provider | Split | Cloud clients (AWS, GCP, Azure, OCI, Nebius, Lambda, Akamai), `commons/pkg/{akamai,lambda}`, the `nke.nvidia.com/*` default keys of the `label` provider | gRPC contract, `generic`, `label`, `kind` |
-| csp-health-monitor | Split | Cloud clients (AWS, GCP, Lambda) | Monitor interface, trigger engine |
-| syslog-health-monitor | Split | `xid`, `sxid`, `gpufallen`, `nicdriver` handlers, the XID catalog, the `GPU` default component class | journald reader, cursors, check dispatch, cancellation |
-| nic-health-monitor | Split | Mellanox vendor gate, BlueField IDs, GPU-to-NIC topology, the `mlx5` `hw_counters/` entries of the counter catalog | Link state checks, and the kernel IB and netdev counters. In the core profile, `nicInclusionRegexOverride` selects the NICs. Without it, the monitor does not start |
-| labeler | Split | `dcgm.version`, `driver.installed`, GPU Operator pod discovery, `nvidia.com/*` count classes | Device-count engine, Kata detection, `managed` opt-out |
-| metadata-collector | Split | NVML and `nvidia-smi` collection, `gpu_metadata.json` schema, the NVIDIA DRA device name format `gpu-%d` | Pod-to-device mapper (kubelet PodResources API) with configured resource names and DRA device names |
-| preflight | Split | `nvidia.com/gpu` and `gpu.nvidia.com` defaults, vendor entries in `networkResourceNames`, NCCL injection, `dcgm-diag` and `nccl-*` checks | Webhook, gang discovery, check injection |
-| gpu-health-monitor, gpu-reset, nvcre-certification-monitor, log-collector GPU steps, `api/proto/device/v1alpha1` | NVIDIA plugin | All | none |
+The detection and remediation plugins keep their vendor logic, so they have no row. These are the health monitors, the preflight checks, janitor, janitor-provider, and gpu-reset. The core components move their vendor parts to a plugin:
+
+| Core component | Moves to a plugin | Stays in the core |
+|---|---|---|
+| platform-connectors | Replaced-GPU recovery (becomes entity-type configuration), `nvidia.com/cuda.*` and cloud entries in `allowedLabels`, `SysLogsXIDError` and `SysLogsSXIDError` in the deduplication `includeChecks` | gRPC ingest, transformers, node conditions |
+| store-client | none | MongoDB provider (Apache-2.0 driver; the user supplies the server) and PostgreSQL provider |
+| fault-quarantine | Replaced-GPU recovery (becomes entity-type configuration), `gpuNodeLabel` default | CEL rule sets, circuit breaker |
+| node-drainer | `GPU_UUID` partial drain (becomes the entity-type map, see [Device scope from configuration](#device-scope-from-configuration)), `gpu-operator`, `network-operator`, `skyhook`, and `gmp-system` in `systemNamespaces` | Eviction, custom drain, pod policies |
+| fault-remediation | Log-collector Job template and its GPU Operator settings | Action templates, equivalence groups, `CUSTOM` |
+| health-events-analyzer | XID burst detector, XID/SXID/NVLink default rules, `RepeatedNICDriverError`, GPU entity metric allowlist | Engine, `MultipleRemediations`, `RepeatedNICDegradation` |
+| metadata-collector | NVML and `nvidia-smi` collection, `gpu_metadata.json` schema, the NVIDIA DRA device name format `gpu-%d`, the `nvidia.com/gpu.present` nodeSelector, the `nvidia` RuntimeClass, the CUDA base image | Pod-to-device mapper (kubelet PodResources API) with configured resource names and DRA device names |
+| labeler | `dcgm.version`, `driver.installed`, GPU Operator pod discovery, `nvidia.com/*` count classes | Device-count engine, Kata detection, `managed` opt-out |
+| preflight webhook | `nvidia.com/gpu` and `gpu.nvidia.com` defaults, vendor entries in `networkResourceNames`, NCCL injection | Webhook, gang discovery, check injection |
+| lifecycle-manager | DCGM readiness probe default | Validation providers and tests |
+| event-exporter | none | All |
 
 The issues that implement each row will name file paths. The rows are the scope of this ADR.
 
@@ -210,11 +241,9 @@ Write a page in `docs/` that lists the extension points, with one example for ea
 #### Phase 2: Make hardcoded logic configurable
 
 - Add the entity-type map ([Device scope from configuration](#device-scope-from-configuration)). Move the GPU recovery cases in fault-quarantine and platform-connectors to it.
-- Make the metadata-collector nodeSelector, the NIC vendor list, and the labeler driver informer configurable. Each default stays the same.
-- Document `nicInclusionRegexOverride` as the NIC selection of the core profile. At this time the code describes it as a fallback for a broken GPU stack.
+- Make the metadata-collector nodeSelector and the labeler driver informer configurable. Each default stays the same.
 - Let overrides set `customRecommendedAction` ([Custom actions in overrides](#custom-actions-in-overrides)).
-- Document the `metadata` keys of each monitor, and add the raw check values that a policy needs ([Raw check values](#raw-check-values)).
-- Replace `go-multierror` and `errwrap` with `errors.Join` from the standard library. Review the other MPL-2.0 and LGPL items in [Datastore and licenses](#datastore-and-licenses).
+- Replace `go-multierror` and `errwrap` with `errors.Join` from the standard library. Review the other MPL-2.0 items in [Datastore and licenses](#datastore-and-licenses).
 
 Each PR that changes remediation or drain adds a test that proves it does not act in the healthy case.
 
@@ -223,9 +252,8 @@ Each PR that changes remediation or drain adds a test that proves it does not ac
 Write a follow-up ADR for each of these:
 
 - The [escalation ladder](#escalation-ladder).
+- The field for [raw check results](#raw-check-results).
 - The neutral domain and the migration of names ([Public names change by addition](#public-names-change-by-addition)).
-- A reset contract for a component that a vendor implements in place of `GPUReset`. This builds on [ADR-069](069-gpu-reset-job-extension.md).
-- A remediation provider operation for repair types other than reboot and terminate.
 
 #### Phase 4: Move vendor code
 
@@ -246,7 +274,7 @@ After the deprecation period, maintainers decide whether to remove the old names
 | Labels, annotations, conditions, and metrics | Components write the old name and the new name, and read both, during the deprecation period |
 | CloudEvent type | event-exporter sends one event for each health event, with one type. The type becomes configurable, and the default stays `com.nvidia.nvsentinel.health.v1` until the deprecation period ends. A consumer that expects the new type changes the configuration. event-exporter never sends two events for one health event |
 | Helm values | No key is renamed or removed. Vendor defaults move to the plugin charts, and the umbrella chart sets them for existing installations |
-| Images | The current images continue to contain the plugins until phase 4. Then the umbrella chart installs the plugin images in their place |
+| Images | The current images continue to contain the vendor parts until phase 4. Then the umbrella chart installs the plugin images in their place |
 
 ## Rationale
 
@@ -260,7 +288,7 @@ At this time the local environment needs a fake DCGM, a fake driver DaemonSet, a
 
 ### Adoption
 
-Other vendors and platforms can contribute monitors, providers, and recovery policies without a fork. Fixes to the core then reach all users.
+Other vendors and platforms can contribute monitors, remediation plugins, and recovery policies without a fork. Fixes to the core then reach all users.
 
 ### Scope
 
@@ -273,7 +301,7 @@ Most of the work is already done. The [existing extension points](#existing-exte
 - A platform can run NVSentinel with its own accelerator, driver stack, or recovery policy, and does not need a fork.
 - The core can be tested in CI with no GPU, DCGM, or GPU Operator mocks.
 - A platform can send each fault to its own action and escalation ladder, and keep the loop protection of `MultipleRemediations`.
-- Vendor plugins can release on their own schedule.
+- Vendor logic stays in the detection and remediation plugins, where the vendor knowledge is used.
 
 ### Negative
 
@@ -291,11 +319,17 @@ Most of the work is already done. The [existing extension points](#existing-exte
 
 ## Alternatives Considered
 
+### Vendor-neutral monitors and remediation plugins
+
+Make every component vendor-neutral, including the health monitors and janitor.
+
+**Rejected** because: a health monitor reads a vendor device, and a remediation plugin calls a vendor tool or API. Vendor-neutral versions need an extra layer that only one vendor implements. The vendor knowledge belongs at the two ends of the pipeline, where it is used.
+
 ### Configuration only
 
 Keep all code in place and add a value for each vendor assumption.
 
-**Rejected** because: vendor code would still be compiled into core images, and NVML and vendor SDKs would stay in the core. The core still could not be tested without vendor mocks. Configuration also does not close the gaps in recovery policy.
+**Rejected** because: vendor code would still be compiled into core images, and NVML would stay in the core. The core still could not be tested without vendor mocks. Configuration also does not close the gaps in recovery policy.
 
 ### Rename all vendor names in one release
 
@@ -321,19 +355,7 @@ Add a vendor-neutral fault class to `HealthEvent`, and make each monitor map its
 
 This ADR does not remove NVIDIA support, and does not select the repository layout or the neutral domain. It does not add a fault scope larger than one node, such as an NVLink domain or a TPU slice. That is a new feature for its own issue.
 
-### Default mapping of COMPONENT_RESET
-
-The default janitor mapping sends `COMPONENT_RESET` to `RebootNode`. The `GPUReset` mapping is only in overlay values. The reset contract ([Phase 3](#phase-3-add-contracts)) must keep this default.
-
 ## Open Questions
-
-### Where do the vendor checks of the health monitors go?
-
-syslog-health-monitor and nic-health-monitor have a generic framework and vendor checks. One option is a generic image that loads vendor checks as configuration, for example regex and action in TOML. Another option is one image for each vendor. The decision belongs to the issue for each monitor.
-
-### Where do the cloud clients go?
-
-The cloud clients in janitor-provider and csp-health-monitor are not accelerator code, but they are vendor code. They can continue to ship in one image as optional built-in providers, or move to one plugin for each cloud.
 
 ### Who owns the escalation ladder?
 
@@ -342,5 +364,5 @@ The [escalation ladder](#escalation-ladder) is a default in the event, and an ov
 ## References
 
 - [#2247](https://github.com/NVIDIA/NVSentinel/issues/2247): Make NVSentinel vendor neutral
-- [ADR-001](001-health-event-detection-interface.md), [ADR-003](003-rule-based-node-quarantine.md), [ADR-015](015-custom-drain-extensibility.md), [ADR-017](017-remediation-plugins.md), [ADR-021](021-health-event-property-overrides.md), [ADR-036](036-custom-remediation-actions.md), [ADR-040](040-external-remediation-request.md), [ADR-051](051-maintenance-request.md), [ADR-064](064-node-and-device-selection.md), [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md), [ADR-069](069-gpu-reset-job-extension.md)
+- [ADR-001](001-health-event-detection-interface.md), [ADR-003](003-rule-based-node-quarantine.md), [ADR-015](015-custom-drain-extensibility.md), [ADR-021](021-health-event-property-overrides.md), [ADR-036](036-custom-remediation-actions.md), [ADR-040](040-external-remediation-request.md), [ADR-051](051-maintenance-request.md), [ADR-064](064-node-and-device-selection.md), [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md)
 - [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015): Kubernetes-native remediation without a database (proposed ADR-067)
