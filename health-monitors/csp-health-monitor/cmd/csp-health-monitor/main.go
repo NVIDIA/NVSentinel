@@ -33,6 +33,7 @@ import (
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp"
+	akamaiclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/akamai"
 	awsclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/aws"
 	gcpclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/gcp"
 	lambdaclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/lambda"
@@ -276,7 +277,23 @@ func initActiveMonitor(
 		return lambdaMonitor
 	}
 
-	slog.Info("No CSP is explicitly enabled in the configuration (GCP, AWS, or Lambda).")
+	if cfg.Akamai.Enabled {
+		slog.Info("Akamai configuration is enabled.")
+
+		akamaiMonitor, err := akamaiclient.NewClient(ctx, cfg.Akamai, cfg.ClusterName, kubeconfigPath, store)
+		if err != nil {
+			metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPAkamai), "init_error").Inc()
+			slog.Error("Failed to initialize Akamai monitor.", "error", err)
+
+			return nil
+		}
+
+		slog.Info("Akamai monitor initialized", "pollingIntervalSeconds", cfg.Akamai.PollingIntervalSeconds)
+
+		return akamaiMonitor
+	}
+
+	slog.Info("No CSP is explicitly enabled in the configuration (GCP, AWS, Lambda, or Akamai).")
 
 	return nil
 }
