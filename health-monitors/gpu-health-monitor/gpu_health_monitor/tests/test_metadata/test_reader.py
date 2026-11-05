@@ -477,6 +477,29 @@ def test_rereads_file_that_failed_to_parse(tmp_path: Path, sample_metadata: dict
     assert reader.get_chassis_serial() == "CHASSIS-12345"
 
 
+def test_malformed_rewrite_keeps_the_last_good_metadata(tmp_path: Path, sample_metadata: dict) -> None:
+    """A copy that fails to parse must not wipe the GPU identities read before, and the next good
+    copy is picked up."""
+    path = str(tmp_path / "gpu_metadata.json")
+    write_like_metadata_collector(path, sample_metadata)
+    reader = MetadataReader(path)
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+
+    bad_copy = path + ".tmp"
+    with open(bad_copy, "w") as f:
+        f.write('{"version": "1.0", "gpus": [}')
+    os.rename(bad_copy, path)
+
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+    assert reader.get_pci_address(1) == "0001:00:00.0"
+    assert reader.get_chassis_serial() == "CHASSIS-12345"
+
+    sample_metadata["gpus"][0]["uuid"] = "GPU-22222222-2222-2222-2222-222222222222"
+    write_like_metadata_collector(path, sample_metadata)
+
+    assert reader.get_gpu_uuid(0) == "GPU-22222222-2222-2222-2222-222222222222"
+
+
 def test_pinned_checks_the_file_once(tmp_path: Path, sample_metadata: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     """Inside pinned() the file is checked once however many lookups run, and a copy written
     meanwhile is served from the first lookup after the block."""

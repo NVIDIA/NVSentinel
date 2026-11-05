@@ -136,11 +136,14 @@ class MetadataReader:
                 return
             except Exception as e:
                 # Handles JSON decode errors, permission errors, etc. The version is kept,
-                # so this copy is not read again but the next one is.
+                # so this copy is not read again but the next one is. Only a copy that
+                # parsed counts as loaded, and it stays in use until a good one replaces it.
+                self._file_version = version
+                if self._loaded:
+                    log.error(f"Error loading metadata from {self._path}, keeping the copy read before: {e}")
+                    return
                 log.error(f"Error loading metadata from {self._path}: {e}")
                 self._metadata = {}
-                self._loaded = True
-                self._file_version = version
 
     def get_gpu_uuid(self, gpu_id: int) -> Optional[str]:
         """Get GPU UUID by DCGM GPU ID.
