@@ -30,9 +30,10 @@
 #     fallback if PodGroup isn't available
 #
 # All are disabled by default (beta on 1.37, alpha before). You need the
-# GenericWorkload feature gate on the API server and scheduler (to get the
-# API itself); on Kubernetes 1.37 also enable the API version with
-# --runtime-config=scheduling.k8s.io/v1beta1=true on the API server.
+# GenericWorkload feature gate on the API server and scheduler, and the API
+# version turned on in the API server with --runtime-config:
+# scheduling.k8s.io/v1beta1=true on 1.37, v1alpha2=true on 1.36, or
+# v1alpha1=true on 1.35.
 # On 1.35 and 1.36 you also need the scheduler's GangScheduling gate (to
 # get all-or-nothing gang scheduling behavior). Kubernetes 1.37 removed
 # that gate and folded it into GenericWorkload, so do not set it there.
