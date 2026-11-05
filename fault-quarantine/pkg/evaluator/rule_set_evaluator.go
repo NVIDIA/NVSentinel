@@ -20,6 +20,7 @@ import (
 
 	multierror "github.com/hashicorp/go-multierror"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 )
@@ -40,11 +41,11 @@ func InitializeRuleSetEvaluators(
 		}
 
 		if len(ruleSet.Match.Any) > 0 {
-			evaluators, err := createEvaluators(ruleSet.Match.Any, nodeInformer)
+			rules, err := createRules(ruleSet.Match.Any, nodeInformer)
 			if err != nil {
 				errs = multierror.Append(errs, err)
 			} else {
-				eval := NewAnyRuleSetEvaluator(evaluators, ruleSet)
+				eval := NewAnyRuleSetEvaluator(rules, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
 
 				slog.Debug("Initialized ruleSetEvaluator", "ruleSet", ruleSet)
@@ -52,11 +53,11 @@ func InitializeRuleSetEvaluators(
 		}
 
 		if len(ruleSet.Match.All) > 0 {
-			evaluators, err := createEvaluators(ruleSet.Match.All, nodeInformer)
+			rules, err := createRules(ruleSet.Match.All, nodeInformer)
 			if err != nil {
 				errs = multierror.Append(errs, err)
 			} else {
-				eval := NewAllRuleSetEvaluator(evaluators, ruleSet)
+				eval := NewAllRuleSetEvaluator(rules, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
 
 				slog.Debug("Initialized ruleSetEvaluator", "ruleSet", ruleSet)
@@ -67,30 +68,31 @@ func InitializeRuleSetEvaluators(
 	return ruleSetEvals, errs.ErrorOrNil()
 }
 
-func createEvaluators(rules []config.Rule, nodeInformer *informer.NodeInformer) ([]RuleEvaluator, error) {
-	evaluators := []RuleEvaluator{}
+func createRules(configRules []config.Rule, nodeInformer *informer.NodeInformer) ([]Rule, error) {
+	rules := []Rule{}
 
 	var errs *multierror.Error
 
-	for _, rule := range rules {
-		var eval RuleEvaluator
+	for _, configRule := range configRules {
+		var (
+			rule Rule
+			err  error
+		)
 
-		var err error
-
-		switch rule.Kind {
-		// Add cases for other kinds of evaluators as needed
+		switch configRule.Kind {
+		// Add cases for other kinds of rules as needed
 		case "HealthEvent":
-			eval, err = NewHealthEventRuleEvaluator(rule.Expression)
+			rule, err = celrule.NewHealthEventRule(configRule.Expression)
 
 		case "Node":
 			if nodeInformer == nil {
 				err = fmt.Errorf("NodeInformer must be provided for Node rule kind")
 			} else {
-				eval, err = newNodeRuleEvaluator(rule.Expression, nodeInformer.Lister(), nodeInformer)
+				rule, err = celrule.NewNodeRule(configRule.Expression, celrule.NodeGetterFunc(nodeInformer.GetRuleNode))
 			}
 
 		default:
-			err = fmt.Errorf("unknown evaluator kind: %s", rule.Kind)
+			err = fmt.Errorf("unknown evaluator kind: %s", configRule.Kind)
 		}
 
 		if err != nil {
@@ -98,8 +100,8 @@ func createEvaluators(rules []config.Rule, nodeInformer *informer.NodeInformer) 
 			continue
 		}
 
-		evaluators = append(evaluators, eval)
+		rules = append(rules, rule)
 	}
 
-	return evaluators, errs.ErrorOrNil()
+	return rules, errs.ErrorOrNil()
 }

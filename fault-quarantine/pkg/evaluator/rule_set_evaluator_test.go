@@ -21,41 +21,39 @@ import (
 	"testing"
 
 	multierror "github.com/hashicorp/go-multierror"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 )
 
-type MockRuleEvaluator struct {
+type mockRule struct {
 	result bool
 	err    error
 }
 
-func (m *MockRuleEvaluator) Evaluate(
-	_ context.Context,
-	healthEvent *protos.HealthEvent,
-) (common.RuleEvaluationResult, error) {
-	if m.result {
-		return common.RuleEvaluationSuccess, m.err
-	}
-	return common.RuleEvaluationFailed, m.err
+func (m *mockRule) Evaluate(context.Context, *protos.HealthEvent) (bool, error) {
+	return m.result, m.err
 }
 
 func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 	tests := []struct {
 		name       string
-		evaluators []RuleEvaluator
+		rules []Rule
 		event      *protos.HealthEvent
 		expected   common.RuleEvaluationResult
 		expectErr  bool
 	}{
 		{
 			name: "One evaluator returns true",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: false, err: nil},
-				&MockRuleEvaluator{result: true, err: nil},
-				&MockRuleEvaluator{result: false, err: nil},
+			rules: []Rule{
+				&mockRule{result: false, err: nil},
+				&mockRule{result: true, err: nil},
+				&mockRule{result: false, err: nil},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationSuccess,
@@ -63,9 +61,9 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 		},
 		{
 			name: "All evaluators return false",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: false, err: nil},
-				&MockRuleEvaluator{result: false, err: nil},
+			rules: []Rule{
+				&mockRule{result: false, err: nil},
+				&mockRule{result: false, err: nil},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationFailed,
@@ -73,8 +71,8 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 		},
 		{
 			name: "Evaluator returns error",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: false, err: errors.New("evaluation error")},
+			rules: []Rule{
+				&mockRule{result: false, err: errors.New("evaluation error")},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationFailed,
@@ -82,9 +80,9 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 		},
 		{
 			name: "Evaluator returns true despite error in others",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: false, err: errors.New("evaluation error")},
-				&MockRuleEvaluator{result: true, err: nil},
+			rules: []Rule{
+				&mockRule{result: false, err: errors.New("evaluation error")},
+				&mockRule{result: true, err: nil},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationSuccess,
@@ -92,9 +90,9 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 		},
 		{
 			name: "All evaluators return error",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: false, err: errors.New("error 1")},
-				&MockRuleEvaluator{result: false, err: errors.New("error 2")},
+			rules: []Rule{
+				&mockRule{result: false, err: errors.New("error 1")},
+				&mockRule{result: false, err: errors.New("error 2")},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationFailed,
@@ -105,7 +103,7 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			evaluator := &AnyRuleSetEvaluator{
-				evaluators: tt.evaluators,
+				rules:      tt.rules,
 				Name:       "TestAnyRuleSet",
 				Version:    "1",
 				Priority:   1,
@@ -132,16 +130,16 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 	tests := []struct {
 		name       string
-		evaluators []RuleEvaluator
+		rules []Rule
 		event      *protos.HealthEvent
 		expected   common.RuleEvaluationResult
 		expectErr  bool
 	}{
 		{
 			name: "All evaluators return true",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: true, err: nil},
-				&MockRuleEvaluator{result: true, err: nil},
+			rules: []Rule{
+				&mockRule{result: true, err: nil},
+				&mockRule{result: true, err: nil},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationSuccess,
@@ -149,9 +147,9 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 		},
 		{
 			name: "One evaluator returns false",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: true, err: nil},
-				&MockRuleEvaluator{result: false, err: nil},
+			rules: []Rule{
+				&mockRule{result: true, err: nil},
+				&mockRule{result: false, err: nil},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationFailed,
@@ -159,9 +157,9 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 		},
 		{
 			name: "Evaluator returns error",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: true, err: nil},
-				&MockRuleEvaluator{result: false, err: errors.New("evaluation error")},
+			rules: []Rule{
+				&mockRule{result: true, err: nil},
+				&mockRule{result: false, err: errors.New("evaluation error")},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationFailed,
@@ -169,9 +167,9 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 		},
 		{
 			name: "All evaluators return error",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: false, err: errors.New("error 1")},
-				&MockRuleEvaluator{result: false, err: errors.New("error 2")},
+			rules: []Rule{
+				&mockRule{result: false, err: errors.New("error 1")},
+				&mockRule{result: false, err: errors.New("error 2")},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationFailed,
@@ -179,9 +177,9 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 		},
 		{
 			name: "All evaluators return true with one error",
-			evaluators: []RuleEvaluator{
-				&MockRuleEvaluator{result: true, err: errors.New("error 1")},
-				&MockRuleEvaluator{result: true, err: nil},
+			rules: []Rule{
+				&mockRule{result: true, err: errors.New("error 1")},
+				&mockRule{result: true, err: nil},
 			},
 			event:     &protos.HealthEvent{},
 			expected:  common.RuleEvaluationSuccess,
@@ -192,7 +190,7 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			evaluator := &AllRuleSetEvaluator{
-				evaluators: tt.evaluators,
+				rules:      tt.rules,
 				Name:       "TestAllRuleSet",
 				Version:    "1",
 				Priority:   1,
@@ -211,6 +209,25 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 				t.Errorf("Expected no error, got %v", err)
 			}
 		})
+	}
+}
+
+// An expression that fails on the event fails the same way on every replay, so
+// cold start must not retry it.
+func TestRuleSetEvaluator_EvaluationError_IsPermanent(t *testing.T) {
+	rule, err := celrule.NewHealthEventRule(`event.metadata["missing"].startsWith("value")`)
+	require.NoError(t, err)
+
+	ruleSet := config.RuleSetMeta{Name: "RuleSet"}
+
+	for _, evaluator := range []RuleSetEvaluatorIface{
+		NewAllRuleSetEvaluator([]Rule{rule}, ruleSet),
+		NewAnyRuleSetEvaluator([]Rule{rule}, ruleSet),
+	} {
+		result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{})
+		assert.Equal(t, common.RuleEvaluationFailed, result)
+		require.Error(t, err)
+		assert.True(t, coldstart.IsPermanentError(err), "%T: %v", evaluator, err)
 	}
 }
 
@@ -312,7 +329,7 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 	}
 }
 
-func TestCreateEvaluators(t *testing.T) {
+func TestCreateRules(t *testing.T) {
 	validRule := config.Rule{
 		Kind:       "HealthEvent",
 		Expression: "event.isHealthy == false",
@@ -368,9 +385,9 @@ func TestCreateEvaluators(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			evaluators, err := createEvaluators(tt.rules, nil)
-			if len(evaluators) != tt.expectedCount {
-				t.Errorf("Expected %d evaluators, got %d", tt.expectedCount, len(evaluators))
+			rules, err := createRules(tt.rules, nil)
+			if len(rules) != tt.expectedCount {
+				t.Errorf("Expected %d rules, got %d", tt.expectedCount, len(rules))
 			}
 
 			if tt.expectErr {
@@ -402,8 +419,8 @@ func TestBaseRuleSetEvaluatorMethods(t *testing.T) {
 }
 
 func TestNewAnyRuleSetEvaluator(t *testing.T) {
-	evaluators := []RuleEvaluator{
-		&MockRuleEvaluator{result: true, err: nil},
+	rules := []Rule{
+		&mockRule{result: true, err: nil},
 	}
 	ruleset := config.RuleSetMeta{
 		Name:     "AnyRuleSet",
@@ -411,20 +428,20 @@ func TestNewAnyRuleSetEvaluator(t *testing.T) {
 		Priority: 1,
 	}
 
-	anyEvaluator := NewAnyRuleSetEvaluator(evaluators, ruleset)
+	anyEvaluator := NewAnyRuleSetEvaluator(rules, ruleset)
 
 	if anyEvaluator.GetName() != "AnyRuleSet" {
 		t.Errorf("Expected Name to be 'AnyRuleSet', got %s", anyEvaluator.GetName())
 	}
 
-	if !reflect.DeepEqual(anyEvaluator.evaluators, evaluators) {
-		t.Errorf("Evaluators do not match")
+	if !reflect.DeepEqual(anyEvaluator.rules, rules) {
+		t.Errorf("Rules do not match")
 	}
 }
 
 func TestNewAllRuleSetEvaluator(t *testing.T) {
-	evaluators := []RuleEvaluator{
-		&MockRuleEvaluator{result: true, err: nil},
+	rules := []Rule{
+		&mockRule{result: true, err: nil},
 	}
 	ruleset := config.RuleSetMeta{
 		Name:     "AllRuleSet",
@@ -432,13 +449,13 @@ func TestNewAllRuleSetEvaluator(t *testing.T) {
 		Priority: 1,
 	}
 
-	allEvaluator := NewAllRuleSetEvaluator(evaluators, ruleset)
+	allEvaluator := NewAllRuleSetEvaluator(rules, ruleset)
 
 	if allEvaluator.GetName() != "AllRuleSet" {
 		t.Errorf("Expected Name to be 'AllRuleSet', got %s", allEvaluator.GetName())
 	}
 
-	if !reflect.DeepEqual(allEvaluator.evaluators, evaluators) {
-		t.Errorf("Evaluators do not match")
+	if !reflect.DeepEqual(allEvaluator.rules, rules) {
+		t.Errorf("Rules do not match")
 	}
 }

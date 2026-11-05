@@ -17,9 +17,27 @@ package evaluator
 import (
 	"context"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 )
+
+// Rule is a compiled rule from commons/pkg/celrule.
+type Rule interface {
+	Evaluate(context.Context, *protos.HealthEvent) (bool, error)
+}
+
+// evaluateRule evaluates one rule of a rule set. An error in the expression is
+// permanent for the event, so cold start does not retry it.
+func evaluateRule(ctx context.Context, rule Rule, event *protos.HealthEvent) (bool, error) {
+	matched, err := rule.Evaluate(ctx, event)
+	if celrule.IsEvaluationError(err) {
+		return false, coldstart.PermanentError(err)
+	}
+
+	return matched, err
+}
 
 // Interfaces and base structs
 type RuleSetEvaluatorIface interface {
