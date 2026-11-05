@@ -175,6 +175,7 @@ The following fields are always retained:
 - `metadata.name`, `metadata.uid`, and `metadata.resourceVersion`
 - all `metadata.labels`
 - the `nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed` annotation, when present
+- the [relearn annotation](#relearning-expected-counts) of each class that sets `relearnID`, when present
 
 When expected device counts have at least one enabled class, the Labeler also
 retains `status.allocatable` and `status.capacity`. Device-count expressions
@@ -187,7 +188,40 @@ When expected device counts are disabled, all of `status` is discarded.
 Expressions that reference discarded fields are unsupported and receive only
 the field's empty or absent value.
 
-For classes without a matching override, the expected value is learned as the maximum current or existing expected count among nodes with the same configured grouping-label values. Learned expected counts can rise automatically, but do not fall automatically when a node reports fewer devices.
+For classes without a matching override, the expected value is learned as the maximum current or existing expected count among nodes with the same configured grouping-label values. Learned expected counts can rise automatically, but do not fall automatically when a node reports fewer devices. To lower them after a deliberate change, see [Relearning Expected Counts](#relearning-expected-counts).
+
+### Relearning Expected Counts
+
+A learned expected count never goes down on its own, so that a node or a whole partition that loses devices keeps being reported ([ADR-043](../designs/043-expected-device-count-labels.md)). After a change that lowers the count on purpose, the labeler can relearn a class once from the current counts of its nodes ([ADR-070](../designs/070-expected-device-count-relearn.md)). For example, two nodes switched to MIG can report more GPUs while they still carry the plain product label, which raises the expected count of every node in the plain partition, and a node that leaves MIG brings its MIG count into the plain partition.
+
+To relearn a class, set `relearnID` on it to a new value, such as a date and a reason:
+
+```yaml
+labeler:
+  expectedDeviceCounts:
+    enabled: true
+    classes:
+      - name: gpu
+        enabled: true
+        relearnID: "2026-11-05-mig"
+        # labels, expectedCountOverrides and sources as in the chart values
+```
+
+Helm replaces lists in values, so give the class list in full, as for `expectedCountOverrides`.
+
+The new value changes the configuration checksum, which restarts the labeler. Its startup reconcile sets the expected count of each partition to the highest current count among its nodes. Next to each expected label of the class, in the same patch, the labeler writes the annotation `nvsentinel.dgxc.nvidia.com/<class>.count.relearn` with the ID and the value, for example `2026-11-05-mig/4`. While the ID is set, an expected label counts only when its annotation has the ID and the label's value. Old labels on nodes not reconciled yet therefore cannot bring the old count back, and with the same ID a node that carries the annotation is not relearned again: afterwards its count rises as before, and a lost device is still reported. The labeler logs each node whose expected count goes down. Overrides still take precedence.
+
+- **Before:** a relearn lowers every partition where all nodes report fewer devices than expected, including a partition that has really lost a device on every node. Check the current and expected labels of each partition first, for example with `kubectl get nodes -L nvsentinel.dgxc.nvidia.com/gpu.count.current,nvsentinel.dgxc.nvidia.com/gpu.count.expected,node.kubernetes.io/instance-type,nvidia.com/gpu.product`, and pin with an override any partition that should not go down. Do not start a relearn while drivers or device plugins are being upgraded: a node that has no count when the labeler reaches it is relearned from whatever it reports once its count returns, and a device lost in between is accepted.
+- **After:** every node of the class should carry the annotation with the new ID:
+
+  ```bash
+  kubectl get nodes -l nvsentinel.dgxc.nvidia.com/gpu.count.expected -o custom-columns='NAME:.metadata.name,RELEARN:.metadata.annotations.nvsentinel\.dgxc\.nvidia\.com/gpu\.count\.relearn'
+  ```
+
+  A node without it had no count, because its count source is missing or its expression failed, or its patch failed. It keeps its labels, and its old label does not count for the other nodes. The labeler relearns it once it has a count again, and retries a failed patch at the node's next reconcile or the next restart. If such a node should not be relearned from the count it comes back with, pin it with an override before then.
+- **Keep the ID:** leave `relearnID` set. Removing it makes every old label count again, including one that a node without a count still carries. Use a new value for the next relearn, for example after the next MIG change, and never reuse an old one: the annotations stay on the nodes after the ID is cleared, so a reused ID treats unchanged nodes as already relearned. Do not remove the annotation by hand either, since without it the node's label stops counting and the node is relearned at its next reconcile, and note that renaming a class with an ID set relearns the whole class, because the annotation key carries the class name.
+
+`relearnID` must be a valid label value: at most 63 characters of letters, digits, `-`, `_` and `.`, starting and ending with a letter or digit. Quote it in YAML, since an unquoted number such as 20261105 is rendered as a float and rejected. The labeler does not start with an invalid value. The default, an empty value, changes nothing.
 
 ### Device-Count Sources
 

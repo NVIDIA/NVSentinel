@@ -94,6 +94,12 @@ enabled = {{ .Values.expectedDeviceCounts.enabled }}
 [[classes]]
 name = {{ .name | quote }}
 enabled = {{ .enabled }}
+{{- if and (hasKey . "relearnID") (not (kindIs "string" .relearnID)) (not (kindIs "invalid" .relearnID)) }}
+{{- fail "labeler: relearnID must be a quoted string" }}
+{{- end }}
+{{- with .relearnID }}
+relearnID = {{ . | quote }}
+{{- end }}
 {{- with .groupingLabels }}
 groupingLabels = [{{- range $i, $label := . }}{{ if $i }}, {{ end }}{{ $label | quote }}{{- end }}]
 {{- end }}

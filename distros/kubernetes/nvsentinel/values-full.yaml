@@ -1411,6 +1411,8 @@ labeler:
   # sources. For each node, the labeler uses the first source that applies. A source with
   # resourceSliceDriver applies when the node has ResourceSlices from that driver. All sources
   # of a class must count the same unit. See the labeler chart values.yaml for details.
+  # Learned expected counts never go down on their own. Set relearnID on a class to a new value
+  # to relearn it once from current counts, and keep it set (ADR-070).
   expectedDeviceCounts:
     enabled: true
     classes:
@@ -1422,6 +1424,7 @@ labeler:
           current: nvsentinel.dgxc.nvidia.com/gpu.count.current
           expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
         expectedCountOverrides: []
+        relearnID: ""
         sources:
           - name: dra
             resourceSliceDriver: gpu.nvidia.com
@@ -1475,6 +1478,7 @@ labeler:
         groupingLabels:
           - node.kubernetes.io/instance-type
         expectedCountOverrides: []
+        relearnID: ""
         currentExpression: |
           int(node.status.allocatable['nvidia.com/mlnxnics'])
       # Example AWS RoCE DRA NIC class. Uncomment and adapt per environment.

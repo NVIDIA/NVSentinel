@@ -112,6 +112,8 @@ Indicates whether the node is running Kata Containers runtime (detected from nod
 
 When enabled, the labeler evaluates configured CEL expressions against the node and associated DRA ResourceSlices. Current labels reflect the observed count. Expected labels come from an override or the maximum learned count among nodes in the same grouping partition.
 
+A learned expected count never goes down on its own, so a lost device keeps being reported. After a change that lowers the count on purpose, such as a MIG reconfiguration, set `relearnID` on the class to relearn it once from current counts. The [labeler configuration reference](configuration/labeler.md#relearning-expected-counts) describes the steps.
+
 The default GPU class works in both GPU Operator modes without extra configuration. In GPUCluster (DRA) mode, the labeler counts the GPU devices in the `gpu.nvidia.com` ResourceSlices. In ClusterPolicy mode, it reads the GFD `nvidia.com/gpu.count` label while the NVIDIA device plugin advertises GPUs, so a label left from an earlier mode is not counted in GPUCluster mode. In DRA mode, the labeler also groups nodes by their GPU models, which it reads from the ResourceSlices. The [labeler configuration reference](configuration/labeler.md#expected-device-counts) describes these sources.
 
 ## Key Features
