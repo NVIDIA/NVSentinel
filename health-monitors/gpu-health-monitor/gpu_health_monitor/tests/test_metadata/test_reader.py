@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import builtins
 import json
 import os
 from pathlib import Path
@@ -648,3 +649,55 @@ def test_wrong_shape_first_copy_reads_as_empty_until_a_good_one(
 
     write_like_metadata_collector(str(path), sample_metadata)
     assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+
+
+def deny_reads_of(monkeypatch: pytest.MonkeyPatch, path: str) -> dict:
+    """Make open() fail with EACCES for reads of path while switch["on"] is true, like a file the
+    pod can stat but not read. chmod would not do here, since the tests may run as root."""
+    switch = {"on": True}
+    real_open = builtins.open
+
+    def denied_open(file, *args, **kwargs):
+        if switch["on"] and os.fspath(file) == path and (not args or "r" in args[0]):
+            raise PermissionError(13, "Permission denied", path)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", denied_open)
+    return switch
+
+
+def test_unreadable_first_copy_is_read_once_access_is_back(
+    tmp_path: Path, sample_metadata: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copy that stats but can't be opened serves empty metadata and is tried again on every
+    access, so getting access back is enough, without the file changing."""
+    path = str(tmp_path / "gpu_metadata.json")
+    write_like_metadata_collector(path, sample_metadata)
+    switch = deny_reads_of(monkeypatch, path)
+    reader = MetadataReader(path)
+    assert reader.get_gpu_uuid(0) is None
+    assert reader.get_chassis_serial() is None
+
+    switch["on"] = False
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+    assert reader.get_chassis_serial() == "CHASSIS-12345"
+
+
+def test_unreadable_new_copy_keeps_the_last_good_metadata_until_it_can_be_read(
+    tmp_path: Path, sample_metadata: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new copy that can't be opened leaves the copy read before in use, and it is read as soon as
+    it can be opened, even though nothing about the file changed in between."""
+    path = str(tmp_path / "gpu_metadata.json")
+    write_like_metadata_collector(path, sample_metadata)
+    reader = MetadataReader(path)
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+
+    sample_metadata["gpus"][0]["uuid"] = "GPU-read-once-access-is-back"
+    write_like_metadata_collector(path, sample_metadata)
+    switch = deny_reads_of(monkeypatch, path)
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+    assert reader.get_pci_address(1) == "0001:00:00.0"
+
+    switch["on"] = False
+    assert reader.get_gpu_uuid(0) == "GPU-read-once-access-is-back"

@@ -85,6 +85,7 @@ class MetadataReader:
         self._lock = threading.RLock()
         self._loaded = False
         self._missing_warned = False
+        self._unreadable_warned = False
         # _version_of() for the copy read last, whether it parsed or not.
         self._file_version: Optional[tuple[int, int, int, int]] = None
         self._pinned = 0
@@ -138,6 +139,7 @@ class MetadataReader:
                 self._file_version = version
                 self._loaded = True
                 self._missing_warned = False
+                self._unreadable_warned = False
                 log.info(
                     f"GPU metadata {'reloaded' if reloaded else 'loaded'} from {self._path}: "
                     f"{gpu_count} GPUs, chassis_serial={'present' if chassis else 'absent'}"
@@ -156,11 +158,22 @@ class MetadataReader:
                 self._metadata = {}
                 # Intentionally do NOT set self._loaded = True, so the next access retries.
                 return
+            except OSError as e:
+                # The file is there but could not be opened or read, a permission problem
+                # most likely. Nothing is remembered about this copy, so the next access
+                # tries it again and reads it once access is back, even if the file itself
+                # did not change. The copy read before stays in use meanwhile.
+                if not self._unreadable_warned:
+                    log.error(f"Error reading {self._path}, will retry on next access: {e}")
+                    self._unreadable_warned = True
+                if not self._loaded:
+                    self._metadata = {}
+                return
             except Exception as e:
-                # Handles JSON decode errors, a copy with the wrong shape, permission errors,
-                # etc. The version is kept,
-                # so this copy is not read again but the next one is. Only a copy that
-                # parsed counts as loaded, and it stays in use until a good one replaces it.
+                # Handles JSON decode errors, a copy with the wrong shape, etc. The version
+                # is kept, so this copy is not read again but the next one is. Only a copy
+                # that parsed counts as loaded, and it stays in use until a good one
+                # replaces it.
                 self._file_version = version
                 if self._loaded:
                     log.error(f"Error loading metadata from {self._path}, keeping the copy read before: {e}")
