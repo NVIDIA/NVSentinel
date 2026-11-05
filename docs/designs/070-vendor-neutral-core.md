@@ -87,7 +87,7 @@ The charts define five CRD groups: `janitor.dgxc.nvidia.com`, `nvsentinel.dgxc.n
 - The fault-quarantine circuit breaker counts the nodes with `nvidia.com/gpu.present` (configurable with `gpuNodeLabel`).
 - The health-events-analyzer runs a Go XID burst detector on PostgreSQL for every unhealthy `GPU` event with an error code. It counts DCGM error codes as XIDs (`health-events-analyzer/pkg/reconciler/reconciler.go:737-745`).
 - janitor contains the GPU reset. It sets `nvidia.com/gpu.deploy.*` labels to stop GPU Operator pods, sets `NVIDIA_VISIBLE_DEVICES=void`, and runs `nvidia-smi --gpu-reset` (`janitor/pkg/gpuservices/manager.go:85-134`, `gpu-reset/gpu_reset.sh`). The reset fails when components that the GPU Operator does not manage keep the GPU open.
-- nic-health-monitor needs the `nvidia-smi topo -m` matrix from metadata-collector to start (`health-monitors/nic-health-monitor/pkg/topology/topology.go:112-119`), and it monitors only NICs with the Mellanox PCI vendor ID `0x15b3` (`health-monitors/nic-health-monitor/pkg/discovery/discovery.go:45`).
+- nic-health-monitor needs the `nvidia-smi topo -m` matrix from metadata-collector to start, unless `nicInclusionRegexOverride` is set (`health-monitors/nic-health-monitor/pkg/topology/topology.go:112-119`). It monitors only NICs with the Mellanox PCI vendor ID `0x15b3` (`health-monitors/nic-health-monitor/pkg/discovery/discovery.go:45`). Its built-in counter catalog includes `mlx5` driver counters under `hw_counters/` (`health-monitors/nic-health-monitor/pkg/config/config.go`).
 
 #### Defaults expect the GPU Operator
 
@@ -199,7 +199,7 @@ The core installs and runs on a cluster with no vendor software and with a datas
 | janitor-provider | Split | Cloud clients (AWS, GCP, Azure, OCI, Nebius, Lambda, Akamai), `commons/pkg/{akamai,lambda}`, the `nke.nvidia.com/*` default keys of the `label` provider | gRPC contract, `generic`, `label`, `kind` |
 | csp-health-monitor | Split | Cloud clients (AWS, GCP, Lambda) | Monitor interface, trigger engine |
 | syslog-health-monitor | Split | `xid`, `sxid`, `gpufallen`, `nicdriver` handlers, the XID catalog, the `GPU` default component class | journald reader, cursors, check dispatch, cancellation |
-| nic-health-monitor | Split | Mellanox vendor gate, BlueField IDs, GPU-to-NIC topology, `mlx5` `hw_counters` defaults | sysfs link state and counter checks. In the core profile, `nicInclusionRegexOverride` selects the NICs to monitor: matched NICs skip the vendor gate and the GPU topology (`main.go:315-337`). Without the override or the GPU metadata file, the monitor does not start, so it cannot act on a management NIC |
+| nic-health-monitor | Split | Mellanox vendor gate, BlueField IDs, GPU-to-NIC topology, the `mlx5` `hw_counters/` entries of the counter catalog | sysfs link state checks, and the kernel counters in the catalog: IB port counters under `counters/`, netdev counters under `statistics/`, and `carrier_changes`. In the core profile, `nicInclusionRegexOverride` selects the NICs to monitor: matched NICs skip the vendor gate and the GPU topology (`main.go:315-337`). The override selects NICs only, not counters. A counter that a NIC does not expose is not monitored, and the monitor logs one warning for it (`evaluator.go:974-986`). Without the override or the GPU metadata file, the monitor does not start, so it cannot act on a management NIC |
 | labeler | Split | `dcgm.version`, `driver.installed`, GPU Operator pod discovery, `nvidia.com/*` count classes | Device-count engine, Kata detection, `managed` opt-out |
 | metadata-collector | Split | NVML and `nvidia-smi` collection, `gpu_metadata.json` schema, the NVIDIA DRA device name format `gpu-%d` | Pod-to-device mapper (kubelet PodResources API) with configured resource names and DRA device names |
 | preflight | Split | `nvidia.com/gpu` and `gpu.nvidia.com` defaults, vendor entries in `networkResourceNames`, NCCL injection, `dcgm-diag` and `nccl-*` checks | Webhook, gang discovery, check injection |
@@ -232,14 +232,14 @@ Write a follow-up ADR for each of these:
 
 - The [escalation ladder](#escalation-ladder).
 - The neutral domain and the migration of names ([Public names change by addition](#public-names-change-by-addition)).
-- A reset contract for a component that a vendor implements in place of `GPUReset`. This builds on [ADR-069](https://github.com/NVIDIA/NVSentinel/pull/2281).
+- A reset contract for a component that a vendor implements in place of `GPUReset`. This builds on [ADR-069](069-gpu-reset-job-extension.md).
 - A remediation provider operation for repair types other than reboot and terminate.
 
 #### Phase 4: Move vendor code
 
 Move each "moves to a plugin" item into its own module and chart. When a module is split, add a lint rule that stops the core part from importing the plugin module. The umbrella chart installs the NVIDIA plugins by default, so existing installations keep their behaviour. Their images and subcharts change.
 
-A new core-only profile installs no plugin and no MongoDB subchart. It uses PostgreSQL, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or a database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer ([Health-events-analyzer in the core](#health-events-analyzer-in-the-core)). The CI job in [Core works without vendor software](#core-works-without-vendor-software) installs this profile.
+A new core-only profile installs no plugin and no MongoDB subchart. It uses the PostgreSQL subchart, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or an external PostgreSQL or MongoDB database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer ([Health-events-analyzer in the core](#health-events-analyzer-in-the-core)). The CI job in [Core works without vendor software](#core-works-without-vendor-software) installs this profile.
 
 #### Phase 5: Remove deprecated names
 
@@ -353,6 +353,5 @@ The [escalation ladder](#escalation-ladder) is a default in the event, and an ov
 ## References
 
 - [#2247](https://github.com/NVIDIA/NVSentinel/issues/2247): Make NVSentinel vendor neutral
-- [ADR-001](001-health-event-detection-interface.md), [ADR-003](003-rule-based-node-quarantine.md), [ADR-015](015-custom-drain-extensibility.md), [ADR-017](017-remediation-plugins.md), [ADR-021](021-health-event-property-overrides.md), [ADR-036](036-custom-remediation-actions.md), [ADR-040](040-external-remediation-request.md), [ADR-051](051-maintenance-request.md), [ADR-064](064-node-and-device-selection.md), [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md)
+- [ADR-001](001-health-event-detection-interface.md), [ADR-003](003-rule-based-node-quarantine.md), [ADR-015](015-custom-drain-extensibility.md), [ADR-017](017-remediation-plugins.md), [ADR-021](021-health-event-property-overrides.md), [ADR-036](036-custom-remediation-actions.md), [ADR-040](040-external-remediation-request.md), [ADR-051](051-maintenance-request.md), [ADR-064](064-node-and-device-selection.md), [ADR-066](066-health-events-analyzer-datastore-neutral-rules.md), [ADR-069](069-gpu-reset-job-extension.md)
 - [#2015](https://github.com/NVIDIA/NVSentinel/pull/2015): Kubernetes-native remediation without a database (proposed ADR-067)
-- [#2281](https://github.com/NVIDIA/NVSentinel/pull/2281): GPU reset Job extension (proposed ADR-069)
