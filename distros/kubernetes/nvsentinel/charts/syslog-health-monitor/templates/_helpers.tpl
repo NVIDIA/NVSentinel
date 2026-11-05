@@ -204,6 +204,11 @@ spec:
             - name: host-machine-id
               mountPath: /etc/machine-id
               readOnly: true
+            {{- else if $root.Values.journalDirectoryHostPath }}
+            # Regular mode: Mount the journal directory itself where the monitor reads it
+            - name: var-log-vol
+              mountPath: /nvsentinel/var/log/journal
+              readOnly: true
             {{- else }}
             # Regular mode: Mount journal from user-defined host path
             - name: var-log-vol
@@ -275,7 +280,11 @@ spec:
         # Regular mode: Mount journal from user-defined host path
         - name: var-log-vol
           hostPath:
+            {{- if $root.Values.journalDirectoryHostPath }}
+            path: {{ $root.Values.journalDirectoryHostPath | quote }}
+            {{- else }}
             path: {{ $root.Values.journalHostPath }}
+            {{- end }}
             type: Directory
         {{- end }}
         - name: sys-vol

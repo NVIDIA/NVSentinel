@@ -216,7 +216,7 @@ Sends via gRPC
 ### 3. CSP Health Monitor
 
 **What it captures:**
-- Cloud provider maintenance schedules (GCP, AWS, OCI)
+- Cloud provider maintenance schedules (GCP, AWS, OCI, Akamai)
 - Upcoming VM migrations
 - Hardware replacement notices
 
