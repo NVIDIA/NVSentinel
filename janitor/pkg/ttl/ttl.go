@@ -14,8 +14,8 @@
 
 // Package ttl provides a generic, annotation-driven TTL reconciler for
 // cluster-scoped Custom Resources. It is used by the janitor binary to
-// auto-delete completed maintenance CRs (RebootNode, GPUReset, TerminateNode)
-// once they are past their TTL.
+// auto-delete maintenance CRs (RebootNode, GPUReset, TerminateNode,
+// ExternalRemediationRequest) once they are past their TTL.
 //
 // See docs/designs/037-janitor-cr-ttl-cleanup.md for the design rationale.
 package ttl
@@ -35,8 +35,10 @@ const (
 	TTLAnnotation = "nvsentinel.nvidia.com/ttl"
 
 	// ExpiryAnnotation stores the calculated expiry time in RFC3339 format.
-	// It is written on first reconcile and never recomputed, so clock skew
-	// and controller restarts don't shift the expiry forward.
+	// It is written on first reconcile and not recomputed afterwards, so clock
+	// skew and controller restarts don't shift the expiry forward. For
+	// completion-gated kinds it is recalculated from the fixed completion time
+	// on every reconcile, and is informational only.
 	ExpiryAnnotation = "nvsentinel.nvidia.com/expiry"
 
 	// PreserveAnnotation, when set to "true", prevents TTL-based deletion.
@@ -83,6 +85,25 @@ type Result struct {
 	Changed bool
 }
 
+// ProcessOption adjusts a single Process call.
+type ProcessOption func(*processConfig)
+
+type processConfig struct {
+	requireCompletion bool
+	completedAt       *time.Time
+}
+
+// AfterCompletion starts the TTL at completedAt instead of the first
+// reconcile. A nil completedAt means the resource is still in progress:
+// Process returns ActionNoop without touching annotations, and ignores any
+// expiry already stored on the resource.
+func AfterCompletion(completedAt *time.Time) ProcessOption {
+	return func(c *processConfig) {
+		c.requireCompletion = true
+		c.completedAt = completedAt
+	}
+}
+
 // Process applies the TTL state machine to obj in memory. It mutates
 // annotations but does NOT call Update or Delete — the caller acts on the
 // returned Result.
@@ -90,8 +111,22 @@ type Result struct {
 // The defaultTTL is applied only when the object has no TTL annotation yet.
 // A zero defaultTTL means "no automatic default" — objects without an explicit
 // TTL annotation are left alone.
-func Process(ctx context.Context, obj client.Object, defaultTTL time.Duration, clock Clock) (Result, error) {
+func Process(
+	ctx context.Context, obj client.Object, defaultTTL time.Duration, clock Clock, opts ...ProcessOption,
+) (Result, error) {
+	var cfg processConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	if skipEarly(ctx, obj) {
+		return Result{Action: ActionNoop}, nil
+	}
+
+	if cfg.requireCompletion && cfg.completedAt == nil {
+		slog.DebugContext(ctx, "resource has not completed, skipping TTL processing",
+			"name", obj.GetName())
+
 		return Result{Action: ActionNoop}, nil
 	}
 
@@ -106,7 +141,7 @@ func Process(ctx context.Context, obj client.Object, defaultTTL time.Duration, c
 		return Result{Action: ActionNoop, Changed: changed}, nil
 	}
 
-	expiryTime, setExpiry := getOrCalculateExpiry(ctx, obj, ttlDuration, clock)
+	expiryTime, setExpiry := getOrCalculateExpiry(ctx, obj, ttlDuration, clock.Now(), cfg.completedAt)
 	changed = changed || setExpiry
 
 	if !clock.Now().Before(expiryTime) {
@@ -184,12 +219,22 @@ func applyDefaultTTLIfNeeded(ctx context.Context, obj client.Object, defaultTTL 
 	return true
 }
 
-// getOrCalculateExpiry returns the expiry time, reading it from the annotation
-// if present (and parseable) or computing it from clock.Now() + ttl. The
-// second return value is true when a new expiry was written to annotations.
+// getOrCalculateExpiry returns the expiry time. The second return value is
+// true when the expiry annotation was changed.
+//
+// Without completedAt, the expiry is read from the annotation if present (and
+// parseable), or computed once from now + ttl.
+//
+// With completedAt, the expiry is always completedAt + ttl. The completion time
+// does not move, so recalculating gives the same value on every reconcile. It
+// also replaces an expiry that an earlier janitor counted from first reconcile.
 func getOrCalculateExpiry(
-	ctx context.Context, obj client.Object, ttl time.Duration, clock Clock,
+	ctx context.Context, obj client.Object, ttl time.Duration, now time.Time, completedAt *time.Time,
 ) (time.Time, bool) {
+	if completedAt != nil {
+		return setExpiryFromCompletion(ctx, obj, completedAt.Add(ttl))
+	}
+
 	annotations := obj.GetAnnotations()
 
 	if existing, ok := annotations[ExpiryAnnotation]; ok {
@@ -201,8 +246,29 @@ func getOrCalculateExpiry(
 			"name", obj.GetName(), "expiry", existing)
 	}
 
-	expiry := clock.Now().Add(ttl)
+	expiry := now.Add(ttl)
 	annotations[ExpiryAnnotation] = expiry.Format(time.RFC3339)
+
+	return expiry, true
+}
+
+// setExpiryFromCompletion writes expiry to the annotation only when the stored
+// value differs, so repeated reconciles do not cause an update loop.
+func setExpiryFromCompletion(ctx context.Context, obj client.Object, expiry time.Time) (time.Time, bool) {
+	annotations := obj.GetAnnotations()
+	formatted := expiry.Format(time.RFC3339)
+
+	existing, ok := annotations[ExpiryAnnotation]
+	if ok && existing == formatted {
+		return expiry, false
+	}
+
+	if ok {
+		slog.InfoContext(ctx, "replacing expiry with value calculated from completion time",
+			"name", obj.GetName(), "oldExpiry", existing, "expiry", formatted)
+	}
+
+	annotations[ExpiryAnnotation] = formatted
 
 	return expiry, true
 }
