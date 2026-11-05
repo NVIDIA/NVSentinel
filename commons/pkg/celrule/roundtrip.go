@@ -165,7 +165,9 @@ func handleInterface(v reflect.Value) any {
 	return structToInterface(v.Elem())
 }
 
-// uses structToInterface for recursive processing
+// RoundTrip converts v to the map a HealthEvent rule reads as "event". Every
+// field is present, even zero values, and is keyed by its JSON tag name. Enums
+// are numbers, and all numbers are float64.
 func RoundTrip(v any) (map[string]any, error) {
 	val := reflect.ValueOf(v)
 	obj := structToInterface(val)
