@@ -657,9 +657,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         events, so a critical event waits for a publish in progress instead of
         racing its cache update, and a fault seen by several polls during an
         outage is published once while a recovery seen afterwards is not lost
-        to a stale cache.
+        to a stale cache. The GPU metadata file is checked once per poll, so
+        every event of the poll names its GPUs from the same copy.
         """
-        with self._event_lock:
+        with self._event_lock, self._metadata_reader.pinned():
             self._publish_health_snapshot(health_details, gpu_ids, switch_ids)
 
     def _publish_health_snapshot(

@@ -413,3 +413,167 @@ def test_classify_unknown_metadata_unavailable() -> None:
     """Missing metadata file returns UNKNOWN."""
     reader = MetadataReader("/nonexistent/file.json")
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
+
+
+# --- metadata-collector rewriting the file ---
+
+
+def write_like_metadata_collector(path: str, metadata: dict) -> None:
+    """Write the file the way metadata-collector does: a temporary file renamed over the old one."""
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(metadata, f)
+    os.chmod(tmp_path, 0o644)
+    os.rename(tmp_path, path)
+
+
+def test_rereads_file_replaced_by_metadata_collector(tmp_path: Path, sample_metadata: dict) -> None:
+    """The file lives on a hostPath that survives a reboot, so the monitor can read the previous
+    boot's copy before metadata-collector replaces it. Later lookups must serve the new file."""
+    path = str(tmp_path / "gpu_metadata.json")
+    write_like_metadata_collector(path, sample_metadata)
+    reader = MetadataReader(path)
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+    assert reader.get_pci_address(1) == "0001:00:00.0"
+    inode_read_first = os.stat(path).st_ino
+
+    sample_metadata["gpus"][0]["uuid"] = "GPU-22222222-2222-2222-2222-222222222222"
+    sample_metadata["gpus"][1]["pci_address"] = "0002:00:00.0"
+    write_like_metadata_collector(path, sample_metadata)
+    assert os.stat(path).st_ino != inode_read_first
+
+    assert reader.get_gpu_uuid(0) == "GPU-22222222-2222-2222-2222-222222222222"
+    assert reader.get_pci_address(1) == "0002:00:00.0"
+
+
+def test_rereads_file_rewritten_in_place(tmp_path: Path, sample_metadata: dict) -> None:
+    """A rewrite in place keeps the inode, and here the size too, so the newer mtime is what shows it."""
+    path = tmp_path / "gpu_metadata.json"
+    path.write_text(json.dumps(sample_metadata))
+    reader = MetadataReader(str(path))
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+    before = os.stat(path)
+
+    sample_metadata["gpus"][0]["uuid"] = "GPU-22222222-2222-2222-2222-222222222222"
+    path.write_text(json.dumps(sample_metadata))
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    after = os.stat(path)
+    assert (after.st_ino, after.st_size) == (before.st_ino, before.st_size)
+
+    assert reader.get_gpu_uuid(0) == "GPU-22222222-2222-2222-2222-222222222222"
+
+
+def test_rereads_file_that_failed_to_parse(tmp_path: Path, sample_metadata: dict) -> None:
+    """A file that could not be parsed must not leave the reader empty after metadata-collector
+    writes a good one."""
+    path = tmp_path / "gpu_metadata.json"
+    path.write_text('{"version": "1.0", "gpus": [}')
+    reader = MetadataReader(str(path))
+    assert reader.get_gpu_uuid(0) is None
+
+    write_like_metadata_collector(str(path), sample_metadata)
+
+    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+    assert reader.get_chassis_serial() == "CHASSIS-12345"
+
+
+def test_pinned_checks_the_file_once(tmp_path: Path, sample_metadata: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inside pinned() the file is checked once however many lookups run, and a copy written
+    meanwhile is served from the first lookup after the block."""
+    path = str(tmp_path / "gpu_metadata.json")
+    write_like_metadata_collector(path, sample_metadata)
+    reader = MetadataReader(path)
+    stat_calls = []
+    real_stat = os.stat
+
+    def counting_stat(stat_path: str, *args: object, **kwargs: object) -> os.stat_result:
+        if stat_path == path:
+            stat_calls.append(stat_path)
+        return real_stat(stat_path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", counting_stat)
+
+    with reader.pinned():
+        for _ in range(3):
+            for gpu_id in (0, 1):
+                assert reader.get_gpu_uuid(gpu_id) is not None
+                assert reader.get_pci_address(gpu_id) is not None
+        assert reader.get_chassis_serial() == "CHASSIS-12345"
+
+        sample_metadata["gpus"][0]["uuid"] = "GPU-22222222-2222-2222-2222-222222222222"
+        write_like_metadata_collector(path, sample_metadata)
+        assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+    assert len(stat_calls) == 1
+
+    assert reader.get_gpu_uuid(0) == "GPU-22222222-2222-2222-2222-222222222222"
+
+
+def test_concurrent_lookups_while_metadata_collector_rewrites(tmp_path: Path, sample_metadata: dict) -> None:
+    """Lookups from several threads while the file is replaced over and over always see a whole
+    copy, and the reader ends on the last one."""
+    path = str(tmp_path / "gpu_metadata.json")
+    uuids = ("GPU-00000000-0000-0000-0000-000000000000", "GPU-22222222-2222-2222-2222-222222222222")
+    write_like_metadata_collector(path, sample_metadata)
+    reader = MetadataReader(path)
+    errors = []
+    stop = threading.Event()
+
+    def look_up() -> None:
+        try:
+            while not stop.is_set():
+                uuid = reader.get_gpu_uuid(0)
+                if uuid not in uuids:
+                    errors.append(f"unexpected UUID {uuid!r}")
+                    return
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=look_up) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for i in range(50):
+        sample_metadata["gpus"][0]["uuid"] = uuids[i % 2]
+        write_like_metadata_collector(path, sample_metadata)
+    stop.set()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+
+    # A last copy of another size, so it can't look like a copy the reader read before.
+    sample_metadata["gpus"][0]["uuid"] = "GPU-last"
+    write_like_metadata_collector(path, sample_metadata)
+    assert reader.get_gpu_uuid(0) == "GPU-last"
+
+
+def test_pinned_poll_that_raises_releases_the_pin(tmp_path: Path, sample_metadata: dict) -> None:
+    """An exception inside a pinned poll must not leave the pin set, or the file would never be checked again."""
+    path = str(tmp_path / "gpu_metadata.json")
+    write_like_metadata_collector(path, sample_metadata)
+    reader = MetadataReader(path)
+
+    with pytest.raises(RuntimeError):
+        with reader.pinned():
+            assert reader.get_gpu_uuid(0) == sample_metadata["gpus"][0]["uuid"]
+            raise RuntimeError("publish failed")
+
+    sample_metadata["gpus"][0]["uuid"] = "GPU-after-the-failed-poll"
+    write_like_metadata_collector(path, sample_metadata)
+    assert reader.get_gpu_uuid(0) == "GPU-after-the-failed-poll"
+
+
+def test_rereads_after_the_file_went_missing(tmp_path: Path, sample_metadata: dict) -> None:
+    """metadata-collector never deletes the file, so a missing file keeps the copy read before until a new one is written."""
+    path = str(tmp_path / "gpu_metadata.json")
+    write_like_metadata_collector(path, sample_metadata)
+    reader = MetadataReader(path)
+    uuid = sample_metadata["gpus"][0]["uuid"]
+    pci = sample_metadata["gpus"][0]["pci_address"]
+    assert reader.get_gpu_uuid(0) == uuid
+
+    os.unlink(path)
+    assert reader.get_gpu_uuid(0) == uuid
+    assert reader.get_pci_address(0) == pci
+
+    sample_metadata["gpus"][0]["uuid"] = "GPU-written-again-later"
+    write_like_metadata_collector(path, sample_metadata)
+    assert reader.get_gpu_uuid(0) == "GPU-written-again-later"

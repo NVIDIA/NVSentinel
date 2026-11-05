@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import enum
 import json
 import logging as log
+import os
 import threading
+from collections.abc import Iterator
 from typing import Optional
 
 
@@ -35,12 +38,18 @@ class NVLinkDownExpectation(enum.Enum):
     UNKNOWN = "unknown"
 
 
+def _version_of(st: os.stat_result) -> tuple[int, int, int, int]:
+    """Device, inode, size and mtime of the file. A change in any of them means a new copy."""
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
 class MetadataReader:
     """Lazy-loading, thread-safe GPU metadata reader.
 
     This class reads GPU metadata from a JSON file and provides
     thread-safe access to GPU UUID and chassis serial information.
-    The metadata is loaded lazily on first access.
+    The metadata is loaded lazily on first access and read again
+    when the file changes.
     """
 
     def __init__(self, metadata_path: str):
@@ -54,29 +63,61 @@ class MetadataReader:
         self._lock = threading.RLock()
         self._loaded = False
         self._missing_warned = False
+        # _version_of() for the copy read last, whether it parsed or not.
+        self._file_version: Optional[tuple[int, int, int, int]] = None
+        self._pinned = 0
+
+    @contextlib.contextmanager
+    def pinned(self) -> Iterator[None]:
+        """Check the file once, then serve that copy to every lookup in the block.
+
+        A health poll looks up every GPU twice per DCGM watch, once for the PCI
+        address and once for the UUID. Pinning the copy for the poll keeps that
+        to one stat of the file, and every event of the poll names its GPUs
+        from the same copy. Lookups made from other threads
+        while the block runs get that copy too.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            self._pinned += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._pinned -= 1
 
     def _ensure_loaded(self):
-        """Load metadata on first use (lazy loading).
+        """Load metadata on first use and read it again when the file changed.
 
-        This method uses double-checked locking to ensure thread-safe
-        lazy initialization of the metadata.
+        metadata-collector replaces the file with a rename when its pod starts,
+        and the file outlives a reboot on the host, so the copy read first can
+        be the previous boot's. Outside pinned(), every lookup compares the
+        file's device, inode, size and mtime with the copy read last, like the
+        syslog monitor's reader does.
         """
-        if self._loaded:
-            return
-
         with self._lock:
-            if self._loaded:
+            if self._pinned:
                 return
 
+            version = None
             try:
+                version = _version_of(os.stat(self._path))
+                if version == self._file_version:
+                    return
+
                 with open(self._path, "r") as f:
-                    self._metadata = json.load(f)
+                    # Stat the open file, so the version always matches what was read.
+                    version = _version_of(os.fstat(f.fileno()))
+                    metadata = json.load(f)
+                gpu_count = len(metadata.get("gpus", []))
+                chassis = metadata.get("chassis_serial")
+                reloaded = self._loaded
+                self._metadata = metadata
+                self._file_version = version
                 self._loaded = True
                 self._missing_warned = False
-                gpu_count = len(self._metadata.get("gpus", []))
-                chassis = self._metadata.get("chassis_serial")
                 log.info(
-                    f"GPU metadata loaded from {self._path}: "
+                    f"GPU metadata {'reloaded' if reloaded else 'loaded'} from {self._path}: "
                     f"{gpu_count} GPUs, chassis_serial={'present' if chassis else 'absent'}"
                 )
             except FileNotFoundError:
@@ -87,14 +128,19 @@ class MetadataReader:
                 if not self._missing_warned:
                     log.warning(f"Metadata file not found: {self._path}, will retry on next access")
                     self._missing_warned = True
+                if self._loaded:
+                    # Keep the copy read before; metadata-collector never deletes the file.
+                    return
                 self._metadata = {}
                 # Intentionally do NOT set self._loaded = True, so the next access retries.
                 return
             except Exception as e:
-                # Handles JSON decode errors, permission errors, etc.
+                # Handles JSON decode errors, permission errors, etc. The version is kept,
+                # so this copy is not read again but the next one is.
                 log.error(f"Error loading metadata from {self._path}: {e}")
                 self._metadata = {}
                 self._loaded = True
+                self._file_version = version
 
     def get_gpu_uuid(self, gpu_id: int) -> Optional[str]:
         """Get GPU UUID by DCGM GPU ID.
