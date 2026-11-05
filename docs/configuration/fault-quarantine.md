@@ -90,7 +90,7 @@ fault-quarantine:
 
 The default matches the label the NVIDIA GPU Operator applies. Override it when your cluster labels GPU nodes differently.
 
-A selector that matches no node gives the circuit breaker a node count of zero. It then logs `Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes` and returns an error instead of a decision, so check this value first when the breaker behaves unexpectedly on a cluster with non-standard labels.
+A selector that matches no node gives the circuit breaker a node count of zero. The breaker then stays `CLOSED` and fault quarantine keeps running. If a node is cordoned while no GPU nodes are counted, the breaker trips, so check this value first when the breaker behaves unexpectedly on a cluster with non-standard labels.
 
 ### Label Prefix
 
