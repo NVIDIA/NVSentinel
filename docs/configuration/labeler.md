@@ -203,7 +203,7 @@ An expected label counts only in the partition where the labeler learned it. Wit
   ```
 
 - A change to the grouping itself changes the partition key of every node: new `groupingLabels` or their order, a renamed source, or a product name that a new GFD or driver release reports differently. Every node then learns its expected count once more from current counts, as in a relearn. A node that is missing devices still gets the higher count from the other nodes of its partition, but a device that every node of a partition lost at that same moment is accepted.
-- The class name must form a valid annotation key, at most 47 characters of letters, digits, `-`, `_` and `.`, starting with a letter or digit, and two enabled classes cannot have the same name. The labeler does not start otherwise.
+- The class name must form a valid annotation key, at most 47 characters of letters, digits, `-`, `_` and `.`, starting with a letter or digit, and two enabled classes cannot have the same name. The labeler does not start otherwise. Earlier labelers accepted any class name that was not empty, so an upgrade can stop the labeler at startup. Before you upgrade, check every enabled class name against this rule and for duplicates.
 - Do not change the annotation by hand. A label whose annotation names another partition stops counting, and the node learns its count again at its next reconcile. A label without the annotation counts in any partition until the labeler writes the annotation again.
 
 ### Relearning Expected Counts
