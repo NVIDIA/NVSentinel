@@ -22,6 +22,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -47,6 +48,11 @@ const (
 	// bootIDPath is the kernel boot ID file. It is not namespaced, so the container reads
 	// the host's value.
 	bootIDPath = "/proc/sys/kernel/random/boot_id"
+	// rejectedPodGracePeriod is how long the reboot Job must have failed, with a pod that
+	// never started and the node's boot ID unchanged, before the attempt is reported failed.
+	// After a reboot the kubelet can reject the pod again and publish that before the node
+	// status that carries the new boot ID; this leaves time for that node status to arrive.
+	rejectedPodGracePeriod = 2 * time.Minute
 )
 
 var _ model.CSPClient = (*Client)(nil)
@@ -350,8 +356,9 @@ func (c *Client) checkRebootJobPodStatus(ctx context.Context, nodeName string, b
 	for _, pod := range pods {
 		// A pod the kubelet rejects at admission (e.g., Evicted under DiskPressure) fails before
 		// its container starts, so it cannot change the boot ID. The kubelet may reject the
-		// pod again after the node boots, which does not undo the reboot.
-		if !bootIDChanged && pod.Status.Phase == corev1.PodFailed && !anyContainerStarted(pod) {
+		// pod again after the node boots, which does not undo the reboot, and the boot ID read
+		// here can still be the old one for a while; see rejectedPodGracePeriod.
+		if !bootIDChanged && failedBeforeStarting(pod) && c.jobFailedLongerThan(ctx, pod, rejectedPodGracePeriod) {
 			return fmt.Errorf("reboot job pod failed before starting on node %s: %s: %s",
 				nodeName, pod.Status.Reason, pod.Status.Message)
 		}
@@ -485,16 +492,46 @@ func isPodScheduled(pod corev1.Pod) bool {
 	return false
 }
 
-// anyContainerStarted reports whether one of the pod's containers has run. A container
-// killed by the reboot it ran may leave its pod Failed before the node reports the new boot ID.
-func anyContainerStarted(pod corev1.Pod) bool {
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.State.Running != nil || cs.State.Terminated != nil || cs.LastTerminationState.Terminated != nil {
-			return true
+// jobFailedLongerThan reports whether the Job owning pod has had its Failed condition for at
+// least d. It returns false when the Job cannot be read or has not failed yet.
+func (c *Client) jobFailedLongerThan(ctx context.Context, pod corev1.Pod, d time.Duration) bool {
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind != "Job" {
+			continue
+		}
+
+		job, err := c.k8sClient.BatchV1().Jobs(c.config.RebootJobNamespace).Get(ctx, owner.Name, metav1.GetOptions{})
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to get the reboot job of a failed pod",
+				"pod", pod.Name, "job", owner.Name, "error", err)
+
+			return false
+		}
+
+		for _, condition := range job.Status.Conditions {
+			if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
+				return time.Since(condition.LastTransitionTime.Time) >= d
+			}
 		}
 	}
 
 	return false
+}
+
+// failedBeforeStarting reports whether pod failed before any of its containers ran. A container
+// killed by the reboot it ran may leave its pod Failed before the node reports the new boot ID.
+func failedBeforeStarting(pod corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodFailed {
+		return false
+	}
+
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Running != nil || cs.State.Terminated != nil || cs.LastTerminationState.Terminated != nil {
+			return false
+		}
+	}
+
+	return true
 }
 
 func isTransientWaitingReason(reason string) bool {

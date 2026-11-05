@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -435,7 +436,8 @@ func TestIsNodeReady_TerminalPodError_RemovesJob(t *testing.T) {
 
 // rejectedRebootJob returns a reboot Job whose pod the kubelet rejected at admission, as
 // under DiskPressure: the pod failed before its container was created, and the kubelet
-// sets no PodScheduled condition on a rejected pod. With BackoffLimit 0 the Job fails too.
+// sets no PodScheduled condition on a rejected pod. With BackoffLimit 0 the Job fails too,
+// here longer ago than rejectedPodGracePeriod.
 func rejectedRebootJob(nodeName string) (*batchv1.Job, *corev1.Pod) {
 	labels := map[string]string{jobLabelKey: "true", jobNodeLabelKey: nodeName}
 	job := &batchv1.Job{
@@ -443,7 +445,10 @@ func rejectedRebootJob(nodeName string) (*batchv1.Job, *corev1.Pod) {
 		Status: batchv1.JobStatus{
 			Failed: 1,
 			Conditions: []batchv1.JobCondition{
-				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonBackoffLimitExceeded},
+				{
+					Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonBackoffLimitExceeded,
+					LastTransitionTime: metav1.NewTime(time.Now().Add(-2 * rejectedPodGracePeriod)),
+				},
 			},
 		},
 	}
@@ -475,6 +480,24 @@ func TestIsNodeReady_PodRejectedByKubelet_ReturnsErrorAndRemovesJob(t *testing.T
 	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, jobs.Items, "the Job of the failed attempt must be removed")
+}
+
+func TestIsNodeReady_PodJustRejected_WaitsForBootID(t *testing.T) {
+	// After a reboot the kubelet may reject the pod again and publish that before the node
+	// status with the new boot ID, so a fresh rejection with the old boot ID is not yet a failure.
+	job, pod := rejectedRebootJob("worker-1")
+	job.Status.Conditions[0].LastTransitionTime = metav1.Now()
+	client := newTestClient(job, pod)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ready, err := client.IsNodeReady(ctx, node, "boot-id-abc")
+	require.NoError(t, err)
+	assert.False(t, ready)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Len(t, jobs.Items, 1, "the Job must survive until the rejection is old enough to rule out a reboot")
 }
 
 func TestIsNodeReady_PodRejectedAfterReboot_ReturnsTrue(t *testing.T) {
