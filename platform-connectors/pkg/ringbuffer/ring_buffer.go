@@ -172,8 +172,14 @@ func (rb *RingBuffer) NumRequeues(data *QueuedHealthEvents) int {
 	return rb.healthMetricQueue.NumRequeues(data)
 }
 
+// ShutDownHealthMetricQueue stops the buffer taking new batches. Dequeue
+// keeps returning the batches already queued and reports the shutdown once
+// the queue is empty, so the loop draining the buffer returns only after it
+// has processed them; a caller that needs them processed waits for that loop.
+// It does not wait itself, because a batch the loop holds while it retries a
+// write would keep ShutDownWithDrain waiting with no bound.
 func (rb *RingBuffer) ShutDownHealthMetricQueue() {
-	rb.healthMetricQueue.ShutDownWithDrain()
+	rb.healthMetricQueue.ShutDown()
 }
 
 func (rb *RingBuffer) CurrentLength() int {

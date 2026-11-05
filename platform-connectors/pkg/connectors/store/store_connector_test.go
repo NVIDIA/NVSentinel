@@ -885,3 +885,41 @@ func TestFetchAndProcessHealthMetric_WriteThatCannotSucceed_IsNotRetried(t *test
 	require.Equal(t, []string{"foreign duplicate", "replay", "next"}, inserts.get())
 	require.Contains(t, logs.String(), `level=ERROR msg="Batch cannot be stored as sent, dropping health events permanently"`)
 }
+
+// TestFetchAndProcessHealthMetric_StoppedWithBatchesQueued_LogsThemAtError: a
+// loop stopped before it emptied its queue, as Shutdown stops one still
+// running at its drain timeout, logs at Error how many acknowledged batches it
+// leaves behind, besides the one it was retrying.
+func TestFetchAndProcessHealthMetric_StoppedWithBatchesQueued_LogsThemAtError(t *testing.T) {
+	logs := captureLogs(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testStoppedWithBatchesQueued", context.Background(),
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	t.Cleanup(ringBuffer.ShutDownHealthMetricQueue)
+
+	inserts := &insertedMessages{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, errors.New("no reachable servers"))
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	for _, message := range []string{"first", "second", "third"} {
+		ringBuffer.Enqueue(batchWithMessage(message, false))
+	}
+
+	exited := runLoop(ctx, connector)
+
+	require.Eventually(t, func() bool { return len(inserts.get()) == 1 }, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	requireClosed(t, exited, "the loop did not return after its context was canceled")
+
+	require.Equal(t, []string{"first"}, inserts.get())
+	require.Contains(t, logs.String(), `level=ERROR msg="Stopped before the batch was stored`)
+	require.Contains(t, logs.String(),
+		`level=ERROR msg="Context canceled with batches still queued, dropping them permanently" batchCount=2`)
+}

@@ -27,6 +27,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/configfile"
@@ -68,7 +70,31 @@ type Connectors struct {
 	// stopCh, on the queued path, ends the Kubernetes connector's loop and
 	// the retries of the batch it is on.
 	stopCh chan struct{}
+	// loops are the queue loops on the queued path, which running tracks.
+	// The Kubernetes loop returns on stopCh; the others return once their
+	// queue is shut down and empty.
+	loops   []*queueLoop
+	running sync.WaitGroup
+	// drainTimeout, when set, replaces queueDrainTimeout; tests shorten it.
+	drainTimeout time.Duration
 }
+
+// queueLoop is a connector's queue loop as Shutdown sees it: its name, the
+// cancel of its context, and whether it has returned.
+type queueLoop struct {
+	name string
+	stop context.CancelFunc
+	done atomic.Bool
+}
+
+// queueDrainTimeout bounds the wait at shutdown for the queue loops to process
+// the batches their queues still hold, which were acknowledged when they were
+// queued. Counting from SIGTERM on the node-local DaemonSet, requests in flight
+// take up to 10 s and this wait ends by 20 s, so the queued events are safe by
+// then. The datastore disconnect, the metrics server and the trace exporter
+// take up to 5 s each after it, 35 s in all, which the pod's termination grace
+// period has to cover.
+const queueDrainTimeout = 10 * time.Second
 
 // looped is a connector with the loop that drains its ring buffer on the
 // queued path.
@@ -220,7 +246,17 @@ func (c *Connectors) add(
 	ctx context.Context, queue *ringbuffer.RingBuffer, name string, connector looped, bestEffort bool,
 ) {
 	if queue != nil {
-		go connector.FetchAndProcessHealthMetric(ctx)
+		// Shutdown waits for the loop, and cancels its context only when it
+		// is still running at the drain timeout.
+		loopCtx, stop := context.WithCancel(ctx)
+		loop := &queueLoop{name: name, stop: stop}
+		c.loops = append(c.loops, loop)
+
+		c.running.Go(func() {
+			defer loop.done.Store(true)
+
+			connector.FetchAndProcessHealthMetric(loopCtx)
+		})
 
 		c.Set = append(c.Set, queue)
 
@@ -238,7 +274,9 @@ func (c *Connectors) add(
 
 // Shutdown stops the connectors once the server accepts no more requests: the
 // Kubernetes loop is told to stop (ending the retries of the batch it is on),
-// every queue is drained, and the sink and datastore connections are closed.
+// every queue stops taking batches, the other loops process what their queues
+// hold, and the sink and datastore connections are closed once the loops have
+// returned.
 func (c *Connectors) Shutdown(ctx context.Context) {
 	if c.stopCh != nil {
 		close(c.stopCh)
@@ -247,6 +285,8 @@ func (c *Connectors) Shutdown(ctx context.Context) {
 	for _, queue := range c.queues {
 		queue.ShutDownHealthMetricQueue()
 	}
+
+	c.waitForLoops(ctx)
 
 	if c.sink != nil {
 		if err := c.sink.Close(); err != nil {
@@ -261,5 +301,41 @@ func (c *Connectors) Shutdown(ctx context.Context) {
 		if err := c.Store.Disconnect(disconnectCtx); err != nil {
 			slog.WarnContext(ctx, "Error disconnecting store connector", "error", err)
 		}
+	}
+}
+
+// waitForLoops waits for the queue loops, so a batch acknowledged before the
+// shutdown is processed before the connections it is written through close.
+// A loop still running at the drain timeout, behind a datastore that stays
+// down for example, is stopped through its context; the store connector logs
+// at Error the batches it drops.
+func (c *Connectors) waitForLoops(ctx context.Context) {
+	timeout := c.drainTimeout
+	if timeout <= 0 {
+		timeout = queueDrainTimeout
+	}
+
+	timer := time.AfterFunc(timeout, func() {
+		var running []string
+
+		for _, loop := range c.loops {
+			if !loop.done.Load() {
+				running = append(running, loop.name)
+			}
+		}
+
+		slog.WarnContext(ctx, "Connector queues not drained before shutdown, stopping their loops",
+			"timeout", timeout, "loops", running)
+		c.stopLoops()
+	})
+	defer timer.Stop()
+
+	c.running.Wait()
+	c.stopLoops()
+}
+
+func (c *Connectors) stopLoops() {
+	for _, loop := range c.loops {
+		loop.stop()
 	}
 }
