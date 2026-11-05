@@ -564,6 +564,8 @@ func (w *PostgreSQLChangeStreamWatcher) handleNotification(ctx context.Context, 
 	return nil
 }
 
+// fetchChangeByID looks a notified changelog row up by id and delivers it. It is the lookup used
+// while no notified id has been dropped since the last pass.
 func (w *PostgreSQLChangeStreamWatcher) fetchChangeByID(ctx context.Context, eventID int64) error {
 	events, err := w.queryChangeByID(ctx, eventID)
 	if err != nil {
@@ -595,6 +597,8 @@ func (w *PostgreSQLChangeStreamWatcher) fetchLateChangeByID(ctx context.Context,
 	return w.deliverChangeByID(ctx, eventID, events)
 }
 
+// queryChangeByID reads one changelog row of this watcher's table by id. It returns no rows when
+// the row is not visible yet or belongs to another table.
 func (w *PostgreSQLChangeStreamWatcher) queryChangeByID(
 	ctx context.Context, eventID int64,
 ) ([]datastore.EventWithToken, error) {
@@ -618,6 +622,8 @@ func (w *PostgreSQLChangeStreamWatcher) queryChangeByID(
 	return events, nil
 }
 
+// deliverChangeByID sends the rows a lookup returned to the consumer. No rows is not an error: the
+// row was not visible yet or did not match the table, and the next poll or NOTIFY covers it.
 func (w *PostgreSQLChangeStreamWatcher) deliverChangeByID(
 	ctx context.Context, eventID int64, events []datastore.EventWithToken,
 ) error {
