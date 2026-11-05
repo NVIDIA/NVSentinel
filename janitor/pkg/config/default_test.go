@@ -203,3 +203,41 @@ func TestApplyDriverBinPath_InvalidPath_ReturnsError(t *testing.T) {
 		})
 	}
 }
+
+// TestGetDefaultGPUResetJobTemplate_RunCount_LastRunReportsFailure verifies that gpu_reset.sh can count its runs:
+// the container restarts in the same pod, the run count file is in an emptyDir that outlives a restart, and the
+// last run that the backoff limit allows is the run that writes a failed result.
+func TestGetDefaultGPUResetJobTemplate_RunCount_LastRunReportsFailure(t *testing.T) {
+	for _, driverRoot := range []string{DriverRootMountPath, ContainerDriverRoot} {
+		t.Run(driverRoot, func(t *testing.T) {
+			template, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+				ResourceRequirements{}, DefaultHostDriverRootPath, driverRoot, "", true, "")
+			require.NoError(t, err)
+
+			podSpec := template.Spec.Template.Spec
+			container := podSpec.Containers[0]
+
+			// With OnFailure, the Job controller fails the Job when the container restart count reaches the
+			// backoff limit, so the limit is the number of full runs.
+			assert.Equal(t, corev1.RestartPolicyOnFailure, podSpec.RestartPolicy)
+			require.NotNil(t, template.Spec.BackoffLimit)
+			assert.Equal(t, int32(ResetJobMaxRuns), *template.Spec.BackoffLimit)
+
+			maxRuns := findEnvVar(container.Env, ResetMaxRunsEnvVar)
+			require.NotNil(t, maxRuns)
+			assert.Equal(t, "2", maxRuns.Value)
+
+			countFile := findEnvVar(container.Env, ResetRunCountFileEnvVar)
+			require.NotNil(t, countFile)
+			assert.Equal(t, ResetStateMountPath+"/run-count", countFile.Value)
+
+			stateVolume := findVolume(podSpec.Volumes, ResetStateVolumeName)
+			require.NotNil(t, stateVolume)
+			assert.NotNil(t, stateVolume.EmptyDir)
+
+			stateMount := findVolumeMount(container.VolumeMounts, ResetStateVolumeName)
+			require.NotNil(t, stateMount)
+			assert.Equal(t, ResetStateMountPath, stateMount.MountPath)
+		})
+	}
+}
