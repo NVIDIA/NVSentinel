@@ -141,6 +141,24 @@ func TestShouldSkipUnchangedEvent(t *testing.T) {
 	}
 }
 
+// TestShouldSkipUnchangedEvent_AkamaiSyntheticCancellation_IsNotSkipped pins
+// that the cancellation the Akamai monitor writes for a vanished maintenance
+// reaches the datastore, whose stored event still says scheduled.
+func TestShouldSkipUnchangedEvent_AkamaiSyntheticCancellation_IsNotSkipped(t *testing.T) {
+	stored := &model.MaintenanceEvent{
+		EventID:   "akamai-7",
+		CSPStatus: "scheduled",
+		Metadata:  map[string]string{model.ProviderLastUpdatedKey: "scheduled|power_off_on"},
+	}
+	synthetic := &model.MaintenanceEvent{
+		EventID:   "akamai-7",
+		CSPStatus: "canceled",
+		Metadata:  map[string]string{model.ProviderLastUpdatedKey: "canceled|scheduled|power_off_on"},
+	}
+
+	assert.False(t, shouldSkipUnchangedEvent(stored, synthetic))
+}
+
 // TestHasProviderLastUpdated verifies the guard used to decide whether we need
 // to fetch the existing doc at all — if the incoming event carries no
 // providerLastUpdated (e.g. a CSP that hasn't opted into dedup, or an event

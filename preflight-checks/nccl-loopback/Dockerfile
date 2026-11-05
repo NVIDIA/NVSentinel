@@ -80,6 +80,7 @@ RUN rm -f /usr/local/bin/uv /usr/local/bin/uvx
 #   - compute_89: L4, L40, L40S (Ada Lovelace)
 #   - compute_90: H100, H200 (Hopper)
 #   - compute_100: GB200, B100, B200 (Blackwell) - requires CUDA 12.8+
+#   - compute_120: RTX Pro 6000 (Blackwell) - requires CUDA 12.8+
 RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git /opt/nccl-tests \
     && cd /opt/nccl-tests \
     && make -j$(nproc) \
@@ -87,7 +88,8 @@ RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git 
         NVCC_GENCODE="-gencode=arch=compute_80,code=sm_80 \
                       -gencode=arch=compute_89,code=sm_89 \
                       -gencode=arch=compute_90,code=sm_90 \
-                      -gencode=arch=compute_100,code=sm_100"
+                      -gencode=arch=compute_100,code=sm_100 \
+                      -gencode=arch=compute_120,code=sm_120"
 
 WORKDIR /app
 
