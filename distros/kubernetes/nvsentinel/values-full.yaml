@@ -86,6 +86,14 @@ global:
   # janitor.config.cspProviderHost and fault-remediation.logCollector.uploadURL.
   # See docs/configuration/README.md#cluster-domain.
   clusterDomain: cluster.local
+  # IPv6 switch for NVSentinel's own charts. Set enabled: true on an IPv6-only
+  # or dual-stack cluster. It binds the GPU health monitor metrics server to "::"
+  # (unless metricsAddress is set to something other than "0.0.0.0"), turns on
+  # IPv6 in Bitnami and Percona MongoDB, and adds an IPv6 listener to the
+  # in-cluster file server. Every node must boot with IPv6 on. The GPU Operator
+  # needs its own setting. See docs/configuration/README.md#ipv6.
+  ipv6:
+    enabled: false
 
   # Docker image configuration
   image:
@@ -246,7 +254,7 @@ global:
 
   # Janitor Module - executes node reboots and terminations
   # Integrates with cloud provider APIs to perform actual maintenance
-  # Supports: AWS, GCP, Azure, OCI, kind (for testing)
+  # Supports: AWS, GCP, Azure, OCI, Akamai (LKE), kind (for testing)
   # Requires: Cloud provider credentials configured
   janitor:
     enabled: false
@@ -258,7 +266,7 @@ global:
 
   # CSP Health Monitor - monitors cloud provider maintenance events
   # Detects scheduled maintenance windows from cloud provider APIs
-  # Supports: GCP (Compute Engine), AWS (EC2)
+  # Supports: GCP (Compute Engine), AWS (EC2), Akamai (LKE)
   # Requires: Cloud provider credentials configured
   cspHealthMonitor:
     enabled: false
@@ -1399,42 +1407,66 @@ labeler:
 
   # Expected device count labels
   # Writes current/expected device-count labels from node labels or DRA ResourceSlice data.
+  # A class defines either one currentExpression with groupingLabels, or an ordered list of
+  # sources. For each node, the labeler uses the first source that applies. A source with
+  # resourceSliceDriver applies when the node has ResourceSlices from that driver. All sources
+  # of a class must count the same unit. See the labeler chart values.yaml for details.
   expectedDeviceCounts:
     enabled: true
     classes:
+      # Counts physical GPUs in both GPU Operator modes: from gpu.nvidia.com ResourceSlices in
+      # GPUCluster (DRA) mode, and from the GFD nvidia.com/gpu.count label in ClusterPolicy mode.
       - name: gpu
         enabled: true
         labels:
           current: nvsentinel.dgxc.nvidia.com/gpu.count.current
           expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
-        groupingLabels:
-          - node.kubernetes.io/instance-type
-          - nvidia.com/gpu.product
         expectedCountOverrides: []
-        currentExpression: |
-          int(node.metadata.labels['nvidia.com/gpu.count'])
-      # Detect GPUs in GPUCluster (DRA) mode of GPU Operator.
-      # Uncomment and adapt per environment.
-      # - name: gpu-dra
-      #   enabled: true
-      #   labels:
-      #     current: nvsentinel.dgxc.nvidia.com/gpu.count.current
-      #     expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
-      #   groupingLabels:
-      #     - node.kubernetes.io/instance-type
-      #   expectedCountOverrides: []
-      #   currentExpression: |
-      #     sum(resourceSlices
-      #       .filter(rs, rs.spec.driver == 'gpu.nvidia.com' && has(rs.spec.devices))
-      #       .map(rs, rs.spec.devices
-      #         .filter(d,
-      #           has(d.attributes) &&
-      #           'type' in d.attributes &&
-      #           has(d.attributes['type'].string) &&
-      #           d.attributes['type'].string == 'gpu'
-      #         )
-      #         .size()
-      #       ))
+        sources:
+          - name: dra
+            resourceSliceDriver: gpu.nvidia.com
+            groupingLabels:
+              - node.kubernetes.io/instance-type
+            currentExpression: |
+              sum(resourceSlices
+                .filter(rs, has(rs.spec.devices))
+                .map(rs, rs.spec.devices
+                  .filter(d,
+                    has(d.attributes) &&
+                    'type' in d.attributes &&
+                    has(d.attributes['type'].string) &&
+                    d.attributes['type'].string == 'gpu'
+                  )
+                  .size()
+                ))
+            groupingExpression: |
+              resourceSlices
+                .map(rs, has(rs.spec.devices) ? rs.spec.devices : [])
+                .flatten()
+                .filter(d,
+                  has(d.attributes) &&
+                  'type' in d.attributes &&
+                  has(d.attributes['type'].string) &&
+                  d.attributes['type'].string == 'gpu' &&
+                  'productName' in d.attributes &&
+                  has(d.attributes['productName'].string)
+                )
+                .map(d, d.attributes['productName'].string)
+          - name: gfd
+            groupingLabels:
+              - node.kubernetes.io/instance-type
+              - nvidia.com/gpu.product
+            # Count the GFD label only while the device plugin advertises GPUs. GPUCluster
+            # (DRA) mode has no device plugin, so a nvidia.com/gpu.count label left from
+            # ClusterPolicy mode is not counted when the DRA slices are gone. -1 means
+            # that the source does not apply, so the class is skipped.
+            currentExpression: |
+              has(node.status.allocatable) &&
+              node.status.allocatable.exists(r,
+                (r == 'nvidia.com/gpu' || r == 'nvidia.com/gpu.shared' || r.startsWith('nvidia.com/mig-')) &&
+                int(node.status.allocatable[r]) > 0)
+                ? int(node.metadata.labels['nvidia.com/gpu.count'])
+                : -1
       - name: nic
         enabled: true
         labels:

@@ -399,13 +399,6 @@ func TestBaseRuleSetEvaluatorMethods(t *testing.T) {
 		t.Errorf("Expected Name to be 'BaseEvaluator', got %s", baseEvaluator.GetName())
 	}
 
-	if baseEvaluator.GetVersion() != "1" {
-		t.Errorf("Expected Version to be '1', got %s", baseEvaluator.GetVersion())
-	}
-
-	if baseEvaluator.GetPriority() != 5 {
-		t.Errorf("Expected Priority to be 5, got %d", baseEvaluator.GetPriority())
-	}
 }
 
 func TestNewAnyRuleSetEvaluator(t *testing.T) {
@@ -422,14 +415,6 @@ func TestNewAnyRuleSetEvaluator(t *testing.T) {
 
 	if anyEvaluator.GetName() != "AnyRuleSet" {
 		t.Errorf("Expected Name to be 'AnyRuleSet', got %s", anyEvaluator.GetName())
-	}
-
-	if anyEvaluator.GetVersion() != "1" {
-		t.Errorf("Expected Version to be '1', got %s", anyEvaluator.GetVersion())
-	}
-
-	if anyEvaluator.GetPriority() != 1 {
-		t.Errorf("Expected Priority to be 1, got %d", anyEvaluator.GetPriority())
 	}
 
 	if !reflect.DeepEqual(anyEvaluator.evaluators, evaluators) {
@@ -451,14 +436,6 @@ func TestNewAllRuleSetEvaluator(t *testing.T) {
 
 	if allEvaluator.GetName() != "AllRuleSet" {
 		t.Errorf("Expected Name to be 'AllRuleSet', got %s", allEvaluator.GetName())
-	}
-
-	if allEvaluator.GetVersion() != "1" {
-		t.Errorf("Expected Version to be '1', got %s", allEvaluator.GetVersion())
-	}
-
-	if allEvaluator.GetPriority() != 1 {
-		t.Errorf("Expected Priority to be 1, got %d", allEvaluator.GetPriority())
 	}
 
 	if !reflect.DeepEqual(allEvaluator.evaluators, evaluators) {

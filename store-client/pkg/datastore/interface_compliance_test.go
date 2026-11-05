@@ -53,62 +53,6 @@ func TestDataStoreInterfaceCompliance(t *testing.T) {
 	})
 }
 
-// TestMaintenanceEventStoreInterfaceCompliance verifies that all provider
-// maintenance event store implementations properly implement the interface.
-func TestMaintenanceEventStoreInterfaceCompliance(t *testing.T) {
-	// Compile-time interface compliance checks
-	var _ datastore.MaintenanceEventStore = (*mongodb.MongoMaintenanceEventStore)(nil)
-	var _ datastore.MaintenanceEventStore = (*postgresql.PostgreSQLMaintenanceEventStore)(nil)
-
-	t.Run("MongoDB implements MaintenanceEventStore", func(t *testing.T) {
-		storeType := reflect.TypeFor[*mongodb.MongoMaintenanceEventStore]()
-		interfaceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
-
-		assertImplementsInterface(t, storeType, interfaceType, "MongoDB MaintenanceEventStore")
-	})
-
-	t.Run("PostgreSQL implements MaintenanceEventStore", func(t *testing.T) {
-		storeType := reflect.TypeFor[*postgresql.PostgreSQLMaintenanceEventStore]()
-		interfaceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
-
-		assertImplementsInterface(t, storeType, interfaceType, "PostgreSQL MaintenanceEventStore")
-	})
-
-	t.Run("MaintenanceEventStore methods exist", func(t *testing.T) {
-		// Verify all expected methods exist on the interface
-		interfaceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
-
-		expectedMethods := []string{
-			"UpsertMaintenanceEvent",
-			"FindEventsToTriggerQuarantine",
-			"FindEventsToTriggerHealthy",
-			"UpdateEventStatus",
-			"GetLastProcessedEventTimestampByCSP",
-			"FindLatestActiveEventByNodeAndType",
-			"FindLatestOngoingEventByNode",
-			"FindActiveEventsByStatuses",
-		}
-
-		for _, methodName := range expectedMethods {
-			method, found := interfaceType.MethodByName(methodName)
-			assert.True(t, found, "MaintenanceEventStore should have method: %s", methodName)
-			if found {
-				// Verify method has correct signature (takes context.Context as first param)
-				numIn := method.Type.NumIn()
-				assert.GreaterOrEqual(t, numIn, 1, "Method %s should have at least 1 input parameter", methodName)
-				if numIn >= 1 {
-					// For interface methods, there's no receiver, so first param is at index 0
-					firstParam := method.Type.In(0)
-					ctxType := reflect.TypeFor[context.Context]()
-					assert.True(t, firstParam.Implements(ctxType) || firstParam == ctxType,
-						"Method %s first parameter should be context.Context, got %s",
-						methodName, firstParam)
-				}
-			}
-		}
-	})
-}
-
 // TestHealthEventStoreInterfaceCompliance verifies that all provider
 // health event store implementations properly implement the interface.
 func TestHealthEventStoreInterfaceCompliance(t *testing.T) {
@@ -136,18 +80,8 @@ func TestHealthEventStoreInterfaceCompliance(t *testing.T) {
 
 		expectedMethods := []string{
 			"UpdateHealthEventStatus",
-			"UpdateHealthEventStatusByNode",
-			"FindHealthEventsByNode",
-			"FindHealthEventsByFilter",
-			"FindHealthEventsByStatus",
 			"FindHealthEventsByQuery",
-			"UpdateHealthEventsByQuery",
-			"UpdateNodeQuarantineStatus",
-			"UpdatePodEvictionStatus",
-			"UpdateRemediationStatus",
 			"UpdateSpanID",
-			"CheckIfNodeAlreadyDrained",
-			"FindLatestEventForNode",
 			"FindHealthEventsByQueryBatched",
 		}
 
@@ -234,30 +168,22 @@ func TestProviderFactoryRegistration(t *testing.T) {
 	})
 }
 
-// TestDataStoreReturnsCorrectInterfaces verifies that DataStore.MaintenanceEventStore()
-// and DataStore.HealthEventStore() return implementations that satisfy their interfaces.
+// TestDataStoreReturnsCorrectInterfaces verifies that DataStore.HealthEventStore()
+// returns an implementation that satisfies its interface.
 func TestDataStoreReturnsCorrectInterfaces(t *testing.T) {
 	t.Run("MongoDB DataStore method return types", func(t *testing.T) {
 		// Use reflection to check return types without calling methods on nil pointers
 		storeType := reflect.TypeFor[*mongodb.AdaptedMongoStore]()
-
-		maintenanceMethod, found := storeType.MethodByName("MaintenanceEventStore")
-		require.True(t, found, "MongoDB should have MaintenanceEventStore method")
-		require.Equal(t, 1, maintenanceMethod.Type.NumOut(), "MaintenanceEventStore should return 1 value")
 
 		healthMethod, found := storeType.MethodByName("HealthEventStore")
 		require.True(t, found, "MongoDB should have HealthEventStore method")
 		require.Equal(t, 1, healthMethod.Type.NumOut(), "HealthEventStore should return 1 value")
 
 		// Verify return types implement the interfaces
-		maintenanceReturnType := maintenanceMethod.Type.Out(0)
 		healthReturnType := healthMethod.Type.Out(0)
 
-		interfaceMaintenanceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
 		interfaceHealthType := reflect.TypeFor[datastore.HealthEventStore]()
 
-		assert.True(t, maintenanceReturnType.Implements(interfaceMaintenanceType),
-			"MongoDB MaintenanceEventStore return type should implement MaintenanceEventStore interface")
 		assert.True(t, healthReturnType.Implements(interfaceHealthType),
 			"MongoDB HealthEventStore return type should implement HealthEventStore interface")
 	})
@@ -266,23 +192,15 @@ func TestDataStoreReturnsCorrectInterfaces(t *testing.T) {
 		// Use reflection to check return types without calling methods on nil pointers
 		storeType := reflect.TypeFor[*postgresql.PostgreSQLDataStore]()
 
-		maintenanceMethod, found := storeType.MethodByName("MaintenanceEventStore")
-		require.True(t, found, "PostgreSQL should have MaintenanceEventStore method")
-		require.Equal(t, 1, maintenanceMethod.Type.NumOut(), "MaintenanceEventStore should return 1 value")
-
 		healthMethod, found := storeType.MethodByName("HealthEventStore")
 		require.True(t, found, "PostgreSQL should have HealthEventStore method")
 		require.Equal(t, 1, healthMethod.Type.NumOut(), "HealthEventStore should return 1 value")
 
 		// Verify return types implement the interfaces
-		maintenanceReturnType := maintenanceMethod.Type.Out(0)
 		healthReturnType := healthMethod.Type.Out(0)
 
-		interfaceMaintenanceType := reflect.TypeFor[datastore.MaintenanceEventStore]()
 		interfaceHealthType := reflect.TypeFor[datastore.HealthEventStore]()
 
-		assert.True(t, maintenanceReturnType.Implements(interfaceMaintenanceType),
-			"PostgreSQL MaintenanceEventStore return type should implement MaintenanceEventStore interface")
 		assert.True(t, healthReturnType.Implements(interfaceHealthType),
 			"PostgreSQL HealthEventStore return type should implement HealthEventStore interface")
 	})

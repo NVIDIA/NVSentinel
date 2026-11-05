@@ -44,6 +44,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -55,6 +56,7 @@ import (
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
 
+	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
 
@@ -65,6 +67,16 @@ const (
 	validationRequestPollInterval = 1 * time.Second
 	NVSentinelNamespace           = "nvsentinel"
 )
+
+// ConflictBackoff is the backoff for retry.RetryOnConflict in the E2E tests. NVSentinel components update the same
+// Nodes and CRs as the tests, so a write can conflict for longer than the 50 ms of ConflictBackoff. This backoff
+// tries 10 times in about 7.5 seconds.
+var ConflictBackoff = wait.Backoff{
+	Steps:    10,
+	Duration: 100 * time.Millisecond,
+	Factor:   1.5,
+	Jitter:   0.1,
+}
 
 var (
 	RebootNodeGVK = schema.GroupVersionKind{
@@ -422,38 +434,6 @@ func WaitForNodesWithLabel(
 	}, EventuallyWaitTimeout, WaitInterval, "all nodes should have label %s=%s", labelKey, expectedValue)
 }
 
-// WaitForNodeLabelNotEqual waits for a single node's label to NOT equal a specific value.
-// This is useful for waiting for state transitions when you don't know the final state.
-func WaitForNodeLabelNotEqual(
-	ctx context.Context, t *testing.T, c klient.Client, nodeName, labelKey, notExpectedValue string,
-) {
-	t.Helper()
-
-	require.Eventually(t, func() bool {
-		node, err := GetNodeByName(ctx, c, nodeName)
-		if err != nil {
-			t.Logf("failed to get node %s: %v", nodeName, err)
-			return false
-		}
-
-		actualValue, exists := node.Labels[labelKey]
-		if !exists {
-			t.Logf("Node %s: label %s does not exist", nodeName, labelKey)
-			return false
-		}
-
-		if actualValue != notExpectedValue {
-			t.Logf("Node %s: label %s=%s (not %s) ✓", nodeName, labelKey, actualValue, notExpectedValue)
-			return true
-		}
-
-		t.Logf("Node %s: label %s still equals %s (waiting for change)", nodeName, labelKey, actualValue)
-
-		return false
-	}, EventuallyWaitTimeout, WaitInterval,
-		"expected node %s label %s to not equal %s", nodeName, labelKey, notExpectedValue)
-}
-
 func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
 	expectedEvent v1.Event) {
 	require.Eventually(t, func() bool {
@@ -644,7 +624,7 @@ func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.N
 }
 
 func SetNodeCordon(ctx context.Context, c klient.Client, nodeName string, cordoned bool) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
 			return err
@@ -988,20 +968,6 @@ func GetAllNodesNames(ctx context.Context, c klient.Client) ([]string, error) {
 	return nodeNames, nil
 }
 
-// CountSchedulableNodes returns the count of nodes that are schedulable (not cordoned).
-// It accepts a v1.NodeList and counts only nodes where Spec.Unschedulable is false.
-func CountSchedulableNodes(nodeList v1.NodeList) int {
-	count := 0
-
-	for _, node := range nodeList.Items {
-		if !node.Spec.Unschedulable {
-			count++
-		}
-	}
-
-	return count
-}
-
 // AllRealNodeNames returns every real (non-KWOK) worker node name, schedulable
 // ones first.
 func AllRealNodeNames(ctx context.Context, c klient.Client) ([]string, error) {
@@ -1242,38 +1208,6 @@ func CreateRebootNodeCR(ctx context.Context, c klient.Client, nodeName string,
 	return rebootNode, nil
 }
 
-// CreateValidationRequest creates a cluster-scoped ValidationRequest targeting the given nodes and tests
-func CreateValidationRequest(ctx context.Context, c klient.Client, crName string,
-	nodeNames, tests []string) (*unstructured.Unstructured, error) {
-	vr := &unstructured.Unstructured{}
-	vr.SetGroupVersionKind(ValidationRequestGVK)
-	vr.SetName(crName)
-
-	nodes := make([]interface{}, len(nodeNames))
-	for i, n := range nodeNames {
-		nodes[i] = map[string]interface{}{fieldNameKey: n}
-	}
-
-	if err := unstructured.SetNestedSlice(vr.Object, nodes, "spec", "nodes"); err != nil {
-		return nil, fmt.Errorf("failed to set nodes in spec: %w", err)
-	}
-
-	testsAny := make([]interface{}, len(tests))
-	for i, testName := range tests {
-		testsAny[i] = testName
-	}
-
-	if err := unstructured.SetNestedSlice(vr.Object, testsAny, "spec", "tests"); err != nil {
-		return nil, fmt.Errorf("failed to set tests in spec: %w", err)
-	}
-
-	if err := c.Resources().Create(ctx, vr); err != nil {
-		return nil, fmt.Errorf("failed to create ValidationRequest %s: %w", crName, err)
-	}
-
-	return vr, nil
-}
-
 func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crName string,
 	uuid string) (*unstructured.Unstructured, error) {
 	gpuReset := &unstructured.Unstructured{}
@@ -1481,40 +1415,47 @@ func WaitForNodeReleaseStateCleared(ctx context.Context, t *testing.T, c klient.
 // removes the release taint and managed label irrespective of ownership so a
 // mid-test failure can't leak state to the next test.
 func ScrubExtRRStateFromNode(ctx context.Context, c klient.Client, nodeName string) error {
-	node, err := GetNodeByName(ctx, c, nodeName)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			return err
+		}
+
+		changed := false
+
+		filtered := node.Spec.Taints[:0]
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "nvsentinel.dgxc.nvidia.com/external-remediation" {
+				changed = true
+				continue
+			}
+
+			filtered = append(filtered, taint)
+		}
+
+		node.Spec.Taints = filtered
+
+		if _, hasLabel := node.Labels["nvsentinel.dgxc.nvidia.com/managed"]; hasLabel {
+			delete(node.Labels, "nvsentinel.dgxc.nvidia.com/managed")
+
+			changed = true
+		}
+
+		if !changed {
 			return nil
 		}
 
-		return fmt.Errorf("get node %q for ExtRR scrub: %w", nodeName, err)
-	}
-
-	changed := false
-
-	filtered := node.Spec.Taints[:0]
-	for _, taint := range node.Spec.Taints {
-		if taint.Key == "nvsentinel.dgxc.nvidia.com/external-remediation" {
-			changed = true
-			continue
-		}
-
-		filtered = append(filtered, taint)
-	}
-
-	node.Spec.Taints = filtered
-
-	if _, hasLabel := node.Labels["nvsentinel.dgxc.nvidia.com/managed"]; hasLabel {
-		delete(node.Labels, "nvsentinel.dgxc.nvidia.com/managed")
-
-		changed = true
-	}
-
-	if !changed {
+		return c.Resources().Update(ctx, node)
+	})
+	if apierrors.IsNotFound(err) {
 		return nil
 	}
 
-	return c.Resources().Update(ctx, node)
+	if err != nil {
+		return fmt.Errorf("scrub ExtRR state from node %q: %w", nodeName, err)
+	}
+
+	return nil
 }
 
 func WaitForValidationRequestForNodes(ctx context.Context, t *testing.T, c klient.Client,
@@ -1760,7 +1701,7 @@ func UpdateConfigMapTOMLField[T any](
 func ScaleDeployment(ctx context.Context, t *testing.T, c klient.Client, name, namespace string, replicas int32) error {
 	t.Logf("Scaling deployment %s/%s to %d", namespace, name, replicas)
 
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		current := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, name, namespace, current); err != nil {
 			return err
@@ -2036,7 +1977,7 @@ func RestartDeployment(
 
 	restartTime := time.Now().Format(time.RFC3339)
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, name, namespace, deployment); err != nil {
 			return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
@@ -2069,7 +2010,7 @@ func RestartDeployment(
 func SetDeploymentEnvVars(
 	ctx context.Context, c klient.Client, deploymentName, namespace, containerName string, envVars map[string]string,
 ) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
 			return err
@@ -2129,7 +2070,7 @@ func setEnvVarsOnContainer(container *v1.Container, envVars map[string]string) {
 func RemoveDeploymentEnvVars(
 	ctx context.Context, c klient.Client, deploymentName, namespace, containerName string, envVarNames []string,
 ) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
 			return err
@@ -2260,7 +2201,7 @@ func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceNa
 		Namespace: namespace,
 	}
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		if err := c.Resources().Get(ctx, serviceName, namespace, svc); err != nil {
 			return fmt.Errorf("failed to get service %s/%s: %w", namespace, serviceName, err)
 		}
@@ -2300,8 +2241,27 @@ func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, no
 	return SetNodeLabel(ctx, c, nodeName, "k8saas.nvidia.com/ManagedByNVSentinel", "")
 }
 
+// RemoveNodeUncordonLabels removes the uncordon-by, uncordon-reason and uncordon-timestamp labels with each
+// prefix from the node, so that a test sees only the labels of its own uncordon.
+func RemoveNodeUncordonLabels(ctx context.Context, c klient.Client, nodeName string, prefixes ...string) error {
+	suffixes := []string{
+		cordonlabels.UncordonedBySuffix, cordonlabels.UncordonedReasonSuffix, cordonlabels.UncordonedTimestampSuffix,
+	}
+
+	for _, prefix := range prefixes {
+		for _, suffix := range suffixes {
+			key := cordonlabels.Key(prefix, suffix)
+			if err := SetNodeLabel(ctx, c, nodeName, key, ""); err != nil {
+				return fmt.Errorf("failed to remove label %s from node %s: %w", key, nodeName, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 func SetNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey, labelValue string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
 			return err
@@ -2328,7 +2288,7 @@ func SetNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey, labe
 }
 
 func SetNodeAnnotation(ctx context.Context, c klient.Client, nodeName, annotationKey, annotationValue string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
 			return err
@@ -2673,7 +2633,7 @@ func SetNodeConditionStatus(
 	t.Helper()
 
 	require.Eventually(t, func() bool {
-		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		err := retry.RetryOnConflict(ConflictBackoff, func() error {
 			node, err := GetNodeByName(ctx, client, nodeName)
 			if err != nil {
 				return err
@@ -3238,7 +3198,7 @@ func UpdateDaemonSetArgs(ctx context.Context, t *testing.T,
 
 	var originalArgs []string
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		daemonSet := &appsv1.DaemonSet{}
 		if err := client.Resources().Get(ctx, daemonsetName, NVSentinelNamespace, daemonSet); err != nil {
 			return err
@@ -3281,7 +3241,7 @@ func RestoreDaemonSetArgs(ctx context.Context, t *testing.T, client klient.Clien
 	t.Logf("Restoring args for daemonset %s/%s container %s to original state",
 		NVSentinelNamespace, daemonsetName, containerName)
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		daemonSet := &appsv1.DaemonSet{}
 		if err := client.Resources().Get(ctx, daemonsetName, NVSentinelNamespace, daemonSet); err != nil {
 			return err
@@ -3491,7 +3451,7 @@ func SetDeploymentArgs(
 ) ([]string, error) {
 	var originalArgs []string
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
 			return err
@@ -3542,7 +3502,7 @@ func RestoreDeploymentArgs(
 	t.Helper()
 	t.Logf("Restoring args %v for deployment %s/%s container %s", originalArgs, namespace, deploymentName, containerName)
 
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
 			return err

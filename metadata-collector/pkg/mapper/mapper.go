@@ -21,7 +21,6 @@ import (
 	"log/slog"
 	"net/url"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -199,6 +198,9 @@ daemonset pods with the tradeoff that the endpoint has to be periodically scrape
 periodically scrape the PodResourcesLister endpoint in the next step, we will be consistent in how we're discovering
 both the pod list for this node and the device to pod allocation by listing from a local endpoint on the node.
 
+Only each pod's name, namespace and device annotation are decoded. Finished pods stay in this list until they are
+deleted, and together their specs can be larger than the container's memory limit.
+
 2. Discover the pod to device mapping using the Kubelet's gRPC PodResourcesLister endpoint. This local gRPC service is
 exposed on a local Unix socket. This endpoint exposes devices allocated to pods through either resource requests through
 device plugins or resource claims through DRA. Starting in v1.35, we can rely on the ResourceHealthStatus feature to
@@ -237,11 +239,11 @@ func (mapper *podDeviceMapper) UpdatePodDevicesAnnotations() (int, error) {
 		}
 
 		if len(patchBytes) > 0 {
-			err = mapper.patchPodWithRetry(pod.GetName(), pod.GetNamespace(), patchType, patchBytes)
+			err = mapper.patchPodWithRetry(pod.Name, pod.Namespace, patchType, patchBytes)
 			switch {
 			case errors.IsNotFound(err):
 				slog.Info("Skipping device annotation update because pod no longer exists",
-					"podKey", pod.GetNamespace()+"/"+pod.GetName())
+					"podKey", pod.Namespace+"/"+pod.Name)
 			case err != nil:
 				return numPodDevicesAnnotationsModified, fmt.Errorf("error patching device annotation: %w", err)
 			default:
@@ -253,9 +255,9 @@ func (mapper *podDeviceMapper) UpdatePodDevicesAnnotations() (int, error) {
 	return numPodDevicesAnnotationsModified, nil
 }
 
-func (mapper *podDeviceMapper) getPatchRequestForPod(pod corev1.Pod,
+func (mapper *podDeviceMapper) getPatchRequestForPod(pod KubeletPod,
 	devicesPerPod map[string]*model.DeviceAnnotation) (types.PatchType, []byte, error) {
-	podKey := pod.GetNamespace() + "/" + pod.GetName()
+	podKey := pod.Namespace + "/" + pod.Name
 	deviceAnnotation, podHasGPUDevices := devicesPerPod[podKey]
 	existingDeviceAnnotation, podHasDeviceAnnotation := pod.Annotations[model.PodDeviceAnnotationName]
 

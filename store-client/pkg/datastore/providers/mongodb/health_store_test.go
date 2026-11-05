@@ -159,108 +159,7 @@ func (m *MockSingleResult) Err() error {
 	return args.Error(0)
 }
 
-func TestMongoHealthEventStore_FindHealthEventsByNode(t *testing.T) {
-	ctx := context.Background()
-	mockDB := new(MockDatabaseClient)
-	mockCursor := new(MockCursor)
-	store := &MongoHealthEventStore{
-		databaseClient: mockDB,
-	}
-
-	nodeName := "test-node"
-	expectedFilter := map[string]any{
-		"healthevent.nodename": nodeName,
-	}
-
-	// Test successful find
-	t.Run("successful find", func(t *testing.T) {
-		mockDB.On("Find", ctx, expectedFilter, (*client.FindOptions)(nil)).Return(mockCursor, nil)
-		mockCursor.On("Close", ctx).Return(nil)
-		mockCursor.On("All", ctx, mock.AnythingOfType("*[]datastore.HealthEventWithStatus")).Return(nil).Run(func(args mock.Arguments) {
-			// Simulate populating the slice
-			events := args.Get(1).(*[]datastore.HealthEventWithStatus)
-			*events = []datastore.HealthEventWithStatus{
-				{CreatedAt: time.Now()},
-			}
-		})
-
-		result, err := store.FindHealthEventsByNode(ctx, nodeName)
-		assert.NoError(t, err)
-		assert.Len(t, result, 1)
-
-		mockDB.AssertExpectations(t)
-		mockCursor.AssertExpectations(t)
-	})
-
-	// Test database error
-	t.Run("database error", func(t *testing.T) {
-		mockDB.ExpectedCalls = nil
-		mockCursor.ExpectedCalls = nil
-
-		mockDB.On("Find", ctx, expectedFilter, (*client.FindOptions)(nil)).Return((*MockCursor)(nil), errors.New("db error"))
-
-		result, err := store.FindHealthEventsByNode(ctx, nodeName)
-		assert.Error(t, err)
-		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "failed to find health events by node")
-
-		mockDB.AssertExpectations(t)
-	})
-}
-
-func TestMongoHealthEventStore_CheckIfNodeAlreadyDrained(t *testing.T) {
-	ctx := context.Background()
-	mockDB := new(MockDatabaseClient)
-	store := &MongoHealthEventStore{
-		databaseClient: mockDB,
-	}
-
-	nodeName := "test-node"
-	expectedFilter := map[string]any{
-		"healthevent.nodename":                            nodeName,
-		"healtheventstatus.userpodsevictionstatus.status": datastore.StatusSucceeded,
-	}
-
-	// Test node is drained (count > 0)
-	t.Run("node is drained", func(t *testing.T) {
-		mockDB.On("CountDocuments", ctx, expectedFilter, (*client.CountOptions)(nil)).Return(int64(1), nil)
-
-		result, err := store.CheckIfNodeAlreadyDrained(ctx, nodeName)
-		assert.NoError(t, err)
-		assert.True(t, result)
-
-		mockDB.AssertExpectations(t)
-	})
-
-	// Test node is not drained (count = 0)
-	t.Run("node is not drained", func(t *testing.T) {
-		mockDB.ExpectedCalls = nil
-
-		mockDB.On("CountDocuments", ctx, expectedFilter, (*client.CountOptions)(nil)).Return(int64(0), nil)
-
-		result, err := store.CheckIfNodeAlreadyDrained(ctx, nodeName)
-		assert.NoError(t, err)
-		assert.False(t, result)
-
-		mockDB.AssertExpectations(t)
-	})
-
-	// Test database error
-	t.Run("database error", func(t *testing.T) {
-		mockDB.ExpectedCalls = nil
-
-		mockDB.On("CountDocuments", ctx, expectedFilter, (*client.CountOptions)(nil)).Return(int64(0), errors.New("db error"))
-
-		result, err := store.CheckIfNodeAlreadyDrained(ctx, nodeName)
-		assert.Error(t, err)
-		assert.False(t, result)
-		assert.Contains(t, err.Error(), "failed to check if node is already drained")
-
-		mockDB.AssertExpectations(t)
-	})
-}
-
-func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
+func TestMongoHealthEventStore_FindLatestHealthEventByQuery(t *testing.T) {
 	ctx := context.Background()
 	mockDB := new(MockDatabaseClient)
 	mockResult := new(MockSingleResult)
@@ -268,10 +167,7 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 		databaseClient: mockDB,
 	}
 
-	nodeName := "test-node"
-	expectedFilter := map[string]any{
-		"healthevent.nodename": nodeName,
-	}
+	expectedFilter := mockQueryBuilder{}.ToMongo()
 	expectedOptions := &client.FindOneOptions{
 		Sort: bson.D{
 			{Key: "createdAt", Value: -1},
@@ -288,7 +184,7 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 			*event = map[string]any{"createdAt": time.Now()}
 		})
 
-		result, err := store.FindLatestEventForNode(ctx, nodeName)
+		result, err := store.FindLatestHealthEventByQuery(ctx, mockQueryBuilder{})
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.False(t, result.CreatedAt.IsZero())
@@ -306,13 +202,26 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 		mockDB.On("FindOne", ctx, expectedFilter, expectedOptions).Return(mockResult, nil)
 		mockResult.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(errors.New("no documents in result"))
 
-		// Need to mock IsNoDocumentsError function behavior
-		result, err := store.FindLatestEventForNode(ctx, nodeName)
+		result, err := store.FindLatestHealthEventByQuery(ctx, mockQueryBuilder{})
 		assert.NoError(t, err)
 		assert.Nil(t, result)
 
 		mockDB.AssertExpectations(t)
 		mockResult.AssertExpectations(t)
+	})
+
+	// Test database error
+	t.Run("database error", func(t *testing.T) {
+		mockDB.ExpectedCalls = nil
+
+		mockDB.On("FindOne", ctx, expectedFilter, expectedOptions).Return((*MockSingleResult)(nil), errors.New("db error"))
+
+		result, err := store.FindLatestHealthEventByQuery(ctx, mockQueryBuilder{})
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "failed to find latest health event by query")
+
+		mockDB.AssertExpectations(t)
 	})
 }
 

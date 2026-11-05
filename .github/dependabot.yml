@@ -136,3 +136,4 @@ updates:
     groups:
       docker-dependencies:
         patterns: ["*"]
+

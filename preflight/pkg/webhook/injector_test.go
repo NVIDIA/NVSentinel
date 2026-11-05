@@ -1763,9 +1763,6 @@ func TestInjectInitContainers_NamespaceScopedDiscovery_SelectsNamespaceDiscovere
 	}
 }
 
-//go:fix inline
-func boolPtr(b bool) *bool { return new(b) }
-
 func testConfig() *config.Config {
 	return &config.Config{
 		InitContainers: []config.InitContainerSpec{

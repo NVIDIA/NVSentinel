@@ -62,6 +62,10 @@ var (
 	kubeletKubeconfigPath = flag.String("kubelet-kubeconfig", "",
 		"Kubeconfig for the kubelet HTTPS endpoint; empty uses KUBELET_HOST and the pod ServiceAccount token")
 
+	podMapperEnabled = flag.Bool("pod-mapper-enabled", true,
+		"Run the pod device mapper after writing the metadata file. Partial drains need the device annotations "+
+			"it writes; disable it only where the mapper cannot work.")
+
 	maxConsecutivePodMapperFailures = flag.Int("pod-mapper-max-consecutive-failures",
 		defaultMaxConsecutivePodMapperFailures,
 		"Consecutive pod device mapper poll failures tolerated before exiting non-zero. Minimum 1.")
@@ -79,18 +83,12 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	metadata, err := runCollector(ctx)
-	if err != nil {
-		slog.Error("Metadata collector failed", "error", err)
-		cancel()
-		os.Exit(1)
-	}
+	collectionCompleted := newCollectionCompletedGauge(prometheus.DefaultRegisterer)
 
-	slog.Info("Metadata collector completed successfully, starting pod device mapper")
-
-	// The mapper loops until the context ends, so the metrics endpoint has to run alongside it
-	// rather than after it. Either goroutine returning cancels the other, which keeps the
-	// threshold's non-zero exit intact.
+	// The metrics endpoint starts before collection, not after it. Collection calls into the GPU
+	// driver, which can block indefinitely when the driver is wedged, and a pod stuck there should
+	// still be scraped and show the stall through collectionCompleted rather than go dark. Either
+	// goroutine returning cancels the other, which keeps the mapper threshold's non-zero exit intact.
 	group, groupCtx := errgroup.WithContext(ctx)
 
 	if *metricsPort > 0 {
@@ -111,8 +109,21 @@ func main() {
 		})
 	}
 
+	metadata, err := runCollector(ctx)
+	if err != nil {
+		slog.Error("Metadata collector failed", "error", err)
+		cancel()
+		os.Exit(1)
+	}
+
+	collectionCompleted.SetToCurrentTime()
+
+	slog.Info("Metadata collector completed successfully")
+
 	group.Go(func() error {
-		return runMapper(groupCtx, newPodMapperMetrics(prometheus.DefaultRegisterer), metadata.GPUs)
+		return runPodMapperIfEnabled(groupCtx, *podMapperEnabled, func(ctx context.Context) error {
+			return runMapper(ctx, newPodMapperMetrics(prometheus.DefaultRegisterer), metadata.GPUs)
+		})
 	})
 
 	if err := group.Wait(); err != nil {
@@ -122,6 +133,21 @@ func main() {
 	}
 
 	slog.Info("Pod device mapper completed successfully")
+}
+
+// runPodMapperIfEnabled runs the pod device mapper, or waits for ctx to end when it is disabled. The process has to
+// stay up either way: it runs as a DaemonSet, so returning would restart it in a loop.
+func runPodMapperIfEnabled(ctx context.Context, enabled bool, run func(context.Context) error) error {
+	if !enabled {
+		slog.Info("Pod device mapper is disabled; pods get no device annotations, so partial drains fail")
+		<-ctx.Done()
+
+		return nil
+	}
+
+	slog.Info("Starting pod device mapper")
+
+	return run(ctx)
 }
 
 func runMapper(ctx context.Context, metrics *podMapperMetrics, gpus []model.GPUInfo) error {

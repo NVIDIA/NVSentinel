@@ -16,7 +16,13 @@ package kubeclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"os"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -253,6 +259,110 @@ func TestNodePatcher_InterruptedRequest_ReportsError(t *testing.T) {
 					assert.False(t, changed)
 				})
 			}
+		})
+	}
+}
+
+// urlError wraps err the way client-go returns a request that failed below HTTP.
+func urlError(err error) error {
+	return &url.Error{Op: "Patch", URL: "https://10.0.0.1:443/api/v1/nodes/node-1", Err: err}
+}
+
+var errConnectionReset = urlError(&net.OpError{
+	Op: "read", Net: "tcp", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET},
+})
+
+func TestIsRetryableNodePatchError_RetriesTransientFailuresOnly(t *testing.T) {
+	nodes := schema.GroupResource{Resource: "nodes"}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "conflict", err: apierrors.NewConflict(nodes, "node-1", assert.AnError), want: true},
+		{name: "server timeout", err: apierrors.NewServerTimeout(nodes, "patch", 1), want: true},
+		{name: "too many requests", err: apierrors.NewTooManyRequests("try again", 1), want: true},
+		{name: "timeout", err: apierrors.NewTimeoutError("request timed out", 1), want: true},
+		{name: "service unavailable", err: apierrors.NewServiceUnavailable("restarting"), want: true},
+		{name: "connection reset", err: errConnectionReset, want: true},
+		{
+			name: "connection refused",
+			err: urlError(&net.OpError{
+				Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED},
+			}),
+			want: true,
+		},
+		{name: "connection closed over HTTP/1.1", err: urlError(io.EOF), want: true},
+		{name: "connection closed over HTTP/2", err: urlError(io.ErrUnexpectedEOF), want: true},
+		{
+			name: "connection closed after GOAWAY",
+			err: urlError(errors.New(
+				`http2: server sent GOAWAY and closed the connection; LastStreamID=1, ErrCode=NO_ERROR, debug=""`)),
+			want: true,
+		},
+		{name: "HTTP/2 health check failed", err: urlError(errors.New("http2: client connection lost")), want: true},
+		{name: "not found", err: apierrors.NewNotFound(nodes, "node-1"), want: false},
+		{name: "invalid", err: apierrors.NewInvalid(schema.GroupKind{Kind: "Node"}, "node-1", nil), want: false},
+		{name: "forbidden", err: apierrors.NewForbidden(nodes, "node-1", assert.AnError), want: false},
+		{name: "request cancelled", err: urlError(context.Canceled), want: false},
+		{name: "request deadline exceeded", err: urlError(context.DeadlineExceeded), want: false},
+		{
+			name: "rate limiter cancelled",
+			err:  fmt.Errorf("client rate limiter Wait returned an error: %w", context.Canceled),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Patch wraps the client error before the retry loop sees it.
+			err := fmt.Errorf("patch node %q: %w", "node-1", tt.err)
+			assert.Equal(t, tt.want, IsRetryableNodePatchError(err))
+		})
+	}
+}
+
+// A connection reset mid-request, as during an API server restart, is retried
+// for the live read and for the patch alike.
+func TestNodePatcher_ConnectionReset_RetriesAndSucceeds(t *testing.T) {
+	for _, verb := range []string{"get", "patch"} {
+		t.Run(verb, func(t *testing.T) {
+			cached := node(map[string]string{"a": "1"}, nil)
+			clientset := fake.NewSimpleClientset(cached.DeepCopy())
+
+			attempts := 0
+			clientset.PrependReactor(verb, "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+				attempts++
+				if attempts == 1 {
+					return true, nil, errConnectionReset
+				}
+
+				return false, nil, nil
+			})
+
+			// A pending write makes Patch read the live node, so the "get" case
+			// fails before any mutation.
+			var patcher NodePatcher
+			patcher.pendingVersions.Store(cached.Name, "unobserved")
+
+			changed, err := patcher.Patch(
+				context.Background(),
+				clientset.CoreV1().Nodes(),
+				cached.Name,
+				cached,
+				func(node *v1.Node) error {
+					node.Labels["b"] = "2"
+					return nil
+				},
+			)
+			require.NoError(t, err)
+			assert.True(t, changed)
+			assert.Equal(t, 2, attempts)
+
+			updated, err := clientset.CoreV1().Nodes().Get(t.Context(), cached.Name, metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.Equal(t, "2", updated.Labels["b"])
 		})
 	}
 }

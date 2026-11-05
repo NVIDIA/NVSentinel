@@ -16,6 +16,8 @@ package devicecounts
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -66,6 +68,64 @@ func ResourceSlicesForNode(indexer cache.Indexer, node *corev1.Node) []*resource
 	}
 
 	return resourceSlices
+}
+
+// driverPoolSlices holds a driver's ResourceSlices for one node, limited to
+// the newest generation of each pool.
+type driverPoolSlices struct {
+	slices []*resourcev1.ResourceSlice
+	// complete is false while any pool's newest generation has fewer slices
+	// than its resourceSliceCount, which happens while a driver republishes.
+	complete bool
+}
+
+type poolGeneration struct {
+	generation int64
+	sliceCount int64
+	slices     []*resourcev1.ResourceSlice
+}
+
+// currentPoolSlices returns the driver's current pool slices for the node. It
+// reports false when the driver publishes no slice for the node.
+func currentPoolSlices(resourceSlices []*resourcev1.ResourceSlice, driver string) (driverPoolSlices, bool) {
+	pools := map[string]*poolGeneration{}
+
+	for _, resourceSlice := range resourceSlices {
+		if resourceSlice == nil || resourceSlice.Spec.Driver != driver {
+			continue
+		}
+
+		pool := resourceSlice.Spec.Pool
+		existing, ok := pools[pool.Name]
+
+		switch {
+		case !ok || pool.Generation > existing.generation:
+			pools[pool.Name] = &poolGeneration{
+				generation: pool.Generation,
+				sliceCount: pool.ResourceSliceCount,
+				slices:     []*resourcev1.ResourceSlice{resourceSlice},
+			}
+		case pool.Generation == existing.generation:
+			existing.slices = append(existing.slices, resourceSlice)
+		}
+	}
+
+	if len(pools) == 0 {
+		return driverPoolSlices{}, false
+	}
+
+	current := driverPoolSlices{complete: true}
+
+	for _, poolName := range slices.Sorted(maps.Keys(pools)) {
+		pool := pools[poolName]
+		if int64(len(pool.slices)) != pool.sliceCount {
+			current.complete = false
+		}
+
+		current.slices = append(current.slices, pool.slices...)
+	}
+
+	return current, true
 }
 
 func resourceSliceNodeName(resourceSlice *resourcev1.ResourceSlice) (string, bool) {

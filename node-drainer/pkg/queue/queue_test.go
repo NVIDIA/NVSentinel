@@ -471,10 +471,6 @@ func (m *mockDataStore) FindDocument(ctx context.Context, filter any, options *c
 	return mockSingleResult{}, nil
 }
 
-func (m *mockDataStore) FindDocuments(ctx context.Context, filter any, options *client.FindOptions) (client.Cursor, error) {
-	return mockCursor{}, nil
-}
-
 type mockSingleResult struct{}
 
 func (m mockSingleResult) Decode(v any) error {
@@ -482,28 +478,6 @@ func (m mockSingleResult) Decode(v any) error {
 }
 
 func (m mockSingleResult) Err() error {
-	return nil
-}
-
-type mockCursor struct{}
-
-func (m mockCursor) Next(ctx context.Context) bool {
-	return false
-}
-
-func (m mockCursor) Decode(v any) error {
-	return nil
-}
-
-func (m mockCursor) Close(ctx context.Context) error {
-	return nil
-}
-
-func (m mockCursor) All(ctx context.Context, results any) error {
-	return nil
-}
-
-func (m mockCursor) Err() error {
 	return nil
 }
 

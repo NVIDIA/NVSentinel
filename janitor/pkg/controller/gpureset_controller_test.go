@@ -30,6 +30,7 @@ import (
 	prmproto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -208,6 +209,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 		reconciler = &GPUResetReconciler{
 			Client:       mgrClient,
+			APIReader:    k8sClient,
 			Scheme:       k8sClient.Scheme(),
 			FieldIndexer: mgr.GetFieldIndexer(),
 			Config: &config.GPUResetControllerConfig{
@@ -1332,6 +1334,22 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
 			}, "10s", "100ms").Should(Succeed())
 
+			By("Waiting for the reconciler's cache to observe the reset teardown condition and the reverted node label")
+			// The reconciler reads through the manager cache, which can lag the writes seen above via k8sClient. A
+			// stale GPUReset makes the next reconcile detect drift again instead of re-applying the node labels, and a
+			// stale node either hides the reverted label or fails the optimistic-lock patch.
+			Eventually(func(g Gomega) {
+				var cachedReset v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cachedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionFalse(cachedReset.Status.Conditions,
+					string(v1alpha1.ServicesTornDown))).To(BeTrue())
+
+				var apiNode, cachedNode corev1.Node
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &apiNode)).To(Succeed())
+				g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: nodeName}, &cachedNode)).To(Succeed())
+				g.Expect(cachedNode.ResourceVersion).To(Equal(apiNode.ResourceVersion))
+			}, "10s", "100ms").Should(Succeed())
+
 			By("Running reconciliation again to enforce the correct state")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
@@ -2211,6 +2229,236 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(updatedReset.Status.ManagedServices).To(BeNil())
 			Expect(updatedReset.Status.JobRef).To(BeNil())
 		})
+
+		Context("with the GPU clients", func() {
+			const clientsNamespace = "gpu-clients"
+
+			BeforeEach(func() {
+				reconciler.serviceManager = gpuservices.WithGPUClients(reconciler.serviceManager)
+				// Check the real pods: the teardown waits for the client pods, and the restore does not.
+				reconciler.checkPodsTerminatedFn = reconciler.checkPodsTerminated
+				reconciler.checkPodsReadyFn = reconciler.checkPodsReady
+
+				namespace := &corev1.Namespace{Name: clientsNamespace}
+				Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, namespace))).To(Succeed())
+			})
+
+			// createClientPod creates a pod in a namespace other than the service manager namespace. The cleanup of
+			// the outer context deletes it.
+			createClientPod := func(name, node string, mutate func(*corev1.Pod)) *corev1.Pod {
+				pod := &corev1.Pod{
+					Name:      name,
+					Namespace: clientsNamespace,
+					Spec: corev1.PodSpec{
+						NodeName:   node,
+						Containers: []corev1.Container{{Name: "client", Image: "client:test"}},
+					},
+				}
+				if mutate != nil {
+					mutate(pod)
+				}
+
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				operandPods = append(operandPods, pod)
+
+				return pod
+			}
+
+			bySelector := func(pod *corev1.Pod) {
+				pod.Spec.NodeSelector = map[string]string{gpuservices.GPUClientsNodeLabel: "true"}
+			}
+
+			// byAffinity selects the label the way the NVSentinel metadata collector does.
+			byAffinity := func(pod *corev1.Pod) {
+				pod.Spec.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{MatchExpressions: []corev1.NodeSelectorRequirement{{
+								Key: gpuservices.GPUClientsNodeLabel, Operator: corev1.NodeSelectorOpIn, Values: []string{"true"},
+							}}},
+							{MatchExpressions: []corev1.NodeSelectorRequirement{{
+								Key: gpuservices.GPUClientsNodeLabel, Operator: corev1.NodeSelectorOpDoesNotExist,
+							}}},
+						},
+					},
+				}}
+			}
+
+			// createDaemonSetPod creates a DaemonSet with the pod template that mutate gives, and a pod that the
+			// DaemonSet controls. As the DaemonSet controller does, the pod keeps the nodeSelector of the template,
+			// but its required node affinity has only a term on the node name.
+			createDaemonSetPod := func(name string, mutate func(*corev1.Pod)) *corev1.Pod {
+				template := &corev1.Pod{Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "client", Image: "client:test"}},
+				}}
+				if mutate != nil {
+					mutate(template)
+				}
+
+				labels := map[string]string{"app": name}
+				daemonSet := &appsv1.DaemonSet{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: clientsNamespace},
+					Spec: appsv1.DaemonSetSpec{
+						Selector: &metav1.LabelSelector{MatchLabels: labels},
+						Template: corev1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{Labels: labels},
+							Spec:       template.Spec,
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, daemonSet)).To(Succeed())
+				DeferCleanup(func() {
+					Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, daemonSet))).To(Succeed())
+				})
+
+				return createClientPod(name+"-pod", nodeName, func(pod *corev1.Pod) {
+					pod.Labels = labels
+					pod.OwnerReferences = []metav1.OwnerReference{
+						*metav1.NewControllerRef(daemonSet, appsv1.SchemeGroupVersion.WithKind("DaemonSet")),
+					}
+					pod.Spec.NodeSelector = template.Spec.NodeSelector
+					pod.Spec.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+							NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchFields: []corev1.NodeSelectorRequirement{{
+								Key: metav1.ObjectNameField, Operator: corev1.NodeSelectorOpIn, Values: []string{nodeName},
+							}}}},
+						},
+					}}
+				})
+			}
+
+			withClientsLabel := func(value string) map[string]string {
+				nodeLabels := devicePluginDeployLabels()
+				nodeLabels[gpuservices.GPUClientsNodeLabel] = value
+
+				return nodeLabels
+			}
+
+			reconcileUntilClientsLabel := func(value string) {
+				Eventually(func(g Gomega) {
+					_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(getNodeLabels()).To(HaveKeyWithValue(gpuservices.GPUClientsNodeLabel, value))
+				}, "10s", "100ms").Should(Succeed())
+			}
+
+			It("should stop the GPU client pods in any namespace before the reset and restore the label after it", func() {
+				nodeLabels := withClientsLabel("true")
+				createNodeWithOperandPods(nodeLabels, nil)
+				selectorPod := createClientPod("client-selector", nodeName, bySelector)
+				affinityPod := createClientPod("client-affinity", nodeName, byAffinity)
+				createClientPod("not-a-client", nodeName, nil)
+				createClientPod("client-on-other-node", "other-node", bySelector)
+				finishedPod := createClientPod("client-finished", nodeName, bySelector)
+				finishedPod.Status.Phase = corev1.PodSucceeded
+				Expect(k8sClient.Status().Update(ctx, finishedPod)).To(Succeed())
+				createReset()
+
+				By("Reconciling until the GPU clients label holds the disabled value")
+				reconcileUntilClientsLabel("false")
+				Expect(getReset().Status.ManagedServices.NodeLabels).To(ConsistOf(gpuservices.GPUClientsNodeLabel))
+
+				By("Verifying that the teardown waits while the client pods run")
+				reconcileTimes(3)
+				Expect(getConditionReason(v1alpha1.ServicesTornDown)).To(Equal(string(v1alpha1.ReasonTearingDownServices)))
+				Expect(getReset().Status.JobRef).To(BeNil())
+
+				By("Removing the client pods, as the DaemonSet controller does")
+				Expect(k8sClient.Delete(ctx, selectorPod, client.GracePeriodSeconds(0))).To(Succeed())
+				Expect(k8sClient.Delete(ctx, affinityPod, client.GracePeriodSeconds(0))).To(Succeed())
+
+				By("Reconciling until the reset is complete, without waiting for client pods to come back")
+				reconcileUntil(v1alpha1.Complete)
+				Expect(getConditionReason(v1alpha1.ServicesRestored)).To(Equal(string(v1alpha1.ReasonServiceRestoreSucceeded)))
+				Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+				Expect(getNodeLabels()).To(Equal(nodeLabels))
+			})
+
+			It("should stop a DaemonSet client that selects the label only in the node affinity of its pod template", func() {
+				nodeLabels := withClientsLabel("true")
+				createNodeWithOperandPods(nodeLabels, nil)
+				clientPod := createDaemonSetPod("affinity-client", byAffinity)
+				createDaemonSetPod("not-a-client", nil)
+				createReset()
+
+				By("Reconciling until the GPU clients label holds the disabled value")
+				reconcileUntilClientsLabel("false")
+				Expect(getReset().Status.ManagedServices.NodeLabels).To(ConsistOf(gpuservices.GPUClientsNodeLabel))
+
+				By("Verifying that the teardown waits while the DaemonSet client pod runs")
+				reconcileTimes(3)
+				Expect(getConditionReason(v1alpha1.ServicesTornDown)).To(Equal(string(v1alpha1.ReasonTearingDownServices)))
+				Expect(getReset().Status.JobRef).To(BeNil())
+
+				By("Removing the DaemonSet client pod, as the DaemonSet controller does")
+				Expect(k8sClient.Delete(ctx, clientPod, client.GracePeriodSeconds(0))).To(Succeed())
+
+				By("Reconciling until the reset is complete, without waiting for the other DaemonSet pod")
+				reconcileUntil(v1alpha1.Complete)
+				Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+				Expect(getNodeLabels()).To(Equal(nodeLabels))
+			})
+
+			DescribeTable("should not change the GPU clients label or wait for the client pods",
+				func(nodeLabels map[string]string) {
+					createNodeWithOperandPods(nodeLabels, nil)
+					createClientPod("client-selector", nodeName, bySelector)
+					createReset()
+
+					observed := reconcileUntil(v1alpha1.Complete)
+					Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+					Expect(getReset().Status.ManagedServices.NodeLabels).To(BeEmpty())
+
+					if value, exists := nodeLabels[gpuservices.GPUClientsNodeLabel]; exists {
+						Expect(observed).To(HaveEach(HaveKeyWithValue(gpuservices.GPUClientsNodeLabel, value)))
+					} else {
+						Expect(observed).To(HaveEach(Not(HaveKey(gpuservices.GPUClientsNodeLabel))))
+					}
+				},
+				Entry("when the node has no GPU clients label, as before GPU Operator 26.7", devicePluginDeployLabels()),
+				Entry("when the GPU clients label holds the disabled value", withClientsLabel("false")),
+			)
+
+			It("should wait while another controller holds the GPU clients label, without changing it", func() {
+				nodeLabels := withClientsLabel("paused-for-driver-upgrade")
+				createNodeWithOperandPods(nodeLabels, nil)
+				createClientPod("client-selector", nodeName, bySelector)
+				createReset()
+
+				By("Reconciling while the label is held")
+				reconcileUntil(v1alpha1.Ready)
+				observed := reconcileTimes(5)
+				Expect(observed).To(HaveEach(Equal(nodeLabels)))
+				Expect(meta.FindStatusCondition(getReset().Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeNil())
+
+				By("Releasing the label: the teardown stops the GPU clients")
+				Eventually(func(g Gomega) {
+					var currentNode corev1.Node
+					g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &currentNode)).To(Succeed())
+					currentNode.Labels[gpuservices.GPUClientsNodeLabel] = "true"
+					g.Expect(k8sClient.Update(ctx, &currentNode)).To(Succeed())
+				}, "5s", "100ms").Should(Succeed())
+				reconcileUntilClientsLabel("false")
+			})
+
+			It("should restore the GPU clients label when the GPUReset is deleted during the teardown", func() {
+				nodeLabels := withClientsLabel("true")
+				createNodeWithOperandPods(nodeLabels, nil)
+				createClientPod("client-selector", nodeName, bySelector)
+				createReset()
+				reconcileUntilClientsLabel("false")
+
+				Expect(k8sClient.Delete(ctx, &v1alpha1.GPUReset{Name: resetName})).To(Succeed())
+				Eventually(func(g Gomega) {
+					_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+					g.Expect(err).NotTo(HaveOccurred())
+					var deleted v1alpha1.GPUReset
+					g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &deleted))).To(BeTrue())
+				}, "10s", "250ms").Should(Succeed())
+
+				Expect(getNodeLabels()).To(Equal(nodeLabels))
+			})
+		})
 	})
 
 	Context("Metrics", func() {
@@ -2554,6 +2802,83 @@ func TestManagedApps_ReturnsTheRecordedServices(t *testing.T) {
 			}
 
 			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestSelectsNodeLabel(t *testing.T) {
+	label := gpuservices.GPUClientsNodeLabel
+
+	affinity := func(keys ...string) *corev1.Affinity {
+		terms := make([]corev1.NodeSelectorTerm, 0, len(keys))
+		for _, key := range keys {
+			terms = append(terms, corev1.NodeSelectorTerm{MatchExpressions: []corev1.NodeSelectorRequirement{{
+				Key: key, Operator: corev1.NodeSelectorOpExists,
+			}}})
+		}
+
+		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: terms},
+		}}
+	}
+
+	cases := []struct {
+		name string
+		spec corev1.PodSpec
+		want bool
+	}{
+		{name: "no selector and no affinity", want: false},
+		{name: "nodeSelector", spec: corev1.PodSpec{NodeSelector: map[string]string{label: "true"}}, want: true},
+		{name: "nodeSelector on another label", spec: corev1.PodSpec{NodeSelector: map[string]string{"other": "true"}}},
+		{name: "required node affinity", spec: corev1.PodSpec{Affinity: affinity("other", label)}, want: true},
+		{name: "required node affinity on another label", spec: corev1.PodSpec{Affinity: affinity("other")}},
+		{
+			name: "preferred node affinity only",
+			spec: corev1.PodSpec{Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{{
+					Weight: 1,
+					Preference: corev1.NodeSelectorTerm{MatchExpressions: []corev1.NodeSelectorRequirement{{
+						Key: label, Operator: corev1.NodeSelectorOpExists,
+					}}},
+				}},
+			}}},
+		},
+		{name: "pod affinity only", spec: corev1.PodSpec{Affinity: &corev1.Affinity{PodAffinity: &corev1.PodAffinity{}}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, selectsNodeLabel(&tc.spec, label))
+		})
+	}
+}
+
+func TestTeardownCandidates_GPUClientsOnlyWhenLabelEnabled(t *testing.T) {
+	manager, err := gpuservices.NewManager("gpu-operator", gpuservices.ManagerSpec{})
+	require.NoError(t, err)
+
+	apps := gpuservices.WithGPUClients(manager).Spec.Apps
+
+	cases := []struct {
+		name        string
+		nodeLabels  map[string]string
+		wantClients bool
+	}{
+		{name: "label absent", nodeLabels: map[string]string{}},
+		{name: "label enabled", nodeLabels: map[string]string{gpuservices.GPUClientsNodeLabel: "true"}, wantClients: true},
+		{name: "label disabled", nodeLabels: map[string]string{gpuservices.GPUClientsNodeLabel: "false"}},
+		{name: "label held", nodeLabels: map[string]string{gpuservices.GPUClientsNodeLabel: "paused-for-driver-upgrade"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := teardownCandidates(apps, tc.nodeLabels)
+
+			// The operands are always candidates; the GPU Operator operand detection decides about them.
+			assert.Equal(t, manager.Spec.Apps, withoutGPUClients(got))
+			assert.Equal(t, tc.wantClients, slices.ContainsFunc(got, func(app gpuservices.AppSpec) bool {
+				return app.IsGPUClients()
+			}))
 		})
 	}
 }

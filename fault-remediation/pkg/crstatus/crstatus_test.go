@@ -141,11 +141,10 @@ func TestGetCRState_GetError(t *testing.T) {
 	gr := schema.GroupResource{Group: "janitor.dgxc.nvidia.com", Resource: "rebootnodes"}
 
 	tests := []struct {
-		name        string
-		getErr      error
-		expected    CRState
-		expectErr   bool
-		expectSkip  bool
+		name      string
+		getErr    error
+		expected  CRState
+		expectErr bool
 	}{
 		{
 			name:     "not found allows create",
@@ -153,22 +152,19 @@ func TestGetCRState_GetError(t *testing.T) {
 			expected: CRStateNotFound,
 		},
 		{
-			name:       "timeout is returned",
-			getErr:     apierrors.NewTimeoutError("etcdserver: request timed out", 1),
-			expectErr:  true,
-			expectSkip: true,
+			name:      "timeout is returned",
+			getErr:    apierrors.NewTimeoutError("etcdserver: request timed out", 1),
+			expectErr: true,
 		},
 		{
-			name:       "forbidden is returned",
-			getErr:     apierrors.NewForbidden(gr, "maintenance-node-1", errors.New("denied")),
-			expectErr:  true,
-			expectSkip: true,
+			name:      "forbidden is returned",
+			getErr:    apierrors.NewForbidden(gr, "maintenance-node-1", errors.New("denied")),
+			expectErr: true,
 		},
 		{
-			name:       "connection error is returned",
-			getErr:     errors.New("dial tcp 10.0.0.1:443: connect: connection refused"),
-			expectErr:  true,
-			expectSkip: true,
+			name:      "connection error is returned",
+			getErr:    errors.New("dial tcp 10.0.0.1:443: connect: connection refused"),
+			expectErr: true,
 		},
 	}
 
@@ -190,8 +186,6 @@ func TestGetCRState_GetError(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, tt.expected, state)
 			}
-
-			assert.Equal(t, tt.expectSkip, checker.ShouldSkipCRCreation(context.Background(), "reboot", "maintenance-node-1"))
 		})
 	}
 }

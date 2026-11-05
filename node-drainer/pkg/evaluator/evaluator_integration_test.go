@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -81,7 +80,6 @@ func (mockStore *mockHealthEventStore) FindHealthEventsByQueryBatched(_ context.
 type testSetup struct {
 	ctx               context.Context
 	client            kubernetes.Interface
-	dynamicClient     dynamic.Interface
 	mockDB            *mockDataStore
 	healthEventStore  *mockHealthEventStore
 	evaluator         *NodeDrainEvaluator

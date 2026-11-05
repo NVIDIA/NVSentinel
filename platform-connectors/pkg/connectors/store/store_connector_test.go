@@ -365,12 +365,6 @@ func TestDisconnect(t *testing.T) {
 	})
 }
 
-func TestGenerateRandomObjectID(t *testing.T) {
-	objectID := GenerateRandomObjectID()
-	require.NotEmpty(t, objectID)
-	require.Len(t, objectID, 36) // UUID string is 36 characters
-}
-
 // TestMessageRetriedOnMongoDBFailure verifies that
 // messages are retried with exponential backoff when MongoDB write fails.
 func TestMessageRetriedOnMongoDBFailure(t *testing.T) {

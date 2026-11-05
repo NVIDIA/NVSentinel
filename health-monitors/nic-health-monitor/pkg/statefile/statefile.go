@@ -138,6 +138,12 @@ type PortStateSnapshot struct {
 	State         string `json:"state"`
 	PhysicalState string `json:"physical_state"`
 	LinkLayer     string `json:"link_layer,omitempty"`
+
+	// SuppressedSince is when the first-poll peer-evidence gate suppressed
+	// this still-unhealthy port, so stateCheck.suppressedPortReportAfter can
+	// report it across pod restarts. It is discarded with the port state on
+	// a reboot or scope change, where the next first poll decides again.
+	SuppressedSince time.Time `json:"suppressed_since,omitzero"`
 }
 
 // AnomalousCardFlag marks one latched card-homogeneity anomaly. The
@@ -246,11 +252,6 @@ type Manager struct {
 	// must react only to real reboots — a scope change neither resets
 	// hardware counters nor clears latched breaches.
 	scopeChanged bool
-}
-
-// NewManager constructs a Manager backed by the default on-host paths.
-func NewManager() *Manager {
-	return NewManagerWithPaths(DefaultStateFilePath, DefaultBootIDPath)
 }
 
 // NewManagerWithPaths constructs a Manager with explicit paths, used by

@@ -218,6 +218,15 @@ type StateCheckConfig struct {
 
 	// HoldDown is PortStateHoldDown parsed by LoadConfig.
 	HoldDown time.Duration `toml:"-"`
+
+	// SuppressedPortReportAfter reports a port that the first-poll
+	// peer-evidence gate suppressed once it has stayed unhealthy this long.
+	// Empty or "0s", the default, keeps suppressing it for as long as it
+	// stays unhealthy.
+	SuppressedPortReportAfter string `toml:"suppressedPortReportAfter"`
+
+	// ReportSuppressedAfter is SuppressedPortReportAfter parsed by LoadConfig.
+	ReportSuppressedAfter time.Duration `toml:"-"`
 }
 
 // IssmMode selects whether InfiniBandCharDeviceCheck expects the per-port
@@ -300,29 +309,39 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid charDeviceCheck: %w", err)
 	}
 
-	holdDown, err := parseHoldDown(cfg.StateCheck.PortStateHoldDown)
-	if err != nil {
+	if err := parseStateCheck(&cfg.StateCheck); err != nil {
 		return nil, fmt.Errorf("invalid stateCheck: %w", err)
 	}
-
-	cfg.StateCheck.HoldDown = holdDown
 
 	return cfg, nil
 }
 
-// parseHoldDown parses stateCheck.portStateHoldDown. Empty means off.
-func parseHoldDown(value string) (time.Duration, error) {
+// parseStateCheck parses the [stateCheck] durations.
+func parseStateCheck(sc *StateCheckConfig) error {
+	var err error
+
+	if sc.HoldDown, err = parseStateDuration("portStateHoldDown", sc.PortStateHoldDown); err != nil {
+		return err
+	}
+
+	sc.ReportSuppressedAfter, err = parseStateDuration("suppressedPortReportAfter", sc.SuppressedPortReportAfter)
+
+	return err
+}
+
+// parseStateDuration parses a [stateCheck] duration. Empty means off.
+func parseStateDuration(name, value string) (time.Duration, error) {
 	if value == "" {
 		return 0, nil
 	}
 
 	d, err := time.ParseDuration(value)
 	if err != nil {
-		return 0, fmt.Errorf("portStateHoldDown %q: %w", value, err)
+		return 0, fmt.Errorf("%s %q: %w", name, value, err)
 	}
 
 	if d < 0 {
-		return 0, fmt.Errorf("portStateHoldDown %q must not be negative", value)
+		return 0, fmt.Errorf("%s %q must not be negative", name, value)
 	}
 
 	return d, nil

@@ -37,8 +37,6 @@ type Reader interface {
 	// verbs character-device class entries (uverbs*), a sibling of
 	// IBBasePath (e.g. /nvsentinel/sys/class/infiniband_verbs).
 	IBVerbsBasePath() string
-	IBPortPath(device string, port int) string
-	NetInterfacePath(iface string) string
 
 	// InfiniBand port attributes ---------------------------------------
 	ReadIBPortState(device string, port int) (string, error)

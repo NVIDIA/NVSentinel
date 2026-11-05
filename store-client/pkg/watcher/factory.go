@@ -47,7 +47,6 @@ type WatcherFactory interface {
 		ds datastore.DataStore,
 		config WatcherConfig,
 	) (datastore.ChangeStreamWatcher, error)
-	SupportedProvider() datastore.DataStoreProvider
 }
 
 // Global registry for watcher factories

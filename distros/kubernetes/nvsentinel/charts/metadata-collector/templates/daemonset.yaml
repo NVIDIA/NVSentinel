@@ -66,6 +66,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --output-path={{ .Values.global.metadataPath }}
+            - --pod-mapper-enabled={{ .Values.podMapper.enabled }}
             - --pod-mapper-max-consecutive-failures={{ .Values.podMapper.maxConsecutiveFailures }}
             {{- if include "metadata-collector.metricsEnabled" . }}
             - --metrics-port={{ .Values.metrics.port }}

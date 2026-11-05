@@ -151,6 +151,7 @@ config:
       # If not set or set to empty, defaults to config.timeout (25m)
       # AWS/Azure/OCI: Typically 25m (includes 5min cooldown period)
       # GCP: Can be shorter as operation status is tracked directly
+      # Akamai (LKE): About 3m for a GPU node in testing
       # kind/kwok: Can be much shorter for testing (5m)
       timeout: "25m"
     
@@ -208,8 +209,10 @@ config:
             cpu: "100m"
             memory: "128Mi"
 
-# TTL-based cleanup of completed maintenance CRs (RebootNode / GPUReset /
-# TerminateNode). See docs/designs/037-janitor-cr-ttl-cleanup.md for details.
+# TTL-based cleanup of maintenance CRs (RebootNode / GPUReset / TerminateNode /
+# ExternalRemediationRequest). An ExternalRemediationRequest is never deleted
+# while it is open; its TTL starts at status.completionTime. See
+# docs/designs/037-janitor-cr-ttl-cleanup.md for details.
 ttl:
   # Enable the TTL reconcilers. When false, the reconcilers are not registered
   # at all; maintenance CRs persist indefinitely and any

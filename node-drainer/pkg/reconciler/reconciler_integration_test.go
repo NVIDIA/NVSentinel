@@ -116,11 +116,6 @@ func (m *mockDataStore) FindDocument(ctx context.Context, filter any, options *s
 	return &mockSingleResult{document: event}, nil
 }
 
-func (m *mockDataStore) FindDocuments(ctx context.Context, filter any, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
-	// Mock implementation - return nil for now
-	return nil, nil
-}
-
 func newMockHealthEventStore(healthEvents []datastore.HealthEventWithStatus, err error) *mockHealthEventStore {
 	return &mockHealthEventStore{
 		healthEvents: healthEvents,
@@ -1307,13 +1302,6 @@ func (m *MockMongoCollection) FindDocument(ctx context.Context, filter any, opti
 	}
 
 	return &MockSingleResult{}, nil
-}
-
-func (m *MockMongoCollection) FindDocuments(ctx context.Context, filter any, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
-	if m.FindDocumentsFunc != nil {
-		return m.FindDocumentsFunc(ctx, filter, options)
-	}
-	return &MockCursor{}, nil
 }
 
 // Mock implementations for client interfaces

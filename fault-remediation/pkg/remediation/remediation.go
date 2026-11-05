@@ -16,11 +16,14 @@ package remediation
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/template"
 	"time"
 
@@ -428,6 +431,21 @@ func (c *FaultRemediationClient) RunLogCollectorJob(
 	return c.checkLogCollectorStatus(ctx, nodeName, job)
 }
 
+// logCollectorNodeLabelValue returns nodeName if it fits in a label value. Node names can be up to
+// 253 characters, so longer names are truncated and suffixed with a hash of the full name, which
+// keeps the value unique, deterministic, and ending in an alphanumeric character.
+func logCollectorNodeLabelValue(nodeName string) string {
+	if len(nodeName) <= labelValueCharactersLimit {
+		return nodeName
+	}
+
+	sum := sha256.Sum256([]byte(nodeName))
+	suffix := hex.EncodeToString(sum[:])[:8]
+	prefix := strings.TrimRight(nodeName[:labelValueCharactersLimit-len(suffix)-1], "-_.")
+
+	return prefix + "-" + suffix
+}
+
 func (c *FaultRemediationClient) launchLogCollectorJob(
 	ctx context.Context,
 	nodeName string,
@@ -472,7 +490,7 @@ func (c *FaultRemediationClient) launchLogCollectorJob(
 	}
 
 	labels := map[string]string{
-		logCollectorNodeLabel:  nodeName,
+		logCollectorNodeLabel:  logCollectorNodeLabelValue(nodeName),
 		logCollectorEventLabel: eventUID,
 	}
 	maps.Copy(job.Labels, labels)

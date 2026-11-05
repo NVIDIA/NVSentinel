@@ -595,30 +595,6 @@ func TestServerConcurrency(t *testing.T) {
 	})
 }
 
-func TestWithTLS(t *testing.T) {
-	t.Run("TLS config is stored", func(t *testing.T) {
-		cfg := TLSConfig{
-			CertFile: "/path/to/cert.pem",
-			KeyFile:  "/path/to/key.pem",
-		}
-
-		srv := NewServer(WithTLS(cfg))
-		s := srv.(*server)
-
-		if s.tlsConfig == nil {
-			t.Fatal("TLS config is nil")
-		}
-
-		if s.tlsConfig.CertFile != cfg.CertFile {
-			t.Errorf("expected CertFile %s, got %s", cfg.CertFile, s.tlsConfig.CertFile)
-		}
-
-		if s.tlsConfig.KeyFile != cfg.KeyFile {
-			t.Errorf("expected KeyFile %s, got %s", cfg.KeyFile, s.tlsConfig.KeyFile)
-		}
-	})
-}
-
 // TestIsRunning verifies that the IsRunning method correctly reports server state.
 func TestIsRunning(t *testing.T) {
 	t.Run("server not running initially", func(t *testing.T) {

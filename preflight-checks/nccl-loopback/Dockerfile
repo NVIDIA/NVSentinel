@@ -37,8 +37,13 @@ COPY preflight-checks/nccl-loopback/go.mod preflight-checks/nccl-loopback/go.sum
 
 WORKDIR /go/src/preflight-checks/nccl-loopback
 
+# Retry go mod download, because proxy.golang.org can close the connection.
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+    for attempt in 1 2 3; do \
+      go mod download && break; \
+      [ "$attempt" -lt 3 ] || exit 1; \
+      sleep $((attempt * 10)); \
+    done
 
 # Copy source code after go mod download
 COPY preflight-checks/nccl-loopback/ .
@@ -62,7 +67,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # We compile nccl-tests from source to get deterministic binary paths and
 # ensure version compatibility with the bundled NCCL.
 # =============================================================================
-FROM nvcr.io/nvidia/pytorch:26.09-py3@sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6 AS runtime
+FROM nvcr.io/nvidia/pytorch:26.10-py3@sha256:6d347d649d5dd108b4652f1b9cea6a3c859692ac408617a9108616da40e3da1f AS runtime
 
 ARG NCCL_TESTS_VERSION
 
@@ -75,6 +80,7 @@ RUN rm -f /usr/local/bin/uv /usr/local/bin/uvx
 #   - compute_89: L4, L40, L40S (Ada Lovelace)
 #   - compute_90: H100, H200 (Hopper)
 #   - compute_100: GB200, B100, B200 (Blackwell) - requires CUDA 12.8+
+#   - compute_120: RTX Pro 6000 (Blackwell) - requires CUDA 12.8+
 RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git /opt/nccl-tests \
     && cd /opt/nccl-tests \
     && make -j$(nproc) \
@@ -82,7 +88,8 @@ RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git 
         NVCC_GENCODE="-gencode=arch=compute_80,code=sm_80 \
                       -gencode=arch=compute_89,code=sm_89 \
                       -gencode=arch=compute_90,code=sm_90 \
-                      -gencode=arch=compute_100,code=sm_100"
+                      -gencode=arch=compute_100,code=sm_100 \
+                      -gencode=arch=compute_120,code=sm_120"
 
 WORKDIR /app
 

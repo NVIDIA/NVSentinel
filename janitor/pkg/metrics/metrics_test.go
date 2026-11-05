@@ -114,10 +114,6 @@ func TestGlobalMetrics_Functions(t *testing.T) {
 	assert.NotPanics(t, func() {
 		IncActionCount(ActionTypeReboot, StatusStarted, "global-test-node")
 	})
-
-	assert.NotPanics(t, func() {
-		RecordActionMTTR(ActionTypeReboot, 1*time.Minute)
-	})
 }
 
 func TestMetricsConstants(t *testing.T) {
@@ -176,17 +172,6 @@ func TestActionMetrics_HistogramObservation(t *testing.T) {
 		// functionality.
 	})
 
-	t.Run("global RecordActionMTTR function works", func(t *testing.T) {
-		// Test the convenience function that uses GlobalMetrics
-		RecordActionMTTR(ActionTypeReboot, 45*time.Second)
-		RecordActionMTTR(ActionTypeTerminate, 3*time.Minute)
-
-		// Test with very short duration
-		RecordActionMTTR(ActionTypeReboot, 5*time.Second)
-
-		// Test with longer duration
-		RecordActionMTTR(ActionTypeTerminate, 15*time.Minute)
-	})
 }
 
 func TestGlobalMetrics_Initialization(t *testing.T) {

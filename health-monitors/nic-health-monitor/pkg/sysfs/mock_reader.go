@@ -85,14 +85,6 @@ func (m *MockReader) IBPortPath(device string, port int) string {
 	return ""
 }
 
-func (m *MockReader) NetInterfacePath(iface string) string {
-	if m.NetIfacePathFn != nil {
-		return m.NetIfacePathFn(iface)
-	}
-
-	return ""
-}
-
 func (m *MockReader) ReadFile(path string) (string, error) {
 	if m.ReadFileFunc != nil {
 		return m.ReadFileFunc(path)
