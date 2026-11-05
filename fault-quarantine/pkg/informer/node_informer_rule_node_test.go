@@ -27,7 +27,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
@@ -65,13 +64,23 @@ func countNodeGets(clientset *fake.Clientset) int {
 	return count
 }
 
-func newOptOutRule(t *testing.T, ni *NodeInformer, expression string) *celrule.NodeRule {
+func newOptOutRule(t *testing.T, expression string) *celrule.NodeRule {
 	t.Helper()
 
-	rule, err := celrule.NewNodeRule(expression, celrule.NodeGetterFunc(ni.GetRuleNode))
+	rule, err := celrule.NewNodeRule(expression)
 	require.NoError(t, err)
 
 	return rule
+}
+
+// evaluateRuleNode evaluates rule against the node GetRuleNode returns.
+func evaluateRuleNode(ctx context.Context, ni *NodeInformer, rule *celrule.NodeRule, name string) (bool, error) {
+	node, err := ni.GetRuleNode(ctx, name)
+	if err != nil {
+		return false, err
+	}
+
+	return rule.Evaluate(node)
 }
 
 func retainedForRule(expression string, operational nodecache.Operational) nodecache.Keys {
@@ -117,8 +126,7 @@ func TestGetRuleNode_PrunedNodeKeepsNoRetainedKeys_EvaluatesOptOutGuards(t *test
 
 	ni, _ := newRuleNodeInformer(t, []*v1.Node{pruned})
 
-	matched, err := newOptOutRule(t, ni, optOutGuards).Evaluate(
-		context.Background(), &protos.HealthEvent{NodeName: "healthy-node"})
+	matched, err := evaluateRuleNode(context.Background(), ni, newOptOutRule(t, optOutGuards), "healthy-node")
 	require.NoError(t, err)
 	require.True(t, matched, "a node that opted out of nothing must match the opt-out guards")
 }
@@ -152,17 +160,14 @@ func TestGetRuleNode_RecoveryRead_PrunedCacheDoesNotHideOptOut(t *testing.T) {
 			},
 		},
 	})
-	rule := newOptOutRule(t, ni, optOutGuard)
+	rule := newOptOutRule(t, optOutGuard)
 
-	matched, err := rule.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "recovering-node"})
+	matched, err := evaluateRuleNode(context.Background(), ni, rule, "recovering-node")
 	require.NoError(t, err, "the pruned cache must still evaluate, not error")
 	require.True(t, matched, "the cache does not hold the opt-out, so the steady-state path matches")
 	require.Zero(t, countNodeGets(clientset), "the steady-state path must not read the API server")
 
-	matched, err = rule.Evaluate(
-		coldstart.WithRecoveryContext(context.Background()),
-		&protos.HealthEvent{NodeName: "recovering-node"},
-	)
+	matched, err = evaluateRuleNode(coldstart.WithRecoveryContext(context.Background()), ni, rule, "recovering-node")
 	require.NoError(t, err)
 	require.False(t, matched, "recovery must honour the opt-out on the live node, whatever the pruned cache holds")
 	require.Equal(t, 1, countNodeGets(clientset), "recovery must read the API server")
@@ -173,21 +178,21 @@ func TestGetRuleNode_RecoveryRead_UsesCurrentNode(t *testing.T) {
 		[]*v1.Node{{ObjectMeta: metav1.ObjectMeta{Name: "node-a", Labels: map[string]string{"state": "stale"}}}},
 		&v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", Labels: map[string]string{"state": "current"}}},
 	)
-	rule := newOptOutRule(t, ni, `node.metadata.labels["state"] == "current"`)
+	rule := newOptOutRule(t, `node.metadata.labels["state"] == "current"`)
 
-	matched, err := rule.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "node-a"})
+	matched, err := evaluateRuleNode(context.Background(), ni, rule, "node-a")
 	require.NoError(t, err)
 	require.False(t, matched, "normal evaluation must read the cache")
 	require.Zero(t, countNodeGets(clientset))
 
 	recoveryCtx := coldstart.WithRecoveryContext(context.Background())
 
-	matched, err = rule.Evaluate(recoveryCtx, &protos.HealthEvent{NodeName: "node-a"})
+	matched, err = evaluateRuleNode(recoveryCtx, ni, rule, "node-a")
 	require.NoError(t, err)
 	require.True(t, matched, "recovery must read the current node")
 	require.Equal(t, 1, countNodeGets(clientset))
 
-	matched, err = rule.Evaluate(recoveryCtx, &protos.HealthEvent{NodeName: "node-a"})
+	matched, err = evaluateRuleNode(recoveryCtx, ni, rule, "node-a")
 	require.NoError(t, err)
 	require.True(t, matched)
 	require.Equal(t, 1, countNodeGets(clientset), "recovery must reuse the snapshot for the event")

@@ -15,8 +15,6 @@
 package celrule
 
 import (
-	"context"
-	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -28,12 +26,6 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
-
-func nodeGetterFor(node *corev1.Node) NodeGetter {
-	return NodeGetterFunc(func(context.Context, string) (*corev1.Node, error) {
-		return node.DeepCopy(), nil
-	})
-}
 
 func TestNodeRuleWithMetadataAndSpecOnly(t *testing.T) {
 	node := &corev1.Node{
@@ -58,11 +50,10 @@ func TestNodeRuleWithMetadataAndSpecOnly(t *testing.T) {
 		 node.metadata.annotations["maintenance"] == "false" &&
 		 node.spec.unschedulable &&
 		 node.spec.taints.exists(t, t.key == "dedicated")`,
-		nodeGetterFor(node),
 	)
 	require.NoError(t, err)
 
-	matched, err := rule.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "slim-node"})
+	matched, err := rule.Evaluate(node)
 	require.NoError(t, err)
 	require.True(t, matched)
 }
@@ -71,18 +62,15 @@ func TestNodeRuleWithMetadataAndSpecOnly(t *testing.T) {
 // rule asking whether a node has any annotations at all would read the cache
 // instead of the node.
 func TestNodeRule_NodeWithNoAnnotations_ReportsThemAbsent(t *testing.T) {
-	rule, err := NewNodeRule(
-		`!has(node.metadata.annotations) && has(node.metadata.labels)`,
-		nodeGetterFor(&corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   "bare-node",
-				Labels: map[string]string{"kubernetes.io/hostname": "bare-node"},
-			},
-		}),
-	)
+	rule, err := NewNodeRule(`!has(node.metadata.annotations) && has(node.metadata.labels)`)
 	require.NoError(t, err)
 
-	matched, err := rule.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "bare-node"})
+	matched, err := rule.Evaluate(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "bare-node",
+			Labels: map[string]string{"kubernetes.io/hostname": "bare-node"},
+		},
+	})
 	require.NoError(t, err)
 	require.True(t, matched,
 		"a nil annotations map must stay absent while a populated labels map stays present")
@@ -94,33 +82,18 @@ func TestNodeRule_EmptyMaps_EvaluateGuards(t *testing.T) {
 	rule, err := NewNodeRule(
 		`!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels) &&
 		 !('quarantinedNodeUncordonedManually' in node.metadata.annotations)`,
-		nodeGetterFor(&corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:        "pruned-node",
-				Labels:      map[string]string{},
-				Annotations: map[string]string{},
-			},
-		}),
 	)
 	require.NoError(t, err)
 
-	matched, err := rule.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "pruned-node"})
+	matched, err := rule.Evaluate(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pruned-node",
+			Labels:      map[string]string{},
+			Annotations: map[string]string{},
+		},
+	})
 	require.NoError(t, err)
 	require.True(t, matched)
-}
-
-func TestNodeRule_GetterError_IsNotEvaluationError(t *testing.T) {
-	getErr := errors.New("node cache unavailable")
-	rule, err := NewNodeRule(`node.metadata.name == "node-a"`,
-		NodeGetterFunc(func(context.Context, string) (*corev1.Node, error) {
-			return nil, getErr
-		}))
-	require.NoError(t, err)
-
-	matched, err := rule.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "node-a"})
-	require.False(t, matched)
-	require.ErrorIs(t, err, getErr)
-	require.False(t, IsEvaluationError(err))
 }
 
 func TestEvaluate(t *testing.T) {
@@ -128,7 +101,7 @@ func TestEvaluate(t *testing.T) {
 	rule, err := NewHealthEventRule(expression)
 	require.NoError(t, err)
 
-	matched, err := rule.Evaluate(context.Background(), &protos.HealthEvent{
+	matched, err := rule.Evaluate(&protos.HealthEvent{
 		Agent:     "GPU",
 		CheckName: "XidError",
 		ErrorCode: []string{"31"},
@@ -136,7 +109,7 @@ func TestEvaluate(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, matched)
 
-	matched, err = rule.Evaluate(context.Background(), &protos.HealthEvent{
+	matched, err = rule.Evaluate(&protos.HealthEvent{
 		Agent:     "GPU",
 		CheckName: "XidError",
 		ErrorCode: []string{"50"},
@@ -149,7 +122,7 @@ func TestHealthEventRule_EvaluationError(t *testing.T) {
 	rule, err := NewHealthEventRule(`event.metadata["missing"].startsWith("value")`)
 	require.NoError(t, err)
 
-	_, err = rule.Evaluate(context.Background(), &protos.HealthEvent{})
+	_, err = rule.Evaluate(&protos.HealthEvent{})
 	require.Error(t, err)
 	require.True(t, IsEvaluationError(err))
 }
@@ -158,7 +131,7 @@ func TestHealthEventRule_NonBooleanResult(t *testing.T) {
 	rule, err := NewHealthEventRule(`event.agent`)
 	require.NoError(t, err)
 
-	_, err = rule.Evaluate(context.Background(), &protos.HealthEvent{Agent: "GPU"})
+	_, err = rule.Evaluate(&protos.HealthEvent{Agent: "GPU"})
 	require.ErrorContains(t, err, "expression did not return a boolean")
 	require.True(t, IsEvaluationError(err))
 }
@@ -167,7 +140,7 @@ func TestNewRule_InvalidExpression(t *testing.T) {
 	_, err := NewHealthEventRule("event.agent ==")
 	require.ErrorContains(t, err, "failed to parse expression")
 
-	_, err = NewNodeRule("invalid.expression", nodeGetterFor(&corev1.Node{}))
+	_, err = NewNodeRule("invalid.expression")
 	require.ErrorContains(t, err, "failed to check expression")
 }
 

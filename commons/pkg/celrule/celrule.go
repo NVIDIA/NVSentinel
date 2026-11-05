@@ -22,7 +22,6 @@
 package celrule
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -59,18 +58,6 @@ func IsEvaluationError(err error) bool {
 	return errors.As(err, &evalErr)
 }
 
-// NodeGetter returns the Node a Node rule is evaluated against.
-type NodeGetter interface {
-	GetNode(ctx context.Context, name string) (*corev1.Node, error)
-}
-
-// NodeGetterFunc adapts a function to a NodeGetter.
-type NodeGetterFunc func(ctx context.Context, name string) (*corev1.Node, error)
-
-func (f NodeGetterFunc) GetNode(ctx context.Context, name string) (*corev1.Node, error) {
-	return f(ctx, name)
-}
-
 type HealthEventRule struct {
 	expression string
 	program    cel.Program
@@ -79,7 +66,6 @@ type HealthEventRule struct {
 type NodeRule struct {
 	expression string
 	program    cel.Program
-	nodeGetter NodeGetter
 }
 
 // NewHealthEventRule compiles a HealthEvent rule.
@@ -98,7 +84,7 @@ func NewHealthEventRule(expression string) (*HealthEventRule, error) {
 }
 
 // Evaluate evaluates the CEL expression against the provided HealthEvent.
-func (he *HealthEventRule) Evaluate(_ context.Context, event *protos.HealthEvent) (bool, error) {
+func (he *HealthEventRule) Evaluate(event *protos.HealthEvent) (bool, error) {
 	obj, err := RoundTrip(event)
 	if err != nil {
 		return false, &EvaluationError{err: fmt.Errorf("error roundtripping event: %w", err)}
@@ -109,8 +95,8 @@ func (he *HealthEventRule) Evaluate(_ context.Context, event *protos.HealthEvent
 	})
 }
 
-// NewNodeRule compiles a Node rule that reads its Node from nodeGetter.
-func NewNodeRule(expression string, nodeGetter NodeGetter) (*NodeRule, error) {
+// NewNodeRule compiles a Node rule.
+func NewNodeRule(expression string) (*NodeRule, error) {
 	slog.Info("Creating NodeRuleEvaluator", "expression", expression)
 
 	program, err := compile(NodeVar, expression)
@@ -121,19 +107,12 @@ func NewNodeRule(expression string, nodeGetter NodeGetter) (*NodeRule, error) {
 	return &NodeRule{
 		expression: expression,
 		program:    program,
-		nodeGetter: nodeGetter,
 	}, nil
 }
 
-// Evaluate evaluates the CEL expression against the metadata and spec of the node
-// of the event.
-func (nm *NodeRule) Evaluate(ctx context.Context, event *protos.HealthEvent) (bool, error) {
-	slog.Info("Evaluating NodeRuleEvaluator for node", "node", event.NodeName)
-
-	node, err := nm.nodeGetter.GetNode(ctx, event.NodeName)
-	if err != nil {
-		return false, fmt.Errorf("failed to get node metadata: %w", err)
-	}
+// Evaluate evaluates the CEL expression against the metadata and spec of node.
+func (nm *NodeRule) Evaluate(node *corev1.Node) (bool, error) {
+	slog.Info("Evaluating NodeRuleEvaluator for node", "node", node.Name)
 
 	nodeInfo, err := NodeToUnstructured(node)
 	if err != nil {

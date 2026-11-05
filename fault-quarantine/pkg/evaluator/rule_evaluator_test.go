@@ -26,7 +26,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
@@ -212,7 +211,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				t.Fatalf("NodeInformer failed to sync")
 			}
 
-			evaluator, err := celrule.NewNodeRule(tt.expression, celrule.NodeGetterFunc(nodeInformer.GetRuleNode))
+			evaluator, err := newNodeRule(tt.expression, nodeInformer)
 			if err != nil && !tt.expectError {
 				t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
 			}

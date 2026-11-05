@@ -23,7 +23,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 )
 
-// RuleEvaluator is a compiled rule from commons/pkg/celrule.
+// RuleEvaluator evaluates a compiled rule from commons/pkg/celrule.
 type RuleEvaluator interface {
 	Evaluate(context.Context, *protos.HealthEvent) (bool, error)
 }
