@@ -32,7 +32,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -234,7 +233,7 @@ func TestE2E_CordonPatchConnectionAlwaysReset_GivesUpAfterBackoff(t *testing.T) 
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
-	assert.True(t, utilnet.IsConnectionReset(err), "the connection error should be returned, got %v", err)
+	assert.True(t, kubeclient.IsRetryableNodePatchError(err), "the connection error should be returned, got %v", err)
 	assert.EqualValues(t, backoff.Steps, proxy.patches.Load(), "PATCH requests for the node")
 	assert.GreaterOrEqual(t, elapsed, budget)
 	assert.Less(t, elapsed, time.Duration(float64(budget)*(1+backoff.Jitter))+5*time.Second)
