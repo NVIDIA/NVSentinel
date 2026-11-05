@@ -17,6 +17,7 @@ package gpuservices
 import (
 	"maps"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 )
@@ -218,5 +219,73 @@ func TestRegistry_GPUOperator_ListsTheOperandsOfBothModes(t *testing.T) {
 
 	if spec.TeardownTimeout != 5*time.Minute || spec.RestoreTimeout != 10*time.Minute {
 		t.Errorf("Expected teardown/restore timeouts 5m/10m, got %v/%v", spec.TeardownTimeout, spec.RestoreTimeout)
+	}
+}
+
+func TestWithGPUClients(t *testing.T) {
+	gpuOperator, err := NewManager("gpu-operator", ManagerSpec{})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	registryApps := slices.Clone(Registry["gpu-operator"].Apps)
+
+	t.Run("adds the GPU clients app without changing the registry", func(t *testing.T) {
+		got := WithGPUClients(gpuOperator)
+
+		if want := append(slices.Clone(registryApps), GPUClientsApp()); !reflect.DeepEqual(got.Spec.Apps, want) {
+			t.Errorf("Apps = %+v, want %+v", got.Spec.Apps, want)
+		}
+
+		if !reflect.DeepEqual(Registry["gpu-operator"].Apps, registryApps) {
+			t.Errorf("registry apps changed: %+v", Registry["gpu-operator"].Apps)
+		}
+
+		if got.Spec.TeardownTimeout != gpuOperator.Spec.TeardownTimeout || got.Spec.RestoreTimeout != gpuOperator.Spec.RestoreTimeout {
+			t.Errorf("timeouts changed: %v/%v", got.Spec.TeardownTimeout, got.Spec.RestoreTimeout)
+		}
+	})
+
+	t.Run("does not add the app twice", func(t *testing.T) {
+		once := WithGPUClients(gpuOperator)
+		if twice := WithGPUClients(once); !reflect.DeepEqual(twice, once) {
+			t.Errorf("WithGPUClients(WithGPUClients(m)) = %+v, want %+v", twice, once)
+		}
+	})
+
+	t.Run("gives a manager without apps the gpu-operator timeouts", func(t *testing.T) {
+		got := WithGPUClients(Manager{})
+
+		if !reflect.DeepEqual(got.Spec.Apps, []AppSpec{GPUClientsApp()}) {
+			t.Errorf("Apps = %+v, want only the GPU clients app", got.Spec.Apps)
+		}
+
+		if got.Spec.TeardownTimeout != gpuOperator.Spec.TeardownTimeout || got.Spec.RestoreTimeout != gpuOperator.Spec.RestoreTimeout {
+			t.Errorf("timeouts = %v/%v, want %v/%v", got.Spec.TeardownTimeout, got.Spec.RestoreTimeout,
+				gpuOperator.Spec.TeardownTimeout, gpuOperator.Spec.RestoreTimeout)
+		}
+	})
+}
+
+func TestAppSpecIsGPUClients(t *testing.T) {
+	testCases := []struct {
+		name string
+		app  AppSpec
+		want bool
+	}{
+		{name: "GPU clients app", app: GPUClientsApp(), want: true},
+		{
+			name: "custom app on the same node label with a pod selector",
+			app:  AppSpec{AppSelector: map[string]string{"app": "my-agent"}, NodeLabel: GPUClientsNodeLabel},
+		},
+		{name: "operand app", app: Registry["gpu-operator"].Apps[0]},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.app.IsGPUClients(); got != tc.want {
+				t.Errorf("IsGPUClients() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

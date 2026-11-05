@@ -54,7 +54,7 @@ RUN cd health-monitors/syslog-health-monitor && \
     CGO_ENABLED=1 go build -tags "${BUILD_TAGS}" -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o syslog-health-monitor main.go
 
 # Runtime stage - using Debian slim for systemd journal support
-FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS runtime
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime
 
 # Install required system libraries for systemd journal
 RUN apt-get update && apt-get install -y --no-install-recommends \

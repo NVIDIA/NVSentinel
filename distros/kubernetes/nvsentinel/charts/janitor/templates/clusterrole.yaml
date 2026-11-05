@@ -39,6 +39,12 @@ rules:
     - watch
     - patch
 - apiGroups:
+    - apps
+  resources:
+    - daemonsets
+  verbs:
+    - get
+- apiGroups:
     - batch
   resources:
     - jobs
