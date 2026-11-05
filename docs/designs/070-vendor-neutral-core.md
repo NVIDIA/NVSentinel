@@ -108,7 +108,7 @@ The core needs more than Kubernetes and a datastore:
 | cert-manager or the OpenShift service CA | lifecycle-manager or the preflight webhook is enabled | The `cert-manager.io/inject-ca-from` annotation sets the webhook CA bundle |
 | OpenTelemetry collector | Tracing is enabled | none |
 
-No chart accepts certificates from another source, for example a Secret that the user creates or a managed certificate service.
+Apart from the OpenShift service CA for the webhooks, no chart accepts certificates from another source, for example a Secret that the user creates.
 
 ### Existing extension points
 
@@ -227,7 +227,7 @@ A follow-up ADR selects one neutral domain for the CRD groups, labels, and annot
 
 ### Core works without vendor software
 
-The core installs and runs with its default values on a cluster with no vendor software and with a datastore that the user supplies. It then detects, quarantines, drains, and remediates a fault. A CI job proves this with a vendor-neutral detection plugin, such as kubernetes-object-monitor, and a vendor-neutral remediation plugin, such as the janitor `kind` provider.
+The core installs and runs with its default values on a cluster with no vendor software and with a datastore that the user supplies. It then detects, quarantines, drains, and remediates a fault. A new CI job proves this with a vendor-neutral detection plugin, such as kubernetes-object-monitor, and a vendor-neutral remediation plugin, such as the janitor `kind` provider.
 
 ## Implementation
 
@@ -281,7 +281,7 @@ Write a follow-up ADR for each of these:
 
 Move each "moves to a plugin" item into its own module and chart. When a module is split, add a lint rule that stops the core part from importing the plugin module. The umbrella chart installs the NVIDIA plugins by default, so existing installations keep their behaviour. Their images and subcharts change.
 
-A new core-only profile installs no plugin, no MongoDB subchart, and no `PodMonitor`. It uses the PostgreSQL subchart, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or an external PostgreSQL or MongoDB database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer. The CI job in [Core works without vendor software](#core-works-without-vendor-software) installs this profile.
+A new core-only profile installs no vendor-specific plugin, no MongoDB subchart, and no `PodMonitor`. It uses the PostgreSQL subchart, the Kubernetes datastore ([#2015](https://github.com/NVIDIA/NVSentinel/pull/2015)), or an external PostgreSQL or MongoDB database that the user supplies. MongoDB stays a supported datastore. After ADR-066 is implemented, the profile includes the analyzer with PostgreSQL or MongoDB. With the Kubernetes datastore, the profile runs without the analyzer. The CI job in [Core works without vendor software](#core-works-without-vendor-software) installs this profile.
 
 #### Phase 5: Remove deprecated names
 
