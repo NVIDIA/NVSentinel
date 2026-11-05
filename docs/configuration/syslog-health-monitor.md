@@ -51,6 +51,17 @@ syslog-health-monitor:
 
 Change it only when your distribution stores the journal elsewhere. The DaemonSet mounts this path into the pod, so a wrong value leaves the monitor with no journal to read.
 
+`journalHostPath` is the directory that *contains* `journal/`: it is mounted at `/nvsentinel/var/log`, and the monitor reads `/nvsentinel/var/log/journal/`. Pointing it at the journal directory itself leaves the monitor with nothing to read.
+
+To mount only the journal directory, set `journalDirectoryHostPath` instead. It is mounted directly at `/nvsentinel/var/log/journal`, and `journalHostPath` is then ignored:
+
+```yaml
+syslog-health-monitor:
+  journalDirectoryHostPath: /var/log/journal
+```
+
+Use this where the parent directory cannot be mounted as-is. For example, the vcluster syncer rewrites a hostPath of exactly `/var/log` to a per-tenant directory, so the default mount points at a directory with no journal; `/var/log/journal` is passed through unchanged. The directory must exist on every node, or the pod does not start; mounting the parent directory (the default) avoids that on nodes without a persistent journal. It applies to regular mode only; kata mode always mounts `/var/log/journal`.
+
 ## Boot Lookback Window
 
 How far back the monitor scans the journal after a node reboot.

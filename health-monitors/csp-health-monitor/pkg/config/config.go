@@ -21,6 +21,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	akamaiapi "github.com/nvidia/nvsentinel/commons/pkg/akamai"
 	lambdaapi "github.com/nvidia/nvsentinel/commons/pkg/lambda"
 )
 
@@ -47,6 +48,7 @@ type Config struct {
 	GCP                                       GCPConfig    `toml:"gcp"`
 	AWS                                       AWSConfig    `toml:"aws"`
 	Lambda                                    LambdaConfig `toml:"lambda"`
+	Akamai                                    AkamaiConfig `toml:"akamai"`
 }
 
 // GCPConfig holds GCP specific configuration.
@@ -73,6 +75,13 @@ type LambdaConfig struct {
 	APIEndpoint            string `toml:"apiEndpoint"`
 	WorkspaceID            string `toml:"workspaceId"`        // optional; defaults to the API key's own workspace
 	MockEventsFilePath     string `toml:"mockEventsFilePath"` // dev/test only; if set, skips real API
+	PollingIntervalSeconds int    `toml:"pollingIntervalSeconds"`
+}
+
+// AkamaiConfig holds Akamai Cloud specific configuration for the CSP health monitor.
+type AkamaiConfig struct {
+	Enabled                bool   `toml:"enabled"`
+	APIEndpoint            string `toml:"apiEndpoint"` // optional; defaults to the production API
 	PollingIntervalSeconds int    `toml:"pollingIntervalSeconds"`
 }
 
@@ -189,7 +198,7 @@ func validateGeneralConfig(cfg *Config) error {
 }
 
 // validateCSPConfig checks per-CSP polling intervals, Lambda event-source
-// exclusivity, and that at most one CSP is enabled.
+// exclusivity, the Akamai endpoint, and that at most one CSP is enabled.
 func validateCSPConfig(cfg *Config) error {
 	if err := validateCSPPollingIntervals(cfg); err != nil {
 		return err
@@ -200,6 +209,10 @@ func validateCSPConfig(cfg *Config) error {
 	}
 
 	if err := validateLambdaWorkspaceID(cfg); err != nil {
+		return err
+	}
+
+	if err := validateAkamaiEndpoint(cfg); err != nil {
 		return err
 	}
 
@@ -231,6 +244,29 @@ func validateCSPPollingIntervals(cfg *Config) error {
 			minCSPSpecificPollingIntervalSeconds,
 			cfg.Lambda.PollingIntervalSeconds,
 		)
+	}
+
+	if cfg.Akamai.Enabled && cfg.Akamai.PollingIntervalSeconds < minCSPSpecificPollingIntervalSeconds {
+		return fmt.Errorf(
+			"akamai.pollingIntervalSeconds must be at least %d seconds (got %d)",
+			minCSPSpecificPollingIntervalSeconds,
+			cfg.Akamai.PollingIntervalSeconds,
+		)
+	}
+
+	return nil
+}
+
+// validateAkamaiEndpoint checks that the optional API endpoint is a host that
+// may receive the credential, so a typo fails at startup rather than on the
+// first poll.
+func validateAkamaiEndpoint(cfg *Config) error {
+	if !cfg.Akamai.Enabled {
+		return nil
+	}
+
+	if _, err := akamaiapi.NormalizeEndpoint("akamai.apiEndpoint", cfg.Akamai.APIEndpoint); err != nil {
+		return fmt.Errorf("akamai: %w", err)
 	}
 
 	return nil
@@ -284,9 +320,13 @@ func validateSingleCSPEnabled(cfg *Config) error {
 		enabledCount++
 	}
 
+	if cfg.Akamai.Enabled {
+		enabledCount++
+	}
+
 	if enabledCount > 1 {
 		return fmt.Errorf(
-			"multiple CSPs enabled: only one of GCP, AWS, or Lambda can be enabled at a time in the configuration",
+			"multiple CSPs enabled: only one of GCP, AWS, Lambda, or Akamai can be enabled at a time in the configuration",
 		)
 	}
 
