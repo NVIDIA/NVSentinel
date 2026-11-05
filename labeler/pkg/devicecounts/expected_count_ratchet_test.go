@@ -26,8 +26,8 @@ import (
 
 // These tests play #1914 with the GPU class as the labeler chart ships it: a
 // fleet of 287 GB200 nodes whose device plugin and GFD report 4 GPUs, two of
-// which are switched to MIG, where GFD reports 8. Each test ends with the
-// operator's relearn from ADR-070.
+// which are switched to MIG, where GFD reports 8. A test that needs a relearn
+// ends with the operator's relearn from ADR-070.
 
 const (
 	ratchetFleetSize    = 287
@@ -35,6 +35,14 @@ const (
 	ratchetMIGProduct   = "NVIDIA-GB200-MIG-3g.93gb"
 	ratchetRelearnID    = "2026-11-05-mig"
 	ratchetAnnotation   = "nvsentinel.dgxc.nvidia.com/gpu.count.relearn"
+
+	// The partition annotation and the partitions of the gfd source for the
+	// plain and the MIG product.
+	ratchetPartitionAnnotation = "nvsentinel.dgxc.nvidia.com/gpu.count.partition"
+	ratchetPlainPartition      = "source=gfd|node.kubernetes.io/instance-type=gb200|nvidia.com/gpu.product=" +
+		ratchetPlainProduct
+	ratchetMIGPartition = "source=gfd|node.kubernetes.io/instance-type=gb200|nvidia.com/gpu.product=" +
+		ratchetMIGProduct
 )
 
 // ratchetRelearnConfig returns the GPU class with a relearn ID, loaded from the
@@ -196,6 +204,25 @@ func TestExpectedCountRatchet_MIGRegroupKeepsTheHigherCountUntilARelearn(t *test
 	for _, node := range nodes {
 		require.False(t, cache.CalculateAndSetDeviceCountLabels(t.Context(), node.DeepCopy()), node.Name)
 	}
+
+	// MIG is turned off on the two nodes again. They come back to the plain
+	// partition with the 8 that the relearn certified in their MIG partition.
+	// That label was learned in another partition, so it counts neither for
+	// them nor for the other nodes: the two nodes relearn 4 under the same ID
+	// and the 285 others stay at 4.
+	for _, node := range nodes[:2] {
+		ratchetSetGFD(node, ratchetPlainProduct, 4)
+	}
+
+	nodes = ratchetSweep(t, newTestManager(t, ratchetRelearnConfig(t, ratchetRelearnID)), nodes)
+
+	require.Zero(t, ratchetMismatches(nodes))
+
+	for _, node := range nodes {
+		require.Equal(t, "4", node.Labels[testGPUCountExpectedLabel], node.Name)
+		require.Equal(t, ratchetRelearnID+"/4", node.Annotations[ratchetAnnotation], node.Name)
+		require.Equal(t, ratchetPlainPartition, node.Annotations[ratchetPartitionAnnotation], node.Name)
+	}
 }
 
 // Removing the expected label is the relearn path ADR-043 names. The labeler
@@ -232,10 +259,12 @@ func TestExpectedCountRatchet_RemovedLabelIsRestoredUntilARelearn(t *testing.T) 
 	require.Equal(t, ratchetFleetSize-12, ratchetMismatches(nodes))
 }
 
-// No transient is needed. When MIG is turned off cleanly, the two nodes bring
-// their expected count of 8 into the plain partition and it spreads to every
-// node there.
-func TestExpectedCountRatchet_CleanMIGDisableSpreadsTheMIGCountUntilARelearn(t *testing.T) {
+// No transient is needed for the other path. When MIG is turned off cleanly,
+// the two nodes come back to the plain partition with the expected count of 8
+// that they learned in their MIG partition. That label does not count in the
+// plain partition, so the two nodes relearn 4 and no other node changes, with
+// no relearn ID.
+func TestExpectedCountRatchet_CleanMIGDisableKeepsTheMIGCountInItsPartition(t *testing.T) {
 	nodes := ratchetFleet(ratchetFleetSize, 4)
 	for _, node := range nodes[:2] {
 		ratchetSetGFD(node, ratchetMIGProduct, 8)
@@ -246,20 +275,23 @@ func TestExpectedCountRatchet_CleanMIGDisableSpreadsTheMIGCountUntilARelearn(t *
 	require.Zero(t, ratchetMismatches(nodes))
 	require.Equal(t, "8", nodes[0].Labels[testGPUCountExpectedLabel])
 
+	learnedIn := nodes[0].Annotations[ratchetPartitionAnnotation]
+
 	for _, node := range nodes[:2] {
 		ratchetSetGFD(node, ratchetPlainProduct, 4)
 	}
 
 	nodes = ratchetSweep(t, manager, nodes)
 
-	require.Equal(t, ratchetFleetSize, ratchetMismatches(nodes))
+	require.Zero(t, ratchetMismatches(nodes))
 
 	for _, node := range nodes {
-		require.Equal(t, "4", node.Labels[testGPUCountCurrentLabel], node.Name)
-		require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel], node.Name)
+		require.Equal(t, "4", node.Labels[testGPUCountExpectedLabel], node.Name)
 	}
 
-	nodes = ratchetSweep(t, newTestManager(t, ratchetRelearnConfig(t, ratchetRelearnID)), nodes)
+	require.Equal(t, ratchetMIGPartition, learnedIn)
 
-	require.Zero(t, ratchetMismatches(nodes))
+	for _, node := range nodes {
+		require.Equal(t, ratchetPlainPartition, node.Annotations[ratchetPartitionAnnotation], node.Name)
+	}
 }

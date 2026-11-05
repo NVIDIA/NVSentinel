@@ -50,6 +50,14 @@ const (
 	ratchetRelearnID     = "2026-11-05-mig"
 	ratchetAnnotation    = "nvsentinel.dgxc.nvidia.com/gpu.count.relearn"
 
+	// The partition annotation and the partitions of the gfd source for the
+	// plain and the MIG product.
+	ratchetPartitionAnnotation = "nvsentinel.dgxc.nvidia.com/gpu.count.partition"
+	ratchetPlainPartition      = "source=gfd|node.kubernetes.io/instance-type=gb200|nvidia.com/gpu.product=" +
+		ratchetPlain
+	ratchetMIGPartition = "source=gfd|node.kubernetes.io/instance-type=gb200|nvidia.com/gpu.product=" +
+		ratchetMIG
+
 	// Every informer Add event also reconciles its node with a fresh cache over
 	// all nodes, so a small fleet keeps the startup work short.
 	ratchetFleetSize = 40
@@ -406,5 +414,101 @@ func TestExpectedCountRatchet_Envtest_MIGRegroupUntilARelearn(t *testing.T) {
 
 	require.Empty(t, stopRecording())
 	require.Equal(t, ratchetTally{plain: map[string]int{"3/4": ratchetPlains}, mig: map[string]int{"8/8": 2}},
+		ratchetCount(t, cli))
+}
+
+// ratchetRequirePartitions checks the partition annotation of every node.
+func ratchetRequirePartitions(t *testing.T, cli kubernetes.Interface, partitions map[string]string) {
+	t.Helper()
+
+	nodes, err := cli.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+
+	for _, node := range nodes.Items {
+		want := ratchetPlainPartition
+		if partition, ok := partitions[node.Name]; ok {
+			want = partition
+		}
+
+		require.Equal(t, want, node.Annotations[ratchetPartitionAnnotation], node.Name)
+	}
+}
+
+// The partition annotation keeps each expected count in the partition where it
+// was learned. Two nodes of the GB200 fleet are switched to MIG and back, with
+// no relearn ID. In their MIG partition they learn 8. When MIG is turned off
+// they come back to the plain partition with that 8 on their label, and it
+// does not count there: the two nodes relearn 4 in the same patch that moves
+// their annotation, no plain node is written, and restarts write nothing.
+func TestExpectedCountRatchet_Envtest_MIGToggleKeepsEachCountInItsPartition(t *testing.T) {
+	cli := ratchetEnvtestClient(t)
+	ratchetCreateFleet(t, cli)
+
+	_, stop := ratchetStart(t, cli, ratchetGPUConfig(t, ""))
+	ratchetWaitFor(t, cli, "every node learns 4", func(c ratchetTally) bool {
+		return c.plain["4/4"] == ratchetFleetSize
+	})
+
+	for i := range 2 {
+		ratchetSetGFD(t, cli, ratchetNodeName(i), ratchetMIG, 8)
+	}
+
+	ratchetWaitFor(t, cli, "the MIG nodes learn 8 in their partition", func(c ratchetTally) bool {
+		return c.mig["8/8"] == 2 && c.plain["4/4"] == ratchetPlains
+	})
+
+	stop()
+
+	stopRecording := ratchetRecordWrites(t, cli)
+	labeler, stop := ratchetStart(t, cli, ratchetGPUConfig(t, ""))
+	require.Empty(t, stopRecording(), "a restart writes nothing")
+
+	// MIG is turned off on the two nodes. They report 4 GPUs under the plain
+	// product and still carry the 8 they learned as MIG nodes.
+	stopRecording = ratchetRecordWrites(t, cli)
+
+	for i := range 2 {
+		ratchetSetGFD(t, cli, ratchetNodeName(i), ratchetPlain, 4)
+	}
+
+	ratchetWaitFor(t, cli, "the two nodes relearn 4", func(c ratchetTally) bool {
+		return c.plain["4/4"] == ratchetFleetSize
+	})
+	time.Sleep(ratchetSettle)
+
+	writes := stopRecording()
+
+	for i := 2; i < ratchetFleetSize; i++ {
+		require.NotContains(t, writes, ratchetNodeName(i), "a node that stayed plain is written")
+	}
+
+	// Every version of the two nodes carried its expected label together with
+	// the partition it was learned in: 8 from the MIG partition, 4 from the
+	// plain one.
+	learnedIn := map[string]string{"8": ratchetMIGPartition, "4": ratchetPlainPartition}
+
+	for name, versions := range writes {
+		require.Contains(t, []string{ratchetNodeName(0), ratchetNodeName(1)}, name)
+
+		for _, version := range versions {
+			expected := version.Labels[ratchetExpectedLabel]
+			require.Equal(t, learnedIn[expected], version.Annotations[ratchetPartitionAnnotation],
+				"%s: expected=%s", name, expected)
+		}
+	}
+
+	ratchetRequirePartitions(t, cli, nil)
+	require.Eventually(t, func() bool {
+		cached, err := labeler.getNodeFromCache(ratchetNodeName(0))
+		return err == nil && cached.Annotations[ratchetPartitionAnnotation] == ratchetPlainPartition
+	}, ratchetWait, 200*time.Millisecond, "the node cache keeps the partition annotation")
+
+	stop()
+
+	stopRecording = ratchetRecordWrites(t, cli)
+	ratchetStart(t, cli, ratchetGPUConfig(t, ""))
+
+	require.Empty(t, stopRecording(), "a restart writes nothing")
+	require.Equal(t, ratchetTally{plain: map[string]int{"4/4": ratchetFleetSize}, mig: map[string]int{}},
 		ratchetCount(t, cli))
 }

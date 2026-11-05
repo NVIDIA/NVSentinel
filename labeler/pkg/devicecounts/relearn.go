@@ -71,22 +71,39 @@ func relearnMarker(relearnID, expected string) string {
 }
 
 // expectedEvidence returns the expected label of node when it may raise a
-// learned expected count. Without a relearn ID that is any label. With one, it
-// is a label whose relearn annotation records that ID and that value, so a
+// learned expected count, and whether the label was ignored because it was
+// learned in another partition than the one observation puts the node in.
+//
+// A label counts only in the partition it was learned in (learnedInPartition),
+// so a node that changes partition, for example when MIG is turned on or off,
+// does not bring its count into the new partition. Under a relearn ID a label
+// also needs a relearn annotation that records that ID and that value, so a
 // value written before the relearn, by an older labeler, or by hand does not
 // count until the labeler writes it again.
-func (class compiledClass) expectedEvidence(node *corev1.Node) string {
+func (class compiledClass) expectedEvidence(node *corev1.Node, observation countObservation) (string, bool) {
 	label := node.Labels[class.Labels.Expected]
-	if class.RelearnID == "" || node.Annotations[class.relearnAnnotation] == relearnMarker(class.RelearnID, label) {
-		return label
+	if label == "" {
+		return "", false
 	}
 
-	return ""
+	if !class.learnedInPartition(node, observation) {
+		return "", true
+	}
+
+	if class.RelearnID != "" && node.Annotations[class.relearnAnnotation] != relearnMarker(class.RelearnID, label) {
+		return "", false
+	}
+
+	return label, false
 }
 
-// setExpected writes the expected label of the class and, under a relearn ID,
-// the annotation that certifies it. The caller writes both in one patch.
-func (class compiledClass) setExpected(node *corev1.Node, expected int) bool {
+// setExpected writes the expected label of the class, the partition annotation
+// that records where it was learned, and, under a relearn ID, the annotation
+// that certifies it. The caller writes them in one patch.
+//
+// A node without a partition keeps the partition annotation it has, because its
+// label still belongs to the partition it was learned in.
+func (class compiledClass) setExpected(node *corev1.Node, expected int, observation countObservation) bool {
 	value := strconv.Itoa(expected)
 	changed := false
 
@@ -100,21 +117,30 @@ func (class compiledClass) setExpected(node *corev1.Node, expected int) bool {
 		changed = true
 	}
 
-	if class.RelearnID == "" {
-		return changed
+	if observation.hasPartition && setAnnotation(node, class.partitionAnnotation, observation.partitionKey) {
+		changed = true
 	}
 
-	marker := relearnMarker(class.RelearnID, value)
-	if node.Annotations[class.relearnAnnotation] != marker {
-		if node.Annotations == nil {
-			node.Annotations = make(map[string]string)
-		}
-
-		node.Annotations[class.relearnAnnotation] = marker
+	if class.RelearnID != "" && setAnnotation(node, class.relearnAnnotation, relearnMarker(class.RelearnID, value)) {
 		changed = true
 	}
 
 	return changed
+}
+
+// setAnnotation sets an annotation on node and reports whether it changed.
+func setAnnotation(node *corev1.Node, key, value string) bool {
+	if current, ok := node.Annotations[key]; ok && current == value {
+		return false
+	}
+
+	if node.Annotations == nil {
+		node.Annotations = make(map[string]string)
+	}
+
+	node.Annotations[key] = value
+
+	return true
 }
 
 // valueCertified reports whether the expected label of the class is the value
@@ -126,7 +152,7 @@ func (class compiledClass) valueCertified(node *corev1.Node) bool {
 }
 
 // RelearnAnnotationKeys returns the relearn annotations of the classes that
-// have a relearn ID. The node cache keeps them.
+// have a relearn ID. EvidenceAnnotationKeys includes them for the node cache.
 func (m *Manager) RelearnAnnotationKeys() []string {
 	if !m.Enabled() {
 		return nil

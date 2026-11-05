@@ -31,8 +31,12 @@ import (
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
 
-// hardwareKeySeparator joins the sorted values of a grouping expression.
-const hardwareKeySeparator = "+"
+const (
+	// hardwareKeySeparator joins the sorted values of a grouping expression.
+	hardwareKeySeparator = "+"
+	// partitionKeySeparator joins the parts of a partition key.
+	partitionKeySeparator = "|"
+)
 
 // observe evaluates one class for one node.
 func (m *Manager) observe(
@@ -170,14 +174,14 @@ func sourcePartitionKey(
 	resourceSlices []*resourcev1.ResourceSlice,
 ) (string, bool) {
 	parts := make([]string, 0, len(source.GroupingLabels)+2)
-	parts = append(parts, "source="+source.Name)
+	parts = append(parts, sourcePartitionPrefix(source.Name))
 
 	for _, label := range source.GroupingLabels {
 		parts = append(parts, label+"="+node.Labels[label])
 	}
 
 	if source.groupingProgram == nil {
-		return strings.Join(parts, "|"), true
+		return strings.Join(parts, partitionKeySeparator), true
 	}
 
 	hardware, err := evaluateGrouping(ctx, source.groupingProgram, node, resourceSlices)
@@ -190,7 +194,13 @@ func sourcePartitionKey(
 
 	parts = append(parts, "hardware="+hardware)
 
-	return strings.Join(parts, "|"), true
+	return strings.Join(parts, partitionKeySeparator), true
+}
+
+// sourcePartitionPrefix is the first part of the partition key of every node
+// that a source counts.
+func sourcePartitionPrefix(sourceName string) string {
+	return "source=" + sourceName
 }
 
 // evaluateGrouping returns the sorted, de-duplicated values of a grouping

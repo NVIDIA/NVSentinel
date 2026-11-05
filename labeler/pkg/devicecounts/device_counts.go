@@ -100,6 +100,9 @@ type compiledClass struct {
 	ClassConfig
 	program cel.Program
 	sources []compiledSource
+	// partitionAnnotation is the annotation that records the partition in
+	// which the expected label was learned.
+	partitionAnnotation string
 	// relearnAnnotation is the annotation that certifies the expected label
 	// while RelearnID is set, and empty otherwise.
 	relearnAnnotation string
@@ -239,6 +242,11 @@ func NewManager(config Config) (*Manager, error) {
 				i, compiledClass.relearnAnnotation)
 		}
 
+		if slices.Contains(manager.EvidenceAnnotationKeys(), compiledClass.partitionAnnotation) {
+			return nil, fmt.Errorf("device-count class at index %d: another class already uses partition annotation %q",
+				i, compiledClass.partitionAnnotation)
+		}
+
 		manager.addClass(compiledClass)
 	}
 
@@ -352,7 +360,7 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 			needsUpdate = true
 		}
 
-		if class.setExpected(node, expected) {
+		if class.setExpected(node, expected, observation) {
 			needsUpdate = true
 		}
 	}
@@ -465,9 +473,10 @@ func compileDeviceCountClass(
 		}
 
 		return compiledClass{
-			ClassConfig:       classConfig,
-			sources:           sources,
-			relearnAnnotation: relearnAnnotation(classConfig),
+			ClassConfig:         classConfig,
+			sources:             sources,
+			partitionAnnotation: PartitionAnnotationKey(classConfig.Name),
+			relearnAnnotation:   relearnAnnotation(classConfig),
 		}, true, nil
 	}
 
@@ -478,9 +487,10 @@ func compileDeviceCountClass(
 	}
 
 	return compiledClass{
-		ClassConfig:       classConfig,
-		program:           program,
-		relearnAnnotation: relearnAnnotation(classConfig),
+		ClassConfig:         classConfig,
+		program:             program,
+		partitionAnnotation: PartitionAnnotationKey(classConfig.Name),
+		relearnAnnotation:   relearnAnnotation(classConfig),
 	}, true, nil
 }
 
@@ -598,6 +608,10 @@ func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
 
 	if err := validateRelearnID(index, classConfig); err != nil {
 		return fmt.Errorf("validate relearn ID: %w", err)
+	}
+
+	if err := validatePartitionAnnotation(index, classConfig); err != nil {
+		return fmt.Errorf("validate partition annotation: %w", err)
 	}
 
 	for j, override := range classConfig.ExpectedCountOverrides {
@@ -831,8 +845,16 @@ func (p *ReconcileCache) expectedDeviceCount(
 
 	// Learned expected counts can rise from current observations or previously
 	// written labels, but they must not fall automatically when devices vanish.
-	// Under a relearn ID only a label the labeler certified counts.
-	expected := maxCountLabel(observation.count, class.expectedEvidence(node))
+	// A label counts only in the partition it was learned in, and under a
+	// relearn ID only when the labeler certified it.
+	evidence, otherPartition := class.expectedEvidence(node, observation)
+	if otherPartition {
+		slog.Info("Ignoring an expected device count learned in another partition",
+			"node", node.Name, "class", class.Name, "expected", node.Labels[class.Labels.Expected],
+			"learnedIn", node.Annotations[class.partitionAnnotation], "partition", observation.partitionKey)
+	}
+
+	expected := maxCountLabel(observation.count, evidence)
 
 	// Without a partition the node cannot tell which peers have the same
 	// hardware, so it learns only from itself rather than risk a higher count.
@@ -882,17 +904,39 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 			continue
 		}
 
-		expected = maxCountLabel(expected, class.expectedEvidence(peer))
-
-		peerCurrent, ok := usablePeerCount(class, node.Name, peer.Name, peerObservation)
-		if ok && peerCurrent > expected {
-			expected = peerCurrent
+		if evidence := peerEvidence(class, node.Name, peer, peerObservation); evidence > expected {
+			expected = evidence
 		}
 	}
 
 	p.partitionExpected[key] = expected
 
 	return expected
+}
+
+// peerEvidence returns the highest count that a peer in the same partition
+// contributes to the partition maximum: its expected label, when it counts, and
+// its current count, when it is usable.
+func peerEvidence(
+	class compiledClass,
+	reconciledNodeName string,
+	peer *corev1.Node,
+	observation countObservation,
+) int {
+	label, otherPartition := class.expectedEvidence(peer, observation)
+	if otherPartition {
+		// The peer moved here with a label it learned elsewhere. It is
+		// rewritten from this partition when the peer is reconciled.
+		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonPartitionChanged).Inc()
+	}
+
+	evidence := maxCountLabel(0, label)
+
+	if current, ok := usablePeerCount(class, reconciledNodeName, peer.Name, observation); ok && current > evidence {
+		evidence = current
+	}
+
+	return evidence
 }
 
 func groupingLabelsMatch(groupingLabels []string, node, peer *corev1.Node) bool {
@@ -1054,5 +1098,5 @@ func (class compiledClass) partitionKey(node *corev1.Node) string {
 		parts = append(parts, label+"="+node.Labels[label])
 	}
 
-	return strings.Join(parts, "|")
+	return strings.Join(parts, partitionKeySeparator)
 }

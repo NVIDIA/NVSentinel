@@ -129,7 +129,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		clientset,
 		resyncPeriod,
 		deviceCounts.Enabled(),
-		deviceCounts.RelearnAnnotationKeys()...,
+		deviceCounts.EvidenceAnnotationKeys()...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create node informer: %w", err)
@@ -315,13 +315,14 @@ func transformPodForCache(obj any) (any, error) {
 
 // transformNodeForCache returns a fixed Node projection for the Labeler.
 //
-// Identity, labels, the DCGM bootstrap annotation, and the given relearn
-// annotations of device-count classes are always retained. When expected
-// device counts are enabled, capacity and allocatable resources are also
-// retained for current-count CEL expressions. All other Node fields are
-// discarded before the object enters the informer cache.
-func transformNodeForCache(deviceCountsEnabled bool, relearnAnnotations ...string) cache.TransformFunc {
-	retainedAnnotations := append([]string{DCGMBootstrapCompletedAnnotation}, relearnAnnotations...)
+// Identity, labels, the DCGM bootstrap annotation, and the given annotations
+// of device-count classes (the partition annotation of each class and the
+// relearn annotation of each class with a relearn ID) are always retained.
+// When expected device counts are enabled, capacity and allocatable resources
+// are also retained for current-count CEL expressions. All other Node fields
+// are discarded before the object enters the informer cache.
+func transformNodeForCache(deviceCountsEnabled bool, deviceCountAnnotations ...string) cache.TransformFunc {
+	retainedAnnotations := append([]string{DCGMBootstrapCompletedAnnotation}, deviceCountAnnotations...)
 
 	return func(obj any) (any, error) {
 		node, ok := obj.(*v1.Node)
@@ -391,12 +392,12 @@ func createNodeInformer(
 	clientset kubernetes.Interface,
 	resyncPeriod time.Duration,
 	deviceCountsEnabled bool,
-	relearnAnnotations ...string,
+	deviceCountAnnotations ...string,
 ) (cache.SharedIndexInformer, error) {
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 	informer := factory.Core().V1().Nodes().Informer()
 
-	if err := informer.SetTransform(transformNodeForCache(deviceCountsEnabled, relearnAnnotations...)); err != nil {
+	if err := informer.SetTransform(transformNodeForCache(deviceCountsEnabled, deviceCountAnnotations...)); err != nil {
 		return nil, fmt.Errorf("failed to set node transform: %w", err)
 	}
 

@@ -176,6 +176,7 @@ The following fields are always retained:
 - all `metadata.labels`
 - the `nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed` annotation, when present
 - the [relearn annotation](#relearning-expected-counts) of each class that sets `relearnID`, when present
+- the [partition annotation](#expected-counts-stay-in-their-partition) of each enabled class, when present
 
 When expected device counts have at least one enabled class, the Labeler also
 retains `status.allocatable` and `status.capacity`. Device-count expressions
@@ -190,9 +191,24 @@ the field's empty or absent value.
 
 For classes without a matching override, the expected value is learned as the maximum current or existing expected count among nodes with the same configured grouping-label values. Learned expected counts can rise automatically, but do not fall automatically when a node reports fewer devices. To lower them after a deliberate change, see [Relearning Expected Counts](#relearning-expected-counts).
 
+### Expected Counts Stay in Their Partition
+
+An expected label counts only in the partition where the labeler learned it. With every expected label it writes, the labeler writes the annotation `nvsentinel.dgxc.nvidia.com/<class>.count.partition` with the partition key of the node, for example `source=gfd|node.kubernetes.io/instance-type=gb200|nvidia.com/gpu.product=NVIDIA-GB200`, in the same patch. When the grouping of a node changes, for example when MIG is turned off and `nvidia.com/gpu.product` loses its MIG suffix, or when the node gets another instance type, its old expected label no longer counts, neither for the node nor for the other nodes of its new partition. The node learns its expected count again from its own current count and from the other nodes of its new partition, and the labeler logs that at Info level. Each time it computes the expected count of a partition, the labeler counts the labels it leaves out this way in the `labeler_device_count_skipped_updates_total` counter with `reason="partition_changed"`.
+
+- A change between the sources of a class, such as a move between GPU Operator modes, is not a partition change. The node keeps its expected count, as described in [Grouping with sources](#grouping-with-sources).
+- Labels written before the annotation existed still count, and the labeler adds the annotation to each node at its next reconcile, which is one extra patch per node. A node that has no count at that reconcile, for example because its device plugin is not running, keeps its old label without the annotation, and that label counts in any partition. If the node changes partition before the labeler counts it again, its old count reaches the new partition. Upgrade the labeler outside MIG changes, and check afterwards that every node with an expected label carries the annotation:
+
+  ```bash
+  kubectl get nodes -l nvsentinel.dgxc.nvidia.com/gpu.count.expected -o custom-columns='NAME:.metadata.name,PARTITION:.metadata.annotations.nvsentinel\.dgxc\.nvidia\.com/gpu\.count\.partition'
+  ```
+
+- A change to the grouping itself changes the partition key of every node: new `groupingLabels` or their order, a renamed source, or a product name that a new GFD or driver release reports differently. Every node then learns its expected count once more from current counts, as in a relearn. A node that is missing devices still gets the higher count from the other nodes of its partition, but a device that every node of a partition lost at that same moment is accepted.
+- The class name must form a valid annotation key, at most 47 characters of letters, digits, `-`, `_` and `.`, starting with a letter or digit, and two enabled classes cannot have the same name. The labeler does not start otherwise.
+- Do not change the annotation by hand. A label whose annotation names another partition stops counting, and the node learns its count again at its next reconcile. A label without the annotation counts in any partition until the labeler writes the annotation again.
+
 ### Relearning Expected Counts
 
-A learned expected count never goes down on its own, so that a node or a whole partition that loses devices keeps being reported ([ADR-043](../designs/043-expected-device-count-labels.md)). After a change that lowers the count on purpose, the labeler can relearn a class once from the current counts of its nodes ([ADR-070](../designs/070-expected-device-count-relearn.md)). For example, two nodes switched to MIG can report more GPUs while they still carry the plain product label, which raises the expected count of every node in the plain partition, and a node that leaves MIG brings its MIG count into the plain partition.
+A learned expected count never goes down on its own, so that a node or a whole partition that loses devices keeps being reported ([ADR-043](../designs/043-expected-device-count-labels.md)). After a change that lowers the count on purpose, the labeler can relearn a class once from the current counts of its nodes ([ADR-070](../designs/070-expected-device-count-relearn.md)). For example, two nodes switched to MIG can report more GPUs while they still carry the plain product label, which raises the expected count of every node in the plain partition. The [partition annotation](#expected-counts-stay-in-their-partition) keeps a count from moving to another partition, but it does not repair a count that is already wrong, such as one raised before an upgrade to a labeler that writes the annotation.
 
 To relearn a class, set `relearnID` on it to a new value, such as a date and a reason:
 
@@ -219,7 +235,7 @@ The new value changes the configuration checksum, which restarts the labeler. It
   ```
 
   A node without it had no count, because its count source is missing or its expression failed, or its patch failed. It keeps its labels, and its old label does not count for the other nodes. The labeler relearns it once it has a count again, and retries a failed patch at the node's next reconcile or the next restart. If such a node should not be relearned from the count it comes back with, pin it with an override before then.
-- **Keep the ID:** leave `relearnID` set. Removing it makes every old label count again, including one that a node without a count still carries. Use a new value for the next relearn, for example after the next MIG change, and never reuse an old one: the annotations stay on the nodes after the ID is cleared, so a reused ID treats unchanged nodes as already relearned. Do not remove the annotation by hand either, since without it the node's label stops counting and the node is relearned at its next reconcile, and note that renaming a class with an ID set relearns the whole class, because the annotation key carries the class name.
+- **Keep the ID:** leave `relearnID` set. Removing it makes every old label count again, including one that a node without a count still carries. Use a new value for the next relearn and never reuse an old one: the annotations stay on the nodes after the ID is cleared, so a reused ID treats unchanged nodes as already relearned. Do not remove the annotation by hand either, since without it the node's label stops counting and the node is relearned at its next reconcile, and note that renaming a class with an ID set relearns the whole class, because the annotation key carries the class name.
 
 `relearnID` must be a valid label value: at most 63 characters of letters, digits, `-`, `_` and `.`, starting and ending with a letter or digit. Quote it in YAML, since an unquoted number such as 20261105 is rendered as a float and rejected. The labeler does not start with an invalid value. The default, an empty value, changes nothing.
 

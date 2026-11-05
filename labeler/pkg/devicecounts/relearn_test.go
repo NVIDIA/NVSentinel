@@ -50,11 +50,13 @@ func TestRelearn_AnnotationKeyMatchesTheLabels(t *testing.T) {
 	require.Empty(t, newTestManager(t, testGPUSourcesConfig()).RelearnAnnotationKeys())
 }
 
-func TestRelearn_WithoutAnIDNothingIsAnnotated(t *testing.T) {
+// Without an ID the labeler records only the partition of each label.
+func TestRelearn_WithoutAnIDOnlyThePartitionIsRecorded(t *testing.T) {
 	nodes := ratchetSweep(t, newTestManager(t, relearnTestConfig("")), ratchetFleet(3, 4))
 
 	for _, node := range nodes {
-		require.Empty(t, node.Annotations, node.Name)
+		require.Equal(t, map[string]string{ratchetPartitionAnnotation: ratchetPlainPartition}, node.Annotations,
+			node.Name)
 	}
 }
 
@@ -250,22 +252,28 @@ func TestRelearn_OverridesStillWinAndAreCertified(t *testing.T) {
 	require.Equal(t, ratchetRelearnID+"/4", nodes[2].Annotations[ratchetAnnotation])
 }
 
-// Known limit: the annotation is not tied to a partition, because #2108 keeps
-// the expected count across a change between the DRA and GFD sources. A clean
-// MIG disable after a relearn therefore spreads 8 again, until a new ID.
-func TestRelearn_MIGDisableAfterARelearnNeedsANewID(t *testing.T) {
+// A clean MIG disable after a relearn needs no new ID. The 8 that the two
+// nodes carry was certified in their MIG partition, and the partition
+// annotation keeps it there: they relearn 4 under the same ID, the other nodes
+// stay at 4, and a restart with the same ID changes nothing.
+func TestRelearn_MIGDisableAfterARelearnNeedsNoNewID(t *testing.T) {
 	nodes := ratchetSweep(t, newTestManager(t, relearnTestConfig(ratchetRelearnID)), ratchetRegroupedFleet(t))
 	require.Zero(t, ratchetMismatches(nodes))
+	require.Equal(t, ratchetRelearnID+"/8", nodes[0].Annotations[ratchetAnnotation])
 
 	for _, node := range nodes[:2] {
 		ratchetSetGFD(node, ratchetPlainProduct, 4)
 	}
 
 	nodes = ratchetSweep(t, newTestManager(t, relearnTestConfig(ratchetRelearnID)), nodes)
-	require.Equal(t, ratchetFleetSize, ratchetMismatches(nodes))
-
-	nodes = ratchetSweep(t, newTestManager(t, relearnTestConfig(ratchetRelearnID+"-2")), nodes)
 	require.Zero(t, ratchetMismatches(nodes))
+	require.Zero(t, relearnUncertified(nodes, ratchetRelearnID))
+	require.Equal(t, "4", nodes[0].Labels[testGPUCountExpectedLabel])
+
+	cache := newTestManager(t, relearnTestConfig(ratchetRelearnID)).NewReconcileCache(nodes, nil)
+	for _, node := range nodes {
+		require.False(t, cache.CalculateAndSetDeviceCountLabels(t.Context(), node.DeepCopy()), node.Name)
+	}
 }
 
 func TestRelearn_LoadConfigReadsTheID(t *testing.T) {

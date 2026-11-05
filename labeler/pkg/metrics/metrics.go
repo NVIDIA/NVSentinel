@@ -27,6 +27,9 @@ const (
 
 	SkipReasonEvaluationError = "evaluation_error"
 	SkipReasonMissingSource   = "missing_source"
+	// SkipReasonPartitionChanged counts expected labels left out of a
+	// partition maximum because they were learned in another partition.
+	SkipReasonPartitionChanged = "partition_changed"
 )
 
 var (
