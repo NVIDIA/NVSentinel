@@ -79,7 +79,11 @@ userNamespaces:
   - name: "*"
     # Eviction mode determines how pods are evicted:
     # - "Immediate": Pod is evicted immediately without waiting for graceful termination
-    # - "AllowCompletion": Wait for pod to complete gracefully (respects terminationGracePeriodSeconds)
+    # - "AllowCompletion": Do not evict. Poll until the pods exit on their own, with no
+    #   deadline -- deleteAfterTimeoutMinutes does not apply to this mode. Suitable for
+    #   workloads that terminate by themselves (Jobs, batch); a Deployment or StatefulSet
+    #   pod never will, so the drain requeues every requeueBackoffBase (capped at 2m) for
+    #   the life of the process. Watch node_drainer_waiting_for_completion to catch that.
     # - "DeleteAfterTimeout": Wait for deleteAfterTimeoutMinutes, then force delete if still running
     mode: "AllowCompletion"
 

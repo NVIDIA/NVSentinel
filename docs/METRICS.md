@@ -94,6 +94,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `node_drainer_waiting_for_timeout` | Gauge | `node` | Shows if node drainer operation is waiting for timeout before force deletion (1=waiting, 0=not waiting) |
+| `node_drainer_waiting_for_completion` | Gauge | `node` | 1 while a drain in `allowCompletion` mode is waiting for pods to finish, 0 once the drain reaches a terminal status. This mode never evicts and has no deadline, so the gauge stays 1 indefinitely for a pod that never exits -- alert on it holding 1 longer than the namespace's workloads take. |
 | `node_drainer_force_delete_pods_after_timeout` | Counter | `node`, `namespace` | Total number of node drainer operations that reached timeout and force deleted pods |
 
 ---

@@ -1084,6 +1084,12 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 
 	time.Sleep(5 * time.Second)
 
+	// allowCompletion has no deadline, so this gauge is the only signal that the drain is
+	// waiting rather than stuck. It must be 1 while the pod is still Running.
+	require.Eventually(t, func() bool {
+		return getGaugeVecValue(t, metrics.NodeDrainAwaitingCompletion, nodeName) == 1
+	}, 10*time.Second, 500*time.Millisecond, "waiting-for-completion gauge should be 1 while a pod is still running")
+
 	updatedPod, err := setup.client.CoreV1().Pods("completion-test").Get(setup.ctx, "running-pod", metav1.GetOptions{})
 	require.NoError(t, err)
 	updatedPod.Status.Phase = v1.PodSucceeded
@@ -1107,6 +1113,12 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	}, 10*time.Second, 500*time.Millisecond)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainSucceededLabelValue)
+
+	// Cleared on every terminal status, so an alert on the gauge does not latch after the
+	// drain finishes.
+	require.Eventually(t, func() bool {
+		return getGaugeVecValue(t, metrics.NodeDrainAwaitingCompletion, nodeName) == 0
+	}, 10*time.Second, 500*time.Millisecond, "waiting-for-completion gauge should return to 0 once the drain reaches a terminal status")
 }
 
 // TestReconciler_MultipleNodesRequeue validates concurrent draining of multiple nodes through the queue.

@@ -765,6 +765,8 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 			)
 		}
 
+		metrics.NodeDrainAwaitingCompletion.WithLabelValues(nodeName).Set(1)
+
 		slog.InfoContext(ctx, "Pods still running on node, requeuing for later check",
 			"node", nodeName,
 			"remainingPods", remainingPods)
@@ -929,6 +931,11 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	nodeName string, drainStatus string) error {
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.update_user_pods_eviction_status")
 	defer span.End()
+
+	// Every terminal drain status funnels through here -- drained, skipped and all three
+	// cancellation paths -- so clearing the allowCompletion gauge once, here, is what keeps
+	// a cancelled drain from leaving it stuck at 1 forever.
+	metrics.NodeDrainAwaitingCompletion.WithLabelValues(nodeName).Set(0)
 	// Extract the document ID (preserving native type for MongoDB)
 	documentID, err := utils.ExtractDocumentIDNative(event)
 	if err != nil {

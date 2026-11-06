@@ -91,6 +91,21 @@ var (
 		[]string{labelNode},
 	)
 
+	// NodeDrainAwaitingCompletion tracks node drainer operations in allowCompletion mode.
+	// allowCompletion is the only mode with no deadline -- it polls until the pods exit on
+	// their own and never evicts -- so this gauge is the only thing that distinguishes a
+	// drain that is waiting from one that cannot finish. Alert on it staying 1 for longer
+	// than any workload in those namespaces would legitimately take.
+	NodeDrainAwaitingCompletion = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "node_drainer_waiting_for_completion",
+			Help: "1 while a node drain in allowCompletion mode is waiting for pods to finish, " +
+				"0 once the drain reaches a terminal status. allowCompletion has no timeout, so " +
+				"this stays 1 indefinitely for a pod that never exits.",
+		},
+		[]string{labelNode},
+	)
+
 	// NodeDrainTimeoutReached tracks operations that reached timeout and force deleted pods
 	NodeDrainTimeoutReached = promauto.NewCounterVec(
 		prometheus.CounterOpts{
