@@ -98,7 +98,7 @@ The GPUReset CRD, its conditions and reasons, the reconcile steps and the protob
 
 ### Mitigations
 
-- Janitor logs the resolved template at startup at debug level.
+- Janitor logs the resolved template at startup, in the `Loaded configuration` message at info level.
 - `docs/configuration/janitor.md` gives the merge key of each list in the reset Job: `containers`, `initContainers`, `volumes` and `env` merge on `name`, `volumeMounts` on `mountPath`, and `tolerations` is replaced. It also states that janitor does not restore host changes that the Job makes.
 
 ## Alternatives Considered

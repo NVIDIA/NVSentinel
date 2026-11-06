@@ -423,6 +423,10 @@ janitor:
                     - name: host-systemd
                       hostPath:
                         path: /run/systemd
+                    - name: reset-hooks
+                      configMap:
+                        name: provider-reset-hooks
+                        defaultMode: 0755
                   initContainers:
                     - name: stop-provider-daemonsets
                       image: provider/reset-hooks:1.0
@@ -432,15 +436,18 @@ janitor:
                       volumeMounts:
                         - name: host-systemd
                           mountPath: /run/systemd
+                        - name: reset-hooks
+                          mountPath: /hooks
 ```
 
-The `gpu-reset` container keeps its image, environment, security context and built-in mounts.
+The `gpu-reset` container keeps its image, environment, security context and built-in mounts. The wrapper command must be in the container: the reset image does not have it. In the example, the `provider-reset-hooks` ConfigMap in the janitor namespace holds the script. A custom image that is based on the reset image also works.
 
 #### Before you set a patch
 
 - Keep the reset in the Job. Janitor uses the Job result as the reset result, so a wrapper command must run the reset and return its exit code.
 - Create the objects that the patch names, such as a ServiceAccount, in the janitor namespace. A missing object shows only when a reset runs, on a node that is already cordoned and drained.
 - Restore the host changes that the Job makes. Janitor restores only the GPU services that it stops.
+- Keep `gpuReset.timeout` longer than the teardown and the `activeDeadlineSeconds` of the Job. When a GPUReset is deleted, janitor waits for a running reset Job only until this timeout. Then it restores the GPU services, also when the Job still runs.
 - Test a patch with one GPU reset on one node before you use it across the cluster.
 
 ### resetJob.image
