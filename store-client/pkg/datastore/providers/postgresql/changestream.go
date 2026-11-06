@@ -73,6 +73,10 @@ const (
 	// bounds how long a late row waits after a transient read error, and keeps the error logs to
 	// one failed pass a second while the database is unhealthy.
 	fetchRetryDelay = time.Second
+	// notifySilentAfter is how long the LISTEN connection can go without a notification before
+	// NOTIFY counts as silent. The fallback poller then polls on its own, and the fetch loop no
+	// longer moves a filtered watcher up to the newest row, see mayMoveToNewestRow.
+	notifySilentAfter = 30 * time.Second
 )
 
 // PostgreSQLChangeStreamWatcher implements ChangeStreamWatcher for PostgreSQL
@@ -745,7 +749,7 @@ func (w *PostgreSQLChangeStreamWatcher) readChangelog(ctx context.Context) error
 		lastTimestamp, lastEventID := w.lastTimestamp, w.lastEventID
 		w.mu.RUnlock()
 
-		if err := w.fetchNewChanges(ctx); err != nil {
+		if err := w.fetchNewChangesFor(ctx, fetchLoopReader); err != nil {
 			return fmt.Errorf("failed to poll the changelog: %w", err)
 		}
 
@@ -882,7 +886,7 @@ func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Conte
 			w.mu.RUnlock()
 
 			// Determine if NOTIFY seems to be working
-			if timeSinceLastNotify > 30*time.Second {
+			if timeSinceLastNotify > notifySilentAfter {
 				// NOTIFY might be silent or broken, poll more aggressively
 				newInterval := 5 * time.Second
 
@@ -904,7 +908,7 @@ func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Conte
 					"mode", "hybrid-polling",
 					"lastEventID", lastEventID)
 
-				if err := w.fetchNewChanges(ctx); err != nil {
+				if err := w.fetchNewChangesFor(ctx, fallbackReader); err != nil {
 					slog.Error("Fallback poll failed",
 						"client", w.clientName,
 						"error", err)
@@ -928,11 +932,32 @@ func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Conte
 	}
 }
 
-// fetchNewChanges fetches new changes from the changelog table.
+// changelogReader names the loop a poll is made for. Only the fetch loop's polls may move a
+// filtered watcher up to the newest row, see mayMoveToNewestRow.
+type changelogReader int
+
+const (
+	// pollingReader is pollForChanges, in polling mode or in hybrid mode without a LISTEN
+	// connection.
+	pollingReader changelogReader = iota
+	// fallbackReader is the adaptive fallback poller, which polls once NOTIFY has gone silent.
+	fallbackReader
+	// fetchLoopReader is the fetch loop next to the LISTEN loop, which looks the notified ids up
+	// after every poll.
+	fetchLoopReader
+)
+
+// fetchNewChanges is the poll pollForChanges makes. It never moves the read position past a row
+// it has not read.
+func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) error {
+	return w.fetchNewChangesFor(ctx, pollingReader)
+}
+
+// fetchNewChangesFor fetches new changes from the changelog table for the loop reader names.
 // Uses two-layer filtering:
 // 1. Server-side: SQL WHERE clause reduces volume at the database level
 // 2. Application-side: PipelineFilter handles edge cases (in sendEventsToChannel)
-func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) error {
+func (w *PostgreSQLChangeStreamWatcher) fetchNewChangesFor(ctx context.Context, reader changelogReader) error {
 	w.fetchMu.Lock()
 	defer w.fetchMu.Unlock()
 
@@ -950,6 +975,14 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 
 	// Build server-side SQL filter from pipeline (if configured)
 	sqlFilterClause, sqlFilterArgs := w.buildSQLFilter()
+
+	// The filter hides the rows it rejects, so the position only moves on rows the poll returns.
+	// It would stay at the last row the filter accepted, and every poll would scan every row
+	// since. Where moving up to the newest row is safe, that row is read before the poll.
+	headTS, headID, headKnown, err := w.readChangelogHead(ctx, w.mayMoveToNewestRow(reader, sqlFilterClause != ""))
+	if err != nil {
+		return err
+	}
 
 	// Base query: Timestamp-based with ID tie-breaking (like MongoDB)
 	// Server-side filter is appended if available
@@ -1011,7 +1044,101 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 		w.lag.RecordCaughtUp(time.Now())
 	}
 
-	return w.sendEventsToChannel(ctx, events)
+	if err := w.sendEventsToChannel(ctx, events); err != nil {
+		return err
+	}
+
+	// The move is made inside this read, before the lookup after the poll takes any id, so that
+	// lookup asks for every row the move went past.
+	w.moveToNewestRowAfterShortBatch(headTS, headID, headKnown, len(events))
+
+	return nil
+}
+
+// mayMoveToNewestRow reports whether a short batch of this poll may move a watcher with a
+// server-side filter up to the newest row of its table. A row the filter accepts can still be in
+// an open transaction while newer rows commit, and once the position has moved past it, only the
+// lookup of its notified id delivers it. So only the fetch loop moves, since it looks the notified
+// ids up after every poll, and only while the LISTEN connection delivers notifications.
+// pollForChanges has no LISTEN connection, and the fallback poller polls because NOTIFY has gone
+// silent. Their position stays at the last row they read, and their next poll reads such a row.
+func (w *PostgreSQLChangeStreamWatcher) mayMoveToNewestRow(reader changelogReader, filtered bool) bool {
+	if reader != fetchLoopReader || !filtered {
+		return false
+	}
+
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return !w.lastNotifyTime.IsZero() && time.Since(w.lastNotifyTime) <= notifySilentAfter
+}
+
+// readChangelogHead returns the position of the newest changelog row of this watcher's table, and
+// false when it is not wanted or the table has none. It is its own statement, read before the poll.
+// Every row it can see is visible to the poll too, so a short batch holds every one of them that
+// the filter accepts. Reading it in the poll's snapshot would not narrow anything: a row that
+// commits after the poll's snapshot depends on its NOTIFY either way, and reading the newest row
+// first keeps the set of such rows the smallest.
+func (w *PostgreSQLChangeStreamWatcher) readChangelogHead(
+	ctx context.Context, wanted bool,
+) (time.Time, int64, bool, error) {
+	if !wanted {
+		return time.Time{}, 0, false, nil
+	}
+
+	var (
+		changedAt time.Time
+		id        int64
+	)
+
+	err := w.db.QueryRowContext(ctx, `
+		SELECT changed_at, id
+		FROM datastore_changelog
+		WHERE table_name = $1
+		ORDER BY changed_at DESC, id DESC
+		LIMIT 1
+	`, w.tableName).Scan(&changedAt, &id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, 0, false, nil
+	}
+
+	if err != nil {
+		return time.Time{}, 0, false, fmt.Errorf("failed to read the newest changelog row: %w", err)
+	}
+
+	return changedAt, id, true, nil
+}
+
+// moveToNewestRowAfterShortBatch moves the read position forward to (ts, id), the newest row read
+// before the poll, when the poll returned fewer than changelogBatchSize rows. Such a batch holds
+// every row the poll could see past the position that the filter accepts, so each row up to
+// (ts, id) is read by now, rejected by the filter, or was not committed when the poll started. A
+// row of the last kind comes from the lookup of its notified id. The position never moves back,
+// and does not move once the watcher is closed.
+func (w *PostgreSQLChangeStreamWatcher) moveToNewestRowAfterShortBatch(
+	ts time.Time, id int64, known bool, batch int,
+) {
+	if !known || batch >= changelogBatchSize {
+		return
+	}
+
+	select {
+	case <-w.stopCh:
+		return
+	default:
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if positionAfter(ts, id, w.lastTimestamp, w.lastEventID) {
+		w.lastTimestamp, w.lastEventID = ts, id
+
+		// highestReadEventID is never below lastEventID.
+		if id > w.highestReadEventID {
+			w.highestReadEventID = id
+		}
+	}
 }
 
 // buildSQLFilter builds a SQL WHERE clause from the pipeline filter.

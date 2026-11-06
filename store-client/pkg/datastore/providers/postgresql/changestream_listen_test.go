@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
@@ -657,6 +658,167 @@ func TestFetchNewChanges_FullBatch_WakesFetchLoop(t *testing.T) {
 			require.NoError(t, watcher.fetchNewChanges(context.Background()))
 			assert.Equal(t, tt.wantWake, len(watcher.wake) == 1)
 			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+// newestRowQuery matches the read of the newest changelog row a filtered watcher may move up to.
+const newestRowQuery = `SELECT changed_at, id FROM datastore_changelog WHERE table_name = \$1 ` +
+	`ORDER BY changed_at DESC, id DESC LIMIT 1`
+
+// filteredPollArgs makes the watcher filter on the server side and returns its poll arguments from
+// position (base+20s, 20).
+func filteredPollArgs(watcher *PostgreSQLChangeStreamWatcher, base time.Time) []driver.Value {
+	watcher.pipeline = client.NewPostgreSQLPipelineBuilder().BuildAllHealthEventInsertsPipeline()
+
+	return []driver.Value{healthEventsTable, base.Add(20 * time.Second), int64(20), "INSERT"}
+}
+
+// expectNewestRow lets the watcher read id as the newest changelog row.
+func expectNewestRow(mock sqlmock.Sqlmock, base time.Time, id int64) {
+	mock.ExpectQuery(newestRowQuery).
+		WithArgs(healthEventsTable).
+		WillReturnRows(sqlmock.NewRows([]string{"changed_at", "id"}).AddRow(base.Add(time.Duration(id)*time.Second), id))
+}
+
+// A watcher whose server-side filter rejects most rows only moves its position on the rows a poll
+// returns, so it would stay at its last match and every poll would scan every row since. A short
+// batch of the fetch loop's poll moves it up to the newest row, read before the poll, while the
+// LISTEN connection delivers notifications. Nothing else moves it: pollForChanges has no LISTEN
+// connection and the fallback poller polls because NOTIFY has gone silent, so no lookup would
+// deliver a row that commits behind the moved position. The newest row is offered to every
+// filtered case, so a poll that reads it when it may not is seen.
+func TestFetchNewChangesFor_ShortFilteredBatch_MovesToNewestRowOnlyForTheFetchLoop(t *testing.T) {
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name         string
+		reader       changelogReader
+		unfiltered   bool
+		notifyAgo    time.Duration // since the last NOTIFY, none when zero
+		newest       int64
+		rows         []int64
+		wantHeadRead bool
+		wantID       int64
+	}{
+		{name: "fetch loop, no row accepted", reader: fetchLoopReader, notifyAgo: time.Second, newest: 500,
+			wantHeadRead: true, wantID: 500},
+		{name: "fetch loop, short batch", reader: fetchLoopReader, notifyAgo: time.Second, newest: 500,
+			rows: []int64{21, 22}, wantHeadRead: true, wantID: 500},
+		{name: "fetch loop, full batch", reader: fetchLoopReader, notifyAgo: time.Second, newest: 500,
+			rows: rowRange(21, 20+changelogBatchSize), wantHeadRead: true, wantID: 20 + changelogBatchSize},
+		{name: "fetch loop, newest row behind the position", reader: fetchLoopReader, notifyAgo: time.Second,
+			newest: 10, wantHeadRead: true, wantID: 20},
+		{name: "fetch loop, no filter", reader: fetchLoopReader, unfiltered: true, notifyAgo: time.Second,
+			rows: []int64{21, 22}, wantID: 22},
+		{name: "fetch loop, NOTIFY silent", reader: fetchLoopReader, notifyAgo: notifySilentAfter + time.Second,
+			newest: 500, wantID: 20},
+		{name: "fetch loop, no NOTIFY yet", reader: fetchLoopReader, newest: 500, wantID: 20},
+		{name: "polling mode", reader: pollingReader, notifyAgo: time.Second, newest: 500, wantID: 20},
+		{name: "fallback poller", reader: fallbackReader, notifyAgo: time.Second, newest: 500, wantID: 20},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			mock.MatchExpectationsInOrder(false)
+
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+			watcher.lastTimestamp = base.Add(20 * time.Second)
+			watcher.lastEventID = 20
+			watcher.highestReadEventID = 20
+			watcher.events = make(chan datastore.EventWithToken, changelogBatchSize)
+
+			if tt.notifyAgo > 0 {
+				watcher.lastNotifyTime = time.Now().Add(-tt.notifyAgo)
+			}
+
+			pollArgs := []driver.Value{healthEventsTable, base.Add(20 * time.Second), int64(20)}
+
+			if !tt.unfiltered {
+				pollArgs = filteredPollArgs(watcher, base)
+				expectNewestRow(mock, base, tt.newest)
+			}
+
+			mock.ExpectQuery(changelogQuery).
+				WithArgs(pollArgs...).
+				WillReturnRows(listenTestRows(base, tt.rows...))
+
+			require.NoError(t, watcher.fetchNewChangesFor(context.Background(), tt.reader))
+
+			assert.Equal(t, base.Add(time.Duration(tt.wantID)*time.Second), watcher.lastTimestamp)
+			assert.Equal(t, tt.wantID, watcher.lastEventID)
+			assert.GreaterOrEqual(t, watcher.highestReadEventID, watcher.lastEventID)
+
+			// Only the offered newest row can be left unread.
+			if tt.wantHeadRead || tt.unfiltered {
+				assert.NoError(t, mock.ExpectationsWereMet(), "the newest row must be read")
+			} else {
+				assert.Error(t, mock.ExpectationsWereMet(), "the newest row must not be read")
+			}
+		})
+	}
+}
+
+// pollForChanges, which polling mode and a hybrid watcher without a LISTEN connection run, never
+// moves a filtered watcher up to the newest row, even with a NOTIFY seen recently.
+func TestPollForChanges_FilteredWatcher_NeverMovesToNewestRow(t *testing.T) {
+	for _, mode := range []ChangeStreamMode{ModePolling, ModeHybrid} {
+		t.Run(string(mode), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			mock.MatchExpectationsInOrder(false)
+
+			base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", mode)
+			watcher.lastTimestamp = base.Add(20 * time.Second)
+			watcher.lastEventID = 20
+			watcher.highestReadEventID = 20
+			watcher.lastNotifyTime = time.Now()
+
+			pollArgs := filteredPollArgs(watcher, base)
+			expectNewestRow(mock, base, 500)
+
+			for range 20 {
+				mock.ExpectQuery(changelogQuery).WithArgs(pollArgs...).WillReturnRows(changelogRows())
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+
+			go func() {
+				defer close(done)
+
+				watcher.pollForChanges(ctx)
+			}()
+
+			// Every empty poll records the time, so a new time means one more poll.
+			var first time.Time
+
+			require.Eventually(t, func() bool {
+				first, _ = watcher.LagState()
+
+				return !first.IsZero()
+			}, 5*time.Second, time.Millisecond, "pollForChanges must poll")
+			require.Eventually(t, func() bool {
+				last, _ := watcher.LagState()
+
+				return last.After(first)
+			}, 5*time.Second, time.Millisecond, "pollForChanges must poll again")
+
+			cancel()
+			<-done
+
+			watcher.mu.RLock()
+			defer watcher.mu.RUnlock()
+
+			assert.Equal(t, base.Add(20*time.Second), watcher.lastTimestamp, "polling must not move to the newest row")
+			assert.Equal(t, int64(20), watcher.lastEventID)
 		})
 	}
 }
