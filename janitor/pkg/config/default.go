@@ -404,9 +404,9 @@ func applyDriverBinPath(job *batchv1.JobTemplateSpec, driverBinPath string) erro
 // applyJobTemplatePatch applies jobTemplatePatch to the reset Job template as a strategic merge patch, with
 // JobTemplateSpec as the schema. An empty patch leaves the template unchanged.
 //
-// Reject at janitor startup, as for driverRoot. The merged result, not the patch, is decoded strictly, because a
-// patch can hold directives such as $patch. A misspelled field name is then an error here, and not a field that
-// the API server drops when a Job is created for a node that is already cordoned and drained.
+// Reject at janitor startup, as for driverRoot. Both the patch, without its directives, and the merged result are
+// decoded strictly. A misspelled field name is then an error here, and not a field that the API server drops when a
+// Job is created for a node that is already cordoned and drained.
 func applyJobTemplatePatch(job *batchv1.JobTemplateSpec, patch string) (*batchv1.JobTemplateSpec, error) {
 	if strings.TrimSpace(patch) == "" {
 		return job, nil
@@ -415,6 +415,10 @@ func applyJobTemplatePatch(job *batchv1.JobTemplateSpec, patch string) (*batchv1
 	patchJSON, err := yaml.YAMLToJSONStrict([]byte(patch))
 	if err != nil {
 		return nil, fmt.Errorf("resetJob.jobTemplatePatch is not valid YAML: %w", err)
+	}
+
+	if err := validatePatchFields(patchJSON); err != nil {
+		return nil, err
 	}
 
 	original, err := json.Marshal(job)
@@ -439,4 +443,51 @@ func applyJobTemplatePatch(job *batchv1.JobTemplateSpec, patch string) (*batchv1
 	}
 
 	return patched, nil
+}
+
+// validatePatchFields decodes the patch strictly, without its directives such as $patch and $retainKeys, which are
+// not fields of a Job. The merge drops a field that the patch sets to null, so a misspelled field set to null is not
+// in the merged result, and only this decode finds it.
+func validatePatchFields(patchJSON []byte) error {
+	var patch any
+	if err := json.Unmarshal(patchJSON, &patch); err != nil {
+		return fmt.Errorf("failed to decode resetJob.jobTemplatePatch: %w", err)
+	}
+
+	fields, err := json.Marshal(withoutPatchDirectives(patch))
+	if err != nil {
+		return fmt.Errorf("failed to encode resetJob.jobTemplatePatch: %w", err)
+	}
+
+	strictErrs, err := sigsjson.UnmarshalStrict(fields, &batchv1.JobTemplateSpec{})
+	if err != nil {
+		return fmt.Errorf("failed to decode resetJob.jobTemplatePatch: %w", err)
+	}
+
+	if len(strictErrs) > 0 {
+		return fmt.Errorf("resetJob.jobTemplatePatch: %w", errors.Join(strictErrs...))
+	}
+
+	return nil
+}
+
+// withoutPatchDirectives removes every key that starts with "$" from the decoded patch.
+func withoutPatchDirectives(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if strings.HasPrefix(key, "$") {
+				delete(typed, key)
+				continue
+			}
+
+			typed[key] = withoutPatchDirectives(item)
+		}
+	case []any:
+		for i, item := range typed {
+			typed[i] = withoutPatchDirectives(item)
+		}
+	}
+
+	return value
 }

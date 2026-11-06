@@ -431,6 +431,12 @@ func TestApplyJobTemplatePatch_InvalidPatch_ReturnsError(t *testing.T) {
 			wantErr: `unknown field "spec.ActiveDeadlineSeconds"`,
 		},
 		{
+			// The merge drops a field set to null, so only the decode of the patch finds this one.
+			name:    "misspelled field set to null",
+			patch:   "spec:\n  template:\n    spec:\n      containers:\n        - name: gpu-reset\n          env:\n            - name: NODE_NAME\n              valuefrom: null\n              value: node\n",
+			wantErr: `unknown field "spec.template.spec.containers[0].env[0].valuefrom"`,
+		},
+		{
 			name:    "wrong type",
 			patch:   "spec:\n  activeDeadlineSeconds: soon\n",
 			wantErr: "failed to decode",
