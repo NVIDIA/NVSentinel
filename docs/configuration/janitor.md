@@ -394,7 +394,7 @@ janitor:
 The reset fails while any process holds the GPU open. If another GPU client runs on the node, for example a DRA kubelet plugin, add its operand to the spec as well.
 
 ### resetJob.jobTemplatePatch
-Changes the GPU reset Job. Use it to add host mounts, init containers or a service account, to wrap the reset command, or to give the Job a longer deadline. It is empty by default, which leaves the Job unchanged. The design is in [ADR-069](../designs/069-gpu-reset-job-extension.md).
+Changes the GPU reset Job. Use it to add host mounts, init containers or a service account, to wrap the reset command, or to give the Job a longer deadline. It is empty by default, which leaves the Job unchanged.
 
 Janitor applies the value as a Kubernetes strategic merge patch on top of the built-in Job, after the other `resetJob` keys. If the patch and a `resetJob` key set the same field, the patch wins. Janitor checks the patch when it starts: a misspelled field, a field name in the wrong case or a value of the wrong type stops janitor with an error.
 
