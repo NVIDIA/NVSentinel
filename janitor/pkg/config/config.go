@@ -118,6 +118,10 @@ type ResetJobConfig struct {
 	DriverBinPath      string               `mapstructure:"driverBinPath" json:"driverBinPath"`
 	WriteSysLogEvent   *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
 	UploadURL          string               `mapstructure:"uploadURL" json:"uploadURL"`
+	// JobTemplatePatch is a strategic merge patch, in YAML or JSON, for the reset Job template. Janitor applies it
+	// after the other keys. It is a string, not a map, because Viper lowercases map keys and Job field names are case
+	// sensitive.
+	JobTemplatePatch string `mapstructure:"jobTemplatePatch" json:"jobTemplatePatch,omitempty"`
 }
 
 type ResourceRequirements struct {
@@ -181,17 +185,8 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 
 		applyResetJobDefaults(&config.GPUReset.ResetJob)
 
-		resetJobConfig := config.GPUReset.ResetJob
-
-		jobTemplate, err := getDefaultGPUResetJobTemplate(namespace, resetJobConfig.ImageConfig.Image,
-			resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.HostDriverRootPath,
-			resetJobConfig.DriverRoot, resetJobConfig.RuntimeClassName, *resetJobConfig.WriteSysLogEvent,
-			resetJobConfig.UploadURL)
+		jobTemplate, err := resolveGPUResetJobTemplate(config.GPUReset.ResetJob, namespace)
 		if err != nil {
-			return nil, err
-		}
-
-		if err := applyDriverBinPath(jobTemplate, resetJobConfig.DriverBinPath); err != nil {
 			return nil, err
 		}
 
@@ -206,4 +201,30 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 	slog.Info("Loaded configuration", "config", string(cfgJSON))
 
 	return &config, nil
+}
+
+// resolveGPUResetJobTemplate builds the GPU reset Job template: the built-in template first, then the resetJob keys,
+// then jobTemplatePatch.
+func resolveGPUResetJobTemplate(resetJobConfig ResetJobConfig, namespace string) (*batchv1.JobTemplateSpec, error) {
+	jobTemplate, err := getDefaultGPUResetJobTemplate(namespace, resetJobConfig.ImageConfig.Image,
+		resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.HostDriverRootPath,
+		resetJobConfig.DriverRoot, resetJobConfig.RuntimeClassName, *resetJobConfig.WriteSysLogEvent,
+		resetJobConfig.UploadURL)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := applyDriverBinPath(jobTemplate, resetJobConfig.DriverBinPath); err != nil {
+		return nil, err
+	}
+
+	jobTemplate, err = applyJobTemplatePatch(jobTemplate, resetJobConfig.JobTemplatePatch)
+	if err != nil {
+		return nil, err
+	}
+
+	// The controller creates and looks up reset Jobs in janitor's namespace, so a namespace in the patch is ignored.
+	jobTemplate.Namespace = namespace
+
+	return jobTemplate, nil
 }
