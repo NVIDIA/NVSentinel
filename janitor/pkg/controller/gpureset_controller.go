@@ -1555,7 +1555,9 @@ func (r *GPUResetReconciler) newGpuResetJob(ctx context.Context, gr *v1alpha1.GP
 }
 
 // setContainersEnvVar sets envVar in each container. It replaces every environment variable with the same name,
-// because the kubelet uses the last one, so a duplicate that is not replaced would pass a stale value.
+// because the kubelet uses the last one, so a duplicate that is not replaced would pass a stale value. When the
+// container has no such variable, envVar goes first, because a $(NAME) reference in a variable expands only to a
+// variable that comes before it.
 func setContainersEnvVar(ctx context.Context, containers []corev1.Container, envVar corev1.EnvVar, jobName,
 	jobNamespace string) {
 	log := log.FromContext(ctx)
@@ -1579,7 +1581,7 @@ func setContainersEnvVar(ctx context.Context, containers []corev1.Container, env
 		if !replaced {
 			log.V(1).Info("Adding environment variable", "env_var", envVar.Name, "job", jobName, "namespace",
 				jobNamespace, "container", container.Name, "value", envVar.Value)
-			container.Env = append(container.Env, envVar)
+			container.Env = append([]corev1.EnvVar{envVar}, container.Env...)
 		}
 	}
 }

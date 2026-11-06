@@ -2950,8 +2950,9 @@ func TestTeardownCandidates_GPUClientsOnlyWhenLabelEnabled(t *testing.T) {
 	}
 }
 
-// TestSetContainersEnvVar_SetsTheValueInEveryContainer checks that each container gets the value, and that every
-// entry with the same name is replaced, because the kubelet uses the last one.
+// TestSetContainersEnvVar_SetsTheValueInEveryContainer checks that each container gets the value, that every entry
+// with the same name is replaced, because the kubelet uses the last one, and that a new entry goes first, so that a
+// later $(NVIDIA_GPU_RESETS) reference expands.
 func TestSetContainersEnvVar_SetsTheValueInEveryContainer(t *testing.T) {
 	envVar := corev1.EnvVar{Name: gpuResetsEnvVar, Value: "GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}
 	other := corev1.EnvVar{Name: "OTHER", Value: "kept"}
@@ -2962,7 +2963,7 @@ func TestSetContainersEnvVar_SetsTheValueInEveryContainer(t *testing.T) {
 		env  []corev1.EnvVar
 		want []corev1.EnvVar
 	}{
-		{name: "no entry", env: []corev1.EnvVar{other}, want: []corev1.EnvVar{other, envVar}},
+		{name: "no entry", env: []corev1.EnvVar{other}, want: []corev1.EnvVar{envVar, other}},
 		{name: "one entry", env: []corev1.EnvVar{stale, other}, want: []corev1.EnvVar{envVar, other}},
 		{name: "duplicate entries", env: []corev1.EnvVar{stale, other, stale}, want: []corev1.EnvVar{envVar, other, envVar}},
 	}
