@@ -586,12 +586,34 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status any) bso
 		return updateFields
 	}
 
-	// Only update fields that are explicitly set (non-nil for pointers, non-zero for values)
+	// Only update fields that are explicitly set (non-nil for pointers, non-zero for values).
+	// Timestamps and bools are stored in protobuf-compatible format so they can be
+	// deserialized into the proto types used by model.HealthEventWithStatus
+	// (timestamppb.Timestamp expects {seconds, nanos}; wrapperspb.BoolValue expects {value}).
+	addQuarantineFieldUpdates(updateFields, basePath, healthStatus)
+	addDrainFieldUpdates(updateFields, basePath, healthStatus)
+	addRemediationFieldUpdates(updateFields, basePath, healthStatus)
+
+	return updateFields
+}
+
+// addQuarantineFieldUpdates sets the status fields that fault-quarantine owns.
+func addQuarantineFieldUpdates(updateFields bson.M, basePath string, healthStatus datastore.HealthEventStatus) {
 	if healthStatus.NodeQuarantined != nil {
 		updateFields[basePath+".nodequarantined"] = string(*healthStatus.NodeQuarantined)
 	}
 
-	// For UserPodsEvictionStatus, we need to update nested fields
+	if healthStatus.QuarantineFinishTimestamp != nil {
+		updateFields[basePath+".quarantinefinishtimestamp"] = map[string]any{
+			fieldTimestampSecs:  healthStatus.QuarantineFinishTimestamp.Seconds,
+			fieldTimestampNanos: healthStatus.QuarantineFinishTimestamp.Nanos,
+		}
+	}
+}
+
+// addDrainFieldUpdates sets the status fields that node-drainer owns.
+// A nil drain decision is skipped, so an update that does not carry one keeps the recorded decision.
+func addDrainFieldUpdates(updateFields bson.M, basePath string, healthStatus datastore.HealthEventStatus) {
 	if healthStatus.UserPodsEvictionStatus.Status != "" {
 		updateFields[basePath+".userpodsevictionstatus.status"] = string(healthStatus.UserPodsEvictionStatus.Status)
 
@@ -604,16 +626,6 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status any) bso
 		}
 	}
 
-	// Timestamps and bools are stored in protobuf-compatible format so they can be
-	// deserialized into the proto types used by model.HealthEventWithStatus
-	// (timestamppb.Timestamp expects {seconds, nanos}; wrapperspb.BoolValue expects {value}).
-	if healthStatus.QuarantineFinishTimestamp != nil {
-		updateFields[basePath+".quarantinefinishtimestamp"] = map[string]any{
-			fieldTimestampSecs:  healthStatus.QuarantineFinishTimestamp.Seconds,
-			fieldTimestampNanos: healthStatus.QuarantineFinishTimestamp.Nanos,
-		}
-	}
-
 	if healthStatus.DrainFinishTimestamp != nil {
 		updateFields[basePath+".drainfinishtimestamp"] = map[string]any{
 			fieldTimestampSecs:  healthStatus.DrainFinishTimestamp.Seconds,
@@ -621,6 +633,14 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status any) bso
 		}
 	}
 
+	if healthStatus.DrainDecision != nil {
+		updateFields[basePath+".draindecision"] = healthStatus.DrainDecision
+	}
+}
+
+// addRemediationFieldUpdates sets the status fields that fault-remediation owns.
+// A nil remediation decision is skipped, so an update that does not carry one keeps the recorded decision.
+func addRemediationFieldUpdates(updateFields bson.M, basePath string, healthStatus datastore.HealthEventStatus) {
 	if healthStatus.FaultRemediated != nil {
 		updateFields[basePath+".faultremediated"] = map[string]any{
 			"value": *healthStatus.FaultRemediated,
@@ -634,7 +654,9 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status any) bso
 		}
 	}
 
-	return updateFields
+	if healthStatus.RemediationDecision != nil {
+		updateFields[basePath+".remediationdecision"] = healthStatus.RemediationDecision
+	}
 }
 
 // resolveMongoFilter converts a *query.Builder (or any type implementing ToMongo())
