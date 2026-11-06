@@ -131,6 +131,8 @@ navigation:
         path: configuration/health-events-analyzer.md
       - page: Janitor
         path: configuration/janitor.md
+      - page: GPU Reset Job Template Patch
+        path: configuration/janitor-gpu-reset-job-patch.md
       - page: Janitor Provider
         path: configuration/janitor-provider.md
       - page: Event Exporter

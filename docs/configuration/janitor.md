@@ -237,6 +237,7 @@ janitor:
           hostDriverRootPath: "/run/nvidia/driver"
           driverRoot: "/run/nvidia/driver"
           driverBinPath: ""
+          jobTemplatePatch: {}
           image:
             repository: ghcr.io/nvidia/nvsentinel/gpu-reset
             tag: ""
@@ -391,6 +392,9 @@ janitor:
 ```
 
 The reset fails while any process holds the GPU open. If another GPU client runs on the node, for example a DRA kubelet plugin, add its operand to the spec as well.
+
+### resetJob.jobTemplatePatch
+Strategic merge patch that janitor applies to the GPU reset Job, after the other `resetJob` keys. Use it to add host mounts, init containers, a service account, a wrapper command or a longer deadline. The value is empty by default, and an empty patch leaves the Job unchanged. A misspelled field stops janitor at startup. Refer to [GPU reset Job template patch](janitor-gpu-reset-job-patch.md) for the merge rules and an example.
 
 ### resetJob.image
 Container image for the GPU reset Job. Leave `tag` empty to use the chart default.

@@ -15,6 +15,8 @@
 package config
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -25,6 +27,9 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	sigsjson "sigs.k8s.io/json"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -394,4 +399,44 @@ func applyDriverBinPath(job *batchv1.JobTemplateSpec, driverBinPath string) erro
 	container.Env = append(container.Env, corev1.EnvVar{Name: DriverBinPathEnvVar, Value: driverBinPath})
 
 	return nil
+}
+
+// applyJobTemplatePatch applies jobTemplatePatch to the reset Job template as a strategic merge patch, with
+// JobTemplateSpec as the schema. An empty patch leaves the template unchanged.
+//
+// Reject at janitor startup, as for driverRoot. The merged result, not the patch, is decoded strictly, because a
+// patch can hold directives such as $patch. A misspelled field name is then an error here, and not a field that
+// the API server drops when a Job is created for a node that is already cordoned and drained.
+func applyJobTemplatePatch(job *batchv1.JobTemplateSpec, patch string) (*batchv1.JobTemplateSpec, error) {
+	if strings.TrimSpace(patch) == "" {
+		return job, nil
+	}
+
+	patchJSON, err := yaml.YAMLToJSONStrict([]byte(patch))
+	if err != nil {
+		return nil, fmt.Errorf("resetJob.jobTemplatePatch is not valid YAML: %w", err)
+	}
+
+	original, err := json.Marshal(job)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal the GPU reset Job template: %w", err)
+	}
+
+	merged, err := strategicpatch.StrategicMergePatch(original, patchJSON, batchv1.JobTemplateSpec{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply resetJob.jobTemplatePatch: %w", err)
+	}
+
+	patched := &batchv1.JobTemplateSpec{}
+
+	strictErrs, err := sigsjson.UnmarshalStrict(merged, patched)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode the GPU reset Job template after resetJob.jobTemplatePatch: %w", err)
+	}
+
+	if len(strictErrs) > 0 {
+		return nil, fmt.Errorf("resetJob.jobTemplatePatch: %w", errors.Join(strictErrs...))
+	}
+
+	return patched, nil
 }

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1537,28 +1538,10 @@ func (r *GPUResetReconciler) newGpuResetJob(ctx context.Context, gr *v1alpha1.GP
 		Value: gpuIDString,
 	}
 
-	for i, container := range jobSpec.Template.Spec.Containers {
-		envVarIndex := -1
-
-		for j, env := range jobSpec.Template.Spec.Containers[i].Env {
-			if env.Name == gpuResetEnvVar.Name {
-				envVarIndex = j
-				break
-			}
-		}
-
-		if envVarIndex >= 0 {
-			oldValue := jobSpec.Template.Spec.Containers[i].Env[envVarIndex]
-			log.V(1).Info("Overriding existing environment variable", "env_var", gpuResetEnvVar.Name, "job", jobName,
-				"namespace", jobNamespace, "container", container.Name, "new_value", gpuResetEnvVar.Value, "old_value",
-				oldValue.Value)
-			jobSpec.Template.Spec.Containers[i].Env[envVarIndex] = gpuResetEnvVar
-		} else {
-			log.V(1).Info("Adding environment variable", "env_var", gpuResetEnvVar.Name, "job", jobName, "namespace",
-				jobNamespace, "container", container.Name, "value", gpuResetEnvVar.Value)
-			jobSpec.Template.Spec.Containers[i].Env = append(jobSpec.Template.Spec.Containers[i].Env, gpuResetEnvVar)
-		}
-	}
+	// Init containers get the GPU IDs too, so that a step that a jobTemplatePatch adds before the reset can find
+	// the GPUs that janitor resets.
+	setContainersEnvVar(ctx, jobSpec.Template.Spec.InitContainers, gpuResetEnvVar, jobName, jobNamespace)
+	setContainersEnvVar(ctx, jobSpec.Template.Spec.Containers, gpuResetEnvVar, jobName, jobNamespace)
 
 	job := &batchv1.Job{
 		ObjectMeta: jobMeta,
@@ -1570,6 +1553,29 @@ func (r *GPUResetReconciler) newGpuResetJob(ctx context.Context, gr *v1alpha1.GP
 	}
 
 	return job, nil
+}
+
+// setContainersEnvVar sets envVar in each container, and replaces the value of an environment variable with the
+// same name.
+func setContainersEnvVar(ctx context.Context, containers []corev1.Container, envVar corev1.EnvVar, jobName,
+	jobNamespace string) {
+	log := log.FromContext(ctx)
+
+	for i := range containers {
+		container := &containers[i]
+
+		envVarIndex := slices.IndexFunc(container.Env, func(env corev1.EnvVar) bool { return env.Name == envVar.Name })
+		if envVarIndex >= 0 {
+			log.V(1).Info("Overriding existing environment variable", "env_var", envVar.Name, "job", jobName,
+				"namespace", jobNamespace, "container", container.Name, "new_value", envVar.Value, "old_value",
+				container.Env[envVarIndex].Value)
+			container.Env[envVarIndex] = envVar
+		} else {
+			log.V(1).Info("Adding environment variable", "env_var", envVar.Name, "job", jobName, "namespace",
+				jobNamespace, "container", container.Name, "value", envVar.Value)
+			container.Env = append(container.Env, envVar)
+		}
+	}
 }
 
 // checkPodsTerminated verifies that all pods belonging to the given managed services
