@@ -777,6 +777,11 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 		return fmt.Errorf("waiting for pods to complete: %d pods remaining", len(remainingPods))
 	}
 
+	// Removed as soon as completion is observed, not left to ClearNodeDraining on a later pass:
+	// this branch requeues for the status update, so the series would otherwise keep reporting a
+	// wait for one more interval after the pods are already gone.
+	metrics.NodeDrainAwaitingCompletionSince.DeleteLabelValues(nodeName)
+
 	slog.InfoContext(ctx, "All pods completed on node", "node", nodeName)
 
 	return fmt.Errorf("pod completion verified, requeuing for status update")
