@@ -156,6 +156,68 @@ func TestListenLoop_LateNotifiedRow_IsDeliveredOnce(t *testing.T) {
 	assert.Equal(t, int64(20), watcher.lastEventID)
 }
 
+// Ids do not follow changed_at: a writer that started first can get its changelog id last, so the
+// poll reads row 151 before rows 1 to 3 and leaves the position at row 3. Through the LISTEN loop, a
+// NOTIFY for a row the poll has read is not looked up, whatever its id. A late row whose id is
+// above the position's but whose changed_at is behind it is looked up with the position the poll
+// left, delivered once, and does not move the position back.
+func TestListenLoop_RowsOutOfIDOrder_AreDeliveredOnce(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.MatchExpectationsInOrder(false)
+
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base
+
+	rows := healthEventRow(changelogRows(), 151, base.Add(500*time.Millisecond))
+
+	for id := int64(1); id <= 3; id++ {
+		healthEventRow(rows, id, base.Add(time.Duration(id)*time.Second))
+	}
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base, int64(0)).
+		WillReturnRows(rows)
+
+	// One poll ends the first pass and one the pass the late row's NOTIFY wakes.
+	for range 2 {
+		mock.ExpectQuery(changelogQuery).
+			WithArgs(healthEventsTable, base.Add(3*time.Second), int64(3)).
+			WillReturnRows(changelogRows())
+	}
+
+	// Row 160 started before row 3 and committed after the poll had passed it.
+	const lateID = 160
+
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(lateID), base.Add(3*time.Second), int64(3)).
+		WillReturnRows(healthEventRow(changelogRows(), lateID, base.Add(2500*time.Millisecond)))
+
+	notify := startTestListenLoop(t, watcher)
+
+	assert.Equal(t, []string{"151", "1", "2", "3"}, takeTokens(t, watcher, 4, 5*time.Second))
+
+	// The NOTIFYs of the rows the poll read come after it, row 151's last, then the late row's.
+	for _, id := range []int64{1, 2, 3, 151, lateID} {
+		notify <- testNotification(id)
+	}
+
+	assert.Equal(t, tokensFor([]int64{lateID}), takeTokens(t, watcher, 1, 5*time.Second),
+		"the late row must be delivered")
+	assert.Never(t, func() bool { return len(watcher.events) > 0 }, 300*time.Millisecond, 10*time.Millisecond,
+		"no row may be delivered twice")
+	assert.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, 5*time.Second, 10*time.Millisecond)
+
+	watcher.mu.RLock()
+	defer watcher.mu.RUnlock()
+
+	assert.Equal(t, base.Add(3*time.Second), watcher.lastTimestamp, "the late row must not move the position back")
+	assert.Equal(t, int64(3), watcher.lastEventID)
+}
+
 // A consumer that stops taking events must not stop the LISTEN connection from being read. When
 // the loop stopped reading, lib/pq's buffers filled and PostgreSQL blocked in ClientWrite while
 // delivering notifications, holding a snapshot open for as long as the consumer stayed behind
