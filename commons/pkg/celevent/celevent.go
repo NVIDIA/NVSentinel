@@ -38,10 +38,11 @@ import (
 // cel.dev/cel-go in v0.32.0, and this keeps that migration out of the health-event filter
 // path.
 //
-// It does not remove the dependency repo-wide: fault-quarantine, labeler, preflight and
+// It does not remove the dependency repo-wide: celrule evaluates the rule set rules with
+// its own event vocabulary (every field, enums as numbers), and labeler, preflight and
 // kubernetes-object-monitor build their own CEL environments over different inputs and
-// still import cel-go directly. Those are separate vocabularies, not health events, so
-// they are deliberately not routed through here.
+// still import cel-go directly. Those are separate vocabularies, so they are deliberately
+// not routed through here.
 type Filter struct {
 	program cel.Program
 }
