@@ -785,7 +785,9 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 			}
 
 			assert.Equal(t, int64(453), watcher.lastEventID, "bookmark must not move backwards")
-			assert.Equal(t, tt.expectRecentlySeen452, watcher.hasRecentlySeenEventID(452))
+
+			_, recentlySeen452 := watcher.recentEventIDs[452]
+			assert.Equal(t, tt.expectRecentlySeen452, recentlySeen452)
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
@@ -852,7 +854,7 @@ func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *t
 	// already read, which the next poll then read again.
 	assert.Equal(t, changedAt.Add(time.Second), watcher.lastTimestamp, "a late row must not move the cursor back")
 	assert.Equal(t, int64(451), watcher.lastEventID)
-	assert.True(t, watcher.hasRecentlySeenEventID(452))
+	assert.Contains(t, watcher.recentEventIDs, int64(452))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

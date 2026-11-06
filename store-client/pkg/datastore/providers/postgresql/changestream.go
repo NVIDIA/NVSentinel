@@ -577,28 +577,8 @@ func (w *PostgreSQLChangeStreamWatcher) handleNotification(ctx context.Context, 
 
 	// This runs on the goroutine that reads the LISTEN connection, so it never queries the
 	// database or waits for the consumer. It records the id and wakes the fetch loop.
-	w.mu.RLock()
-	lastEventID := w.lastEventID
-	w.mu.RUnlock()
-
-	// The cursor follows (changed_at, id), so a row already read can have a higher id than the
-	// cursor. Skip any row read recently, whatever its id.
-	if w.hasRecentlySeenEventID(payload.ID) {
-		slog.Debug("Skipping already-processed event from NOTIFY",
-			"client", w.clientName,
-			"notifiedID", payload.ID,
-			"lastEventID", lastEventID)
-
-		return nil
-	}
-
-	if payload.ID <= lastEventID {
-		slog.Debug("Recovering out-of-order NOTIFY below current bookmark",
-			"client", w.clientName,
-			"notifiedID", payload.ID,
-			"lastEventID", lastEventID)
-	}
-
+	// addNotifiedID leaves out a row a poll has read, whatever its id: the cursor follows
+	// (changed_at, id), so a row already read can have a higher id than the cursor.
 	w.addNotifiedID(payload.ID)
 
 	return nil
@@ -685,12 +665,15 @@ func (w *PostgreSQLChangeStreamWatcher) deliverChangeByID(
 // addNotifiedID records a notified changelog id for the fetch loop and wakes it. It never blocks.
 // When notifiedIDLimit ids are already waiting, the id is dropped and counted instead. A row a
 // poll has read by now is left out, under the lock the read is recorded with, so no pass looks it
-// up and delivers it a second time.
+// up and delivers it a second time. Only a recorded id wakes the fetch loop: an id left out needs
+// no pass, and one that is dropped or already waiting comes while ids wait, so a pass that takes
+// them is already due.
 func (w *PostgreSQLChangeStreamWatcher) addNotifiedID(id int64) {
 	w.mu.Lock()
 
 	_, read := w.recentEventIDs[id]
 	_, waiting := w.unreadIDs[id]
+	recorded := false
 
 	if !read && !waiting {
 		if len(w.notifiedIDs) < notifiedIDLimit {
@@ -700,6 +683,7 @@ func (w *PostgreSQLChangeStreamWatcher) addNotifiedID(id int64) {
 
 			w.unreadIDs[id] = struct{}{}
 			w.notifiedIDs = append(w.notifiedIDs, id)
+			recorded = true
 		} else {
 			w.droppedIDs++
 		}
@@ -707,7 +691,9 @@ func (w *PostgreSQLChangeStreamWatcher) addNotifiedID(id int64) {
 
 	w.mu.Unlock()
 
-	w.wakeFetchLoop()
+	if recorded {
+		w.wakeFetchLoop()
+	}
 }
 
 // takeNotifiedIDs returns the notified ids no read has returned yet, in arrival order, with the
@@ -1586,16 +1572,6 @@ func positionAfter(ts time.Time, id int64, otherTS time.Time, otherID int64) boo
 	}
 
 	return id > otherID
-}
-
-func (w *PostgreSQLChangeStreamWatcher) hasRecentlySeenEventID(eventID int64) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.pruneRecentEventIDsLocked(time.Now())
-	_, recentlySeen := w.recentEventIDs[eventID]
-
-	return recentlySeen
 }
 
 func (w *PostgreSQLChangeStreamWatcher) recordRecentEventIDLocked(eventID int64, now time.Time) {

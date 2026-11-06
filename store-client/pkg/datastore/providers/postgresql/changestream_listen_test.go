@@ -196,22 +196,22 @@ func TestHandleNotification_RecordsIDForFetchLoop(t *testing.T) {
 		},
 		{
 			// The poll read the row before its NOTIFY arrived, so the position already covers
-			// it. Looking it up would deliver it twice.
-			name:     "row past the position that a poll read is skipped",
-			extra:    `{"id":21,"table":"health_events","operation":"INSERT"}`,
-			readID:   21,
-			wantWake: true,
+			// it. Looking it up would deliver it twice, and there is nothing to wake for.
+			name:   "row past the position that a poll read is skipped",
+			extra:  `{"id":21,"table":"health_events","operation":"INSERT"}`,
+			readID: 21,
 		},
 		{
 			name:  "row of another table is ignored",
 			extra: `{"id":22,"table":"maintenance_events","operation":"INSERT"}`,
 		},
 		{
+			// The ids already waiting woke the fetch loop when they were recorded, so the
+			// pass that takes them is due without another wake.
 			name:        "full list drops the id and counts it",
 			extra:       `{"id":23,"table":"health_events","operation":"INSERT"}`,
 			full:        true,
 			wantDropped: 1,
-			wantWake:    true,
 		},
 	}
 
