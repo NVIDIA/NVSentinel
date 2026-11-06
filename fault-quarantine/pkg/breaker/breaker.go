@@ -204,6 +204,9 @@ const (
 	boundMaxCordonedNodes Bound = "maxCordonedNodes"
 	// boundMaxCordonedPercentage is the percentage form of boundMaxCordonedNodes.
 	boundMaxCordonedPercentage Bound = "maxCordonedPercentage"
+	// boundNoGPUNodes is reported when no GPU nodes are counted, where any recent cordon trips
+	// the breaker.
+	boundNoGPUNodes Bound = "noGPUNodes"
 )
 
 // resolveThreshold turns a percentage bound and an absolute bound into a single node count,
@@ -456,10 +459,9 @@ func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bo
 	b.mu.Lock()
 	b.slideWindow(time.Now())
 	recentCordonedNodes := b.sumBuckets()
-	threshold, bindingBound := b.tripThreshold(0)
 	b.mu.Unlock()
 
-	metrics.SetFaultQuarantineBreakerThresholdNodes(float64(threshold), string(bindingBound))
+	metrics.SetFaultQuarantineBreakerThresholdNodes(1, string(boundNoGPUNodes))
 
 	if recentCordonedNodes == 0 {
 		metrics.SetFaultQuarantineBreakerUtilization(0)

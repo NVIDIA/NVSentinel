@@ -1149,7 +1149,7 @@ func TestIsTripped_NoGPUNodes_StaysClosed(t *testing.T) {
 	}
 
 	require.Equal(t, StateClosed, b.CurrentState())
-	assert.Equal(t, map[string]float64{string(boundPercentage): 0},
+	assert.Equal(t, map[string]float64{string(boundNoGPUNodes): 1},
 		gaugeSeries(t, metrics.FaultQuarantineBreakerThresholdNodes),
 		"the threshold gauge must not keep a value from a nonzero node count")
 }
@@ -1164,6 +1164,8 @@ func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, tripped, "a cordon while no GPU nodes are counted must trip the breaker")
 	require.Equal(t, StateTripped, b.CurrentState())
+	assert.Equal(t, map[string]float64{string(boundNoGPUNodes): 1},
+		gaugeSeries(t, metrics.FaultQuarantineBreakerThresholdNodes))
 }
 
 func TestIsTripped_GPUNodeJoinsAfterZero_UsesNodeCount(t *testing.T) {
