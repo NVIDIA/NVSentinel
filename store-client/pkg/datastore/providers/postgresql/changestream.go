@@ -66,7 +66,7 @@ type notificationPayload struct {
 const (
 	// changelogBatchSize is the most changelog rows one poll reads.
 	changelogBatchSize = 100
-	// notifiedIDLimit bounds the notified changelog ids kept between two passes of the fetch
+	// notifiedIDLimit bounds the notified changelog ids kept between two lookups of the fetch
 	// loop. Ids that arrive while the list is full are dropped, see fetchNotifiedRows.
 	notifiedIDLimit = 1000
 	// fetchRetryDelay is how long the fetch loop waits before it makes a failed pass again. It
@@ -122,7 +122,7 @@ type PostgreSQLChangeStreamWatcher struct {
 	wake        chan struct{}      // holds at most one wake-up, which covers any number of notifications
 	notifiedIDs []int64            // notified ids in the order they arrived, at most notifiedIDLimit
 	unreadIDs   map[int64]struct{} // the notified ids no read has returned yet
-	droppedIDs  int                // notified ids not kept since the last pass, because notifiedIDs was full
+	droppedIDs  int                // notified ids not kept since the last lookup, because notifiedIDs was full
 
 	// fetchMu lets one goroutine read the changelog and deliver what it read at a time. The
 	// fallback poller and the fetch loop would otherwise read the same rows from the same
@@ -715,13 +715,8 @@ func (w *PostgreSQLChangeStreamWatcher) fetchLoop(ctx context.Context) {
 	for {
 		// The first pass reads what was committed before LISTEN was acknowledged, which no
 		// notification announces.
-		if err := w.catchUp(ctx); err != nil {
-			if ctx.Err() == nil {
-				slog.Error("Failed to catch up on the changelog", "client", w.clientName, "error", err)
-				retry.Reset(w.retryDelay)
-			}
-		} else if err := w.fetchNotifiedRows(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("Failed to read notified changelog rows", "client", w.clientName, "error", err)
+		if err := w.readChangelog(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("Failed to read the changelog", "client", w.clientName, "error", err)
 			retry.Reset(w.retryDelay)
 		}
 
@@ -737,16 +732,24 @@ func (w *PostgreSQLChangeStreamWatcher) fetchLoop(ctx context.Context) {
 	}
 }
 
-// catchUp polls until a poll leaves the read position where it was, so every row committed past
-// the position is read in (changed_at, id) order and a full batch is followed by the next poll
-// right away, not by the next notification or fallback tick.
-func (w *PostgreSQLChangeStreamWatcher) catchUp(ctx context.Context) error {
+// readChangelog polls, looks up the notified ids, and repeats until a poll leaves the read position
+// where it was. Every row committed past the position is read in (changed_at, id) order, and a full
+// batch is followed by the next poll right away, not by the next notification or fallback tick.
+// The lookup after every poll empties the list of notified ids, so during a long catch-up the list
+// holds what was notified during one poll, not during the whole catch-up, and a late row's id is
+// not dropped because the list filled up meanwhile. An id notified after a lookup woke the fetch
+// loop, so the next pass takes it.
+func (w *PostgreSQLChangeStreamWatcher) readChangelog(ctx context.Context) error {
 	for {
 		w.mu.RLock()
 		lastTimestamp, lastEventID := w.lastTimestamp, w.lastEventID
 		w.mu.RUnlock()
 
 		if err := w.fetchNewChanges(ctx); err != nil {
+			return fmt.Errorf("failed to poll the changelog: %w", err)
+		}
+
+		if err := w.fetchNotifiedRows(ctx); err != nil {
 			return err
 		}
 
@@ -764,25 +767,13 @@ func (w *PostgreSQLChangeStreamWatcher) positionMovedFrom(lastTimestamp time.Tim
 	return !w.lastTimestamp.Equal(lastTimestamp) || w.lastEventID != lastEventID
 }
 
-// fetchNotifiedRows looks up every notified row no read has returned yet, delivers the ones at or
-// behind the read position in the order the poll reads them, and then catches up. A row whose
-// transaction committed after the read position had passed it is only found this way, and it is
-// delivered without moving the position back. A row past the position is left to the catch-up,
-// which reads it in order. Delivering it here would move the position over rows that committed
-// meanwhile and that no read has returned, and one of those whose id is dropped would never be
-// delivered.
+// fetchNotifiedRows looks up every notified row no read has returned yet and delivers the ones at
+// or behind the read position, in the order the poll reads them. A row whose transaction committed
+// after the read position had passed it is only found this way, and it is delivered without moving
+// the position back. A row past the position is left to the polls, which read it in order.
+// Delivering it here would move the position over rows that committed meanwhile and that no read
+// has returned, and one of those whose id is dropped would never be delivered.
 func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRows(ctx context.Context) error {
-	fetched, err := w.fetchNotifiedRowsByID(ctx)
-	if err != nil || !fetched {
-		return err
-	}
-
-	return w.catchUp(ctx)
-}
-
-// fetchNotifiedRowsByID is the lookup part of fetchNotifiedRows. It reports whether there was
-// any id to look up.
-func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRowsByID(ctx context.Context) (bool, error) {
 	// Taking the ids and fetching them is one read: a poll in between could deliver a taken row
 	// that the lookup then delivers again.
 	w.fetchMu.Lock()
@@ -792,7 +783,7 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRowsByID(ctx context.Contex
 	// or the retry is ready together with the stop. Nothing may be looked up or delivered then.
 	select {
 	case <-w.stopCh:
-		return false, nil
+		return nil
 	default:
 	}
 
@@ -804,28 +795,28 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRowsByID(ctx context.Contex
 	}
 
 	if len(ids) == 0 {
-		return false, nil
+		return nil
 	}
 
 	// One query looks every id up, so no lookup starts after the stop check above.
 	events, err := w.queryNotifiedRows(ctx, ids)
 	if err != nil {
 		if ctx.Err() != nil {
-			return true, ctx.Err()
+			return ctx.Err()
 		}
 
 		// The pass is retried, so the ids stay pending. A late row is only ever delivered by its
 		// lookup, so dropping them here would lose it.
 		w.keepNotifiedIDs(ids, dropped)
 
-		return true, fmt.Errorf("failed to fetch %d notified changelog rows: %w", len(ids), err)
+		return fmt.Errorf("failed to fetch %d notified changelog rows: %w", len(ids), err)
 	}
 
 	if err := w.sendEventsToChannel(ctx, events); err != nil {
-		return true, fmt.Errorf("failed to deliver notified changelog rows: %w", err)
+		return fmt.Errorf("failed to deliver notified changelog rows: %w", err)
 	}
 
-	return true, nil
+	return nil
 }
 
 // keepNotifiedIDs puts the ids of a failed lookup back in front of the ones notified since, and
