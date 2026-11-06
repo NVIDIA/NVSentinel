@@ -931,11 +931,6 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	nodeName string, drainStatus string) error {
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.update_user_pods_eviction_status")
 	defer span.End()
-
-	// Every terminal drain status funnels through here -- drained, skipped and all three
-	// cancellation paths -- so clearing the allowCompletion gauge once, here, is what keeps
-	// a cancelled drain from leaving it stuck at 1 forever.
-	metrics.NodeDrainAwaitingCompletion.WithLabelValues(nodeName).Set(0)
 	// Extract the document ID (preserving native type for MongoDB)
 	documentID, err := utils.ExtractDocumentIDNative(event)
 	if err != nil {
@@ -993,6 +988,12 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		"evictionStatus", userPodsEvictionStatus.Status,
 		"drainScope", drainScope)
 	metrics.EventsProcessed.WithLabelValues(drainStatus, nodeName, string(drainScope)).Inc()
+
+	// Cleared only once the terminal status is persisted. Every terminal status -- drained,
+	// skipped and all three cancellation paths -- funnels through here, so one clear covers
+	// every exit; doing it before the update would drop the gauge to 0 on an update that
+	// then fails and requeues, silencing an alert while the drain is in fact still waiting.
+	metrics.NodeDrainAwaitingCompletion.WithLabelValues(nodeName).Set(0)
 
 	if partialEntity != nil {
 		metrics.RecordPartialDrain(nodeName, partialEntity.GetEntityType(), partialEntity.GetEntityValue())
