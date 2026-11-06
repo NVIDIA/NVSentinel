@@ -90,7 +90,7 @@ func appliedTaintsAnnotation(t *testing.T, taints ...config.Taint) string {
 	return string(taintsJSON)
 }
 
-func TestMarkPreExistingTaints(t *testing.T) {
+func TestReconcileTaintsWithNode(t *testing.T) {
 	taint := config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"}
 
 	testCases := []struct {
@@ -139,7 +139,7 @@ func TestMarkPreExistingTaints(t *testing.T) {
 				Spec:       corev1.NodeSpec{Taints: tc.nodeTaints},
 			}
 
-			got := markPreExistingTaints(node, tc.desired)
+			got := reconcileTaintsWithNode(context.Background(), node, tc.desired)
 			assert.Equal(t, tc.expected, got)
 		})
 	}
