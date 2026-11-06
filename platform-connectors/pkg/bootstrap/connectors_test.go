@@ -224,6 +224,28 @@ func (s *stuck) FetchAndProcessHealthMetric(ctx context.Context) {
 	s.queue.HealthMetricEleProcessingCompleted(item)
 }
 
+// hung is a queued connector whose loop keeps its batch until the test ends
+// and watches neither its context nor stopCh, like a loop held by a datastore
+// call that does not end with its context.
+type hung struct {
+	queue   *ringbuffer.RingBuffer
+	holding chan struct{}
+	release chan struct{}
+}
+
+func (*hung) ProcessBatch(context.Context, *pb.HealthEvents) error { return nil }
+
+func (h *hung) FetchAndProcessHealthMetric(context.Context) {
+	item, quit := h.queue.Dequeue()
+	if quit {
+		return
+	}
+
+	close(h.holding)
+	<-h.release
+	h.queue.HealthMetricEleProcessingCompleted(item)
+}
+
 // held is a queued connector whose loop keeps its batch until stopCh closes,
 // the way stopCh ends the retries of the batch the Kubernetes connector's loop
 // is on. It does not watch its context, so only stopCh can end it.
@@ -364,6 +386,55 @@ func TestShutdown_LoopStillBusyAtTheDrainTimeout_IsStopped(t *testing.T) {
 	require.True(t, loop.canceled.Load(), "the loop still busy at the timeout was stopped through its context")
 	require.Contains(t, logs.String(),
 		`level=WARN msg="Connector queues not drained before shutdown, stopping their loops" timeout=100ms loops=[stuck]`)
+	require.NotContains(t, logs.String(), "still running after it was stopped",
+		"a loop that returned once it was stopped is not reported as left behind")
+}
+
+// TestShutdown_LoopIgnoringItsStop_DoesNotHoldShutdown: a loop that does not
+// return once it is stopped, behind a PostgreSQL insert whose host stopped
+// answering for example, holds Shutdown no longer than the stop timeout after
+// the drain timeout, so the connections still close before the pod is killed.
+// The batches it is left with are logged at Error, since it cannot log them; a
+// loop that did return once it was stopped is not reported.
+func TestShutdown_LoopIgnoringItsStop_DoesNotHoldShutdown(t *testing.T) {
+	logs := captureLogs(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	c := &Connectors{
+		mode: ConnectorOptions{Queued: true}, stopCh: make(chan struct{}),
+		drainTimeout: 100 * time.Millisecond, stopTimeout: 100 * time.Millisecond,
+	}
+	stoppedQueue := c.queue(ctx, "stuck")
+	stopped := &stuck{queue: stoppedQueue, holding: make(chan struct{})}
+	c.add(ctx, stoppedQueue, "stuck", stopped, false)
+
+	queue := c.queue(ctx, "hung")
+	loop := &hung{queue: queue, holding: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { close(loop.release) })
+	c.add(ctx, queue, "hung", loop, false)
+
+	require.NoError(t, stoppedQueue.ProcessBatch(ctx, &pb.HealthEvents{Events: []*pb.HealthEvent{{NodeName: "node-1"}}}))
+
+	for range 3 {
+		require.NoError(t, queue.ProcessBatch(ctx, &pb.HealthEvents{Events: []*pb.HealthEvent{{NodeName: "node-1"}}}))
+	}
+
+	require.Eventually(t, func() bool { return isClosed(stopped.holding) && isClosed(loop.holding) },
+		5*time.Second, 5*time.Millisecond)
+
+	shutdown := shutdownInBackground(ctx, c)
+
+	require.Eventually(t, func() bool { return isClosed(shutdown) }, 5*time.Second, 5*time.Millisecond,
+		"Shutdown kept waiting for a loop that did not return once it was stopped")
+	require.True(t, c.loops[0].done.Load(), "the loop that returned once it was stopped was waited for")
+	require.False(t, c.loops[1].done.Load(), "the loop that did not return was left behind")
+	require.Contains(t, logs.String(),
+		`level=WARN msg="Connector queues not drained before shutdown, stopping their loops" timeout=100ms loops="[stuck hung]"`)
+	require.Contains(t, logs.String(), `level=ERROR msg="Connector loop still running after it was stopped, `+
+		`dropping its batches permanently" loop=hung batchCount=3 timeout=100ms`)
+	require.NotContains(t, logs.String(), "loop=stuck", "a loop that returned once it was stopped is not reported")
 }
 
 // gatedSink is the far end of the gRPC sink, a PlatformConnector server that

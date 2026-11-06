@@ -338,7 +338,7 @@ platformConnector:
 
 When a PostgreSQL client certificate is mounted, the platform connector runs a `fix-cert-permissions` init container first, because the PostgreSQL client rejects a key file that is group-readable or world-readable. `mongodbStore.maxRetries` bounds the retries on a failed store write before the event is dropped.
 
-The store connector holds a failed batch and retries it before it takes the next batch, so a newer batch cannot overtake a pending fault or recovery. At shutdown, the queues get up to 10 seconds to empty before the datastore client closes, and the store connector logs at Error each batch that it drops.
+The store connector holds a failed batch and retries it before it takes the next batch, so a newer batch cannot overtake a pending fault or recovery. At shutdown, the queues get up to 10 seconds to empty before the datastore client closes, and the store connector logs at Error each batch that it drops. A connector that does not stop within 5 seconds after that is left behind. Shutdown then closes the connections and logs at Error the number of batches that the connector still holds.
 
 To rotate certificates without restarting pods, see [Client Certificate Rotation](./README.md#client-certificate-rotation).
 
