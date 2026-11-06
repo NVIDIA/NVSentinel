@@ -92,12 +92,18 @@ type PostgreSQLChangeStreamWatcher struct {
 	stopCh         chan struct{}
 	lastEventID    int64        // For tie-breaking when timestamps are equal
 	lastTimestamp  time.Time    // Primary resume position (timestamp-based, like MongoDB)
-	mu             sync.RWMutex // Protects lastEventID, lastTimestamp, and lastNotifyTime
+	mu             sync.RWMutex // Protects lastEventID, lastTimestamp, highestReadEventID, and lastNotifyTime
 	pollInterval   time.Duration
 	pipelineFilter *PipelineFilter // Application-side filter (fallback for edge cases)
 	pipeline       any             // Raw pipeline for SQL filter building
 	recentEventIDs map[int64]time.Time
 	recentEventSeq []int64
+
+	// highestReadEventID is the highest changelog id this watcher has read, resumed from, or
+	// acknowledged past. It is never below lastEventID. The cursor moves in (changed_at, id)
+	// order, so its id can drop below ids already read, and an ack for such a row must not
+	// need the row's changed_at: the row can have been purged by then.
+	highestReadEventID int64
 
 	resumeRetryInterval time.Duration // Initial legacy lookup retry delay; overridden in tests
 
@@ -265,11 +271,11 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 
 	processedEventID := eventID
 
-	// Mark all events up to and including this eventID as processed
-	// This is safe because:
-	// 1. The application only calls MarkProcessed after successfully processing an event
-	// 2. Events are delivered in order (by ID)
-	// 3. If an event is filtered by the pipeline, we never send it, so MarkProcessed is never called for it
+	// Mark rows up to and including this id as processed. Rows are delivered in (changed_at, id)
+	// order, not by id, so with out-of-order rows this can also mark a lower-id row that hasn't
+	// been delivered yet. Today that only skews GetUnprocessedEventCount, because
+	// cleanup_changelog() is never called (#2170) and ADR-068 doesn't delete by this flag.
+	// Retention must not delete by processed without revisiting this.
 	query := `
 		UPDATE datastore_changelog
 		SET processed = TRUE
@@ -285,9 +291,17 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 	// MarkProcessed calls cannot persist an older bookmark after a newer one.
 	w.mu.Lock()
 
-	if processedEventID > w.lastEventID {
+	// Move the cursor only forward in (changed_at, id) order. The id alone isn't enough, since a
+	// row can have a higher id than the cursor and an earlier changed_at. advancePosition has
+	// already put the cursor at or past every row this watcher delivered, so an ack only moves it
+	// for a row the watcher never delivered, such as one from before a restart.
+	if positionAfter(timestamp, processedEventID, w.lastTimestamp, w.lastEventID) {
 		w.lastEventID = processedEventID
 		w.lastTimestamp = timestamp
+	}
+
+	if processedEventID > w.highestReadEventID {
+		w.highestReadEventID = processedEventID
 	}
 
 	resumeEventID := w.lastEventID
@@ -310,15 +324,17 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 	return nil
 }
 
-// timestampForAck only looks up a timestamp when the ack is ahead of the read position.
+// timestampForAck only looks up a timestamp when the ack is ahead of every row read so far.
 func (w *PostgreSQLChangeStreamWatcher) timestampForAck(ctx context.Context, eventID int64) (time.Time, error) {
 	w.mu.RLock()
-	lastEventID := w.lastEventID
+	highestReadEventID := w.highestReadEventID
 	w.mu.RUnlock()
 
-	// Normal acks must still succeed after their changelog row has expired.
-	// The read ID only increases, so the later locked comparison remains safe.
-	if eventID <= lastEventID {
+	// An ack for a row this watcher has read doesn't need the row's changed_at. The cursor is
+	// already at or past the row, so the ack can't move it, and the row may have been purged.
+	// The cursor's own id is not enough here: it moves in (changed_at, id) order and can sit
+	// below ids already read, and those acks must keep working too.
+	if eventID <= highestReadEventID {
 		return time.Time{}, nil
 	}
 
@@ -565,16 +581,18 @@ func (w *PostgreSQLChangeStreamWatcher) handleNotification(ctx context.Context, 
 	lastEventID := w.lastEventID
 	w.mu.RUnlock()
 
+	// The cursor follows (changed_at, id), so a row already read can have a higher id than the
+	// cursor. Skip any row read recently, whatever its id.
+	if w.hasRecentlySeenEventID(payload.ID) {
+		slog.Debug("Skipping already-processed event from NOTIFY",
+			"client", w.clientName,
+			"notifiedID", payload.ID,
+			"lastEventID", lastEventID)
+
+		return nil
+	}
+
 	if payload.ID <= lastEventID {
-		if w.hasRecentlySeenEventID(payload.ID) {
-			slog.Debug("Skipping already-processed event from NOTIFY",
-				"client", w.clientName,
-				"notifiedID", payload.ID,
-				"lastEventID", lastEventID)
-
-			return nil
-		}
-
 		slog.Debug("Recovering out-of-order NOTIFY below current bookmark",
 			"client", w.clientName,
 			"notifiedID", payload.ID,
@@ -1538,7 +1556,17 @@ func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWit
 	w.mu.Lock()
 	w.recordRecentEventIDLocked(eventID, time.Now())
 
-	if eventID > w.lastEventID {
+	if eventID > w.highestReadEventID {
+		w.highestReadEventID = eventID
+	}
+
+	// The poll reads rows in (changed_at, id) order, so the cursor has to move in that order.
+	// A row can have a higher id and an earlier changed_at than rows read after it: changed_at
+	// is when its transaction started and the id is taken when its statement ends. Moving by id
+	// alone pinned the cursor on such a row, and every later poll read the same rows again.
+	// A row behind the cursor, such as a late commit fetched from its NOTIFY, is still
+	// delivered but does not move the cursor back.
+	if positionAfter(eventTimestamp, eventID, w.lastTimestamp, w.lastEventID) {
 		w.lastEventID = eventID
 		w.lastTimestamp = eventTimestamp
 	}
@@ -1548,6 +1576,16 @@ func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWit
 	slog.Debug("Advanced position before filtering", "client", w.clientName, "eventID", eventID)
 
 	return eventID
+}
+
+// positionAfter reports whether (ts, id) comes after (otherTS, otherID) in the order the poll
+// reads the changelog: changed_at first, then id.
+func positionAfter(ts time.Time, id int64, otherTS time.Time, otherID int64) bool {
+	if c := ts.Compare(otherTS); c != 0 {
+		return c > 0
+	}
+
+	return id > otherID
 }
 
 func (w *PostgreSQLChangeStreamWatcher) hasRecentlySeenEventID(eventID int64) bool {
@@ -1670,6 +1708,8 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumePosition(ctx context.Context) 
 			return fmt.Errorf("failed to convert old resume token: %w", err)
 		}
 	}
+
+	w.highestReadEventID = w.lastEventID
 
 	slog.Info("Loaded resume position",
 		"client", w.clientName,
