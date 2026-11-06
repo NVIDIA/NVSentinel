@@ -108,7 +108,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `node_drainer_waiting_for_timeout` | Gauge | `node` | Shows if node drainer operation is waiting for timeout before force deletion (1=waiting, 0=not waiting) |
 | `node_drainer_force_delete_pods_after_timeout` | Counter | `node`, `namespace` | Total number of node drainer operations that reached timeout and force deleted pods |
-| `node_drainer_partial_drains_total` | Counter | `node`, `entity_type`, `entity_value` | Total number of partial drains by the entity they targeted (registered when opted in) |
+| `node_drainer_partial_drains_total` | Counter | `node`, `entity_type`, `entity_value` | Total number of partial drains by the entity they targeted. Disabled by default; enable via [`node-drainer.partialDrainEntityMetricEnabled`](configuration/node-drainer.md#partial-drain-entity-metric) |
 
 ---
 
@@ -372,6 +372,12 @@ These metrics track the internal ring buffer workqueue performance:
 ---
 
 ## Metadata Collector
+
+### Collection Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `metadata_collector_collection_completed_timestamp_seconds` | Gauge | - | Unix time GPU metadata collection completed, or 0 while it is still running. Collection can block on a wedged GPU driver, so 0 long after process start means it has stalled |
 
 ### Pod Mapper Metrics
 
