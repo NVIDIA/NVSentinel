@@ -457,6 +457,45 @@ func TestFetchAndProcessHealthMetric_ContextCanceledDuringRetry_DropsTheBatchAtE
 		`level=ERROR msg="Stopped before the batch was sent, dropping health events permanently"`)
 }
 
+// TestFetchAndProcessHealthMetric_StoppedWithBatchesQueued_LogsThemAtError: a
+// loop stopped before it emptied its queue, as Shutdown stops one still
+// running at its drain timeout, logs at Error how many acknowledged batches it
+// leaves behind, besides the one it was retrying, as the store connector does.
+func TestFetchAndProcessHealthMetric_StoppedWithBatchesQueued_LogsThemAtError(t *testing.T) {
+	logs := captureLogs(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rb := ringbuffer.NewRingBuffer("testSendStoppedWithBatchesQueued", context.Background(),
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	t.Cleanup(rb.ShutDownHealthMetricQueue)
+
+	sent := &sentMessages{}
+
+	mockClient := &mockPlatformConnectorClient{}
+	mockClient.On("HealthEventOccurredV1", mock.Anything, mock.Anything).
+		Run(sent.record).Return((*emptypb.Empty)(nil), errors.New("sink unavailable"))
+
+	connector := newTestConnector(mockClient, rb, 3)
+
+	for _, message := range []string{"first", "second", "third"} {
+		rb.Enqueue(batchWithMessage(message, false))
+	}
+
+	exited := runLoop(ctx, connector)
+
+	require.Eventually(t, func() bool { return len(sent.get()) == 1 }, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	requireClosed(t, exited, "the loop did not return after its context was canceled")
+
+	require.Equal(t, []string{"first"}, sent.get())
+	require.Contains(t, logs.String(),
+		`level=ERROR msg="Stopped before the batch was sent, dropping health events permanently"`)
+	require.Contains(t, logs.String(),
+		`level=ERROR msg="Context canceled with batches still queued, dropping them permanently" batchCount=2`)
+}
+
 // TestFetchAndProcessHealthMetric_StatusTheTargetRepeats_IsNotRetried: a batch
 // the target refuses with a status it gives every resend of it
 // (InvalidArgument, PermissionDenied, Unimplemented) is dropped at once, at

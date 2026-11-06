@@ -113,7 +113,15 @@ func (g *GRPCSinkConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// Shutdown stops a loop that has not emptied its queue in time;
+			// the batches left behind were acknowledged when they were queued.
+			if queued := g.ringBuffer.CurrentLength(); queued > 0 {
+				slog.Error("Context canceled with batches still queued, dropping them permanently",
+					"batchCount", queued)
+			}
+
 			slog.Info("Context canceled, exiting gRPC sink processing loop")
+
 			return
 		default:
 			queued, quit := g.ringBuffer.Dequeue()
