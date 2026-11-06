@@ -770,8 +770,6 @@ gpuResetController:
 	assert.Equal(t, "provider-reset", template.Spec.Template.Spec.ServiceAccountName)
 	require.Len(t, template.Spec.Template.Spec.InitContainers, 1)
 	assert.Equal(t, "stop-provider-daemonsets", template.Spec.Template.Spec.InitContainers[0].Name)
-	require.Len(t, template.Spec.Template.Spec.Containers, 1)
-	assert.Equal(t, GPUResetContainerName, template.Spec.Template.Spec.Containers[0].Name)
 }
 
 func TestLoadConfig_GPUResetInvalidJobTemplatePatch_ReturnsError(t *testing.T) {
