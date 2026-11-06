@@ -2646,7 +2646,12 @@ func (r *Reconciler) handleDryRunQuarantineOnNodeChange(
 func (r *Reconciler) cordonAfterPreExistingCordonRemoved(ctx context.Context, nodeName string) error {
 	slog.InfoContext(ctx, "Pre-existing cordon removed from quarantined node; cordoning node", "node", nodeName)
 
+	applied := false
+
 	updateFn := func(node *corev1.Node) error {
+		// A conflict retry may observe that the session ended after the previous attempt.
+		applied = false
+
 		// The session may have ended between the uncordon and this patch; a released node is left alone.
 		if _, sessionActive := node.Annotations[common.QuarantineHealthEventAnnotationKey]; !sessionActive {
 			return nil
@@ -2664,6 +2669,7 @@ func (r *Reconciler) cordonAfterPreExistingCordonRemoved(ctx context.Context, no
 		}
 
 		node.Labels[r.cordonedTimestampLabelKey] = time.Now().UTC().Format(cordonlabels.TimestampFormat)
+		applied = true
 
 		return nil
 	}
@@ -2673,7 +2679,9 @@ func (r *Reconciler) cordonAfterPreExistingCordonRemoved(ctx context.Context, no
 		return fmt.Errorf("failed to cordon node %s after its pre-existing cordon was removed: %w", nodeName, err)
 	}
 
-	metrics.CordonsApplied.Inc()
+	if applied {
+		metrics.CordonsApplied.Inc()
+	}
 
 	return nil
 }
