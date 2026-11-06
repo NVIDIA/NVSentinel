@@ -307,7 +307,7 @@ Turns the connector on. Disabled by default, like the other optional connectors.
 Address of the receiving gRPC server, as `host:port`. Required when the connector is enabled.
 
 #### maxRetries
-Retry attempts with exponential backoff before the connector drops the event. Total send attempts are `1 + maxRetries`. The per-RPC timeout is fixed at 10 seconds; a target that does not answer inside that window counts as a failure and is retried.
+Retry attempts with exponential backoff before the connector drops the event. Total send attempts are `1 + maxRetries`. The per-RPC timeout is fixed at 10 seconds; a target that does not answer inside that window counts as a failure and is retried. The connector holds a failed batch and retries it before it takes the next batch, so a newer batch cannot overtake a pending fault or recovery. A batch that fails while the queues drain at shutdown is retried too. A batch that the target refuses with InvalidArgument, PermissionDenied or Unimplemented gets the same answer on every attempt, so the connector does not retry it. It drops the batch at once and logs it at Error.
 
 #### tokenPath
 Path to a projected Kubernetes ServiceAccount token. When set, the connector attaches the token as a Bearer header on every RPC, and the receiving server validates it with the TokenReview API. Empty disables authentication, which matches the other internal NVSentinel gRPC connections.

@@ -32,6 +32,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -366,10 +368,14 @@ func TestShutdown_LoopStillBusyAtTheDrainTimeout_IsStopped(t *testing.T) {
 
 // gatedSink is the far end of the gRPC sink, a PlatformConnector server that
 // holds every batch until the test opens the gate and counts what it gets.
+// With failFirst it answers the first batch with an error once the gate
+// opens, as a sink that is briefly unavailable does.
 type gatedSink struct {
 	pb.UnimplementedPlatformConnectorServer
-	gate     chan struct{}
-	received atomic.Int32
+	gate      chan struct{}
+	failFirst bool
+	calls     atomic.Int32
+	received  atomic.Int32
 }
 
 func (s *gatedSink) HealthEventOccurredV1(ctx context.Context, _ *pb.HealthEvents) (*emptypb.Empty, error) {
@@ -379,20 +385,23 @@ func (s *gatedSink) HealthEventOccurredV1(ctx context.Context, _ *pb.HealthEvent
 		return nil, ctx.Err()
 	}
 
+	if s.calls.Add(1) == 1 && s.failFirst {
+		return nil, status.Error(codes.Unavailable, "sink briefly unavailable")
+	}
+
 	s.received.Add(1)
 
 	return &emptypb.Empty{}, nil
 }
 
-// TestShutdown_QueuedSinkBatches_DeliveredBeforeTheSinkCloses: Shutdown closes
-// the sink and the datastore only after the loops have finished, so every batch
-// the gRPC sink's queue held at shutdown reaches the sink, including the one in
-// flight when Shutdown started.
-func TestShutdown_QueuedSinkBatches_DeliveredBeforeTheSinkCloses(t *testing.T) {
+// serveSink serves sink on a local port until the test ends and returns its
+// address.
+func serveSink(t *testing.T, sink *gatedSink) string {
+	t.Helper()
+
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	sink := &gatedSink{gate: make(chan struct{})}
 	server := grpc.NewServer()
 	pb.RegisterPlatformConnectorServer(server, sink)
 
@@ -400,11 +409,22 @@ func TestShutdown_QueuedSinkBatches_DeliveredBeforeTheSinkCloses(t *testing.T) {
 
 	t.Cleanup(server.Stop)
 
+	return lis.Addr().String()
+}
+
+// TestShutdown_QueuedSinkBatches_DeliveredBeforeTheSinkCloses: Shutdown closes
+// the sink and the datastore only after the loops have finished, so every batch
+// the gRPC sink's queue held at shutdown reaches the sink, including the one in
+// flight when Shutdown started.
+func TestShutdown_QueuedSinkBatches_DeliveredBeforeTheSinkCloses(t *testing.T) {
+	sink := &gatedSink{gate: make(chan struct{})}
+	target := serveSink(t, sink)
+
 	ctx := context.Background()
 	c := &Connectors{mode: ConnectorOptions{Queued: true}}
 	require.NoError(t, c.addSink(ctx, map[string]any{
 		"enableGRPCSinkConnector":     "true",
-		"GRPCSinkTarget":              lis.Addr().String(),
+		"GRPCSinkTarget":              target,
 		"GRPCSinkConnectorMaxRetries": json.Number("3"),
 	}))
 
@@ -421,6 +441,39 @@ func TestShutdown_QueuedSinkBatches_DeliveredBeforeTheSinkCloses(t *testing.T) {
 
 	require.Eventually(t, func() bool { return isClosed(shutdown) }, 5*time.Second, 5*time.Millisecond)
 	require.EqualValues(t, batches, sink.received.Load(), "every queued batch reached the sink before it was closed")
+}
+
+// TestShutdown_SinkSendFailingDuringTheDrain_IsRetried: a send to the gRPC sink
+// that fails while Shutdown waits for the loops is retried, and every batch
+// the sink's queue held at shutdown still reaches the sink before it is
+// closed. A queue that is shut down takes no batch back, so a failed batch
+// handed back to it would be lost.
+func TestShutdown_SinkSendFailingDuringTheDrain_IsRetried(t *testing.T) {
+	sink := &gatedSink{gate: make(chan struct{}), failFirst: true}
+	target := serveSink(t, sink)
+
+	ctx := context.Background()
+	c := &Connectors{mode: ConnectorOptions{Queued: true}}
+	require.NoError(t, c.addSink(ctx, map[string]any{
+		"enableGRPCSinkConnector":     "true",
+		"GRPCSinkTarget":              target,
+		"GRPCSinkConnectorMaxRetries": json.Number("3"),
+	}))
+
+	const batches = 5
+	for range batches {
+		require.NoError(t, c.Set.ProcessBatch(ctx, &pb.HealthEvents{Events: []*pb.HealthEvent{{NodeName: "node-1"}}}))
+	}
+
+	shutdown := shutdownInBackground(ctx, c)
+
+	require.Never(t, func() bool { return isClosed(shutdown) }, 100*time.Millisecond, 5*time.Millisecond,
+		"Shutdown returned while the sink still held a batch")
+	close(sink.gate)
+
+	require.Eventually(t, func() bool { return isClosed(shutdown) }, 5*time.Second, 5*time.Millisecond)
+	require.EqualValues(t, batches, sink.received.Load(),
+		"the batch whose send failed during the drain was sent again before the sink was closed")
 }
 
 // TestShutdown_LoopHeldUntilStopCh_IsStoppedAtTheDrainTimeout: Shutdown keeps
