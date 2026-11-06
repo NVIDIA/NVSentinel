@@ -260,10 +260,11 @@ func nilIfEmpty(ids []int64) []int64 {
 	return ids
 }
 
-// After ids were dropped, a pass must not move the read position forward to a notified row: it
-// could step over a dropped row that no poll would return then. It delivers the rows at or behind
-// the position, and the poll reads the rest in order.
-func TestFetchNotifiedRows_AfterDroppedIDs_DeliversOnlyRowsBehindPosition(t *testing.T) {
+// A lookup delivers a notified row only when it is at or behind the read position. Moving the
+// position forward to a notified row would step over a row that committed meanwhile and that no
+// read has returned, and if that row's id were dropped, nothing would deliver it. The poll reads
+// the rows past the position in order.
+func TestFetchNotifiedRows_RowPastPosition_IsLeftToThePoll(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -273,9 +274,10 @@ func TestFetchNotifiedRows_AfterDroppedIDs_DeliversOnlyRowsBehindPosition(t *tes
 	watcher.lastTimestamp = base.Add(20 * time.Second)
 	watcher.lastEventID = 20
 
+	// Row 15 committed after the position passed it. Rows 21 and 30 committed after the last
+	// poll, and only the NOTIFY for row 30 has been handled. No id was dropped.
 	watcher.addNotifiedID(15)
 	watcher.addNotifiedID(30)
-	watcher.droppedIDs = 1
 
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, int64(15)).
@@ -285,16 +287,15 @@ func TestFetchNotifiedRows_AfterDroppedIDs_DeliversOnlyRowsBehindPosition(t *tes
 		WillReturnRows(listenTestRows(base, 30))
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
-		WillReturnRows(listenTestRows(base, 30))
+		WillReturnRows(listenTestRows(base, 21, 30))
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(30*time.Second), int64(30)).
 		WillReturnRows(changelogRows())
 
 	require.NoError(t, watcher.fetchNotifiedRows(context.Background()))
 
-	assert.Equal(t, []byte("15"), (<-watcher.events).ResumeToken, "the late row comes from its lookup")
-	assert.Equal(t, []byte("30"), (<-watcher.events).ResumeToken, "the row past the position comes from the poll")
-	assert.Empty(t, watcher.events)
+	assert.Equal(t, []string{"15", "21", "30"}, drainTokens(watcher),
+		"the late row comes from its lookup, the rows past the position from the poll in order")
 	assert.Equal(t, base.Add(30*time.Second), watcher.lastTimestamp)
 	assert.Equal(t, int64(30), watcher.lastEventID)
 	assert.NoError(t, mock.ExpectationsWereMet())

@@ -584,20 +584,9 @@ func (w *PostgreSQLChangeStreamWatcher) handleNotification(ctx context.Context, 
 	return nil
 }
 
-// fetchChangeByID looks a notified changelog row up by id and delivers it. It is the lookup used
-// while no notified id has been dropped since the last pass.
+// fetchChangeByID looks a notified changelog row up by id and delivers it when it is at or behind
+// the read position. A row past the position is left to the polls, which read it in order.
 func (w *PostgreSQLChangeStreamWatcher) fetchChangeByID(ctx context.Context, eventID int64) error {
-	events, err := w.queryChangeByID(ctx, eventID)
-	if err != nil {
-		return err
-	}
-
-	return w.deliverChangeByID(ctx, eventID, events)
-}
-
-// fetchLateChangeByID is fetchChangeByID for a row that only counts when it is at or behind the
-// read position. A row past the position is left for the polls, which read it in order.
-func (w *PostgreSQLChangeStreamWatcher) fetchLateChangeByID(ctx context.Context, eventID int64) error {
 	events, err := w.queryChangeByID(ctx, eventID)
 	if err != nil || len(events) == 0 {
 		return err
@@ -758,8 +747,7 @@ func (w *PostgreSQLChangeStreamWatcher) fetchLoop(ctx context.Context) {
 
 	for {
 		// The first pass reads what was committed before LISTEN was acknowledged, which no
-		// notification announces. Catching up before the lookup also keeps a notified row past
-		// the read position from moving the position over rows that nothing has read yet.
+		// notification announces.
 		if err := w.catchUp(ctx); err != nil {
 			if ctx.Err() == nil {
 				slog.Error("Failed to catch up on the changelog", "client", w.clientName, "error", err)
@@ -810,11 +798,12 @@ func (w *PostgreSQLChangeStreamWatcher) positionMovedFrom(lastTimestamp time.Tim
 }
 
 // fetchNotifiedRows fetches by id, in the order the notifications arrived, every notified row no
-// read has returned yet, and then catches up. A row whose transaction committed after the read
-// position had passed it is only found this way, and it is delivered without moving the position
-// back. A row past the position moves the position forward to it, as a notification always did,
-// unless ids were dropped since the last pass: the position could then step over a dropped row
-// that no poll would return, so only rows at or behind it are delivered and the polls read the rest.
+// read has returned yet, delivers the ones at or behind the read position, and then catches up. A
+// row whose transaction committed after the read position had passed it is only found this way,
+// and it is delivered without moving the position back. A row past the position is left to the
+// catch-up, which reads it in order. Delivering it here would move the position over rows that
+// committed meanwhile and that no read has returned, and one of those whose id is dropped would
+// never be delivered.
 func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRows(ctx context.Context) error {
 	fetched, err := w.fetchNotifiedRowsByID(ctx)
 	if err != nil || !fetched {
@@ -842,16 +831,13 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRowsByID(ctx context.Contex
 
 	ids, dropped := w.takeNotifiedIDs()
 
-	fetch := w.fetchChangeByID
 	if dropped > 0 {
-		fetch = w.fetchLateChangeByID
-
 		slog.Warn("Fetch loop fell behind notifications, dropped notified changelog ids",
 			"client", w.clientName, "dropped", dropped, "limit", notifiedIDLimit)
 	}
 
 	for i, id := range ids {
-		if err := fetch(ctx, id); err != nil {
+		if err := w.fetchChangeByID(ctx, id); err != nil {
 			if ctx.Err() != nil {
 				return true, ctx.Err()
 			}
