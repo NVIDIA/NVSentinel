@@ -505,7 +505,6 @@ func (r *Reconciler) initializeQuarantineMetrics(ctx context.Context) {
 }
 
 // checkCircuitBreakerAtStartup checks if circuit breaker is tripped at startup
-// Returns error if retry exhaustion occurs (should restart pod)
 // Blocks indefinitely if circuit breaker is tripped (wait for manual intervention)
 func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
 	if !r.breakerActive() {
@@ -514,10 +513,6 @@ func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
 
 	tripped, err := r.cb.IsTripped(ctx)
 	if err != nil {
-		if errors.Is(err, breaker.ErrRetryExhausted) {
-			return err
-		}
-
 		slog.ErrorContext(ctx, "Error checking if circuit breaker is tripped", "error", err)
 		<-ctx.Done()
 
