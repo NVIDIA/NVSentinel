@@ -203,7 +203,7 @@ config:
         # whole tolerations list. Janitor sets the Job name, namespace and owner labels,
         # nodeName and NVIDIA_GPU_RESETS for each reset, over any value in the patch.
         # A misspelled field stops janitor at startup. Empty leaves the Job unchanged.
-        # See docs/configuration/janitor-gpu-reset-job-patch.md.
+        # See docs/configuration/janitor.md.
         jobTemplatePatch: {}
         # imagePullSecrets can be specified under image.imagePullSecrets, otherwise we will
         # fall back to global.imagePullSecrets.
