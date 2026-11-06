@@ -31,11 +31,51 @@ import (
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
 
-// hardwareKeySeparator joins the sorted values of a grouping expression.
-const hardwareKeySeparator = "+"
+const (
+	// hardwareKeySeparator joins the sorted values of a grouping expression.
+	hardwareKeySeparator = "+"
+	// partitionKeySeparator joins the parts of a partition key.
+	partitionKeySeparator = "|"
+)
 
-// observe evaluates one class for one node.
+// observe evaluates one class for one node: its count, its partition, and
+// whether the node is settled.
 func (m *Manager) observe(
+	ctx context.Context,
+	class compiledClass,
+	node *corev1.Node,
+	resourceSlices []*resourcev1.ResourceSlice,
+) countObservation {
+	observation := m.observeCount(ctx, class, node, resourceSlices)
+
+	// A node with neither a count nor a partition is not written and is no
+	// node's peer, so the gate cannot change anything for it. A node without a
+	// count can still have a partition, in a class without sources, and then
+	// its expected label teaches the partition unless the gate says otherwise.
+	if !observation.hasPartition && (observation.missingSource || observation.err != nil) {
+		return observation
+	}
+
+	// A node that cannot tell whether it is settled is skipped like one whose
+	// currentExpression failed, and it teaches nobody.
+	settled, err := class.settled(ctx, node, resourceSlices)
+	if err != nil {
+		if observation.err == nil {
+			observation.err = err
+		}
+
+		observation.unsettled = true
+
+		return observation
+	}
+
+	observation.unsettled = !settled
+
+	return observation
+}
+
+// observeCount evaluates the count and the partition of one class for one node.
+func (m *Manager) observeCount(
 	ctx context.Context,
 	class compiledClass,
 	node *corev1.Node,
@@ -170,14 +210,14 @@ func sourcePartitionKey(
 	resourceSlices []*resourcev1.ResourceSlice,
 ) (string, bool) {
 	parts := make([]string, 0, len(source.GroupingLabels)+2)
-	parts = append(parts, "source="+source.Name)
+	parts = append(parts, sourcePartitionPrefix(source.Name))
 
 	for _, label := range source.GroupingLabels {
 		parts = append(parts, label+"="+node.Labels[label])
 	}
 
 	if source.groupingProgram == nil {
-		return strings.Join(parts, "|"), true
+		return strings.Join(parts, partitionKeySeparator), true
 	}
 
 	hardware, err := evaluateGrouping(ctx, source.groupingProgram, node, resourceSlices)
@@ -190,7 +230,13 @@ func sourcePartitionKey(
 
 	parts = append(parts, "hardware="+hardware)
 
-	return strings.Join(parts, "|"), true
+	return strings.Join(parts, partitionKeySeparator), true
+}
+
+// sourcePartitionPrefix is the first part of the partition key of every node
+// that a source counts.
+func sourcePartitionPrefix(sourceName string) string {
+	return "source=" + sourceName
 }
 
 // evaluateGrouping returns the sorted, de-duplicated values of a grouping

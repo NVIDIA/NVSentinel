@@ -129,6 +129,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		clientset,
 		resyncPeriod,
 		deviceCounts.Enabled(),
+		deviceCounts.EvidenceAnnotationKeys()...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create node informer: %w", err)
@@ -314,11 +315,15 @@ func transformPodForCache(obj any) (any, error) {
 
 // transformNodeForCache returns a fixed Node projection for the Labeler.
 //
-// Identity, labels, and the DCGM bootstrap annotation are always retained.
+// Identity, labels, the DCGM bootstrap annotation, and the given annotations
+// of device-count classes (the partition annotation of each class and the
+// relearn annotation of each class with a relearn ID) are always retained.
 // When expected device counts are enabled, capacity and allocatable resources
 // are also retained for current-count CEL expressions. All other Node fields
 // are discarded before the object enters the informer cache.
-func transformNodeForCache(deviceCountsEnabled bool) cache.TransformFunc {
+func transformNodeForCache(deviceCountsEnabled bool, deviceCountAnnotations ...string) cache.TransformFunc {
+	retainedAnnotations := append([]string{DCGMBootstrapCompletedAnnotation}, deviceCountAnnotations...)
+
 	return func(obj any) (any, error) {
 		node, ok := obj.(*v1.Node)
 		if !ok {
@@ -329,8 +334,15 @@ func transformNodeForCache(deviceCountsEnabled bool) cache.TransformFunc {
 		status := node.Status
 
 		var annotations map[string]string
-		if value, exists := objectMeta.Annotations[DCGMBootstrapCompletedAnnotation]; exists {
-			annotations = map[string]string{DCGMBootstrapCompletedAnnotation: value}
+
+		for _, key := range retainedAnnotations {
+			if value, exists := objectMeta.Annotations[key]; exists {
+				if annotations == nil {
+					annotations = make(map[string]string, len(retainedAnnotations))
+				}
+
+				annotations[key] = value
+			}
 		}
 
 		node.TypeMeta = metav1.TypeMeta{}
@@ -380,11 +392,12 @@ func createNodeInformer(
 	clientset kubernetes.Interface,
 	resyncPeriod time.Duration,
 	deviceCountsEnabled bool,
+	deviceCountAnnotations ...string,
 ) (cache.SharedIndexInformer, error) {
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 	informer := factory.Core().V1().Nodes().Informer()
 
-	if err := informer.SetTransform(transformNodeForCache(deviceCountsEnabled)); err != nil {
+	if err := informer.SetTransform(transformNodeForCache(deviceCountsEnabled, deviceCountAnnotations...)); err != nil {
 		return nil, fmt.Errorf("failed to set node transform: %w", err)
 	}
 
@@ -649,8 +662,9 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 // that the labeler reads from nodes: labels, allocatable, or capacity. DCGM
 // and driver labels are driven by pod events, so the node UpdateFunc only needs
 // to react to changes in kata detection labels, the gpu-present label (for
-// assumeDriverInstalled mode), and resource changes for status-backed device
-// count classes.
+// assumeDriverInstalled mode), resource changes for status-backed device
+// count classes, and an expected device count label that someone else changed
+// after a relearn certified it.
 func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	oldNode, ok1 := oldObj.(*v1.Node)
 	newNode, ok2 := newObj.(*v1.Node)
@@ -674,7 +688,8 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	}
 
 	return l.deviceCounts.NodeResourcesAffectDeviceCounts(oldNode, newNode) ||
-		l.deviceCounts.NodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
+		l.deviceCounts.NodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels) ||
+		l.deviceCounts.RelearnCertificationLost(oldNode, newNode)
 }
 
 const gpuPresentLabel = "nvidia.com/gpu.present"
