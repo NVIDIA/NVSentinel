@@ -141,10 +141,10 @@ config: |
 
   [[rules]]
   name = "RepeatedXIDErrorOnSameGPU"
-  description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
+  description = "Detect occurrence of XID errors (any XID except 31, 43, 45 and 137) on the same GPU 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
   recommended_action = "CONTACT_SUPPORT"
   evaluate_rule = {{ .Values.enableRepeatedXIDErrorOnSameGPURule }}
-  when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45'))"
+  when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || !(event.errorCode[0] in ['31', '43', '45', '137']))"
   stage = [
     '''
     {
@@ -177,18 +177,7 @@ config: |
         "$expr": {
           "$and": [
             {"$eq": ["this.healthevent.checkname", "SysLogsXIDError"]},
-            {
-              "$ne": [
-                "this.healthevent.errorcode.0",
-                "31"
-              ]
-            },
-            {
-              "$ne": [
-                "this.healthevent.errorcode.0",
-                "45"
-              ]
-            }
+            {"$not": [{"$in": ["this.healthevent.errorcode.0", ["31", "43", "45", "137"]]}]}
           ]
         }
       }
@@ -199,7 +188,9 @@ config: |
     #
     # Excluded codes: 31 has its own dedicated rules; 45 is preemptive channel cleanup that
     # the Xid catalogue resolves as "Not Solo: IGNORE (follow other Xid)", and a repeat is
-    # never solo.
+    # never solo. 43 (GPU stopped processing) and 137 (NVLink privilege error) are
+    # application faults the Xid catalogue resolves as IGNORE, so a crash-looping
+    # application repeats them on a healthy GPU.
     '''
     {
       "$match": {
@@ -208,7 +199,7 @@ config: |
         "healthevent.nodename": "this.healthevent.nodename",
         "$expr": {
           "$and": [
-            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "45"]]}]},
+            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "43", "45", "137"]]}]},
             {
               "$gt": [
                 {
