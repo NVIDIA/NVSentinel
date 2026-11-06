@@ -199,9 +199,11 @@ config:
         # Strategic merge patch that janitor applies to the GPU reset Job template
         # after the keys above, for example to add host mounts, init containers or a
         # service account. Lists merge on their merge keys: containers, initContainers,
-        # volumes and env on name, and volumeMounts on mountPath. A patch replaces the
-        # whole tolerations list. Janitor sets the Job name, namespace and owner labels,
-        # nodeName and NVIDIA_GPU_RESETS for each reset, over any value in the patch.
+        # volumes and env on name, and volumeMounts on mountPath. If a patch sets
+        # tolerations, its list replaces the built-in list, so include
+        # operator: Exists to keep the built-in toleration. Janitor sets the Job name,
+        # namespace and owner labels, nodeName and NVIDIA_GPU_RESETS for each reset,
+        # over any value in the patch.
         # A misspelled field stops janitor at startup. Empty leaves the Job unchanged.
         # See docs/configuration/janitor.md.
         jobTemplatePatch: {}

@@ -402,7 +402,7 @@ Janitor applies the patch at startup, with the Kubernetes `JobTemplateSpec` as t
 
 - `containers`, `initContainers`, `volumes` and `env` merge on `name`. An item with a new name is added. An item with the name of a built-in item changes only the fields that the patch sets.
 - `volumeMounts` merge on `mountPath`. A patch that gives a built-in mount a new `mountPath` adds a second mount. Use `hostDriverRootPath` and `driverRoot` to change the driver paths.
-- `tolerations` has no merge key, so a patch replaces the whole list. Keep a toleration with `operator: Exists` and no `effect`, or a `NoExecute` taint can evict the reset pod.
+- `tolerations` has no merge key. If a patch sets `tolerations`, its list replaces the built-in list, so include `operator: Exists` to keep the built-in toleration. Without it, a `NoExecute` taint can evict the reset pod.
 - To remove a built-in item, add the item with its merge key and `$patch: delete`.
 
 #### Example
