@@ -765,7 +765,10 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 			)
 		}
 
-		metrics.NodeDrainAwaitingCompletion.WithLabelValues(nodeName).Set(1)
+		// Re-asserted every poll from the event itself, so this is the instant the wait began
+		// no matter how many times the item has been requeued.
+		metrics.NodeDrainAwaitingCompletionSince.WithLabelValues(nodeName).
+			Set(float64(healthEvent.CreatedAt.Unix()))
 
 		slog.InfoContext(ctx, "Pods still running on node, requeuing for later check",
 			"node", nodeName,
@@ -988,12 +991,6 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		"evictionStatus", userPodsEvictionStatus.Status,
 		"drainScope", drainScope)
 	metrics.EventsProcessed.WithLabelValues(drainStatus, nodeName, string(drainScope)).Inc()
-
-	// Cleared only once the terminal status is persisted. Every terminal status -- drained,
-	// skipped and all three cancellation paths -- funnels through here, so one clear covers
-	// every exit; doing it before the update would drop the gauge to 0 on an update that
-	// then fails and requeues, silencing an alert while the drain is in fact still waiting.
-	metrics.NodeDrainAwaitingCompletion.WithLabelValues(nodeName).Set(0)
 
 	if partialEntity != nil {
 		metrics.RecordPartialDrain(nodeName, partialEntity.GetEntityType(), partialEntity.GetEntityValue())

@@ -91,17 +91,22 @@ var (
 		[]string{labelNode},
 	)
 
-	// NodeDrainAwaitingCompletion tracks node drainer operations in allowCompletion mode.
-	// allowCompletion is the only mode with no deadline -- it polls until the pods exit on
-	// their own and never evicts -- so this gauge is the only thing that distinguishes a
-	// drain that is waiting from one that cannot finish. Alert on it staying 1 for longer
-	// than any workload in those namespaces would legitimately take.
-	NodeDrainAwaitingCompletion = promauto.NewGaugeVec(
+	// NodeDrainAwaitingCompletionSince carries the creation time of the health event behind an
+	// in-progress allowCompletion drain, for nodes still waiting on pods. allowCompletion is the
+	// only mode with no deadline, so this is what makes "waiting too long" expressible:
+	// time() - this > <the longest run those namespaces should take>.
+	//
+	// A timestamp rather than a 0/1 flag on purpose. The value is re-asserted from the event on
+	// every poll, so if the series is removed while another event for the same node is still
+	// waiting, the next poll restores the same instant instead of restarting the clock -- a 0/1
+	// flag with a `for:` clause would have its timer reset by that gap. The series is removed,
+	// not zeroed, when the node stops draining: time() minus zero would read as a very long wait.
+	NodeDrainAwaitingCompletionSince = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "node_drainer_waiting_for_completion",
-			Help: "1 while a node drain in allowCompletion mode is waiting for pods to finish, " +
-				"0 once the drain reaches a terminal status. allowCompletion has no timeout, so " +
-				"this stays 1 indefinitely for a pod that never exits.",
+			Name: "node_drainer_awaiting_completion_since_seconds",
+			Help: "Unix time of the health event behind an allowCompletion drain that is still " +
+				"waiting for pods to finish. Absent when the node is not waiting. allowCompletion " +
+				"has no timeout, so alert on time() minus this value.",
 		},
 		[]string{labelNode},
 	)
