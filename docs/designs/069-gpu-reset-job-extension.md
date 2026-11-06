@@ -1,6 +1,6 @@
 # ADR-069: Janitor — Extend the GPU Reset Job with a Strategic Merge Patch
 
-Status: Proposed (tracking issue [#1782](https://github.com/NVIDIA/NVSentinel/issues/1782))
+Status: Accepted (tracking issue [#1782](https://github.com/NVIDIA/NVSentinel/issues/1782))
 
 ## Context
 
