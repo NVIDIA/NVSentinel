@@ -447,7 +447,8 @@ The `gpu-reset` container keeps its image, environment, security context and bui
 - Keep the reset in the Job. Janitor uses the Job result as the reset result, so a wrapper command must run the reset and return its exit code.
 - Create the objects that the patch names, such as a ServiceAccount, in the janitor namespace. A missing object shows only when a reset runs, on a node that is already cordoned and drained.
 - Restore the host changes that the Job makes. Janitor restores only the GPU services that it stops.
-- Keep `gpuReset.timeout` longer than the teardown and the `activeDeadlineSeconds` of the Job. When a GPUReset is deleted, janitor waits for a running reset Job only until this timeout. Then it restores the GPU services, also when the Job still runs.
+- Keep `gpuReset.timeout` longer than the time before the Job starts and the `activeDeadlineSeconds` of the Job. The timeout starts when the GPUReset starts, so a wait for node labels that another controller holds and the teardown also use it. When a GPUReset is deleted, janitor waits for a running reset Job only until this timeout. Then it restores the GPU services, also when the Job still runs. Do not delete a GPUReset while its Job runs.
+- Do not put a credential in the patch. The patch is in the janitor ConfigMap, and janitor logs the resolved template at startup. Read a credential from a Secret with `valueFrom.secretKeyRef`.
 - Test a patch with one GPU reset on one node before you use it across the cluster.
 
 ### resetJob.image

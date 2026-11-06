@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1555,22 +1554,29 @@ func (r *GPUResetReconciler) newGpuResetJob(ctx context.Context, gr *v1alpha1.GP
 	return job, nil
 }
 
-// setContainersEnvVar sets envVar in each container, and replaces the value of an environment variable with the
-// same name.
+// setContainersEnvVar sets envVar in each container. It replaces every environment variable with the same name,
+// because the kubelet uses the last one, so a duplicate that is not replaced would pass a stale value.
 func setContainersEnvVar(ctx context.Context, containers []corev1.Container, envVar corev1.EnvVar, jobName,
 	jobNamespace string) {
 	log := log.FromContext(ctx)
 
 	for i := range containers {
 		container := &containers[i]
+		replaced := false
 
-		envVarIndex := slices.IndexFunc(container.Env, func(env corev1.EnvVar) bool { return env.Name == envVar.Name })
-		if envVarIndex >= 0 {
+		for j := range container.Env {
+			if container.Env[j].Name != envVar.Name {
+				continue
+			}
+
 			log.V(1).Info("Overriding existing environment variable", "env_var", envVar.Name, "job", jobName,
 				"namespace", jobNamespace, "container", container.Name, "new_value", envVar.Value, "old_value",
-				container.Env[envVarIndex].Value)
-			container.Env[envVarIndex] = envVar
-		} else {
+				container.Env[j].Value)
+			container.Env[j] = envVar
+			replaced = true
+		}
+
+		if !replaced {
 			log.V(1).Info("Adding environment variable", "env_var", envVar.Name, "job", jobName, "namespace",
 				jobNamespace, "container", container.Name, "value", envVar.Value)
 			container.Env = append(container.Env, envVar)
