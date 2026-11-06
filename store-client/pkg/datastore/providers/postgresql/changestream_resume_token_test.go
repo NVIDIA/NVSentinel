@@ -1229,6 +1229,9 @@ func TestHandleNotification_ReadRowAboveCursorID_IsSkipped(t *testing.T) {
 	require.NoError(t, watcher.handleNotification(context.Background(), &pq.Notification{
 		Extra: `{"id":151,"table":"health_events","operation":"INSERT"}`,
 	}))
+	// handleNotification only records the id; the fetch loop fetches the row. sqlmock fails a
+	// lookup it isn't told to expect.
+	require.NoError(t, watcher.fetchNotifiedRows(context.Background()))
 
 	assert.Equal(t, []string{"151", "1", "2", "3"}, drainTokens(watcher))
 	assert.Equal(t, base.Add(3*time.Second), watcher.lastTimestamp)
