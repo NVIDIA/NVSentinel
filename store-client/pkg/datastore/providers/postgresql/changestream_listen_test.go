@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,6 +64,16 @@ func testNotification(id int64) *pq.Notification {
 	}
 }
 
+// changelogLookupQuery matches the lookup of notified rows: one query for all of them that reads
+// only rows at or behind the read position, in the order the poll reads them.
+const changelogLookupQuery = `WHERE table_name = \$1 AND id = ANY\(\$2\) AND \(changed_at, id\) <= \(\$3, \$4\) ` +
+	`ORDER BY changed_at ASC, id ASC`
+
+// lookupIDs is the id argument of a lookup of the given notified ids, in the order they arrived.
+func lookupIDs(ids ...int64) any {
+	return pq.Array(ids)
+}
+
 // listenTestRows returns changelog rows for health_events, one second apart from base by id.
 func listenTestRows(base time.Time, ids ...int64) *sqlmock.Rows {
 	rows := changelogRows()
@@ -92,8 +103,8 @@ func TestListenLoop_LateNotifiedRow_IsDeliveredOnce(t *testing.T) {
 	watcher.lastEventID = 20
 	watcher.recordRecentEventIDLocked(20, time.Now())
 
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(15)).
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(15), base.Add(20*time.Second), int64(20)).
 		WillReturnRows(listenTestRows(base, 15))
 
 	// Any poll from the read position finds nothing new.
@@ -143,10 +154,8 @@ func TestListenLoop_StalledConsumer_KeepsReadingNotifications(t *testing.T) {
 	watcher.events = make(chan datastore.EventWithToken, 1)
 	watcher.events <- datastore.EventWithToken{ResumeToken: []byte("0")}
 
-	// Whatever reads the changelog first gets row 1 and then waits to deliver it.
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(1)).
-		WillReturnRows(listenTestRows(base, 1))
+	// The fetch loop reads the changelog with a poll first, gets row 1 and then waits to
+	// deliver it.
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(listenTestRows(base, 1))
@@ -279,12 +288,11 @@ func TestFetchNotifiedRows_RowPastPosition_IsLeftToThePoll(t *testing.T) {
 	watcher.addNotifiedID(15)
 	watcher.addNotifiedID(30)
 
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(15)).
+	// The lookup asks only for rows at or behind the position, so PostgreSQL returns row 15 and
+	// not row 30.
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(15, 30), base.Add(20*time.Second), int64(20)).
 		WillReturnRows(listenTestRows(base, 15))
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(30)).
-		WillReturnRows(listenTestRows(base, 30))
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
 		WillReturnRows(listenTestRows(base, 21, 30))
@@ -497,9 +505,10 @@ func TestListenLoop_NotifiedRowPastBacklog_DoesNotSkipBacklog(t *testing.T) {
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(151*time.Second), int64(151)).
 		WillReturnRows(changelogRows())
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(151)).
-		WillReturnRows(listenTestRows(base, 151))
+	// Row 151 is past the read position until the polls reach it, so its lookup finds nothing.
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(151), base.Add(100*time.Second), int64(100)).
+		WillReturnRows(changelogRows())
 
 	listener := &pq.Listener{Notify: make(chan *pq.Notification, 32)}
 	listener.Notify <- testNotification(151)
@@ -549,8 +558,8 @@ func TestFetchLoop_FailedPass_RetriesWithoutNotification(t *testing.T) {
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
 		WillReturnRows(changelogRows())
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(15)).
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(15), base.Add(20*time.Second), int64(20)).
 		WillReturnRows(listenTestRows(base, 15))
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
@@ -653,18 +662,15 @@ func TestFetchLoop_FailedLookup_DeliversTheRowOnTheRetry(t *testing.T) {
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
 		WillReturnRows(changelogRows())
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(15)).
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(15, 16), base.Add(20*time.Second), int64(20)).
 		WillReturnError(errors.New("connection reset by peer"))
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
 		WillReturnRows(changelogRows())
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(15)).
-		WillReturnRows(listenTestRows(base, 15))
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(16)).
-		WillReturnRows(listenTestRows(base, 16))
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(15, 16), base.Add(20*time.Second), int64(20)).
+		WillReturnRows(listenTestRows(base, 15, 16))
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
 		WillReturnRows(changelogRows())
@@ -678,9 +684,54 @@ func TestFetchLoop_FailedLookup_DeliversTheRowOnTheRetry(t *testing.T) {
 	assert.Empty(t, watcher.events, "nothing else may be delivered")
 }
 
-// A failed lookup keeps that id and the ones after it pending, in front of ids notified since,
-// lists an id notified again once, and keeps the dropped count.
-func TestFetchNotifiedRows_FailedLookup_KeepsTheRestPending(t *testing.T) {
+// A failed lookup keeps its ids pending, in front of ids notified since, lists an id notified
+// again once, and keeps the dropped count.
+func TestFetchNotifiedRows_FailedLookup_KeepsItsIDsPending(t *testing.T) {
+	hold := newHoldFirstQuery()
+
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(hold))
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base.Add(20 * time.Second)
+	watcher.lastEventID = 20
+
+	watcher.addNotifiedID(15)
+	watcher.addNotifiedID(16)
+	watcher.addNotifiedID(17)
+	watcher.droppedIDs = 2
+
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(15, 16, 17), base.Add(20*time.Second), int64(20)).
+		WillReturnError(errors.New("connection reset by peer"))
+
+	done := make(chan error, 1)
+
+	go func() { done <- watcher.fetchNotifiedRows(context.Background()) }()
+
+	// While the lookup runs, row 16 is notified a second time and row 18 for the first time.
+	<-hold.started
+	watcher.addNotifiedID(16)
+	watcher.addNotifiedID(18)
+	close(hold.release)
+
+	err = <-done
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "3 notified changelog rows")
+	assert.ErrorContains(t, err, "connection reset by peer")
+
+	ids, dropped := watcher.takeNotifiedIDs()
+	assert.Equal(t, []int64{15, 17, 16, 18}, ids,
+		"the failed lookup's ids go in front, row 16 is already listed again, then the new one")
+	assert.Equal(t, 2, dropped, "the dropped count is kept for the retry")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A pass looks every notified row up in one query, not one query per id, and delivers what it
+// returns in the order the poll reads the rows, whatever order the notifications came in.
+func TestFetchNotifiedRows_NotifiedIDs_AreLookedUpInOneQuery(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -689,50 +740,71 @@ func TestFetchNotifiedRows_FailedLookup_KeepsTheRestPending(t *testing.T) {
 	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
 	watcher.lastTimestamp = base.Add(20 * time.Second)
 	watcher.lastEventID = 20
-	// Unbuffered, so the pass waits in the delivery of row 15 until the test takes it.
-	watcher.events = make(chan datastore.EventWithToken)
 
-	watcher.addNotifiedID(15)
-	watcher.addNotifiedID(16)
-	watcher.addNotifiedID(17)
-	watcher.droppedIDs = 2
+	// Rows 15, 16 and 17 committed after the position passed them, and their notifications came
+	// in another order.
+	for _, id := range []int64{17, 15, 16} {
+		watcher.addNotifiedID(id)
+	}
 
-	// Row 15 is looked up and delivered, the lookup of row 16 fails.
+	// sqlmock fails any query it is not told to expect, such as a second lookup.
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(17, 15, 16), base.Add(20*time.Second), int64(20)).
+		WillReturnRows(listenTestRows(base, 15, 16, 17))
 	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(15)).
-		WillReturnRows(listenTestRows(base, 15))
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(16)).
-		WillReturnError(errors.New("connection reset by peer"))
+		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
+		WillReturnRows(changelogRows())
+
+	require.NoError(t, watcher.fetchNotifiedRows(context.Background()))
+
+	assert.Equal(t, []string{"15", "16", "17"}, drainTokens(watcher))
+	assert.Equal(t, base.Add(20*time.Second), watcher.lastTimestamp, "late rows must not move the position back")
+	assert.Equal(t, int64(20), watcher.lastEventID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Close can land while a lookup runs. That lookup is the last query of the pass: nothing is looked
+// up after Close, so no row a later lookup returns can be sent on the closed events channel.
+func TestFetchNotifiedRows_ClosedDuringLookup_StartsNoOtherQuery(t *testing.T) {
+	hold := newHoldFirstQuery()
+
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(hold))
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.lastTimestamp = base.Add(20 * time.Second)
+	watcher.lastEventID = 20
+	// The lookup that was running delivers its rows after Close. No event matches the filter, so
+	// none is sent on the closed channel.
+	watcher.pipelineFilter = rejectAllFilter()
+
+	for _, id := range []int64{15, 16, 17} {
+		watcher.addNotifiedID(id)
+	}
+
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(15, 16, 17), base.Add(20*time.Second), int64(20)).
+		WillReturnRows(listenTestRows(base, 15, 16, 17))
 
 	done := make(chan error, 1)
 
 	go func() { done <- watcher.fetchNotifiedRows(context.Background()) }()
 
-	// While the pass waits to deliver row 15, row 16 is notified a second time and row 18 for the
-	// first time.
-	require.Eventually(t, func() bool {
-		watcher.mu.RLock()
-		defer watcher.mu.RUnlock()
+	<-hold.started
+	require.NoError(t, watcher.Close(context.Background()))
+	hold.closed.Store(true)
+	close(hold.release)
 
-		_, delivering := watcher.recentEventIDs[15]
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lookup must return after Close")
+	}
 
-		return delivering
-	}, 5*time.Second, time.Millisecond)
-	watcher.addNotifiedID(16)
-	watcher.addNotifiedID(18)
-
-	assert.Equal(t, []byte("15"), (<-watcher.events).ResumeToken)
-
-	err = <-done
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "notified changelog row 16")
-	assert.ErrorContains(t, err, "connection reset by peer")
-
-	ids, dropped := watcher.takeNotifiedIDs()
-	assert.Equal(t, []int64{17, 16, 18}, ids,
-		"the id after the failed one goes in front, the failed id is already listed again, then the new one")
-	assert.Equal(t, 2, dropped, "the dropped count is kept for the retry")
+	assert.False(t, hold.queriedAfterClose.Load(), "no query may start after Close")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -797,8 +869,8 @@ func TestFetchNotifiedRows_AfterClose_LooksNothingUp(t *testing.T) {
 
 	// The row is there so that a lookup that wrongly runs is seen: it would take the id off the
 	// pending list.
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(15)).
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(15), base.Add(20*time.Second), int64(20)).
 		WillReturnRows(listenTestRows(base, 15))
 
 	require.NoError(t, watcher.Close(context.Background()))
@@ -810,11 +882,14 @@ func TestFetchNotifiedRows_AfterClose_LooksNothingUp(t *testing.T) {
 }
 
 // holdFirstQuery matches queries the way sqlmock does by default and holds the first query it
-// sees until the test releases it, so the test can act while that query is in flight.
+// sees until the test releases it, so the test can act while that query is in flight. Once the
+// test sets closed, it records any query that starts after that.
 type holdFirstQuery struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+
+	closed, queriedAfterClose atomic.Bool
 }
 
 func newHoldFirstQuery() *holdFirstQuery {
@@ -822,6 +897,10 @@ func newHoldFirstQuery() *holdFirstQuery {
 }
 
 func (h *holdFirstQuery) Match(expectedSQL, actualSQL string) error {
+	if h.closed.Load() {
+		h.queriedAfterClose.Store(true)
+	}
+
 	h.once.Do(func() {
 		close(h.started)
 		<-h.release
@@ -854,8 +933,8 @@ func TestFetchLoop_ClosedWhileRetryPending_LooksNothingUp(t *testing.T) {
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(20*time.Second), int64(20)).
 		WillReturnError(errors.New("connection reset by peer"))
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(15)).
+	mock.ExpectQuery(changelogLookupQuery).
+		WithArgs(healthEventsTable, lookupIDs(15), base.Add(20*time.Second), int64(20)).
 		WillReturnRows(listenTestRows(base, 15))
 
 	done := make(chan struct{})

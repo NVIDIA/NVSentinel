@@ -732,7 +732,7 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 						changedAt,
 					)
 				mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-					WithArgs(tableName, int64(452)).
+					WithArgs(tableName, lookupIDs(452), changedAt.Add(time.Second), int64(453)).
 					WillReturnRows(rows)
 				mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
 					WithArgs(tableName, changedAt.Add(time.Second), int64(453)).
@@ -825,7 +825,7 @@ func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *t
 			changedAt,
 		)
 	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-		WithArgs(tableName, int64(452)).
+		WithArgs(tableName, lookupIDs(452), changedAt.Add(time.Second), int64(451)).
 		WillReturnRows(notifiedRows)
 
 	// The normal timestamp cursor would miss the notified row because its changed_at
@@ -1020,10 +1020,13 @@ func TestAdvancePosition_EqualChangedAt_OrdersByID(t *testing.T) {
 	assert.Equal(t, int64(7), watcher.lastEventID)
 
 	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(4)).
+		WithArgs(healthEventsTable, lookupIDs(4), same, int64(7)).
 		WillReturnRows(healthEventRow(changelogRows(), 4, same))
 
-	require.NoError(t, watcher.fetchChangeByID(ctx, 4))
+	watcher.addNotifiedID(4)
+
+	_, err = watcher.fetchNotifiedRowsByID(ctx)
+	require.NoError(t, err)
 	assert.Equal(t, same, watcher.lastTimestamp)
 	assert.Equal(t, int64(7), watcher.lastEventID)
 

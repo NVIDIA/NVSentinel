@@ -584,71 +584,38 @@ func (w *PostgreSQLChangeStreamWatcher) handleNotification(ctx context.Context, 
 	return nil
 }
 
-// fetchChangeByID looks a notified changelog row up by id and delivers it when it is at or behind
-// the read position. A row past the position is left to the polls, which read it in order.
-func (w *PostgreSQLChangeStreamWatcher) fetchChangeByID(ctx context.Context, eventID int64) error {
-	events, err := w.queryChangeByID(ctx, eventID)
-	if err != nil || len(events) == 0 {
-		return err
-	}
-
-	changedAt := w.extractEventTimestamp(events[0].Event, eventID)
-
+// queryNotifiedRows reads the changelog rows of this watcher's table with the given ids that are
+// at or behind the read position, in the order the poll reads them. The bound is the poll's own
+// comparison turned around, so a row past the position, which the poll reads in order, is neither
+// read here nor counted as read for the lag metric. A row not visible yet or of another table is
+// not returned either.
+func (w *PostgreSQLChangeStreamWatcher) queryNotifiedRows(
+	ctx context.Context, ids []int64,
+) ([]datastore.EventWithToken, error) {
 	w.mu.RLock()
-	pastPosition := changedAt.After(w.lastTimestamp) ||
-		(changedAt.Equal(w.lastTimestamp) && eventID > w.lastEventID)
+	lastTimestamp, lastEventID := w.lastTimestamp, w.lastEventID
 	w.mu.RUnlock()
 
-	if pastPosition {
-		return nil
-	}
-
-	return w.deliverChangeByID(ctx, eventID, events)
-}
-
-// queryChangeByID reads one changelog row of this watcher's table by id. It returns no rows when
-// the row is not visible yet or belongs to another table.
-func (w *PostgreSQLChangeStreamWatcher) queryChangeByID(
-	ctx context.Context, eventID int64,
-) ([]datastore.EventWithToken, error) {
 	query := `
 		SELECT id, record_id, operation, old_values, new_values, changed_at
 		FROM datastore_changelog
-		WHERE table_name = $1 AND id = $2
+		WHERE table_name = $1 AND id = ANY($2)
+		  AND (changed_at, id) <= ($3, $4)
+		ORDER BY changed_at ASC, id ASC
 	`
 
-	rows, err := w.db.QueryContext(ctx, query, w.tableName, eventID)
+	rows, err := w.db.QueryContext(ctx, query, w.tableName, pq.Array(ids), lastTimestamp, lastEventID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query changelog event by ID: %w", err)
+		return nil, fmt.Errorf("failed to query notified changelog rows: %w", err)
 	}
 	defer rows.Close()
 
 	events, err := w.processChangelogRows(rows)
 	if err != nil {
-		return nil, fmt.Errorf("failed to process recovered changelog row %d: %w", eventID, err)
+		return nil, fmt.Errorf("failed to process notified changelog rows: %w", err)
 	}
 
 	return events, nil
-}
-
-// deliverChangeByID sends the rows a lookup returned to the consumer. No rows is not an error: the
-// row was not visible yet or did not match the table, and the next poll or NOTIFY covers it.
-func (w *PostgreSQLChangeStreamWatcher) deliverChangeByID(
-	ctx context.Context, eventID int64, events []datastore.EventWithToken,
-) error {
-	if len(events) == 0 {
-		slog.Debug("Out-of-order NOTIFY row was not visible or did not match table",
-			"client", w.clientName,
-			"eventID", eventID)
-
-		return nil
-	}
-
-	if err := w.sendEventsToChannel(ctx, events); err != nil {
-		return fmt.Errorf("failed to deliver recovered changelog row %d: %w", eventID, err)
-	}
-
-	return nil
 }
 
 // addNotifiedID records a notified changelog id for the fetch loop and wakes it. It never blocks.
@@ -797,13 +764,13 @@ func (w *PostgreSQLChangeStreamWatcher) positionMovedFrom(lastTimestamp time.Tim
 	return !w.lastTimestamp.Equal(lastTimestamp) || w.lastEventID != lastEventID
 }
 
-// fetchNotifiedRows fetches by id, in the order the notifications arrived, every notified row no
-// read has returned yet, delivers the ones at or behind the read position, and then catches up. A
-// row whose transaction committed after the read position had passed it is only found this way,
-// and it is delivered without moving the position back. A row past the position is left to the
-// catch-up, which reads it in order. Delivering it here would move the position over rows that
-// committed meanwhile and that no read has returned, and one of those whose id is dropped would
-// never be delivered.
+// fetchNotifiedRows looks up every notified row no read has returned yet, delivers the ones at or
+// behind the read position in the order the poll reads them, and then catches up. A row whose
+// transaction committed after the read position had passed it is only found this way, and it is
+// delivered without moving the position back. A row past the position is left to the catch-up,
+// which reads it in order. Delivering it here would move the position over rows that committed
+// meanwhile and that no read has returned, and one of those whose id is dropped would never be
+// delivered.
 func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRows(ctx context.Context) error {
 	fetched, err := w.fetchNotifiedRowsByID(ctx)
 	if err != nil || !fetched {
@@ -836,26 +803,34 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRowsByID(ctx context.Contex
 			"client", w.clientName, "dropped", dropped, "limit", notifiedIDLimit)
 	}
 
-	for i, id := range ids {
-		if err := w.fetchChangeByID(ctx, id); err != nil {
-			if ctx.Err() != nil {
-				return true, ctx.Err()
-			}
-
-			// The pass is retried, so this id and the ones after it stay pending. A late row is
-			// only ever delivered by its lookup, so dropping it here would lose it.
-			w.keepNotifiedIDs(ids[i:], dropped)
-
-			return true, fmt.Errorf("failed to fetch notified changelog row %d: %w", id, err)
-		}
+	if len(ids) == 0 {
+		return false, nil
 	}
 
-	return len(ids) > 0, nil
+	// One query looks every id up, so no lookup starts after the stop check above.
+	events, err := w.queryNotifiedRows(ctx, ids)
+	if err != nil {
+		if ctx.Err() != nil {
+			return true, ctx.Err()
+		}
+
+		// The pass is retried, so the ids stay pending. A late row is only ever delivered by its
+		// lookup, so dropping them here would lose it.
+		w.keepNotifiedIDs(ids, dropped)
+
+		return true, fmt.Errorf("failed to fetch %d notified changelog rows: %w", len(ids), err)
+	}
+
+	if err := w.sendEventsToChannel(ctx, events); err != nil {
+		return true, fmt.Errorf("failed to deliver notified changelog rows: %w", err)
+	}
+
+	return true, nil
 }
 
-// keepNotifiedIDs puts the ids a failed pass did not look up back in front of the ones notified
-// since, and adds the pass's dropped count back, so the retry sees the same state. An id notified
-// again in the meantime is listed once, and the list is cut at notifiedIDLimit as before.
+// keepNotifiedIDs puts the ids of a failed lookup back in front of the ones notified since, and
+// adds the lookup's dropped count back, so the retry sees the same state. An id notified again in
+// the meantime is listed once, and the list is cut at notifiedIDLimit as before.
 func (w *PostgreSQLChangeStreamWatcher) keepNotifiedIDs(ids []int64, dropped int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
