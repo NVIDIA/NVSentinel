@@ -588,10 +588,10 @@ health-events-analyzer:
 
     [[rules]]
     name = "RepeatedXIDErrorOnSameGPU"
-    description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
+    description = "Detect occurrence of XID errors (any XID except 31, 43, 45 and 137) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
-    when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45'))"
+    when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || !(event.errorCode[0] in ['31', '43', '45', '137']))"
     stage = [
       '''
       {
@@ -625,7 +625,7 @@ health-events-analyzer:
             "$and": [
               {"$eq": ["this.healthevent.checkname", "SysLogsXIDError"]},
               {
-              "$not": [{"$in": ["this.healthevent.errorcode.0", ["31", "45"]]}]
+              "$not": [{"$in": ["this.healthevent.errorcode.0", ["31", "43", "45", "137"]]}]
               }
             ]
           }
@@ -646,7 +646,7 @@ health-events-analyzer:
           "healthevent.nodename": "this.healthevent.nodename",
           "$expr": {
           "$and": [
-            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "45"]]}]},
+            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "43", "45", "137"]]}]},
             {
               "$gt": [
                 {
