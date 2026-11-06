@@ -103,9 +103,9 @@ var (
 	// not zeroed, when the node stops draining: time() minus zero would read as a very long wait.
 	NodeDrainAwaitingCompletionSince = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "node_drainer_awaiting_completion_since_seconds",
+			Name: "node_drainer_awaiting_completion_start_timestamp_seconds",
 			Help: "Unix time of the health event behind an allowCompletion drain that is still " +
-				"waiting for pods to finish. Absent when the node is not waiting. allowCompletion " +
+				"waiting for pods to finish. Absent when nothing is waiting on that node. allowCompletion " +
 				"has no timeout, so alert on time() minus this value.",
 		},
 		[]string{labelNode},

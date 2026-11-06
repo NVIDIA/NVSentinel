@@ -766,9 +766,15 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 		}
 
 		// Re-asserted every poll from the event itself, so this is the instant the wait began
-		// no matter how many times the item has been requeued.
-		metrics.NodeDrainAwaitingCompletionSince.WithLabelValues(nodeName).
-			Set(float64(healthEvent.CreatedAt.Unix()))
+		// no matter how many times the item has been requeued. Skipped when the event carries no
+		// creation time: time.Time's zero value is year 1, so publishing it would make
+		// `time() - this` read as two millennia and fire every threshold immediately and
+		// permanently. The rest of this package guards the same field the same way
+		// (coldstart/resolver.go, isEventCancelled).
+		if !healthEvent.CreatedAt.IsZero() {
+			metrics.NodeDrainAwaitingCompletionSince.WithLabelValues(nodeName).
+				Set(float64(healthEvent.CreatedAt.Unix()))
+		}
 
 		slog.InfoContext(ctx, "Pods still running on node, requeuing for later check",
 			"node", nodeName,

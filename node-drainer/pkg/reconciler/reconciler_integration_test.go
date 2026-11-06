@@ -1905,12 +1905,17 @@ func getGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 // GetMetricWithLabelValues cannot answer this: it creates the series as a side effect, so a
 // removed series would look present at zero.
 func gaugeVecHasSeries(gaugeVec *prometheus.GaugeVec, labelValues ...string) bool {
-	ch := make(chan prometheus.Metric, 64)
+	ch := make(chan prometheus.Metric)
+
 	go func() {
 		gaugeVec.Collect(ch)
 		close(ch)
 	}()
 
+	found := false
+
+	// Drains the channel even after a match: returning early would leave Collect blocked on an
+	// unbuffered send, leaking the goroutine for the rest of the test binary.
 	for m := range ch {
 		dtoMetric := &dto.Metric{}
 		if err := m.Write(dtoMetric); err != nil {
@@ -1923,11 +1928,11 @@ func gaugeVecHasSeries(gaugeVec *prometheus.GaugeVec, labelValues ...string) boo
 		}
 
 		if slices.Equal(values, labelValues) {
-			return true
+			found = true
 		}
 	}
 
-	return false
+	return found
 }
 
 func getGaugeVecValue(t *testing.T, gaugeVec *prometheus.GaugeVec, labelValues ...string) float64 {
