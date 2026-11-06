@@ -3,7 +3,6 @@ module github.com/nvidia/nvsentinel/fault-quarantine
 go 1.27.3
 
 require (
-	cel.dev/cel-go v0.33.2
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
@@ -22,6 +21,7 @@ require (
 )
 
 require (
+	cel.dev/cel-go v0.33.2 // indirect
 	cel.dev/expr v0.25.3 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/XSAM/otelsql v0.44.0 // indirect
