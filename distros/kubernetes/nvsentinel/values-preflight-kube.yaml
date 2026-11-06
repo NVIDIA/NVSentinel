@@ -24,16 +24,21 @@
 # not just within one node) need to know which pods belong together. This
 # file uses Kubernetes' own gang scheduling APIs to find out, so it works
 # with no extra scheduler, PROVIDED your cluster has them turned on:
+#   - Kubernetes 1.37: scheduling.k8s.io/v1beta1 PodGroup
 #   - Kubernetes 1.36: scheduling.k8s.io/v1alpha2 PodGroup
 #   - Kubernetes 1.35: scheduling.k8s.io/v1alpha1 Workload, used as a
 #     fallback if PodGroup isn't available
 #
-# Both are alpha and disabled by default. You need the GenericWorkload
-# feature gate on the API server and scheduler (to get the API itself),
-# and the scheduler's GangScheduling gate (to get all-or-nothing gang
-# scheduling behavior; folded into GenericWorkload from Kubernetes 1.37).
+# All are disabled by default (beta on 1.37, alpha before). You need the
+# GenericWorkload feature gate on the API server and scheduler, and the API
+# version turned on in the API server with --runtime-config:
+# scheduling.k8s.io/v1beta1=true on 1.37, v1alpha2=true on 1.36, or
+# v1alpha1=true on 1.35.
+# On 1.35 and 1.36 you also need the scheduler's GangScheduling gate (to
+# get all-or-nothing gang scheduling behavior). Kubernetes 1.37 removed
+# that gate and folded it into GenericWorkload, so do not set it there.
 # A cluster admin has to enable these; they aren't a Helm value, and some
-# managed Kubernetes offerings won't let you turn on alpha gates at all.
+# managed Kubernetes offerings won't let you turn on these gates at all.
 # Check what your cluster actually exposes before relying on this:
 #   kubectl api-resources --api-group=scheduling.k8s.io
 #
