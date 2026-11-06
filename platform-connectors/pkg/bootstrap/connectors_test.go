@@ -19,10 +19,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -31,6 +33,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
@@ -216,7 +223,8 @@ func (s *stuck) FetchAndProcessHealthMetric(ctx context.Context) {
 }
 
 // held is a queued connector whose loop keeps its batch until stopCh closes,
-// the way the Kubernetes connector's loop ends its retries on stopCh.
+// the way stopCh ends the retries of the batch the Kubernetes connector's loop
+// is on. It does not watch its context, so only stopCh can end it.
 type held struct {
 	queue   *ringbuffer.RingBuffer
 	stopCh  <-chan struct{}
@@ -225,19 +233,14 @@ type held struct {
 
 func (*held) ProcessBatch(context.Context, *pb.HealthEvents) error { return nil }
 
-func (h *held) FetchAndProcessHealthMetric(ctx context.Context) {
+func (h *held) FetchAndProcessHealthMetric(context.Context) {
 	item, quit := h.queue.Dequeue()
 	if quit {
 		return
 	}
 
 	close(h.holding)
-
-	select {
-	case <-h.stopCh:
-	case <-ctx.Done():
-	}
-
+	<-h.stopCh
 	h.queue.HealthMetricEleProcessingCompleted(item)
 }
 
@@ -268,6 +271,19 @@ func isClosed(ch <-chan struct{}) bool {
 	default:
 		return false
 	}
+}
+
+// captureLogs sends the default logger to a buffer until the test ends.
+func captureLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+
+	logs := &syncBuffer{}
+	previous := slog.Default()
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	return logs
 }
 
 // shutdownInBackground runs Shutdown; the channel is closed when it returns.
@@ -407,15 +423,17 @@ func TestShutdown_QueuedSinkBatches_DeliveredBeforeTheSinkCloses(t *testing.T) {
 	require.EqualValues(t, batches, sink.received.Load(), "every queued batch reached the sink before it was closed")
 }
 
-// TestShutdown_LoopEndingOnStopCh_DoesNotWaitForTheDrainTimeout: Shutdown
-// closes stopCh before it waits for the loops, so a loop that ends its retries
-// on stopCh, as the Kubernetes connector's does, returns at once instead of
-// holding every shutdown to the drain timeout.
-func TestShutdown_LoopEndingOnStopCh_DoesNotWaitForTheDrainTimeout(t *testing.T) {
+// TestShutdown_LoopHeldUntilStopCh_IsStoppedAtTheDrainTimeout: Shutdown keeps
+// stopCh open while the loops drain their queues, so the Kubernetes loop writes
+// what its queue holds like the others, and closes it at the drain timeout,
+// which ends the retries of the batch a loop still holds then.
+func TestShutdown_LoopHeldUntilStopCh_IsStoppedAtTheDrainTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	c := &Connectors{mode: ConnectorOptions{Queued: true}, stopCh: make(chan struct{}), drainTimeout: 5 * time.Second}
+	c := &Connectors{
+		mode: ConnectorOptions{Queued: true}, stopCh: make(chan struct{}), drainTimeout: 500 * time.Millisecond,
+	}
 	queue := c.queue(ctx, "held")
 	loop := &held{queue: queue, stopCh: c.stopCh, holding: make(chan struct{})}
 	c.add(ctx, queue, "held", loop, true)
@@ -423,11 +441,115 @@ func TestShutdown_LoopEndingOnStopCh_DoesNotWaitForTheDrainTimeout(t *testing.T)
 	require.NoError(t, queue.ProcessBatch(ctx, &pb.HealthEvents{Events: []*pb.HealthEvent{{NodeName: "node-1"}}}))
 	require.Eventually(t, func() bool { return isClosed(loop.holding) }, 5*time.Second, 5*time.Millisecond)
 
-	start := time.Now()
 	shutdown := shutdownInBackground(ctx, c)
 
-	require.Eventually(t, func() bool { return isClosed(shutdown) }, 10*time.Second, 5*time.Millisecond)
-	require.Less(t, time.Since(start), time.Second, "Shutdown waited for a loop that stopCh should have ended")
+	require.Never(t, func() bool { return isClosed(c.stopCh) }, 200*time.Millisecond, 5*time.Millisecond,
+		"stopCh was closed while the loops still had time to drain their queues")
+	require.Eventually(t, func() bool { return isClosed(shutdown) }, 5*time.Second, 5*time.Millisecond)
+	require.True(t, c.loops[0].done.Load(), "the loop held until stopCh closes returned before Shutdown did")
+}
+
+// kubernetesLoop adds the Kubernetes connector to c on the queued path, as
+// addKubernetes does, over a fake clientset the test controls.
+func kubernetesLoop(ctx context.Context, c *Connectors, client *fake.Clientset) *ringbuffer.RingBuffer {
+	queue := c.queue(ctx, "kubernetes")
+	connector := kubernetes.NewK8sConnector(client, queue, c.stopCh, ctx, k8sSettings.K8sConnectorConfig)
+	c.add(ctx, queue, "kubernetes", connector, true)
+
+	return queue
+}
+
+// nodeEventBatch is a batch of one fault that is not fatal, which the
+// Kubernetes connector writes as a Kubernetes Event named after its message.
+func nodeEventBatch(message string) *pb.HealthEvents {
+	return &pb.HealthEvents{Events: []*pb.HealthEvent{{
+		NodeName: "node-1", CheckName: "GpuXidError", Agent: "gpu-health-monitor",
+		Message: message, GeneratedTimestamp: timestamppb.Now(),
+	}}}
+}
+
+// TestShutdown_QueuedKubernetesBatches_WrittenBeforeShutdownReturns: a batch is
+// acknowledged once it is queued, so the Kubernetes loop writes every batch its
+// queue holds at shutdown, as the other loops do, before Shutdown returns.
+func TestShutdown_QueuedKubernetesBatches_WrittenBeforeShutdownReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// Every Event create waits until the test releases it, so the loop is in
+	// the middle of its first batch when Shutdown starts.
+	inFlight := make(chan struct{})
+	release := make(chan struct{})
+
+	var (
+		created  atomic.Int32
+		announce sync.Once
+	)
+
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("create", "events", func(ktesting.Action) (bool, runtime.Object, error) {
+		announce.Do(func() { close(inFlight) })
+		<-release
+		created.Add(1)
+
+		return false, nil, nil
+	})
+
+	c := &Connectors{mode: ConnectorOptions{Queued: true}, stopCh: make(chan struct{})}
+	queue := kubernetesLoop(ctx, c, client)
+
+	const batches = 5
+	for i := range batches {
+		require.NoError(t, queue.ProcessBatch(ctx, nodeEventBatch(fmt.Sprintf("fault %d", i))))
+	}
+
+	require.Eventually(t, func() bool { return isClosed(inFlight) }, 5*time.Second, 5*time.Millisecond)
+
+	shutdown := shutdownInBackground(ctx, c)
+
+	require.Never(t, func() bool { return isClosed(shutdown) }, 100*time.Millisecond, 5*time.Millisecond,
+		"Shutdown returned while an Event write was in flight")
+	close(release)
+
+	require.Eventually(t, func() bool { return isClosed(shutdown) }, 5*time.Second, 5*time.Millisecond)
+	require.EqualValues(t, batches, created.Load(), "every queued batch was written before Shutdown returned")
+	require.True(t, isClosed(c.stopCh), "stopCh is closed once the loops have returned")
+}
+
+// TestShutdown_KubernetesWriteStillFailingAtTheDrainTimeout_IsCut: a Kubernetes
+// write that keeps failing is retried while the queues drain, and stopCh ends
+// its retries at the drain timeout, so a slow API server holds shutdown no
+// longer than the drain timeout. The write is dropped as a shutdown drop, at
+// Info, as before.
+func TestShutdown_KubernetesWriteStillFailingAtTheDrainTimeout_IsCut(t *testing.T) {
+	logs := captureLogs(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("create", "events", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewServiceUnavailable("API server unavailable")
+	})
+
+	c := &Connectors{mode: ConnectorOptions{Queued: true}, stopCh: make(chan struct{}), drainTimeout: time.Second}
+	queue := kubernetesLoop(ctx, c, client)
+
+	require.NoError(t, queue.ProcessBatch(ctx, nodeEventBatch("fault")))
+	require.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), `retryCount=1 retryDelay=500ms`)
+	}, 5*time.Second, 5*time.Millisecond, "the first write never failed")
+
+	shutdown := shutdownInBackground(ctx, c)
+
+	require.Eventually(t, func() bool { return isClosed(shutdown) }, 5*time.Second, 5*time.Millisecond,
+		"the retries of the Kubernetes write were not ended at the drain timeout")
+
+	// The retry 500 ms after the first failure runs during the drain; the next
+	// one, a second later, would come after the drain timeout.
+	require.Contains(t, logs.String(), `retryCount=2 retryDelay=1s`, "the write was not retried during the drain")
+	require.Contains(t, logs.String(),
+		`level=INFO msg="Discarding unsuccessful Kubernetes write" operation=node_event node=node-1 reason=shutdown`+
+			` isHealthy=false retryCount=2`)
 }
 
 // TestReadiness_ShuttingDownWinsOverReady: /readyz follows the role's

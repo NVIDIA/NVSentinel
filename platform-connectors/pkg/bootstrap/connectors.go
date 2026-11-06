@@ -68,11 +68,13 @@ type Connectors struct {
 	sink   *grpcsink.GRPCSinkConnector
 	queues []*ringbuffer.RingBuffer
 	// stopCh, on the queued path, ends the Kubernetes connector's loop and
-	// the retries of the batch it is on.
-	stopCh chan struct{}
+	// the retries of the batch it is on. Shutdown closes it, once, when the
+	// loops are stopped: at the drain timeout, or after they have returned.
+	stopCh   chan struct{}
+	stopOnce sync.Once
 	// loops are the queue loops on the queued path, which running tracks.
-	// The Kubernetes loop returns on stopCh; the others return once their
-	// queue is shut down and empty.
+	// Each returns once its queue is shut down and empty, or once it is
+	// stopped.
 	loops   []*queueLoop
 	running sync.WaitGroup
 	// drainTimeout, when set, replaces queueDrainTimeout; tests shorten it.
@@ -272,16 +274,11 @@ func (c *Connectors) add(
 	c.Set = append(c.Set, connector)
 }
 
-// Shutdown stops the connectors once the server accepts no more requests: the
-// Kubernetes loop is told to stop (ending the retries of the batch it is on),
-// every queue stops taking batches, the other loops process what their queues
-// hold, and the sink and datastore connections are closed once the loops have
-// returned.
+// Shutdown stops the connectors once the server accepts no more requests:
+// every queue stops taking batches, every loop, the Kubernetes one included,
+// processes what its queue holds, and the sink and datastore connections are
+// closed once the loops have returned.
 func (c *Connectors) Shutdown(ctx context.Context) {
-	if c.stopCh != nil {
-		close(c.stopCh)
-	}
-
 	for _, queue := range c.queues {
 		queue.ShutDownHealthMetricQueue()
 	}
@@ -307,8 +304,8 @@ func (c *Connectors) Shutdown(ctx context.Context) {
 // waitForLoops waits for the queue loops, so a batch acknowledged before the
 // shutdown is processed before the connections it is written through close.
 // A loop still running at the drain timeout, behind a datastore that stays
-// down for example, is stopped through its context; the store connector logs
-// at Error the batches it drops.
+// down for example, is stopped (see stopLoops); the store connector logs at
+// Error the batches it drops.
 func (c *Connectors) waitForLoops(ctx context.Context) {
 	timeout := c.drainTimeout
 	if timeout <= 0 {
@@ -334,7 +331,16 @@ func (c *Connectors) waitForLoops(ctx context.Context) {
 	c.stopLoops()
 }
 
+// stopLoops ends the loops: closing stopCh ends the retries and API calls of
+// the batch the Kubernetes loop is on, and canceling each loop's context ends
+// the others' work. The drain timer and the end of the wait can both call it.
 func (c *Connectors) stopLoops() {
+	c.stopOnce.Do(func() {
+		if c.stopCh != nil {
+			close(c.stopCh)
+		}
+	})
+
 	for _, loop := range c.loops {
 		loop.stop()
 	}

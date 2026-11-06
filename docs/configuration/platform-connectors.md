@@ -378,7 +378,7 @@ Retry delays start at 500 milliseconds, double after each failure, and are cappe
 
 Maximum processing time for the whole batch, including Kubernetes API calls and inner retry delays. The default is `1m`. Omission or a zero duration selects the default. Positive duration strings up to `5m` are accepted; negative, invalid, and larger durations are rejected.
 
-The connector holds the current batch while retrying. Newer batches cannot overtake a pending fault or recovery. This pauses consumption of the Kubernetes queue while other connector queues continue independently. Cancellation and connector shutdown interrupt API calls and backoff.
+The connector holds the current batch while retrying. Newer batches cannot overtake a pending fault or recovery. This pauses consumption of the Kubernetes queue while other connector queues continue independently. Cancellation interrupts API calls and backoff. At shutdown, the connector writes the batches that its queue holds, as the other connectors do. When the queues are not empty after 10 seconds, shutdown interrupts the API calls and the backoff.
 
 For a five-minute outage window, configure both limits:
 
