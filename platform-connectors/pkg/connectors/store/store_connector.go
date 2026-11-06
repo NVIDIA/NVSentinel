@@ -198,9 +198,9 @@ func (r *DatabaseStoreConnector) insertWithRetry(
 
 	for retries := 0; ; retries++ {
 		outcome, err := r.insertHealthEvents(ctx, healthEvents, batchKey)
-		// A duplicate under another unique index gets the same answer on
-		// every attempt, so retrying it would only hold the queue.
-		if err == nil || retries >= r.maxRetries || ctx.Err() != nil || foreignDuplicate(err) != nil {
+		// A batch the datastore can never store as sent gets the same answer
+		// on every attempt, so retrying it would only hold the queue.
+		if err == nil || retries >= r.maxRetries || ctx.Err() != nil || unstorable(err) != nil {
 			return outcome, retries, err
 		}
 
@@ -232,7 +232,7 @@ func dropMessage(ctx context.Context, err error) string {
 	switch {
 	case ctx.Err() != nil:
 		return "Stopped before the batch was stored, dropping health events permanently"
-	case foreignDuplicate(err) != nil:
+	case unstorable(err) != nil:
 		return "Batch cannot be stored as sent, dropping health events permanently"
 	default:
 		return "Max retries exceeded, dropping health events permanently"
@@ -291,29 +291,37 @@ func (r *DatabaseStoreConnector) ProcessBatch(ctx context.Context, healthEvents 
 	return nil
 }
 
-// terminalIfDocumentError turns the one answer about a document that a resend
-// can never change, a duplicate on a unique index other than the idempotency
-// index, into a status the caller does not retry. Every other failure is left
-// as it is and answered with a retryable status: a document error can also be
-// the server stepping down in the middle of the batch, which a resend cures.
+// terminalIfDocumentError turns an answer about a document that a resend can
+// never change into a status the caller does not retry. Every other failure is
+// left as it is and answered with a retryable status: a document error can
+// also be the server stepping down in the middle of the batch, which a resend
+// cures.
 func terminalIfDocumentError(err error) error {
-	failure := foreignDuplicate(err)
+	failure := unstorable(err)
 	if failure == nil {
 		return err
 	}
 
+	if failure.Failed.Duplicate {
+		return status.Errorf(codes.InvalidArgument,
+			"event %d duplicates a document already stored under index %q, so the batch cannot be stored as sent: %s",
+			failure.Failed.DocumentIndex, failure.Failed.IndexName, failure.Failed.Message)
+	}
+
 	return status.Errorf(codes.InvalidArgument,
-		"event %d duplicates a document already stored under index %q, so the batch cannot be stored as sent: %s",
-		failure.Failed.DocumentIndex, failure.Failed.IndexName, failure.Failed.Message)
+		"the datastore rejects event %d for what it contains, so the batch cannot be stored as sent: %s",
+		failure.Failed.DocumentIndex, failure.Failed.Message)
 }
 
-// foreignDuplicate returns the failure when err is a duplicate on a unique
-// index other than the idempotency index, the one answer about a document that
-// a resend can never change, and nil otherwise. A duplicate on the idempotency
+// unstorable returns the failure when err is an answer about a document that a
+// resend can never change, and nil otherwise: a duplicate on a unique index
+// other than the idempotency index, or a document the datastore rejects for
+// what it contains (see datastore.BulkDocumentError.Permanent), such as a
+// check name longer than its PostgreSQL column. A duplicate on the idempotency
 // index never gets here: the insert skips it as an event already stored.
-func foreignDuplicate(err error) *datastore.BulkWriteFailure {
+func unstorable(err error) *datastore.BulkWriteFailure {
 	var failure *datastore.BulkWriteFailure
-	if errors.As(err, &failure) && failure.Failed.Duplicate {
+	if errors.As(err, &failure) && (failure.Failed.Duplicate || failure.Failed.Permanent) {
 		return failure
 	}
 

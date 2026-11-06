@@ -338,7 +338,7 @@ platformConnector:
 
 When a PostgreSQL client certificate is mounted, the platform connector runs a `fix-cert-permissions` init container first, because the PostgreSQL client rejects a key file that is group-readable or world-readable. `mongodbStore.maxRetries` bounds the retries on a failed store write before the event is dropped.
 
-The store connector holds a failed batch and retries it before it takes the next batch, so a newer batch cannot overtake a pending fault or recovery. At shutdown, the queues get up to 10 seconds to empty before the datastore client closes, and the store connector logs at Error each batch that it drops. A connector that does not stop within 5 seconds after that is left behind. Shutdown then closes the connections and logs at Error the number of batches that the connector still holds.
+The store connector holds a failed batch and retries it before it takes the next batch, so a newer batch cannot overtake a pending fault or recovery. A batch that the datastore rejects for its content, such as a check name longer than its PostgreSQL column, gets the same answer on every attempt. The store connector does not retry such a batch. It drops the batch at once and logs it at Error. At shutdown, the queues get up to 10 seconds to empty before the datastore client closes, and the store connector logs at Error each batch that it drops. A connector that does not stop within 5 seconds after that is left behind. Shutdown then closes the connections and logs at Error the number of batches that the connector still holds.
 
 To rotate certificates without restarting pods, see [Client Certificate Rotation](./README.md#client-certificate-rotation).
 
@@ -455,7 +455,7 @@ A publisher on `publishTo: deployment` gets its connection settings from the cha
 - The pause between two attempts is at most 30 seconds. The client retries the connection at most 10 seconds apart. Thus the client delivers a batch within about 30 seconds after the deployment platform connector comes back.
 - A monitor can stop waiting earlier, because its context ended or its own timeout expired. The client then withdraws the batch at once, also when the batch is already on the wire.
 - An attempt can be cut or time out after the batch is stored. This can leave a duplicate next to the event that the monitor sends again. The deployment platform connector tolerates this duplicate.
-- The deployment platform connector can refuse a batch for good. It does this when the batch is invalid or names a node that the monitor may not report on. The client then reports the batch as rejected at once and does not retry. The syslog monitor skips such a journal entry. The NIC monitor and the health events analyzer drop the event and count it.
+- The deployment platform connector can refuse a batch for good. It does this when the batch is invalid, when the datastore rejects it for its content, or when it names a node that the monitor may not report on. The client then reports the batch as rejected at once and does not retry. The syslog monitor skips such a journal entry. The NIC monitor and the health events analyzer drop the event and count it.
 - `nvsentinel_health_events_publisher_dropped_total` counts the drops by reason. See [METRICS.md](../METRICS.md#health-event-publisher).
 
 The deployment platform connector has its own network policy for the gRPC port. The metrics port is open through the chart's `metrics-access` policy, like for the other components. The gRPC port admits these pods:

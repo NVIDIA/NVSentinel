@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -584,18 +585,26 @@ func TestProcessBatch_ReportsOnlyTheErrorAndCountsTheOutcome(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
-// TestProcessBatch_OnlyAForeignDuplicateIsNotRetried: a duplicate on another
-// unique index is the same on every resend, so the caller gets a status it
-// does not retry, naming the event. Any other document error (the server
+// TestProcessBatch_OnlyABatchThatCannotBeStoredIsNotRetried: a duplicate on
+// another unique index, or a document the datastore rejects for what it
+// contains, gets the same answer on every resend, so the caller gets a status
+// it does not retry, naming the event. Any other document error (the server
 // stepping down mid-batch is reported per document too) and any transport
 // failure stay plain errors the caller retries.
-func TestProcessBatch_OnlyAForeignDuplicateIsNotRetried(t *testing.T) {
+func TestProcessBatch_OnlyABatchThatCannotBeStoredIsNotRetried(t *testing.T) {
 	mockClient := &mockDatabaseClient{}
 	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
 		Return(nil, error(&datastore.BulkWriteFailure{
 			InsertedCount: 1,
 			Failed: datastore.BulkDocumentError{
 				DocumentIndex: 1, Duplicate: true, IndexName: "some_other_unique_index", Message: "E11000 duplicate key",
+			},
+		})).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Return(nil, error(&datastore.BulkWriteFailure{
+			InsertedCount: 2,
+			Failed: datastore.BulkDocumentError{
+				DocumentIndex: 2, Permanent: true, Message: "value too long for type character varying(100)",
 			},
 		})).Once()
 	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
@@ -613,8 +622,13 @@ func TestProcessBatch_OnlyAForeignDuplicateIsNotRetried(t *testing.T) {
 	require.Contains(t, status.Convert(err).Message(), "some_other_unique_index")
 
 	err = connector.ProcessBatch(context.Background(), simpleHealthEvents())
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "event 2")
+	require.Contains(t, status.Convert(err).Message(), "value too long for type character varying(100)")
+
+	err = connector.ProcessBatch(context.Background(), simpleHealthEvents())
 	require.Error(t, err)
-	require.Equal(t, codes.Unknown, status.Code(err), "a document error that is not a duplicate is retried")
+	require.Equal(t, codes.Unknown, status.Code(err), "a document error that is not a duplicate or permanent is retried")
 
 	err = connector.ProcessBatch(context.Background(), simpleHealthEvents())
 	require.Error(t, err)
@@ -842,11 +856,12 @@ func TestFetchAndProcessHealthMetric_ContextCanceledDuringRetry_DropsTheBatchAtE
 }
 
 // TestFetchAndProcessHealthMetric_WriteThatCannotSucceed_IsNotRetried: a batch
-// that duplicates a document under another unique index gets the same answer
-// on every attempt, so it is dropped at once, at Error, instead of holding the
-// batches behind it through the whole backoff. A replay whose events are
-// already stored under the idempotency index is a success and is not retried
-// either.
+// that duplicates a document under another unique index, or one the datastore
+// rejects for what it contains, such as a check name longer than its
+// PostgreSQL column, gets the same answer on every attempt, so it is dropped
+// at once, at Error, instead of holding the batches behind it through the
+// whole backoff. A replay whose events are already stored under the
+// idempotency index is a success and is not retried either.
 func TestFetchAndProcessHealthMetric_WriteThatCannotSucceed_IsNotRetried(t *testing.T) {
 	logs := captureLogs(t)
 
@@ -865,26 +880,34 @@ func TestFetchAndProcessHealthMetric_WriteThatCannotSucceed_IsNotRetried(t *test
 		},
 	})).Once()
 	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, error(&datastore.BulkWriteFailure{
+		Failed: datastore.BulkDocumentError{
+			DocumentIndex: 0, Permanent: true, Message: "value too long for type character varying(100)",
+		},
+	})).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
 		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{}, DuplicateCount: 1}, nil).Once()
 	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
 		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{"id"}}, nil)
 
 	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
 
-	for _, message := range []string{"foreign duplicate", "replay", "next"} {
+	for _, message := range []string{"foreign duplicate", "rejected", "replay", "next"} {
 		ringBuffer.Enqueue(batchWithMessage(message, false))
 	}
 
 	exited := runLoop(ctx, connector)
 
-	require.Eventually(t, func() bool { return len(inserts.get()) == 3 }, 5*time.Second, 5*time.Millisecond,
+	require.Eventually(t, func() bool { return len(inserts.get()) == 4 }, 5*time.Second, 5*time.Millisecond,
 		"a batch was held for a retry")
 
 	ringBuffer.ShutDownHealthMetricQueue()
 	requireClosed(t, exited, "the loop did not return after the queue was shut down")
 
-	require.Equal(t, []string{"foreign duplicate", "replay", "next"}, inserts.get())
-	require.Contains(t, logs.String(), `level=ERROR msg="Batch cannot be stored as sent, dropping health events permanently"`)
+	require.Equal(t, []string{"foreign duplicate", "rejected", "replay", "next"}, inserts.get())
+	require.Equal(t, 2, strings.Count(logs.String(),
+		`level=ERROR msg="Batch cannot be stored as sent, dropping health events permanently"`))
+	require.Contains(t, logs.String(), `value too long for type character varying(100)`)
 }
 
 // TestFetchAndProcessHealthMetric_StoppedWithBatchesQueued_LogsThemAtError: a
