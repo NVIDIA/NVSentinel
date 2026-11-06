@@ -27,7 +27,7 @@ tests:
           path: data["config.yaml"]
           pattern: jobTemplatePatch
 
-  # Janitor reads the patch as a string, so the field names keep their case.
+  # The patch is rendered as a string, so its field names keep their case.
   - it: renders the patch as a YAML string under resetJob
     set:
       janitor.config.controllers.gpuReset.resetJob.jobTemplatePatch:

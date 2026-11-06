@@ -731,8 +731,8 @@ gpuResetController:
 	assert.Contains(t, err.Error(), "resetJob.driverBinPath")
 }
 
-// TestLoadConfig_GPUResetJobTemplatePatch loads a patch the way the chart renders it, as a YAML string. The field
-// names keep their case through Viper, and a patch does not move the reset Jobs to another namespace.
+// TestLoadConfig_GPUResetJobTemplatePatch loads a patch written as a YAML string, the way the chart renders it. It
+// checks that camelCase field names survive Viper, and that a namespace in the patch does not move the reset Jobs.
 func TestLoadConfig_GPUResetJobTemplatePatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "janitor-config.yaml")

@@ -401,11 +401,11 @@ func applyDriverBinPath(job *batchv1.JobTemplateSpec, driverBinPath string) erro
 	return nil
 }
 
-// applyJobTemplatePatch applies jobTemplatePatch to the reset Job template as a strategic merge patch, with
+// applyJobTemplatePatch applies jobTemplatePatch to the reset Job template as a strategic merge patch, using
 // JobTemplateSpec as the schema. An empty patch leaves the template unchanged.
 //
 // It checks the patch and the merged template strictly, so a misspelled field stops janitor at startup. Without the
-// check, the decode would drop the field without a warning, and every reset Job would run without that change.
+// check, the misspelled field would be dropped silently, and every reset Job would run without it.
 func applyJobTemplatePatch(job *batchv1.JobTemplateSpec, patch string) (*batchv1.JobTemplateSpec, error) {
 	if strings.TrimSpace(patch) == "" {
 		return job, nil
@@ -444,9 +444,10 @@ func applyJobTemplatePatch(job *batchv1.JobTemplateSpec, patch string) (*batchv1
 	return patched, nil
 }
 
-// validatePatchFields checks the field names and types in the patch. It removes directives such as $patch and
-// $retainKeys first, because they are not Job fields. The check of the merged template is not enough: the merge
-// removes every field that the patch sets to null, so a misspelled field set to null never reaches it.
+// validatePatchFields checks that every field in the patch is a real Job field with the right type. Directives such
+// as $patch and $retainKeys are removed first, because they are not fields. Checking only the merged template misses
+// one case: the merge removes any field that the patch sets to null, so a misspelled field set to null never shows
+// up there.
 func validatePatchFields(patchJSON []byte) error {
 	var patch any
 	if err := json.Unmarshal(patchJSON, &patch); err != nil {

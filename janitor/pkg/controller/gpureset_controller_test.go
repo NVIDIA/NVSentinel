@@ -953,7 +953,7 @@ var _ = Describe("GPUReset Controller", func() {
 		})
 
 		It("should set NVIDIA_GPU_RESETS in init containers and use the node of the reset", func() {
-			By("Configuring a template with an init container and another node, as a jobTemplatePatch can")
+			By("Configuring a template with an init container and a different nodeName, as a jobTemplatePatch could")
 			customTemplate := reconciler.Config.ResolvedJobTemplate.DeepCopy()
 			customTemplate.Spec.Template.Spec.NodeName = "another-node"
 			customTemplate.Spec.Template.Spec.InitContainers = []corev1.Container{
@@ -2950,9 +2950,9 @@ func TestTeardownCandidates_GPUClientsOnlyWhenLabelEnabled(t *testing.T) {
 	}
 }
 
-// TestSetContainersEnvVar_SetsTheValueInEveryContainer checks that each container gets the value, that every entry
-// with the same name is replaced, because the kubelet uses the last one, and that a new entry goes first, so that a
-// later $(NVIDIA_GPU_RESETS) reference expands.
+// TestSetContainersEnvVar_SetsTheValueInEveryContainer checks that each container gets the value, that every existing
+// entry with that name is overwritten, and that a new entry goes first, so a later $(NVIDIA_GPU_RESETS) reference
+// works.
 func TestSetContainersEnvVar_SetsTheValueInEveryContainer(t *testing.T) {
 	envVar := corev1.EnvVar{Name: gpuResetsEnvVar, Value: "GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}
 	other := corev1.EnvVar{Name: "OTHER", Value: "kept"}

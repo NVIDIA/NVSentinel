@@ -264,8 +264,8 @@ func TestApplyJobTemplatePatch_EmptyPatch_LeavesTemplateUnchanged(t *testing.T) 
 	}
 }
 
-// TestApplyJobTemplatePatch_ADRExample_MergesIntoTheBuiltInTemplate applies the example of ADR-069. The lists merge
-// on their merge keys, so the built-in volumes, mounts, environment and security context stay.
+// TestApplyJobTemplatePatch_ADRExample_MergesIntoTheBuiltInTemplate applies the ADR-069 example and checks that the
+// built-in volumes, mounts, env vars and security context are still there, because lists merge by key.
 func TestApplyJobTemplatePatch_ADRExample_MergesIntoTheBuiltInTemplate(t *testing.T) {
 	template := defaultTestJobTemplate(t)
 	builtIn := template.DeepCopy()
@@ -340,8 +340,8 @@ spec:
 	assert.Equal(t, "provider/gpu-reset:1.0", podSpec.Containers[0].Image)
 }
 
-// TestApplyJobTemplatePatch_Directive_IsApplied checks that a $patch directive is applied and is not taken for a
-// misspelled field by the strict decode.
+// TestApplyJobTemplatePatch_Directive_IsApplied checks that a $patch directive takes effect, and that the strict
+// check does not reject it as an unknown field.
 func TestApplyJobTemplatePatch_Directive_IsApplied(t *testing.T) {
 	template := defaultTestJobTemplate(t)
 	require.NotNil(t, findEnvVar(template.Spec.Template.Spec.Containers[0].Env, UploadURLBaseEnvVar))
@@ -363,7 +363,8 @@ spec:
 	assert.NotNil(t, findEnvVar(env, NodeNameEnvVar))
 }
 
-// TestApplyJobTemplatePatch_MergeRules covers the two merge rules that docs/configuration/janitor.md describes.
+// TestApplyJobTemplatePatch_MergeRules covers the two merge rules that docs/configuration/janitor.md warns about: a
+// new mountPath adds a second mount, and tolerations are replaced.
 func TestApplyJobTemplatePatch_MergeRules(t *testing.T) {
 	t.Run("a new mountPath for driver-root adds a second mount", func(t *testing.T) {
 		patched, err := applyJobTemplatePatch(defaultTestJobTemplate(t), `
@@ -431,7 +432,7 @@ func TestApplyJobTemplatePatch_InvalidPatch_ReturnsError(t *testing.T) {
 			wantErr: `unknown field "spec.ActiveDeadlineSeconds"`,
 		},
 		{
-			// The merge drops a field set to null, so only the decode of the patch finds this one.
+			// The merge removes fields set to null, so only the check of the patch itself catches this one.
 			name:    "misspelled field set to null",
 			patch:   "spec:\n  template:\n    spec:\n      containers:\n        - name: gpu-reset\n          env:\n            - name: NODE_NAME\n              valuefrom: null\n              value: node\n",
 			wantErr: `unknown field "spec.template.spec.containers[0].env[0].valuefrom"`,

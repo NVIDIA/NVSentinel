@@ -118,9 +118,9 @@ type ResetJobConfig struct {
 	DriverBinPath      string               `mapstructure:"driverBinPath" json:"driverBinPath"`
 	WriteSysLogEvent   *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
 	UploadURL          string               `mapstructure:"uploadURL" json:"uploadURL"`
-	// JobTemplatePatch is a strategic merge patch, in YAML or JSON, that janitor applies to the reset Job template
-	// after the other keys. It is a string because Viper changes map keys to lower case, and the field names of a
-	// Job are case sensitive.
+	// JobTemplatePatch is a strategic merge patch, in YAML or JSON, for the reset Job template. Janitor applies it
+	// after the other keys. It is a string, not a map, because Viper lowercases map keys and Job field names are case
+	// sensitive.
 	JobTemplatePatch string `mapstructure:"jobTemplatePatch" json:"jobTemplatePatch,omitempty"`
 }
 
@@ -203,8 +203,8 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 	return &config, nil
 }
 
-// resolveGPUResetJobTemplate builds the GPU reset Job template from the built-in template, the resetJob keys and
-// the jobTemplatePatch, in that order.
+// resolveGPUResetJobTemplate builds the GPU reset Job template: the built-in template first, then the resetJob keys,
+// then jobTemplatePatch.
 func resolveGPUResetJobTemplate(resetJobConfig ResetJobConfig, namespace string) (*batchv1.JobTemplateSpec, error) {
 	jobTemplate, err := getDefaultGPUResetJobTemplate(namespace, resetJobConfig.ImageConfig.Image,
 		resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.HostDriverRootPath,
@@ -223,7 +223,7 @@ func resolveGPUResetJobTemplate(resetJobConfig ResetJobConfig, namespace string)
 		return nil, err
 	}
 
-	// The controller creates and finds the reset Jobs in this namespace, so a patch does not change it.
+	// The controller creates and looks up reset Jobs in janitor's namespace, so a namespace in the patch is ignored.
 	jobTemplate.Namespace = namespace
 
 	return jobTemplate, nil
