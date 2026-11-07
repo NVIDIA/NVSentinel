@@ -179,6 +179,74 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     assert processor._connectivity_failure_window_seconds == (4 * 17 if custom_settings else 0)
 
 
+def test_cli_exits_non_zero_on_dcgm_version_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_file = tmp_path / "monitor.ini"
+    mapping_file = tmp_path / "mapping.csv"
+    state_file = tmp_path / "state"
+    state_file.write_text("test-boot-id")
+    mapping_file.write_text("DCGM_FR_NVLINK_DOWN,CONTACT_SUPPORT\n")
+    config_file.write_text(
+        "[logging]\n[dcgm]\nPollIntervalSeconds=17\n"
+        "[cli]\nEnabledEventProcessors=PlatformConnectorEventProcessor\n"
+        f"[eventprocessors.platformconnector]\nSocketPath={tmp_path / 'connector.sock'}\n"
+    )
+    exits: list[Event] = []
+
+    def mismatch_start(watcher: cli_module.dcgm.DCGMWatcher, fields: list[str], exit: Event) -> None:
+        exits.append(exit)
+        watcher._callback_thread_pool.shutdown()
+        raise cli_module.DCGMVersionMismatchError("API version mismatch")
+
+    termination_log = tmp_path / "termination-log"
+    prom_server, prom_thread = MagicMock(), MagicMock()
+    monkeypatch.setattr(cli_module, "TERMINATION_LOG_PATH", str(termination_log))
+    monkeypatch.setattr(cli_module.dcgm.DCGMWatcher, "start", mismatch_start)
+    monkeypatch.setattr(cli_module, "start_health_server", MagicMock(return_value=(prom_server, prom_thread)))
+    monkeypatch.setattr(cli_module.signal, "signal", MagicMock())
+    monkeypatch.setattr(cli_module, "set_default_structured_logger_with_level", MagicMock())
+    monkeypatch.setattr(cli_module, "get_package_version", lambda _: "test")
+    result = CliRunner().invoke(
+        cli_module.cli,
+        [
+            "--dcgm-addr",
+            "localhost:5555",
+            "--dcgm-error-mapping-config-file",
+            str(mapping_file),
+            "--config-file",
+            str(config_file),
+            "--port",
+            "8080",
+            "--state-file",
+            str(state_file),
+            "--dcgm-k8s-service-enabled",
+            "False",
+            "--metadata-path",
+            str(tmp_path / "metadata.json"),
+            "--processing-strategy",
+            "EXECUTE_REMEDIATION",
+            "--platform-connector-token-path",
+            "",
+            "--suppress-nvlink-down-unbridged-pcie",
+            "False",
+        ],
+        env={"NODE_NAME": "test-node"},
+    )
+
+    assert result.exit_code == 1, result.output or str(result.exception)
+    (exit,) = exits
+    assert exit.is_set()
+    prom_server.shutdown.assert_called_once()
+    prom_thread.join.assert_called_once()
+    message = termination_log.read_text()
+    assert "DCGM API version mismatch: API version mismatch" in message
+    assert "nvsentinel.dgxc.nvidia.com/dcgm.version" in message
+
+
+def test_write_termination_message_tolerates_unwritable_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli_module, "TERMINATION_LOG_PATH", str(tmp_path / "missing" / "termination-log"))
+    cli_module._write_termination_message("mismatch")
+
+
 def _find_option(param_name: str) -> Parameter | None:
     for param in cli.params:
         if param.name == param_name:

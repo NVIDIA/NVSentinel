@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG DCGM_VERSION="4.7.0-ubuntu24.04@sha256:c7e042a939a5c0d4d588fff28f9371d9d101e66eece7b3f831cf5d44fa182fc8"
+ARG DCGM_VERSION="4.7.1-ubuntu24.04@sha256:2fc0b3091e54f2d96c592b16e2fd16e326f378651a7ed01eeda909f22cbfd57c"
+ARG DCGM_LEGACY_VERSION="4.7.0-ubuntu24.04@sha256:c7e042a939a5c0d4d588fff28f9371d9d101e66eece7b3f831cf5d44fa182fc8"
 ARG VERSION="0.1.0"
 ARG GIT_COMMIT="none"
 ARG BUILD_DATE=$(date -u +%FT%TZ)
@@ -36,6 +37,15 @@ RUN poetry version $(echo "${VERSION}" | sed 's/^v//')
 RUN --mount=type=cache,target=/tmp/poetry_cache \
     poetry build --format wheel
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
+
+
+# Legacy DCGM client lane for hostengines older than 4.7.1 (see dcgm_diag/lane.py). Only libdcgm
+# and its Python bindings are needed; libdcgm depends on system libraries only.
+FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_LEGACY_VERSION} AS dcgm-legacy
+
+RUN mkdir -p /dcgm-legacy/lib /dcgm-legacy/bindings && \
+    cp -a /usr/lib/*-linux-gnu/libdcgm.so.4* /dcgm-legacy/lib/ && \
+    cp -a /usr/share/datacenter-gpu-manager-4/bindings/python3/. /dcgm-legacy/bindings/
 
 
 # Digest-pinned through the ARG value (tag@sha256). The tag is a build-matrix parameter (see
@@ -64,6 +74,8 @@ COPY --from=build /app/dist/*.whl ./
 COPY --from=build /app/constraints.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install ./nvsentinel_dcgm_diag*.whl --constraint constraints.txt
+
+COPY --from=dcgm-legacy /dcgm-legacy /opt/dcgm-4.7.0
 
 # Bundle error mapping file (static release data, not runtime config)
 COPY distros/kubernetes/nvsentinel/charts/gpu-health-monitor/files/dcgmerrorsmapping.csv /etc/dcgm/dcgmerrorsmapping.csv

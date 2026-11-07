@@ -72,6 +72,17 @@ class MockDCGMModule:
     class DCGMError_FunctionNotFound(Exception):
         pass
 
+    # Status-carrying errors, as raised by the real bindings' dcgmExceptionClass(status)()
+    DCGM_ST_CONNECTION_NOT_VALID = -6
+    DCGM_ST_VER_MISMATCH = -12
+
+    class DCGMError(Exception):
+        value = None
+
+    @staticmethod
+    def dcgmExceptionClass(status):
+        return type(f"DCGMError_{status}", (MockDCGMModule.DCGMError,), {"value": status})
+
     class IncidentArrayType(type):
         """Metaclass to support array creation with * operator."""
 

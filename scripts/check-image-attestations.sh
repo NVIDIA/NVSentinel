@@ -31,7 +31,7 @@
 #   ./scripts/check-image-attestations.sh v1.2.3 nvsentinel/platform-connectors  # Check with namespace
 #
 # Image names can be specified with or without the 'nvsentinel/' prefix.
-# For images with tag suffixes (dcgm-3.x, dcgm-4.x), use the base name without suffix.
+# For images with tag suffixes (dcgm-3.x, dcgm-4.x, dcgm-4.7.1-plus), use the base name without suffix.
 #
 # Requirements:
 #   - crane (for manifest inspection and OCI 1.1 attestation detection)
@@ -74,6 +74,7 @@ KO_IMAGES=(
 DOCKER_IMAGES=(
     "nvsentinel/gpu-health-monitor:dcgm-3.x"
     "nvsentinel/gpu-health-monitor:dcgm-4.x"
+    "nvsentinel/gpu-health-monitor:dcgm-4.7.1-plus"
     "nvsentinel/syslog-health-monitor"
     "nvsentinel/log-collector"
     "nvsentinel/file-server-cleanup"

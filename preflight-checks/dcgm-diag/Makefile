@@ -22,7 +22,8 @@ include ../../make/common.mk
 include ../../make/python.mk
 include ../../make/docker.mk
 
-DCGM_VERSION ?= 4.7.0-ubuntu24.04@sha256:c7e042a939a5c0d4d588fff28f9371d9d101e66eece7b3f831cf5d44fa182fc8
+DCGM_VERSION ?= 4.7.1-ubuntu24.04@sha256:2fc0b3091e54f2d96c592b16e2fd16e326f378651a7ed01eeda909f22cbfd57c
+DCGM_LEGACY_VERSION ?= 4.7.0-ubuntu24.04@sha256:c7e042a939a5c0d4d588fff28f9371d9d101e66eece7b3f831cf5d44fa182fc8
 IMAGE_NAME := preflight-dcgm-diag
 
 .PHONY: all
@@ -88,6 +89,7 @@ docker-build: setup-buildx
 		-f $(MODULE_PATH)/Dockerfile \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(IMAGE_NAME):$(SAFE_REF_NAME) \
 		--build-arg DCGM_VERSION=$(DCGM_VERSION) \
+		--build-arg DCGM_LEGACY_VERSION=$(DCGM_LEGACY_VERSION) \
 		--network=host \
 		$(DOCKER_LOAD_ARG) \
 		.
@@ -99,6 +101,7 @@ docker-publish: setup-buildx
 		-f $(MODULE_PATH)/Dockerfile \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(IMAGE_NAME):$(SAFE_REF_NAME) \
 		--build-arg DCGM_VERSION=$(DCGM_VERSION) \
+		--build-arg DCGM_LEGACY_VERSION=$(DCGM_LEGACY_VERSION) \
 		--network=host \
 		--push \
 		.

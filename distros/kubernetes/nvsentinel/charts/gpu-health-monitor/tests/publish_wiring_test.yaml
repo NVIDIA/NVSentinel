@@ -22,6 +22,7 @@ release:
 templates:
   - templates/daemonset-dcgm-3.x.yaml
   - templates/daemonset-dcgm-4.x.yaml
+  - templates/daemonset-dcgm-4.7.1-plus.yaml
   # Rendered too because the templates above checksum-annotate it.
   - templates/configmap.yaml
 set:
@@ -37,6 +38,7 @@ tests:
     templates:
       - templates/daemonset-dcgm-3.x.yaml
       - templates/daemonset-dcgm-4.x.yaml
+      - templates/daemonset-dcgm-4.7.1-plus.yaml
     asserts:
       - contains:
           path: spec.template.spec.volumes
@@ -59,6 +61,7 @@ tests:
     templates:
       - templates/daemonset-dcgm-3.x.yaml
       - templates/daemonset-dcgm-4.x.yaml
+      - templates/daemonset-dcgm-4.7.1-plus.yaml
     set:
       publishTo: deployment
     asserts:
@@ -98,6 +101,7 @@ tests:
     templates:
       - templates/daemonset-dcgm-3.x.yaml
       - templates/daemonset-dcgm-4.x.yaml
+      - templates/daemonset-dcgm-4.7.1-plus.yaml
     set:
       publishTo: deployment
       global.platformConnectorDeployment.tls.mode: insecureDevelopmentMode

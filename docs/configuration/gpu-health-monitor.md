@@ -43,7 +43,15 @@ GPU Health Monitor starts an in-process DCGM hostengine and exposes it to pod-lo
 > [!WARNING]
 > **Deprecated:** DCGM 3.x support is deprecated and will be removed on 30 November 2026. DCGM 3.x is end-of-life and gets no more patches. After the removal, NVSentinel will not detect faults on nodes running DCGM 3.x. To find these nodes, run `kubectl get nodes -l nvsentinel.dgxc.nvidia.com/dcgm.version=3.x`. Upgrade DCGM on these nodes to 4.x. If you have any concerns, please provide feedback in [PR #2102](https://github.com/NVIDIA/NVSentinel/pull/2102). Refer to [GPU Health Monitor: DCGM 3.x Support Removal](../deprecations/gpu-health-monitor-dcgm-3-support-removal.md) for the details.
 
-Use a GPU Health Monitor image from the same DCGM major version as its hostengine. The node `nvsentinel.dgxc.nvidia.com/dcgm.version` label selects the 3.x or 4.x monitor image.
+Use a GPU Health Monitor image on the same side of a DCGM protocol break as its hostengine. The node `nvsentinel.dgxc.nvidia.com/dcgm.version` label selects the monitor image. Each label value is one lane:
+
+| Label value | Hostengine DCGM version | Monitor image tag suffix | Monitor image DCGM version |
+|---|---|---|---|
+| `3.x` (deprecated) | 3.x | `-dcgm-3.x` | 3.3.x |
+| `4.x` | 4.0.0 to 4.7.0 | `-dcgm-4.x` | 4.7.0 |
+| `4.7.1-plus` | 4.7.1 and later 4.x | `-dcgm-4.7.1-plus` | 4.7.1 |
+
+DCGM 4.7.1 changed the version of the GPU and NVSwitch discovery message, and the hostengine does not accept the old version. A client and a hostengine on different sides of 4.7.1 fail that call with `DCGM_ST_VER_MISMATCH` (`-12`), in both directions. For this reason, the 4.x and 4.7.1-plus lanes use different images. Kubernetes label values cannot contain `+`, so the lane is named `4.7.1-plus`.
 
 In `operator-service` mode, labeler derives this label from the DCGM pod image. In `external-hostengine` and `embedded-mode`, the cluster operator supplies the label.
 
@@ -153,7 +161,7 @@ The GPU Operator sets the label back to `true` before the new driver loads, so t
 
 ### DCGM Version Node Label
 
-GPU Health Monitor ships one DaemonSet per DCGM major version. Each DaemonSet selects nodes with the `nvsentinel.dgxc.nvidia.com/dcgm.version` label, so every node gets the monitor image that matches its DCGM. All three modes render this `nodeSelector`, but only `operator-service` supplies the label for you.
+GPU Health Monitor ships one DaemonSet per [DCGM version lane](#dcgm-version-selection). Each DaemonSet selects nodes with the `nvsentinel.dgxc.nvidia.com/dcgm.version` label, so every node gets the monitor image that matches its DCGM. All three modes render this `nodeSelector`, but only `operator-service` supplies the label for you.
 
 | Mode | Who sets the label |
 |---|---|
@@ -167,7 +175,7 @@ One case still removes the label: a node labelled `nvsentinel.dgxc.nvidia.com/ma
 
 An unlabeled node runs no GPU Health Monitor pod, and nothing reports an error. The DaemonSet stays healthy because Kubernetes never schedules a pod it can reject. GPU health monitoring is silently absent on that node.
 
-Label every GPU node with its DCGM major version. The only accepted values are `3.x` and `4.x`; labeler treats any other value as absent.
+Label every GPU node with the lane of its DCGM version. The only accepted values are `3.x`, `4.x` and `4.7.1-plus`; labeler treats any other value as absent.
 
 ```bash
 # One node
@@ -175,11 +183,12 @@ kubectl label node <node-name> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x
 
 # Many nodes at once. Label each DCGM version separately, using a selector that
 # matches only the nodes running that version.
+kubectl label node -l <your-4.7.1-plus-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=4.7.1-plus
 kubectl label node -l <your-4.x-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x
 kubectl label node -l <your-3.x-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=3.x
 ```
 
-Do not label every GPU node with one version. A node labelled `4.x` while running DCGM 3.x gets the 4.x monitor image, which then fails against the hostengine it finds. If your fleet is genuinely uniform, `nvidia.com/gpu.present=true` is a usable selector — it comes from Node Feature Discovery, which the GPU Operator installs. Substitute your own selector if you run neither, which is common in `embedded-mode`.
+Do not label every GPU node with one version. A node labelled `4.x` while running DCGM 3.x gets the 4.x monitor image, which then fails against the hostengine it finds. A node labelled `4.x` while running DCGM 4.7.1 or later gets a monitor that DCGM rejects with `DCGM_ST_VER_MISMATCH`; see [DCGM API Version Mismatch](#dcgm-api-version-mismatch). If your fleet is genuinely uniform, `nvidia.com/gpu.present=true` is a usable selector — it comes from Node Feature Discovery, which the GPU Operator installs. Substitute your own selector if you run neither, which is common in `embedded-mode`.
 
 Confirm a monitor pod now runs on each labeled node:
 
@@ -192,6 +201,19 @@ Compare that count against the nodes that carry the label:
 ```bash
 kubectl get nodes -L nvsentinel.dgxc.nvidia.com/dcgm.version
 ```
+
+### DCGM API Version Mismatch
+
+When the hostengine rejects the monitor's DCGM API version (`DCGM_ST_VER_MISMATCH`, `-12`), the monitor is in the wrong lane for that node. A short mismatch is normal during a DCGM upgrade: the old lane pod sees `-12` until the label changes and the pod for the new lane starts.
+
+The monitor does not treat `-12` as a connectivity failure:
+
+- It does not publish `GpuDcgmConnectivityFailure` for the mismatch. The DCGM restart before it can still publish one, as any DCGM restart does; the monitor for the new lane clears it when it connects.
+- It logs an error that names the `nvsentinel.dgxc.nvidia.com/dcgm.version` label, writes the same reason to the container termination message, and exits with code `1`. The pod restarts, and shows `Error` or `CrashLoopBackOff`, until the label changes and the DaemonSet of the old lane removes it.
+- The monitor also increments `dcgm_api_failures{error_name="version_mismatch"}`, but it exits before Prometheus can scrape the counter. To detect the mismatch, use the pod status: `kubectl describe pod` shows the termination message under `Last State`. For alerts, use the kube-state-metrics series `kube_pod_container_status_restarts_total`, `kube_pod_container_status_last_terminated_exitcode` and `kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}` for the GPU health monitor container.
+- The startup gate does not wait on `-12`, so the main container starts and reports the mismatch.
+
+While the pod restarts, the node has no GPU health monitoring. If the pod keeps restarting after a DCGM upgrade is complete, check that the label matches the DCGM version on the node.
 
 ### Host Networking Override
 

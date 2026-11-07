@@ -322,6 +322,7 @@ echo "=== DaemonSets ==="
 check_daemonset "platform-connectors"
 check_daemonset "gpu-health-monitor-dcgm-3.x"
 check_daemonset "gpu-health-monitor-dcgm-4.x"
+check_daemonset "gpu-health-monitor-dcgm-4.7.1-plus"
 check_daemonset "syslog-health-monitor-regular"
 check_daemonset "syslog-health-monitor-kata"
 

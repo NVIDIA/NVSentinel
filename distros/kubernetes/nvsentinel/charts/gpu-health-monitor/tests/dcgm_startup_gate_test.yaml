@@ -15,6 +15,7 @@
 suite: DCGM startup gate
 templates:
   - templates/daemonset-dcgm-4.x.yaml
+  - templates/daemonset-dcgm-4.7.1-plus.yaml
   - templates/daemonset-dcgm-3.x.yaml
   - templates/configmap.yaml
 tests:
@@ -53,6 +54,20 @@ tests:
       - equal:
           path: spec.template.spec.initContainers[0].image
           value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-4.x
+
+  - it: waits for operator-service DCGM with the 4.7.1-plus image
+    template: templates/daemonset-dcgm-4.7.1-plus.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.startupGate.enabled: true
+      image.tag: test
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: wait-for-dcgm
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-4.7.1-plus
 
   - it: uses the external hostengine endpoint with the 3.x image
     template: templates/daemonset-dcgm-3.x.yaml
