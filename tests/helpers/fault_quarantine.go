@@ -193,6 +193,13 @@ type QuarantineSetupOptions struct {
 	CircuitBreakerCursorMode string
 	DryRun                   *bool
 	SkipRestart              bool
+
+	// NodeLabels are applied to the test node before fault-quarantine
+	// restarts, so its initial list already carries them. Use this for
+	// labels a rule reads from the informer cache (for example
+	// k8saas.nvidia.com/ManagedByNVSentinel): setting the label after
+	// the restart races the first event.
+	NodeLabels               map[string]string
 }
 
 // SetupQuarantineTestWithOptions sets up a quarantine test with additional configuration options.
@@ -240,13 +247,71 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 		}
 	}
 
+	// When the test needs node labels in place before fault-quarantine
+	// starts, select the node and apply them first: the restarted
+	// deployment's initial list then already carries the labels, so a
+	// rule reading them from the informer cache cannot miss them.
+	nodeName := ""
+	if opts != nil && len(opts.NodeLabels) > 0 {
+		nodeName = SelectTestNodeFromUnusedPool(ctx, t, client)
+		labelledNode := nodeName
+
+		// Capture the node's original values for the labels before
+		// writing any of them, and register a cleanup that restores
+		// them. Feature teardown does not run if setup fails (for
+		// example, the deployment restart below fails), so without
+		// this a failed setup would leave the labels on the node and
+		// later tests could select it with events filtered unexpectedly.
+		// The cleanup also runs on the success path, after teardown,
+		// leaving the node exactly as it was found.
+		node, err := GetNodeByName(ctx, client, labelledNode)
+		require.NoError(t, err)
+		originalLabels := make(map[string]string, len(opts.NodeLabels))
+		originalPresent := make(map[string]bool, len(opts.NodeLabels))
+		for key := range opts.NodeLabels {
+			if node.Labels != nil {
+				if value, ok := node.Labels[key]; ok {
+					originalLabels[key] = value
+					originalPresent[key] = true
+				}
+			}
+		}
+		t.Cleanup(func() {
+			for key := range opts.NodeLabels {
+				var restoreErr error
+				if originalPresent[key] && originalLabels[key] == "" {
+					// SetNodeLabel treats an empty value as "delete
+					// the key", so restore a pre-existing empty-valued
+					// label directly to preserve its presence.
+					restoreErr = setNodeLabelAllowEmpty(ctx, client, labelledNode, key)
+				} else if originalPresent[key] {
+					restoreErr = SetNodeLabel(ctx, client, labelledNode, key, originalLabels[key])
+				} else {
+					// An empty value deletes the label.
+					restoreErr = SetNodeLabel(ctx, client, labelledNode, key, "")
+				}
+				if restoreErr != nil {
+					t.Errorf("Failed to restore original label %s on node %s: %v", key, labelledNode, restoreErr)
+				}
+			}
+		})
+
+		for key, value := range opts.NodeLabels {
+			err = SetNodeLabel(ctx, client, nodeName, key, value)
+			require.NoError(t, err)
+		}
+	}
+
 	if opts == nil || !opts.SkipRestart {
 		t.Log("Restarting fault-quarantine deployment to load all configuration changes")
 		err = RestartDeployment(ctx, t, client, "fault-quarantine", NVSentinelNamespace)
 		require.NoError(t, err)
 	}
 
-	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
+	if nodeName == "" {
+		nodeName = SelectTestNodeFromUnusedPool(ctx, t, client)
+	}
+
 	testCtx.NodeName = nodeName
 	ctx = context.WithValue(ctx, CELKeyNodeName, nodeName)
 	ctx = context.WithValue(ctx, CELKeyConfigMapBackup, testCtx.ConfigMapBackup)
