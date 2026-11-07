@@ -1727,7 +1727,7 @@ janitor:
       
       # Setup steps for AWS:
       # 1. Create IAM role with trust relationship to OIDC provider
-      # 2. Attach policy with ec2:RebootInstances permission
+      # 2. Attach policy with ec2:RebootInstances and ec2:TerminateInstances permissions
       # 3. Annotate service account with role ARN
       # 4. Janitor pods will use IRSA to assume the role
     

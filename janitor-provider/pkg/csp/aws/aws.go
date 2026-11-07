@@ -43,6 +43,11 @@ type EC2 interface {
 		input *ec2.RebootInstancesInput,
 		opts ...func(*ec2.Options),
 	) (*ec2.RebootInstancesOutput, error)
+	TerminateInstances(
+		ctx context.Context,
+		input *ec2.TerminateInstancesInput,
+		opts ...func(*ec2.Options),
+	) (*ec2.TerminateInstancesOutput, error)
 }
 
 // Client is the AWS implementation of the CSP Client interface.
@@ -147,9 +152,36 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	return true, nil
 }
 
-// SendTerminateSignal is not implemented for AWS.
+// SendTerminateSignal terminates the EC2 instance backing the given node.
+// The returned reference is the instance ID.
 func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (model.TerminateNodeRequestRef, error) {
-	return model.TerminateNodeRequestRef(""), fmt.Errorf("SendTerminateSignal not implemented for AWS")
+	providerID := node.Spec.ProviderID
+	if providerID == "" {
+		err := fmt.Errorf("no provider ID found for node %s", node.Name)
+		slog.ErrorContext(ctx, "Failed to terminate node", "error", err)
+
+		return "", err
+	}
+
+	instanceID, err := parseAWSProviderID(providerID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to parse provider ID", "error", err)
+
+		return "", err
+	}
+
+	slog.InfoContext(ctx, "Terminating node", "node", node.Name, "instanceID", instanceID)
+
+	_, err = c.ec2.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+		InstanceIds: []string{instanceID},
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to terminate instance", "error", err, "instanceID", instanceID)
+
+		return "", fmt.Errorf("terminate instance %s: %w", instanceID, err)
+	}
+
+	return model.TerminateNodeRequestRef(instanceID), nil
 }
 
 // parseAWSProviderID extracts the EC2 instance ID from an AWS provider ID.
