@@ -74,7 +74,15 @@ metadata:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 600
+  {{- $deadline := 1800 }}
+  {{- with .Values.job }}
+  {{- if hasKey . "activeDeadlineSeconds" }}
+  {{- $deadline = int .activeDeadlineSeconds }}
+  {{- end }}
+  {{- end }}
+  {{- if $deadline }}
+  activeDeadlineSeconds: {{ $deadline }}
+  {{- end }}
   template:
     spec:
       serviceAccountName: mongodb-job-sa
