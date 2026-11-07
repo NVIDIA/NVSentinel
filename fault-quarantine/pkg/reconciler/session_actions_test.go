@@ -16,8 +16,8 @@ package reconciler
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -61,7 +61,7 @@ func TestUpdateSessionActionMetrics_CountsOnlyCordonsThatFaultQuarantineApplied(
 		{
 			name: "pre-existing cordon is recorded but not applied",
 			update: sessionActionUpdate{annotations: map[string]string{
-				common.QuarantineHealthEventIsCordonedAnnotationKey: common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+				common.QuarantineHealthEventIsCordonedAnnotationKey:        common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
 				common.QuarantineHealthEventCordonPreExistingAnnotationKey: common.QuarantineHealthEventCordonPreExistingAnnotationValue,
 			}},
 			expectedDelta: 0,
@@ -88,6 +88,61 @@ func appliedTaintsAnnotation(t *testing.T, taints ...config.Taint) string {
 	require.NoError(t, err)
 
 	return string(taintsJSON)
+}
+
+func TestReconcileTaintsWithNode(t *testing.T) {
+	taint := config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"}
+
+	testCases := []struct {
+		name       string
+		nodeTaints []corev1.Taint
+		desired    []config.Taint
+		expected   []config.Taint
+	}{
+		{
+			name:     "a taint the node does not have is applied as is",
+			desired:  []config.Taint{taint},
+			expected: []config.Taint{taint},
+		},
+		{
+			name: "a taint already on the node with the same value is marked pre-existing",
+			nodeTaints: []corev1.Taint{
+				{Key: taint.Key, Value: taint.Value, Effect: corev1.TaintEffectNoSchedule},
+			},
+			desired: []config.Taint{taint},
+			expected: []config.Taint{
+				{Key: taint.Key, Value: taint.Value, Effect: taint.Effect, PreExisting: true},
+			},
+		},
+		{
+			name: "a taint already on the node with another value is dropped, not overwritten",
+			nodeTaints: []corev1.Taint{
+				{Key: taint.Key, Value: "owned-by-operator", Effect: corev1.TaintEffectNoSchedule},
+			},
+			desired:  []config.Taint{taint},
+			expected: []config.Taint{},
+		},
+		{
+			name: "the same key with another effect is a different taint and is applied",
+			nodeTaints: []corev1.Taint{
+				{Key: taint.Key, Value: taint.Value, Effect: corev1.TaintEffectNoExecute},
+			},
+			desired:  []config.Taint{taint},
+			expected: []config.Taint{taint},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "node"},
+				Spec:       corev1.NodeSpec{Taints: tc.nodeTaints},
+			}
+
+			got := reconcileTaintsWithNode(context.Background(), node, tc.desired)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
 }
 
 func TestSessionTaintsToAdd(t *testing.T) {
