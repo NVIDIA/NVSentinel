@@ -126,7 +126,15 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 	for {
 		select {
 		case <-ctx.Done():
+			// Shutdown stops a loop that has not emptied its queue in time;
+			// the batches left behind were acknowledged when they were queued.
+			if queued := r.ringBuffer.CurrentLength(); queued > 0 {
+				slog.ErrorContext(ctx, "Context canceled with batches still queued, dropping them permanently",
+					"batchCount", queued)
+			}
+
 			slog.InfoContext(ctx, "Context canceled, exiting health metric processing loop")
+
 			return
 		default:
 			queuedHealthEvents, quit := r.ringBuffer.Dequeue()
@@ -146,49 +154,93 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 
 			eventCount := len(healthEvents.GetEvents())
 
-			outcome, err := r.insertHealthEvents(batchCtx, healthEvents, r.batchKey(queuedHealthEvents))
+			// The batch is retried here, before the next one is taken, so a
+			// monitor's batches are stored in the order it sent them even
+			// when a write fails.
+			outcome, retryCount, err := r.insertWithRetry(batchCtx, healthEvents, r.batchKey(queuedHealthEvents))
 			if err != nil {
-				retryCount := r.ringBuffer.NumRequeues(queuedHealthEvents)
-
 				tracing.RecordError(span, err)
 				span.SetAttributes(
 					attribute.String("platform_connector.store.error", err.Error()),
 					attribute.Int("platform_connector.store.retry_count", retryCount),
 					attribute.Int("platform_connector.store.max_retries", r.maxRetries),
+					attribute.String("platform_connector.store.status", "failed"),
 				)
 
-				if retryCount < r.maxRetries {
-					slog.WarnContext(batchCtx, "Error inserting health events, will retry with exponential backoff",
-						"error", err,
-						"retryCount", retryCount,
-						"maxRetries", r.maxRetries,
-						"eventCount", eventCount)
-
-					r.ringBuffer.AddRateLimited(queuedHealthEvents)
-				} else {
-					span.SetAttributes(attribute.String("platform_connector.store.status", "failed"))
-					slog.ErrorContext(batchCtx, "Max retries exceeded, dropping health events permanently",
-						"error", err,
-						"retryCount", retryCount,
-						"maxRetries", r.maxRetries,
-						"eventCount", eventCount,
-						"firstEventNodeName", healthEvents.GetEvents()[0].GetNodeName(),
-						"firstEventCheckName", healthEvents.GetEvents()[0].GetCheckName())
-					r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
-				}
+				slog.ErrorContext(batchCtx, dropMessage(ctx, err),
+					"error", err,
+					"retryCount", retryCount,
+					"maxRetries", r.maxRetries,
+					"eventCount", eventCount,
+					"firstEventNodeName", healthEvents.GetEvents()[0].GetNodeName(),
+					"firstEventCheckName", healthEvents.GetEvents()[0].GetCheckName())
 			} else {
 				batchesWritten.WithLabelValues(outcome).Inc()
 				span.SetAttributes(attribute.String("platform_connector.store.status", "inserted"))
-				r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
 			}
+
+			r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
 
 			span.End()
 		}
 	}
 }
 
+// insertWithRetry writes one batch and, after a failed write, retries it in
+// place with exponential backoff, up to maxRetries times. The loop holds the
+// batch meanwhile, so no later batch is stored ahead of it. The backoff is the
+// one the ring buffer was configured with, and a canceled context ends the
+// retries. It returns the outcome and the number of retries made.
+func (r *DatabaseStoreConnector) insertWithRetry(
+	ctx context.Context, healthEvents *protos.HealthEvents, batchKey string,
+) (string, int, error) {
+	delay, maxDelay := r.ringBuffer.RetryDelays()
+
+	for retries := 0; ; retries++ {
+		outcome, err := r.insertHealthEvents(ctx, healthEvents, batchKey)
+		// A batch the datastore can never store as sent gets the same answer
+		// on every attempt, so retrying it would only hold the queue.
+		if err == nil || retries >= r.maxRetries || ctx.Err() != nil || unstorable(err) != nil {
+			return outcome, retries, err
+		}
+
+		slog.WarnContext(ctx, "Error inserting health events, will retry in place with exponential backoff",
+			"error", err,
+			"retryCount", retries+1,
+			"maxRetries", r.maxRetries,
+			"retryDelay", delay,
+			"eventCount", len(healthEvents.GetEvents()))
+		r.ringBuffer.CountRetry()
+
+		timer := time.NewTimer(delay)
+
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+
+			return "", retries, err
+		case <-timer.C:
+		}
+
+		delay = min(delay*2, maxDelay)
+	}
+}
+
+// dropMessage says why the loop drops a batch: it was stopped first, the
+// datastore gave an answer no retry can change, or the retries ran out.
+func dropMessage(ctx context.Context, err error) string {
+	switch {
+	case ctx.Err() != nil:
+		return "Stopped before the batch was stored, dropping health events permanently"
+	case unstorable(err) != nil:
+		return "Batch cannot be stored as sent, dropping health events permanently"
+	default:
+		return "Max retries exceeded, dropping health events permanently"
+	}
+}
+
 // batchKey returns the idempotency key prefix of a queued batch, chosen on
-// its first write attempt and kept on the item: a batch requeued after a
+// its first write attempt and kept on the item: a batch retried after a
 // failed write carries the same per-event keys, so its next attempt stores
 // only what the first one did not, instead of storing the documents before
 // the failure a second time.
@@ -239,20 +291,41 @@ func (r *DatabaseStoreConnector) ProcessBatch(ctx context.Context, healthEvents 
 	return nil
 }
 
-// terminalIfDocumentError turns the one answer about a document that a resend
-// can never change, a duplicate on a unique index other than the idempotency
-// index, into a status the caller does not retry. Every other failure is left
-// as it is and answered with a retryable status: a document error can also be
-// the server stepping down in the middle of the batch, which a resend cures.
+// terminalIfDocumentError turns an answer about a document that a resend can
+// never change into a status the caller does not retry. Every other failure is
+// left as it is and answered with a retryable status: a document error can
+// also be the server stepping down in the middle of the batch, which a resend
+// cures.
 func terminalIfDocumentError(err error) error {
-	var failure *datastore.BulkWriteFailure
-	if !errors.As(err, &failure) || !failure.Failed.Duplicate {
+	failure := unstorable(err)
+	if failure == nil {
 		return err
 	}
 
+	if failure.Failed.Duplicate {
+		return status.Errorf(codes.InvalidArgument,
+			"event %d duplicates a document already stored under index %q, so the batch cannot be stored as sent: %s",
+			failure.Failed.DocumentIndex, failure.Failed.IndexName, failure.Failed.Message)
+	}
+
 	return status.Errorf(codes.InvalidArgument,
-		"event %d duplicates a document already stored under index %q, so the batch cannot be stored as sent: %s",
-		failure.Failed.DocumentIndex, failure.Failed.IndexName, failure.Failed.Message)
+		"the datastore rejects event %d for what it contains, so the batch cannot be stored as sent: %s",
+		failure.Failed.DocumentIndex, failure.Failed.Message)
+}
+
+// unstorable returns the failure when err is an answer about a document that a
+// resend can never change, and nil otherwise: a duplicate on a unique index
+// other than the idempotency index, or a document the datastore rejects for
+// what it contains (see datastore.BulkDocumentError.Permanent), such as a
+// check name longer than its PostgreSQL column. A duplicate on the idempotency
+// index never gets here: the insert skips it as an event already stored.
+func unstorable(err error) *datastore.BulkWriteFailure {
+	var failure *datastore.BulkWriteFailure
+	if errors.As(err, &failure) && (failure.Failed.Duplicate || failure.Failed.Permanent) {
+		return failure
+	}
+
+	return nil
 }
 
 // insertHealthEvents writes one batch: in order, past the documents that

@@ -44,6 +44,12 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}
+      # Shutdown waits up to 10s for open requests and up to 10s for the
+      # connector queues to drain, then up to 5s each for the loops it stops,
+      # the datastore disconnect, the metrics server and the trace exporter. The
+      # grace period leaves margin over that 40s budget so cleanup is not cut
+      # short by SIGKILL.
+      terminationGracePeriodSeconds: 45
       {{- $seLinuxOptions := (.Values.global).seLinuxOptions }}
       {{- if or .Values.global.auditLogging.enabled $seLinuxOptions }}
       securityContext:
