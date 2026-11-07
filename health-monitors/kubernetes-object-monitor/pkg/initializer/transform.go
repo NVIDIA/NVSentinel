@@ -205,11 +205,17 @@ func (f *gvkFieldPaths) cacheEntryFor(gvk schema.GroupVersionKind) gvkCacheEntry
 }
 
 func policyExpressions(p config.Policy) []string {
-	if p.NodeAssociation == nil {
-		return []string{p.Predicate.Expression}
+	expressions := []string{p.Predicate.Expression}
+
+	if p.RecoveryPredicate != nil {
+		expressions = append(expressions, p.RecoveryPredicate.Expression)
 	}
 
-	return []string{p.Predicate.Expression, p.NodeAssociation.Expression}
+	if p.NodeAssociation != nil {
+		expressions = append(expressions, p.NodeAssociation.Expression)
+	}
+
+	return expressions
 }
 
 // newFieldPruningTransform returns a cache.TransformFunc that strips every

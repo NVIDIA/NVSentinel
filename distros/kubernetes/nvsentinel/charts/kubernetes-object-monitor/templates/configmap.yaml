@@ -39,6 +39,13 @@ data:
         expression = {{ if contains "\n" .predicate.expression }}'''
 {{ .predicate.expression | trim | nindent 10 }}
         '''{{ else }}{{ .predicate.expression | quote }}{{ end }}
+      {{- if .recoveryPredicate }}
+      
+      [policies.recoveryPredicate]
+        expression = {{ if contains "\n" .recoveryPredicate.expression }}'''
+{{ .recoveryPredicate.expression | trim | nindent 10 }}
+        '''{{ else }}{{ .recoveryPredicate.expression | quote }}{{ end }}
+      {{- end }}
       
       {{- if .nodeAssociation }}
       [policies.nodeAssociation]

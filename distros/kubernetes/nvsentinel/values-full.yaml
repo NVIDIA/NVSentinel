@@ -1162,6 +1162,26 @@ kubernetes-object-monitor:
   # Where health events go: socket or deployment. See docs/configuration/platform-connectors.md.
   publishTo: socket
 
+  # Policies are defined in charts/kubernetes-object-monitor/values.yaml and
+  # values-npd-remediation.yaml. Setting this list replaces the defaults. Each
+  # policy may set recoveryPredicate: when its predicate stops matching, the
+  # resource is reported healthy only once this CEL expression is also true;
+  # until then the match is kept. See docs/configuration/kubernetes-object-monitor.md.
+  # policies:
+  #   - name: NPDXfsShutdown
+  #     ...
+  #     predicate:
+  #       expression: |
+  #         resource.status.conditions.exists(c,
+  #           c.type == "XfsShutdown" && c.status != "False")
+  #     recoveryPredicate:
+  #       expression: |
+  #         "recovery.nvsentinel.nvidia.com/npd-xfs-shutdown" in resource.metadata.annotations &&
+  #         resource.status.conditions.exists(c,
+  #           c.type == "XfsShutdown" && c.status == "False" &&
+  #           timestamp(string(resource.metadata.annotations["recovery.nvsentinel.nvidia.com/npd-xfs-shutdown"])) >
+  #             timestamp(c.lastTransitionTime))
+
 ################################################################################
 # NVCRE-CERTIFICATION-MONITOR CONFIGURATION
 #

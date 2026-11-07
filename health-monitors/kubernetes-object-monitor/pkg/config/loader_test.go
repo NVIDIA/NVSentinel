@@ -215,3 +215,71 @@ errorCode = ["OPERATOR_POD_UNHEALTHY"]
 		})
 	}
 }
+
+func TestLoadRecoveryPredicate(t *testing.T) {
+	tests := []struct {
+		name         string
+		recoveryTOML string
+		wantRecovery *PredicateSpec
+		wantError    string
+	}{
+		{
+			name:         "unset",
+			wantRecovery: nil,
+		},
+		{
+			name: "set",
+			recoveryTOML: `
+[policies.recoveryPredicate]
+expression = '"recovery.example.com/verified" in resource.metadata.annotations'
+`,
+			wantRecovery: &PredicateSpec{Expression: `"recovery.example.com/verified" in resource.metadata.annotations`},
+		},
+		{
+			name: "set without expression",
+			recoveryTOML: `
+[policies.recoveryPredicate]
+`,
+			wantError: "recoveryPredicate.expression is required when recoveryPredicate is set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "config.toml")
+			tomlConfig := `
+[[policies]]
+name = "node-condition-latched"
+enabled = true
+
+[policies.resource]
+group = ""
+version = "v1"
+kind = "Node"
+
+[policies.predicate]
+expression = 'resource.status.conditions.exists(c, c.type == "XfsShutdown" && c.status != "False")'
+` + tt.recoveryTOML + `
+[policies.healthEvent]
+componentClass = "Node"
+isFatal = true
+message = "filesystem shut down"
+recommendedAction = "REPLACE_VM"
+errorCode = ["XFS_SHUTDOWN"]
+`
+			require.NoError(t, os.WriteFile(configPath, []byte(tomlConfig), 0o600))
+
+			cfg, err := Load(configPath)
+			if tt.wantError != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantError)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Len(t, cfg.Policies, 1)
+			require.Equal(t, tt.wantRecovery, cfg.Policies[0].RecoveryPredicate)
+		})
+	}
+}

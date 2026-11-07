@@ -37,6 +37,13 @@
 # policies. Before each install or upgrade, add every policy that must be
 # retained to the list below. The default ReplaceNotReadyNode policy is repeated
 # here so applying this overlay preserves it.
+#
+# The NPD SystemLogMonitor conditions below stay True until NPD restarts, and a
+# restart resets them to False without proving that the fault is gone. Their
+# policies therefore set recoveryPredicate: KOM keeps the match, and the node
+# stays unhealthy, until the node is replaced or an operator records a
+# verification time on the node after the reset. See "Recover a node" in
+# docs/tutorials/integrating-node-problem-detector.md.
 # --------------------------------------------------------------------------
 
 global:
@@ -80,6 +87,14 @@ kubernetes-object-monitor:
           resource.status.conditions.exists(c,
             c.type == "XfsShutdown" &&
             c.status != "False")
+      recoveryPredicate:
+        expression: |
+          "recovery.nvsentinel.nvidia.com/npd-xfs-shutdown" in resource.metadata.annotations &&
+          resource.status.conditions.exists(c,
+            c.type == "XfsShutdown" &&
+            c.status == "False" &&
+            timestamp(string(resource.metadata.annotations["recovery.nvsentinel.nvidia.com/npd-xfs-shutdown"])) >
+              timestamp(c.lastTransitionTime))
       healthEvent:
         componentClass: Node
         isFatal: true
@@ -101,6 +116,14 @@ kubernetes-object-monitor:
           resource.status.conditions.exists(c,
             c.type == "CperHardwareErrorFatal" &&
             c.status != "False")
+      recoveryPredicate:
+        expression: |
+          "recovery.nvsentinel.nvidia.com/npd-cper-hardware-error-fatal" in resource.metadata.annotations &&
+          resource.status.conditions.exists(c,
+            c.type == "CperHardwareErrorFatal" &&
+            c.status == "False" &&
+            timestamp(string(resource.metadata.annotations["recovery.nvsentinel.nvidia.com/npd-cper-hardware-error-fatal"])) >
+              timestamp(c.lastTransitionTime))
       healthEvent:
         componentClass: Node
         isFatal: true
@@ -122,6 +145,14 @@ kubernetes-object-monitor:
           resource.status.conditions.exists(c,
             c.type == "ReadonlyFilesystem" &&
             c.status != "False")
+      recoveryPredicate:
+        expression: |
+          "recovery.nvsentinel.nvidia.com/npd-readonly-filesystem" in resource.metadata.annotations &&
+          resource.status.conditions.exists(c,
+            c.type == "ReadonlyFilesystem" &&
+            c.status == "False" &&
+            timestamp(string(resource.metadata.annotations["recovery.nvsentinel.nvidia.com/npd-readonly-filesystem"])) >
+              timestamp(c.lastTransitionTime))
       healthEvent:
         componentClass: Node
         isFatal: true

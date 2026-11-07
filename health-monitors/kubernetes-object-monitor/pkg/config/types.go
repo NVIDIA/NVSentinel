@@ -18,12 +18,18 @@ type Config struct {
 }
 
 type Policy struct {
-	Name            string           `toml:"name"`
-	Enabled         bool             `toml:"enabled"`
-	Resource        ResourceSpec     `toml:"resource"`
-	Predicate       PredicateSpec    `toml:"predicate"`
-	NodeAssociation *AssociationSpec `toml:"nodeAssociation,omitempty"`
-	HealthEvent     HealthEventSpec  `toml:"healthEvent"`
+	Name      string        `toml:"name"`
+	Enabled   bool          `toml:"enabled"`
+	Resource  ResourceSpec  `toml:"resource"`
+	Predicate PredicateSpec `toml:"predicate"`
+	// RecoveryPredicate, when set, gates the healthy transition of a matched
+	// resource: once Predicate stops matching, the resource is reported healthy
+	// only when this expression also evaluates to true. Until then the match is
+	// kept. When unset, the resource is reported healthy as soon as Predicate
+	// stops matching.
+	RecoveryPredicate *PredicateSpec   `toml:"recoveryPredicate,omitempty"`
+	NodeAssociation   *AssociationSpec `toml:"nodeAssociation,omitempty"`
+	HealthEvent       HealthEventSpec  `toml:"healthEvent"`
 }
 
 type ResourceSpec struct {
