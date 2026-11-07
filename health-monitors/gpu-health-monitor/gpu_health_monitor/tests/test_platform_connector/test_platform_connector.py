@@ -1442,6 +1442,169 @@ class TestPlatformConnectors(unittest.TestCase):
         server.stop(0)
         os.unlink(temp_file_path)
 
+    @staticmethod
+    def _metadata_with_gpus(*gpus: tuple[int, str, str]) -> dict:
+        """gpu_metadata.json content with one entry per (gpu_id, uuid, pci_address)."""
+        metadata = sample_metadata()
+        metadata["gpus"] = [
+            {
+                "gpu_id": gpu_id,
+                "uuid": uuid,
+                "pci_address": pci_address,
+                "serial_number": f"SN-GPU-{gpu_id}",
+                "device_name": "NVIDIA H100 80GB HBM3",
+                "nvlinks": [],
+            }
+            for gpu_id, uuid, pci_address in gpus
+        ]
+        return metadata
+
+    def _fault_after_metadata_rewrite(
+        self, metadata_before: dict, metadata_after: dict, gpu_ids: list[int], failing_gpu_id: int
+    ) -> platformconnector_pb2.HealthEvent:
+        """Publishes a healthy poll with metadata_before on disk, replaces the file with metadata_after
+        the way metadata-collector does, then publishes a double-bit ECC error on failing_gpu_id and
+        returns the fault event."""
+        metadata_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(metadata_dir.cleanup)
+        metadata_path = os.path.join(metadata_dir.name, "gpu_metadata.json")
+
+        def write_like_metadata_collector(metadata: dict) -> None:
+            tmp_path = metadata_path + ".tmp"
+            with open(tmp_path, "w") as f:
+                json.dump(metadata, f)
+            os.rename(tmp_path, metadata_path)
+
+        healthEventProcessor = PlatformConnectorServicer()
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+        server.add_insecure_port(f"unix://{socket_path}")
+        server.start()
+        self.addCleanup(server.stop, 0)
+
+        watcher = dcgm.DCGMWatcher(
+            config=dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+            ),
+            callbacks=[],
+        )
+
+        # After a reboot the hostPath still holds the previous boot's file.
+        write_like_metadata_collector(metadata_before)
+        processor = platform_connector.PlatformConnectorEventProcessor(
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={"DCGM_FR_VOLATILE_DBE_DETECTED": "COMPONENT_RESET"},
+                state_file_path=os.path.join(metadata_dir.name, "statefile"),
+                metadata_path=metadata_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            ),
+            exit=Event(),
+        )
+        self.addCleanup(processor.close)
+
+        # The first poll finds every watch healthy and reads the file for the healthy events.
+        processor.health_event_occurred(watcher._get_health_status_dict(), gpu_ids)
+
+        # metadata-collector starts, collects and replaces the file.
+        write_like_metadata_collector(metadata_after)
+
+        dcgm_health_events = watcher._get_health_status_dict()
+        dcgm_health_events["DCGM_HEALTH_WATCH_MEM"] = dcgmtypes.HealthDetails(
+            status=dcgmtypes.HealthStatus.FAIL,
+            entity_failures={
+                failing_gpu_id: [
+                    dcgm.types.ErrorDetails(
+                        code="DCGM_FR_VOLATILE_DBE_DETECTED",
+                        message=f"Volatile double-bit ECC error on GPU {failing_gpu_id}",
+                    )
+                ]
+            },
+        )
+        healthEventProcessor.health_events = None
+        processor.health_event_occurred(dcgm_health_events, gpu_ids)
+
+        faults = [event for event in healthEventProcessor.health_events or [] if not event.isHealthy]
+        assert len(faults) == 1
+        return faults[0]
+
+    def test_health_event_names_gpu_from_rewritten_metadata(self) -> None:
+        """A fault on the board swapped into slot 0 must name that board's UUID, not the UUID of the
+        board the previous boot's file lists there. Partial drains and GPU resets go by that UUID."""
+        fault = self._fault_after_metadata_rewrite(
+            metadata_before=self._metadata_with_gpus(
+                (0, "GPU-aaaaaaaa-0000-0000-0000-000000000000", "0000:17:00.0"),
+                (1, "GPU-bbbbbbbb-0000-0000-0000-000000000000", "0000:2a:00.0"),
+            ),
+            metadata_after=self._metadata_with_gpus(
+                (0, "GPU-cccccccc-0000-0000-0000-000000000000", "0000:17:00.0"),
+                (1, "GPU-bbbbbbbb-0000-0000-0000-000000000000", "0000:2a:00.0"),
+            ),
+            gpu_ids=[0, 1],
+            failing_gpu_id=0,
+        )
+
+        entities = {entity.entityType: entity.entityValue for entity in fault.entitiesImpacted}
+        assert entities == {
+            "GPU": "0",
+            "PCI": "0000:17:00.0",
+            "GPU_UUID": "GPU-cccccccc-0000-0000-0000-000000000000",
+        }
+        assert fault.recommendedAction == platformconnector_pb2.COMPONENT_RESET
+
+    def test_health_event_names_pci_from_rewritten_metadata_when_a_gpu_is_missing(self) -> None:
+        """When the board at 2a:00 does not come up after the reboot, DCGM id 1 is the board at 3d:00.
+        A fault on id 1 must name 3d:00 and its UUID, not the slot of the board that is gone."""
+        fault = self._fault_after_metadata_rewrite(
+            metadata_before=self._metadata_with_gpus(
+                (0, "GPU-00000000-0000-0000-0000-000000000000", "0000:17:00.0"),
+                (1, "GPU-11111111-0000-0000-0000-000000000000", "0000:2a:00.0"),
+                (2, "GPU-22222222-0000-0000-0000-000000000000", "0000:3d:00.0"),
+            ),
+            metadata_after=self._metadata_with_gpus(
+                (0, "GPU-00000000-0000-0000-0000-000000000000", "0000:17:00.0"),
+                (1, "GPU-22222222-0000-0000-0000-000000000000", "0000:3d:00.0"),
+            ),
+            gpu_ids=[0, 1],
+            failing_gpu_id=1,
+        )
+
+        entities = {entity.entityType: entity.entityValue for entity in fault.entitiesImpacted}
+        assert entities == {
+            "GPU": "1",
+            "PCI": "0000:3d:00.0",
+            "GPU_UUID": "GPU-22222222-0000-0000-0000-000000000000",
+        }
+
+    def test_health_event_poll_checks_metadata_file_once(self) -> None:
+        """A poll looks up every GPU once per watch but checks the metadata file only once."""
+        with self._running_connector() as (servicer, processor):
+            watcher = dcgm.DCGMWatcher(
+                config=dcgm.types.DCGMWatcherConfig(
+                    addr="localhost:5555",
+                    poll_interval_seconds=10,
+                    dcgm_k8s_service_enabled=False,
+                ),
+                callbacks=[],
+            )
+            metadata_path = processor._metadata_reader._path
+            stat_calls = []
+            real_stat = os.stat
+
+            def counting_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+                if path == metadata_path:
+                    stat_calls.append(path)
+                return real_stat(path, *args, **kwargs)
+
+            with unittest.mock.patch.object(os, "stat", counting_stat):
+                processor.health_event_occurred(watcher._get_health_status_dict(), [0, 1, 2, 3, 4, 5, 6, 7])
+
+            assert servicer.health_events is not None
+            assert len(stat_calls) == 1
+
     def test_dcgm_connectivity_failed(self):
         """Test that GpuDcgmConnectivityFailure health event is sent when DCGM connectivity fails."""
         import tempfile
