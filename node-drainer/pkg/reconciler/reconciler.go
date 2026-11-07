@@ -765,12 +765,28 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 			)
 		}
 
+		// Re-asserted every poll from the event itself, so this is the instant the wait began
+		// no matter how many times the item has been requeued. Skipped when the event carries no
+		// creation time: time.Time's zero value is year 1, so publishing it would make
+		// `time() - this` read as two millennia and fire every threshold immediately and
+		// permanently. The rest of this package guards the same field the same way
+		// (coldstart/resolver.go, isEventCancelled).
+		if !healthEvent.CreatedAt.IsZero() {
+			metrics.NodeDrainAwaitingCompletionSince.WithLabelValues(nodeName).
+				Set(float64(healthEvent.CreatedAt.Unix()))
+		}
+
 		slog.InfoContext(ctx, "Pods still running on node, requeuing for later check",
 			"node", nodeName,
 			"remainingPods", remainingPods)
 
 		return fmt.Errorf("waiting for pods to complete: %d pods remaining", len(remainingPods))
 	}
+
+	// Removed as soon as completion is observed, not left to ClearNodeDraining on a later pass:
+	// this branch requeues for the status update, so the series would otherwise keep reporting a
+	// wait for one more interval after the pods are already gone.
+	metrics.NodeDrainAwaitingCompletionSince.DeleteLabelValues(nodeName)
 
 	slog.InfoContext(ctx, "All pods completed on node", "node", nodeName)
 

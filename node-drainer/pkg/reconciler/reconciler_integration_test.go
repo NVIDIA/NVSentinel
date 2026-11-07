@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -1084,6 +1085,13 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 
 	time.Sleep(5 * time.Second)
 
+	// allowCompletion has no deadline, so this timestamp is the only signal that the drain is
+	// waiting rather than stuck. It must carry the event's creation time while the pod runs.
+	require.Eventually(t, func() bool {
+		return gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionSince, nodeName) &&
+			getGaugeVecValue(t, metrics.NodeDrainAwaitingCompletionSince, nodeName) > 0
+	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion timestamp should be set while a pod is still running")
+
 	updatedPod, err := setup.client.CoreV1().Pods("completion-test").Get(setup.ctx, "running-pod", metav1.GetOptions{})
 	require.NoError(t, err)
 	updatedPod.Status.Phase = v1.PodSucceeded
@@ -1107,6 +1115,12 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	}, 10*time.Second, 500*time.Millisecond)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainSucceededLabelValue)
+
+	// Removed once the node stops draining, so time() minus a stale timestamp cannot keep an
+	// alert firing after the drain finished.
+	require.Eventually(t, func() bool {
+		return !gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionSince, nodeName)
+	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion series should be removed once the node stops draining")
 }
 
 // TestReconciler_MultipleNodesRequeue validates concurrent draining of multiple nodes through the queue.
@@ -1885,6 +1899,40 @@ func getGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 	err := gauge.Write(metric)
 	require.NoError(t, err)
 	return metric.Gauge.GetValue()
+}
+
+// gaugeVecHasSeries reports whether the vector currently has a series for these label values.
+// GetMetricWithLabelValues cannot answer this: it creates the series as a side effect, so a
+// removed series would look present at zero.
+func gaugeVecHasSeries(gaugeVec *prometheus.GaugeVec, labelValues ...string) bool {
+	ch := make(chan prometheus.Metric)
+
+	go func() {
+		gaugeVec.Collect(ch)
+		close(ch)
+	}()
+
+	found := false
+
+	// Drains the channel even after a match: returning early would leave Collect blocked on an
+	// unbuffered send, leaking the goroutine for the rest of the test binary.
+	for m := range ch {
+		dtoMetric := &dto.Metric{}
+		if err := m.Write(dtoMetric); err != nil {
+			continue
+		}
+
+		values := make([]string, 0, len(dtoMetric.Label))
+		for _, label := range dtoMetric.Label {
+			values = append(values, label.GetValue())
+		}
+
+		if slices.Equal(values, labelValues) {
+			found = true
+		}
+	}
+
+	return found
 }
 
 func getGaugeVecValue(t *testing.T, gaugeVec *prometheus.GaugeVec, labelValues ...string) float64 {
