@@ -82,6 +82,7 @@ func TestSendTerminateSignalErrors(t *testing.T) {
 	}{
 		{name: "missing provider ID", providerID: ""},
 		{name: "malformed provider ID", providerID: "aws:///i-0123456789abcdef0"},
+		{name: "empty instance ID segment", providerID: "aws:///us-east-2b/"},
 		{name: "EC2 API error", providerID: "aws:///us-east-2b/i-0123456789abcdef0", apiErr: apiErr, wantCalls: 1, wantErrIs: apiErr},
 	}
 

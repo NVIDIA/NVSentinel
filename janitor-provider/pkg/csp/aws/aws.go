@@ -188,7 +188,7 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 // Example provider ID: aws:///us-west-2/i-1234567890abcdef0
 func parseAWSProviderID(providerID string) (string, error) {
 	parts := strings.Split(providerID, "/")
-	if len(parts) < 5 {
+	if len(parts) < 5 || parts[4] == "" {
 		return "", fmt.Errorf("invalid provider ID: %s", providerID)
 	}
 
