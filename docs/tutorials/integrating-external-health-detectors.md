@@ -145,12 +145,19 @@ replaces the complete list on upgrade, so your values file must include
 default policies (such as `ReplaceNotReadyNode`). Omitting a policy from the
 list silently removes it on the next upgrade.
 
-To see the defaults shipped by the chart before editing:
+To see the default policies shipped by the KOM subchart before editing,
+set your version first and inspect the subchart directly:
 
 ```bash
-helm show values oci://ghcr.io/nvidia/nvsentinel \
+NVSENTINEL_VERSION="<your-version>"
+
+# Inspect the KOM subchart defaults (policies live there, not in the umbrella chart)
+helm show values oci://ghcr.io/nvidia/nvsentinel/charts/kubernetes-object-monitor \
   --version "$NVSENTINEL_VERSION" \
   | grep -A 60 'policies:'
+
+# On an existing release, also check the currently active effective values:
+helm get values nvsentinel --namespace nvsentinel
 ```
 
 ```yaml
@@ -185,16 +192,24 @@ kubernetes-object-monitor:
 
 Apply the updated values:
 
-> **Warning:** Run this upgrade against a non-production cluster or disable
-> downstream remediation (`fault-remediation.enabled: false`) before applying
-> the new policy. On an existing release, `--reuse-values` retains any enabled
-> remediation pipeline. A matching condition on any node will trigger a fatal
-> `HealthEvent` and may cordon that node before you reach the validation steps
-> below.
+> **Warning:** Run this upgrade against a non-production cluster, or disable
+> all downstream remediation components before applying the new policy. On an
+> existing release, `--reuse-values` retains any enabled pipeline. A matching
+> condition on any node will trigger a fatal `HealthEvent` and may cordon or
+> drain that node before you reach the validation steps below. To disable all
+> relevant components:
+>
+> ```yaml
+> global:
+>   faultRemediation:
+>     enabled: false
+>   faultQuarantine:
+>     enabled: false
+>   nodedrainer:
+>     enabled: false
+> ```
 
 ```bash
-NVSENTINEL_VERSION="<your-version>"
-
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
   --namespace nvsentinel \
@@ -218,7 +233,7 @@ kubectl logs deployment/kubernetes-object-monitor \
 # Expected: a "Loaded policy configuration" entry appearing after the
 # most recent pod start, confirming KOM read its configuration successfully.
 # Cross-check by viewing the ConfigMap KOM reads from:
-kubectl get configmap -n nvsentinel -l app.kubernetes.io/component=kubernetes-object-monitor \
+kubectl get configmap -n nvsentinel -l app.kubernetes.io/name=kubernetes-object-monitor \
   -o yaml | grep -A 5 "ExternalGPUIntegrityCheck"
 ```
 
@@ -249,12 +264,12 @@ kubectl logs deployment/kubernetes-object-monitor \
   | grep "ExternalGPUIntegrityCheck"
 # Expected: a log entry showing the policy matched
 
-# Confirm the HealthEvent was received downstream by checking for a
-# NVSentinel node condition on the affected node:
+# Confirm the HealthEvent was received downstream by checking for the
+# condition the platform connector sets, named after the policy check:
 kubectl get node "$NODE" \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' \
-  | grep -i nvsentinel
-# Expected: a NVSentinel-managed condition present on the node
+  | grep "ExternalGPUIntegrityCheck=True"
+# Expected: ExternalGPUIntegrityCheck=True
 ```
 
 **Step 3 — confirm the node was cordoned** (only if downstream remediation is
