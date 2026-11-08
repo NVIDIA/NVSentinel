@@ -38,6 +38,12 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 	ds datastore.DataStore,
 	config watcher.WatcherConfig,
 ) (datastore.ChangeStreamWatcher, error) {
+	return f.createChangeStreamWatcher(ctx, ds, config, client.ResetResumeTokenOnStartIfConfigured)
+}
+
+func (f *PostgreSQLWatcherFactory) createChangeStreamWatcher(
+	ctx context.Context, ds datastore.DataStore, config watcher.WatcherConfig, reset resetResumeTokenFunc,
+) (datastore.ChangeStreamWatcher, error) {
 	pgStore, ok := ds.(*PostgreSQLDataStore)
 	if !ok {
 		return nil, fmt.Errorf("expected PostgreSQL datastore, got %T", ds)
@@ -50,7 +56,7 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 		return nil, fmt.Errorf("CollectionName (table name) is required for PostgreSQL watcher")
 	}
 
-	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(
+	resumeControlDecision, err := reset(
 		ctx,
 		pgStore.GetDatabaseClient(),
 		client.TokenConfig{ClientName: clientName},
@@ -73,6 +79,10 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 		pgStore.connString,
 		ModeHybrid,
 	)
+
+	if err := changeStreamWatcher.initializeResumePosition(ctx); err != nil {
+		return nil, fmt.Errorf("initialize PostgreSQL watcher position: %w", err)
+	}
 
 	f.applyPipelineFilter(changeStreamWatcher, config.Pipeline, tableName)
 

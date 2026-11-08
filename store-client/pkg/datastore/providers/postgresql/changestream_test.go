@@ -398,39 +398,19 @@ func TestBuildEventDocument(t *testing.T) {
 	}
 }
 
-// TestTimestampBasedResume_FirstStartup tests that on first startup with no resume token,
-// the watcher starts from current time (not from position 0)
-func TestTimestampBasedResume_FirstStartup(t *testing.T) {
+// A missing row is distinguished from every other load failure. Only initialization writes it.
+func TestLoadResumePosition_MissingRow_ReturnsNoRows(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
 
-	ctx := context.Background()
-	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
-
-	// Mock: No resume token found
-	mock.ExpectQuery("SELECT resume_token FROM resume_tokens").
-		WithArgs("test-client").
+	w := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
+	mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
 		WillReturnError(sql.ErrNoRows)
 
-	// Load resume position
-	beforeLoad := time.Now().Add(-1 * time.Second)
-	err = watcher.loadResumePosition(ctx)
-	afterLoad := time.Now().Add(1 * time.Second)
-
-	require.NoError(t, err)
-
-	// Verify timestamp-based resume (not ID-based)
-	assert.False(t, watcher.lastTimestamp.IsZero(), "lastTimestamp should be set")
-	assert.Equal(t, int64(0), watcher.lastEventID, "lastEventID should be 0 on first startup")
-
-	// Verify timestamp is approximately "now" (within 2 second window)
-	assert.True(t, watcher.lastTimestamp.After(beforeLoad), "lastTimestamp should be after beforeLoad")
-	assert.True(t, watcher.lastTimestamp.Before(afterLoad), "lastTimestamp should be before afterLoad")
-
-	// Verify MongoDB-like behavior: start from current time, not from beginning
-	t.Logf("First startup: lastTimestamp=%v, lastEventID=%d", watcher.lastTimestamp, watcher.lastEventID)
-
+	require.ErrorIs(t, w.loadResumePosition(context.Background()), sql.ErrNoRows)
+	assert.True(t, w.lastTimestamp.IsZero())
+	assert.Zero(t, w.lastEventID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -710,34 +690,6 @@ func TestTimestampBasedResume_TieBreaking(t *testing.T) {
 
 // TestTimestampBasedResume_MongoDBEquivalence tests that behavior matches MongoDB
 func TestTimestampBasedResume_MongoDBEquivalence(t *testing.T) {
-	t.Run("MongoDB: SetStartAtOperationTime(now) ≡ PostgreSQL: lastTimestamp = time.Now()", func(t *testing.T) {
-		db, mock, err := sqlmock.New()
-		require.NoError(t, err)
-		defer db.Close()
-
-		ctx := context.Background()
-		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
-
-		// Mock: No resume token (first startup)
-		mock.ExpectQuery("SELECT resume_token FROM resume_tokens").
-			WithArgs("test-client").
-			WillReturnError(sql.ErrNoRows)
-
-		beforeLoad := time.Now()
-		err = watcher.loadResumePosition(ctx)
-		afterLoad := time.Now()
-
-		require.NoError(t, err)
-
-		// Verify: Starts from "now" (like MongoDB)
-		assert.True(t, watcher.lastTimestamp.After(beforeLoad.Add(-1*time.Second)))
-		assert.True(t, watcher.lastTimestamp.Before(afterLoad.Add(1*time.Second)))
-
-		t.Logf("✅ PostgreSQL starts from current time, like MongoDB's SetStartAtOperationTime(now)")
-
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
 	t.Run("MongoDB: WHERE ts > token ≡ PostgreSQL: WHERE changed_at > token", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
@@ -812,134 +764,60 @@ func TestLoadResumePosition_LegacyLookupTransientError_RetriesUntilSuccess(t *te
 }
 
 func TestLoadResumePosition_LegacyLookupCancelled_StopsRetrying(t *testing.T) {
-	for _, fallback := range []bool{false, true} {
-		t.Run(fmt.Sprintf("fallback=%t", fallback), func(t *testing.T) {
-			db, mock, err := sqlmock.New()
-			require.NoError(t, err)
-			defer db.Close()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
-			mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
-				WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow([]byte(`{"eventID":193}`)))
-			lookup := mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").WithArgs(int64(193))
-			if fallback {
-				lookup.WillReturnError(sql.ErrNoRows)
-				mock.ExpectQuery(`SELECT MIN\(changed_at\) FROM datastore_changelog`).
-					WithArgs(int64(193)).WillReturnError(sql.ErrConnDone)
-			} else {
-				lookup.WillReturnError(sql.ErrConnDone)
-			}
+	w := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
+	mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
+		WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow([]byte(`{"eventID":193}`)))
+	mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").WithArgs(int64(193)).
+		WillReturnError(sql.ErrConnDone)
 
-			done := make(chan error, 1)
-			go func() { done <- watcher.loadResumePosition(ctx) }()
+	done := make(chan error, 1)
+	go func() { done <- w.loadResumePosition(ctx) }()
 
-			// Cancel after the failed lookup, while the context-aware backoff waits.
-			require.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, time.Second, time.Millisecond)
-			cancel()
+	require.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, time.Second, time.Millisecond)
+	cancel()
 
-			select {
-			case err := <-done:
-				require.ErrorIs(t, err, context.Canceled)
-			case <-time.After(time.Second):
-				t.Fatal("legacy lookup did not stop after cancellation")
-			}
-
-			assert.True(t, watcher.lastTimestamp.IsZero())
-			assert.Zero(t, watcher.lastEventID, "a failed conversion must permit a replay that advances")
-			assert.NoError(t, mock.ExpectationsWereMet())
-		})
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("legacy lookup did not stop after cancellation")
 	}
+
+	assert.True(t, w.lastTimestamp.IsZero())
+	assert.False(t, w.positionInitialized)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestStart_NonLegacyLoadError_StartsReaders(t *testing.T) {
-	for _, corrupt := range []bool{false, true} {
-		t.Run(fmt.Sprintf("corrupt=%t", corrupt), func(t *testing.T) {
-			db, mock, err := sqlmock.New()
-			require.NoError(t, err)
-			defer db.Close()
-
-			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
-			lookup := mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client")
-			if corrupt {
-				lookup.WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow([]byte(`{"eventID":`)))
-			} else {
-				lookup.WillReturnError(sql.ErrConnDone)
-			}
-
-			changedAt := time.Date(2024, 11, 24, 10, 0, 4, 0, time.UTC)
-			mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-				WithArgs("health_events", time.Time{}, int64(0)).
-				WillReturnRows(sqlmock.NewRows([]string{
-					"id", "record_id", "operation", "old_values", "new_values", "changed_at",
-				}).AddRow(1, "uuid-1", "INSERT", nil, `{"document":{}}`, changedAt))
-
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			watcher.Start(ctx)
-
-			select {
-			case event := <-watcher.Events():
-				assert.Equal(t, []byte("1"), event.ResumeToken)
-			case <-time.After(time.Second):
-				t.Fatal("watcher did not deliver replayed event after load error")
-			}
-
-			cancel()
-			assert.NoError(t, mock.ExpectationsWereMet())
-		})
-	}
-}
-
-func TestStart_CancelledFallback_DoesNotLaunchReaders(t *testing.T) {
+func TestStart_Uninitialized_DoesNotLaunchReaders(t *testing.T) {
 	for _, mode := range []ChangeStreamMode{ModePolling, ModeNotify, ModeHybrid, "unknown"} {
 		t.Run(string(mode), func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
 			defer db.Close()
 
-			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", mode)
-			watcher.pollInterval = time.Millisecond
-			mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
-				WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow([]byte(`{"eventID":193}`)))
-			mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
-				WithArgs(int64(193)).WillReturnError(sql.ErrNoRows)
-			mock.ExpectQuery(`SELECT MIN\(changed_at\) FROM datastore_changelog`).
-				WithArgs(int64(193)).WillReturnError(sql.ErrConnDone)
+			w := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", mode)
+			w.Start(context.Background())
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			// No I/O is permitted, including a token lookup or a checkpoint write.
+			assert.NoError(t, mock.ExpectationsWereMet())
+			assert.Nil(t, w.listener)
+			assert.Empty(t, w.events)
+			assert.True(t, w.lastTimestamp.IsZero())
 
-			done := make(chan struct{})
-			go func() {
-				watcher.Start(ctx)
-				close(done)
-			}()
-
-			require.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, time.Second, time.Millisecond)
-			cancel()
-
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-				t.Fatal("Start did not return after cancellation")
-			}
-
-			assert.True(t, watcher.lastTimestamp.IsZero())
-			assert.Zero(t, watcher.lastEventID)
-
-			// This expectation must remain unmet: cancellation must prevent readers.
+			// A polling reader must not consume this expectation after Start returns.
 			mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
 				WillReturnRows(sqlmock.NewRows([]string{
 					"id", "record_id", "operation", "old_values", "new_values", "changed_at",
 				}))
 			require.Never(t, func() bool { return mock.ExpectationsWereMet() == nil },
 				30*time.Millisecond, time.Millisecond)
-			assert.Nil(t, watcher.listener)
-			assert.Empty(t, watcher.events)
 		})
 	}
 }
@@ -1019,74 +897,23 @@ func TestMarkProcessed_VerifiedTimestamp_PersistsResumePosition(t *testing.T) {
 	}
 }
 
-func TestLoadResumePosition_LegacyRowMissing_UsesSafeFallback(t *testing.T) {
-	earliest := time.Date(2024, 11, 24, 10, 0, 5, 0, time.UTC)
-	tests := []struct {
-		name      string
-		timestamp any
-		lookupErr error
-		retry     bool
-	}{
-		{name: "remaining rows", timestamp: earliest},
-		{name: "no remaining rows"},
-		{name: "fallback query transient error", timestamp: earliest, retry: true},
-		{name: "fallback query missing row", lookupErr: sql.ErrNoRows},
+func TestLoadResumePosition_LegacyRowMissing_ReturnsError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	w := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
+	// Every restart must encounter the unchanged legacy token and require operator recovery.
+	for range 2 {
+		mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
+			WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow([]byte(`{"eventID":193}`)))
+		mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").WithArgs(int64(193)).
+			WillReturnError(sql.ErrNoRows)
+
+		require.ErrorIs(t, w.loadResumePosition(context.Background()), sql.ErrNoRows)
+		assert.True(t, w.lastTimestamp.IsZero())
+		assert.False(t, w.positionInitialized)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			db, mock, err := sqlmock.New()
-			require.NoError(t, err)
-			defer db.Close()
-
-			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
-			watcher.resumeRetryInterval = time.Microsecond
-			mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
-				WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow([]byte(`{"eventID":193}`)))
-			mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
-				WithArgs(int64(193)).WillReturnError(sql.ErrNoRows)
-			if tt.retry {
-				mock.ExpectQuery(`SELECT MIN\(changed_at\) FROM datastore_changelog WHERE id > \$1`).
-					WithArgs(int64(193)).WillReturnError(sql.ErrConnDone)
-			}
-
-			fallback := mock.ExpectQuery(`SELECT MIN\(changed_at\) FROM datastore_changelog WHERE id > \$1`).
-				WithArgs(int64(193))
-			if tt.lookupErr != nil {
-				fallback.WillReturnError(tt.lookupErr)
-			} else {
-				fallback.WillReturnRows(sqlmock.NewRows([]string{"min"}).AddRow(tt.timestamp))
-			}
-
-			beforeLoad := time.Now()
-			err = watcher.loadResumePosition(context.Background())
-			afterLoad := time.Now()
-
-			if tt.lookupErr != nil {
-				require.ErrorIs(t, err, tt.lookupErr)
-				assert.True(t, watcher.lastTimestamp.IsZero())
-				assert.Zero(t, watcher.lastEventID, "a live context must not retain (zero, oldID)")
-			} else {
-				require.NoError(t, err)
-				assert.Equal(t, int64(0), watcher.lastEventID)
-
-				if tt.timestamp == nil {
-					assert.False(t, watcher.lastTimestamp.Before(beforeLoad))
-					assert.False(t, watcher.lastTimestamp.After(afterLoad))
-				} else {
-					assert.Equal(t, earliest, watcher.lastTimestamp)
-					// The tuple bound must include rows at the earliest timestamp.
-					mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-						WithArgs("health_events", earliest, int64(0)).
-						WillReturnRows(sqlmock.NewRows([]string{
-							"id", "record_id", "operation", "old_values", "new_values", "changed_at",
-						}).AddRow(194, "uuid-194", "INSERT", nil, `{"document":{}}`, earliest))
-					require.NoError(t, watcher.fetchNewChanges(context.Background()))
-					assert.Len(t, watcher.events, 1)
-				}
-			}
-
-			assert.NoError(t, mock.ExpectationsWereMet())
-		})
-	}
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
