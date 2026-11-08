@@ -12,7 +12,7 @@ require (
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1
-	go.mongodb.org/mongo-driver/v2 v2.9.2
+	go.mongodb.org/mongo-driver/v2 v2.9.3
 	go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/v2/mongo/otelmongo v0.0.0-20261021085639-04aa428291d2
 	go.opentelemetry.io/otel v1.47.0
 	google.golang.org/protobuf v1.36.12

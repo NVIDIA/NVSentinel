@@ -66,7 +66,7 @@ require (
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/yandex/protoc-gen-crd v1.1.0 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
-	go.mongodb.org/mongo-driver/v2 v2.9.2 // indirect
+	go.mongodb.org/mongo-driver/v2 v2.9.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/v2/mongo/otelmongo v0.0.0-20261021085639-04aa428291d2 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect

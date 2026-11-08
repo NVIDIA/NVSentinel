@@ -10,7 +10,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/nvidia/nvsentinel/store-client v0.0.0
-	github.com/onsi/ginkgo/v2 v2.33.1
+	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1
@@ -77,7 +77,7 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yandex/protoc-gen-crd v1.1.0 // indirect
-	go.mongodb.org/mongo-driver/v2 v2.9.2 // indirect
+	go.mongodb.org/mongo-driver/v2 v2.9.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
