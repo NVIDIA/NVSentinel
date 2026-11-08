@@ -53,6 +53,11 @@ rules to avoid false alarms and split-ownership conflicts.
   detector has confirmed recovery*, not simply because the check interval
   elapsed. Setting `False` before recovery causes KOM to observe a healthy
   transition that can cancel active break-fix processing.
+- Do not set `status: "Unknown"` while a fault is active. If the condition
+  transitions to `Unknown`, the KOM predicate (which matches `status == "True"`)
+  becomes false, and KOM will publish a healthy event that can cancel active
+  remediation. The condition must remain `True` with the same `reason` string
+  until the detector has confirmed recovery.
 
 **Policy naming**
 - Each condition type should have its own named KOM policy. The policy `name`
@@ -101,12 +106,13 @@ GPU workload rather than the host itself (inference-integrity errors, model
 divergence, and similar). NVSentinel will associate the event with the GPU
 rather than the whole node.
 
-> **Limitation:** KOM targets the node containing the affected GPU. On a node
-> with multiple GPUs, all GPUs on that node will be included in the impacted
-> entities. If you need per-GPU precision, see the
-> [Writing a Health Monitor](writing-a-health-monitor.md) guide,
-> which describes how to send `HealthEvent`s over gRPC with an explicit GPU UUID
-> in `entitiesImpacted`.
+> **Limitation:** KOM publishes the Node as the impacted entity in the
+> `HealthEvent` — it does not enumerate individual GPUs on that node. The event
+> is therefore node-scoped: consumers that require a GPU UUID cannot derive one
+> from this event. If you need per-GPU precision, see the
+> [Writing a Health Monitor](writing-a-health-monitor.md) guide, which describes
+> how to send `HealthEvent`s over gRPC with an explicit GPU UUID in
+> `entitiesImpacted`.
 
 ```yaml
 - name: ExternalGPUIntegrityCheck
@@ -134,8 +140,18 @@ rather than the whole node.
 
 Append the policy block to the existing
 `kubernetes-object-monitor.policies` list in your Helm values file. Helm
-replaces the complete list on upgrade, so merge any existing custom policies
-before running `helm upgrade`.
+replaces the complete list on upgrade, so your values file must include
+**all** policies you need — both any existing custom policies and the chart's
+default policies (such as `ReplaceNotReadyNode`). Omitting a policy from the
+list silently removes it on the next upgrade.
+
+To see the defaults shipped by the chart before editing:
+
+```bash
+helm show values oci://ghcr.io/nvidia/nvsentinel \
+  --version "$NVSENTINEL_VERSION" \
+  | grep -A 60 'policies:'
+```
 
 ```yaml
 global:
@@ -144,7 +160,8 @@ global:
 
 kubernetes-object-monitor:
   policies:
-    # ... existing policies ...
+    # Include all default policies (e.g. ReplaceNotReadyNode) and any
+    # existing custom policies here before adding the new one below.
     - name: ExternalGPUIntegrityCheck
       enabled: true
       resource:
@@ -168,6 +185,13 @@ kubernetes-object-monitor:
 
 Apply the updated values:
 
+> **Warning:** Run this upgrade against a non-production cluster or disable
+> downstream remediation (`fault-remediation.enabled: false`) before applying
+> the new policy. On an existing release, `--reuse-values` retains any enabled
+> remediation pipeline. A matching condition on any node will trigger a fatal
+> `HealthEvent` and may cordon that node before you reach the validation steps
+> below.
+
 ```bash
 NVSENTINEL_VERSION="<your-version>"
 
@@ -180,12 +204,22 @@ helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --wait
 ```
 
-Verify KOM loaded the new policy:
+Verify KOM picked up the new policy by checking the rollout and the rendered
+configuration:
 
 ```bash
+# Confirm the new pod is running
+kubectl rollout status deployment/kubernetes-object-monitor \
+  --namespace nvsentinel
+
+# Inspect the rendered policy list loaded by KOM
 kubectl logs deployment/kubernetes-object-monitor \
-  --namespace nvsentinel | grep -i "policy"
-# Expected: "Loaded policy configuration" and your policy name in the output
+  --namespace nvsentinel | grep -i "loaded policy"
+# Expected: a "Loaded policy configuration" entry appearing after the
+# most recent pod start, confirming KOM read its configuration successfully.
+# Cross-check by viewing the ConfigMap KOM reads from:
+kubectl get configmap -n nvsentinel -l app.kubernetes.io/component=kubernetes-object-monitor \
+  -o yaml | grep -A 5 "ExternalGPUIntegrityCheck"
 ```
 
 ---
@@ -207,13 +241,20 @@ kubectl get node "$NODE" \
 # ExternalGPUIntegrity=True reason=GPUIntegrityFailed
 ```
 
-**Step 2 — confirm KOM published a HealthEvent**
+**Step 2 — confirm KOM matched the policy and the HealthEvent was received**
 
 ```bash
 kubectl logs deployment/kubernetes-object-monitor \
   --namespace nvsentinel \
   | grep "ExternalGPUIntegrityCheck"
-# Expected: an entry showing the policy matched and a HealthEvent was published
+# Expected: a log entry showing the policy matched
+
+# Confirm the HealthEvent was received downstream by checking for a
+# NVSentinel node condition on the affected node:
+kubectl get node "$NODE" \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' \
+  | grep -i nvsentinel
+# Expected: a NVSentinel-managed condition present on the node
 ```
 
 **Step 3 — confirm the node was cordoned** (only if downstream remediation is
@@ -278,6 +319,16 @@ against a node's JSON with `kubectl get node <node> -o json` and the
 
 ### A node is cordoned but the condition was already cleared
 
-This is expected: NVSentinel cordons on the fatal HealthEvent and waits for a
-human operator or the fault-remediation component to uncordon after break-fix
-completes. Clearing the Node Condition does not automatically uncordon the node.
+NVSentinel cordons on the fatal `HealthEvent`. Whether the node is subsequently
+uncordoned automatically depends on your deployment configuration:
+
+- **With fault quarantine enabled:** The fault-quarantine component tracks all
+  active `HealthEvent`s for the node. When all tracked events recover (the
+  detector sets `status: "False"`), fault quarantine can automatically uncordon
+  the node after any configured validation gate passes.
+- **Without fault quarantine, or with manual gates configured:** A human
+  operator must uncordon the node after break-fix is complete.
+
+Clearing the Node Condition alone does not uncordon the node — KOM must observe
+the `False` transition and publish a recovery event for the downstream pipeline
+to act on it.
