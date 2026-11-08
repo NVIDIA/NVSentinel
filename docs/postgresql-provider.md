@@ -44,6 +44,18 @@ PostgreSQL doesn't have native change streams like MongoDB. The provider emulate
 - **Polling mechanism** to detect new changes
 - **Resume tokens** to track client progress and enable resumption
 
+### Delivery Acknowledgments
+
+`MarkProcessed(token)` acknowledges the earliest pending delivery with that token and every delivery before it. Resolve that entire delivery prefix before acknowledging. Concurrent consumers must use a contiguous completion watermark, as described in [ADR-056](designs/056-concurrent-node-partitioned-event-processing.md).
+
+The provider tracks matching deliveries before enqueueing them. Buffered events count as pending. It saves the read cursor only when no deliveries remain pending. Otherwise, it saves the smaller of the cursor and the position strictly before every pending delivery in `(changed_at, id)` order. A late NOTIFY row can move the saved position backward. A restart can therefore replay acknowledged events as well as pending events.
+
+Empty, unknown, and already acknowledged tokens certify no outstanding deliveries. Empty tokens retain the existing processed-row update at the read cursor. All tokens retain the cumulative `processed = TRUE WHERE id <= token` update. This flag does not prove that all consumers acknowledged a row.
+
+The provider tracks at most 4,096 pending deliveries per watcher. This exceeds the partitioned processor's default 1,000 in-flight events plus the watcher and adapter buffers of 100 each. At the limit, the watcher waits for acknowledgment capacity, cancellation, or stop. It logs one warning per watcher. A consumer that drops deliveries without acknowledging them can stall reading at this limit. Larger configured processing windows can also encounter this backpressure. The watcher releases pending entries for abandoned sends.
+
+Checkpoint write failures return to the caller. The token schema and startup resume behavior stay unchanged. These rules implement acknowledgment safety independently of the proposed [retention protocol](postgresql-changelog-retention-protocol.md#consumer-bound-and-idle-checkpoints). They do not implement retention or idle checkpoints.
+
 ## Configuration
 
 ### Helm Chart Deployment

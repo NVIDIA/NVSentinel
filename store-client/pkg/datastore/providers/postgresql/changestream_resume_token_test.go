@@ -1056,7 +1056,7 @@ func TestPositionAfter_OrdersByChangedAtThenID(t *testing.T) {
 // deliver them again. The ack must not look the row up either. The watcher has read it, so the
 // cursor is already past it, and by the time the ack comes the row may have been purged, which
 // would fail the ack for good. sqlmock rejects any statement it isn't told to expect, so a
-// lookup here fails the test. The saved resume position is the cursor.
+// lookup here fails the test. The saved position stays strictly before pending row 1.
 func TestMarkProcessed_ReadHighIDEarlyRow_AcksWithoutLookupAndKeepsCursor(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -1074,7 +1074,7 @@ func TestMarkProcessed_ReadHighIDEarlyRow_AcksWithoutLookupAndKeepsCursor(t *tes
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	tokenJSON, err := json.Marshal(map[string]any{
-		"timestamp": base.Add(3 * time.Second).Format(time.RFC3339Nano), "eventID": int64(3),
+		"timestamp": base.Add(time.Second).Format(time.RFC3339Nano), "eventID": int64(0),
 	})
 	require.NoError(t, err)
 	mock.ExpectExec("INSERT INTO resume_tokens").
