@@ -985,7 +985,7 @@ func TestMarkProcessed_PurgedRowBehindReadPosition_UpdatesAndSaves(t *testing.T)
 	}
 }
 
-func TestMarkProcessed_VerifiedTimestamp_PersistsResumePosition(t *testing.T) {
+func TestMarkProcessed_VerifiedTimestamp_PreservesReadPosition(t *testing.T) {
 	for _, token := range []string{"193", ""} {
 		t.Run("token="+token, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
@@ -994,8 +994,9 @@ func TestMarkProcessed_VerifiedTimestamp_PersistsResumePosition(t *testing.T) {
 
 			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", "health_events", "", ModePolling)
 			changedAt := time.Date(2024, 11, 24, 10, 0, 4, 0, time.UTC)
+			watcher.lastTimestamp = changedAt
+			watcher.lastEventID = 192
 			if token == "" {
-				watcher.lastTimestamp = changedAt
 				watcher.lastEventID = 193
 			} else {
 				mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
@@ -1003,7 +1004,7 @@ func TestMarkProcessed_VerifiedTimestamp_PersistsResumePosition(t *testing.T) {
 			}
 
 			tokenJSON, err := json.Marshal(map[string]any{
-				"timestamp": changedAt.Format(time.RFC3339Nano), "eventID": int64(193),
+				"timestamp": changedAt.Format(time.RFC3339Nano), "eventID": watcher.lastEventID,
 			})
 			require.NoError(t, err)
 			mock.ExpectExec("UPDATE datastore_changelog").
@@ -1013,7 +1014,11 @@ func TestMarkProcessed_VerifiedTimestamp_PersistsResumePosition(t *testing.T) {
 
 			require.NoError(t, watcher.MarkProcessed(context.Background(), []byte(token)))
 			assert.Equal(t, changedAt, watcher.lastTimestamp)
-			assert.Equal(t, int64(193), watcher.lastEventID)
+			if token == "" {
+				assert.Equal(t, int64(193), watcher.lastEventID)
+			} else {
+				assert.Equal(t, int64(192), watcher.lastEventID)
+			}
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}

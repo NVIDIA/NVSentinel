@@ -265,7 +265,18 @@ func TestMarkProcessed_CheckpointWriteFails_ReturnsErrorAndRetryStaysSafe(t *tes
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestSendEventsToChannel_PendingLimit_BackpressuresAndResumesAfterAck(t *testing.T) {
+// deliverAndDrop models node-drainer's continue-without-ack preprocessing failures.
+func deliverAndDrop(t *testing.T, watcher *PostgreSQLChangeStreamWatcher, start, end int64, ts time.Time) {
+	t.Helper()
+
+	for id := start; id <= end; id++ {
+		require.NoError(t, watcher.sendEventsToChannel(context.Background(), []datastore.EventWithToken{checkpointEvent(id, ts)}))
+		<-watcher.Events()
+		require.LessOrEqual(t, len(watcher.pending), pendingDeliveryLimit)
+	}
+}
+
+func TestSendEventsToChannel_Saturation_TracksMinimumEvictedPositionWithoutBlocking(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
@@ -274,76 +285,171 @@ func TestSendEventsToChannel_PendingLimit_BackpressuresAndResumesAfterAck(t *tes
 		ctx := context.Background()
 		base := time.Now()
 		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
-
-		// Model a consumer draining and dropping its deliveries without acknowledging.
-		for id := int64(1); id <= pendingDeliveryLimit; id++ {
-			require.NoError(t, watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{checkpointEvent(id, base)}))
-			<-watcher.Events()
+		events := []datastore.EventWithToken{
+			checkpointEvent(9000, base.Add(time.Hour)),
+			checkpointEvent(1, base),
+			checkpointEvent(2, base.Add(-time.Second)),
 		}
-
-		done := make(chan error, 1)
-		go func() {
-			done <- watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{checkpointEvent(pendingDeliveryLimit+1, base)})
-		}()
-
-		synctest.Wait()
+		require.NoError(t, watcher.sendEventsToChannel(ctx, events))
+		require.Equal(t, []string{"9000", "1", "2"}, drainTokens(watcher))
+		deliverAndDrop(t, watcher, 3, pendingDeliveryLimit+2, base)
 		require.Len(t, watcher.pending, pendingDeliveryLimit)
-		require.True(t, watcher.pendingLimitWarned)
-		require.Empty(t, watcher.events)
-		require.Equal(t, int64(pendingDeliveryLimit), watcher.lastEventID)
-		// Empty and unknown acknowledgments must neither certify nor unblock this window.
-		for _, token := range []string{"", "0"} {
-			processedID := int64(pendingDeliveryLimit)
-			if token == "0" {
-				processedID = 0
+		require.Equal(t, uint64(3), watcher.pendingFloor.seq)
+		require.Equal(t, int64(2), watcher.pendingFloor.id)
+		require.Equal(t, base.Add(-time.Second), watcher.pendingFloor.timestamp)
+
+		// Neither empty nor evicted-only tokens can certify the summarized deliveries.
+		for _, token := range []string{"", "9000", "1", "2", "0"} {
+			processedID := int64(9000)
+			if token != "" {
+				processedID = mustParseCheckpointID(t, token)
 			}
 
-			expectCheckpoint(t, mock, processedID, base, 0)
+			expectCheckpoint(t, mock, processedID, base.Add(-time.Second), 1)
 			require.NoError(t, watcher.MarkProcessed(ctx, []byte(token)))
-			synctest.Wait()
-			require.Len(t, watcher.pending, pendingDeliveryLimit)
-			require.Empty(t, watcher.events)
+			require.Equal(t, uint64(3), watcher.pendingFloor.seq)
 		}
 
-		expectCheckpoint(t, mock, pendingDeliveryLimit, base, pendingDeliveryLimit)
-		require.NoError(t, watcher.MarkProcessed(ctx, []byte(strconv.Itoa(pendingDeliveryLimit))))
-		require.NoError(t, <-done)
-		assert.Len(t, watcher.pending, 1)
-		assert.Equal(t, int64(pendingDeliveryLimit+1), watcher.pending[0].id)
+		// A tracked delivery is later than the whole evicted prefix, regardless of id order.
+		expectCheckpoint(t, mock, 3, base, 3)
+		require.NoError(t, watcher.MarkProcessed(ctx, []byte("3")))
+		assert.Zero(t, watcher.pendingFloor.seq)
+		assert.Len(t, watcher.pending, pendingDeliveryLimit-1)
+
+		// A later saturation episode creates a fresh floor and can log again.
+		deliverAndDrop(t, watcher, pendingDeliveryLimit+3, pendingDeliveryLimit+4, base)
+		assert.Equal(t, uint64(5), watcher.pendingFloor.seq)
+		assert.Equal(t, int64(4), watcher.pendingFloor.id)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
 
-func TestSendEventsToChannel_AbandonedSend_RemovesOnlyUnsentDelivery(t *testing.T) {
-	for _, stop := range []bool{false, true} {
-		t.Run(strconv.FormatBool(stop), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
+func TestSendEventsToChannel_LongPreprocessingFailureRun_LaterSuccessClearsFloor(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer db.Close()
 
-				watcher := NewPostgreSQLChangeStreamWatcher(nil, "test-client", healthEventsTable, "", ModePolling)
-				watcher.events = make(chan datastore.EventWithToken)
-				done := make(chan error, 1)
-				go func() {
-					done <- watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{checkpointEvent(1, time.Now())})
-				}()
+		ctx := context.Background()
+		base := time.Now()
+		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+		const failures = 2*pendingDeliveryLimit + 7
 
-				synctest.Wait()
-				require.Len(t, watcher.pending, 1)
+		deliverAndDrop(t, watcher, 1, failures, base)
+		require.Equal(t, uint64(failures-pendingDeliveryLimit), watcher.pendingFloor.seq)
+		expectCheckpoint(t, mock, 1, base, 0)
+		require.NoError(t, watcher.MarkProcessed(ctx, []byte("1")))
+		require.NotZero(t, watcher.pendingFloor.seq)
 
-				if stop {
-					require.NoError(t, watcher.Close(ctx))
-					require.NoError(t, watcher.Close(ctx))
-					require.NoError(t, <-done)
-				} else {
-					cancel()
-					require.ErrorIs(t, <-done, context.Canceled)
-				}
+		// The first success after the outage must still be deliverable without a restart.
+		deliverAndDrop(t, watcher, failures+1, failures+1, base)
+		expectCheckpoint(t, mock, failures+1, base, failures+1)
+		require.NoError(t, watcher.MarkProcessed(ctx, []byte(strconv.Itoa(failures+1))))
+		assert.Empty(t, watcher.pending)
+		assert.Zero(t, watcher.pendingFloor.seq)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
 
-				assert.Empty(t, watcher.pending)
-			})
-		})
+func TestMarkProcessed_WatermarkFlushAfterClose_ReplaysAbandonedDelivery(t *testing.T) {
+	for _, saturated := range []bool{false, true} {
+		for _, late := range []bool{false, true} {
+			for _, stop := range []bool{false, true} {
+				name := "saturated=" + strconv.FormatBool(saturated) + "/late=" + strconv.FormatBool(late) + "/stop=" + strconv.FormatBool(stop)
+				t.Run(name, func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						verifyAbandonedWatermarkFlush(t, saturated, late, stop)
+					})
+				})
+			}
+		}
 	}
+}
+
+func verifyAbandonedWatermarkFlush(t *testing.T, saturated, late, stop bool) {
+	t.Helper()
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	base := time.Now()
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+	var dropped int64
+
+	if saturated {
+		dropped = pendingDeliveryLimit + 3
+		deliverAndDrop(t, watcher, 1, dropped, base)
+	}
+
+	tracker := client.NewLowWaterMarkTracker()
+	seqs := make([]uint64, 3)
+
+	for i := range seqs {
+		require.NoError(t, watcher.sendEventsToChannel(ctx,
+			[]datastore.EventWithToken{checkpointEvent(dropped+int64(i)+1, base)}))
+		seqs[i] = tracker.Register((<-watcher.Events()).ResumeToken)
+	}
+
+	abandonedID := dropped + 4
+	abandonedTS := base.Add(time.Second)
+	if late {
+		abandonedTS = base.Add(-time.Second)
+	}
+
+	watcher.events = make(chan datastore.EventWithToken)
+	done := make(chan error, 1)
+	go func() {
+		done <- watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{checkpointEvent(abandonedID, abandonedTS)})
+	}()
+
+	synctest.Wait()
+	require.Equal(t, abandonedID, watcher.pending[len(watcher.pending)-1].id)
+	require.Nil(t, tracker.MarkDone(seqs[2]))
+	firstToken := tracker.MarkDone(seqs[0])
+	firstTS, firstID := base, dropped+1
+	if late {
+		firstTS, firstID = abandonedTS, abandonedID-1
+	}
+
+	expectCheckpoint(t, mock, dropped+1, firstTS, firstID)
+	require.NoError(t, watcher.MarkProcessed(context.Background(), firstToken))
+
+	if stop {
+		require.NoError(t, watcher.Close(context.Background()))
+		require.NoError(t, <-done)
+	} else {
+		cancel()
+		require.ErrorIs(t, <-done, context.Canceled)
+		require.NoError(t, watcher.Close(context.Background()))
+	}
+
+	require.NoError(t, watcher.Close(context.Background()))
+	// Match the partitioned processor's retained watermark + final Flush fallback.
+	tokenToFlush := tracker.MarkDone(seqs[1])
+	if flushToken := tracker.Flush(); len(flushToken) > 0 {
+		tokenToFlush = flushToken
+	}
+
+	require.Equal(t, strconv.FormatInt(dropped+3, 10), string(tokenToFlush))
+	expectCheckpoint(t, mock, dropped+3, abandonedTS, abandonedID-1)
+	require.NoError(t, watcher.MarkProcessed(context.Background(), tokenToFlush))
+	require.Len(t, watcher.pending, 1)
+	require.Equal(t, abandonedID, watcher.pending[0].id)
+	require.Zero(t, watcher.pendingFloor.seq)
+
+	restarted := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+	mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
+		WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow(string(checkpointJSON(t, abandonedTS, abandonedID-1))))
+	require.NoError(t, restarted.loadResumePosition(context.Background()))
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, abandonedTS, abandonedID-1).
+		WillReturnRows(healthEventRow(changelogRows(), abandonedID, abandonedTS))
+	require.NoError(t, restarted.fetchNewChanges(context.Background()))
+	assert.Equal(t, []string{strconv.FormatInt(abandonedID, 10)}, drainTokens(restarted))
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestMarkProcessed_ConcurrentDeliveryAndAck_CheckpointsNeverPassPending(t *testing.T) {
@@ -378,44 +484,6 @@ func TestMarkProcessed_ConcurrentDeliveryAndAck_CheckpointsNeverPassPending(t *t
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestSendEventsToChannel_PendingLimit_CancellationAndStopReleaseSender(t *testing.T) {
-	for _, stop := range []bool{false, true} {
-		t.Run(strconv.FormatBool(stop), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-
-				watcher := NewPostgreSQLChangeStreamWatcher(nil, "test-client", healthEventsTable, "", ModePolling)
-				for id := int64(1); id <= pendingDeliveryLimit; id++ {
-					require.NoError(t, watcher.sendEventsToChannel(ctx,
-						[]datastore.EventWithToken{checkpointEvent(id, time.Now())}))
-					<-watcher.Events()
-				}
-
-				done := make(chan error, 1)
-				go func() {
-					done <- watcher.sendEventsToChannel(ctx,
-						[]datastore.EventWithToken{checkpointEvent(pendingDeliveryLimit+1, time.Now())})
-				}()
-
-				synctest.Wait()
-				require.True(t, watcher.pendingLimitWarned)
-
-				if stop {
-					require.NoError(t, watcher.Close(ctx))
-					require.NoError(t, <-done)
-				} else {
-					cancel()
-					require.ErrorIs(t, <-done, context.Canceled)
-				}
-
-				assert.Len(t, watcher.pending, pendingDeliveryLimit)
-				assert.Equal(t, uint64(pendingDeliveryLimit), watcher.deliverySeq)
-			})
-		})
-	}
-}
-
 func TestMarkProcessed_FilteredTail_SavesCursorWhenMatchingDeliveriesAreAcknowledged(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -439,5 +507,33 @@ func TestMarkProcessed_FilteredTail_SavesCursorWhenMatchingDeliveriesAreAcknowle
 	expectCheckpoint(t, mock, 1, base.Add(time.Second), 2)
 	require.NoError(t, watcher.MarkProcessed(ctx, []byte("1")))
 	assert.Empty(t, watcher.pending)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMarkProcessed_UnknownAheadWithoutPending_PreservesReadCursorAndHighWaterMark(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+	watcher.lastTimestamp, watcher.lastEventID, watcher.highestReadEventID = base, 10, 10
+
+	// Repeated verified unknown acknowledgments are still not evidence of reading any row.
+	for range 2 {
+		mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").WithArgs(int64(20)).
+			WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(base.Add(time.Second)))
+		expectCheckpoint(t, mock, 20, base, 10)
+		require.NoError(t, watcher.MarkProcessed(ctx, []byte("20")))
+		assert.Equal(t, base, watcher.lastTimestamp)
+		assert.Equal(t, int64(10), watcher.lastEventID)
+		assert.Equal(t, int64(10), watcher.highestReadEventID)
+	}
+
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, base, int64(10)).
+		WillReturnRows(healthEventRow(changelogRows(), 11, base))
+	require.NoError(t, watcher.fetchNewChanges(ctx))
+	assert.Equal(t, []string{"11"}, drainTokens(watcher))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

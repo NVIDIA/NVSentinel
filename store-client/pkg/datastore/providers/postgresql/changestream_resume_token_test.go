@@ -417,9 +417,8 @@ func TestConcurrentClientsWithDifferentFilters(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestMarkProcessedUpdatesResumeToken verifies that MarkProcessed correctly
-// updates both the in-memory lastEventID and persists it to the database.
-func TestMarkProcessedUpdatesResumeToken(t *testing.T) {
+// An acknowledgment for an unread row validates the row but cannot advance the cursor.
+func TestMarkProcessed_UnreadAcknowledgment_PreservesCursor(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -448,14 +447,15 @@ func TestMarkProcessedUpdatesResumeToken(t *testing.T) {
 
 	// Mock the saveResumePosition INSERT/UPDATE
 	mock.ExpectExec("INSERT INTO resume_tokens").
+		WithArgs(clientName, checkpointJSON(t, time.Time{}, 0)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err = watcher.MarkProcessed(ctx, []byte("42"))
 	require.NoError(t, err)
 
-	// Verify in-memory lastEventID was updated
-	assert.Equal(t, int64(42), watcher.lastEventID,
-		"lastEventID should be updated to 42")
+	assert.Zero(t, watcher.lastEventID)
+	assert.True(t, watcher.lastTimestamp.IsZero())
+	assert.Zero(t, watcher.highestReadEventID)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -1096,8 +1096,7 @@ func TestMarkProcessed_ReadHighIDEarlyRow_AcksWithoutLookupAndKeepsCursor(t *tes
 
 // After a restart the watcher resumes from the saved token. An ack for a row at or below the
 // token's id must not look the row up: it was read before the restart and may be purged. An ack
-// above it is for a row this watcher hasn't read, so its changed_at decides whether the cursor
-// moves.
+// above it is validated, but cannot advance the cursor or read high-water mark.
 func TestMarkProcessed_AfterResume_AcksAtOrBelowTokenIDWithoutLookup(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -1134,7 +1133,7 @@ func TestMarkProcessed_AfterResume_AcksAtOrBelowTokenIDWithoutLookup(t *testing.
 	assert.Equal(t, base, watcher.lastTimestamp)
 	assert.Equal(t, int64(42), watcher.lastEventID)
 
-	// Row 43 wasn't: its changed_at is looked up, and the cursor moves to it.
+	// Row 43 was not read: validate it without advancing either read position.
 	mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
 		WithArgs(int64(43)).
 		WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(base.Add(time.Second)))
@@ -1142,19 +1141,19 @@ func TestMarkProcessed_AfterResume_AcksAtOrBelowTokenIDWithoutLookup(t *testing.
 		WithArgs(int64(43), healthEventsTable).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO resume_tokens").
-		WithArgs("test-client", savedToken(base.Add(time.Second), 43)).
+		WithArgs("test-client", savedToken(base, 42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	require.NoError(t, watcher.MarkProcessed(ctx, []byte("43")))
-	assert.Equal(t, base.Add(time.Second), watcher.lastTimestamp)
-	assert.Equal(t, int64(43), watcher.lastEventID)
+	assert.Equal(t, base, watcher.lastTimestamp)
+	assert.Equal(t, int64(42), watcher.lastEventID)
+	assert.Equal(t, int64(42), watcher.highestReadEventID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 // An ack for a row this watcher hasn't read, such as one from before a restart, needs the row's
-// changed_at to decide whether the cursor moves. If that lookup fails, the ack must fail and
-// change nothing. After pollHighIDEarlyRowFirst the cursor's id is 3, below an id already read,
-// so a guessed timestamp would have moved the cursor to (guess, 200), past rows never delivered.
+// changed_at validated. If that lookup fails, the ack must fail without writing a checkpoint.
+// After pollHighIDEarlyRowFirst the cursor's id is 3, below an id already read.
 func TestMarkProcessed_UnreadRowLookupFails_ReturnsErrorAndKeepsCursor(t *testing.T) {
 	tests := []struct {
 		name    string
