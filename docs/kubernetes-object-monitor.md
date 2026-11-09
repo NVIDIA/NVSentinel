@@ -164,6 +164,46 @@ For each override block, `force` and `skip` are mutually exclusive. Use `force`
 when this policy should perform the action regardless of normal rules, or `skip`
 when this policy should bypass the action.
 
+## Testing Policies
+
+The monitor binary can check policies against test cases without a cluster. Pass `--test-policies` with a YAML file of cases, and `--policy-config-path` with the rendered policy config (the `config.toml` key of the `kubernetes-object-monitor` ConfigMap, for example from `helm template --show-only charts/kubernetes-object-monitor/templates/configmap.yaml`). The monitor evaluates each case the same way it does in the cluster, prints one line per case, and exits.
+
+```yaml
+# Cluster state that lookup() sees.
+objects:
+  - apiVersion: v1
+    kind: Node
+    metadata:
+      name: node-a
+      labels:
+        nvidia.com/gpu.present: "true"
+cases:
+  - name: Rebooted event on a GPU node
+    policy: node-rebooted          # Policy name from the config
+    resource:                      # The object the monitor would watch
+      apiVersion: v1
+      kind: Event
+      metadata: {name: node-a.1, namespace: default}
+      reason: Rebooted
+      involvedObject: {kind: Node, name: node-a}
+    expect:
+      match: true                  # Expected predicate result
+      node: node-a                 # Optional: expected node association
+```
+
+```bash
+docker run --rm -v "$PWD:/tests" ghcr.io/nvidia/nvsentinel/kubernetes-object-monitor:<version> \
+  --policy-config-path /tests/config.toml --test-policies /tests/policy-tests.yaml
+```
+
+```
+PASS  Rebooted event on a GPU node  [node-rebooted] match=true node=node-a
+
+1 passed, 0 failed
+```
+
+A case fails when the predicate result or node differs from `expect`, when an expression errors, or when the resource is a kind or namespace the policy does not watch. The exit code is 0 when every case passes, 1 when any case fails, and 2 when the config or test file is invalid. `lookup()` only finds the objects the test file lists. Expressions that use `now` are evaluated against the current time.
+
 ## Key Features
 
 ### Policy-Based Monitoring

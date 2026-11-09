@@ -28,8 +28,10 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/initializer"
 	_ "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policytest"
 )
 
 const (
@@ -88,10 +90,21 @@ var (
 		"EXECUTE_REMEDIATION",
 		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY",
 	)
+	testPoliciesPath = flag.String(
+		"test-policies",
+		"",
+		"Path to a YAML file of policy test cases. When set, evaluates them against the policies in "+
+			"--policy-config-path without connecting to a cluster, prints the results and exits "+
+			"non-zero if any case fails.",
+	)
 )
 
 func main() {
 	flag.Parse()
+
+	if *testPoliciesPath != "" {
+		os.Exit(testPolicies(*policyConfigPath, *testPoliciesPath))
+	}
 
 	logger.SetDefaultStructuredLogger(defaultAgentName, version)
 	slog.Info("Starting kubernetes-object-monitor", "version", version, "commit", commit, "date", date)
@@ -142,4 +155,34 @@ func run() error {
 	}
 
 	return nil
+}
+
+// testPolicies runs the test cases and returns the process exit code.
+func testPolicies(configPath, testsPath string) int {
+	// The evaluator logs every expression it evaluates; keep the report readable.
+	slog.SetDefault(slog.New(slog.DiscardHandler))
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load policy config: %v\n", err)
+		return 2
+	}
+
+	suite, err := policytest.LoadSuite(testsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 2
+	}
+
+	results, err := policytest.Run(context.Background(), cfg.Policies, suite)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 2
+	}
+
+	if policytest.Report(os.Stdout, results) > 0 {
+		return 1
+	}
+
+	return 0
 }
