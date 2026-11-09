@@ -65,10 +65,13 @@ test-ci:
 	$(MAKE) test
 
 # Run end-to-end tests (override standard test to use gotestsum with custom format)
+# E2E_SHARD names one CI job (E2E_JOB_ID). The job runs only its tests and the tests in "all" in e2e-shards.yaml.
 .PHONY: test
-test: ## Run end-to-end tests (USE_POSTGRESQL=1 excludes MongoDB-only tests)
+test: ## Run end-to-end tests (USE_POSTGRESQL=1 excludes MongoDB-only tests, E2E_SHARD=<job> runs one CI job's tests)
 	@echo "Running end-to-end tests on $(MODULE_NAME) with tags: $(TEST_TAGS)..."
-	$(GOTESTSUM) --format standard-verbose -- -tags=$(TEST_TAGS) $(TEST_EXTRA_FLAGS) ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=github.com/nvidia/nvsentinel/$(MODULE_NAME)/...
+	mkdir -p results
+	skip=$$(if [ -n "$(E2E_SHARD)" ]; then ./e2e-skip-pattern.sh "$(E2E_SHARD)"; fi) && \
+	$(GOTESTSUM) --format standard-verbose --jsonfile results/e2e-tests.json -- -tags=$(TEST_TAGS) $(TEST_EXTRA_FLAGS) $${skip:+-skip "$$skip"} ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=github.com/nvidia/nvsentinel/$(MODULE_NAME)/...
 
 
 # =============================================================================
@@ -92,4 +95,5 @@ help: ## Show help for available targets
 	@echo ""
 	@echo "Database-specific behavior:"
 	@echo "  USE_POSTGRESQL=1 make test  - Excludes MongoDB-only tests (health_events_analyzer)"
+	@echo "  E2E_SHARD=<job> make test   - Runs only the job's tests in e2e-shards.yaml"
 	@echo "  make test                   - Includes all tests (default, for MongoDB)"

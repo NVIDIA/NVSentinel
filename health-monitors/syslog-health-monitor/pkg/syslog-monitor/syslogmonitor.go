@@ -1232,13 +1232,30 @@ func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check C
 
 // isStaleBootEntry returns true if the current journal entry belongs to a
 // previous boot and should be skipped during the post-reboot scan.
+//
+// A real journal returns the whole field, "_BOOT_ID=<id>", and journald
+// writes the ID without dashes, while currentBootID is read from
+// /proc/sys/kernel/random/boot_id, which has them. Both are put in
+// journald's form before they are compared.
 func (sm *SyslogMonitor) isStaleBootEntry(journal Journal) bool {
 	entryBootID, err := journal.GetData(FieldBootID)
-	if err != nil || entryBootID == "" || sm.currentBootID == "" {
+	if err != nil {
 		return false
 	}
 
-	return entryBootID != sm.currentBootID
+	entryBootID = journaldBootID(strings.TrimPrefix(entryBootID, FieldBootID+"="))
+	currentBootID := journaldBootID(sm.currentBootID)
+
+	if entryBootID == "" || currentBootID == "" {
+		return false
+	}
+
+	return entryBootID != currentBootID
+}
+
+// journaldBootID returns a boot ID the way journald writes it, without dashes.
+func journaldBootID(bootID string) string {
+	return strings.ReplaceAll(bootID, "-", "")
 }
 
 // skipStaleBootEntry advances past a stale-boot entry, updating the cursor.
@@ -1316,7 +1333,11 @@ func (sm *SyslogMonitor) getJournalMessage(journal Journal, checkName string) (s
 		// Try to read the message
 		message, err = journal.GetData(FieldMessage)
 		if err == nil {
-			return message, nil
+			// journald returns MESSAGE as raw bytes, and a kernel line can hold
+			// bytes that are not UTF-8, such as a task name. A health event
+			// built from them cannot be encoded (proto3 strings must be UTF-8),
+			// so the check would stop at this entry on every poll.
+			return strings.ToValidUTF8(message, "\uFFFD"), nil
 		}
 
 		// If it's not a retryable error, return immediately

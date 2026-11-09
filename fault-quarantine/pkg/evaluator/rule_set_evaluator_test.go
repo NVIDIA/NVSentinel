@@ -21,10 +21,18 @@ import (
 	"testing"
 
 	multierror "github.com/hashicorp/go-multierror"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 )
 
 type MockRuleEvaluator struct {
@@ -35,11 +43,8 @@ type MockRuleEvaluator struct {
 func (m *MockRuleEvaluator) Evaluate(
 	_ context.Context,
 	healthEvent *protos.HealthEvent,
-) (common.RuleEvaluationResult, error) {
-	if m.result {
-		return common.RuleEvaluationSuccess, m.err
-	}
-	return common.RuleEvaluationFailed, m.err
+) (bool, error) {
+	return m.result, m.err
 }
 
 func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
@@ -212,6 +217,74 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An expression that fails on the event fails the same way on every replay, so
+// cold start must not retry it.
+func TestRuleSetEvaluator_EvaluationError_IsPermanent(t *testing.T) {
+	evaluator, err := newHealthEventRule(`event.metadata["missing"].startsWith("value")`)
+	require.NoError(t, err)
+
+	ruleSet := config.RuleSetMeta{Name: "RuleSet"}
+
+	for _, ruleSetEvaluator := range []RuleSetEvaluatorIface{
+		NewAllRuleSetEvaluator([]RuleEvaluator{evaluator}, ruleSet),
+		NewAnyRuleSetEvaluator([]RuleEvaluator{evaluator}, ruleSet),
+	} {
+		result, err := ruleSetEvaluator.Evaluate(context.Background(), &protos.HealthEvent{})
+		assert.Equal(t, common.RuleEvaluationFailed, result)
+		require.Error(t, err)
+		assert.True(t, coldstart.IsPermanentError(err), "%T: %v", ruleSetEvaluator, err)
+	}
+}
+
+// A Node rule reads the cached node normally, and the live node during cold
+// start, when the cache may not yet hold what earlier events wrote.
+func TestInitializeRuleSetEvaluators_NodeRule_RecoveryReadsLiveNode(t *testing.T) {
+	clientset := fake.NewSimpleClientset(&v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}})
+
+	nodeInformer, err := informer.NewNodeInformer(clientset, 0,
+		informer.GPUNodeLabel, informer.GPUNodeLabelValue, nodecache.Keys{})
+	require.NoError(t, err)
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	require.NoError(t, nodeInformer.Run(stopCh))
+
+	ruleSetEvals, err := InitializeRuleSetEvaluators([]config.RuleSetMeta{{
+		Name:    "node-rule",
+		Enabled: true,
+		Match: config.Match{
+			All: []config.Rule{{Kind: "Node", Expression: `node.metadata.name == "node-a"`}},
+		},
+	}}, nodeInformer)
+	require.NoError(t, err)
+	require.Len(t, ruleSetEvals, 1)
+
+	countNodeGets := func() int {
+		count := 0
+
+		for _, action := range clientset.Actions() {
+			if action.Matches("get", "nodes") {
+				count++
+			}
+		}
+
+		return count
+	}
+
+	event := &protos.HealthEvent{NodeName: "node-a"}
+
+	result, err := ruleSetEvals[0].Evaluate(context.Background(), event)
+	require.NoError(t, err)
+	assert.Equal(t, common.RuleEvaluationSuccess, result)
+	assert.Zero(t, countNodeGets(), "normal evaluation must read the cache")
+
+	result, err = ruleSetEvals[0].Evaluate(coldstart.WithRecoveryContext(context.Background()), event)
+	require.NoError(t, err)
+	assert.Equal(t, common.RuleEvaluationSuccess, result)
+	assert.Equal(t, 1, countNodeGets(), "cold start must read the live node")
 }
 
 func TestInitializeRuleSetEvaluators(t *testing.T) {

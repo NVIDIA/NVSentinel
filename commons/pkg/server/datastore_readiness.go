@@ -39,7 +39,8 @@ type ReadinessStateProvider interface {
 	IsReady() bool
 }
 
-// DatastoreReadinessChecker reports readiness based on change stream watcher lag state.
+// DatastoreReadinessChecker reports watcher readiness when it is available.
+// Watchers without readiness state remain ready once registered.
 // It implements ReadinessChecker for server.WithReadinessCheck, controller-runtime healthz.Checker
 // for mgr.AddReadyzCheck, and prometheus.Collector for exporting the datastore_connected gauge.
 type DatastoreReadinessChecker struct {
@@ -81,7 +82,8 @@ func NewDatastoreReadinessChecker(reg prometheus.Registerer) *DatastoreReadiness
 	return checker
 }
 
-// SetLagProvider sets the LagStateProvider used to determine datastore connectivity.
+// SetLagProvider records the watcher and its optional readiness state.
+// Ready does not call LagState.
 func (c *DatastoreReadinessChecker) SetLagProvider(provider LagStateProvider) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

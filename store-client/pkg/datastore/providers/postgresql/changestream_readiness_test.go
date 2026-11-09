@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -92,5 +93,108 @@ func TestFetchNewChanges_ReadinessRequiresSuccessfulPoll(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(changelogQuery)).WillReturnError(sql.ErrConnDone)
 	require.Error(t, watcher.fetchNewChanges(context.Background()))
 	require.False(t, watcher.IsReady())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestFetch_ReadFailureOverridesActiveListener(t *testing.T) {
+	for _, byID := range []bool{false, true} {
+		t.Run(strconv.FormatBool(byID), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+			watcher.listenerConnected, watcher.listenerSubscribed = true, true
+			require.True(t, watcher.IsReady())
+			fetch := func() error { return watcher.fetchNewChanges(context.Background()) }
+			if byID {
+				fetch = func() error { return watcher.fetchChangeByID(context.Background(), 1) }
+			}
+			mock.ExpectQuery(changelogQuery).WillReturnError(sql.ErrConnDone)
+			require.Error(t, fetch())
+			require.False(t, watcher.IsReady(), "LISTEN cannot compensate for an unreadable query pool")
+			mock.ExpectQuery(changelogQuery).WillReturnRows(changelogRows())
+			require.NoError(t, fetch())
+			require.True(t, watcher.IsReady())
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestProcessNotification_ReconnectCatchesUpBeforeNewNotification(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	when := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+	watcher.lastTimestamp = when
+	watcher.lastEventID = 1
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when, int64(1)).
+		WillReturnRows(healthEventRow(changelogRows(), 2, when.Add(time.Second)))
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when.Add(time.Second), int64(2)).
+		WillReturnRows(changelogRows())
+	watcher.processNotification(context.Background(), nil)
+	require.Len(t, watcher.events, 1, "a reconnect must recover the missed row immediately")
+	require.Equal(t, []byte("2"), (<-watcher.events).ResumeToken)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestListenerReconnect_DoesNotPretendToReceiveNotification(t *testing.T) {
+	watcher := NewPostgreSQLChangeStreamWatcher(nil, "test-client", healthEventsTable, "", ModeHybrid)
+	before := time.Now().Add(-time.Minute)
+	watcher.lastNotifyTime = before
+	watcher.listenerEventCallback()(pq.ListenerEventReconnected, nil)
+	require.Equal(t, before, watcher.lastNotifyTime)
+}
+
+func TestProcessNotification_FailedCatchUpCannotSkipMissedRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	when := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+	watcher.lastTimestamp, watcher.lastEventID = when, 1
+	mock.ExpectQuery(changelogQuery).WillReturnError(sql.ErrConnDone)
+	watcher.processNotification(context.Background(), nil)
+	require.False(t, watcher.IsReady())
+	require.True(t, watcher.catchUpPending)
+	// Two batches must be drained before fetching the newer notified row.
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when, int64(1)).
+		WillReturnRows(healthEventRow(changelogRows(), 2, when.Add(time.Second)))
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when.Add(time.Second), int64(2)).
+		WillReturnRows(healthEventRow(changelogRows(), 3, when.Add(2*time.Second)))
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when.Add(2*time.Second), int64(3)).
+		WillReturnRows(changelogRows())
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, int64(4)).
+		WillReturnRows(healthEventRow(changelogRows(), 4, when.Add(3*time.Second)))
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when.Add(3*time.Second), int64(4)).
+		WillReturnRows(changelogRows())
+	watcher.processNotification(context.Background(), &pq.Notification{Extra: `{"id":4,"table":"health_events","operation":"INSERT"}`})
+	require.Len(t, watcher.events, 3)
+	for _, id := range []string{"2", "3", "4"} {
+		require.Equal(t, []byte(id), (<-watcher.events).ResumeToken)
+	}
+	require.True(t, watcher.IsReady())
+	require.False(t, watcher.catchUpPending)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestListenLoop_StartupCatchesUpWithoutNotification(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeNotify)
+	watcher.listener = &pq.Listener{Notify: make(chan *pq.Notification)}
+	mock.ExpectQuery(changelogQuery).WillReturnRows(changelogRows())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); watcher.listenLoop(ctx) }()
+	require.Eventually(t, watcher.IsReady, time.Second, time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("listener did not stop")
+	}
 	require.NoError(t, mock.ExpectationsWereMet())
 }

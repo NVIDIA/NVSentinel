@@ -238,6 +238,10 @@ if err != nil {
 
 Everywhere else, `return err` bare loses the call site — wrap with `fmt.Errorf("context: %w", err)`.
 
+**In E2E tests, retry conflicts with `helpers.ConflictBackoff`, not `retry.DefaultRetry`.** `retry.DefaultRetry` stops after 5 tries in about 50 ms. During the tests, other writers update the same objects; for example, NVSentinel components update Nodes. Get the object inside the retry function: an `Update` of a stale copy gets the same 409 on every try.
+
+**Before you change an environment variable in a chart, find every place that reads it.** One variable can set more than one behaviour — `MONGODB_PING_TIMEOUT_TOTAL_SECONDS` sets four timeouts. Also compare the value with the code default, because some chart values override it.
+
 **Compare errors with `errors.Is`, never `==`.** `errorlint` is enabled and will fail CI, and `==` breaks on wrapped errors:
 
 ```go
@@ -352,6 +356,18 @@ require.Eventually(t, func() bool {
 ```
 
 Use `require.Never` for the inverse — proving a node is *not* cordoned when it should not be. That pairing matters here: remediation code needs a test showing it does not fire in the healthy case, and `require.Never` is how you write it.
+
+**In an envtest controller test, wait for the cache before you call `Reconcile`.** The reconciler reads through the controller-runtime cache, which can lag a write that the test made through the API server. Wait until the cached client returns the write, then reconcile.
+
+**Show a flake fix with repeated runs.** Reproduce the failure with repeated runs under parallel load before the fix, and show zero failures in the same number of runs after it.
+
+## CI and E2E
+
+**List each new E2E test in `tests/e2e-shards.yaml`.** CI fails if a test is not listed. A test in `all` runs in every job, so its run time adds to each job. The header of the file says which tests go in `all` and where to put the others.
+
+**Run a network download in a CI step through `scripts/retry.sh`.** In a Dockerfile, use the inline retry loop around `go mod download` that the other Dockerfiles use, because some build contexts do not include `scripts/`.
+
+**Compare all E2E jobs before and after a change to CI time.** Use the test durations in `results/e2e-tests.json` of each job.
 
 ## Anti-Patterns
 

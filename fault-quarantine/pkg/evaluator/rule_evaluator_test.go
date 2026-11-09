@@ -18,45 +18,20 @@ import (
 	"context"
 	"log"
 	"os"
-	"reflect"
 	"testing"
-	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
-	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
-
-type directNodeReaderStub struct {
-	node  *corev1.Node
-	err   error
-	calls int
-}
-
-func (s *directNodeReaderStub) GetNodeDirect(context.Context, string) (*corev1.Node, error) {
-	s.calls++
-	if s.err != nil {
-		return nil, s.err
-	}
-
-	return s.node.DeepCopy(), nil
-}
 
 var (
 	testClient *kubernetes.Clientset
@@ -109,311 +84,6 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	if err != nil {
 		t.Fatalf("Failed to create test node %s: %v", name, err)
 	}
-}
-
-func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-	node := &corev1.Node{
-		Name:        "slim-node",
-		Labels:      map[string]string{"environment": "production"},
-		Annotations: map[string]string{"maintenance": "false"},
-		Spec: corev1.NodeSpec{
-			Unschedulable: true,
-			Taints: []corev1.Taint{{
-				Key:    "dedicated",
-				Value:  "gpu",
-				Effect: corev1.TaintEffectNoSchedule,
-			}},
-		},
-	}
-	if err := indexer.Add(node); err != nil {
-		t.Fatalf("indexer.Add() error = %v", err)
-	}
-
-	evaluator, err := NewNodeRuleEvaluator(
-		`node.metadata.name == "slim-node" &&
-		 node.metadata.labels["environment"] == "production" &&
-		 node.metadata.annotations["maintenance"] == "false" &&
-		 node.spec.unschedulable &&
-		 node.spec.taints.exists(t, t.key == "dedicated")`,
-		corelisters.NewNodeLister(indexer),
-	)
-	if err != nil {
-		t.Fatalf("NewNodeRuleEvaluator() error = %v", err)
-	}
-
-	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "slim-node"})
-	if err != nil {
-		t.Fatalf("Evaluate() error = %v", err)
-	}
-	if result != common.RuleEvaluationSuccess {
-		t.Fatalf("Evaluate() = %v, want success", result)
-	}
-}
-
-// A healthy node that has never been quarantined carries none of the keys the
-// cache retains, so it prunes to empty label and annotation maps. Converting it
-// for CEL drops an empty map, and an absent map raises "no such key" rather than
-// evaluating the guard as false, which would fail every rule and stop
-// fault-quarantine cordoning the node at all.
-func TestNodeRuleEvaluator_PrunedNodeKeepsNoRetainedKeys_EvaluatesOptOutGuards(t *testing.T) {
-	const optOutGuards = `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels &&
-		 node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
-	!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels &&
-	  node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false") &&
-	!('quarantinedNodeUncordonedManually' in node.metadata.annotations)`
-
-	retained := nodecache.Derive(config.TomlConfig{
-		LabelPrefix: "k8saas.nvidia.com/",
-		RuleSets: []config.QuarantineRuleSet{{
-			RuleSetMeta: config.RuleSetMeta{
-				Enabled: true,
-				Name:    "shipped",
-				Match: config.Match{
-					All: []config.Rule{{Kind: "Node", Expression: optOutGuards}},
-				},
-			},
-		}},
-	}, nodecache.Operational{})
-
-	transformed, err := retained.Transform()(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        "healthy-node",
-			Labels:      map[string]string{"kubernetes.io/hostname": "healthy-node"},
-			Annotations: map[string]string{"unrelated/annotation": "value"},
-		},
-	})
-	require.NoError(t, err)
-
-	pruned, ok := transformed.(*corev1.Node)
-	require.True(t, ok, "Transform() returned %T", transformed)
-	require.Empty(t, pruned.Labels, "node under test must retain no labels")
-	require.Empty(t, pruned.Annotations, "node under test must retain no annotations")
-
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-	require.NoError(t, indexer.Add(pruned))
-
-	evaluator, err := NewNodeRuleEvaluator(optOutGuards, corelisters.NewNodeLister(indexer))
-	require.NoError(t, err)
-
-	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "healthy-node"})
-	require.NoError(t, err)
-	require.Equal(t, common.RuleEvaluationSuccess, result,
-		"a node that opted out of nothing must match the opt-out guards")
-}
-
-// Recovery reads the node from the API server rather than the cache, so it has
-// to see an opt-out the cache does not hold. Pruning narrows the cache as well
-// as ageing it, so this drives both paths of the same evaluator against a cache
-// pruned by the shipped rules.
-func TestNodeRuleEvaluator_RecoveryRead_PrunedCacheDoesNotHideOptOut(t *testing.T) {
-	const optOutGuard = `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && ` +
-		`node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")`
-
-	retained := nodecache.Derive(config.TomlConfig{
-		LabelPrefix: "k8saas.nvidia.com/",
-		RuleSets: []config.QuarantineRuleSet{{
-			RuleSetMeta: config.RuleSetMeta{
-				Enabled: true,
-				Name:    "shipped",
-				Match: config.Match{
-					All: []config.Rule{{Kind: "Node", Expression: optOutGuard}},
-				},
-			},
-		}},
-	}, nodecache.Operational{GPUNodeLabelKey: "nvidia.com/gpu.present"})
-
-	// The cached entry predates the opt-out, and pruning has stripped the rest.
-	cached, err := retained.Transform()(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "recovering-node",
-			Labels: map[string]string{"kubernetes.io/hostname": "recovering-node"},
-		},
-	})
-	require.NoError(t, err)
-
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-	require.NoError(t, indexer.Add(cached))
-
-	// The live node carries the opt-out its owner has since set.
-	reader := &directNodeReaderStub{node: &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "recovering-node",
-			Labels: map[string]string{
-				"kubernetes.io/hostname":                "recovering-node",
-				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
-			},
-		},
-	}}
-
-	evaluator, err := newNodeRuleEvaluator(optOutGuard, corelisters.NewNodeLister(indexer), reader)
-	require.NoError(t, err)
-
-	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "recovering-node"})
-	require.NoError(t, err, "the pruned cache must still evaluate, not error")
-	require.Equal(t, common.RuleEvaluationSuccess, result,
-		"the cache does not hold the opt-out, so the steady-state path matches")
-	require.Zero(t, reader.calls, "the steady-state path must not read the API server")
-
-	result, err = evaluator.Evaluate(
-		coldstart.WithRecoveryContext(context.Background()),
-		&protos.HealthEvent{NodeName: "recovering-node"},
-	)
-	require.NoError(t, err)
-	require.Equal(t, common.RuleEvaluationFailed, result,
-		"recovery must honour the opt-out on the live node, whatever the pruned cache holds")
-	require.Equal(t, 1, reader.calls, "recovery must read the API server")
-}
-
-// Restoring the pruned maps must not invent one the node never carried, or a
-// rule asking whether a node has any annotations at all would read the cache
-// instead of the node.
-func TestNodeRuleEvaluator_NodeWithNoAnnotations_ReportsThemAbsent(t *testing.T) {
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-	require.NoError(t, indexer.Add(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "bare-node",
-			Labels: map[string]string{"kubernetes.io/hostname": "bare-node"},
-		},
-	}))
-
-	evaluator, err := NewNodeRuleEvaluator(
-		`!has(node.metadata.annotations) && has(node.metadata.labels)`,
-		corelisters.NewNodeLister(indexer),
-	)
-	require.NoError(t, err)
-
-	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "bare-node"})
-	require.NoError(t, err)
-	require.Equal(t, common.RuleEvaluationSuccess, result,
-		"a nil annotations map must stay absent while a populated labels map stays present")
-}
-
-func TestNodeRuleEvaluator_RecoveryRead_UsesCurrentNode(t *testing.T) {
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-	if err := indexer.Add(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "node-a",
-			Labels: map[string]string{"state": "stale"},
-		},
-	}); err != nil {
-		t.Fatalf("indexer.Add() error = %v", err)
-	}
-
-	reader := &directNodeReaderStub{node: &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "node-a",
-			Labels: map[string]string{"state": "current"},
-		},
-	}}
-	evaluator, err := newNodeRuleEvaluator(
-		`node.metadata.labels["state"] == "current"`,
-		corelisters.NewNodeLister(indexer),
-		reader,
-	)
-	if err != nil {
-		t.Fatalf("newNodeRuleEvaluator() error = %v", err)
-	}
-
-	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "node-a"})
-	if err != nil {
-		t.Fatalf("Evaluate() error = %v", err)
-	}
-	if result != common.RuleEvaluationFailed || reader.calls != 0 {
-		t.Fatalf("normal evaluation result/calls = %v/%d, want failed/0", result, reader.calls)
-	}
-
-	recoveryCtx := coldstart.WithRecoveryContext(context.Background())
-	result, err = evaluator.Evaluate(
-		recoveryCtx,
-		&protos.HealthEvent{NodeName: "node-a"},
-	)
-	if err != nil {
-		t.Fatalf("recovery Evaluate() error = %v", err)
-	}
-	if result != common.RuleEvaluationSuccess || reader.calls != 1 {
-		t.Fatalf("recovery evaluation result/calls = %v/%d, want success/1", result, reader.calls)
-	}
-
-	result, err = evaluator.Evaluate(recoveryCtx, &protos.HealthEvent{NodeName: "node-a"})
-	if err != nil {
-		t.Fatalf("second recovery Evaluate() error = %v", err)
-	}
-	if result != common.RuleEvaluationSuccess || reader.calls != 1 {
-		t.Fatalf("second recovery evaluation result/calls = %v/%d, want success/1", result, reader.calls)
-	}
-}
-
-func TestNodeRuleEvaluator_DeletedNodeDuringRecovery_ReturnsPermanentError(t *testing.T) {
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-	reader := &directNodeReaderStub{
-		err: apierrors.NewNotFound(schema.GroupResource{Resource: "nodes"}, "deleted-node"),
-	}
-	evaluator, err := newNodeRuleEvaluator(
-		`node.metadata.name == "deleted-node"`,
-		corelisters.NewNodeLister(indexer),
-		reader,
-	)
-	require.NoError(t, err)
-
-	result, err := evaluator.Evaluate(
-		coldstart.WithRecoveryContext(context.Background()),
-		&protos.HealthEvent{NodeName: "deleted-node"},
-	)
-
-	assert.Equal(t, common.RuleEvaluationFailed, result)
-	require.Error(t, err)
-	assert.True(t, coldstart.IsPermanentError(err))
-	assert.Equal(t, 1, reader.calls)
-}
-
-func TestEvaluate(t *testing.T) {
-	expression := "event.agent == 'GPU' && event.checkName == 'XidError' && ('31' in event.errorCode || '42' in event.errorCode)"
-	evaluator, err := NewHealthEventRuleEvaluator(expression)
-	if err != nil {
-		t.Fatalf("Failed to create HealthEventRuleEvaluator: %v", err)
-	}
-
-	eventTrue := &protos.HealthEvent{
-		Agent:     "GPU",
-		CheckName: "XidError",
-		ErrorCode: []string{"31"},
-	}
-
-	result, err := evaluator.Evaluate(context.Background(), eventTrue)
-	if err != nil {
-		t.Fatalf("Failed to evaluate expression: %v", err)
-	}
-
-	if result != common.RuleEvaluationSuccess {
-		t.Errorf("Expected evaluation result to be true, got false")
-	}
-
-	eventFalse := &protos.HealthEvent{
-		Agent:     "GPU",
-		CheckName: "XidError",
-		ErrorCode: []string{"50"},
-	}
-
-	result, err = evaluator.Evaluate(context.Background(), eventFalse)
-	if err != nil {
-		t.Fatalf("Failed to evaluate expression: %v", err)
-	}
-
-	if result != common.RuleEvaluationFailed {
-		t.Errorf("Expected evaluation result to be false, got true")
-	}
-}
-
-func TestHealthEventRuleEvaluator_EvaluationError_ReturnsPermanentError(t *testing.T) {
-	ruleEvaluator, err := NewHealthEventRuleEvaluator(
-		`event.metadata["missing"].startsWith("value")`,
-	)
-	require.NoError(t, err)
-
-	_, err = ruleEvaluator.Evaluate(context.Background(), &protos.HealthEvent{})
-	require.Error(t, err)
-	assert.True(t, coldstart.IsPermanentError(err))
 }
 
 func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
@@ -541,12 +211,12 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				t.Fatalf("NodeInformer failed to sync")
 			}
 
-			evaluator, err := NewNodeRuleEvaluator(tt.expression, nodeInformer.Lister())
+			evaluator, err := newNodeRule(tt.expression, nodeInformer)
 			if err != nil && !tt.expectError {
 				t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
 			}
 			if evaluator != nil {
-				isEvaluated, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{
+				isEvaluated, err := evaluateRule(context.Background(), evaluator, &protos.HealthEvent{
 					NodeName: nodeName,
 				})
 				if (err != nil) != tt.expectError {
@@ -558,63 +228,5 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestRoundTrip(t *testing.T) {
-	eventTime := timestamppb.New(time.Now())
-	event := &protos.HealthEvent{
-		Id:                 "123",
-		Version:            1,
-		Agent:              "test-agent",
-		ComponentClass:     "test-component",
-		CheckName:          "test-check",
-		IsFatal:            true,
-		IsHealthy:          false,
-		Message:            "test-message",
-		RecommendedAction:  protos.RecommendedAction_RESTART_VM,
-		ErrorCode:          []string{"E001", "E002"},
-		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "GPU-0"}},
-		Metadata:           map[string]string{"key1": "value1"},
-		GeneratedTimestamp: eventTime,
-		NodeName:           "test-node",
-	}
-
-	result, err := RoundTrip(event)
-	if err != nil {
-		t.Fatalf("Failed to roundtrip event: %v", err)
-	}
-
-	expectedMap := map[string]any{
-		"id":                "123",
-		"version":           float64(1),
-		"agent":             "test-agent",
-		"componentClass":    "test-component",
-		"checkName":         "test-check",
-		"isFatal":           true,
-		"isHealthy":         false,
-		"message":           "test-message",
-		"recommendedAction": float64(protos.RecommendedAction_RESTART_VM),
-		"errorCode":         []any{"E001", "E002"},
-		"entitiesImpacted": []any{
-			map[string]any{
-				"entityType":  "GPU",
-				"entityValue": "GPU-0",
-			},
-		},
-		"metadata": map[string]any{"key1": "value1"},
-		"generatedTimestamp": map[string]any{
-			"seconds": float64(eventTime.GetSeconds()),
-			"nanos":   float64(eventTime.GetNanos()),
-		},
-		"nodeName":                "test-node",
-		"processingStrategy":      float64(0),
-		"quarantineOverrides":     nil,
-		"drainOverrides":          nil,
-		"customRecommendedAction": "",
-	}
-
-	if !reflect.DeepEqual(result, expectedMap) {
-		t.Errorf("Expected map %v, got %v", expectedMap, result)
 	}
 }

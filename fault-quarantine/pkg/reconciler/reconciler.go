@@ -505,7 +505,6 @@ func (r *Reconciler) initializeQuarantineMetrics(ctx context.Context) {
 }
 
 // checkCircuitBreakerAtStartup checks if circuit breaker is tripped at startup
-// Returns error if retry exhaustion occurs (should restart pod)
 // Blocks indefinitely if circuit breaker is tripped (wait for manual intervention)
 func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
 	if !r.breakerActive() {
@@ -514,10 +513,6 @@ func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
 
 	tripped, err := r.cb.IsTripped(ctx)
 	if err != nil {
-		if errors.Is(err, breaker.ErrRetryExhausted) {
-			return err
-		}
-
 		slog.ErrorContext(ctx, "Error checking if circuit breaker is tripped", "error", err)
 		<-ctx.Done()
 
@@ -691,7 +686,7 @@ func (r *Reconciler) handleEvent(
 	// For healthy events, if there's no existing quarantine annotation,
 	// skip processing as there's no transition from unhealthy to healthy
 	if event.HealthEvent.IsHealthy {
-		slog.InfoContext(ctx, "Skipping healthy event for node as there's no existing quarantine annotation",
+		slog.DebugContext(ctx, "Skipping healthy event for node as there's no existing quarantine annotation",
 			"node", event.HealthEvent.NodeName, "event", event.HealthEvent)
 		span.SetAttributes(
 			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
@@ -718,7 +713,7 @@ func (r *Reconciler) handleEvent(
 	selectedLabels := make(map[string]selectedLabel)
 
 	evaluationErr := r.evaluateRulesets(
-		ctx, event, ruleSetEvals, rulesetsConfig,
+		ctx, event.HealthEvent, ruleSetEvals, rulesetsConfig,
 		taintAppliedMap, &labelsMap, &appliedLabelsMap, selectedLabels, &isCordoned, taintEffectPriorityMap,
 	)
 	if shouldDeferRecoveryActions(ctx, evaluationErr) {
@@ -947,7 +942,7 @@ func (r *Reconciler) resolveAlreadyQuarantinedStatus(
 // evaluateRulesets evaluates all rulesets against the health event in parallel.
 func (r *Reconciler) evaluateRulesets(
 	ctx context.Context,
-	event *model.HealthEventWithStatus,
+	event *protos.HealthEvent,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
 	taintAppliedMap map[keyValTaint]string,
@@ -961,13 +956,13 @@ func (r *Reconciler) evaluateRulesets(
 	defer span.End()
 
 	// Handle quarantine override (force quarantine without rule evaluation)
-	if event.HealthEvent.QuarantineOverrides != nil && event.HealthEvent.QuarantineOverrides.Force {
+	if event.QuarantineOverrides != nil && event.QuarantineOverrides.Force {
 		isCordoned.Store(true)
 
-		creatorID := event.HealthEvent.Metadata["creator_id"]
-		labelsMap.LoadOrStore(r.cordonedByLabelKey, event.HealthEvent.Agent+"-"+creatorID)
+		creatorID := event.Metadata["creator_id"]
+		labelsMap.LoadOrStore(r.cordonedByLabelKey, event.Agent+"-"+creatorID)
 		labelsMap.Store(r.cordonedReasonLabelKey,
-			formatCordonOrUncordonReasonValue(event.HealthEvent.Message, 63))
+			formatCordonOrUncordonReasonValue(event.Message, 63))
 
 		span.SetAttributes(attribute.String("fault_quarantine.ruleset.override", "force_quarantine"))
 	}
@@ -985,7 +980,7 @@ func (r *Reconciler) evaluateRulesets(
 
 			slog.InfoContext(ctx, "Handling event for ruleset", "event", event, "ruleset", eval.GetName())
 
-			matched, err := evaluateRuleAgainstRecoveryEffects(ctx, event.HealthEvent, eval)
+			matched, err := evaluateRuleAgainstRecoveryEffects(ctx, event, eval)
 
 			if matched {
 				r.handleSuccessfulRuleEvaluation(
@@ -995,7 +990,7 @@ func (r *Reconciler) evaluateRulesets(
 			}
 
 			if err != nil {
-				r.handleRuleEvaluationError(ctx, event.HealthEvent, eval.GetName(), err)
+				r.handleRuleEvaluationError(ctx, event, eval.GetName(), err)
 
 				errCh <- err
 			}
@@ -1610,7 +1605,7 @@ func (r *Reconciler) evaluateSessionActions(
 	)
 
 	evaluationErr := r.evaluateRulesets(
-		ctx, &model.HealthEventWithStatus{HealthEvent: event}, ruleSetEvals, rulesetsConfig,
+		ctx, event, ruleSetEvals, rulesetsConfig,
 		taintAppliedMap, &labelsMap, &appliedLabelsMap, make(map[string]selectedLabel), &isCordoned,
 		taintEffectPriorityMap,
 	)
@@ -1926,7 +1921,7 @@ func (r *Reconciler) getHealthEventsFromAnnotation(
 
 	quarantineAnnotationStr, exists := annotations[common.QuarantineHealthEventAnnotationKey]
 	if !exists || quarantineAnnotationStr == "" {
-		slog.InfoContext(ctx, "No quarantine annotation found for node", "node", event.NodeName)
+		slog.DebugContext(ctx, "No quarantine annotation found for node", "node", event.NodeName)
 		span.SetAttributes(attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
 			attribute.String("fault_quarantine.skip.reason", "No existing quarantine annotation found for node"),
 		)

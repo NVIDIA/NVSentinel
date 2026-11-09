@@ -23,6 +23,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
@@ -30,6 +31,7 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
@@ -253,6 +255,38 @@ func (ni *NodeInformer) GetNodeDirect(ctx context.Context, name string) (*v1.Nod
 
 	node = node.DeepCopy()
 	node.Status = v1.NodeStatus{}
+
+	return node, nil
+}
+
+// GetRuleNode returns the node a Node rule is evaluated against.
+//
+// Live processing reads the informer cache. Recovery bypasses it so rules see
+// current node state, reading one API server snapshot per node, and a node
+// deleted before replay is a permanent event error.
+func (ni *NodeInformer) GetRuleNode(ctx context.Context, name string) (*v1.Node, error) {
+	var (
+		node *v1.Node
+		err  error
+	)
+
+	isRecoveryRead := coldstart.IsRecoveryContext(ctx)
+	if isRecoveryRead {
+		node, err = coldstart.GetRecoveryNode(ctx, name, func() (*v1.Node, error) {
+			return ni.GetNodeDirect(ctx, name)
+		})
+	} else {
+		node, err = ni.lister.Get(name)
+	}
+
+	if err != nil {
+		wrappedErr := fmt.Errorf("failed to get node %s: %w", name, err)
+		if isRecoveryRead && apierrors.IsNotFound(err) {
+			return nil, coldstart.PermanentError(wrappedErr)
+		}
+
+		return nil, wrappedErr
+	}
 
 	return node, nil
 }

@@ -153,4 +153,40 @@ spec:
                   type: object
                   additionalProperties:
                     type: string
+                drainDecision:
+                  nullable: true
+                  type: object
+                  properties:
+                    ruleSet:
+                      type: string
+                      description: 'Rule set that applies: the winner, or the rule set of the reusedFrom event. Empty for the default.'
+                    method:
+                      type: string
+                      description: BuiltIn or Custom. Empty when stopped.
+                    stopped:
+                      type: boolean
+                    scope:
+                      nullable: true
+                      type: object
+                      properties:
+                        entityType:
+                          type: string
+                        entityValue:
+                          type: string
+                      description: Entity type and value of a partial drain. Empty for a drain of the full node.
+                    reusedFrom:
+                      type: string
+                      description: Event of the quarantine session whose method this event uses. Empty when this event selected it.
+                remediationDecision:
+                  nullable: true
+                  type: object
+                  properties:
+                    ruleSet:
+                      type: string
+                      description: Rule set that won. Empty when no rule set matched.
+                    action:
+                      type: string
+                      description: Entry of maintenance.actions. Empty when stopped.
+                    stopped:
+                      type: boolean
           description: HealthEventResource is the root type for CRD generation. This will map to Kubernetes .spec and .status fields.

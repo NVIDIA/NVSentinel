@@ -36,6 +36,7 @@ func TestProvider_String(t *testing.T) {
 		{"oci provider", ProviderOCI, "oci"},
 		{"nebius provider", ProviderNebius, "nebius"},
 		{"lambda provider", ProviderLambda, "lambda"},
+		{"akamai provider", ProviderAkamai, "akamai"},
 		{"generic provider", ProviderGeneric, "generic"},
 		{"label provider", ProviderLabel, "label"},
 	}
@@ -70,6 +71,7 @@ func TestGetProviderFromEnv_Valid(t *testing.T) {
 		{"oci", "oci", ProviderOCI},
 		{"nebius", "nebius", ProviderNebius},
 		{"lambda", "lambda", ProviderLambda},
+		{"akamai", "akamai", ProviderAkamai},
 		{"generic", "generic", ProviderGeneric},
 		{"label", "label", ProviderLabel},
 	}
@@ -198,6 +200,7 @@ func TestProviderConstants(t *testing.T) {
 	assert.Equal(t, Provider("oci"), ProviderOCI)
 	assert.Equal(t, Provider("nebius"), ProviderNebius)
 	assert.Equal(t, Provider("lambda"), ProviderLambda)
+	assert.Equal(t, Provider("akamai"), ProviderAkamai)
 	assert.Equal(t, Provider("generic"), ProviderGeneric)
 	assert.Equal(t, Provider("label"), ProviderLabel)
 }
@@ -210,6 +213,7 @@ func TestNewWithProvider_AllProviders(t *testing.T) {
 		provider      Provider
 		shouldSucceed bool
 		skipReason    string
+		env           map[string]string
 	}{
 		{
 			name:          "kind provider",
@@ -252,6 +256,13 @@ func TestNewWithProvider_AllProviders(t *testing.T) {
 			skipReason:    "Lambda client requires an API key",
 		},
 		{
+			name:          "akamai provider",
+			provider:      ProviderAkamai,
+			shouldSucceed: true,
+			// A fake token is enough: construction reads it but makes no API call.
+			env: map[string]string{"LINODE_TOKEN": "fake-token-for-test", "AKAMAI_API_ENDPOINT": ""},
+		},
+		{
 			name:          "label provider",
 			provider:      ProviderLabel,
 			shouldSucceed: false,
@@ -263,6 +274,10 @@ func TestNewWithProvider_AllProviders(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if !tt.shouldSucceed && tt.skipReason != "" {
 				t.Skip(tt.skipReason)
+			}
+
+			for k, v := range tt.env {
+				t.Setenv(k, v)
 			}
 
 			client, err := NewWithProvider(ctx, tt.provider)

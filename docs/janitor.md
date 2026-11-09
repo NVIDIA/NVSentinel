@@ -41,6 +41,7 @@ Issues a reboot API call to the cloud provider. The node restarts with the same 
 | GCP | `reset` |
 | Azure | Virtual Machine restart |
 | OCI | `InstanceAction RESET` |
+| Akamai | `POST /linode/instances/{id}/reboot` |
 
 ### TerminateNode
 
@@ -51,6 +52,8 @@ Issues a terminate or stop API call to the cloud provider. Used for `REPLACE_VM`
 Runs a privileged Kubernetes Job on the target node that performs an in-place GPU reset via `nvidia-smi`. The GPU Operator DaemonSet is paused on the node during the reset to prevent interference. On completion, the Job writes a syslog event so the Syslog Health Monitor can confirm the reset succeeded.
 
 GPUReset supports both GPU Operator modes: device plugin and DRA. Refer to [GPU Operator modes](configuration/janitor.md#gpu-operator-modes).
+
+GPU clients outside the GPU Operator, in any namespace, can also hold the GPUs open. The controller also stops them before the reset. Refer to [GPU clients](configuration/janitor.md#gpu-clients).
 
 ## Configuration
 
@@ -78,7 +81,7 @@ janitor:
 
 janitor-provider:
   csp:
-    provider: aws         # Cloud provider: aws | gcp | azure | oci | nebius | generic | kind | kwok
+    provider: aws         # Cloud provider: aws | gcp | azure | oci | nebius | akamai | generic | kind | kwok
 ```
 
 See [Janitor configuration](configuration/janitor.md) and [Janitor Provider configuration](configuration/janitor-provider.md) for the full Helm reference.
@@ -92,6 +95,7 @@ See [Janitor configuration](configuration/janitor.md) and [Janitor Provider conf
 | `azure` | Yes | Yes | Yes |
 | `oci` | Yes | Yes | Yes |
 | `nebius` | Yes | Yes | Yes |
+| `akamai` | Yes | Yes | Yes |
 | `generic` | — | — | Yes (privileged Job) |
 | `kind` / `kwok` | Simulated | Simulated | Simulated |
 

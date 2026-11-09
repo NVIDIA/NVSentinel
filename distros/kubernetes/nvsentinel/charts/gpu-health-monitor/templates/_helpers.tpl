@@ -400,3 +400,16 @@ render the user's affinity unchanged.
 {{- end -}}
 {{- with $affinity }}{{ toYaml . }}{{ end -}}
 {{- end -}}
+
+{{/*
+Bind address for the metrics server. global.ipv6.enabled turns the default
+"0.0.0.0" into "::"; any other explicit global.metricsAddress wins. See the
+IPv6 section in docs/configuration/README.md.
+*/}}
+{{- define "gpu-health-monitor.metricsAddress" -}}
+{{- $addr := .Values.global.metricsAddress | default "0.0.0.0" -}}
+{{- if and (eq (toString (dig "ipv6" "enabled" false (.Values.global | default dict))) "true") (eq $addr "0.0.0.0") -}}
+{{- $addr = "::" -}}
+{{- end -}}
+{{- $addr -}}
+{{- end -}}
