@@ -125,7 +125,7 @@ rather than the whole node.
     expression: |
       resource.status.conditions.exists(c,
         c.type   == "ExternalGPUIntegrity" &&
-        c.status == "True" &&
+        c.status != "False" &&
         c.reason == "GPUIntegrityFailed")
   healthEvent:
     componentClass: GPU
@@ -152,12 +152,15 @@ set your version first and inspect the subchart directly:
 NVSENTINEL_VERSION="<your-version>"
 
 # Inspect the KOM subchart defaults (policies live there, not in the umbrella chart)
-helm show values oci://ghcr.io/nvidia/nvsentinel/charts/kubernetes-object-monitor \
-  --version "$NVSENTINEL_VERSION" \
-  | grep -A 60 'policies:'
+# Pull the umbrella chart and inspect the bundled KOM subchart defaults:
+helm pull oci://ghcr.io/nvidia/nvsentinel \
+  --version "$NVSENTINEL_VERSION" --untar
+grep -A 60 'policies:' nvsentinel/charts/kubernetes-object-monitor/values.yaml
+rm -rf nvsentinel/
 
-# On an existing release, also check the currently active effective values:
-helm get values nvsentinel --namespace nvsentinel
+# On an existing release, also check the currently active effective values
+# (--all includes chart defaults, not just user-supplied overrides):
+helm get values nvsentinel --namespace nvsentinel --all
 ```
 
 ```yaml
@@ -192,12 +195,17 @@ kubernetes-object-monitor:
 
 Apply the updated values:
 
-> **Warning:** Run this upgrade against a non-production cluster, or disable
-> all downstream remediation components before applying the new policy. On an
-> existing release, `--reuse-values` retains any enabled pipeline. A matching
-> condition on any node will trigger a fatal `HealthEvent` and may cordon or
-> drain that node before you reach the validation steps below. To disable all
-> relevant components:
+> **Warning:** **Use a non-production cluster for this validation step.**
+> On an existing release, `--reuse-values` retains any enabled remediation
+> pipeline. A matching condition on any node will trigger a fatal `HealthEvent`
+> and may cordon or drain that node before you reach the validation steps below.
+>
+> If a non-production cluster is not available, you may disable all downstream
+> remediation components, but note that disabling `faultQuarantine` carries an
+> additional risk: any fault event emitted while quarantine restarts may be
+> missed, because KOM does not republish an unchanged match and MongoDB change
+> streams do not replay missed events on cold start. Only proceed with this
+> approach if you understand and accept this risk:
 >
 > ```yaml
 > global:
@@ -205,7 +213,7 @@ Apply the updated values:
 >     enabled: false
 >   faultQuarantine:
 >     enabled: false
->   nodedrainer:
+>   node-drainer:
 >     enabled: false
 > ```
 
@@ -270,6 +278,12 @@ kubectl get node "$NODE" \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' \
   | grep "ExternalGPUIntegrityCheck=True"
 # Expected: ExternalGPUIntegrityCheck=True
+#
+# Note: if kubernetes-object-monitor.processingStrategy is set to STORE_ONLY,
+# the platform connector does not write a node condition, so this check will
+# return no output even when delivery succeeded. In that mode, confirm receipt
+# by querying the datastore (MongoDB or PostgreSQL) for the stored HealthEvent
+# instead of checking the node condition.
 ```
 
 **Step 3 — confirm the node was cordoned** (only if downstream remediation is
