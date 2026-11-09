@@ -1088,8 +1088,8 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	// allowCompletion has no deadline, so this timestamp is the only signal that the drain is
 	// waiting rather than stuck. It must carry the event's creation time while the pod runs.
 	require.Eventually(t, func() bool {
-		return gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionSince, nodeName) &&
-			getGaugeVecValue(t, metrics.NodeDrainAwaitingCompletionSince, nodeName) > 0
+		return gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionStart, nodeName) &&
+			getGaugeVecValue(t, metrics.NodeDrainAwaitingCompletionStart, nodeName) > 0
 	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion timestamp should be set while a pod is still running")
 
 	updatedPod, err := setup.client.CoreV1().Pods("completion-test").Get(setup.ctx, "running-pod", metav1.GetOptions{})
@@ -1119,7 +1119,7 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	// Removed once the node stops draining, so time() minus a stale timestamp cannot keep an
 	// alert firing after the drain finished.
 	require.Eventually(t, func() bool {
-		return !gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionSince, nodeName)
+		return !gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionStart, nodeName)
 	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion series should be removed once the node stops draining")
 }
 

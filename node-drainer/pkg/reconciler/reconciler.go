@@ -772,7 +772,7 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 		// permanently. The rest of this package guards the same field the same way
 		// (coldstart/resolver.go, isEventCancelled).
 		if !healthEvent.CreatedAt.IsZero() {
-			metrics.NodeDrainAwaitingCompletionSince.WithLabelValues(nodeName).
+			metrics.NodeDrainAwaitingCompletionStart.WithLabelValues(nodeName).
 				Set(float64(healthEvent.CreatedAt.Unix()))
 		}
 
@@ -786,7 +786,7 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 	// Removed as soon as completion is observed, not left to ClearNodeDraining on a later pass:
 	// this branch requeues for the status update, so the series would otherwise keep reporting a
 	// wait for one more interval after the pods are already gone.
-	metrics.NodeDrainAwaitingCompletionSince.DeleteLabelValues(nodeName)
+	metrics.NodeDrainAwaitingCompletionStart.DeleteLabelValues(nodeName)
 
 	slog.InfoContext(ctx, "All pods completed on node", "node", nodeName)
 

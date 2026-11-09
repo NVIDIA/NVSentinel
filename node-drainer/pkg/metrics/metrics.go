@@ -91,7 +91,7 @@ var (
 		[]string{labelNode},
 	)
 
-	// NodeDrainAwaitingCompletionSince carries the creation time of the health event behind an
+	// NodeDrainAwaitingCompletionStart carries the creation time of the health event behind an
 	// in-progress allowCompletion drain, for nodes still waiting on pods. allowCompletion is the
 	// only mode with no deadline, so this is what makes "waiting too long" expressible:
 	// time() - this > <the longest run those namespaces should take>.
@@ -101,7 +101,7 @@ var (
 	// waiting, the next poll restores the same instant instead of restarting the clock -- a 0/1
 	// flag with a `for:` clause would have its timer reset by that gap. The series is removed,
 	// not zeroed, when the node stops draining: time() minus zero would read as a very long wait.
-	NodeDrainAwaitingCompletionSince = promauto.NewGaugeVec(
+	NodeDrainAwaitingCompletionStart = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "node_drainer_awaiting_completion_start_timestamp_seconds",
 			Help: "Unix time of the health event behind an allowCompletion drain that is still " +

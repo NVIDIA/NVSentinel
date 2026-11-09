@@ -84,7 +84,7 @@ func (m *eventQueueManager) ClearNodeDraining(nodeName string) {
 	// lane rather than dropping them), and every way a node stops draining reaches here. If a
 	// single-event cancellation removes it while another event for that node is still waiting,
 	// that event's next poll restores the same timestamp.
-	metrics.NodeDrainAwaitingCompletionSince.DeleteLabelValues(nodeName)
+	metrics.NodeDrainAwaitingCompletionStart.DeleteLabelValues(nodeName)
 }
 
 // EnqueueEventGeneric enqueues an event using the new database-agnostic interface.
