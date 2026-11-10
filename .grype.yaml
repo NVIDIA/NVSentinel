@@ -23,5 +23,7 @@ exclude:
   - ./tests/**  # E2E and scale tests
 
 # Vulnerabilities that were checked and do not affect NVSentinel. Grype does not report them.
-vex-documents:
-  - .openvex.json
+# An OpenVEX document must have at least one statement, so .openvex.json does not exist yet.
+# Uncomment these lines in the pull request that adds its first statement (see SECURITY.md).
+# vex-documents:
+#   - .openvex.json
