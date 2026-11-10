@@ -5,18 +5,5 @@
   "role": "Document Creator",
   "timestamp": "2026-11-10T00:00:00Z",
   "version": 1,
-  "statements": [
-    {
-      "vulnerability": {
-        "name": "GHSA-mrrh-fwg8-r2c3",
-        "aliases": ["CVE-2025-30066"]
-      },
-      "products": [
-        {"@id": "pkg:github/tj-actions/changed-files@v42.1.0"}
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_present",
-      "impact_statement": "The attack in March 2025 moved the version tags of tj-actions/changed-files to a malicious commit. .github/workflows/lint-test.yml pins commit aa08304bd477b800d468db44fe10f6c61f7f7b11 of v42.1.0, from 9 March 2024, so it does not run the malicious code."
-    }
-  ]
+  "statements": []
 }
