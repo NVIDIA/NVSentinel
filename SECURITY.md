@@ -27,14 +27,16 @@ NVSentinel does not currently maintain long-term-support branches. Security and 
 
 ## Vulnerability Scanning
 
-The security scans check the dependencies of NVSentinel with [Grype](https://github.com/anchore/grype), and report each vulnerability that has a fix as a code scanning alert in the Security tab of the repository.
+The security scan checks the dependencies of NVSentinel with [Grype](https://github.com/anchore/grype), and reports each vulnerability that has a fix as a code scanning alert in the Security tab of the repository.
 
-Grype reads its configuration from [`.grype.yaml`](.grype.yaml). The file excludes the paths that are not part of the product, such as `demos/`, `tilt/` and `tests/`, and lists the vulnerabilities that were checked and do not affect NVSentinel.
+Grype compares the version of each package with its vulnerability database. It does not check whether NVSentinel calls the vulnerable code. For Go, the scan therefore first runs [govulncheck](https://go.dev/doc/security/vuln/) on each Go module. govulncheck follows the call graph of the module, and the scan does not report a Go vulnerability whose vulnerable code the module does not call. govulncheck uses the Go vulnerability database, which can add a new advisory later than Grype's database. Until then, Grype still reports that vulnerability.
+
+Grype also reads [`.grype.yaml`](.grype.yaml). The file excludes the paths that are not part of the product, such as `demos/`, `tilt/` and `tests/`, and can list ignore rules for other vulnerabilities that do not affect NVSentinel.
 
 ### Handle a Reported Vulnerability
 
 - If the vulnerability affects NVSentinel, update the dependency or the base image that contains it.
-- If it does not affect NVSentinel, open a pull request that adds a rule to the `ignore` list in `.grype.yaml`. A maintainer reviews the reason in the pull request. After the merge, Grype no longer reports the vulnerability, and its alert closes at the next scan.
+- If it does not affect NVSentinel, open a pull request that adds a rule to the `ignore` list in `.grype.yaml`. A maintainer reviews the reason in the pull request. After the merge, Grype no longer reports the vulnerability, and its alert closes at the next scan. A Go vulnerability usually needs no rule, because govulncheck checks it at each scan.
 
 ### Add an Ignore Rule
 
