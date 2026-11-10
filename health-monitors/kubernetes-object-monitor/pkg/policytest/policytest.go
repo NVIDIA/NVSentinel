@@ -100,9 +100,8 @@ func LoadSuite(path string) (*Suite, error) {
 	return &s, nil
 }
 
-// Run evaluates every case against the policies, the same way the monitor's
-// reconciler does: the predicate first, then the node association, falling back
-// to the resource name when the association is empty.
+// Run evaluates every case against the policies with policy.Evaluator.Evaluate,
+// the same call the monitor's reconciler makes.
 func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, error) {
 	objects := make([]client.Object, 0, len(s.Objects))
 	for i, o := range s.Objects {
@@ -148,24 +147,13 @@ func runCase(ctx context.Context, evaluator *policy.Evaluator, byName map[string
 		return r
 	}
 
-	match, err := evaluator.EvaluatePredicate(ctx, c.Policy, resource)
+	match, node, err := evaluator.Evaluate(ctx, c.Policy, resource)
 	if err != nil {
-		r.Failures = append(r.Failures, fmt.Sprintf("predicate: %v", err))
+		r.Failures = append(r.Failures, err.Error())
 		return r
 	}
 
 	r.Match = match
-
-	node, err := evaluator.EvaluateNodeAssociation(ctx, c.Policy, resource)
-	if err != nil {
-		r.Failures = append(r.Failures, fmt.Sprintf("node association: %v", err))
-		return r
-	}
-
-	if node == "" {
-		node = resource.GetName()
-	}
-
 	r.Node = node
 
 	if match != c.Expect.Match {

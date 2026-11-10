@@ -175,7 +175,7 @@ func TestRunReportsFailures(t *testing.T) {
 				"spec":     map[string]any{"nodeName": "node-missing"},
 				"status":   map[string]any{"phase": "Failed"},
 			}},
-			wantFailure: "predicate:",
+			wantFailure: "predicate evaluation failed:",
 		},
 	}
 
