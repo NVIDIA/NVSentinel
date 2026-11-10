@@ -1812,21 +1812,21 @@ func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 // uses for the event, before the existing CR check, the log collector and the CR. Without rule
 // sets, the entry is the recommended action of the event.
 //
-// A later pass for the same event, for example while the log collector runs, finds the record
-// in its status and does not write it again. The record is also set on the in-memory status, so
-// that a pass that reuses the event without a new read finds it too.
+// The record is written once. A later pass for the same event, for example while the log
+// collector runs, finds the record in its status and keeps it, even if the action would now be
+// different. The record is also set on the in-memory status, so that a pass that reuses the
+// event without a new read finds it too.
 func (r *FaultRemediationReconciler) recordRemediationDecision(
 	ctx context.Context,
 	healthEventStore datastore.HealthEventStore,
 	eventWithToken datastore.EventWithToken,
 	healthEventWithStatus *events.HealthEventDoc,
 ) error {
-	action := model.GetEffectiveActionName(healthEventWithStatus.HealthEvent)
-
-	if recorded := healthEventWithStatus.HealthEventStatus.GetRemediationDecision(); recorded != nil &&
-		recorded.GetAction() == action {
+	if healthEventWithStatus.HealthEventStatus.GetRemediationDecision() != nil {
 		return nil
 	}
+
+	action := model.GetEffectiveActionName(healthEventWithStatus.HealthEvent)
 
 	documentID, err := utils.ExtractDocumentID(eventWithToken.Event)
 	if err != nil {

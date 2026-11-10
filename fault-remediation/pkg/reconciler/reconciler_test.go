@@ -3118,6 +3118,14 @@ func TestRecordRemediationDecision(t *testing.T) {
 			},
 			expectedSaved: &protos.RemediationDecision{Action: "RESTART_BM"},
 		},
+		{
+			name:  "keeps a recorded decision that differs from the action of the event",
+			event: &protos.HealthEvent{NodeName: "node-a", RecommendedAction: protos.RecommendedAction_RESTART_BM},
+			status: &protos.HealthEventStatus{
+				RemediationDecision: &protos.RemediationDecision{Action: "EXTERNAL_REPAIR"},
+			},
+			expectedSaved: &protos.RemediationDecision{Action: "EXTERNAL_REPAIR"},
+		},
 	}
 
 	for _, tt := range tests {
