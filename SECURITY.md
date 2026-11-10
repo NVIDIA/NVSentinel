@@ -29,55 +29,41 @@ NVSentinel does not currently maintain long-term-support branches. Security and 
 
 The security scans check the dependencies of NVSentinel with [Grype](https://github.com/anchore/grype), and report each vulnerability that has a fix as a code scanning alert in the Security tab of the repository.
 
-Grype reads its configuration from [`.grype.yaml`](.grype.yaml). The file excludes the paths that are not part of the product, such as `demos/`, `tilt/` and `tests/`. It also loads `.openvex.json`, the list of vulnerabilities that were checked and do not affect NVSentinel, once that file exists.
+Grype reads its configuration from [`.grype.yaml`](.grype.yaml). The file excludes the paths that are not part of the product, such as `demos/`, `tilt/` and `tests/`, and lists the vulnerabilities that were checked and do not affect NVSentinel.
 
 ### Handle a Reported Vulnerability
 
 - If the vulnerability affects NVSentinel, update the dependency or the base image that contains it.
-- If it does not affect NVSentinel, open a pull request that adds a statement to `.openvex.json`. A maintainer reviews the reason in the pull request. After the merge, Grype no longer reports the vulnerability, and its alert closes at the next scan.
+- If it does not affect NVSentinel, open a pull request that adds a rule to the `ignore` list in `.grype.yaml`. A maintainer reviews the reason in the pull request. After the merge, Grype no longer reports the vulnerability, and its alert closes at the next scan.
 
-### Add a Statement to `.openvex.json`
+### Add an Ignore Rule
 
-`.openvex.json` is an [OpenVEX](https://openvex.dev) document. An OpenVEX document must have at least one statement, so the file does not exist until the first statement is added. The pull request that adds it creates the file as in this example, and uncomments the `vex-documents` lines in `.grype.yaml`:
+A rule applies to one vulnerability in one version of a package, in one file of NVSentinel. It records that NVSentinel is not affected, not that the package is safe. For example:
 
-```json
-{
-  "@context": "https://openvex.dev/ns/v0.2.0",
-  "@id": "https://github.com/NVIDIA/NVSentinel/.openvex.json",
-  "author": "NVSentinel maintainers",
-  "role": "Document Creator",
-  "timestamp": "2026-11-10T00:00:00Z",
-  "version": 1,
-  "statements": [
-    {
-      "vulnerability": {"name": "GHSA-xxxx-xxxx-xxxx", "aliases": ["CVE-YYYY-NNNNN"]},
-      "products": [{"@id": "pkg:golang/example.com/module@v1.2.3"}],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "NVSentinel imports the module only for its parser, and the vulnerability is in its HTTP server.",
-      "timestamp": "2026-11-10T00:00:00Z"
-    }
-  ]
-}
+```yaml
+ignore:
+  - vulnerability: GHSA-xxxx-xxxx-xxxx
+    reason: NVSentinel imports the module only for its parser, and the vulnerability is in its HTTP server.
+    package:
+      name: example.com/module
+      version: v1.2.3
+      location: /store-client/go.mod
 ```
 
-A later pull request adds its statement to the `statements` list. Each statement has these fields:
+Each rule has these fields:
 
-- `vulnerability.name`: the ID that Grype reports. Put the other IDs of the same vulnerability, such as its CVE, in `aliases`.
-- `products`: the package URL that Grype reports for the vulnerable package. The statement applies to that version of the package wherever Grype finds it. After an update to another version, the statement no longer matches, so remove it.
-- `status`: `not_affected`.
-- `justification`: one of the [OpenVEX justifications](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md#status-justifications), for example `vulnerable_code_not_present` or `vulnerable_code_not_in_execute_path`.
-- `impact_statement`: why the vulnerability does not affect NVSentinel, so that a reviewer and a user can check the reason.
-- `timestamp`: when the statement was written. A statement without a timestamp takes the timestamp of the document, which changes with every update, so always set it. Do not change the timestamp of the other statements.
+- `vulnerability`: the ID that Grype reports.
+- `reason`: why the vulnerability does not affect NVSentinel, so that a reviewer can check it.
+- `package.name` and `package.version`: the package and the version that Grype reports. After an update to another version, the rule no longer matches, so remove it.
+- `package.location`: the file in which Grype found the package. When the same package is in more than one file, add a rule for each file in which NVSentinel is not affected.
 
-With each change, also increase `version` and set `timestamp` at the top of the document to the time of the change.
+Do not add a rule for a GitHub Action. When a workflow pins an action to a commit, with the version in a comment, Grype takes the version from the comment and does not record the commit. A rule would then apply to any commit with the same comment, including a malicious one. Update the action instead.
 
-Do not add a statement for a GitHub Action. When a workflow pins an action to a commit, with the version in a comment, Grype takes the version from the comment, and the package URL does not contain the commit. A statement would then apply to any commit with the same comment, including a malicious one. Update the action instead.
-
-To get the ID and the package URL of each finding, run Grype from the repository root:
+To get these values for each finding, run Grype from the repository root:
 
 ```shell
-grype dir:. --only-fixed -o json | jq -r '.matches[] | "\(.vulnerability.id) \(.artifact.purl)"'
+grype dir:. --only-fixed -o json \
+  | jq -r '.matches[] | "\(.vulnerability.id) \(.artifact.name) \(.artifact.version) \(.artifact.locations[0].path)"'
 ```
 
 ## Product Security Resources
