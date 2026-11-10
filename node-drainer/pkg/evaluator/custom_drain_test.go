@@ -93,6 +93,19 @@ func (c *countingCustomDrainClient) GetCRStatus(context.Context, string) (bool, 
 	return c.eventCRExists, c.eventCRComplete, nil
 }
 
+// decisionRecorder stands in for the reconciler write of a new drain decision.
+type decisionRecorder struct {
+	decisions []*protos.DrainDecision
+	err       error
+}
+
+// record keeps each decision and returns the configured error.
+func (r *decisionRecorder) record(_ context.Context, decision *protos.DrainDecision) error {
+	r.decisions = append(r.decisions, decision)
+
+	return r.err
+}
+
 // newNodeSelectorEvaluator builds an evaluator whose custom drain is scoped by nodeSelector.
 func newNodeSelectorEvaluator(t *testing.T, nodeSelector string,
 	nodes map[string]*v1.Node) (*NodeDrainEvaluator, *countingCustomDrainClient) {
@@ -159,18 +172,21 @@ func TestEvaluateEventWithDatabase_NodeSelector_RoutesEachNodeToItsDrainPath(t *
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			evaluator, client := newNodeSelectorEvaluator(t, "scheduler=slurm", nodes)
+			recorder := &decisionRecorder{}
 
-			result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent(tt.nodeName), nil, nil)
+			result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent(tt.nodeName), nil, nil,
+				recorder.record)
 			require.NoError(t, err)
-
-			require.True(t, result.RecordDrainDecision)
-			require.Equal(t, ActionWait, result.Action, "a new decision is stored before any drain action")
+			require.Len(t, recorder.decisions, 1)
+			require.Same(t, recorder.decisions[0], result.DrainDecision)
 
 			if tt.customDrain {
-				require.Equal(t, 1, client.existsCalls, "the read-only custom drain check runs before the store")
+				require.Equal(t, ActionCreateCR, result.Action)
+				require.Equal(t, 1, client.existsCalls, "one pass checks the custom drain CR once")
 				require.Equal(t, model.DrainMethodCustom, result.DrainDecision.GetMethod())
 				require.Equal(t, model.CustomDrainNodeSelectorRuleSet, result.DrainDecision.GetRuleSet())
 			} else {
+				require.Equal(t, ActionUpdateStatus, result.Action)
 				require.Zero(t, client.existsCalls)
 				require.Equal(t, model.DrainMethodBuiltIn, result.DrainDecision.GetMethod())
 				require.Empty(t, result.DrainDecision.GetRuleSet())
@@ -183,13 +199,15 @@ func TestEvaluateEventWithDatabase_NodeSelector_RoutesEachNodeToItsDrainPath(t *
 // keeps an unresolvable node from silently falling back to the wrong drain path.
 func TestEvaluateEventWithDatabase_NodeMissingFromCache_RetriesInsteadOfGuessing(t *testing.T) {
 	evaluator, client := newNodeSelectorEvaluator(t, "scheduler=slurm", nil)
+	recorder := &decisionRecorder{}
 
-	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent("absent-node"), nil, nil)
+	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent("absent-node"), nil, nil,
+		recorder.record)
 	require.NoError(t, err)
 	require.Equal(t, ActionWait, result.Action)
 	require.Equal(t, time.Minute, result.WaitDelay)
 	require.Nil(t, result.DrainDecision)
-	require.False(t, result.RecordDrainDecision)
+	require.Empty(t, recorder.decisions)
 	require.Zero(t, client.existsCalls)
 }
 
@@ -198,13 +216,15 @@ func TestEvaluateEventWithDatabase_NodeMissingFromCache_RetriesInsteadOfGuessing
 func TestEvaluateEventWithDatabase_NoNodeSelector_SendsEveryNodeToCustomDrain(t *testing.T) {
 	evaluator, client := newNodeSelectorEvaluator(t, "", nil)
 	evaluator.config.UserNamespaces = nil
+	recorder := &decisionRecorder{}
 
-	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent("absent-node"), nil, nil)
+	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent("absent-node"), nil, nil,
+		recorder.record)
 	require.NoError(t, err)
-	require.Equal(t, ActionWait, result.Action)
+	require.Equal(t, ActionCreateCR, result.Action)
 	require.Equal(t, model.DrainMethodCustom, result.DrainDecision.GetMethod())
 	require.Empty(t, result.DrainDecision.GetRuleSet())
-	require.True(t, result.RecordDrainDecision)
+	require.Len(t, recorder.decisions, 1)
 	require.Equal(t, 1, client.existsCalls)
 }
 
@@ -238,7 +258,7 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			namespaces:    []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
 			nodes:         slurmNodes,
 			event:         quarantinedEvent("slurm-node"),
-			wantAction:    ActionWait,
+			wantAction:    ActionCreateCR,
 			wantMethod:    model.DrainMethodCustom,
 			wantRuleSet:   model.CustomDrainNodeSelectorRuleSet,
 			wantRecord:    true,
@@ -250,7 +270,7 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			namespaces:    []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
 			nodes:         slurmNodes,
 			event:         quarantinedEvent("plain-node"),
-			wantAction:    ActionWait,
+			wantAction:    ActionUpdateStatus,
 			wantMethod:    model.DrainMethodBuiltIn,
 			wantRecord:    true,
 		},
@@ -258,7 +278,7 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			name:          "unscoped custom drain records custom with an empty rule set",
 			customEnabled: true,
 			event:         quarantinedEvent("any-node"),
-			wantAction:    ActionWait,
+			wantAction:    ActionCreateCR,
 			wantMethod:    model.DrainMethodCustom,
 			wantRecord:    true,
 		},
@@ -266,7 +286,7 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			name:       "custom drain off records built-in",
 			namespaces: []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
 			event:      quarantinedEvent("any-node"),
-			wantAction: ActionWait,
+			wantAction: ActionUpdateStatus,
 			wantMethod: model.DrainMethodBuiltIn,
 			wantRecord: true,
 		},
@@ -282,7 +302,7 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			customEnabled:  true,
 			eventCRDrained: true,
 			event:          quarantinedEvent("any-node"),
-			wantAction:     ActionWait,
+			wantAction:     ActionMarkAlreadyDrained,
 			wantMethod:     model.DrainMethodCustom,
 			wantRecord:     true,
 		},
@@ -398,10 +418,18 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 				before = counterValue(t, metrics.ProcessingErrors, tt.wantErrorType, tt.event.HealthEvent.NodeName)
 			}
 
-			result, err := evaluator.EvaluateEventWithDatabase(t.Context(), tt.event, nil, nil)
+			recorder := &decisionRecorder{}
+
+			result, err := evaluator.EvaluateEventWithDatabase(t.Context(), tt.event, nil, nil, recorder.record)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantAction, result.Action)
-			require.Equal(t, tt.wantRecord, result.RecordDrainDecision)
+
+			if tt.wantRecord {
+				require.Len(t, recorder.decisions, 1)
+				require.Same(t, recorder.decisions[0], result.DrainDecision)
+			} else {
+				require.Empty(t, recorder.decisions)
+			}
 
 			if tt.wantMethod == "" {
 				require.Nil(t, result.DrainDecision)
@@ -455,17 +483,18 @@ func TestEvaluateEventWithDatabase_AlreadyDrained_DoesNotRecordDecision(t *testi
 	event := quarantinedEvent(nodeName)
 	event.HealthEventStatus.NodeQuarantined = string(model.AlreadyQuarantined)
 
-	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, store)
+	recorder := &decisionRecorder{}
+
+	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, store, recorder.record)
 	require.NoError(t, err)
 	require.Equal(t, ActionMarkAlreadyDrained, result.Action)
 	require.Nil(t, result.DrainDecision)
-	require.False(t, result.RecordDrainDecision)
+	require.Empty(t, recorder.decisions)
 }
 
-// TestEvaluateEventWithDatabase_NewBuiltInDecision_ChecksNoPodsBeforeStore keeps the pod checks,
-// which can force-delete pods, out of the pass that chooses the method. Only the pass that
-// reads the stored decision runs them.
-func TestEvaluateEventWithDatabase_NewBuiltInDecision_ChecksNoPodsBeforeStore(t *testing.T) {
+// TestEvaluateEventWithDatabase_NewBuiltInDecision_StoresBeforePodChecks keeps the pod checks,
+// which can force-delete pods, behind the store of the decision in the same pass.
+func TestEvaluateEventWithDatabase_NewBuiltInDecision_StoresBeforePodChecks(t *testing.T) {
 	podInformers := &nodeSelectorInformers{}
 	cfg := config.TomlConfig{
 		SystemNamespaces: "kube-*",
@@ -474,24 +503,176 @@ func TestEvaluateEventWithDatabase_NewBuiltInDecision_ChecksNoPodsBeforeStore(t 
 	evaluator, err := NewNodeDrainEvaluator(cfg, podInformers, nil)
 	require.NoError(t, err)
 
-	event := quarantinedEvent("plain-node")
+	podChecksAtStore := -1
+	recordDecision := func(context.Context, *protos.DrainDecision) error {
+		podChecksAtStore = podInformers.podChecks
+		return nil
+	}
 
-	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, nil)
+	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent("plain-node"), nil, nil,
+		recordDecision)
 	require.NoError(t, err)
-	require.True(t, result.RecordDrainDecision)
-	require.Equal(t, ActionWait, result.Action)
-	require.Equal(t, model.DrainMethodBuiltIn, result.DrainDecision.GetMethod())
-	require.Zero(t, podInformers.podChecks, "no pod check may run before the decision is stored")
-
-	event.HealthEventStatus.DrainDecision = result.DrainDecision
-
-	result, err = evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, nil)
-	require.NoError(t, err)
-	require.False(t, result.RecordDrainDecision)
 	require.Equal(t, ActionUpdateStatus, result.Action)
-	require.Positive(t, podInformers.podChecks, "the stored decision runs the pod checks")
+	require.Equal(t, model.DrainMethodBuiltIn, result.DrainDecision.GetMethod())
+	require.Zero(t, podChecksAtStore, "no pod check may run before the decision is stored")
+	require.Positive(t, podInformers.podChecks, "the same pass runs the pod checks after the store")
 }
 
+// TestEvaluateEventWithDatabase_NewDecision_RecordsPartialDrainScope records the entity of a partial
+// drain as the scope, and no scope for a drain of the full node.
+func TestEvaluateEventWithDatabase_NewDecision_RecordsPartialDrainScope(t *testing.T) {
+	gpu := &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-123"}
+
+	tests := []struct {
+		name          string
+		customEnabled bool
+		partialDrain  bool
+		action        protos.RecommendedAction
+		wantScope     *protos.Entity
+	}{
+		{"built-in partial drain", false, true, protos.RecommendedAction_COMPONENT_RESET, gpu},
+		{"custom partial drain", true, true, protos.RecommendedAction_COMPONENT_RESET, gpu},
+		{"partial drain off drains the full node", false, false, protos.RecommendedAction_COMPONENT_RESET, nil},
+		{"other recommended action drains the full node", false, true, protos.RecommendedAction_RESTART_VM, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var namespaces []config.UserNamespace
+			if !tt.customEnabled {
+				namespaces = []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}}
+			}
+
+			evaluator, _ := newDecisionEvaluator(t, tt.customEnabled, "", namespaces, nil)
+			evaluator.config.PartialDrainEnabled = tt.partialDrain
+
+			event := quarantinedEvent("plain-node")
+			event.HealthEvent.RecommendedAction = tt.action
+			event.HealthEvent.EntitiesImpacted = []*protos.Entity{gpu}
+			recorder := &decisionRecorder{}
+
+			_, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, nil, recorder.record)
+			require.NoError(t, err)
+			require.Len(t, recorder.decisions, 1)
+
+			if tt.wantScope == nil {
+				require.Nil(t, recorder.decisions[0].GetScope())
+			} else {
+				require.Equal(t, tt.wantScope.GetEntityType(), recorder.decisions[0].GetScope().GetEntityType())
+				require.Equal(t, tt.wantScope.GetEntityValue(), recorder.decisions[0].GetScope().GetEntityValue())
+			}
+		})
+	}
+}
+
+// TestEvaluateEventWithDatabase_RecordedDecision_KeepsRecordedScope drains the recorded scope after
+// partialDrainEnabled changes, in both directions.
+func TestEvaluateEventWithDatabase_RecordedDecision_KeepsRecordedScope(t *testing.T) {
+	gpu := &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-123"}
+
+	tests := []struct {
+		name          string
+		recordedScope *protos.Entity
+		partialDrain  bool
+		entities      []*protos.Entity
+		wantEntity    *protos.Entity
+	}{
+		{
+			name:          "partial drain stays partial after partialDrainEnabled turns off",
+			recordedScope: gpu,
+			entities:      []*protos.Entity{gpu},
+			wantEntity:    gpu,
+		},
+		{
+			name:         "full drain stays full after partialDrainEnabled turns on",
+			partialDrain: true,
+			entities:     []*protos.Entity{gpu},
+		},
+		{
+			name:         "full drain does not fail when the entity no longer supports a partial drain",
+			partialDrain: true,
+			entities:     []*protos.Entity{{EntityType: "PCI", EntityValue: "0000:03:00"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evaluator, _ := newDecisionEvaluator(t, true, "", nil, nil)
+			evaluator.config.PartialDrainEnabled = tt.partialDrain
+
+			event := eventWithDrainDecision("plain-node", model.DrainMethodCustom, "")
+			event.HealthEventStatus.DrainDecision.Scope = tt.recordedScope
+			event.HealthEvent.RecommendedAction = protos.RecommendedAction_COMPONENT_RESET
+			event.HealthEvent.EntitiesImpacted = tt.entities
+			recorder := &decisionRecorder{}
+
+			result, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, nil, recorder.record)
+			require.NoError(t, err)
+			require.Equal(t, ActionCreateCR, result.Action)
+			require.Empty(t, recorder.decisions)
+
+			if tt.wantEntity == nil {
+				require.Nil(t, result.PartialDrainEntity)
+			} else {
+				require.Equal(t, tt.wantEntity.GetEntityType(), result.PartialDrainEntity.GetEntityType())
+				require.Equal(t, tt.wantEntity.GetEntityValue(), result.PartialDrainEntity.GetEntityValue())
+			}
+		})
+	}
+}
+
+// TestEvaluateEventWithDatabase_DecisionNotStored_ReturnsNoAction stops the pass when the new
+// decision cannot be stored, so neither drain path acts on an unrecorded decision.
+func TestEvaluateEventWithDatabase_DecisionNotStored_ReturnsNoAction(t *testing.T) {
+	writeErr := errors.New("injected write failure")
+
+	tests := []struct {
+		name          string
+		customEnabled bool
+		recorder      *decisionRecorder
+		wantCause     error
+	}{
+		{name: "built-in write failure", recorder: &decisionRecorder{err: writeErr}, wantCause: writeErr},
+		{
+			name:          "custom write failure",
+			customEnabled: true,
+			recorder:      &decisionRecorder{err: writeErr},
+			wantCause:     writeErr,
+		},
+		{name: "no recorder"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var namespaces []config.UserNamespace
+			if !tt.customEnabled {
+				namespaces = []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}}
+			}
+
+			evaluator, _ := newDecisionEvaluator(t, tt.customEnabled, "", namespaces, nil)
+			podInformers := evaluator.informers.(*nodeSelectorInformers)
+
+			var recordDecision RecordDrainDecisionFunc
+			if tt.recorder != nil {
+				recordDecision = tt.recorder.record
+			}
+
+			result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent("plain-node"), nil, nil,
+				recordDecision)
+			require.ErrorIs(t, err, ErrDrainDecisionNotRecorded)
+
+			if tt.wantCause != nil {
+				require.ErrorIs(t, err, tt.wantCause)
+			}
+
+			require.Nil(t, result)
+			require.Zero(t, podInformers.podChecks)
+		})
+	}
+}
+
+// newDecisionEvaluator builds an evaluator with custom drain on or off. The returned client is nil
+// when custom drain is off.
 func newDecisionEvaluator(t *testing.T, customEnabled bool, nodeSelector string,
 	namespaces []config.UserNamespace, nodes map[string]*v1.Node) (*NodeDrainEvaluator, *countingCustomDrainClient) {
 	t.Helper()
@@ -534,7 +715,7 @@ func eventWithDrainDecision(nodeName, method, ruleSet string) model.HealthEventW
 	return event
 }
 
-// eventWithStoppedDrainDecision carries a stop, which has no method, as a newer version writes it.
+// eventWithStoppedDrainDecision carries a stop, which has no method.
 func eventWithStoppedDrainDecision(nodeName string) model.HealthEventWithStatus {
 	event := quarantinedEvent(nodeName)
 	event.HealthEventStatus.DrainDecision = &protos.DrainDecision{Stopped: true}

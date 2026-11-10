@@ -372,7 +372,8 @@ func CancelledHealthEventFaultRemediated(
 	return strings.Contains(stdout, "FAULT_REMEDIATED_TRUE")
 }
 
-// HealthEventDrainMethod reads drainDecision.method for a succeeded health event.
+// HealthEventDrainMethod reads drainDecision.method for the newest succeeded health event that
+// matches. Test nodes are reused, so an older event can carry the same message.
 // The event document is stored only in the datastore, so the check reads MongoDB or PostgreSQL.
 // ok is false until that document is visible.
 func HealthEventDrainMethod(
@@ -393,6 +394,7 @@ func HealthEventDrainMethod(
 	return "", false
 }
 
+// mongoDrainMethod reads drainDecision.method of the newest matching event from MongoDB.
 func mongoDrainMethod(
 	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client,
 	mongoPod, nodeName, message string,
@@ -401,11 +403,11 @@ func mongoDrainMethod(
 
 	js := fmt.Sprintf(`
 		db = db.getSiblingDB("%s");
-		const doc = db.HealthEvents.findOne({
+		const doc = db.HealthEvents.find({
 			"healthevent.nodename": %q,
 			"healthevent.message": %q,
 			"healtheventstatus.userpodsevictionstatus.status": "Succeeded"
-		});
+		}).sort({ createdAt: -1 }).limit(1).toArray()[0];
 		if (doc && doc.healtheventstatus && doc.healtheventstatus.draindecision &&
 			doc.healtheventstatus.draindecision.method) {
 			print(doc.healtheventstatus.draindecision.method);
@@ -424,6 +426,7 @@ func mongoDrainMethod(
 	return method, true
 }
 
+// postgresDrainMethod reads drainDecision.method of the newest matching event from PostgreSQL.
 func postgresDrainMethod(
 	ctx context.Context, t *testing.T, restConfig *rest.Config, podName, nodeName, message string,
 ) (string, bool) {
@@ -455,6 +458,8 @@ func postgresDrainMethod(
 	return method, true
 }
 
+// postgresPrimaryPodName returns the running PostgreSQL primary pod in the NVSentinel namespace.
+// found is false when the cluster uses MongoDB instead.
 func postgresPrimaryPodName(ctx context.Context, t *testing.T, client klient.Client) (string, bool) {
 	t.Helper()
 
@@ -473,6 +478,7 @@ func postgresPrimaryPodName(ctx context.Context, t *testing.T, client klient.Cli
 	return "", false
 }
 
+// sqlLiteral escapes single quotes so the value can sit inside a quoted SQL string.
 func sqlLiteral(value string) string {
 	return strings.ReplaceAll(value, "'", "''")
 }

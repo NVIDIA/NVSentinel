@@ -249,7 +249,10 @@ well: the unmatched nodes would reach the built-in eviction path with no namespa
 act on, and be marked drained while their pods keep running. An invalid selector is also rejected at
 startup.
 
-node-drainer chooses the drain method once for each health event and records it on the event. It
+node-drainer chooses the drain method once for each health event and records it on the event. For
+a partial drain, the record also holds the entity that is drained, for example a GPU UUID. Later
+passes drain the recorded entity, so a change to `partialDrainEnabled` during the drain does not
+change what is drained. It
 stores the record before it reads, evicts or deletes a pod, and before it creates a custom drain CR.
 Every drain action then follows the stored record. If two node-drainer passes choose at the same
 time, only the first record is kept, and the other pass follows it. A label change during the drain
@@ -259,8 +262,8 @@ record. The first pass after the upgrade chooses the method again and records it
 
 If the method is `Custom` and the CR of another event has already drained the node, node-drainer
 marks the event drained and records no method. If the CR of the event itself completed before a
-method was recorded, as for a drain that an older node-drainer started, node-drainer records
-`Custom`, then marks the event drained.
+method was recorded, as for a drain that started before node-drainer recorded decisions,
+node-drainer records `Custom`, then marks the event drained.
 
 A node the cache cannot resolve is retried rather than assigned a path. Only the label keys the
 selector references are retained in the node cache.
@@ -268,13 +271,16 @@ selector references are retained in the node cache.
 node-drainer keeps a recorded method when the current configuration cannot carry it out. It logs
 an error, increments `node_drainer_processing_errors_total`, and retries:
 
-- The record says `Custom` and custom drain is now off. Turn custom drain back on, or end the quarantine.
+- The record says `Custom` and custom drain is now off. Turn custom drain back on, or end the
+  quarantine and delete the DrainRequest CR of the event. With custom drain off, node-drainer does
+  not delete that CR, so the plugin can keep draining the node. The CR is named
+  `drain-<node name>-<event ID>` and is in the custom drain namespace.
 - The record says `BuiltIn`, custom drain is on with no `nodeSelector`, and both `userNamespaces`
   and `podDrainPolicies` are empty. Set the `nodeSelector` and one of those lists again, or end the
   quarantine. Empty lists would mark the node drained while its pods keep running. With custom drain
   off, empty lists act as they do for an event with no record.
-- The record has no method, or a method this version does not know. A newer node-drainer can write
-  such a record, for example to stop a drain. node-drainer does not choose a method in its place.
+- The record has no method, or a method other than `BuiltIn` or `Custom`. A stop (`stopped: true`)
+  is one example of a record with no method. node-drainer does not choose a method in its place.
 
 ## User Namespaces
 

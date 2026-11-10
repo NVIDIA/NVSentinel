@@ -423,7 +423,7 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 	r.markEventInProgress(ctx, eventID, nodeName, healthEventWithStatus.CreatedAt)
 
-	actionResult, err := r.evaluateNextAction(ctx, healthEventWithStatus, event, database, healthEventStore, nodeName)
+	actionResult, err := r.evaluateEvent(ctx, healthEventWithStatus, event, database, healthEventStore, nodeName)
 	if err != nil {
 		return err
 	}
@@ -449,24 +449,30 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 	return err
 }
 
-// evaluateNextAction returns the drain action for this pass. When this pass chooses a new drain
-// decision, the decision is stored first and the action comes from the stored decision.
-func (r *Reconciler) evaluateNextAction(ctx context.Context, healthEvent model.HealthEventWithStatus,
+// evaluateEvent returns the drain action for this pass. When the event has no drain decision,
+// the evaluator stores the one it chooses through recordNewDrainDecision before it returns an
+// action, so nothing drains before the store.
+func (r *Reconciler) evaluateEvent(ctx context.Context, healthEvent model.HealthEventWithStatus,
 	event datastore.Event, database queue.DataStore, healthEventStore datastore.HealthEventStore, nodeName string,
 ) (*evaluator.DrainActionResult, error) {
-	actionResult, err := r.evaluateEvent(ctx, healthEvent, database, healthEventStore, nodeName)
-	if err != nil || !actionResult.RecordDrainDecision {
-		return actionResult, err
+	recordDecision := func(ctx context.Context, decision *protos.DrainDecision) error {
+		if err := r.recordNewDrainDecision(ctx, decision, event, database, nodeName); err != nil {
+			return err
+		}
+
+		healthEvent.HealthEventStatus.DrainDecision = decision
+
+		return nil
 	}
 
-	return r.recordDecisionAndEvaluate(ctx, actionResult, healthEvent, event, database, healthEventStore, nodeName)
-}
+	actionResult, err := r.evaluator.EvaluateEventWithDatabase(ctx, healthEvent, database, healthEventStore,
+		recordDecision)
+	if err == nil {
+		return actionResult, nil
+	}
 
-func (r *Reconciler) evaluateEvent(ctx context.Context, healthEvent model.HealthEventWithStatus,
-	database queue.DataStore, healthEventStore datastore.HealthEventStore, nodeName string,
-) (*evaluator.DrainActionResult, error) {
-	actionResult, err := r.evaluator.EvaluateEventWithDatabase(ctx, healthEvent, database, healthEventStore)
-	if err != nil {
+	// recordNewDrainDecision counts its own failures, and a lost race is a requeue, not an error.
+	if !errors.Is(err, evaluator.ErrDrainDecisionNotRecorded) {
 		_, span := tracing.StartSpan(ctx, "node_drainer.evaluate_event")
 		defer span.End()
 
@@ -476,45 +482,21 @@ func (r *Reconciler) evaluateEvent(ctx context.Context, healthEvent model.Health
 			attribute.String("node_drainer.error.type", "evaluate_event_error"),
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
-
-		return nil, fmt.Errorf("failed to evaluate event: %w", err)
 	}
 
-	return actionResult, nil
+	return nil, fmt.Errorf("failed to evaluate event: %w", err)
 }
 
-// recordDecisionAndEvaluate stores a new drain decision, then evaluates the event again from it.
-// Every drain action therefore comes from a stored decision, and nothing drains before the store.
-func (r *Reconciler) recordDecisionAndEvaluate(ctx context.Context, decisionResult *evaluator.DrainActionResult,
-	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore,
-	healthEventStore datastore.HealthEventStore, nodeName string) (*evaluator.DrainActionResult, error) {
-	if err := r.recordNewDrainDecision(ctx, decisionResult, event, database, nodeName); err != nil {
-		return nil, err
-	}
-
-	healthEvent.HealthEventStatus.DrainDecision = decisionResult.DrainDecision
-
-	actionResult, err := r.evaluateEvent(ctx, healthEvent, database, healthEventStore, nodeName)
-	if err != nil {
-		return nil, err
-	}
-
-	if actionResult.RecordDrainDecision {
-		return nil, fmt.Errorf("drain decision for node %s was stored but is not used by the evaluator", nodeName)
-	}
-
-	return actionResult, nil
-}
-
-// recordNewDrainDecision stores the method and rule set. Scope is left unset.
+// recordNewDrainDecision stores the method, the rule set, and the scope of a partial drain.
+// A drain of the full node stores no scope.
 // A failed write returns an error so the queue retries and nothing is drained yet.
 // The update names only draindecision, so a remediation decision on the same event stays.
 // The write matches only while draindecision is unset. During a rolling update two node-drainer
 // pods can decide the same event with different config; the one that loses requeues and follows
 // the stored decision on its next pass instead of overwriting it.
-func (r *Reconciler) recordNewDrainDecision(ctx context.Context, action *evaluator.DrainActionResult,
+func (r *Reconciler) recordNewDrainDecision(ctx context.Context, decision *protos.DrainDecision,
 	event datastore.Event, database queue.DataStore, nodeName string) error {
-	if action.DrainDecision.GetMethod() == "" {
+	if decision.GetMethod() == "" {
 		return fmt.Errorf("drain decision for node %s has no method to record", nodeName)
 	}
 
@@ -532,11 +514,18 @@ func (r *Reconciler) recordNewDrainDecision(ctx context.Context, action *evaluat
 		return fmt.Errorf("failed to extract document ID for drain decision: %w", err)
 	}
 
-	decision := map[string]any{
-		"method": action.DrainDecision.GetMethod(),
+	stored := map[string]any{
+		"method": decision.GetMethod(),
 	}
-	if ruleSet := action.DrainDecision.GetRuleSet(); ruleSet != "" {
-		decision["ruleset"] = ruleSet
+	if ruleSet := decision.GetRuleSet(); ruleSet != "" {
+		stored["ruleset"] = ruleSet
+	}
+
+	if scope := decision.GetScope(); scope != nil {
+		stored["scope"] = map[string]any{
+			"entitytype":  scope.GetEntityType(),
+			"entityvalue": scope.GetEntityValue(),
+		}
 	}
 
 	filter := map[string]any{
@@ -544,7 +533,7 @@ func (r *Reconciler) recordNewDrainDecision(ctx context.Context, action *evaluat
 		drainDecisionKey: nil,
 	}
 	update := map[string]any{opSet: map[string]any{
-		drainDecisionKey: decision,
+		drainDecisionKey: stored,
 	}}
 
 	result, err := database.UpdateDocument(ctx, filter, update)
@@ -562,8 +551,8 @@ func (r *Reconciler) recordNewDrainDecision(ctx context.Context, action *evaluat
 	if result == nil || result.MatchedCount == 0 {
 		slog.WarnContext(ctx, "Drain decision already recorded by another writer, requeueing to follow it",
 			"node", nodeName,
-			"method", action.DrainDecision.GetMethod(),
-			"ruleSet", action.DrainDecision.GetRuleSet())
+			"method", decision.GetMethod(),
+			"ruleSet", decision.GetRuleSet())
 		span.SetAttributes(attribute.Bool("node_drainer.drain.decision_already_recorded", true))
 
 		return fmt.Errorf("drain decision for node %s already recorded, requeueing to follow it", nodeName)
@@ -571,12 +560,14 @@ func (r *Reconciler) recordNewDrainDecision(ctx context.Context, action *evaluat
 
 	slog.InfoContext(ctx, "Recorded drain decision",
 		"node", nodeName,
-		"method", action.DrainDecision.GetMethod(),
-		"ruleSet", action.DrainDecision.GetRuleSet())
+		"method", decision.GetMethod(),
+		"ruleSet", decision.GetRuleSet(),
+		"scopeEntityType", decision.GetScope().GetEntityType(),
+		"scopeEntityValue", decision.GetScope().GetEntityValue())
 
 	span.SetAttributes(
-		attribute.String("node_drainer.drain.method", action.DrainDecision.GetMethod()),
-		attribute.String("node_drainer.drain.ruleset", action.DrainDecision.GetRuleSet()),
+		attribute.String("node_drainer.drain.method", decision.GetMethod()),
+		attribute.String("node_drainer.drain.ruleset", decision.GetRuleSet()),
 	)
 
 	return nil

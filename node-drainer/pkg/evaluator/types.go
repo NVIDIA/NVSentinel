@@ -16,6 +16,7 @@ package evaluator
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -31,8 +32,15 @@ import (
 type DrainEvaluator interface {
 	// Database-agnostic method
 	EvaluateEventWithDatabase(context.Context, model.HealthEventWithStatus, queue.DataStore,
-		datastore.HealthEventStore) (*DrainActionResult, error)
+		datastore.HealthEventStore, RecordDrainDecisionFunc) (*DrainActionResult, error)
 }
+
+// RecordDrainDecisionFunc stores the drain decision that a pass chooses for an event with no
+// record. The evaluator calls it before any drain action and returns no action when it fails.
+type RecordDrainDecisionFunc func(context.Context, *protos.DrainDecision) error
+
+// ErrDrainDecisionNotRecorded wraps every failure to store a new drain decision.
+var ErrDrainDecisionNotRecorded = errors.New("drain decision not recorded")
 
 type NodeDrainEvaluator struct {
 	config            config.TomlConfig
@@ -80,11 +88,9 @@ type DrainActionResult struct {
 	Status             model.Status  // For ActionUpdateStatus and ActionCancel
 	PartialDrainEntity *protos.Entity
 	PodFilter          informers.PodFilter
-	// DrainDecision is the method for this pass. RecordDrainDecision is true only when
-	// this pass chose it. That result carries no drain action: the reconciler stores the
-	// decision, then evaluates the event again from the stored decision.
-	DrainDecision       *protos.DrainDecision
-	RecordDrainDecision bool
+	// DrainDecision is the stored method that this action follows. It is nil when no method
+	// applies, as for a skip or a wait for the node cache.
+	DrainDecision *protos.DrainDecision
 	// drainedByOtherCR marks an AlreadyDrained result that comes from the CR of another event.
 	// This event made no drain decision, so it gets no record. A result from the CR of this
 	// event still gets one.
