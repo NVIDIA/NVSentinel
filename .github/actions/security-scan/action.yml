@@ -1,0 +1,52 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'Vulnerability Scan'
+description: 'Scan a path with Grype and upload the findings to the GitHub Security tab'
+
+inputs:
+  path:
+    description: 'Path to scan'
+    required: false
+    default: '.'
+  # Every finding is reported. This only sets the alert level: findings at or above the cutoff are
+  # errors and the others are warnings.
+  severity-cutoff:
+    description: 'Lowest severity reported as an error: negligible, low, medium, high or critical'
+    required: false
+    default: 'medium'
+  category:
+    description: 'Code scanning category, which keeps these alerts apart from other scans'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    # Findings do not fail the step. They are reported as code scanning alerts instead.
+    # A scanner error, for example a failed database download, does fail it.
+    - name: Run Grype
+      id: scan
+      uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
+      with:
+        path: ${{ inputs.path }}
+        severity-cutoff: ${{ inputs.severity-cutoff }}
+        output-format: sarif
+        only-fixed: true
+        fail-build: false
+
+    - name: Upload findings to the Security tab
+      uses: github/codeql-action/upload-sarif@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif }}
+        category: ${{ inputs.category }}
