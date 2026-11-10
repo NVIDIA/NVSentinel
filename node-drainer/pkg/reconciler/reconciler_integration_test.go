@@ -1079,7 +1079,11 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	require.NoError(t, err)
 
 	createPod(setup.ctx, t, setup.client, "completion-test", "running-pod", nodeName, v1.PodRunning, nil, nil, nil)
-	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
+	// A known past creation time rather than "now", so the assertion below can be exact: a
+	// poll-time value would also be positive, but `time() - start` could then never cross an
+	// elapsed-time threshold and the alert would not fire.
+	eventCreatedAt := time.Now().Add(-2 * time.Hour)
+	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName, eventCreatedAt)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
 
@@ -1089,8 +1093,8 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	// waiting rather than stuck. It must carry the event's creation time while the pod runs.
 	require.Eventually(t, func() bool {
 		return gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionStart, nodeName) &&
-			getGaugeVecValue(t, metrics.NodeDrainAwaitingCompletionStart, nodeName) > 0
-	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion timestamp should be set while a pod is still running")
+			getGaugeVecValue(t, metrics.NodeDrainAwaitingCompletionStart, nodeName) == float64(eventCreatedAt.Unix())
+	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion timestamp should carry the event's creation time while a pod is still running")
 
 	updatedPod, err := setup.client.CoreV1().Pods("completion-test").Get(setup.ctx, "running-pod", metav1.GetOptions{})
 	require.NoError(t, err)
@@ -1711,12 +1715,17 @@ func createHealthEvent(opts healthEventOptions) map[string]any {
 }
 
 func enqueueHealthEvent(ctx context.Context, t *testing.T, queueMgr queue.EventQueueManager,
-	collection *MockMongoCollection, healthEventStore datastore.HealthEventStore, nodeName string) {
+	collection *MockMongoCollection, healthEventStore datastore.HealthEventStore, nodeName string,
+	createdAt ...time.Time) {
 	t.Helper()
-	event := createHealthEvent(healthEventOptions{
+	opts := healthEventOptions{
 		nodeName:        nodeName,
 		nodeQuarantined: model.Quarantined,
-	})
+	}
+	if len(createdAt) > 0 {
+		opts.createdAt = createdAt[0]
+	}
+	event := createHealthEvent(opts)
 	// Store event in collection so the worker can fetch it by _id via lazy fetch.
 	if id, ok := event["_id"]; ok {
 		collection.StoreDocument(fmt.Sprintf("%v", id), event)
