@@ -25,6 +25,35 @@ NVIDIA offers acknowledgement for externally reported security issues under our 
 
 NVSentinel does not currently maintain long-term-support branches. Security and bug fixes are applied to the `main` branch and released as part of the latest tagged release; only the most recent release receives fixes. See [RELEASE.md](RELEASE.md) for the release process, including the emergency hotfix procedure used for urgent fixes.
 
+## Vulnerability Scanning
+
+The security scans check the dependencies of NVSentinel with [Grype](https://github.com/anchore/grype), and report each vulnerability that has a fix as a code scanning alert in the Security tab of the repository.
+
+Grype reads its configuration from [`.grype.yaml`](.grype.yaml). The file excludes the paths that are not part of the product, such as `demos/`, `tilt/` and `tests/`, and loads [`.openvex.json`](.openvex.json), the list of vulnerabilities that were checked and do not affect NVSentinel.
+
+### Handle a Reported Vulnerability
+
+- If the vulnerability affects NVSentinel, update the dependency or the base image that contains it.
+- If it does not affect NVSentinel, open a pull request that adds a statement to `.openvex.json`. A maintainer reviews the reason in the pull request. After the merge, Grype no longer reports the vulnerability, and its alert closes at the next scan.
+
+### Add a Statement to `.openvex.json`
+
+`.openvex.json` is an [OpenVEX](https://openvex.dev) document. The statement that is already in the file is an example. Each statement has these fields:
+
+- `vulnerability.name`: the ID that Grype reports, for example `GHSA-mrrh-fwg8-r2c3`. Put the other IDs of the same vulnerability, such as its CVE, in `aliases`.
+- `products`: the package URL that Grype reports for the vulnerable package. The statement applies to that version of the package wherever Grype finds it. After an update to another version, the statement no longer matches, so remove it.
+- `status`: `not_affected`.
+- `justification`: one of the [OpenVEX justifications](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md#status-justifications), for example `vulnerable_code_not_present` or `vulnerable_code_not_in_execute_path`.
+- `impact_statement`: why the vulnerability does not affect NVSentinel, so that a reviewer and a user can check the reason.
+
+Also increase `version` and update `timestamp` at the top of the document.
+
+To get the ID and the package URL of each finding, run Grype from the repository root:
+
+```shell
+grype dir:. --only-fixed -o json | jq -r '.matches[] | "\(.vulnerability.id) \(.artifact.purl)"'
+```
+
 ## Product Security Resources
 
 For all security-related concerns: https://www.nvidia.com/en-us/security
