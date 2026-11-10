@@ -48,7 +48,7 @@ ignore:
     reason: NVSentinel imports the module only for its parser, and the vulnerability is in its HTTP server.
     package:
       name: example.com/module
-      version: v1.2.3
+      version: "v1.2.3"
       location: /store-client/go.mod
 ```
 
@@ -56,7 +56,7 @@ Each rule has these fields:
 
 - `vulnerability`: the ID that Grype reports.
 - `reason`: why the vulnerability does not affect NVSentinel, so that a reviewer can check it.
-- `package.name` and `package.version`: the package and the version that Grype reports. After an update to another version, the rule no longer matches, so remove it.
+- `package.name` and `package.version`: the package and the version that Grype reports. After an update to another version, the rule no longer matches, so remove it. Put the version in quotes. Without quotes, YAML reads a version such as `2.20` as the number 2.2, and the rule does not match.
 - `package.location`: the file in which Grype found the package. When the same package is in more than one file, add a rule for each file in which NVSentinel is not affected.
 
 Do not add a rule for a GitHub Action. When a workflow pins an action to a commit, with the version in a comment, Grype takes the version from the comment and does not record the commit. A rule would then apply to any commit with the same comment, including a malicious one. Update the action instead.
