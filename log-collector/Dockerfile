@@ -20,7 +20,7 @@
 FROM public.ecr.aws/docker/library/ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG KUBECTL_VERSION=v1.34.8
+ARG KUBECTL_VERSION=v1.35.10
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
