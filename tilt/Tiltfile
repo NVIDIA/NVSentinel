@@ -83,6 +83,7 @@ helm_resource(
     resource_deps=['prometheus-community', 'remove-pending-helm-releases'],
     flags=[
         '--create-namespace',
+        '--version=92.22.0',
         '--set=prometheus.enabled=true',
         '--set=alertmanager.enabled=false',
         '--set=grafana.enabled=false',
