@@ -236,3 +236,15 @@ func TestRunRejectsObjectsWithoutIdentity(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "needs apiVersion, kind and metadata.name")
 }
+
+func TestRunRejectsDuplicateObjects(t *testing.T) {
+	node := map[string]any{"apiVersion": "v1", "kind": "Node", "metadata": map[string]any{"name": "node-a"}}
+	suite := &Suite{
+		Objects: []map[string]any{node, node},
+		Cases:   []Case{{Name: "c", Policy: "pod-on-cordoned-node", Resource: map[string]any{"apiVersion": "v1", "kind": "Pod"}}},
+	}
+
+	_, err := Run(context.Background(), podPolicies(), suite)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "object 1 duplicates object 0 (v1 Node /node-a)")
+}

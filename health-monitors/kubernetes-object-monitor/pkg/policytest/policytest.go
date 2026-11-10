@@ -103,12 +103,26 @@ func LoadSuite(path string) (*Suite, error) {
 // Run evaluates every case against the policies with policy.Evaluator.Evaluate,
 // the same call the monitor's reconciler makes.
 func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, error) {
+	type objectKey struct {
+		apiVersion, kind, namespace, name string
+	}
+
 	objects := make([]client.Object, 0, len(s.Objects))
+	seen := make(map[objectKey]int, len(s.Objects))
+
 	for i, o := range s.Objects {
 		u := &unstructured.Unstructured{Object: o}
 		if u.GetAPIVersion() == "" || u.GetKind() == "" || u.GetName() == "" {
 			return nil, fmt.Errorf("object %d needs apiVersion, kind and metadata.name", i)
 		}
+
+		key := objectKey{u.GetAPIVersion(), u.GetKind(), u.GetNamespace(), u.GetName()}
+		if first, ok := seen[key]; ok {
+			return nil, fmt.Errorf("object %d duplicates object %d (%s %s %s/%s)",
+				i, first, key.apiVersion, key.kind, key.namespace, key.name)
+		}
+
+		seen[key] = i
 
 		objects = append(objects, u)
 	}
