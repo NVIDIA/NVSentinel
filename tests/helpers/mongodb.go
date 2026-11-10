@@ -371,3 +371,108 @@ func CancelledHealthEventFaultRemediated(
 
 	return strings.Contains(stdout, "FAULT_REMEDIATED_TRUE")
 }
+
+// HealthEventDrainMethod reads drainDecision.method for a succeeded health event.
+// The event document is stored only in the datastore, so the check reads MongoDB or PostgreSQL.
+// ok is false until that document is visible.
+func HealthEventDrainMethod(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client, nodeName, message string,
+) (string, bool) {
+	t.Helper()
+
+	if podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client); found {
+		return mongoDrainMethod(ctx, t, restConfig, client, podName, nodeName, message)
+	}
+
+	if podName, found := postgresPrimaryPodName(ctx, t, client); found {
+		return postgresDrainMethod(ctx, t, restConfig, podName, nodeName, message)
+	}
+
+	t.Logf("No MongoDB or PostgreSQL pod found for drain decision lookup")
+
+	return "", false
+}
+
+func mongoDrainMethod(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client,
+	mongoPod, nodeName, message string,
+) (string, bool) {
+	t.Helper()
+
+	js := fmt.Sprintf(`
+		db = db.getSiblingDB("%s");
+		const doc = db.HealthEvents.findOne({
+			"healthevent.nodename": %q,
+			"healthevent.message": %q,
+			"healtheventstatus.userpodsevictionstatus.status": "Succeeded"
+		});
+		if (doc && doc.healtheventstatus && doc.healtheventstatus.draindecision &&
+			doc.healtheventstatus.draindecision.method) {
+			print(doc.healtheventstatus.draindecision.method);
+		} else {
+			print("NOT_READY");
+		}
+	`, MongoDBDatabase, nodeName, message)
+
+	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
+	method := strings.TrimSpace(stdout)
+
+	if method == "" || strings.Contains(method, "NOT_READY") {
+		return "", false
+	}
+
+	return method, true
+}
+
+func postgresDrainMethod(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, podName, nodeName, message string,
+) (string, bool) {
+	t.Helper()
+
+	query := fmt.Sprintf(`
+		SELECT COALESCE(document #>> '{healtheventstatus,draindecision,method}', '')
+		FROM health_events
+		WHERE node_name = '%s'
+		  AND document #>> '{healthevent,message}' = '%s'
+		  AND document #>> '{healtheventstatus,userpodsevictionstatus,status}' = 'Succeeded'
+		ORDER BY created_at DESC
+		LIMIT 1;
+	`, sqlLiteral(nodeName), sqlLiteral(message))
+
+	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
+		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
+	if err != nil {
+		t.Logf("PostgreSQL drain decision lookup failed: %v stderr=%s", err, stderr)
+
+		return "", false
+	}
+
+	method := strings.TrimSpace(stdout)
+	if method == "" {
+		return "", false
+	}
+
+	return method, true
+}
+
+func postgresPrimaryPodName(ctx context.Context, t *testing.T, client klient.Client) (string, bool) {
+	t.Helper()
+
+	pods := &v1.PodList{}
+	err := client.Resources().List(ctx, pods, func(opts *metav1.ListOptions) {
+		opts.LabelSelector = "app.kubernetes.io/name=postgresql,app.kubernetes.io/component=primary"
+	})
+	require.NoError(t, err, "failed to list PostgreSQL pods")
+
+	for _, pod := range pods.Items {
+		if pod.Namespace == NVSentinelNamespace && pod.Status.Phase == v1.PodRunning {
+			return pod.Name, true
+		}
+	}
+
+	return "", false
+}
+
+func sqlLiteral(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}

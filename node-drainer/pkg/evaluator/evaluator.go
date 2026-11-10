@@ -30,6 +30,7 @@ import (
 	annotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -155,19 +156,133 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 		return result, nil
 	}
 
-	useCustomDrain, retry := e.shouldUseCustomDrain(ctx, nodeName)
+	decision, recordDecision, retry := e.selectDrainMethod(ctx, healthEvent)
 	if retry != nil {
 		return retry, nil
 	}
 
-	if useCustomDrain {
-		r, err := e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
-		return r, err
+	if recordDecision {
+		return e.newDrainDecisionAction(ctx, decision, healthEvent, partialDrainEntity)
 	}
 
-	r, err := e.evaluateUserNamespaceActions(ctx, healthEvent, partialDrainEntity)
+	return e.evaluateRecordedDrainMethod(ctx, decision, healthEvent, partialDrainEntity)
+}
 
-	return r, err
+// selectDrainMethod chooses BuiltIn or Custom for this event.
+// A method already stored on the event is kept, so a label change during the drain
+// cannot switch it. The bool is true when this pass chose the method and it still
+// needs to be stored. The wait result means "not yet": the node is missing, or a
+// stored method cannot be carried out with the current configuration.
+func (e *NodeDrainEvaluator) selectDrainMethod(ctx context.Context, healthEvent model.HealthEventWithStatus,
+) (*protos.DrainDecision, bool, *DrainActionResult) {
+	nodeName := healthEvent.HealthEvent.NodeName
+
+	// Any stored decision counts, including one with no method, such as a stop that a
+	// newer node-drainer wrote. Treating it as absent would drain an event that must not drain.
+	if recorded := healthEvent.HealthEventStatus.GetDrainDecision(); recorded != nil {
+		if wait := e.guardRecordedDrainMethod(ctx, nodeName, recorded); wait != nil {
+			return nil, false, wait
+		}
+
+		return recorded, false, nil
+	}
+
+	useCustomDrain, retry := e.shouldUseCustomDrain(ctx, nodeName)
+	if retry != nil {
+		return nil, false, retry
+	}
+
+	decision := &protos.DrainDecision{Method: model.DrainMethodBuiltIn}
+	if useCustomDrain {
+		decision.Method = model.DrainMethodCustom
+		if e.customDrainNodes.IsScoped() {
+			decision.RuleSet = model.CustomDrainNodeSelectorRuleSet
+		}
+	}
+
+	return decision, true, nil
+}
+
+// guardRecordedDrainMethod stops a pass that would drain against a stored method
+// the current configuration cannot perform. It does not choose a different method.
+func (e *NodeDrainEvaluator) guardRecordedDrainMethod(ctx context.Context, nodeName string,
+	recorded *protos.DrainDecision) *DrainActionResult {
+	switch recorded.GetMethod() {
+	case model.DrainMethodCustom:
+		if e.config.CustomDrain.Enabled && e.customDrainClient != nil {
+			return nil
+		}
+
+		e.countRecordedDrainGuard(ctx, nodeName, recorded, metrics.ErrorTypeRecordedCustomDrainUnavailable,
+			"Recorded custom drain cannot run because custom drain is unavailable")
+	case model.DrainMethodBuiltIn:
+		// With custom drain off, empty lists act as they do for an event with no record.
+		// With custom drain on and unscoped, validation requires empty lists, so the drain
+		// would complete without evicting any pod.
+		if !e.config.CustomDrain.Enabled || len(e.config.UserNamespaces) > 0 || len(e.config.PodDrainPolicies) > 0 {
+			return nil
+		}
+
+		e.countRecordedDrainGuard(ctx, nodeName, recorded, metrics.ErrorTypeRecordedBuiltInNoPodPolicies,
+			"Recorded built-in drain has no userNamespaces and no podDrainPolicies")
+	default:
+		e.countRecordedDrainGuard(ctx, nodeName, recorded, metrics.ErrorTypeRecordedDrainMethodUnknown,
+			"Recorded drain method is not supported")
+	}
+
+	return &DrainActionResult{Action: ActionWait, WaitDelay: time.Minute}
+}
+
+func (e *NodeDrainEvaluator) countRecordedDrainGuard(ctx context.Context, nodeName string,
+	recorded *protos.DrainDecision, errorType, message string) {
+	slog.ErrorContext(ctx, message,
+		"node", nodeName,
+		"method", recorded.GetMethod(),
+		"stopped", recorded.GetStopped())
+
+	metrics.ProcessingErrors.WithLabelValues(errorType, nodeName).Inc()
+}
+
+// newDrainDecisionAction returns a decision for the reconciler to store before anything drains.
+// The built-in checks can force-delete pods past their deadline, so they run only after the store.
+// The custom drain checks only read; they run first so that an event whose node the CR of another
+// event has already drained is marked AlreadyDrained and gets no decision. The completed CR of
+// this event, which an older version can leave with no record, still gets the Custom decision.
+func (e *NodeDrainEvaluator) newDrainDecisionAction(ctx context.Context, decision *protos.DrainDecision,
+	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
+	if decision.GetMethod() == model.DrainMethodCustom {
+		action, err := e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
+		if err != nil || action == nil || action.drainedByOtherCR {
+			return action, err
+		}
+	}
+
+	return &DrainActionResult{
+		Action:              ActionWait,
+		DrainDecision:       decision,
+		RecordDrainDecision: true,
+	}, nil
+}
+
+// evaluateRecordedDrainMethod selects the next drain action for the stored method.
+func (e *NodeDrainEvaluator) evaluateRecordedDrainMethod(ctx context.Context, decision *protos.DrainDecision,
+	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
+	var (
+		action *DrainActionResult
+		err    error
+	)
+
+	if decision.GetMethod() == model.DrainMethodCustom {
+		action, err = e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
+	} else {
+		action, err = e.evaluateUserNamespaceActions(ctx, healthEvent, partialDrainEntity)
+	}
+
+	if action != nil {
+		action.DrainDecision = decision
+	}
+
+	return action, err
 }
 
 // shouldUseCustomDrain reports whether the node is drained by the custom drain plugin
@@ -506,8 +621,9 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 				"node", nodeName)
 
 			return &DrainActionResult{
-				Action: ActionMarkAlreadyDrained,
-				Status: model.AlreadyDrained,
+				Action:           ActionMarkAlreadyDrained,
+				Status:           model.AlreadyDrained,
+				drainedByOtherCR: true,
 			}, nil
 		}
 

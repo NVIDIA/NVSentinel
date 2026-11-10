@@ -80,6 +80,15 @@ type DrainActionResult struct {
 	Status             model.Status  // For ActionUpdateStatus and ActionCancel
 	PartialDrainEntity *protos.Entity
 	PodFilter          informers.PodFilter
+	// DrainDecision is the method for this pass. RecordDrainDecision is true only when
+	// this pass chose it. That result carries no drain action: the reconciler stores the
+	// decision, then evaluates the event again from the stored decision.
+	DrainDecision       *protos.DrainDecision
+	RecordDrainDecision bool
+	// drainedByOtherCR marks an AlreadyDrained result that comes from the CR of another event.
+	// This event made no drain decision, so it gets no record. A result from the CR of this
+	// event still gets one.
+	drainedByOtherCR bool
 }
 
 var drainActionNames = map[DrainAction]string{
