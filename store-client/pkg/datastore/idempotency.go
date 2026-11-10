@@ -96,8 +96,9 @@ const maxFailureMessageLength = 256
 // it were not attempted; the caller's retry of the whole batch stores them in
 // order and meets the stored ones as duplicates (a retry cannot change a
 // duplicate on another unique index or an answer marked Permanent, so the
-// platform connector does not retry such a batch). Failed carries the server's
-// answer about the document, so the reason survives into logs.
+// platform connector's store loop drops that document and stores the ones
+// after it). Failed carries the server's answer about the document, so the
+// reason survives into logs.
 //
 //nolint:errname // cross-module API name, consumed outside this module; mirrors mongo.BulkWriteException
 type BulkWriteFailure struct {

@@ -910,6 +910,120 @@ func TestFetchAndProcessHealthMetric_WriteThatCannotSucceed_IsNotRetried(t *test
 	require.Contains(t, logs.String(), `value too long for type character varying(100)`)
 }
 
+// insertedDocuments records, in call order, the message and idempotency key of
+// every document the mock datastore is asked to insert.
+type insertedDocuments struct {
+	mu    sync.Mutex
+	calls [][]string
+}
+
+func (d *insertedDocuments) record(args mock.Arguments) {
+	docs := args.Get(1).([]any)
+	call := make([]string, 0, len(docs))
+
+	for _, doc := range docs {
+		event := doc.(model.HealthEventWithStatus).HealthEvent
+		call = append(call, event.GetMessage()+" "+event.GetMetadata()[datastore.HealthEventIdempotencyKeyMetadataField])
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.calls = append(d.calls, call)
+}
+
+func (d *insertedDocuments) get() [][]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return append([][]string(nil), d.calls...)
+}
+
+func batchWithMessages(messages ...string) *protos.HealthEvents {
+	events := make([]*protos.HealthEvent, 0, len(messages))
+	for _, message := range messages {
+		events = append(events, &protos.HealthEvent{
+			NodeName: "gpu-node-1", CheckName: "GpuXidError", Message: message, IsFatal: true,
+			GeneratedTimestamp: timestamppb.Now(),
+		})
+	}
+
+	return &protos.HealthEvents{Events: events}
+}
+
+// TestInsertWithRetry_RejectedEvent_TheEventsAfterItAreStored: the insert is
+// ordered and stops at an event the datastore rejects for what it contains, so
+// the events after it were never attempted. Only the rejected event is dropped,
+// at Error; the events after it are stored with the keys of their positions in
+// the batch, without a retry and without dropping the batch.
+func TestInsertWithRetry_RejectedEvent_TheEventsAfterItAreStored(t *testing.T) {
+	logs := captureLogs(t)
+
+	ringBuffer := ringbuffer.NewRingBuffer("testRejectedEventMidBatch", context.Background(),
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	t.Cleanup(ringBuffer.ShutDownHealthMetricQueue)
+
+	inserts := &insertedDocuments{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, error(&datastore.BulkWriteFailure{
+		InsertedCount: 1,
+		Failed: datastore.BulkDocumentError{
+			DocumentIndex: 1, Permanent: true, Message: "value too long for type character varying(100)",
+		},
+	})).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{"id-c"}}, nil).Once()
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	outcome, retries, err := connector.insertWithRetry(context.Background(), batchWithMessages("a", "b", "c"), "inst#7")
+	require.NoError(t, err)
+	require.Equal(t, outcomeStored, outcome)
+	require.Zero(t, retries, "a rejected event is not a reason to retry")
+
+	require.Equal(t, [][]string{
+		{"a inst#7#0", "b inst#7#1", "c inst#7#2"},
+		{"c inst#7#2"},
+	}, inserts.get(), "only the events after the rejected one are written again, under the keys of their positions")
+	require.Contains(t, logs.String(),
+		`level=ERROR msg="Event cannot be stored as sent, dropping it permanently and storing the rest of its batch"`)
+	require.Contains(t, logs.String(), "eventIndex=1 eventCount=3")
+	require.NotContains(t, logs.String(), "Batch cannot be stored as sent")
+	mockClient.AssertExpectations(t)
+}
+
+// TestInsertWithRetry_LastEventRejected_TheBatchIsStoredWithoutIt: when the
+// rejected event is the last one, the events before it are already stored, so
+// the batch counts as stored and only that event is dropped.
+func TestInsertWithRetry_LastEventRejected_TheBatchIsStoredWithoutIt(t *testing.T) {
+	logs := captureLogs(t)
+
+	ringBuffer := ringbuffer.NewRingBuffer("testRejectedLastEvent", context.Background(),
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	t.Cleanup(ringBuffer.ShutDownHealthMetricQueue)
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Return(nil, error(&datastore.BulkWriteFailure{
+			InsertedCount: 2,
+			Failed: datastore.BulkDocumentError{
+				DocumentIndex: 2, Permanent: true, Message: "invalid byte sequence for encoding \"UTF8\": 0x00",
+			},
+		})).Once()
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	outcome, retries, err := connector.insertWithRetry(context.Background(), batchWithMessages("a", "b", "c"), "inst#8")
+	require.NoError(t, err)
+	require.Equal(t, outcomeStored, outcome)
+	require.Zero(t, retries)
+	require.Contains(t, logs.String(), "eventIndex=2 eventCount=3")
+	require.NotContains(t, logs.String(), "Batch cannot be stored as sent")
+	mockClient.AssertExpectations(t)
+}
+
 // TestFetchAndProcessHealthMetric_StoppedWithBatchesQueued_LogsThemAtError: a
 // loop stopped before it emptied its queue, as Shutdown stops one still
 // running at its drain timeout, logs at Error how many acknowledged batches it

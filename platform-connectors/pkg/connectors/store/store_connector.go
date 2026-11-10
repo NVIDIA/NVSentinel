@@ -190,17 +190,37 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 // place with exponential backoff, up to maxRetries times. The loop holds the
 // batch meanwhile, so no later batch is stored ahead of it. The backoff is the
 // one the ring buffer was configured with, and a canceled context ends the
-// retries. It returns the outcome and the number of retries made.
+// retries. An event the datastore can never store as sent is dropped on its
+// own, at Error, and the events after it are still stored. It returns the
+// outcome and the number of retries made.
 func (r *DatabaseStoreConnector) insertWithRetry(
 	ctx context.Context, healthEvents *protos.HealthEvents, batchKey string,
 ) (string, int, error) {
 	delay, maxDelay := r.ringBuffer.RetryDelays()
+	batch := &batchWrite{events: healthEvents.GetEvents()}
 
-	for retries := 0; ; retries++ {
-		outcome, err := r.insertHealthEvents(ctx, healthEvents, batchKey)
-		// A batch the datastore can never store as sent gets the same answer
-		// on every attempt, so retrying it would only hold the queue.
-		if err == nil || retries >= r.maxRetries || ctx.Err() != nil || unstorable(err) != nil {
+	for retries := 0; ; {
+		outcome, err := r.insertHealthEventsFrom(ctx, healthEvents, batchKey, batch.from)
+		if err == nil {
+			return batch.outcome(outcome), retries, nil
+		}
+
+		// An event the datastore can never store as sent gets the same answer
+		// on every attempt, so retrying it would only hold the queue. The insert
+		// stopped there, so the events after it are stored without it.
+		if failure := unstorable(err); failure != nil {
+			if !batch.skipRejected(ctx, err, failure) {
+				return "", retries, err
+			}
+
+			if batch.from == len(batch.events) {
+				return batch.outcome(outcomeDuplicate), retries, nil
+			}
+
+			continue
+		}
+
+		if retries >= r.maxRetries || ctx.Err() != nil {
 			return outcome, retries, err
 		}
 
@@ -223,7 +243,54 @@ func (r *DatabaseStoreConnector) insertWithRetry(
 		}
 
 		delay = min(delay*2, maxDelay)
+		retries++
 	}
+}
+
+// batchWrite follows one batch through insertWithRetry.
+type batchWrite struct {
+	events []*protos.HealthEvent
+	// from is the first event not yet stored or dropped. The insert is ordered
+	// and stops at the event it fails on, so the events before it are stored.
+	from int
+	// stored says an event of the batch is in the datastore, and inserted that
+	// one was written by this batch rather than found there already.
+	stored, inserted bool
+}
+
+// outcome is the batch's outcome once its last write returned last: stored
+// when any of its events was written, else last.
+func (b *batchWrite) outcome(last string) string {
+	if b.inserted {
+		return outcomeStored
+	}
+
+	return last
+}
+
+// skipRejected drops, at Error, the event the datastore can never store as
+// sent, so the next write starts after it. It reports false when the batch has
+// to be dropped whole instead: the event cannot be placed in the batch, or it
+// is the last one and nothing of the batch is stored.
+func (b *batchWrite) skipRejected(ctx context.Context, err error, failure *datastore.BulkWriteFailure) bool {
+	index := failure.Failed.DocumentIndex
+	b.stored = b.stored || failure.InsertedCount+failure.DuplicateCount > 0
+	b.inserted = b.inserted || failure.InsertedCount > 0
+
+	if index < b.from || index >= len(b.events) || (index == len(b.events)-1 && !b.stored) {
+		return false
+	}
+
+	slog.ErrorContext(ctx, "Event cannot be stored as sent, dropping it permanently and storing the rest of its batch",
+		"error", err,
+		"eventIndex", index,
+		"eventCount", len(b.events),
+		"nodeName", b.events[index].GetNodeName(),
+		"checkName", b.events[index].GetCheckName())
+
+	b.from = index + 1
+
+	return true
 }
 
 // dropMessage says why the loop drops a batch: it was stopped first, the
@@ -341,10 +408,22 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 	healthEvents *protos.HealthEvents,
 	batchKey string,
 ) (string, error) {
+	return r.insertHealthEventsFrom(ctx, healthEvents, batchKey, 0)
+}
+
+// insertHealthEventsFrom writes the events of a batch from index from on, as
+// insertHealthEvents does: each keeps the key of its position in the whole
+// batch, and a failed document is reported at that position.
+func (r *DatabaseStoreConnector) insertHealthEventsFrom(
+	ctx context.Context,
+	healthEvents *protos.HealthEvents,
+	batchKey string,
+	from int,
+) (string, error) {
 	// An empty batch is a success before any datastore call: on MongoDB the
 	// driver rejects an empty insert with ErrEmptySlice, which classifies as
 	// retryable and would burn the whole retry budget.
-	if len(healthEvents.GetEvents()) == 0 {
+	if len(healthEvents.GetEvents()) <= from {
 		return outcomeStored, nil
 	}
 
@@ -352,10 +431,12 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.store.insert_health_events")
 	defer span.End()
 
-	healthEventWithStatusList := make([]any, 0, len(healthEvents.GetEvents()))
+	healthEventWithStatusList := make([]any, 0, len(healthEvents.GetEvents())-from)
 	traceID := span.SpanContext().TraceID().String()
 
-	for i, healthEvent := range healthEvents.GetEvents() {
+	for offset, healthEvent := range healthEvents.GetEvents()[from:] {
+		i := from + offset
+
 		_, eventSpan := tracing.StartSpan(ctx, "platform_connector.process_event")
 
 		// CRITICAL FIX: Clone the HealthEvent to avoid pointer reuse issues with gRPC buffers
@@ -408,6 +489,12 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 	// the documents before it stay stored, which the keys make harmless.
 	result, err := r.databaseClient.InsertManyIdempotent(dbCtx, healthEventWithStatusList)
 	if err != nil {
+		var failure *datastore.BulkWriteFailure
+		if errors.As(err, &failure) {
+			// The client counts from the first document it was given.
+			failure.Failed.DocumentIndex += from
+		}
+
 		slog.ErrorContext(ctx, "Insert failed", "error", err)
 		tracing.RecordError(dbSpan, err)
 		dbSpan.SetAttributes(
