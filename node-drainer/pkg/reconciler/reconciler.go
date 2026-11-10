@@ -886,6 +886,11 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		if !nodeLabelModified {
 			return fmt.Errorf("failed to update node %s label to %s: %w", nodeName, terminalDrainLabelValue, err)
 		}
+
+		// The validation error is returned after the label is written, so the node label is
+		// terminal even though ClearNodeDraining was skipped above. Drop the waiting series
+		// here rather than leave a false wait behind.
+		metrics.NodeDrainAwaitingCompletionStart.DeleteLabelValues(nodeName)
 	} else {
 		r.queueManager.ClearNodeDraining(nodeName)
 	}
@@ -911,6 +916,11 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 				attribute.String("node_drainer.error.type", "update_nvsentinel_state_label"),
 				attribute.String("node_drainer.error.message", err.Error()),
 			)
+
+			// The unquarantine ends the wait whether or not the label removal lands, and the
+			// caller returns without requeueing, so the removal is never retried. Drop the
+			// waiting series here rather than leave a false wait behind.
+			metrics.NodeDrainAwaitingCompletionStart.DeleteLabelValues(nodeName)
 		} else {
 			r.queueManager.ClearNodeDraining(nodeName)
 		}
@@ -1264,6 +1274,11 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)
+
+		// The cancelled status is already persisted and this event is not requeued, so the
+		// label removal is never retried. Drop the waiting series here rather than leave a
+		// false wait behind.
+		metrics.NodeDrainAwaitingCompletionStart.DeleteLabelValues(nodeName)
 	} else {
 		r.queueManager.ClearNodeDraining(nodeName)
 	}
