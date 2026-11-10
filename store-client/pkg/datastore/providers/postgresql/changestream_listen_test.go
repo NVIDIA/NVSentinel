@@ -696,6 +696,8 @@ func TestFetchNewChangesFor_ShortFilteredBatch_MovesToNewestRowOnlyForTheFetchLo
 		reader       changelogReader
 		unfiltered   bool
 		notifyAgo    time.Duration // since the last NOTIFY, none when zero
+		dropped      int           // notified ids dropped since the last lookup
+		fullList     bool          // notifiedIDLimit ids are waiting
 		newest       int64
 		rows         []int64
 		wantHeadRead bool
@@ -714,6 +716,11 @@ func TestFetchNewChangesFor_ShortFilteredBatch_MovesToNewestRowOnlyForTheFetchLo
 		{name: "fetch loop, NOTIFY silent", reader: fetchLoopReader, notifyAgo: notifySilentAfter + time.Second,
 			newest: 500, wantID: 20},
 		{name: "fetch loop, no NOTIFY yet", reader: fetchLoopReader, newest: 500, wantID: 20},
+		// A row the move steps over may come only from its lookup, and its id may be dropped.
+		{name: "fetch loop, notified ids dropped", reader: fetchLoopReader, notifyAgo: time.Second, dropped: 1,
+			newest: 500, wantHeadRead: true, wantID: 20},
+		{name: "fetch loop, list of notified ids full", reader: fetchLoopReader, notifyAgo: time.Second,
+			fullList: true, newest: 500, wantHeadRead: true, wantID: 20},
 		{name: "polling mode", reader: pollingReader, notifyAgo: time.Second, newest: 500, wantID: 20},
 		{name: "fallback poller", reader: fallbackReader, notifyAgo: time.Second, newest: 500, wantID: 20},
 	}
@@ -734,6 +741,14 @@ func TestFetchNewChangesFor_ShortFilteredBatch_MovesToNewestRowOnlyForTheFetchLo
 
 			if tt.notifyAgo > 0 {
 				watcher.lastNotifyTime = time.Now().Add(-tt.notifyAgo)
+			}
+
+			watcher.droppedIDs = tt.dropped
+
+			if tt.fullList {
+				for id := int64(1000); len(watcher.notifiedIDs) < notifiedIDLimit; id++ {
+					watcher.addNotifiedID(id)
+				}
 			}
 
 			pollArgs := []driver.Value{healthEventsTable, base.Add(20 * time.Second), int64(20)}

@@ -1113,8 +1113,10 @@ func (w *PostgreSQLChangeStreamWatcher) readChangelogHead(
 // before the poll, when the poll returned fewer than changelogBatchSize rows. Such a batch holds
 // every row the poll could see past the position that the filter accepts, so each row up to
 // (ts, id) is read by now, rejected by the filter, or was not committed when the poll started. A
-// row of the last kind comes from the lookup of its notified id. The position never moves back,
-// and does not move once the watcher is closed.
+// row of the last kind comes from the lookup of its notified id, so the position does not move
+// while notified ids are being dropped: such a row's id can be one of them, and the next poll
+// reads the row only if the position is still behind it. The position never moves back, and
+// does not move once the watcher is closed.
 func (w *PostgreSQLChangeStreamWatcher) moveToNewestRowAfterShortBatch(
 	ts time.Time, id int64, known bool, batch int,
 ) {
@@ -1130,6 +1132,10 @@ func (w *PostgreSQLChangeStreamWatcher) moveToNewestRowAfterShortBatch(
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	if w.droppedIDs > 0 || len(w.notifiedIDs) >= notifiedIDLimit {
+		return
+	}
 
 	if positionAfter(ts, id, w.lastTimestamp, w.lastEventID) {
 		w.lastTimestamp, w.lastEventID = ts, id
