@@ -114,33 +114,9 @@ func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, err
 
 	plan := cacheplan.Build(compiler, policies)
 
-	type objectKey struct {
-		apiVersion, kind, namespace, name string
-	}
-
-	objects := make([]client.Object, 0, len(s.Objects))
-	seen := make(map[objectKey]int, len(s.Objects))
-
-	for i, o := range s.Objects {
-		u := &unstructured.Unstructured{Object: o}
-		if u.GetAPIVersion() == "" || u.GetKind() == "" || u.GetName() == "" {
-			return nil, fmt.Errorf("object %d needs apiVersion, kind and metadata.name", i)
-		}
-
-		key := objectKey{u.GetAPIVersion(), u.GetKind(), u.GetNamespace(), u.GetName()}
-		if first, ok := seen[key]; ok {
-			return nil, fmt.Errorf("object %d duplicates object %d (%s %s %s/%s)",
-				i, first, key.apiVersion, key.kind, key.namespace, key.name)
-		}
-
-		seen[key] = i
-
-		cached, err := lookedUp(plan, u)
-		if err != nil {
-			return nil, fmt.Errorf("object %d: %w", i, err)
-		}
-
-		objects = append(objects, cached)
+	objects, err := clusterObjects(plan, s.Objects)
+	if err != nil {
+		return nil, err
 	}
 
 	reader := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).WithObjects(objects...).Build()
@@ -166,6 +142,44 @@ func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, err
 	}
 
 	return results, nil
+}
+
+// clusterObjects validates the test file's objects and returns them as lookup()
+// sees them in the cluster.
+func clusterObjects(
+	plan map[schema.GroupVersionKind]cacheplan.Entry,
+	manifests []map[string]any,
+) ([]client.Object, error) {
+	type objectKey struct {
+		apiVersion, kind, namespace, name string
+	}
+
+	objects := make([]client.Object, 0, len(manifests))
+	seen := make(map[objectKey]int, len(manifests))
+
+	for i, o := range manifests {
+		u := &unstructured.Unstructured{Object: o}
+		if u.GetAPIVersion() == "" || u.GetKind() == "" || u.GetName() == "" {
+			return nil, fmt.Errorf("object %d needs apiVersion, kind and metadata.name", i)
+		}
+
+		key := objectKey{u.GetAPIVersion(), u.GetKind(), u.GetNamespace(), u.GetName()}
+		if first, ok := seen[key]; ok {
+			return nil, fmt.Errorf("object %d duplicates object %d (%s %s %s/%s)",
+				i, first, key.apiVersion, key.kind, key.namespace, key.name)
+		}
+
+		seen[key] = i
+
+		cached, err := lookedUp(plan, u)
+		if err != nil {
+			return nil, fmt.Errorf("object %d: %w", i, err)
+		}
+
+		objects = append(objects, cached)
+	}
+
+	return objects, nil
 }
 
 func runCase(
