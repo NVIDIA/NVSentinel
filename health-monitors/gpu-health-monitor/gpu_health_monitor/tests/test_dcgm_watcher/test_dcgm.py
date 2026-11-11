@@ -26,8 +26,9 @@ from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from typing import Optional
-from ctypes import pointer
+from ctypes import c_void_p, pointer
 import copy
 import json
 import logging
@@ -1797,6 +1798,292 @@ class TestDCGMHealthChecks:
         assert gpu_serials == ({gpu_id: "TEST_SERIAL" for gpu_id in gpu_ids} if attributes_supported else {})
         # Verify that health.Set was called on the actual group object
         group.health.Set.assert_called_once()
+
+
+class _DcgmDuplicateKeyError(Exception):
+    """Stands in for the DCGMError that DCGM raises for DCGM_ST_DUPLICATE_KEY (-26)."""
+
+
+class _DcgmMaxLimitError(Exception):
+    """Stands in for the DCGMError that DCGM raises for DCGM_ST_MAX_LIMIT."""
+
+
+class _FakeHostengine:
+    """Entity-group and field-group tables of one fake hostengine.
+
+    Like the DCGM hostengine, it keeps at most 64 groups of each kind, a field-group
+    name must be unique, and any client can list and delete any group. A group stays
+    until a client deletes it or the hostengine restarts, because the hostengine does
+    not see an unclean disconnect.
+    """
+
+    MAX_GROUPS = 64
+
+    def __init__(self) -> None:
+        """Start with no groups and no injected failures."""
+        self.entity_groups: dict[int, str] = {}
+        self.field_groups: dict[int, str] = {}
+        self.destroyed: list[tuple[str, str]] = []
+        self.fail_listing = False
+        self.fail_delete = False
+        self._next_id = 0
+
+    def add(self, table: dict[int, str], name: str) -> int:
+        """Add a group and return its ID, or raise if the table is full."""
+        if len(table) >= self.MAX_GROUPS:
+            raise _DcgmMaxLimitError("Max limit reached for the object")
+        self._next_id += 1
+        table[self._next_id] = name
+        return self._next_id
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Replace the pydcgm group classes and the dcgm_agent group calls with this table."""
+        engine = self
+
+        class FakeDcgmGroup:
+            """Stands in for pydcgm.DcgmGroup."""
+
+            def __init__(self, dcgm_handle: object, groupName: str = "", groupType: object = None) -> None:
+                """Add the entity group to the hostengine."""
+                self.groupId = engine.add(engine.entity_groups, groupName)
+                self.health = MagicMock()
+                self.samples = MagicMock()
+
+            def AddEntity(self, entity_type: int, entity_id: int) -> None:
+                """Accept any entity."""
+
+            def GetGpuIds(self) -> list[int]:
+                """Return one GPU."""
+                return [0]
+
+            def Delete(self) -> None:
+                """Remove the entity group from the hostengine."""
+                engine.entity_groups.pop(self.groupId, None)
+
+        class FakeDcgmFieldGroup:
+            """Stands in for pydcgm.DcgmFieldGroup."""
+
+            def __init__(self, dcgm_handle: object, name: str = "", fieldIds: list[int] | None = None) -> None:
+                """Add the field group, or raise if a field group with this name exists."""
+                if name in engine.field_groups.values():
+                    raise _DcgmDuplicateKeyError("Duplicate key passed to function")
+                self.fieldGroupId = engine.add(engine.field_groups, name)
+
+            def Delete(self) -> None:
+                """Remove the field group from the hostengine."""
+                engine.field_groups.pop(self.fieldGroupId, None)
+
+        def check_listing() -> None:
+            """Raise if the test injects a listing failure."""
+            if engine.fail_listing:
+                raise RuntimeError("DCGM call failed")
+
+        def group_get_all_ids(handle: object) -> list[int]:
+            """Return the IDs of all entity groups."""
+            check_listing()
+            return list(engine.entity_groups)
+
+        # The DCGM calls take pointer-sized group IDs, so the fake accepts only c_void_p.
+        def group_get_info(handle: object, group_id: c_void_p) -> SimpleNamespace:
+            """Return the name of the entity group, encoded as DCGM returns it."""
+            return SimpleNamespace(groupName=engine.entity_groups[group_id.value].encode())
+
+        def field_group_get_all(handle: object) -> SimpleNamespace:
+            """Return all field groups in the layout that dcgmFieldGroupGetAll uses."""
+            check_listing()
+            infos = [SimpleNamespace(fieldGroupId=i, fieldGroupName=n.encode()) for i, n in engine.field_groups.items()]
+            return SimpleNamespace(numFieldGroups=len(infos), fieldGroups=infos)
+
+        def destroyer(kind: str, table: dict[int, str]) -> Callable[[object, c_void_p], None]:
+            """Return a delete call for one table that records each deleted group."""
+
+            def destroy(handle: object, group_id: c_void_p) -> None:
+                """Delete the group, or raise if the test injects a delete failure."""
+                if engine.fail_delete:
+                    raise RuntimeError("DCGM call failed")
+                engine.destroyed.append((kind, table.pop(group_id.value)))
+
+            return destroy
+
+        monkeypatch.setattr(dcgm.pydcgm, "DcgmGroup", FakeDcgmGroup)
+        monkeypatch.setattr(dcgm.pydcgm, "DcgmFieldGroup", FakeDcgmFieldGroup, raising=False)
+        agent_calls = {
+            "dcgmGroupGetAllIds": group_get_all_ids,
+            "dcgmGroupGetInfo": group_get_info,
+            "dcgmGroupDestroy": destroyer("entity", self.entity_groups),
+            "dcgmFieldGroupGetAll": field_group_get_all,
+            "dcgmFieldGroupDestroy": destroyer("field", self.field_groups),
+        }
+        for name, call in agent_calls.items():
+            monkeypatch.setattr(dcgm.dcgm_agent, name, call, raising=False)
+
+
+class TestGroupsAfterStaleConnection:
+    """Tests for DCGM group setup after a stale connection.
+
+    The hostengine does not see an unclean client disconnect, so the groups of the
+    stale connection stay. They count against the limit of 64 groups of each kind,
+    and the stale field group blocks a new field group with the same name. Setup
+    must delete these stale groups and must not delete the groups of other clients.
+    """
+
+    @pytest.fixture
+    def engine(self, monkeypatch: pytest.MonkeyPatch) -> _FakeHostengine:
+        """Return a fake hostengine that the DCGM calls of the watcher use."""
+        engine = _FakeHostengine()
+        engine.install(monkeypatch)
+        return engine
+
+    @staticmethod
+    def _make_watcher() -> dcgm.DCGMWatcher:
+        """Return a watcher that creates one entity group and one field group per setup."""
+        watcher = dcgm.DCGMWatcher(
+            dcgm.types.DCGMWatcherConfig(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                dcgm_k8s_service_enabled=False,
+                thermal_margin_enabled=True,
+            ),
+            callbacks=[],
+            metadata_reader=MagicMock(),
+        )
+        watcher._get_gpu_serial_numbers = MagicMock(return_value={})
+        return watcher
+
+    @staticmethod
+    def _add_other_client_groups(engine: _FakeHostengine) -> tuple[list[str], list[str]]:
+        """Add groups of other clients, some with names close to the monitor group names, and return their names."""
+        entity_names = ["gpud-health", "gpu-collector-0", "dcgm_health_2", "DCGM_HEALTH"]
+        field_names = ["dcgm-exporter", "gpu_temp_limit_2", "nvsentinel_field_monitors_2", "NVSENTINEL_FIELD_MONITORS"]
+        for name in entity_names:
+            engine.add(engine.entity_groups, name)
+        for name in field_names:
+            engine.add(engine.field_groups, name)
+        return entity_names, field_names
+
+    @pytest.mark.parametrize("restart_monitor", [False, True], ids=["reconnect_in_process", "monitor_restart"])
+    def test_initialize_dcgm_monitoring_after_unclean_disconnect_replaces_stale_groups(
+        self, engine: _FakeHostengine, restart_monitor: bool
+    ) -> None:
+        """A new connection deletes the groups of the stale connection and creates its own."""
+        stale_watcher = self._make_watcher()
+        stale_watcher._initialize_dcgm_monitoring(MagicMock())
+        # Unclean disconnect: no cleanup reaches the hostengine, so the groups of the
+        # stale connection stay.
+        stale_ids = {*engine.entity_groups, *engine.field_groups}
+
+        watcher = self._make_watcher() if restart_monitor else stale_watcher
+        watcher._initialize_dcgm_monitoring(MagicMock())
+
+        assert engine.destroyed == [("entity", "dcgm_health"), ("field", "nvsentinel_field_monitors")]
+        assert list(engine.entity_groups.values()) == ["dcgm_health"]
+        assert list(engine.field_groups.values()) == ["nvsentinel_field_monitors"]
+        assert not stale_ids & {*engine.entity_groups, *engine.field_groups}
+
+    @pytest.mark.parametrize("restart_monitor", [False, True], ids=["reconnect_in_process", "monitor_restart"])
+    def test_repeated_unclean_disconnects_keep_one_group_of_each_kind(
+        self, engine: _FakeHostengine, restart_monitor: bool
+    ) -> None:
+        """Twice as many unclean disconnects as the group limit leave one group of each kind."""
+        watcher = self._make_watcher()
+        for _ in range(2 * _FakeHostengine.MAX_GROUPS):
+            if restart_monitor:
+                watcher = self._make_watcher()
+            # Unclean disconnect after each setup: no cleanup reaches the hostengine.
+            watcher._initialize_dcgm_monitoring(MagicMock())
+
+        assert list(engine.entity_groups.values()) == ["dcgm_health"]
+        assert list(engine.field_groups.values()) == ["nvsentinel_field_monitors"]
+
+    def test_setup_deletes_only_groups_with_the_monitor_group_names(self, engine: _FakeHostengine) -> None:
+        """Setup deletes every stale group with a monitor group name and no group of another client."""
+        entity_names, field_names = self._add_other_client_groups(engine)
+        # Stale groups of earlier monitor connections. Entity-group names can repeat.
+        for _ in range(3):
+            engine.add(engine.entity_groups, "dcgm_health")
+        engine.add(engine.field_groups, "nvsentinel_field_monitors")
+
+        self._make_watcher()._initialize_dcgm_monitoring(MagicMock())
+
+        assert engine.destroyed == [("entity", "dcgm_health")] * 3 + [("field", "nvsentinel_field_monitors")]
+        assert list(engine.entity_groups.values()) == [*entity_names, "dcgm_health"]
+        assert list(engine.field_groups.values()) == [*field_names, "nvsentinel_field_monitors"]
+
+    def test_setup_after_upgrade_deletes_the_groups_of_an_older_release(self, engine: _FakeHostengine) -> None:
+        """Setup deletes the stale groups of an older release, which named its field group gpu_temp_limit."""
+        entity_names, field_names = self._add_other_client_groups(engine)
+        # The older release stopped uncleanly, so its groups stay on the hostengine.
+        engine.add(engine.entity_groups, "dcgm_health")
+        engine.add(engine.field_groups, "gpu_temp_limit")
+
+        self._make_watcher()._initialize_dcgm_monitoring(MagicMock())
+
+        assert engine.destroyed == [("entity", "dcgm_health"), ("field", "gpu_temp_limit")]
+        assert list(engine.entity_groups.values()) == [*entity_names, "dcgm_health"]
+        assert list(engine.field_groups.values()) == [*field_names, "nvsentinel_field_monitors"]
+
+    @pytest.mark.parametrize("case", ["first_setup", "clean_reconnect"])
+    def test_setup_without_stale_groups_deletes_no_group(self, engine: _FakeHostengine, case: str) -> None:
+        """With no stale group on the hostengine, setup deletes no group."""
+        entity_names, field_names = self._add_other_client_groups(engine)
+        watcher = self._make_watcher()
+        if case == "clean_reconnect":
+            dcgm_group, _, _, _ = watcher._initialize_dcgm_monitoring(MagicMock())
+            watcher._cleanup_dcgm_resources(dcgm_group, MagicMock())
+
+        watcher._initialize_dcgm_monitoring(MagicMock())
+
+        assert engine.destroyed == []
+        assert list(engine.entity_groups.values()) == [*entity_names, "dcgm_health"]
+        assert list(engine.field_groups.values()) == [*field_names, "nvsentinel_field_monitors"]
+
+    @pytest.mark.parametrize("failure", ["listing", "delete"])
+    def test_stale_group_cleanup_failure_is_counted_and_setup_continues(
+        self, engine: _FakeHostengine, failure: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed listing or delete is logged and counted, setup continues, and the next setup deletes the group."""
+        engine.add(engine.entity_groups, "dcgm_health")
+        counter = dcgm.metrics.dcgm_api_failures.labels("stale_group_cleanup")
+        before = counter._value.get()
+        setattr(engine, f"fail_{failure}", True)
+        watcher = self._make_watcher()
+
+        with caplog.at_level(logging.WARNING):
+            watcher._initialize_dcgm_monitoring(MagicMock())
+
+        # The cleanup lists the groups once for each of the three group names it deletes.
+        assert counter._value.get() - before == (3 if failure == "listing" else 1)
+        assert any(r.levelno == logging.WARNING and "stale" in r.getMessage() for r in caplog.records)
+        assert list(engine.entity_groups.values()) == ["dcgm_health", "dcgm_health"]
+        assert list(engine.field_groups.values()) == ["nvsentinel_field_monitors"]
+
+        setattr(engine, f"fail_{failure}", False)
+        watcher._initialize_dcgm_monitoring(MagicMock())
+
+        assert list(engine.entity_groups.values()) == ["dcgm_health"]
+        assert list(engine.field_groups.values()) == ["nvsentinel_field_monitors"]
+
+    @pytest.mark.parametrize("setup_fails", [True, False], ids=["setup_fails", "setup_succeeds"])
+    def test_monitoring_setup_failure_increments_counter(self, setup_fails: bool) -> None:
+        """Only a failed DCGM monitoring setup increments the dcgm_initialize_monitoring counter."""
+        watcher = self._make_watcher()
+        watcher._get_dcgm_handle = MagicMock(return_value=MagicMock())
+        if setup_fails:
+            setup_error = _DcgmDuplicateKeyError("Duplicate key passed to function")
+            watcher._initialize_dcgm_monitoring = MagicMock(side_effect=setup_error)
+        else:
+            watcher._initialize_dcgm_monitoring = MagicMock(return_value=(MagicMock(), [], [], {}))
+        counter = dcgm.metrics.dcgm_api_failures.labels("dcgm_initialize_monitoring")
+        before = counter._value.get()
+
+        # Run one loop cycle: stop after the first monitoring setup.
+        stop_event = MagicMock(spec=Event)
+        stop_event.wait.return_value = False
+        stop_event.is_set.side_effect = lambda: watcher._initialize_dcgm_monitoring.called
+        watcher.start([], stop_event)
+
+        watcher._initialize_dcgm_monitoring.assert_called_once()
+        assert counter._value.get() - before == (1 if setup_fails else 0)
 
 
 class TestDCGMHandleLeakFix:
