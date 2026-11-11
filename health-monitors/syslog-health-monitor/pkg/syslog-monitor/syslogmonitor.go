@@ -1232,13 +1232,30 @@ func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check C
 
 // isStaleBootEntry returns true if the current journal entry belongs to a
 // previous boot and should be skipped during the post-reboot scan.
+//
+// A real journal returns the whole field, "_BOOT_ID=<id>", and journald
+// writes the ID without dashes, while currentBootID is read from
+// /proc/sys/kernel/random/boot_id, which has them. Both are put in
+// journald's form before they are compared.
 func (sm *SyslogMonitor) isStaleBootEntry(journal Journal) bool {
 	entryBootID, err := journal.GetData(FieldBootID)
-	if err != nil || entryBootID == "" || sm.currentBootID == "" {
+	if err != nil {
 		return false
 	}
 
-	return entryBootID != sm.currentBootID
+	entryBootID = journaldBootID(strings.TrimPrefix(entryBootID, FieldBootID+"="))
+	currentBootID := journaldBootID(sm.currentBootID)
+
+	if entryBootID == "" || currentBootID == "" {
+		return false
+	}
+
+	return entryBootID != currentBootID
+}
+
+// journaldBootID returns a boot ID the way journald writes it, without dashes.
+func journaldBootID(bootID string) string {
+	return strings.ReplaceAll(bootID, "-", "")
 }
 
 // skipStaleBootEntry advances past a stale-boot entry, updating the cursor.

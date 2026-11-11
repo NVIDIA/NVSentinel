@@ -22,7 +22,6 @@ package breaker
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -31,14 +30,12 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 )
 
-const (
-	resultError = "error"
-)
+// nodeCountResult is the result label on the get_total_nodes duration metric.
+type nodeCountResult string
 
-var (
-	// ErrRetryExhausted signals that GetTotalNodes retry attempts were exhausted
-	// This error should trigger pod restart
-	ErrRetryExhausted = errors.New("circuit breaker: all retry attempts exhausted")
+const (
+	nodeCountSuccess nodeCountResult = "success"
+	nodeCountError   nodeCountResult = "error"
 )
 
 // NewSlidingWindowBreaker creates a new sliding window circuit breaker for fault quarantine.
@@ -207,6 +204,9 @@ const (
 	boundMaxCordonedNodes Bound = "maxCordonedNodes"
 	// boundMaxCordonedPercentage is the percentage form of boundMaxCordonedNodes.
 	boundMaxCordonedPercentage Bound = "maxCordonedPercentage"
+	// boundNoGPUNodes is reported when no GPU nodes are counted, where any recent cordon trips
+	// the breaker.
+	boundNoGPUNodes Bound = "noGPUNodes"
 )
 
 // resolveThreshold turns a percentage bound and an absolute bound into a single node count,
@@ -315,16 +315,15 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 
 	b.mu.RUnlock()
 
-	totalNodes, err := b.getTotalNodesWithRetry(ctx)
+	totalNodes, err := b.getTotalNodes(ctx)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to get total nodes after retries", "error", err)
+		slog.ErrorContext(ctx, "Failed to get total nodes", "error", err)
 
-		return false, fmt.Errorf("failed to get total nodes after retries: %w", err)
+		return false, fmt.Errorf("failed to get total nodes: %w", err)
 	}
 
 	if totalNodes == 0 {
-		slog.ErrorContext(ctx, "Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes")
-		return false, fmt.Errorf("total nodes is 0 after retries")
+		return b.isTrippedByRecentCordons(ctx)
 	}
 
 	now := time.Now()
@@ -432,169 +431,51 @@ func (b *slidingWindowBreaker) SetCursorMode(ctx context.Context, mode CursorMod
 	return b.cfg.K8sClient.WriteCursorMode(ctx, b.cfg.ConfigMapName, b.cfg.ConfigMapNamespace, mode)
 }
 
-// getTotalNodesWithRetry gets the total number of nodes with retry logic and exponential backoff.
-// This handles NodeInformer cache sync delays that can cause GetTotalNodes to temporarily return 0.
-func (b *slidingWindowBreaker) getTotalNodesWithRetry(ctx context.Context) (int, error) {
+// getTotalNodes reads the GPU node count from the synced NodeInformer cache.
+func (b *slidingWindowBreaker) getTotalNodes(ctx context.Context) (int, error) {
 	startTime := time.Now()
-
-	var result string
-
-	var errorType string
+	result := nodeCountSuccess
 
 	defer func() {
-		duration := time.Since(startTime).Seconds()
-		metrics.FaultQuarantineGetTotalNodesDuration.WithLabelValues(result).Observe(duration)
-
-		if errorType != "" {
-			metrics.FaultQuarantineGetTotalNodesErrors.WithLabelValues(errorType).Inc()
-		}
+		metrics.FaultQuarantineGetTotalNodesDuration.WithLabelValues(string(result)).Observe(time.Since(startTime).Seconds())
 	}()
 
-	maxRetries, initialDelay, maxDelay := b.getRetryConfig()
+	totalNodes, err := b.cfg.K8sClient.GetTotalNodes(ctx)
+	if err != nil {
+		result = nodeCountError
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		totalNodes, err := b.cfg.K8sClient.GetTotalNodes(ctx)
-		if err != nil {
-			result = resultError
-			errorType = "api_error"
+		metrics.FaultQuarantineGetTotalNodesErrors.WithLabelValues("api_error").Inc()
 
-			return b.handleGetTotalNodesError(err, attempt, maxRetries)
-		}
-
-		if totalNodes > 0 {
-			result = "success"
-
-			metrics.FaultQuarantineGetTotalNodesRetryAttempts.Observe(float64(attempt))
-
-			return b.handleSuccessfulNodeCount(totalNodes, attempt)
-		}
-
-		if attempt == 0 {
-			slog.InfoContext(ctx, "Circuit breaker starting retries: NodeInformer cache may not be synced yet",
-				"maxRetries", maxRetries)
-		}
-
-		if attempt < maxRetries {
-			if err := b.performRetryDelay(ctx, attempt, maxRetries, initialDelay, maxDelay); err != nil {
-				result = resultError
-				errorType = "context_cancelled"
-
-				return 0, fmt.Errorf("context cancelled during GetTotalNodes retry: %w", err)
-			}
-		}
-	}
-
-	// All retries exhausted
-	result = resultError
-	errorType = "zero_nodes"
-
-	return 0, b.logRetriesExhausted(ctx, maxRetries, initialDelay, maxDelay)
-}
-
-// getRetryConfig extracts and validates retry configuration with defaults
-func (b *slidingWindowBreaker) getRetryConfig() (int, time.Duration, time.Duration) {
-	maxRetries := b.cfg.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 10 // Default: 10 retries
-	}
-
-	initialDelay := b.cfg.InitialRetryDelay
-	if initialDelay <= 0 {
-		initialDelay = 100 * time.Millisecond // Default: 100ms
-	}
-
-	maxDelay := b.cfg.MaxRetryDelay
-	if maxDelay <= 0 {
-		maxDelay = 5 * time.Second // Default: 5 seconds
-	}
-
-	return maxRetries, initialDelay, maxDelay
-}
-
-// handleGetTotalNodesError handles API errors from GetTotalNodes
-func (b *slidingWindowBreaker) handleGetTotalNodesError(err error, attempt, maxRetries int) (int, error) {
-	slog.Error("GetTotalNodes failed on attempt",
-		"attempt", attempt+1,
-		"maxAttempts", maxRetries+1,
-		"error", err)
-
-	return 0, fmt.Errorf("GetTotalNodes failed: %w", err)
-}
-
-// handleSuccessfulNodeCount handles the success case when nodes > 0
-func (b *slidingWindowBreaker) handleSuccessfulNodeCount(totalNodes, attempt int) (int, error) {
-	if attempt > 0 {
-		slog.Info("Circuit breaker retry successful",
-			"totalNodes", totalNodes,
-			"attempts", attempt+1)
+		return 0, fmt.Errorf("GetTotalNodes failed: %w", err)
 	}
 
 	return totalNodes, nil
 }
 
-// performRetryDelay calculates and performs the exponential backoff delay
-func (b *slidingWindowBreaker) performRetryDelay(ctx context.Context, attempt, maxRetries int,
-	initialDelay, maxDelay time.Duration) error {
-	delay := b.calculateBackoffDelay(attempt, initialDelay, maxDelay)
+// isTrippedByRecentCordons is called when no GPU nodes are counted. It trips if the window
+// holds any cordon, since that means gpuNodeLabel does not match the nodes being
+// quarantined. Otherwise the breaker stays CLOSED.
+func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bool, error) {
+	b.mu.Lock()
+	b.slideWindow(time.Now())
+	recentCordonedNodes := b.sumBuckets()
+	b.mu.Unlock()
 
-	slog.DebugContext(ctx, "Circuit breaker retry; got 0 nodes, retrying (NodeInformer cache may still be syncing)",
-		"attempt", attempt+1,
-		"maxRetries", maxRetries,
-		"delay", delay)
+	metrics.SetFaultQuarantineBreakerThresholdNodes(1, string(boundNoGPUNodes))
 
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
-	case <-time.After(delay):
+	if recentCordonedNodes == 0 {
+		metrics.SetFaultQuarantineBreakerUtilization(0)
+		metrics.SetFaultQuarantineBreakerState(string(StateClosed))
+
+		return false, nil
 	}
 
-	return nil
-}
+	slog.ErrorContext(ctx, "Circuit breaker: nodes were cordoned but no GPU nodes are counted; tripping",
+		"recentCordonedNodes", recentCordonedNodes)
 
-// calculateBackoffDelay calculates exponential backoff delay with overflow protection
-func (b *slidingWindowBreaker) calculateBackoffDelay(attempt int,
-	initialDelay, maxDelay time.Duration) time.Duration {
-	if attempt > 30 || attempt < 0 { // Prevent overflow for very large or negative attempts
-		return maxDelay
+	if err := b.ForceState(ctx, StateTripped); err != nil {
+		return true, fmt.Errorf("error forcing circuit breaker state to TRIPPED: %w", err)
 	}
 
-	// Safe conversion: attempt is guaranteed to be [0, 30] at this point
-	safeAttempt := uint(attempt)
-	multiplier := int64(1 << safeAttempt) // 2^attempt as integer
-	delay := time.Duration(int64(initialDelay) * multiplier)
-
-	if delay > maxDelay || delay < 0 { // Check for overflow
-		delay = maxDelay
-	}
-
-	return delay
-}
-
-// logRetriesExhausted logs a summary when all retries are exhausted.
-// Returns ErrRetryExhausted wrapped with context for pod restart.
-func (b *slidingWindowBreaker) logRetriesExhausted(ctx context.Context, maxRetries int,
-	initialDelay, maxDelay time.Duration) error {
-	actualNodes, err := b.cfg.K8sClient.GetTotalNodes(ctx)
-	if err != nil {
-		slog.ErrorContext(ctx,
-			"Circuit breaker: All retry attempts exhausted; failed to get node count from Kubernetes API; pod will restart",
-			"maxRetries", maxRetries,
-			"error", err,
-			"initialDelay", initialDelay,
-			"totalClusterNodes", actualNodes,
-			"maxDelay", maxDelay)
-
-		return fmt.Errorf("%w: failed to get node count: %w", ErrRetryExhausted, err)
-	}
-
-	slog.ErrorContext(ctx, "Circuit breaker: All retry attempts exhausted",
-		"maxRetries", maxRetries,
-		"actualNodes", actualNodes,
-		"initialDelay", initialDelay,
-		"maxDelay", maxDelay,
-		"message",
-		"Found total nodes but GetTotalNodes still returning 0. NodeInformer cache sync issues. Pod will restart.")
-
-	return fmt.Errorf("%w: NodeInformer cache sync failed after %d retries (actualNodes=%d but GetTotalNodes returning 0)",
-		ErrRetryExhausted, maxRetries, actualNodes)
+	return true, nil
 }
