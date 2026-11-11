@@ -57,3 +57,25 @@ runs:
       with:
         sarif_file: ${{ steps.scan.outputs.sarif }}
         category: ${{ inputs.category }}
+
+    # Counts the findings for the run summary. The severity comes from the security-severity score
+    # of each finding, banded the same way as in the Security tab.
+    - name: Summarize the findings
+      shell: bash
+      env:
+        SARIF: ${{ steps.scan.outputs.sarif }}
+        CATEGORY: ${{ inputs.category }}
+      run: |
+        set -euo pipefail
+        jq -r --arg category "${CATEGORY}" '
+          .runs[0] as $run
+          | (reduce ($run.tool.driver.rules // [])[] as $rule ({};
+              .[$rule.id] = ($rule.properties["security-severity"] // "0" | tonumber))) as $score
+          | [($run.results // [])[] | $score[.ruleId] // 0
+             | if . >= 9 then "Critical" elif . >= 7 then "High" elif . >= 4 then "Medium"
+               elif . > 0 then "Low" else "Unknown" end] as $levels
+          | ["Critical", "High", "Medium", "Low", "Unknown"] as $names
+          | "### \($category)\n\n| " + ($names | join(" | ")) + " | Total |\n|" + ("---|" * 6) + "\n| "
+            + ([$names[] as $n | $levels | map(select(. == $n)) | length | tostring] | join(" | "))
+            + " | \($levels | length) |\n"
+        ' "${SARIF}" >> "${GITHUB_STEP_SUMMARY}"
