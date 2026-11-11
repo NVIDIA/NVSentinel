@@ -241,7 +241,7 @@ func buildCachePlanWithRESTMapper(
 			continue
 		}
 
-		if err := validateResourceNamespaceScope(restMapper, p, policyGVK(p)); err != nil {
+		if err := validateResourceNamespaceScope(restMapper, p, p.Resource.GroupVersionKind()); err != nil {
 			return cachePlan{}, err
 		}
 	}
@@ -420,19 +420,11 @@ func groupPoliciesByGVK(policies []config.Policy) map[schema.GroupVersionKind][]
 			continue
 		}
 
-		gvk := policyGVK(p)
+		gvk := p.Resource.GroupVersionKind()
 		result[gvk] = append(result[gvk], p)
 	}
 
 	return result
-}
-
-func policyGVK(p config.Policy) schema.GroupVersionKind {
-	return schema.GroupVersionKind{
-		Group:   p.Resource.Group,
-		Version: p.Resource.Version,
-		Kind:    p.Resource.Kind,
-	}
 }
 
 func newUnstructuredForGVK(gvk schema.GroupVersionKind) client.Object {

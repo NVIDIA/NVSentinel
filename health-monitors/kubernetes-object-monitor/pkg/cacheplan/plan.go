@@ -86,7 +86,7 @@ func watchNamespaces(policies []config.Policy) map[schema.GroupVersionKind][]str
 			continue
 		}
 
-		gvk := policyGVK(p)
+		gvk := p.Resource.GroupVersionKind()
 		if p.Resource.Namespace == "" {
 			clusterWide[gvk] = true
 
@@ -109,12 +109,4 @@ func watchNamespaces(policies []config.Policy) map[schema.GroupVersionKind][]str
 	}
 
 	return out
-}
-
-func policyGVK(p config.Policy) schema.GroupVersionKind {
-	return schema.GroupVersionKind{
-		Group:   p.Resource.Group,
-		Version: p.Resource.Version,
-		Kind:    p.Resource.Kind,
-	}
 }

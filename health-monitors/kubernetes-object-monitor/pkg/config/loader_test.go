@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func TestLoadHealthEventBehaviourOverrides(t *testing.T) {
@@ -214,4 +215,12 @@ errorCode = ["OPERATOR_POD_UNHEALTHY"]
 			require.Contains(t, err.Error(), tt.wantError)
 		})
 	}
+}
+
+func TestResourceSpecGroupVersionKind(t *testing.T) {
+	core := ResourceSpec{Version: "v1", Kind: "Node"}
+	require.Equal(t, schema.GroupVersionKind{Version: "v1", Kind: "Node"}, core.GroupVersionKind())
+
+	grouped := ResourceSpec{Group: "karpenter.sh", Version: "v1", Kind: "NodeClaim"}
+	require.Equal(t, schema.GroupVersionKind{Group: "karpenter.sh", Version: "v1", Kind: "NodeClaim"}, grouped.GroupVersionKind())
 }

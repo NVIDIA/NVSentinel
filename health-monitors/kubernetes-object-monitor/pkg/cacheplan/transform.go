@@ -121,7 +121,7 @@ func derivePolicyFieldPaths(compiler *celenv.Environment, policies []config.Poli
 			continue
 		}
 
-		watched := derived.forGVK(policyGVK(policy))
+		watched := derived.forGVK(policy.Resource.GroupVersionKind())
 		watched.watched = true
 
 		for _, expression := range policyExpressions(policy) {

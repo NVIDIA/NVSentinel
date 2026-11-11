@@ -256,7 +256,7 @@ func checkScope(byName map[string]config.Policy, name string, resource *unstruct
 	}
 
 	gvk := resource.GroupVersionKind()
-	if gvk.Group != p.Resource.Group || gvk.Version != p.Resource.Version || gvk.Kind != p.Resource.Kind {
+	if gvk != p.Resource.GroupVersionKind() {
 		return fmt.Sprintf("resource is %s but policy %q watches %s, so the monitor never evaluates it",
 			resourceGVK(gvk.Group, gvk.Version, gvk.Kind), p.Name, p.Resource.GVK())
 	}

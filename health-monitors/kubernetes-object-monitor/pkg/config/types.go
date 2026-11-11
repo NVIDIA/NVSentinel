@@ -13,6 +13,8 @@
 // limitations under the License.
 package config
 
+import "k8s.io/apimachinery/pkg/runtime/schema"
+
 type Config struct {
 	Policies []Policy `toml:"policies"`
 }
@@ -68,6 +70,10 @@ func (r *ResourceSpec) GVK() string {
 	}
 
 	return r.Group + "/" + r.Version + "/" + r.Kind
+}
+
+func (r *ResourceSpec) GroupVersionKind() schema.GroupVersionKind {
+	return schema.GroupVersionKind{Group: r.Group, Version: r.Version, Kind: r.Kind}
 }
 
 func (r *ResourceSpec) MatchesNamespace(namespace string) bool {
