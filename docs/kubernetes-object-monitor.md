@@ -191,6 +191,28 @@ cases:
       node: node-a                 # Optional: expected node association
 ```
 
+The example tests this policy, set in the chart values:
+
+```yaml
+kubernetes-object-monitor:
+  policies:
+    - name: node-rebooted
+      enabled: true
+      resource: {group: "", version: v1, kind: Event}
+      predicate:
+        expression: |
+          resource.reason == 'Rebooted' &&
+          lookup('v1', 'Node', '', resource.involvedObject.name).metadata.labels['nvidia.com/gpu.present'] == 'true'
+      nodeAssociation:
+        expression: resource.involvedObject.name
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: Node rebooted
+        recommendedAction: CONTACT_SUPPORT
+        errorCode: [NODE_REBOOTED]
+```
+
 To render the policy config from the chart and your values:
 
 ```bash
