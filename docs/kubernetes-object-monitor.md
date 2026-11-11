@@ -166,7 +166,7 @@ when this policy should bypass the action.
 
 ## Testing Policies
 
-The monitor binary can check policies against test cases without a cluster. Pass `--test-policies` with a YAML file of cases, and `--policy-config-path` with the rendered policy config (the `config.toml` key of the `kubernetes-object-monitor` ConfigMap, for example from `helm template --show-only charts/kubernetes-object-monitor/templates/configmap.yaml`). The monitor evaluates each case with the same evaluator it runs in the cluster, against the objects as written in the file, prints one line per case, and exits.
+The monitor binary can check policies against test cases without a cluster. Pass `--test-policies` with a YAML file of cases, and `--policy-config-path` with the rendered policy config (the `config.toml` key of the `kubernetes-object-monitor` ConfigMap, for example from `helm template --show-only charts/kubernetes-object-monitor/templates/configmap.yaml`). The monitor evaluates each case the same way it does in the cluster: it prunes the resource and the objects `lookup()` returns to the fields its cache keeps, runs the policy with the same evaluator, prints one line per case, and exits.
 
 ```yaml
 # Cluster state that lookup() sees.

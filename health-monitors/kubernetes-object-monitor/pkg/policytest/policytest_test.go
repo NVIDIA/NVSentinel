@@ -23,7 +23,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cacheplan"
+	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 )
 
@@ -247,4 +250,64 @@ func TestRunRejectsDuplicateObjects(t *testing.T) {
 	_, err := Run(context.Background(), podPolicies(), suite)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "object 1 duplicates object 0 (v1 Node /node-a)")
+}
+
+func TestObjectsArePrunedLikeTheCache(t *testing.T) {
+	compiler, err := celenv.NewCompilerEnvironment()
+	require.NoError(t, err)
+
+	plan := cacheplan.Build(compiler, podPolicies())
+
+	t.Run("watched resource keeps only the fields the policy reads", func(t *testing.T) {
+		pod := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1", "kind": "Pod",
+			"metadata": map[string]any{"name": "p1", "namespace": "workloads", "labels": map[string]any{"app": "x"}},
+			"spec":     map[string]any{"nodeName": "node-a", "containers": []any{map[string]any{"name": "c"}}},
+			"status":   map[string]any{"phase": "Failed"},
+		}}
+
+		got, err := pruned(plan[pod.GroupVersionKind()], pod)
+		require.NoError(t, err)
+		assert.Equal(t, "node-a", got.Object["spec"].(map[string]any)["nodeName"])
+		assert.NotContains(t, got.Object["spec"], "containers")
+		assert.NotContains(t, got.Object["metadata"], "labels")
+		assert.Contains(t, pod.Object["metadata"], "labels", "the test file's object must not be modified")
+	})
+
+	t.Run("looked-up object served from the cache is pruned", func(t *testing.T) {
+		node := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1", "kind": "Node",
+			"metadata": map[string]any{"name": "node-a", "labels": map[string]any{"zone": "a"}},
+			"spec":     map[string]any{"unschedulable": true, "podCIDR": "10.0.0.0/24"},
+		}}
+
+		got, err := lookedUp(plan, node)
+		require.NoError(t, err)
+		assert.Equal(t, true, got.Object["spec"].(map[string]any)["unschedulable"])
+		assert.NotContains(t, got.Object["spec"], "podCIDR")
+		assert.NotContains(t, got.Object["metadata"], "labels")
+	})
+
+	t.Run("looked-up object read through the API stays whole", func(t *testing.T) {
+		policies := append(podPolicies(), config.Policy{
+			Name:      "pod-lookup",
+			Enabled:   true,
+			Resource:  config.ResourceSpec{Version: "v1", Kind: "Node"},
+			Predicate: config.PredicateSpec{Expression: `lookup("v1", "Pod", "other", "p").status.phase == "Failed"`},
+		})
+		plan := cacheplan.Build(compiler, policies)
+
+		pod := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1", "kind": "Pod",
+			"metadata": map[string]any{"name": "p", "namespace": "other", "labels": map[string]any{"app": "x"}},
+		}}
+
+		entry := plan[pod.GroupVersionKind()]
+		require.NotNil(t, entry.Transform, "pods are pruned in the cache")
+		require.False(t, entry.LookupsFromCache, "pods are cached for one namespace, so lookups read the API")
+
+		got, err := lookedUp(plan, pod)
+		require.NoError(t, err)
+		assert.Contains(t, got.Object["metadata"], "labels")
+	})
 }

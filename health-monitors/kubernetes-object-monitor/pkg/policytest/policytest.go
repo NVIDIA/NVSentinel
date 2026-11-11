@@ -14,7 +14,9 @@
 
 // Package policytest evaluates policies against test cases offline, with no cluster.
 // Each case gives a resource and the expected predicate result and node; lookup()
-// resolves against the objects the test file lists.
+// resolves against the objects the test file lists. Both are pruned the way the
+// monitor's cache prunes them, so a policy sees the same fields it sees in the
+// cluster.
 package policytest
 
 import (
@@ -25,10 +27,12 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
 
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cacheplan"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
@@ -103,6 +107,13 @@ func LoadSuite(path string) (*Suite, error) {
 // Run evaluates every case against the policies with policy.Evaluator.Evaluate,
 // the same call the monitor's reconciler makes.
 func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, error) {
+	compiler, err := celenv.NewCompilerEnvironment()
+	if err != nil {
+		return nil, fmt.Errorf("create CEL compiler: %w", err)
+	}
+
+	plan := cacheplan.Build(compiler, policies)
+
 	type objectKey struct {
 		apiVersion, kind, namespace, name string
 	}
@@ -124,7 +135,12 @@ func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, err
 
 		seen[key] = i
 
-		objects = append(objects, u)
+		cached, err := lookedUp(plan, u)
+		if err != nil {
+			return nil, fmt.Errorf("object %d: %w", i, err)
+		}
+
+		objects = append(objects, cached)
 	}
 
 	reader := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).WithObjects(objects...).Build()
@@ -146,18 +162,30 @@ func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, err
 
 	results := make([]Result, 0, len(s.Cases))
 	for _, c := range s.Cases {
-		results = append(results, runCase(ctx, evaluator, byName, c))
+		results = append(results, runCase(ctx, evaluator, plan, byName, c))
 	}
 
 	return results, nil
 }
 
-func runCase(ctx context.Context, evaluator *policy.Evaluator, byName map[string]config.Policy, c Case) Result {
+func runCase(
+	ctx context.Context,
+	evaluator *policy.Evaluator,
+	plan map[schema.GroupVersionKind]cacheplan.Entry,
+	byName map[string]config.Policy,
+	c Case,
+) Result {
 	r := Result{Case: c.Name, Policy: c.Policy}
 	resource := &unstructured.Unstructured{Object: c.Resource}
 
 	if failure := checkScope(byName, c.Policy, resource); failure != "" {
 		r.Failures = append(r.Failures, failure)
+		return r
+	}
+
+	resource, err := pruned(plan[resource.GroupVersionKind()], resource)
+	if err != nil {
+		r.Failures = append(r.Failures, err.Error())
 		return r
 	}
 
@@ -179,6 +207,40 @@ func runCase(ctx context.Context, evaluator *policy.Evaluator, byName map[string
 	}
 
 	return r
+}
+
+// lookedUp returns obj as lookup() sees it in the cluster: pruned when the
+// monitor serves lookups of its GVK from the cache, whole when it reads the API.
+func lookedUp(
+	plan map[schema.GroupVersionKind]cacheplan.Entry,
+	obj *unstructured.Unstructured,
+) (*unstructured.Unstructured, error) {
+	entry, ok := plan[obj.GroupVersionKind()]
+	if !ok || !entry.LookupsFromCache {
+		return obj, nil
+	}
+
+	return pruned(entry, obj)
+}
+
+// pruned returns a copy of obj with the fields the entry's cache transform
+// drops removed, or obj itself when the GVK is cached whole.
+func pruned(entry cacheplan.Entry, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	if entry.Transform == nil {
+		return obj, nil
+	}
+
+	out, err := entry.Transform(obj.DeepCopy())
+	if err != nil {
+		return nil, fmt.Errorf("prune %s %s: %w", obj.GetKind(), obj.GetName(), err)
+	}
+
+	u, ok := out.(*unstructured.Unstructured)
+	if !ok {
+		return nil, fmt.Errorf("prune %s %s: transform returned %T", obj.GetKind(), obj.GetName(), out)
+	}
+
+	return u, nil
 }
 
 // checkScope reports why the monitor would never evaluate the resource with the
