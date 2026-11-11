@@ -29,6 +29,7 @@ runs:
         fi
         
         # Load all versions from .versions.yaml
+        echo "os_version=$(. /etc/os-release && echo "$VERSION_ID")" >> $GITHUB_OUTPUT
         echo "go_version=$(yq '.languages.go' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "python_version=$(yq '.languages.python' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "poetry_version=$(yq '.build_tools.poetry' .versions.yaml)" >> $GITHUB_OUTPUT
@@ -58,11 +59,28 @@ runs:
         ./scripts/retry.sh sudo apt-get update -qq
         ./scripts/retry.sh sudo apt-get install -y -qq python3 python3-pip curl git wget unzip build-essential
 
+    # The self-hosted runners start with an empty tool cache, so setup-python downloads Python from
+    # GitHub release assets, which answer HTTP 429 when many jobs start at the same time. The Actions
+    # cache restores Python from an earlier run if present. When missing, setup-python downloads it
+    # and saves immediately to the cache before other tools install packages into it.
+    - name: Restore cached Python
+      id: python-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/Python
+        key: ${{ runner.os }}-${{ steps.versions.outputs.os_version }}-${{ runner.arch }}-python-${{ steps.versions.outputs.python_version }}
+
     - name: Set up Python
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
       with:
         python-version: ${{ steps.versions.outputs.python_version }}
-        cache: 'pip'
+
+    - name: Save Python to the cache
+      if: steps.python-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/Python
+        key: ${{ steps.python-cache.outputs.cache-primary-key }}
 
     - name: Cache Poetry dependencies
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -113,10 +131,39 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
       with:
         go-version: ${{ steps.versions.outputs.go_version }}
-        cache: true
-        cache-dependency-path: |
-          **/go.sum
-          **/go.mod
+        cache: false
+
+    # The Go cache is about 1.7 GB for each architecture. When every branch saves its own copy, the
+    # repository Actions cache is full, and other caches are removed. So only main saves the Go cache,
+    # and other branches restore the cache of main.
+    - name: Find the Go cache paths
+      id: go-cache
+      shell: bash
+      run: |
+        echo "modcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "buildcache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Go modules and build output
+      if: github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: |
+          ${{ steps.go-cache.outputs.modcache }}
+          ${{ steps.go-cache.outputs.buildcache }}
+        key: ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-${{ hashFiles('**/go.sum', '**/go.mod') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-
+
+    - name: Restore cached Go modules and build output
+      if: github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: |
+          ${{ steps.go-cache.outputs.modcache }}
+          ${{ steps.go-cache.outputs.buildcache }}
+        key: ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-${{ hashFiles('**/go.sum', '**/go.mod') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-
 
     - name: Install Go tools
       shell: bash
