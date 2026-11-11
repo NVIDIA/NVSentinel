@@ -213,7 +213,7 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 
 **Container Images** published to `ghcr.io/nvidia/nvsentinel/`:
 - Most component images are tagged with the release tag, e.g. `ghcr.io/nvidia/nvsentinel/fault-quarantine:v1.2.3`
-- `gpu-health-monitor` is the exception: it ships one image per DCGM major version, tagged `v1.2.3-dcgm-3.x` and `v1.2.3-dcgm-4.x`
+- `gpu-health-monitor` is the exception: it ships one image per DCGM version lane, tagged `v1.2.3-dcgm-3.x`, `v1.2.3-dcgm-4.x` (DCGM 4.0.0–4.7.0) and `v1.2.3-dcgm-4.7.1-plus` (DCGM 4.7.1 and newer)
 - See the release's `versions.txt` for the exact set
 
 **Helm Chart**: `oci://ghcr.io/nvidia/nvsentinel:v1.2.3`

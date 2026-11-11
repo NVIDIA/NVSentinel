@@ -1,0 +1,65 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Each DCGM version lane renders its own DaemonSet. The labeler sets
+# nvsentinel.dgxc.nvidia.com/dcgm.version on each node, and only the lane
+# with the matching value is scheduled there.
+suite: DCGM version lanes
+templates:
+  - templates/daemonset-dcgm-3.x.yaml
+  - templates/daemonset-dcgm-4.x.yaml
+  - templates/daemonset-dcgm-4.7.1-plus.yaml
+  - templates/configmap.yaml
+set:
+  global.platformConnectorAuth.enabled: false
+  image.tag: test
+tests:
+  - it: renders the 3.x lane
+    template: templates/daemonset-dcgm-3.x.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: gpu-health-monitor-dcgm-3.x
+      - equal:
+          path: spec.template.spec.nodeSelector["nvsentinel.dgxc.nvidia.com/dcgm.version"]
+          value: "3.x"
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-3.x
+
+  - it: renders the 4.x lane for DCGM 4.0.0 to 4.7.0
+    template: templates/daemonset-dcgm-4.x.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: gpu-health-monitor-dcgm-4.x
+      - equal:
+          path: spec.template.spec.nodeSelector["nvsentinel.dgxc.nvidia.com/dcgm.version"]
+          value: "4.x"
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-4.x
+
+  - it: renders the 4.7.1-plus lane for DCGM 4.7.1 and newer
+    template: templates/daemonset-dcgm-4.7.1-plus.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: gpu-health-monitor-dcgm-4.7.1-plus
+      - equal:
+          path: spec.template.spec.nodeSelector["nvsentinel.dgxc.nvidia.com/dcgm.version"]
+          value: "4.7.1-plus"
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-4.7.1-plus

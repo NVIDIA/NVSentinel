@@ -104,6 +104,14 @@ config:
     dcgm-diag-test:
       provider: k8s-job-provider
       image: nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04
+      # dcgmi diag fails with an API version mismatch when the client and the node's DCGM hostengine are on
+      # different sides of DCGM 4.7.1. Pick the image from the DCGM version label that labeler sets on the node.
+      # Nodes without the label, or with a value not listed here, use the image above.
+      imageByNodeLabel:
+        key: nvsentinel.dgxc.nvidia.com/dcgm.version
+        images:
+          "4.x": nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04
+          "4.7.1-plus": nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04
       # Add dcgmi diag retries for runtime errors which indicate that dcgmi diag failed to run compared to
       # the command failing due to detecting a GPU health issue. Specifically, we have observed that dcgm-diag-test
       # retries can result in a DCGM_ST_IN_USE runtime error because a previous request to nv-hostengine does not

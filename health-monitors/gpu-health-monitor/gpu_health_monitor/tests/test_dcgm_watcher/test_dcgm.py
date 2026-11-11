@@ -2490,3 +2490,64 @@ def test_remote_handle_raises_when_no_address_connects(mock_handle):
     )
     with pytest.raises(RuntimeError, match="Unable to connect to any DCGM address: a:5555.*b:5555"):
         watcher._create_dcgm_handle()
+
+
+@patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmGroup")
+@patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+def test_version_mismatch_exits_without_connectivity_failure(mock_dcgm_handle, mock_dcgm_group):
+    """A hostengine on the other side of the DCGM 4.7.1 protocol break must not cordon the node.
+
+    The old lane pod sees DCGM_ST_VER_MISMATCH until the labeler moves the node
+    to the matching lane. The monitor exits so the pod restarts visibly, and it
+    does not report a connectivity failure.
+    """
+    processor = FakeEventProcessorInTest()
+    watcher = dcgm.DCGMWatcher(
+        dcgm.types.DCGMWatcherConfig(addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False),
+        callbacks=[processor],
+    )
+    dcgm_handle_mock = MagicMock()
+    dcgm_handle_mock.GetSystem.return_value.discovery.GetEntityGroupEntities.side_effect = (
+        dcgm_structs.dcgmExceptionClass(dcgm_structs.DCGM_ST_VER_MISMATCH)()
+    )
+    mock_dcgm_handle.return_value = dcgm_handle_mock
+    failures_before = dcgm.metrics.dcgm_api_failures.labels("version_mismatch")._value.get()
+
+    stop_event = MagicMock(spec=Event)
+    stop_event.is_set.side_effect = [False, False, True]
+    stop_event.wait.side_effect = [False, True]
+    with pytest.raises(dcgm.types.DCGMVersionMismatchError):
+        watcher.start([], stop_event)
+
+    assert processor.connectivity_failed_called is False
+    assert dcgm.metrics.dcgm_api_failures.labels("version_mismatch")._value.get() == failures_before + 1
+    # The handle is released before the monitor exits.
+    dcgm_handle_mock.Shutdown.assert_called()
+
+
+@patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmGroup")
+@patch("gpu_health_monitor.dcgm_watcher.dcgm.pydcgm.DcgmHandle")
+def test_other_dcgm_init_errors_still_report_connectivity_failure(mock_dcgm_handle, mock_dcgm_group):
+    processor = FakeEventProcessorInTest()
+    watcher = dcgm.DCGMWatcher(
+        dcgm.types.DCGMWatcherConfig(addr="localhost:5555", poll_interval_seconds=10, dcgm_k8s_service_enabled=False),
+        callbacks=[processor],
+    )
+    dcgm_handle_mock = MagicMock()
+    dcgm_handle_mock.GetSystem.return_value.discovery.GetEntityGroupEntities.side_effect = (
+        dcgm_structs.dcgmExceptionClass(dcgm_structs.DCGM_ST_CONNECTION_NOT_VALID)()
+    )
+    mock_dcgm_handle.return_value = dcgm_handle_mock
+
+    stop_event = MagicMock(spec=Event)
+    stop_event.is_set.side_effect = [False, False, True]
+    stop_event.wait.side_effect = [False, True]
+    watcher.start([], stop_event)
+
+    assert processor.connectivity_failed_called is True
+
+
+def test_is_dcgm_version_mismatch_matches_only_ver_mismatch():
+    assert dcgm.types.is_dcgm_version_mismatch(dcgm_structs.dcgmExceptionClass(dcgm_structs.DCGM_ST_VER_MISMATCH)())
+    assert not dcgm.types.is_dcgm_version_mismatch(dcgm_structs.DCGMError_Timeout())
+    assert not dcgm.types.is_dcgm_version_mismatch(RuntimeError("API version mismatch"))

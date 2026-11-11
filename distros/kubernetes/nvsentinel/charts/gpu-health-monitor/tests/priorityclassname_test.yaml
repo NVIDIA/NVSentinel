@@ -17,6 +17,7 @@ suite: priorityClassName (node-level agent)
 # so it has to be parseable; assertions are scoped to the DaemonSet.
 templates:
   - templates/daemonset-dcgm-4.x.yaml
+  - templates/daemonset-dcgm-4.7.1-plus.yaml
   - templates/daemonset-dcgm-3.x.yaml
   - templates/configmap.yaml
 tests:
@@ -71,6 +72,16 @@ tests:
     asserts:
       - notExists:
           path: spec.template.spec.priorityClassName
+
+  - it: must take global.priorityClassName (4.7.1-plus variant)
+    template: templates/daemonset-dcgm-4.7.1-plus.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      global.priorityClassName: system-node-critical
+    asserts:
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: system-node-critical
 
   - it: must not emit priorityClassName when neither global nor local is set (3.x variant)
     template: templates/daemonset-dcgm-3.x.yaml

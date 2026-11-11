@@ -152,6 +152,8 @@ For gang-aware containers the webhook also injects `GANG_ID`, `GANG_CONFIG_DIR`,
 
 Runs DCGM diagnostics against every GPU allocated to the pod via the remote hostengine.
 
+DCGM 4.7.1 clients cannot run diagnostics against hostengines older than 4.7.1, and older clients cannot run them against 4.7.1 or newer. The image therefore ships two DCGM client versions: 4.7.1 (default) and 4.7.0. At startup, the check reads the hostengine version and uses the 4.7.0 client when the hostengine is older than 4.7.1. If the version cannot be read, it uses the default client. No configuration is needed.
+
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `DCGM_DIAG_LEVEL` | `2` | Diagnostic depth: 1 = short (approx 30 s, software deployment checks), 2 = medium (approx 2 min, adds PCIe and basic GPU stress), 3 = long (approx 15 min, adds Diagnostic plugin stress), 4 = xlong (1-2 hr, extended stress) |

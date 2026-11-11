@@ -22,6 +22,7 @@ from .config import Config
 from .diag import DCGMDiagnostic, DiagnosticStatusError
 from .errors import resolve_recommended_action
 from .health import HealthReporter
+from .lane import select_lane
 from .logger import setup_logging
 from .protos import health_event_pb2 as pb
 
@@ -68,6 +69,7 @@ def main() -> None:
         status_retry_max_attempts=cfg.status_retry_max_attempts,
         status_retry_interval_seconds=cfg.status_retry_interval_seconds,
     )
+    select_lane(diag)
     _install_shutdown_handlers(diag)
     store_only = cfg.processing_strategy == pb.ProcessingStrategy.STORE_ONLY
 

@@ -44,11 +44,15 @@ CACHE_FROM_ARG_DCGM3 :=
 CACHE_TO_ARG_DCGM3 :=
 CACHE_FROM_ARG_DCGM4 :=
 CACHE_TO_ARG_DCGM4 :=
+CACHE_FROM_ARG_DCGM471 :=
+CACHE_TO_ARG_DCGM471 :=
 else
 CACHE_FROM_ARG_DCGM3 := --cache-from=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3
 CACHE_TO_ARG_DCGM3 := --cache-to=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3,mode=max
 CACHE_FROM_ARG_DCGM4 := --cache-from=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4
 CACHE_TO_ARG_DCGM4 := --cache-to=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4,mode=max
+CACHE_FROM_ARG_DCGM471 := --cache-from=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4.7.1-plus
+CACHE_TO_ARG_DCGM471 := --cache-to=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4.7.1-plus,mode=max
 endif
 
 # =============================================================================
@@ -112,9 +116,9 @@ endif
 # PYTHON-SPECIFIC DOCKER OVERRIDES
 # =============================================================================
 
-# Override docker builds to support dual DCGM versions
-docker-build: setup-buildx docker-build-dcgm3 docker-build-dcgm4
-	@echo "Built both DCGM 3.x and 4.x images locally"
+# Override docker builds to support one image per DCGM version lane
+docker-build: setup-buildx docker-build-dcgm3 docker-build-dcgm4 docker-build-dcgm4.7.1-plus
+	@echo "Built DCGM 3.x, 4.x and 4.7.1-plus images locally"
 
 docker-build-dcgm3: setup-buildx
 	@echo "Building Docker image for $(MODULE_NAME) with DCGM 3.x (local development)..."
@@ -133,7 +137,7 @@ docker-build-dcgm3: setup-buildx
 		.
 
 docker-build-dcgm4: setup-buildx
-	@echo "Building Docker image for $(MODULE_NAME) with DCGM 4.x (local development)..."
+	@echo "Building Docker image for $(MODULE_NAME) with DCGM 4.x (4.0.0-4.7.0 hostengines, local development)..."
 	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
@@ -143,11 +147,27 @@ docker-build-dcgm4: setup-buildx
 		$(DOCKER_EXTRA_ARGS) \
 		$(DOCKER_LOAD_ARG) \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-4.x \
+		--build-arg DCGM_VERSION=4.7.0-ubuntu24.04@sha256:c7e042a939a5c0d4d588fff28f9371d9d101e66eece7b3f831cf5d44fa182fc8 \
 		-f $(MODULE_PATH)/Dockerfile \
 		.
 
-docker-publish: setup-buildx docker-publish-dcgm3 docker-publish-dcgm4
-	@echo "Published both DCGM 3.x and 4.x images to registry"
+docker-build-dcgm4.7.1-plus: setup-buildx
+	@echo "Building Docker image for $(MODULE_NAME) with DCGM 4.7.1-plus (4.7.1+ hostengines, local development)..."
+	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
+	cd $(REPO_ROOT) && docker buildx build \
+		--platform $(PLATFORMS) \
+		--network=host \
+		$(CACHE_FROM_ARG_DCGM471) \
+		$(CACHE_TO_ARG_DCGM471) \
+		$(DOCKER_EXTRA_ARGS) \
+		$(DOCKER_LOAD_ARG) \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-4.7.1-plus \
+		--build-arg DCGM_VERSION=4.7.1-ubuntu24.04@sha256:2fc0b3091e54f2d96c592b16e2fd16e326f378651a7ed01eeda909f22cbfd57c \
+		-f $(MODULE_PATH)/Dockerfile \
+		.
+
+docker-publish: setup-buildx docker-publish-dcgm3 docker-publish-dcgm4 docker-publish-dcgm4.7.1-plus
+	@echo "Published DCGM 3.x, 4.x and 4.7.1-plus images to registry"
 
 docker-publish-dcgm3: setup-buildx
 	@echo "Building and publishing Docker image for $(MODULE_NAME) with DCGM 3.x (production)..."
@@ -167,7 +187,7 @@ docker-publish-dcgm3: setup-buildx
 		.
 
 docker-publish-dcgm4: setup-buildx
-	@echo "Building and publishing Docker image for $(MODULE_NAME) with DCGM 4.x (production)..."
+	@echo "Building and publishing Docker image for $(MODULE_NAME) with DCGM 4.x (4.0.0-4.7.0 hostengines, production)..."
 	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
@@ -178,6 +198,23 @@ docker-publish-dcgm4: setup-buildx
 		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
 		--push \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-4.x \
+		--build-arg DCGM_VERSION=4.7.0-ubuntu24.04@sha256:c7e042a939a5c0d4d588fff28f9371d9d101e66eece7b3f831cf5d44fa182fc8 \
+		-f $(MODULE_PATH)/Dockerfile \
+		.
+
+docker-publish-dcgm4.7.1-plus: setup-buildx
+	@echo "Building and publishing Docker image for $(MODULE_NAME) with DCGM 4.7.1-plus (4.7.1+ hostengines, production)..."
+	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
+	cd $(REPO_ROOT) && docker buildx build \
+		--platform $(PLATFORMS) \
+		--network=host \
+		$(CACHE_FROM_ARG_DCGM471) \
+		$(CACHE_TO_ARG_DCGM471) \
+		$(DOCKER_EXTRA_ARGS) \
+		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
+		--push \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-4.7.1-plus \
+		--build-arg DCGM_VERSION=4.7.1-ubuntu24.04@sha256:2fc0b3091e54f2d96c592b16e2fd16e326f378651a7ed01eeda909f22cbfd57c \
 		-f $(MODULE_PATH)/Dockerfile \
 		.
 
@@ -276,6 +313,7 @@ protos-clean: vendor-proto
 # =============================================================================
 
 .PHONY: image publish image-dcgm3 image-dcgm4 publish-dcgm3 publish-dcgm4
+.PHONY: docker-build-dcgm4.7.1-plus docker-publish-dcgm4.7.1-plus
 image: docker-build
 	@echo "Legacy 'image' target - use 'docker-build' for local development"
 
@@ -328,13 +366,15 @@ help:
 	@echo "  protos-generate       - Generate Python protobuf files from .proto sources"
 	@echo "  format-protobuf-files - Format generated protobuf files with Black"
 	@echo ""
-	@echo "Docker targets (dual DCGM support):"
-	@echo "  docker-build         - Build both DCGM 3.x and 4.x images locally"
+	@echo "Docker targets (one image per DCGM version lane):"
+	@echo "  docker-build         - Build all DCGM lane images locally"
 	@echo "  docker-build-dcgm3   - Build DCGM 3.x image locally"
-	@echo "  docker-build-dcgm4   - Build DCGM 4.x image locally"
-	@echo "  docker-publish       - Build and publish both images (CI/production)"
+	@echo "  docker-build-dcgm4   - Build DCGM 4.x image (DCGM 4.7.0 client) locally"
+	@echo "  docker-build-dcgm4.7.1-plus - Build DCGM 4.7.1-plus image (DCGM 4.7.1 client) locally"
+	@echo "  docker-publish       - Build and publish all lane images (CI/production)"
 	@echo "  docker-publish-dcgm3 - Build and publish DCGM 3.x image"
 	@echo "  docker-publish-dcgm4 - Build and publish DCGM 4.x image"
+	@echo "  docker-publish-dcgm4.7.1-plus - Build and publish DCGM 4.7.1-plus image"
 	@echo "  setup-buildx         - Setup Docker buildx builder"
 	@echo ""
 	@echo "Legacy targets:"

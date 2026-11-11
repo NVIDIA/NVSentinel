@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
@@ -68,7 +69,7 @@ type TolerationTemplateContext struct {
 
 func (r *ValidationRequestReconciler) createTestGroupObject(ctx context.Context, vr *v1alpha1.ValidationRequest,
 	group *v1alpha1.TestGroupStatus, objectName string) error {
-	u, err := r.renderTestGroupObject(vr, group, objectName)
+	u, err := r.renderTestGroupObject(ctx, vr, group, objectName)
 	if err != nil {
 		return err
 	}
@@ -82,6 +83,34 @@ func (r *ValidationRequestReconciler) createTestGroupObject(ctx context.Context,
 	}
 
 	return nil
+}
+
+// resolveTestImage returns the image for a test group. If testCfg.ImageByNodeLabel is set, it reads the label from
+// the first node in the group and returns the matching image. Otherwise, or if the node is not found or has no matching
+// label value, it returns testCfg.Image.
+func (r *ValidationRequestReconciler) resolveTestImage(ctx context.Context, testCfg v1alpha1.TestConfig,
+	nodes []string) (string, error) {
+	byLabel := testCfg.ImageByNodeLabel
+	if byLabel == nil || len(nodes) == 0 {
+		return testCfg.Image, nil
+	}
+
+	node := &corev1.Node{}
+	if err := r.Get(ctx, types.NamespacedName{Name: nodes[0]}, node); client.IgnoreNotFound(err) != nil {
+		return "", fmt.Errorf("get node %q to select test image: %w", nodes[0], err)
+	}
+
+	value, hasLabel := node.Labels[byLabel.Key]
+
+	image, ok := byLabel.Images[value]
+	if !hasLabel || !ok {
+		image = testCfg.Image
+	}
+
+	logf.FromContext(ctx).Info("Selected test image", "node", nodes[0], "label", byLabel.Key,
+		"labelValue", value, "image", image)
+
+	return image, nil
 }
 
 func (r *ValidationRequestReconciler) deleteTestGroupObject(ctx context.Context, group *v1alpha1.TestGroupStatus,
@@ -187,7 +216,7 @@ support batching, it will likely need to template the tests field above because 
 directly from the test provider template. In other words, the test provider which supports test batching will need
 knowledge of which subset of tests it supports to run.
 */
-func (r *ValidationRequestReconciler) renderTestGroupObject(vr *v1alpha1.ValidationRequest,
+func (r *ValidationRequestReconciler) renderTestGroupObject(ctx context.Context, vr *v1alpha1.ValidationRequest,
 	group *v1alpha1.TestGroupStatus, objectName string) (*unstructured.Unstructured, error) {
 	providerCfg := r.Config.Validation.Spec.Providers[group.Provider]
 	tmpl := r.Config.Templates[providerCfg.TemplateFile]
@@ -215,9 +244,13 @@ func (r *ValidationRequestReconciler) renderTestGroupObject(vr *v1alpha1.Validat
 
 	if len(group.Tests) > 0 {
 		testCfg := r.Config.Validation.Spec.Tests[group.Tests[0]]
-		image = testCfg.Image
 		command = testCfg.Command
 		env = testCfg.Env
+
+		var err error
+		if image, err = r.resolveTestImage(ctx, testCfg, group.Nodes); err != nil {
+			return nil, err
+		}
 	}
 
 	tolerations := []TolerationTemplateContext{

@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,9 +56,12 @@ const (
 	NodeGKEDriverInstallerIndex = "nodeGKEDriverInstaller"
 	driverComponentLabel        = "app.kubernetes.io/component"
 	driverComponentValue        = "nvidia-driver"
-	// DCGM major versions used for the dcgm.version label.
-	dcgmVersion3 = "3.x"
-	dcgmVersion4 = "4.x"
+	// DCGM version lanes used for the dcgm.version label. DCGM 4.7.1 changed
+	// client/hostengine message versions, so 4.x is split at 4.7.1: a client
+	// must be on the same side of 4.7.1 as the hostengine.
+	dcgmVersion3         = "3.x"
+	dcgmVersion4         = "4.x"
+	dcgmVersion4_7_1Plus = "4.7.1-plus"
 
 	// Label values
 	LabelValueTrue  = "true"
@@ -67,6 +71,7 @@ const (
 var (
 	dcgm4Regex       = regexp.MustCompile(`.*dcgm:4\..*`)
 	dcgm3Regex       = regexp.MustCompile(`.*dcgm:3\..*`)
+	dcgm4SemverRegex = regexp.MustCompile(`dcgm:4\.(\d+)\.(\d+)`)
 	nodeLockHashSeed = maphash.MakeSeed()
 )
 
@@ -610,15 +615,40 @@ func (l *Labeler) resolveDCGMVersionLabelValue(node *v1.Node, excludePod *v1.Pod
 		}
 
 		for _, container := range pod.Spec.Containers {
-			if dcgm4Regex.MatchString(container.Image) {
-				return dcgmVersion4, nil
-			} else if dcgm3Regex.MatchString(container.Image) {
-				return dcgmVersion3, nil
+			if version := dcgmVersionFromImage(container.Image); version != "" {
+				return version, nil
 			}
 		}
 	}
 
 	return "", nil
+}
+
+// dcgmVersionFromImage returns the dcgm.version lane for a DCGM image, or "" if
+// the image is not a DCGM image. A DCGM 4 tag without a parseable minor and patch
+// version maps to 4.x, the lane used before 4.x was split.
+func dcgmVersionFromImage(image string) string {
+	switch {
+	case dcgm3Regex.MatchString(image):
+		return dcgmVersion3
+	case !dcgm4Regex.MatchString(image):
+		return ""
+	}
+
+	m := dcgm4SemverRegex.FindStringSubmatch(image)
+	if m == nil {
+		slog.Warn("Cannot parse DCGM 4 minor and patch version from image; using 4.x", "image", image)
+		return dcgmVersion4
+	}
+
+	minor, _ := strconv.Atoi(m[1])
+	patch, _ := strconv.Atoi(m[2])
+
+	if minor > 7 || (minor == 7 && patch >= 1) {
+		return dcgmVersion4_7_1Plus
+	}
+
+	return dcgmVersion4
 }
 
 // normalizeDCGMVersion validates the dcgm.version label. Anything else is rejected.
@@ -628,6 +658,8 @@ func normalizeDCGMVersion(version string) string {
 		return dcgmVersion3
 	case dcgmVersion4:
 		return dcgmVersion4
+	case dcgmVersion4_7_1Plus:
+		return dcgmVersion4_7_1Plus
 	default:
 		return ""
 	}
