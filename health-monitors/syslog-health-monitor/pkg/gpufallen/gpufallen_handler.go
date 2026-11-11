@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -88,7 +89,7 @@ func (h *GPUFallenHandler) trackXIDIfPresent(message string) {
 		return // Not an XID message
 	}
 
-	pciAddr := matches[1]
+	pciAddr := normalizePCIAddress(matches[1])
 	xidCode := 0
 	// Parse XID code (matches[2])
 	if _, err := fmt.Sscanf(matches[2], "%d", &xidCode); err != nil {
@@ -109,9 +110,22 @@ func (h *GPUFallenHandler) trackXIDIfPresent(message string) {
 	}
 }
 
+// normalizePCIAddress returns the domain:bus:device part of a PCI address. The driver prints
+// XID lines without the function ("0000:b3:00") and the fallen off the bus line with it
+// ("0000:b3:00.0"), so both must be reduced to the same key before they are compared.
+func normalizePCIAddress(pciAddr string) string {
+	if before, _, ok := strings.Cut(pciAddr, "."); ok {
+		pciAddr = before
+	}
+
+	return strings.ToLower(pciAddr)
+}
+
 // hasRecentXID checks if a PCI address has had an XID error within the time window
 // and opportunistically cleans up expired entries to prevent memory leaks
 func (h *GPUFallenHandler) hasRecentXID(pciAddr string) bool {
+	pciAddr = normalizePCIAddress(pciAddr)
+
 	h.mu.RLock()
 	record, exists := h.recentXIDs[pciAddr]
 	h.mu.RUnlock()
