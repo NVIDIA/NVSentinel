@@ -53,6 +53,10 @@ type NICHealthMonitor struct {
 
 	stateInterval time.Duration
 
+	// publishDrain bounds how long each publish keeps trying past the
+	// shutdown context's cancellation; see defaultPublishDrain.
+	publishDrain time.Duration
+
 	// stall is nil unless EnablePollStallDetection turned it on.
 	stall *pollStall
 }
@@ -80,6 +84,7 @@ func NewNICHealthMonitor(
 		nodeName:      nodeName,
 		pub:           healthpub.New(pcClient, target, agentName, pubOpts...),
 		stateInterval: stateInterval,
+		publishDrain:  defaultPublishDrain,
 	}
 
 	names := make([]string, 0, len(allChecks))
@@ -190,7 +195,12 @@ func (m *NICHealthMonitor) runOneCheck(ctx context.Context, chk checks.Transacti
 
 	batch := &pb.HealthEvents{Version: 1, Events: events}
 
-	if err := m.pub.Publish(ctx, batch); err != nil {
+	// The poll may be completing after SIGTERM; its events still go out on
+	// the drain window.
+	pubCtx, cancel := m.publishDrainContext(ctx)
+	defer cancel()
+
+	if err := m.pub.Publish(pubCtx, batch); err != nil {
 		if errors.Is(err, healthpub.ErrPublishRejected) {
 			chk.Commit()
 			slog.Error("Platform connector rejected health events for good; dropping them",

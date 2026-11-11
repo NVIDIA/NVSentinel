@@ -1,0 +1,107 @@
+// Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package monitor
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
+)
+
+// hangingClient holds a send until its context ends or the test releases it,
+// standing in for a platform connector that wedged mid-send.
+type hangingClient struct {
+	release chan struct{}
+}
+
+func (c *hangingClient) HealthEventOccurredV1(
+	ctx context.Context, _ *pb.HealthEvents, _ ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.release:
+		return &emptypb.Empty{}, nil
+	}
+}
+
+// TestCheckPollStalls_CancelledContextStillPublishesStall: the stall event is
+// the only record that the node was blind, and liveness lands SIGTERM on
+// this monitor precisely while that event is still trying to deliver, so
+// the publish must go out on the drain window instead of dying on the
+// cancelled context.
+func TestCheckPollStalls_CancelledContextStillPublishesStall(t *testing.T) {
+	m, client, clock := newStallMonitor(t, "cancelled-node")
+	publishBaseline(t, m)
+
+	m.beginPoll("state")
+	*clock = clock.Add(11 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.checkPollStalls(ctx)
+
+	events := client.stallEvents()
+	require.Len(t, events, 2, "baseline, then the stall event delivered on the drain window")
+	assert.False(t, events[1].IsHealthy)
+}
+
+// TestRunChecks_CancelledContextStillPublishes: a poll that completes after
+// SIGTERM carries the transition that ended the stall, so its batch goes
+// out on the drain window and the check commits instead of leaving the
+// next container to re-detect the recovery.
+func TestRunChecks_CancelledContextStillPublishes(t *testing.T) {
+	client := &capturingClient{}
+	check := &stagedTestCheck{}
+	m := NewNICHealthMonitor("node1", client, "127.0.0.1:5555",
+		[]checks.TransactionalCheck{check}, time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.NoError(t, m.RunStateChecks(ctx))
+
+	assert.True(t, check.committed, "delivered on the drain window, so the transition is consumed")
+	assert.Len(t, client.events, 1)
+}
+
+// TestRunChecks_WedgedPublishIsBoundedByDrainWindow: detaching from the
+// cancellation must not turn a wedged connector into an unbounded wait at
+// shutdown; the publish ends with its window and the transition stays
+// staged for the next poll.
+func TestRunChecks_WedgedPublishIsBoundedByDrainWindow(t *testing.T) {
+	client := &hangingClient{release: make(chan struct{})}
+	defer close(client.release)
+
+	check := &stagedTestCheck{}
+	m := NewNICHealthMonitor("node1", client, "127.0.0.1:5555",
+		[]checks.TransactionalCheck{check}, time.Second)
+	m.publishDrain = 50 * time.Millisecond
+
+	start := time.Now()
+	require.NoError(t, m.RunStateChecks(context.Background()))
+
+	assert.Less(t, time.Since(start), 5*time.Second,
+		"the drain window bounds how long shutdown waits on one publish")
+	assert.False(t, check.committed, "undelivered, so the transition stays staged")
+	assert.Equal(t, 1, check.discardCalls)
+}
