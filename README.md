@@ -47,7 +47,7 @@ helm upgrade --install cert-manager jetstack/cert-manager \
 This block works for both a first install and every later upgrade; rerun it as is. By default it only turns on health monitoring: it won't cordon a node, evict a pod, or reboot a machine, so it's safe to run anywhere. The flags below the command are everything you can layer on later; see [Adoption](#adoption) for what each one does.
 
 ```bash
-NVSENTINEL_VERSION=v1.30.0
+NVSENTINEL_VERSION=v1.31.0
 
 kubectl create namespace nvsentinel --dry-run=client -o yaml | kubectl apply -f -
 
@@ -133,7 +133,7 @@ Uncomment this flag:
 --set global.preflight.enabled=true
 ```
 
-This uses Kubernetes' native gang scheduling (the `GenericWorkload` and `GangScheduling` feature gates need to be enabled by a cluster admin). Using a different scheduler instead? See the [gang discovery guide](https://docs.nvidia.com/nvsentinel/configuration/preflight/#gang-discovery).
+This uses Kubernetes' native gang scheduling (a cluster admin needs to enable the `GenericWorkload` feature gate, plus the `GangScheduling` gate on Kubernetes 1.35 and 1.36; Kubernetes 1.37 removed `GangScheduling`). Using a different scheduler instead? See the [gang discovery guide](https://docs.nvidia.com/nvsentinel/configuration/preflight/#gang-discovery).
 
 **Label the namespaces that should run it.** It's opt-in per namespace, so nothing changes until you do this:
 
