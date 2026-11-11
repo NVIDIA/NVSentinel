@@ -74,6 +74,46 @@ func slowdownTLimitC(device nvml.Device) *int {
 	return &val
 }
 
+func nvlinkPresentLinkCount(device nvml.Device) *int {
+	fields := []nvml.FieldValue{{FieldId: nvml.FI_DEV_NVLINK_LINK_COUNT}}
+	if ret := device.GetFieldValues(fields); ret != nvml.SUCCESS {
+		slog.Error("NVML GetFieldValues failed",
+			"field_id", nvml.FI_DEV_NVLINK_LINK_COUNT,
+			"error", nvml.ErrorString(ret))
+
+		return nil
+	}
+
+	field := fields[0]
+	if ret := nvml.Return(field.NvmlReturn); ret != nvml.SUCCESS {
+		slog.Error("NVML field read failed",
+			"field_id", field.FieldId,
+			"error", nvml.ErrorString(ret))
+
+		return nil
+	}
+
+	var count int
+	switch nvml.ValueType(field.ValueType) {
+	case nvml.VALUE_TYPE_UNSIGNED_INT:
+		count = int(binary.NativeEndian.Uint32(field.Value[:4]))
+	case nvml.VALUE_TYPE_UNSIGNED_LONG, nvml.VALUE_TYPE_UNSIGNED_LONG_LONG:
+		count = int(binary.NativeEndian.Uint64(field.Value[:8]))
+	default:
+		slog.Error("NVML field has unexpected value type",
+			"field_id", field.FieldId,
+			"value_type", field.ValueType)
+
+		return nil
+	}
+
+	slog.Info("NVML NVLink present link count",
+		"field_id", field.FieldId,
+		"value", count)
+
+	return &count
+}
+
 type NVMLWrapper struct{}
 
 func (w *NVMLWrapper) Init() error {
@@ -143,6 +183,7 @@ func (w *NVMLWrapper) GetGPUInfo(index int) (*model.GPUInfo, error) {
 	gpuInfo.DeviceName = name
 
 	gpuInfo.SlowdownTLimitC = slowdownTLimitC(device)
+	gpuInfo.NVLinkPresentLinkCount = nvlinkPresentLinkCount(device)
 
 	if minor, ret := device.GetMinorNumber(); ret == nvml.SUCCESS {
 		gpuInfo.MinorNumber = &minor
