@@ -20,6 +20,10 @@ on:
   schedule:
     - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
   workflow_dispatch: {}
+  # TEMPORARY: test on the copy-pr-bot branch of #2361. Remove before merge.
+  push:
+    branches:
+      - pull-request/2361
 
 permissions:
   contents: read
@@ -55,13 +59,13 @@ jobs:
             echo "::error::No successful run of publish.yml on main"
             exit 1
           fi
-          images=$(./scripts/retry.sh scripts/published-images.sh "main-${sha:0:7}")
+          images=$(./scripts/retry.sh scripts/published-images.sh "main-${sha:0:7}" | jq -c '[.[] | select(.large)]')  # TEMPORARY
           echo "images=${images}" >> "${GITHUB_OUTPUT}"
           jq -r '.[] | "\(.ref) \(.size_mb) MB"' <<< "${images}"
 
   scan:
     needs: find-images
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.image.large && 'linux-amd64-cpu32' || 'ubuntu-latest' }}  # TEMPORARY
     timeout-minutes: 90
     permissions:
       contents: read
@@ -76,6 +80,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      # TEMPORARY: sample memory and disk while the image is scanned directly.
+      - name: Sample memory and disk
+        run: |
+          nproc; free -m; df -h /
+          nohup bash -c 'while sleep 10; do echo "$(date +%T) used=$(free -m | awk "/Mem/{print \$3}")MB disk_used=$(df -BG --output=used / | tail -1)"; done' > "${RUNNER_TEMP}/samples.log" 2>&1 &
 
       # Grype does not finish a scan of the largest images on a GitHub-hosted runner. For those, scan
       # the SBOM that the publish workflow attested, after a check of its signature.
@@ -109,7 +119,12 @@ jobs:
       - name: Scan the image
         uses: ./.github/actions/security-scan
         with:
-          image: ${{ !matrix.image.large && format('registry:{0}', matrix.image.ref) || '' }}
-          sbom: ${{ steps.sbom.outputs.file }}
+          image: registry:${{ matrix.image.ref }}  # TEMPORARY: scan the large images directly
           severity-cutoff: high
           category: ${{ matrix.image.category }}
+
+      - name: Show the samples  # TEMPORARY
+        if: always()
+        run: |
+          cat "${RUNNER_TEMP}/samples.log"
+          echo "peak used: $(grep -o 'used=[0-9]*' "${RUNNER_TEMP}/samples.log" | cut -d= -f2 | sort -n | tail -1)MB"
