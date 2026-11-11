@@ -41,7 +41,8 @@ jobs:
           persist-credentials: false
 
       # Images from main are tagged main-<short commit>. Scan the images of the latest commit that
-      # published successfully.
+      # published successfully. A manual run of publish.yml publishes the tag it is given instead, so
+      # only runs from a push count.
       - name: Find the images of the latest publish from main
         id: images
         env:
@@ -49,12 +50,16 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          sha=$(gh run list -R "${REPOSITORY}" --workflow publish.yml --branch main --status success \
-            --limit 1 --json headSha --jq '.[0].headSha')
+          sha=$(gh run list -R "${REPOSITORY}" --workflow publish.yml --branch main --event push \
+            --status success --limit 1 --json headSha --jq '.[0].headSha')
           if [ -z "${sha}" ]; then
             echo "::error::No successful run of publish.yml on main"
             exit 1
           fi
+          # Read the image list from the published commit, in case a later commit adds or removes an
+          # image.
+          ./scripts/retry.sh git fetch -q --depth=1 origin "${sha}"
+          git checkout -q "${sha}" -- scripts/buildko.sh .github/workflows/publish.yml
           images=$(./scripts/retry.sh scripts/published-images.sh "main-${sha:0:7}")
           echo "images=${images}" >> "${GITHUB_OUTPUT}"
           jq -r '.[] | "\(.ref) \(.size_mb) MB"' <<< "${images}"
