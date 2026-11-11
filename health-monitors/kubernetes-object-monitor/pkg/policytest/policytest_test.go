@@ -227,6 +227,7 @@ func TestLoadSuiteRejectsInvalidFiles(t *testing.T) {
 		{name: "missing name", content: "cases:\n  - {policy: p, resource: " + pod + "}\n", wantErr: "has no name"},
 		{name: "duplicate name", content: "cases:\n  - {name: a, policy: p, resource: " + pod + "}\n  - {name: a, policy: p, resource: " + pod + "}\n", wantErr: "duplicate case name"},
 		{name: "missing policy", content: "cases:\n  - {name: a, resource: " + pod + "}\n", wantErr: "has no policy"},
+		{name: "second document", content: "cases:\n  - {name: a, policy: p, resource: " + pod + "}\n---\ncases:\n  - {name: b, policy: p, resource: " + pod + "}\n", wantErr: "has more than one YAML document"},
 		{name: "missing resource", content: "cases:\n  - {name: a, policy: p}\n", wantErr: "has no resource"},
 		{name: "resource without apiVersion", content: "cases:\n  - {name: a, policy: p, resource: {kind: Pod, metadata: {name: p}}}\n", wantErr: `case "a" resource needs apiVersion, kind and metadata.name`},
 		{name: "resource without kind", content: "cases:\n  - {name: a, policy: p, resource: {apiVersion: v1, metadata: {name: p}}}\n", wantErr: `case "a" resource needs apiVersion, kind and metadata.name`},

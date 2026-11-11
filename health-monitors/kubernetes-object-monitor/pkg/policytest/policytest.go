@@ -20,7 +20,10 @@
 package policytest
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
@@ -75,6 +79,15 @@ func LoadSuite(path string) (*Suite, error) {
 		return nil, fmt.Errorf("read test file: %w", err)
 	}
 
+	docs, err := countDocuments(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse test file %s: %w", path, err)
+	}
+
+	if docs > 1 {
+		return nil, fmt.Errorf("test file %s has more than one YAML document", path)
+	}
+
 	var s Suite
 	if err := yaml.UnmarshalStrict(data, &s); err != nil {
 		return nil, fmt.Errorf("parse test file %s: %w", path, err)
@@ -95,6 +108,32 @@ func LoadSuite(path string) (*Suite, error) {
 	}
 
 	return &s, nil
+}
+
+// countDocuments returns how many non-empty YAML documents data holds.
+func countDocuments(data []byte) (int, error) {
+	r := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
+	n := 0
+
+	for {
+		doc, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			return n, nil
+		}
+
+		if err != nil {
+			return 0, err
+		}
+
+		var v any
+		if err := yaml.Unmarshal(doc, &v); err != nil {
+			return 0, err
+		}
+
+		if v != nil {
+			n++
+		}
+	}
 }
 
 func validateCase(i int, c Case, seen map[string]bool) error {
