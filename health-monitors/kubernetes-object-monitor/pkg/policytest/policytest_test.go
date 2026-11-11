@@ -311,3 +311,25 @@ func TestObjectsArePrunedLikeTheCache(t *testing.T) {
 		assert.Contains(t, got.Object["metadata"], "labels")
 	})
 }
+
+func TestRunReportsMatchWhenNodeAssociationFails(t *testing.T) {
+	policies := []config.Policy{{
+		Name:            "failed-pod",
+		Enabled:         true,
+		Resource:        config.ResourceSpec{Version: "v1", Kind: "Pod"},
+		Predicate:       config.PredicateSpec{Expression: `resource.status.phase == "Failed"`},
+		NodeAssociation: &config.AssociationSpec{Expression: "resource.spec.nodeName"},
+	}}
+	suite := &Suite{Cases: []Case{{Name: "c", Policy: "failed-pod", Resource: map[string]any{
+		"apiVersion": "v1", "kind": "Pod",
+		"metadata": map[string]any{"name": "p", "namespace": "default"},
+		"status":   map[string]any{"phase": "Failed"},
+	}, Expect: Expect{Match: true}}}}
+
+	results, err := Run(context.Background(), policies, suite)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Match)
+	require.Len(t, results[0].Failures, 1)
+	assert.Contains(t, results[0].Failures[0], "node association evaluation failed:")
+}

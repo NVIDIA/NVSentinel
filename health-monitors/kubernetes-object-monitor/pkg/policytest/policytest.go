@@ -190,13 +190,13 @@ func runCase(
 	}
 
 	match, node, err := evaluator.Evaluate(ctx, c.Policy, resource)
+	r.Match = match
+	r.Node = node
+
 	if err != nil {
 		r.Failures = append(r.Failures, err.Error())
 		return r
 	}
-
-	r.Match = match
-	r.Node = node
 
 	if match != c.Expect.Match {
 		r.Failures = append(r.Failures, fmt.Sprintf("match is %v, want %v", match, c.Expect.Match))
