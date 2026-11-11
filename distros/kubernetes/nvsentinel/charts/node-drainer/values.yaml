@@ -82,9 +82,9 @@ userNamespaces:
     # - "AllowCompletion": Do not evict. Poll until the pods exit on their own, with no
     #   deadline -- deleteAfterTimeoutMinutes does not apply to this mode. Suitable for
     #   workloads that terminate by themselves (Jobs, batch); a Deployment or StatefulSet
-    #   pod never will, so the drain requeues every requeueBackoffBase (capped at 2m) for
-    #   the life of the process. Alert on node_drainer_awaiting_completion_start_timestamp_seconds
-    #   to catch that.
+    #   pod never will, so each event requeues with exponential backoff (requeueBackoffBase,
+    #   doubling, capped at 2m) for the life of the process. Alert on
+    #   node_drainer_awaiting_completion_event_timestamp_seconds to catch that.
     # - "DeleteAfterTimeout": Wait for deleteAfterTimeoutMinutes, then force delete if still running
     mode: "AllowCompletion"
 

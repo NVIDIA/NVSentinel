@@ -83,8 +83,8 @@ func (m *eventQueueManager) ClearNodeDraining(nodeName string) {
 	// several events can be queued for one node (classifyForEnqueue puts the later ones in the low
 	// lane rather than dropping them), and every way a node stops draining reaches here. If a
 	// single-event cancellation removes it while another event for that node is still waiting,
-	// that event's next poll restores the same timestamp.
-	metrics.NodeDrainAwaitingCompletionStart.DeleteLabelValues(nodeName)
+	// that event's next poll restores its own event's time, so the gap does not restart its clock.
+	metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 }
 
 // EnqueueEventGeneric enqueues an event using the new database-agnostic interface.
