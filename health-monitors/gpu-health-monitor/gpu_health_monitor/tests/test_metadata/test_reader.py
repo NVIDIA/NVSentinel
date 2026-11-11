@@ -532,41 +532,35 @@ def test_pinned_checks_the_file_once(tmp_path: Path, sample_metadata: dict, monk
     assert reader.get_gpu_uuid(0) == "GPU-22222222-2222-2222-2222-222222222222"
 
 
-def test_concurrent_lookups_while_metadata_collector_rewrites(tmp_path: Path, sample_metadata: dict) -> None:
-    """Lookups from several threads while the file is replaced over and over always see a whole
-    copy, and the reader ends on the last one."""
+def test_concurrent_lookups_see_each_replacement(tmp_path: Path, sample_metadata: dict) -> None:
+    """After each replacement of the file, every thread looking up at the same time gets the new copy."""
     path = str(tmp_path / "gpu_metadata.json")
-    uuids = ("GPU-00000000-0000-0000-0000-000000000000", "GPU-22222222-2222-2222-2222-222222222222")
     write_like_metadata_collector(path, sample_metadata)
     reader = MetadataReader(path)
-    errors = []
-    stop = threading.Event()
+    workers, rounds = 8, 20
+    # Each round, the main thread writes a new copy, then all workers look up at the same time.
+    written = threading.Barrier(workers + 1, timeout=10)
+    looked_up = threading.Barrier(workers + 1, timeout=10)
+    seen = [[] for _ in range(rounds)]
 
     def look_up() -> None:
-        try:
-            while not stop.is_set():
-                uuid = reader.get_gpu_uuid(0)
-                if uuid not in uuids:
-                    errors.append(f"unexpected UUID {uuid!r}")
-                    return
-        except Exception as e:
-            errors.append(e)
+        for r in range(rounds):
+            written.wait()
+            seen[r].append(reader.get_gpu_uuid(0))
+            looked_up.wait()
 
-    threads = [threading.Thread(target=look_up) for _ in range(8)]
+    threads = [threading.Thread(target=look_up) for _ in range(workers)]
     for thread in threads:
         thread.start()
-    for i in range(50):
-        sample_metadata["gpus"][0]["uuid"] = uuids[i % 2]
+    for r in range(rounds):
+        sample_metadata["gpus"][0]["uuid"] = f"GPU-round-{r:02d}"
         write_like_metadata_collector(path, sample_metadata)
-    stop.set()
+        written.wait()
+        looked_up.wait()
     for thread in threads:
         thread.join()
-    assert errors == []
 
-    # A last copy of another size, so it can't look like a copy the reader read before.
-    sample_metadata["gpus"][0]["uuid"] = "GPU-last"
-    write_like_metadata_collector(path, sample_metadata)
-    assert reader.get_gpu_uuid(0) == "GPU-last"
+    assert seen == [[f"GPU-round-{r:02d}"] * workers for r in range(rounds)]
 
 
 def test_pinned_poll_that_raises_releases_the_pin(tmp_path: Path, sample_metadata: dict) -> None:
