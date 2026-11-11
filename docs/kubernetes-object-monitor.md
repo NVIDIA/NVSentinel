@@ -166,7 +166,7 @@ when this policy should bypass the action.
 
 ## Testing Policies
 
-The monitor binary can check policies against test cases without a cluster. Pass `--test-policies` with a YAML file of cases, and `--policy-config-path` with the rendered policy config (the `config.toml` key of the `kubernetes-object-monitor` ConfigMap, for example from `helm template --show-only charts/kubernetes-object-monitor/templates/configmap.yaml`). The monitor evaluates each case the same way it does in the cluster: it prunes the resource and the objects `lookup()` returns to the fields its cache keeps, runs the policy with the same evaluator, prints one line per case, and exits.
+The monitor binary can check policies against test cases without a cluster. Pass `--test-policies` with a YAML file of cases, and `--policy-config-path` with the rendered policy config, the `config.toml` key of the `kubernetes-object-monitor` ConfigMap. The monitor evaluates each case the same way it does in the cluster: it prunes the resource and the objects `lookup()` returns to the fields its cache keeps, runs the policy with the same evaluator, prints one line per case, and exits.
 
 ```yaml
 # Cluster state that lookup() sees.
@@ -190,6 +190,17 @@ cases:
       match: true                  # Required: expected predicate result
       node: node-a                 # Optional: expected node association
 ```
+
+To render the policy config from the chart and your values:
+
+```bash
+helm template nvsentinel oci://ghcr.io/nvidia/nvsentinel --version <version> -f values.yaml \
+  --set global.kubernetesObjectMonitor.enabled=true \
+  --show-only charts/kubernetes-object-monitor/templates/configmap.yaml \
+  | yq 'select(.kind == "ConfigMap") | .data["config.toml"]' > config.toml
+```
+
+Then run the tests:
 
 ```bash
 docker run --rm -v "$PWD:/tests" ghcr.io/nvidia/nvsentinel/kubernetes-object-monitor:<version> \
