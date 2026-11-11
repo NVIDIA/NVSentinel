@@ -265,7 +265,7 @@ func clusterObjects(
 
 		seen[key] = i
 
-		cached, err := lookedUp(plan, u)
+		cached, err := clusterObject(plan, u)
 		if err != nil {
 			return nil, fmt.Errorf("object %d: %w", i, err)
 		}
@@ -274,6 +274,29 @@ func clusterObjects(
 	}
 
 	return objects, nil
+}
+
+// clusterObject returns u as lookup() sees it, in a form the fake client accepts.
+func clusterObject(
+	plan map[schema.GroupVersionKind]cacheplan.Entry,
+	u *unstructured.Unstructured,
+) (*unstructured.Unstructured, error) {
+	if u.GetDeletionTimestamp() != nil && len(u.GetFinalizers()) == 0 {
+		return nil, errors.New("metadata.deletionTimestamp is set without finalizers, which the API server never serves")
+	}
+
+	cached, err := lookedUp(plan, u)
+	if err != nil {
+		return nil, err
+	}
+
+	// The fake client rejects a terminating object without finalizers, and the
+	// cache transform drops them unless a policy reads them.
+	if cached != u && cached.GetDeletionTimestamp() != nil && len(cached.GetFinalizers()) == 0 {
+		cached.SetFinalizers(u.GetFinalizers())
+	}
+
+	return cached, nil
 }
 
 func runCase(

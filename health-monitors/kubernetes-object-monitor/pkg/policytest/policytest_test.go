@@ -258,6 +258,43 @@ func TestRunRejectsObjectsWithoutIdentity(t *testing.T) {
 	assert.Contains(t, err.Error(), "needs apiVersion, kind and metadata.name")
 }
 
+func TestRunRejectsTerminatingObjectsWithoutFinalizers(t *testing.T) {
+	suite := &Suite{
+		Objects: []map[string]any{{
+			"apiVersion": "v1", "kind": "Node",
+			"metadata": map[string]any{"name": "node-a", "deletionTimestamp": "2026-11-11T00:00:00Z"},
+		}},
+		Cases: []Case{{Name: "c", Policy: "pod-on-cordoned-node", Resource: map[string]any{"apiVersion": "v1", "kind": "Pod"}}},
+	}
+
+	_, err := Run(context.Background(), podPolicies(), suite)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "object 0: metadata.deletionTimestamp is set without finalizers")
+}
+
+func TestRunLooksUpTerminatingObjects(t *testing.T) {
+	suite := &Suite{
+		Objects: []map[string]any{{
+			"apiVersion": "v1", "kind": "Node",
+			"metadata": map[string]any{
+				"name": "node-a", "deletionTimestamp": "2026-11-11T00:00:00Z", "finalizers": []any{"example.com/hold"},
+			},
+			"spec": map[string]any{"unschedulable": true},
+		}},
+		Cases: []Case{{Name: "c", Policy: "pod-on-cordoned-node", Expect: Expect{Match: ptr(true)}, Resource: map[string]any{
+			"apiVersion": "v1", "kind": "Pod",
+			"metadata": map[string]any{"name": "p", "namespace": "workloads"},
+			"spec":     map[string]any{"nodeName": "node-a"},
+			"status":   map[string]any{"phase": "Failed"},
+		}}},
+	}
+
+	results, err := Run(context.Background(), podPolicies(), suite)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Empty(t, results[0].Failures)
+}
+
 func TestRunRejectsDuplicateObjects(t *testing.T) {
 	node := map[string]any{"apiVersion": "v1", "kind": "Node", "metadata": map[string]any{"name": "node-a"}}
 	suite := &Suite{
