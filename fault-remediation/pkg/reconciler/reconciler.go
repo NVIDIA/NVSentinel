@@ -1063,6 +1063,18 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return res, err
 	}
 
+	if err := r.recordRemediationDecision(ctx, healthEventStore, eventWithToken, healthEventWithStatus); err != nil {
+		metrics.ProcessingErrors.WithLabelValues("record_decision_error", nodeName).Inc()
+		slog.ErrorContext(ctx, "Error recording remediation decision", "node", nodeName, "error", err)
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "record_decision_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+
+		return ctrl.Result{}, err
+	}
+
 	res, err, done = r.tryHandleExistingCR(ctx, span, healthEventWithStatus, groupConfig, eventWithToken,
 		watcherInstance, healthEventStore, nodeName)
 	if done {
@@ -1792,6 +1804,48 @@ func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 	slog.InfoContext(ctx, "Health event has been updated with status",
 		"id", documentID,
 		"status", nodeRemediatedStatus)
+
+	return nil
+}
+
+// recordRemediationDecision records the entry of maintenance.actions that fault-remediation
+// uses for the event, before the existing CR check, the log collector and the CR. Without rule
+// sets, the entry is the recommended action of the event.
+//
+// The record is written once. A later pass for the same event, for example while the log
+// collector runs, finds the record in its status and keeps it, even if the action would now be
+// different. The record is also set on the in-memory status, so that a pass that reuses the
+// event without a new read finds it too.
+func (r *FaultRemediationReconciler) recordRemediationDecision(
+	ctx context.Context,
+	healthEventStore datastore.HealthEventStore,
+	eventWithToken datastore.EventWithToken,
+	healthEventWithStatus *events.HealthEventDoc,
+) error {
+	if healthEventWithStatus.HealthEventStatus.GetRemediationDecision() != nil {
+		return nil
+	}
+
+	action := model.GetEffectiveActionName(healthEventWithStatus.HealthEvent)
+
+	documentID, err := utils.ExtractDocumentID(eventWithToken.Event)
+	if err != nil {
+		return err
+	}
+
+	status := datastore.HealthEventStatus{
+		RemediationDecision: &datastore.RemediationDecision{Action: action},
+	}
+
+	if err := healthEventStore.UpdateHealthEventStatus(ctx, documentID, status); err != nil {
+		return fmt.Errorf("error recording remediation decision for document with ID: %v, error: %w", documentID, err)
+	}
+
+	if healthEventWithStatus.HealthEventStatus != nil {
+		healthEventWithStatus.HealthEventStatus.RemediationDecision = &protos.RemediationDecision{Action: action}
+	}
+
+	slog.InfoContext(ctx, "Recorded remediation decision", "id", documentID, "action", action)
 
 	return nil
 }
