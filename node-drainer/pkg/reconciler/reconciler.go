@@ -497,6 +497,8 @@ func (r *Reconciler) evaluateEvent(ctx context.Context, healthEvent model.Health
 func (r *Reconciler) recordNewDrainDecision(ctx context.Context, decision *protos.DrainDecision,
 	event datastore.Event, database queue.DataStore, nodeName string) error {
 	if decision.GetMethod() == "" {
+		metrics.ProcessingErrors.WithLabelValues(metrics.ErrorTypeRecordDrainDecision, nodeName).Inc()
+
 		return fmt.Errorf("drain decision for node %s has no method to record", nodeName)
 	}
 
@@ -505,6 +507,7 @@ func (r *Reconciler) recordNewDrainDecision(ctx context.Context, decision *proto
 
 	documentID, err := utils.ExtractDocumentIDNative(event)
 	if err != nil {
+		metrics.ProcessingErrors.WithLabelValues(metrics.ErrorTypeRecordDrainDecision, nodeName).Inc()
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("node_drainer.error.type", "extract_document_id_error"),
@@ -514,18 +517,15 @@ func (r *Reconciler) recordNewDrainDecision(ctx context.Context, decision *proto
 		return fmt.Errorf("failed to extract document ID for drain decision: %w", err)
 	}
 
-	stored := map[string]any{
-		"method": decision.GetMethod(),
-	}
-	if ruleSet := decision.GetRuleSet(); ruleSet != "" {
-		stored["ruleset"] = ruleSet
+	stored := &datastore.DrainDecision{
+		RuleSet:    decision.GetRuleSet(),
+		Method:     decision.GetMethod(),
+		Stopped:    decision.GetStopped(),
+		ReusedFrom: decision.GetReusedFrom(),
 	}
 
 	if scope := decision.GetScope(); scope != nil {
-		stored["scope"] = map[string]any{
-			"entitytype":  scope.GetEntityType(),
-			"entityvalue": scope.GetEntityValue(),
-		}
+		stored.Scope = &datastore.Entity{EntityType: scope.GetEntityType(), EntityValue: scope.GetEntityValue()}
 	}
 
 	filter := map[string]any{

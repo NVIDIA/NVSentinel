@@ -2747,6 +2747,44 @@ func TestReconciler_DrainDecision_WriteFailureDoesNotDrain(t *testing.T) {
 	assert.Nil(t, pod.DeletionTimestamp)
 }
 
+// TestReconciler_DrainDecision_NoDocumentIDDoesNotDrain stops before the custom drain CR when
+// the event has no document ID to store the decision on, and counts it as a write error.
+func TestReconciler_DrainDecision_NoDocumentIDDoesNotDrain(t *testing.T) {
+	cfg := testCustomDrainConfig("")
+	setup := setupCustomDrainTest(t, cfg)
+
+	nodeName := "no-document-id-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "app-ns")
+	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	store := &recordingDataStore{mockDataStore: setup.mockDB}
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	delete(event, "_id")
+	setup.mockDB.storeEvent(nodeName, event)
+
+	beforeWriteErrors := getCounterVecValue(t, metrics.ProcessingErrors, metrics.ErrorTypeRecordDrainDecision, nodeName)
+	beforeEvaluateErrors := getCounterVecValue(t, metrics.ProcessingErrors, "evaluate_event_error", nodeName)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to extract document ID for drain decision")
+	assert.Equal(t, beforeWriteErrors+1,
+		getCounterVecValue(t, metrics.ProcessingErrors, metrics.ErrorTypeRecordDrainDecision, nodeName))
+	assert.Equal(t, beforeEvaluateErrors,
+		getCounterVecValue(t, metrics.ProcessingErrors, "evaluate_event_error", nodeName),
+		"a decision with no document ID is counted once, as a write error")
+	assert.Zero(t, drainDecisionUpdateCount(store.updates))
+
+	crs, listErr := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default").List(setup.ctx, metav1.ListOptions{})
+	require.NoError(t, listErr)
+	assert.Empty(t, crs.Items)
+
+	pod, getErr := setup.client.CoreV1().Pods("app-ns").Get(setup.ctx, "app-pod", metav1.GetOptions{})
+	require.NoError(t, getErr)
+	assert.Nil(t, pod.DeletionTimestamp)
+}
+
 // TestReconciler_DrainDecision_LostRaceFollowsStoredDecision models two node-drainer pods
 // during a rolling update. This pod picks Custom, but another pod already stored BuiltIn.
 // This pod must not create the custom drain CR or overwrite the record, and its next pass
@@ -2990,7 +3028,8 @@ func applyRecordedDrainDecision(t *testing.T, event map[string]any, updates []ma
 	return &decision
 }
 
-// latestDrainDecision returns the last decision write and checks its lowercase store keys.
+// latestDrainDecision returns the last decision write as the store encodes it, and checks its
+// lowercase store keys.
 func latestDrainDecision(t *testing.T, updates []map[string]any) map[string]any {
 	t.Helper()
 
@@ -3002,12 +3041,16 @@ func latestDrainDecision(t *testing.T, updates []map[string]any) map[string]any 
 			continue
 		}
 
-		value, ok := setMap["healtheventstatus.draindecision"].(map[string]any)
+		value, ok := setMap["healtheventstatus.draindecision"]
 		if !ok {
 			continue
 		}
 
-		decision = value
+		raw, err := json.Marshal(value)
+		require.NoError(t, err)
+
+		decision = nil
+		require.NoError(t, json.Unmarshal(raw, &decision))
 	}
 
 	require.NotNil(t, decision, "drain decision should be written before the drain action")
