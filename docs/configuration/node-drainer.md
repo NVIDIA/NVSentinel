@@ -101,6 +101,20 @@ node-drainer:
 
 Off by default because `entity_value` holds a GPU UUID, which adds one time series per GPU in the fleet. The `drain_scope` label on `node_drainer_events_processed_total` already separates partial drains from full ones without that cardinality. Enable this only when you need per-GPU attribution and your Prometheus can carry the extra series.
 
+### AllowCompletion Drain Metric
+
+`node_drainer_awaiting_completion_event_timestamp_seconds{node}` holds the creation time of the health event behind an `allowCompletion` drain that is still waiting on pods, giving the one mode with no deadline a way to say "waiting too long": alert on `time() -` this value exceeding the longest run the drained namespaces should take.
+
+```promql
+time() - node_drainer_awaiting_completion_event_timestamp_seconds > 7200
+```
+
+The value is the event's creation time, not the moment the drain began: it is the same instant the `DeleteAfterTimeout` deadline measures from, and it can predate the drain itself. A fault quarantined, halted, then re-quarantined hours later reads as hours of waiting on the first poll — set thresholds with that in mind.
+
+Several events can be queued for one node while it drains, and each one's poll re-asserts its own event's time. The series keeps the earliest of them, so a newer event cannot hide an older wait.
+
+**Absence is not proof that nothing is waiting.** The series is removed when the node stops draining and when completion is observed, and it is never published for an event that carries no creation time. A cancellation of one of several events queued for the same node removes the series while another event still waits; that event's next poll restores its own event's time, so the gap does not restart its clock — normally within one requeue interval (exponential from `requeueBackoffBase`, capped at two minutes), though queue delays or repeated failures can extend the gap. Treat a short gap as normal; pair with the node's drain state for a definitive answer. A node drained in part rather than in whole shares this series, since it is keyed by node alone.
+
 ### Eviction Timeout
 
 Grace period in seconds applied to pod eviction requests in Immediate mode only.

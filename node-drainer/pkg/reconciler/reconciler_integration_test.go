@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -1078,11 +1079,22 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	require.NoError(t, err)
 
 	createPod(setup.ctx, t, setup.client, "completion-test", "running-pod", nodeName, v1.PodRunning, nil, nil, nil)
-	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
+	// A known past creation time rather than "now", so the assertion below can be exact: a
+	// poll-time value would also be positive, but `time() - start` could then never cross an
+	// elapsed-time threshold and the alert would not fire.
+	eventCreatedAt := time.Now().Add(-2 * time.Hour)
+	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName, eventCreatedAt)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
 
 	time.Sleep(5 * time.Second)
+
+	// allowCompletion has no deadline, so this timestamp is the only signal that the drain is
+	// waiting rather than stuck. It must carry the event's creation time while the pod runs.
+	require.Eventually(t, func() bool {
+		return gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionEventTimestamp, nodeName) &&
+			getGaugeVecValue(t, metrics.NodeDrainAwaitingCompletionEventTimestamp, nodeName) == float64(eventCreatedAt.Unix())
+	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion timestamp should carry the event's creation time while a pod is still running")
 
 	updatedPod, err := setup.client.CoreV1().Pods("completion-test").Get(setup.ctx, "running-pod", metav1.GetOptions{})
 	require.NoError(t, err)
@@ -1107,6 +1119,12 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	}, 10*time.Second, 500*time.Millisecond)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainSucceededLabelValue)
+
+	// Removed once the node stops draining, so time() minus a stale timestamp cannot keep an
+	// alert firing after the drain finished.
+	require.Eventually(t, func() bool {
+		return !gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionEventTimestamp, nodeName)
+	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion series should be removed once the node stops draining")
 }
 
 // TestReconciler_MultipleNodesRequeue validates concurrent draining of multiple nodes through the queue.
@@ -1708,12 +1726,17 @@ func createHealthEvent(opts healthEventOptions) map[string]any {
 }
 
 func enqueueHealthEvent(ctx context.Context, t *testing.T, queueMgr queue.EventQueueManager,
-	collection *MockMongoCollection, healthEventStore datastore.HealthEventStore, nodeName string) {
+	collection *MockMongoCollection, healthEventStore datastore.HealthEventStore, nodeName string,
+	createdAt ...time.Time) {
 	t.Helper()
-	event := createHealthEvent(healthEventOptions{
+	opts := healthEventOptions{
 		nodeName:        nodeName,
 		nodeQuarantined: model.Quarantined,
-	})
+	}
+	if len(createdAt) > 0 {
+		opts.createdAt = createdAt[0]
+	}
+	event := createHealthEvent(opts)
 	// Store event in collection so the worker can fetch it by _id via lazy fetch.
 	if id, ok := event["_id"]; ok {
 		collection.StoreDocument(fmt.Sprintf("%v", id), event)
@@ -1896,6 +1919,40 @@ func getGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 	err := gauge.Write(metric)
 	require.NoError(t, err)
 	return metric.Gauge.GetValue()
+}
+
+// gaugeVecHasSeries reports whether the vector currently has a series for these label values.
+// GetMetricWithLabelValues cannot answer this: it creates the series as a side effect, so a
+// removed series would look present at zero.
+func gaugeVecHasSeries(gaugeVec *prometheus.GaugeVec, labelValues ...string) bool {
+	ch := make(chan prometheus.Metric)
+
+	go func() {
+		gaugeVec.Collect(ch)
+		close(ch)
+	}()
+
+	found := false
+
+	// Drains the channel even after a match: returning early would leave Collect blocked on an
+	// unbuffered send, leaking the goroutine for the rest of the test binary.
+	for m := range ch {
+		dtoMetric := &dto.Metric{}
+		if err := m.Write(dtoMetric); err != nil {
+			continue
+		}
+
+		values := make([]string, 0, len(dtoMetric.Label))
+		for _, label := range dtoMetric.Label {
+			values = append(values, label.GetValue())
+		}
+
+		if slices.Equal(values, labelValues) {
+			found = true
+		}
+	}
+
+	return found
 }
 
 func getGaugeVecValue(t *testing.T, gaugeVec *prometheus.GaugeVec, labelValues ...string) float64 {

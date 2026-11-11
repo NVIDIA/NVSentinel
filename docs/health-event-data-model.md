@@ -261,7 +261,7 @@ Each field is written by a specific module at a specific pipeline stage:
 | `lastRemediationTimestamp` | **fault-remediation** | When the remediation CR was last created |
 | `spanIds` | **all modules** | Distributed tracing span IDs per service (e.g. `{"platform-connector": "abc123", "fault-quarantine": "def456"}`) |
 | `drainDecision` | **node-drainer** | The drain method chosen for the event. node-drainer writes `ruleSet`, `method` and `scope` once, only when no decision is stored, and before it reads or evicts pods or creates a custom drain CR. Every drain action follows the stored record. See [ADR-064](designs/064-node-and-device-selection.md) |
-| `remediationDecision` | **fault-remediation** | The remediation action chosen for the event. No module writes this field yet. See [ADR-064](designs/064-node-and-device-selection.md) |
+| `remediationDecision` | **fault-remediation** | The remediation action chosen for the event, written before the log collector and the maintenance CR. See [ADR-064](designs/064-node-and-device-selection.md) |
 
 ### Drain and Remediation Decisions
 

@@ -482,3 +482,40 @@ func postgresPrimaryPodName(ctx context.Context, t *testing.T, client klient.Cli
 func sqlLiteral(value string) string {
 	return strings.ReplaceAll(value, "'", "''")
 }
+
+// LatestHealthEventRemediationAction returns the action of the remediation decision recorded
+// on the latest HealthEvent for the node with the message, or "" when none is recorded yet.
+func LatestHealthEventRemediationAction(
+	ctx context.Context,
+	t *testing.T,
+	restConfig *rest.Config,
+	client klient.Client,
+	mongoPod, nodeName, message string,
+) string {
+	t.Helper()
+
+	js := fmt.Sprintf(`
+		db = db.getSiblingDB("%s");
+		const docs = db.HealthEvents.find({
+			"healthevent.nodename": %q,
+			"healthevent.message": %q
+		}).sort({ createdAt: -1 }).limit(1).toArray();
+		const decision = docs.length > 0 && docs[0].healtheventstatus &&
+			docs[0].healtheventstatus.remediationdecision;
+		if (decision && decision.action) {
+			print("REMEDIATION_ACTION=" + decision.action);
+		} else {
+			print("NOT_READY");
+		}
+	`, MongoDBDatabase, nodeName, message)
+
+	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
+
+	for _, line := range strings.Split(stdout, "\n") {
+		if action, found := strings.CutPrefix(strings.TrimSpace(line), "REMEDIATION_ACTION="); found {
+			return action
+		}
+	}
+
+	return ""
+}
