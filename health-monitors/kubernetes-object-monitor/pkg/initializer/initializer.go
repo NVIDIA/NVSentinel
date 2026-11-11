@@ -228,22 +228,9 @@ func buildCachePlanWithRESTMapper(
 		SyncPeriod: &resyncPeriod,
 	}
 
-	anyEnabled := false
-
-	for _, p := range policies {
-		if !p.Enabled {
-			continue
-		}
-
-		anyEnabled = true
-
-		if p.Resource.Namespace == "" {
-			continue
-		}
-
-		if err := validateResourceNamespaceScope(restMapper, p, p.Resource.GroupVersionKind()); err != nil {
-			return cachePlan{}, err
-		}
+	anyEnabled, err := validatePolicyScopes(restMapper, policies)
+	if err != nil {
+		return cachePlan{}, err
 	}
 
 	if !anyEnabled {
@@ -286,6 +273,30 @@ func buildCachePlanWithRESTMapper(
 	}
 
 	return cachePlan{options: opts, lookupGVKs: lookupGVKs}, nil
+}
+
+// validatePolicyScopes rejects an enabled policy that sets resource.namespace on a
+// cluster-scoped kind, and reports whether any policy is enabled.
+func validatePolicyScopes(restMapper meta.RESTMapper, policies []config.Policy) (bool, error) {
+	anyEnabled := false
+
+	for _, p := range policies {
+		if !p.Enabled {
+			continue
+		}
+
+		anyEnabled = true
+
+		if p.Resource.Namespace == "" {
+			continue
+		}
+
+		if err := validateResourceNamespaceScope(restMapper, p, p.Resource.GroupVersionKind()); err != nil {
+			return false, err
+		}
+	}
+
+	return anyEnabled, nil
 }
 
 func validateResourceNamespaceScope(
