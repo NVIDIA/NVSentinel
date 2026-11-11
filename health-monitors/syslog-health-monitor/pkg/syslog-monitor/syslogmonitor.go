@@ -1130,7 +1130,7 @@ func (sm *SyslogMonitor) processOneEntryAndAdvance(
 // initializeJournalFromTail seeks to the journal tail, sets the resume cursor, and returns.
 // Used when there is no last known cursor (first run or no saved state). Returns nil on success.
 func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckDefinition) error {
-	slog.Info("No last known cursor, seeking to journal tail", "check", check.Name)
+	slog.Debug("No last known cursor, seeking to journal tail", "check", check.Name)
 
 	if err := journal.SeekTail(); err != nil {
 		return fmt.Errorf("check '%s': failed to seek to journal tail for initialization: %w", check.Name, err)
@@ -1142,7 +1142,7 @@ func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckD
 	}
 
 	if count == 0 {
-		slog.Info("Journal is empty, nothing to do", "check", check.Name)
+		slog.Debug("Journal is empty, nothing to do", "check", check.Name)
 
 		return nil
 	}
