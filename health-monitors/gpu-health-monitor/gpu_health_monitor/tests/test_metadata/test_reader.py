@@ -20,6 +20,7 @@ import tempfile
 import threading
 import pytest
 from gpu_health_monitor.metadata import MetadataReader, NVLinkDownExpectation
+from gpu_health_monitor.metadata.reader import _checked_gpus
 from gpu_health_monitor.tests.nvlink_fixtures import (
     A100_PCIE_UNBRIDGED,
     H100_SXM_TRAINED,
@@ -464,13 +465,24 @@ def test_rereads_file_rewritten_in_place(tmp_path: Path, sample_metadata: dict) 
     assert reader.get_gpu_uuid(0) == "GPU-22222222-2222-2222-2222-222222222222"
 
 
-def test_rereads_file_that_failed_to_parse(tmp_path: Path, sample_metadata: dict) -> None:
-    """A file that could not be parsed must not leave the reader empty after metadata-collector
-    writes a good one."""
+# A copy that does not parse, and one that parses with the wrong shape (a string under gpus made
+# every lookup raise before the shape check).
+BAD_COPIES = [
+    pytest.param('{"version": "1.0", "gpus": [}', id="does_not_parse"),
+    pytest.param('{"version": "1.0", "gpus": "abc"}', id="wrong_shape"),
+]
+
+
+@pytest.mark.parametrize("contents", BAD_COPIES)
+def test_rereads_file_that_failed_to_load(tmp_path: Path, sample_metadata: dict, contents: str) -> None:
+    """A first copy that can't be used serves empty metadata, without raising, and must not leave
+    the reader empty after metadata-collector writes a good one."""
     path = tmp_path / "gpu_metadata.json"
-    path.write_text('{"version": "1.0", "gpus": [}')
+    path.write_text(contents)
     reader = MetadataReader(str(path))
     assert reader.get_gpu_uuid(0) is None
+    assert reader.get_pci_address(0) is None
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
 
     write_like_metadata_collector(str(path), sample_metadata)
 
@@ -478,8 +490,9 @@ def test_rereads_file_that_failed_to_parse(tmp_path: Path, sample_metadata: dict
     assert reader.get_chassis_serial() == "CHASSIS-12345"
 
 
-def test_malformed_rewrite_keeps_the_last_good_metadata(tmp_path: Path, sample_metadata: dict) -> None:
-    """A copy that fails to parse must not wipe the GPU identities read before, and the next good
+@pytest.mark.parametrize("contents", BAD_COPIES)
+def test_malformed_rewrite_keeps_the_last_good_metadata(tmp_path: Path, sample_metadata: dict, contents: str) -> None:
+    """A copy that can't be used must not wipe the GPU identities read before, and the next good
     copy is picked up."""
     path = str(tmp_path / "gpu_metadata.json")
     write_like_metadata_collector(path, sample_metadata)
@@ -488,7 +501,7 @@ def test_malformed_rewrite_keeps_the_last_good_metadata(tmp_path: Path, sample_m
 
     bad_copy = path + ".tmp"
     with open(bad_copy, "w") as f:
-        f.write('{"version": "1.0", "gpus": [}')
+        f.write(contents)
     os.rename(bad_copy, path)
 
     assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
@@ -597,52 +610,19 @@ def test_rereads_after_the_file_went_missing(tmp_path: Path, sample_metadata: di
     assert reader.get_gpu_uuid(0) == "GPU-written-again-later"
 
 
-WRONG_SHAPE_COPIES = [
-    pytest.param('"abc"', id="string_instead_of_object"),
-    pytest.param('{"version": "1.0", "gpus": "abc"}', id="gpus_is_a_string"),
-    pytest.param('{"version": "1.0", "gpus": [1]}', id="gpu_entry_is_a_number"),
-    pytest.param('{"version": "1.0", "gpus": {}}', id="gpus_is_an_object"),
-    pytest.param('{"version": "1.0"}', id="gpus_key_missing"),
-]
-
-
-@pytest.mark.parametrize("contents", WRONG_SHAPE_COPIES)
-def test_wrong_shape_rewrite_keeps_the_last_good_metadata(tmp_path: Path, sample_metadata: dict, contents: str) -> None:
-    """A copy that parses as JSON but has the wrong shape is rejected like one that doesn't parse, so
-    lookups keep the identities read before instead of raising on every poll."""
-    path = str(tmp_path / "gpu_metadata.json")
-    write_like_metadata_collector(path, sample_metadata)
-    reader = MetadataReader(path)
-    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
-
-    bad_copy = path + ".tmp"
-    with open(bad_copy, "w") as f:
-        f.write(contents)
-    os.rename(bad_copy, path)
-
-    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
-    assert reader.get_pci_address(1) == "0001:00:00.0"
-    assert reader.get_chassis_serial() == "CHASSIS-12345"
-
-    sample_metadata["gpus"][0]["uuid"] = "GPU-after-the-wrong-shape"
-    write_like_metadata_collector(path, sample_metadata)
-    assert reader.get_gpu_uuid(0) == "GPU-after-the-wrong-shape"
-
-
-@pytest.mark.parametrize("contents", WRONG_SHAPE_COPIES)
-def test_wrong_shape_first_copy_reads_as_empty_until_a_good_one(
-    tmp_path: Path, sample_metadata: dict, contents: str
-) -> None:
-    """A first copy with the wrong shape serves empty metadata, without raising, until a good copy is written."""
-    path = tmp_path / "gpu_metadata.json"
-    path.write_text(contents)
-    reader = MetadataReader(str(path))
-    assert reader.get_gpu_uuid(0) is None
-    assert reader.get_pci_address(0) is None
-    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
-
-    write_like_metadata_collector(str(path), sample_metadata)
-    assert reader.get_gpu_uuid(0) == "GPU-00000000-0000-0000-0000-000000000000"
+@pytest.mark.parametrize(
+    "contents, error",
+    [
+        pytest.param('"abc"', "expected a JSON object", id="not_an_object"),
+        pytest.param('{"version": "1.0"}', "no gpus key", id="gpus_key_missing"),
+        pytest.param('{"version": "1.0", "gpus": {}}', "expected a list under gpus", id="gpus_not_a_list"),
+        pytest.param('{"version": "1.0", "gpus": [1]}', r"expected an object at gpus\[0\]", id="gpu_not_an_object"),
+    ],
+)
+def test_each_wrong_shape_is_rejected(contents: str, error: str) -> None:
+    """Each shape rule rejects its case. BAD_COPIES above shows what the reader does with a rejected copy."""
+    with pytest.raises(ValueError, match=error):
+        _checked_gpus(json.loads(contents))
 
 
 def deny_reads_of(monkeypatch: pytest.MonkeyPatch, path: str) -> dict:
