@@ -139,3 +139,16 @@ func TestLoadTomlConfigFromString_InvalidNodeSelector_ReturnsValidationError(t *
 	_, err := LoadTomlConfigFromString(validCustomDrain + "nodeSelector = \"scheduler in (\"\n")
 	require.ErrorContains(t, err, "invalid customDrain.nodeSelector")
 }
+
+// TestLoadTomlConfigFromString_CustomDrainTimeoutKeyIsIgnored keeps configs rendered by
+// earlier charts loading. Those charts wrote `timeout = "30m"`, which the removed
+// seconds-only parser rejected, so node-drainer never started with the chart default.
+func TestLoadTomlConfigFromString_CustomDrainTimeoutKeyIsIgnored(t *testing.T) {
+	for _, timeout := range []string{`"30m"`, `"3600s"`, `"1800"`} {
+		t.Run(timeout, func(t *testing.T) {
+			cfg, err := LoadTomlConfigFromString(validCustomDrain + "timeout = " + timeout + "\n")
+			require.NoError(t, err)
+			require.True(t, cfg.CustomDrain.Enabled)
+		})
+	}
+}

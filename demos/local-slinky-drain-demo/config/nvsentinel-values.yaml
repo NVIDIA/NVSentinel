@@ -160,7 +160,6 @@ node-drainer:
     resource: "drainrequests"
     statusConditionType: "DrainComplete"
     statusConditionStatus: "True"
-    timeout: "1800"
 
 gpu-health-monitor:
   resources:

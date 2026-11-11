@@ -653,7 +653,6 @@ node-drainer:
     resource: "drainrequests"     # must equal the CRD's spec.names.plural
     statusConditionType: "DrainComplete"
     statusConditionStatus: "True"
-    timeout: "1800"
 ```
 
 With the two pieces above applied, node-drainer renders the template into a `DrainRequest` for any
