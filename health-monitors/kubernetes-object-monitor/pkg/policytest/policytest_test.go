@@ -89,6 +89,8 @@ cases:
       match: false
 `
 
+func ptr[T any](v T) *T { return &v }
+
 func writeFile(t *testing.T, content string) string {
 	t.Helper()
 
@@ -140,7 +142,7 @@ func TestRunReportsFailures(t *testing.T) {
 	}{
 		{
 			name: "wrong expected match",
-			c: Case{Name: "c", Policy: "pod-on-cordoned-node", Expect: Expect{Match: false}, Resource: map[string]any{
+			c: Case{Name: "c", Policy: "pod-on-cordoned-node", Expect: Expect{Match: ptr(false)}, Resource: map[string]any{
 				"apiVersion": "v1", "kind": "Pod",
 				"metadata": map[string]any{"name": "p", "namespace": "workloads"},
 				"spec":     map[string]any{"nodeName": "node-a"},
@@ -150,7 +152,7 @@ func TestRunReportsFailures(t *testing.T) {
 		},
 		{
 			name: "wrong expected node",
-			c: Case{Name: "c", Policy: "pod-on-cordoned-node", Expect: Expect{Match: true, Node: &node}, Resource: map[string]any{
+			c: Case{Name: "c", Policy: "pod-on-cordoned-node", Expect: Expect{Match: ptr(true), Node: &node}, Resource: map[string]any{
 				"apiVersion": "v1", "kind": "Pod",
 				"metadata": map[string]any{"name": "p", "namespace": "workloads"},
 				"spec":     map[string]any{"nodeName": "node-a"},
@@ -225,7 +227,9 @@ func TestLoadSuiteRejectsInvalidFiles(t *testing.T) {
 		{name: "no cases", content: "objects: []\n", wantErr: "has no cases"},
 		{name: "unknown field", content: "cases:\n  - name: a\n    policy: p\n    resource: " + pod + "\n    expected: {match: true}\n", wantErr: "unknown field"},
 		{name: "missing name", content: "cases:\n  - {policy: p, resource: " + pod + "}\n", wantErr: "has no name"},
-		{name: "duplicate name", content: "cases:\n  - {name: a, policy: p, resource: " + pod + "}\n  - {name: a, policy: p, resource: " + pod + "}\n", wantErr: "duplicate case name"},
+		{name: "duplicate name", content: "cases:\n  - {name: a, policy: p, resource: " + pod + ", expect: {match: true}}\n  - {name: a, policy: p, resource: " + pod + ", expect: {match: true}}\n", wantErr: "duplicate case name"},
+		{name: "missing expect", content: "cases:\n  - {name: a, policy: p, resource: " + pod + "}\n", wantErr: `case "a" has no expect.match`},
+		{name: "missing expect.match", content: "cases:\n  - {name: a, policy: p, resource: " + pod + ", expect: {node: n}}\n", wantErr: `case "a" has no expect.match`},
 		{name: "missing policy", content: "cases:\n  - {name: a, resource: " + pod + "}\n", wantErr: "has no policy"},
 		{name: "second document", content: "cases:\n  - {name: a, policy: p, resource: " + pod + "}\n---\ncases:\n  - {name: b, policy: p, resource: " + pod + "}\n", wantErr: "has more than one YAML document"},
 		{name: "missing resource", content: "cases:\n  - {name: a, policy: p}\n", wantErr: "has no resource"},
@@ -341,7 +345,7 @@ func TestRunReportsMatchWhenNodeAssociationFails(t *testing.T) {
 		"apiVersion": "v1", "kind": "Pod",
 		"metadata": map[string]any{"name": "p", "namespace": "default"},
 		"status":   map[string]any{"phase": "Failed"},
-	}, Expect: Expect{Match: true}}}}
+	}, Expect: Expect{Match: ptr(true)}}}}
 
 	results, err := Run(context.Background(), policies, suite)
 	require.NoError(t, err)

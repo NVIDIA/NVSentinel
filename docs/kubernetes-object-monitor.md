@@ -187,7 +187,7 @@ cases:
       reason: Rebooted
       involvedObject: {kind: Node, name: node-a}
     expect:
-      match: true                  # Expected predicate result
+      match: true                  # Required: expected predicate result
       node: node-a                 # Optional: expected node association
 ```
 

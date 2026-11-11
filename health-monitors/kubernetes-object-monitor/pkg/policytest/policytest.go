@@ -59,9 +59,10 @@ type Case struct {
 	Expect   Expect         `json:"expect"`
 }
 
-// Expect is the expected outcome of a case. Node is only checked when set.
+// Expect is the expected outcome of a case. Match is required; Node is only
+// checked when set.
 type Expect struct {
-	Match bool    `json:"match"`
+	Match *bool   `json:"match"`
 	Node  *string `json:"node,omitempty"`
 }
 
@@ -186,6 +187,8 @@ func validateCase(i int, c Case, seen map[string]bool) error {
 		return fmt.Errorf("case %q has no resource", c.Name)
 	case !hasIdentity(&unstructured.Unstructured{Object: c.Resource}):
 		return fmt.Errorf("case %q resource needs apiVersion, kind and metadata.name", c.Name)
+	case c.Expect.Match == nil:
+		return fmt.Errorf("case %q has no expect.match", c.Name)
 	}
 
 	return nil
@@ -303,8 +306,8 @@ func runCase(
 		return r
 	}
 
-	if match != c.Expect.Match {
-		r.Failures = append(r.Failures, fmt.Sprintf("match is %v, want %v", match, c.Expect.Match))
+	if c.Expect.Match != nil && match != *c.Expect.Match {
+		r.Failures = append(r.Failures, fmt.Sprintf("match is %v, want %v", match, *c.Expect.Match))
 	}
 
 	if c.Expect.Node != nil && node != *c.Expect.Node {
