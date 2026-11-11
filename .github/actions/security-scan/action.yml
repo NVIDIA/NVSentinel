@@ -13,17 +13,23 @@
 # limitations under the License.
 
 name: 'Vulnerability Scan'
-description: 'Scan a path or an image with Grype and upload the findings to the GitHub Security tab'
+description: 'Scan a path, an image or an SBOM with Grype and upload the findings to the GitHub Security tab'
 
 inputs:
   path:
-    description: 'Path to scan, when image is empty'
+    description: 'Path to scan, when image and sbom are empty'
     required: false
     default: '.'
-  # A Go binary in an image matches a Go vulnerability only when it contains the vulnerable
-  # symbols, so an image scan needs no govulncheck step.
+  # In an image, Grype matches a Go binary to a Go vulnerability only when the binary contains the
+  # vulnerable symbols.
   image:
     description: 'Image to scan instead of the path, for example ghcr.io/nvidia/nvsentinel/janitor:v1.0.0'
+    required: false
+    default: ''
+  # An SBOM scan has no binaries, so it reports a Go vulnerability for each module version that
+  # the SBOM lists, whether or not the binary contains the vulnerable symbols.
+  sbom:
+    description: 'CycloneDX or SPDX SBOM file to scan instead of the path'
     required: false
     default: ''
   # Every finding is reported. This only sets the alert level: findings at or above the cutoff are
@@ -45,8 +51,9 @@ runs:
       id: scan
       uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
       with:
-        path: ${{ inputs.image == '' && inputs.path || '' }}
+        path: ${{ inputs.image == '' && inputs.sbom == '' && inputs.path || '' }}
         image: ${{ inputs.image }}
+        sbom: ${{ inputs.sbom }}
         severity-cutoff: ${{ inputs.severity-cutoff }}
         output-format: sarif
         only-fixed: true
