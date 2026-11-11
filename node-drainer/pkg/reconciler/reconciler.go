@@ -765,12 +765,23 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 			)
 		}
 
+		// Re-asserted every poll from the event itself, so this is the instant the wait began
+		// no matter how many times the item has been requeued. Several events can be queued for
+		// one node while it drains; the helper keeps the earliest event's time so a newer event's
+		// polls cannot hide an older wait, and skips events that carry no creation time.
+		metrics.RecordNodeDrainAwaitingCompletionEventTimestamp(nodeName, healthEvent.CreatedAt)
+
 		slog.InfoContext(ctx, "Pods still running on node, requeuing for later check",
 			"node", nodeName,
 			"remainingPods", remainingPods)
 
 		return fmt.Errorf("waiting for pods to complete: %d pods remaining", len(remainingPods))
 	}
+
+	// Removed as soon as completion is observed, not left to ClearNodeDraining on a later pass:
+	// this branch requeues for the status update, so the series would otherwise keep reporting a
+	// wait for one more interval after the pods are already gone.
+	metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 
 	slog.InfoContext(ctx, "All pods completed on node", "node", nodeName)
 
@@ -870,6 +881,11 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		if !nodeLabelModified {
 			return fmt.Errorf("failed to update node %s label to %s: %w", nodeName, terminalDrainLabelValue, err)
 		}
+
+		// The validation error is returned after the label is written, so the node label is
+		// terminal even though ClearNodeDraining was skipped above. Drop the waiting series
+		// here rather than leave a false wait behind.
+		metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 	} else {
 		r.queueManager.ClearNodeDraining(nodeName)
 	}
@@ -895,6 +911,11 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 				attribute.String("node_drainer.error.type", "update_nvsentinel_state_label"),
 				attribute.String("node_drainer.error.message", err.Error()),
 			)
+
+			// The unquarantine ends the wait whether or not the label removal lands, and the
+			// caller returns without requeueing, so the removal is never retried. Drop the
+			// waiting series here rather than leave a false wait behind.
+			metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 		} else {
 			r.queueManager.ClearNodeDraining(nodeName)
 		}
@@ -1248,6 +1269,11 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)
+
+		// The cancelled status is already persisted and this event is not requeued, so the
+		// label removal is never retried. Drop the waiting series here rather than leave a
+		// false wait behind.
+		metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 	} else {
 		r.queueManager.ClearNodeDraining(nodeName)
 	}

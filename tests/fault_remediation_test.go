@@ -33,10 +33,16 @@ func TestNewCRsAreCreatedAfterFaultsAreRemediated(t *testing.T) {
 		WithLabel("suite", "fault-remediation-advanced")
 
 	var testCtx *helpers.RemediationTestContext
+	var mongoPod string
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		var newCtx context.Context
 		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "")
+
+		client, err := c.NewClient()
+		require.NoError(t, err)
+		mongoPod, _ = helpers.TryGetMongoDBPrimaryPodName(ctx, t, client)
+
 		return newCtx
 	})
 
@@ -48,6 +54,17 @@ func TestNewCRsAreCreatedAfterFaultsAreRemediated(t *testing.T) {
 		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 15)
 		cr1 := helpers.WaitForCR(ctx, t, client, testCtx.NodeName, helpers.RebootNodeGVK)
 		t.Logf("First CR created and completed: %s", cr1.GetName())
+
+		// The recommended action is recorded on the event as the remediation decision.
+		if mongoPod == "" {
+			t.Log("Skipping the remediation decision assertion for non-MongoDB datastore")
+		} else {
+			require.Eventually(t, func() bool {
+				return helpers.LatestHealthEventRemediationAction(ctx, t, client.RESTConfig(), client, mongoPod,
+					testCtx.NodeName, "XID 79 fatal error") == "RESTART_VM"
+			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+				"FR should record RESTART_VM as the remediation decision on the event")
+		}
 
 		// Send healthy event to clear the fault
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
