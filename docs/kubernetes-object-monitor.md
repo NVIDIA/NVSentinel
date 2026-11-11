@@ -202,7 +202,7 @@ PASS  Rebooted event on a GPU node  [node-rebooted] match=true node=node-a
 1 passed, 0 failed
 ```
 
-A case fails when the predicate result or node differs from `expect`, when an expression errors, or when the resource is a kind or namespace the policy does not watch. The exit code is 0 when every case passes, 1 when any case fails, and 2 when the config or test file is invalid. `lookup()` only finds the objects the test file lists. Expressions that use `now` are evaluated against the current time. The tool does not contact the API server, so it does not check that `resource.namespace` is only set for a namespaced kind; the monitor checks that when it starts.
+A case fails when the predicate result or node differs from `expect`, when an expression errors, or when the resource is a kind or namespace the policy does not watch. Every object and case resource needs `apiVersion`, `kind` and `metadata.name`. The exit code is 0 when every case passes, 1 when any case fails, and 2 when the config or test file is invalid. `lookup()` only finds the objects the test file lists. Expressions that use `now` are evaluated against the current time. The tool does not contact the API server, so it does not check that `resource.namespace` is only set for a namespaced kind; the monitor checks that when it starts.
 
 ## Key Features
 

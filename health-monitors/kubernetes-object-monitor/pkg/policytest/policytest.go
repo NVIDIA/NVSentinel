@@ -87,21 +87,35 @@ func LoadSuite(path string) (*Suite, error) {
 	seen := make(map[string]bool, len(s.Cases))
 
 	for i, c := range s.Cases {
-		switch {
-		case c.Name == "":
-			return nil, fmt.Errorf("case %d has no name", i)
-		case seen[c.Name]:
-			return nil, fmt.Errorf("duplicate case name %q", c.Name)
-		case c.Policy == "":
-			return nil, fmt.Errorf("case %q has no policy", c.Name)
-		case c.Resource == nil:
-			return nil, fmt.Errorf("case %q has no resource", c.Name)
+		if err := validateCase(i, c, seen); err != nil {
+			return nil, err
 		}
 
 		seen[c.Name] = true
 	}
 
 	return &s, nil
+}
+
+func validateCase(i int, c Case, seen map[string]bool) error {
+	switch {
+	case c.Name == "":
+		return fmt.Errorf("case %d has no name", i)
+	case seen[c.Name]:
+		return fmt.Errorf("duplicate case name %q", c.Name)
+	case c.Policy == "":
+		return fmt.Errorf("case %q has no policy", c.Name)
+	case c.Resource == nil:
+		return fmt.Errorf("case %q has no resource", c.Name)
+	case !hasIdentity(&unstructured.Unstructured{Object: c.Resource}):
+		return fmt.Errorf("case %q resource needs apiVersion, kind and metadata.name", c.Name)
+	}
+
+	return nil
+}
+
+func hasIdentity(u *unstructured.Unstructured) bool {
+	return u.GetAPIVersion() != "" && u.GetKind() != "" && u.GetName() != ""
 }
 
 // Run evaluates every case against the policies with policy.Evaluator.Evaluate,
@@ -159,7 +173,7 @@ func clusterObjects(
 
 	for i, o := range manifests {
 		u := &unstructured.Unstructured{Object: o}
-		if u.GetAPIVersion() == "" || u.GetKind() == "" || u.GetName() == "" {
+		if !hasIdentity(u) {
 			return nil, fmt.Errorf("object %d needs apiVersion, kind and metadata.name", i)
 		}
 

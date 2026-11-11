@@ -207,17 +207,22 @@ func TestRunReportsFailures(t *testing.T) {
 }
 
 func TestLoadSuiteRejectsInvalidFiles(t *testing.T) {
+	const pod = "{apiVersion: v1, kind: Pod, metadata: {name: p}}"
+
 	tests := []struct {
 		name    string
 		content string
 		wantErr string
 	}{
 		{name: "no cases", content: "objects: []\n", wantErr: "has no cases"},
-		{name: "unknown field", content: "cases:\n  - name: a\n    policy: p\n    resource: {kind: Pod}\n    expected: {match: true}\n", wantErr: "unknown field"},
-		{name: "missing name", content: "cases:\n  - policy: p\n    resource: {kind: Pod}\n", wantErr: "has no name"},
-		{name: "duplicate name", content: "cases:\n  - {name: a, policy: p, resource: {kind: Pod}}\n  - {name: a, policy: p, resource: {kind: Pod}}\n", wantErr: "duplicate case name"},
-		{name: "missing policy", content: "cases:\n  - {name: a, resource: {kind: Pod}}\n", wantErr: "has no policy"},
+		{name: "unknown field", content: "cases:\n  - name: a\n    policy: p\n    resource: " + pod + "\n    expected: {match: true}\n", wantErr: "unknown field"},
+		{name: "missing name", content: "cases:\n  - {policy: p, resource: " + pod + "}\n", wantErr: "has no name"},
+		{name: "duplicate name", content: "cases:\n  - {name: a, policy: p, resource: " + pod + "}\n  - {name: a, policy: p, resource: " + pod + "}\n", wantErr: "duplicate case name"},
+		{name: "missing policy", content: "cases:\n  - {name: a, resource: " + pod + "}\n", wantErr: "has no policy"},
 		{name: "missing resource", content: "cases:\n  - {name: a, policy: p}\n", wantErr: "has no resource"},
+		{name: "resource without apiVersion", content: "cases:\n  - {name: a, policy: p, resource: {kind: Pod, metadata: {name: p}}}\n", wantErr: `case "a" resource needs apiVersion, kind and metadata.name`},
+		{name: "resource without kind", content: "cases:\n  - {name: a, policy: p, resource: {apiVersion: v1, metadata: {name: p}}}\n", wantErr: `case "a" resource needs apiVersion, kind and metadata.name`},
+		{name: "resource without name", content: "cases:\n  - {name: a, policy: p, resource: {apiVersion: v1, kind: Pod}}\n", wantErr: `case "a" resource needs apiVersion, kind and metadata.name`},
 	}
 
 	for _, tt := range tests {
