@@ -50,11 +50,11 @@ Every error-returning PostgreSQL watcher constructor loads or creates its saved 
 
 For a missing `resume_tokens` row, the constructor saves `{timestamp, eventID}` with database `clock_timestamp()` and eventID `0`. The insert reads the clock on the same connection that saves the pair. The watcher then reads back the stored pair and uses it as its read position. Concurrent constructors for the same client use the winning row. Existing rows remain unchanged.
 
-A restart before the first acknowledgment resumes from that saved pair. Initialization errors prevent construction, polling and delivery. Malformed tokens and unresolved legacy tokens also prevent construction. Legacy timestamp lookups retry database errors until success or context cancellation. A missing legacy changelog row requires operator recovery and leaves the saved token unchanged.
+A restart before the first acknowledgment resumes from that saved pair. Load errors prevent construction, polling and delivery. A malformed token is logged and kept, and the watcher replays the changelog from the beginning, so a corrupt row cannot fail every restart. Legacy timestamp lookups retry database errors until success or context cancellation. A missing legacy changelog row resumes from the earliest later `changed_at` with eventID `0`; existing tokens are never replaced.
 
 The watcher factory and datastore paths run the configured reset before initialization. The database-client path initializes after any reset performed by its caller, including `ClientFactory`. The shared reset helper skips `event-exporter`.
 
-`Start(ctx)` uses the prepared pair and writes no checkpoint. The low-level `NewPostgreSQLChangeStreamWatcher` cannot return initialization errors. Callers must use an error-returning constructor; an uninitialized watcher's `Start` logs an error and launches no readers.
+`Start(ctx)` uses the prepared pair and writes no checkpoint. The low-level `NewPostgreSQLChangeStreamWatcher` cannot return initialization errors, so `Start` initializes such a watcher itself. If that fails, `Start` logs the error and launches no readers.
 
 Initial persistence does not establish ADR-054 lag evidence; lag stays unknown until a poll records progress or an empty batch. An initial row with eventID `0` uses the same `last_updated` stale-token threshold as any other checkpoint.
 

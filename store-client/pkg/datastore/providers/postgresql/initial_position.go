@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
@@ -40,7 +41,18 @@ func (w *PostgreSQLChangeStreamWatcher) initializeResumePosition(ctx context.Con
 
 	// Release the reserved connection before legacy lookups, including when the pool has size one.
 	if err := w.restoreResumePosition(ctx, tokenJSON); err != nil {
-		return fmt.Errorf("restore initial position for %s: %w", w.clientName, err)
+		if !errors.Is(err, errMalformedResumeToken) {
+			return fmt.Errorf("restore initial position for %s: %w", w.clientName, err)
+		}
+
+		// Failing here would fail every restart. Keep the row for an operator and replay
+		// the changelog from the beginning, as before initial positions were persisted.
+		slog.Error("Resume token is malformed; replaying the changelog from the beginning",
+			"client", w.clientName, "error", err)
+
+		w.lastTimestamp = time.Time{}
+		w.lastEventID = 0
+		w.highestReadEventID = 0
 	}
 
 	w.positionInitialized = true

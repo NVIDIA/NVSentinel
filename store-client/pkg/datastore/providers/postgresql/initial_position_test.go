@@ -155,23 +155,27 @@ func TestWatcherConstruction_InitializationErrors_FailConstruction(t *testing.T)
 }
 
 func TestWatcherConstruction_ExistingTokens_NeverWrites(t *testing.T) {
+	fallbackTime := initialDBTime.Add(time.Hour)
 	cases := []struct {
-		name      string
-		token     []byte
-		legacy    bool
-		lookupErr error
-		wantErr   bool
+		name        string
+		token       []byte
+		legacy      bool
+		missingRow  bool
+		replay      bool // malformed: keep the row and replay from the beginning
+		wantTime    time.Time
+		wantEventID int64
 	}{
-		{name: "initial row", token: positionToken(t, initialDBTime, 0)},
-		{name: "acknowledged row", token: positionToken(t, initialDBTime, 42)},
-		{name: "legacy", token: []byte(`{"eventID":42}`), legacy: true},
-		{name: "missing legacy row", token: []byte(`{"eventID":42}`), legacy: true, lookupErr: sql.ErrNoRows, wantErr: true},
-		{name: "malformed JSON", token: []byte(`{"eventID":`), wantErr: true},
-		{name: "malformed timestamp", token: []byte(`{"eventID":42,"timestamp":"invalid"}`), wantErr: true},
-		{name: "missing fields", token: []byte(`{}`), wantErr: true},
-		{name: "missing timestamp at zero", token: []byte(`{"eventID":0}`), wantErr: true},
-		{name: "fractional ID", token: []byte(`{"eventID":1.5}`), wantErr: true},
-		{name: "negative ID", token: []byte(`{"eventID":-1}`), wantErr: true},
+		{name: "initial row", token: positionToken(t, initialDBTime, 0), wantTime: initialDBTime},
+		{name: "acknowledged row", token: positionToken(t, initialDBTime, 42), wantTime: initialDBTime, wantEventID: 42},
+		{name: "legacy", token: []byte(`{"eventID":42}`), legacy: true, wantTime: initialDBTime, wantEventID: 42},
+		// As in #2250: an expired legacy row resumes at the earliest later timestamp, with ID zero.
+		{name: "missing legacy row", token: []byte(`{"eventID":42}`), legacy: true, missingRow: true, wantTime: fallbackTime},
+		{name: "malformed JSON", token: []byte(`{"eventID":`), replay: true},
+		{name: "malformed timestamp", token: []byte(`{"eventID":42,"timestamp":"invalid"}`), replay: true},
+		{name: "missing fields", token: []byte(`{}`), replay: true},
+		{name: "missing timestamp at zero", token: []byte(`{"eventID":0}`), replay: true},
+		{name: "fractional ID", token: []byte(`{"eventID":1.5}`), replay: true},
+		{name: "negative ID", token: []byte(`{"eventID":-1}`), replay: true},
 	}
 	for path, construct := range positionConstructors() {
 		for _, tc := range cases {
@@ -183,8 +187,10 @@ func TestWatcherConstruction_ExistingTokens_NeverWrites(t *testing.T) {
 				expectPositionToken(mock, "event-exporter", tc.token)
 				if tc.legacy {
 					lookup := mock.ExpectQuery(`SELECT changed_at FROM datastore_changelog WHERE id = \$1`).WithArgs(int64(42))
-					if tc.lookupErr != nil {
-						lookup.WillReturnError(tc.lookupErr)
+					if tc.missingRow {
+						lookup.WillReturnError(sql.ErrNoRows)
+						mock.ExpectQuery(`SELECT MIN\(changed_at\) FROM datastore_changelog WHERE id > \$1`).
+							WithArgs(int64(42)).WillReturnRows(sqlmock.NewRows([]string{"min"}).AddRow(fallbackTime))
 					} else {
 						lookup.WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(initialDBTime))
 					}
@@ -193,15 +199,15 @@ func TestWatcherConstruction_ExistingTokens_NeverWrites(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 				defer cancel()
 				w, err := construct(ctx, db, "event-exporter")
-				if tc.wantErr {
-					require.Error(t, err)
-					assert.Nil(t, w)
-					if tc.lookupErr != nil {
-						require.ErrorIs(t, err, tc.lookupErr)
-					}
+				// No case fails construction, and none writes: existing rows are never replaced.
+				require.NoError(t, err)
+				require.True(t, w.positionInitialized)
+				if tc.replay {
+					assert.True(t, w.lastTimestamp.IsZero())
+					assert.Zero(t, w.lastEventID)
 				} else {
-					require.NoError(t, err)
-					assert.Equal(t, initialDBTime, w.lastTimestamp)
+					assert.Equal(t, tc.wantTime, w.lastTimestamp)
+					assert.Equal(t, tc.wantEventID, w.lastEventID)
 				}
 				require.NoError(t, mock.ExpectationsWereMet())
 			})
@@ -391,4 +397,36 @@ func TestWatcherConstruction_ManualTokenDeletion_InitializesFreshPair(t *testing
 	assert.True(t, recovered.lastTimestamp.After(old.lastTimestamp))
 	assert.Zero(t, recovered.lastEventID)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestWatcherConstruction_MalformedToken_ReplaysWithoutWriting(t *testing.T) {
+	malformed := map[string][]byte{
+		"not an object":           []byte(`[]`),
+		"missing eventID":         []byte(`{"timestamp":"2024-11-24T10:00:00Z"}`),
+		"negative eventID":        []byte(`{"timestamp":"2024-11-24T10:00:00Z","eventID":-1}`),
+		"zero timestamp":          []byte(`{"timestamp":"0001-01-01T00:00:00Z","eventID":5}`),
+		"no timestamp, eventID 0": []byte(`{"eventID":0}`),
+	}
+
+	for path, construct := range positionConstructors() {
+		for name, token := range malformed {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				db, mock, err := sqlmock.New()
+				require.NoError(t, err)
+				defer db.Close()
+
+				// Failing construction would fail every restart. The row is kept for an
+				// operator and the watcher replays from the beginning, with no write.
+				expectPositionToken(mock, "event-exporter", token)
+
+				w, err := construct(t.Context(), db, "event-exporter")
+				require.NoError(t, err)
+				require.True(t, w.positionInitialized)
+				assert.True(t, w.lastTimestamp.IsZero())
+				assert.Zero(t, w.lastEventID)
+				assert.Zero(t, w.highestReadEventID)
+				require.NoError(t, mock.ExpectationsWereMet())
+			})
+		}
+	}
 }

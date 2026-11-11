@@ -139,12 +139,15 @@ func (w *PostgreSQLChangeStreamWatcher) Events() <-chan datastore.EventWithToken
 
 // Start starts the change stream watcher
 func (w *PostgreSQLChangeStreamWatcher) Start(ctx context.Context) {
-	// The low-level, non-error-returning constructor cannot prepare a durable position.
-	// Fail closed for callers that bypass the error-returning construction paths.
+	// Production construction paths prepare the position before returning. A watcher built
+	// directly with NewPostgreSQLChangeStreamWatcher prepares it here, so it never starts
+	// silently without readers.
 	if !w.positionInitialized {
-		slog.Error("PostgreSQL watcher position is not initialized", "client", w.clientName)
+		if err := w.initializeResumePosition(ctx); err != nil {
+			slog.Error("Failed to initialize PostgreSQL watcher position", "client", w.clientName, "error", err)
 
-		return
+			return
+		}
 	}
 
 	if ctx.Err() != nil {
@@ -1312,6 +1315,11 @@ func (w *PostgreSQLChangeStreamWatcher) pruneRecentEventIDsLocked(now time.Time)
 }
 
 // restoreResumePosition validates a saved pair or resolves a legacy ID without writing it.
+// errMalformedResumeToken marks a saved token that cannot be parsed or validated. Construction
+// keeps such a row for an operator and replays from the beginning instead of failing on every
+// restart.
+var errMalformedResumeToken = errors.New("malformed resume token")
+
 func (w *PostgreSQLChangeStreamWatcher) restoreResumePosition(ctx context.Context, tokenJSON []byte) error {
 	var token struct {
 		Timestamp *time.Time `json:"timestamp"`
@@ -1319,27 +1327,30 @@ func (w *PostgreSQLChangeStreamWatcher) restoreResumePosition(ctx context.Contex
 	}
 
 	if err := json.Unmarshal(tokenJSON, &token); err != nil {
-		return fmt.Errorf("parse resume token for %s: %w", w.clientName, err)
+		return fmt.Errorf("parse resume token for %s: %w: %w", w.clientName, errMalformedResumeToken, err)
 	}
 
 	if token.EventID == nil || *token.EventID < 0 {
-		return fmt.Errorf("invalid resume eventID for %s", w.clientName)
+		return fmt.Errorf("%w: invalid resume eventID for %s", errMalformedResumeToken, w.clientName)
 	}
 
 	w.lastEventID = *token.EventID
 
 	if token.Timestamp != nil {
 		if token.Timestamp.IsZero() {
-			return fmt.Errorf("invalid resume timestamp for %s", w.clientName)
+			return fmt.Errorf("%w: invalid resume timestamp for %s", errMalformedResumeToken, w.clientName)
 		}
 
 		w.lastTimestamp = *token.Timestamp
 	} else {
 		if w.lastEventID == 0 {
-			return fmt.Errorf("missing resume timestamp for %s", w.clientName)
+			return fmt.Errorf("%w: missing resume timestamp for %s", errMalformedResumeToken, w.clientName)
 		}
 
 		if err := w.convertOldTokenToTimestamp(ctx); err != nil {
+			// Never leave (zero timestamp, old id): its poll can resend the same rows forever.
+			w.lastEventID = 0
+
 			return fmt.Errorf("convert legacy resume token for %s: %w", w.clientName, err)
 		}
 	}
@@ -1372,11 +1383,40 @@ func (w *PostgreSQLChangeStreamWatcher) convertOldTokenToTimestamp(ctx context.C
 		return nil
 	}
 
-	return fmt.Errorf("failed to get timestamp for old event %d: %w", oldEventID, err)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("failed to get timestamp for old event %d: %w", oldEventID, err)
+	}
+
+	// The old row may have expired. Start at the earliest remaining timestamp after
+	// its ID, with ID zero to include every row at that timestamp. Replaying is safer
+	// than using the current time, which would skip events accumulated before restart.
+	fallbackQuery := `SELECT MIN(changed_at) FROM datastore_changelog WHERE id > $1`
+
+	var nextTimestamp sql.NullTime
+
+	if err := w.queryLegacyTimestamp(ctx, fallbackQuery, oldEventID, &nextTimestamp); err != nil {
+		return fmt.Errorf("failed to find timestamp after old event %d: %w", oldEventID, err)
+	}
+
+	if nextTimestamp.Valid {
+		w.lastTimestamp = nextTimestamp.Time
+	} else {
+		// No later rows remain; preserve the existing current-time startup behavior.
+		w.lastTimestamp = time.Now()
+	}
+
+	w.lastEventID = 0
+
+	slog.Warn("Could not find event for old token, using fallback timestamp",
+		"client", w.clientName,
+		"oldEventID", oldEventID,
+		"timestamp", w.lastTimestamp)
+
+	return nil
 }
 
 // queryLegacyTimestamp retries the legacy timestamp lookup until success,
-// a missing row, or cancellation. Missing rows require operator recovery.
+// a missing row, or cancellation. The caller handles missing rows and NULL timestamps.
 func (w *PostgreSQLChangeStreamWatcher) queryLegacyTimestamp(
 	ctx context.Context, query string, eventID int64, timestamp any,
 ) error {
