@@ -190,6 +190,9 @@ type MockHealthEventStore struct {
 	// must be atomic to stay race-free.
 	updateCalled                 atomic.Int64
 	findHealthEventsByQueryCalls atomic.Int64
+	// recordedDecisions holds the last remediation decision recorded for each document ID.
+	// A decision is recorded before the reconciler acts, so it is not counted in updateCalled.
+	recordedDecisions sync.Map
 	// seededEvents answers lookups by document ID. The reconciler queues only an event's
 	// ID and loads the document when the worker runs, so a test that publishes a live
 	// event must also make it fetchable. Every other query falls through to
@@ -397,6 +400,11 @@ func TestMain(m *testing.M) {
 	// Create mock health event store
 	mockStore = &MockHealthEventStore{}
 	mockStore.UpdateHealthEventStatusFn = func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
+		if status.RemediationDecision != nil {
+			mockStore.recordedDecisions.Store(id, *status.RemediationDecision)
+			return nil
+		}
+
 		mockStore.updateCalled.Add(1)
 		return nil
 	}
@@ -1328,6 +1336,9 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		}
 		assert.Equal(t, 1, crCount, "Only one CR should exist for the node at this point")
 
+		// The action is recorded on the event before the CR is created.
+		assertRecordedAction(t, eventID1, "RESTART_BM")
+
 		// Event 2: Set CR to InProgress, send duplicate event (different action, same group).
 		// Regression test for issue #1536: the duplicate must be requeued while the CR is
 		// in progress — not checkpointed or finalized — and automatically reconsidered
@@ -1371,6 +1382,9 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 			}
 		}
 		assert.Equal(t, 1, crCount2, "Should still be only one CR (duplicate event was skipped)")
+
+		// An event covered by an existing CR records its own action.
+		assertRecordedAction(t, eventID2, "RESTART_VM")
 
 		// While waiting, the event must not be finalized: no status write, no checkpoint.
 		assert.Equal(t, updateCountBefore, mockStore.updateCalled.Load(),
@@ -2582,4 +2596,13 @@ func TestCustomAction_E2E(t *testing.T) {
 	assert.Equal(t, 1, markedCount, "MarkProcessed should be called once")
 
 	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
+}
+
+// assertRecordedAction checks the remediation decision recorded for the event.
+func assertRecordedAction(t *testing.T, eventID, action string) {
+	t.Helper()
+
+	recorded, ok := mockStore.recordedDecisions.Load(eventID)
+	require.True(t, ok, "a remediation decision should be recorded for event %s", eventID)
+	assert.Equal(t, datastore.RemediationDecision{Action: action}, recorded)
 }

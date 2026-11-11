@@ -23,10 +23,11 @@ The Fault Remediation module watches the datastore for drained nodes that need r
 
 1. Receives events with recommended actions (RESTART_VM, REPLACE_VM, etc.)
 2. Filters out NONE and UNKNOWN actions
-3. Checks if a maintenance CR already exists for the node
-4. Optionally triggers log collection
-5. Creates maintenance Custom Resource using configured template
-6. Updates node labels to track remediation state
+3. Records the selected remediation action on the event
+4. Checks if a maintenance CR already exists for the node
+5. Optionally triggers log collection
+6. Creates maintenance Custom Resource using configured template
+7. Updates node labels to track remediation state
 
 External operators watch for these CRs and perform the actual maintenance work (reboot, terminate, replace, etc.).
 
@@ -111,6 +112,9 @@ Updates node labels throughout remediation lifecycle:
 - `remediating`: Maintenance request created
 - `remediation-succeeded`: Maintenance completed
 - `remediation-failed`: Maintenance encountered errors
+
+### Remediation Decision
+Records on each event the entry of `maintenance.actions` that it uses, in `remediationDecision` of the event status. It writes the record before the log collector and the maintenance CR, so it is on the event of a remediation that is in progress. The entry is the recommended action of the event, or `customRecommendedAction` for a `CUSTOM` event. An event that is skipped, for example with an action that has no entry, gets no record. See [Drain and Remediation Decisions](health-event-data-model.md#drain-and-remediation-decisions).
 
 ### Optional Log Collection
 Gather diagnostics before remediation for troubleshooting and root cause analysis.
