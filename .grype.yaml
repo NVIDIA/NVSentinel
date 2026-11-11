@@ -21,8 +21,3 @@ exclude:
   - ./demos/**  # example code
   - ./tilt/**   # mocks for local development
   - ./tests/**  # E2E and scale tests
-
-# Vulnerabilities that were checked and do not affect NVSentinel. Each rule names the vulnerability,
-# the package version and the file where Grype found it, and gives the reason. Grype does not report
-# a finding that a rule matches. SECURITY.md describes how to add a rule.
-ignore: []

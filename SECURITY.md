@@ -27,45 +27,55 @@ NVSentinel does not currently maintain long-term-support branches. Security and 
 
 ## Vulnerability Scanning
 
-The security scan checks the dependencies of NVSentinel with [Grype](https://github.com/anchore/grype), and reports each vulnerability that has a fix as a code scanning alert in the Security tab of the repository.
+Two scans check NVSentinel with [Grype](https://github.com/anchore/grype) and report each vulnerability that has a fix as a code scanning alert in the Security tab of the repository:
 
-Grype compares the version of each package with its vulnerability database. It does not check whether NVSentinel calls the vulnerable code. For Go, the scan therefore first runs [govulncheck](https://go.dev/doc/security/vuln/) on each Go module. govulncheck follows the call graph of the module, and the scan does not report a Go vulnerability whose vulnerable code the module does not call. govulncheck uses the Go vulnerability database, which can add a new advisory later than Grype's database. Until then, Grype still reports that vulnerability.
+- The daily scan checks the dependencies in the repository: the `go.mod` and `poetry.lock` file of each module.
+- The weekly scan checks each published container image, including the packages of its base image.
 
-Grype also reads [`.grype.yaml`](.grype.yaml). The file excludes the paths that are not part of the product, such as `demos/`, `tilt/` and `tests/`, and can list ignore rules for other vulnerabilities that do not affect NVSentinel.
+Grype compares the version of each package with its vulnerability database. It does not check whether NVSentinel calls the vulnerable code. For Go, both scans do more:
+
+- In the repository, the daily scan first runs [govulncheck](https://go.dev/doc/security/vuln/) on each Go module. govulncheck follows the call graph of the module, and the scan does not report a Go vulnerability whose vulnerable code the module does not call. govulncheck uses the Go vulnerability database, which can add a new advisory later than Grype's database. Until then, Grype still reports that vulnerability.
+- In an image, Grype reports a Go vulnerability only when the binary contains the vulnerable code.
+
+The daily scan also reads [`.grype.yaml`](.grype.yaml), which excludes the paths that are not part of the product, such as `demos/`, `tilt/` and `tests/`.
 
 ### Handle a Reported Vulnerability
 
 - If the vulnerability affects NVSentinel, update the dependency or the base image that contains it.
-- If it does not affect NVSentinel, open a pull request that adds a rule to the `ignore` list in `.grype.yaml`. A maintainer reviews the reason in the pull request. After the merge, Grype no longer reports the vulnerability, and its alert closes at the next scan. A Go vulnerability usually needs no rule, because govulncheck checks it at each scan.
+- If a vulnerability in an image does not affect NVSentinel, open a pull request that adds a statement to [`.openvex.json`](.openvex.json). A maintainer reviews the statement in the pull request. After the merge, the weekly scan no longer reports the vulnerability for that image, and its alert closes at the next scan.
 
-### Add an Ignore Rule
+### Add a Statement
 
-A rule applies to one vulnerability in one version of a package, in one file of NVSentinel. It records that NVSentinel is not affected, not that the package is safe. For example:
+`.openvex.json` is an [OpenVEX](https://openvex.dev) document. A statement records that a vulnerability does not affect one or more images, and why. It records that NVSentinel is not affected, not that the package is safe. For example:
 
-```yaml
-ignore:
-  - vulnerability: GHSA-xxxx-xxxx-xxxx
-    reason: NVSentinel imports the module only for its parser, and the vulnerability is in its HTTP server.
-    package:
-      name: example.com/module
-      version: "v1.2.3"
-      location: /store-client/go.mod
+```json
+{
+  "vulnerability": { "name": "CVE-YYYY-NNNNN" },
+  "timestamp": "2026-11-11T00:00:00Z",
+  "products": [{ "@id": "pkg:oci/gpu-reset" }],
+  "status": "not_affected",
+  "justification": "vulnerable_code_not_in_execute_path",
+  "impact_statement": "The library is in the CUDA base image, but gpu-reset never loads it."
+}
 ```
 
-Each rule has these fields:
+Each statement has these fields:
 
-- `vulnerability`: the ID that Grype reports.
-- `reason`: why the vulnerability does not affect NVSentinel, so that a reviewer can check it.
-- `package.name` and `package.version`: the package and the version that Grype reports. After an update to another version, the rule no longer matches, so remove it. Put the version in quotes. Without quotes, YAML reads a version such as `2.20` as the number 2.2, and the rule does not match.
-- `package.location`: the file in which Grype found the package. When the same package is in more than one file, add a rule for each file in which NVSentinel is not affected.
+- `vulnerability.name`: the ID that Grype reports.
+- `timestamp`: when the statement was written.
+- `products`: the images that the statement applies to. Name an image by the last part of its repository, for example `pkg:oci/gpu-reset` for `ghcr.io/nvidia/nvsentinel/gpu-reset`. Without `subcomponents`, the statement applies to the vulnerability in every package of the image.
+- `subcomponents` (optional, in each product): the packages that the statement applies to, by the PURL that Grype reports, for example `{ "@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04" }`. After an update to another version, the PURL no longer matches, so remove the statement.
+- `status`: `not_affected`.
+- `justification`: one of the [OpenVEX justifications](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md#status-justifications), for example `vulnerable_code_not_in_execute_path`.
+- `impact_statement`: why the vulnerability does not affect the image, so that a reviewer can check it.
 
-Do not add a rule for a GitHub Action. When a workflow pins an action to a commit, with the version in a comment, Grype takes the version from the comment and does not record the commit. A rule would then apply to any commit with the same comment, including a malicious one. Update the action instead.
+Also increase the `version` of the document by one, and set its `timestamp` to the time of the change.
 
-To get these values for each finding, run Grype from the repository root:
+To get the ID and the PURL of each finding in an image, run Grype on the image:
 
 ```shell
-grype dir:. --only-fixed -o json \
-  | jq -r '.matches[] | "\(.vulnerability.id) \(.artifact.name) \(.artifact.version) \(.artifact.locations[0].path)"'
+grype ghcr.io/nvidia/nvsentinel/gpu-reset:<tag> --only-fixed -o json \
+  | jq -r '.matches[] | "\(.vulnerability.id) \(.artifact.purl)"'
 ```
 
 ## Product Security Resources

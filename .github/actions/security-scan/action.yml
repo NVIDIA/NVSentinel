@@ -36,6 +36,12 @@ inputs:
     description: 'Leave out Go vulnerabilities whose code is not called, as govulncheck reports them'
     required: false
     default: 'false'
+  # Grype does not report a finding that a statement in the document says does not affect the
+  # product. A statement names an image as its product, so this applies to an image scan.
+  vex:
+    description: 'OpenVEX document with the vulnerabilities that do not affect NVSentinel'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -81,6 +87,7 @@ runs:
         only-fixed: true
         fail-build: false
         config: ${{ steps.govulncheck.outputs.config }}
+        vex: ${{ inputs.vex }}
 
     - name: Upload findings to the Security tab
       uses: github/codeql-action/upload-sarif@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
