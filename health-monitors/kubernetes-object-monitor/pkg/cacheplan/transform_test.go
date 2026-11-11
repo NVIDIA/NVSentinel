@@ -27,18 +27,12 @@ import (
 
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
-)
-
-const nodeNotReadyPredicate = `resource.status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0`
-
-var (
-	nodeGVK = schema.GroupVersionKind{Version: "v1", Kind: "Node"}
-	podGVK  = schema.GroupVersionKind{Version: "v1", Kind: "Pod"}
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/testutils"
 )
 
 func TestTransform_ProductionShapedNode_RetainsOnlyPolicyFields(t *testing.T) {
-	transform := transformForGVK(t, nodeGVK, []config.Policy{
-		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+	transform := transformForGVK(t, testutils.NodeGVK, []config.Policy{
+		testutils.PolicyWithExpressions("node-not-ready", testutils.NodeGVK, testutils.NodeNotReadyPredicate, ""),
 	})
 
 	node := productionShapedNode()
@@ -101,8 +95,8 @@ func TestTransform_ProductionShapedNode_RetainsOnlyPolicyFields(t *testing.T) {
 // flattened to a dotted string would be read back as five nested fields, none
 // of which exist, and the label the policy reads would be pruned away.
 func TestTransform_LabelKeyContainingDots_IsRetained(t *testing.T) {
-	transform := transformForGVK(t, nodeGVK, []config.Policy{
-		policyWithExpressions("gpu-present", nodeGVK,
+	transform := transformForGVK(t, testutils.NodeGVK, []config.Policy{
+		testutils.PolicyWithExpressions("gpu-present", testutils.NodeGVK,
 			`resource.metadata.labels["nvidia.com/gpu.present"] != "true"`, ""),
 	})
 
@@ -131,8 +125,8 @@ func TestTransform_LabelKeyContainingDots_IsRetained(t *testing.T) {
 }
 
 func TestTransform_DeletionTimestampPresent_IsRetained(t *testing.T) {
-	transform := transformForGVK(t, nodeGVK, []config.Policy{
-		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+	transform := transformForGVK(t, testutils.NodeGVK, []config.Policy{
+		testutils.PolicyWithExpressions("node-not-ready", testutils.NodeGVK, testutils.NodeNotReadyPredicate, ""),
 	})
 
 	node := productionShapedNode()
@@ -148,10 +142,10 @@ func TestTransform_DeletionTimestampPresent_IsRetained(t *testing.T) {
 }
 
 func TestTransform_NodeAssociationExpression_FieldsAreRetained(t *testing.T) {
-	transform := transformForGVK(t, podGVK, []config.Policy{
-		policyWithExpressions(
+	transform := transformForGVK(t, testutils.PodGVK, []config.Policy{
+		testutils.PolicyWithExpressions(
 			"gpu-operator-pod-health",
-			podGVK,
+			testutils.PodGVK,
 			`resource.status.phase != 'Running'`,
 			`resource.spec.nodeName`,
 		),
@@ -196,8 +190,8 @@ func TestTransform_NodeAssociationExpression_FieldsAreRetained(t *testing.T) {
 }
 
 func TestTransform_NonUnstructuredInput_PassesThroughUnchanged(t *testing.T) {
-	transform := transformForGVK(t, nodeGVK, []config.Policy{
-		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+	transform := transformForGVK(t, testutils.NodeGVK, []config.Policy{
+		testutils.PolicyWithExpressions("node-not-ready", testutils.NodeGVK, testutils.NodeNotReadyPredicate, ""),
 	})
 
 	// The same GVK is also served to structured readers and to tombstones from
@@ -215,16 +209,16 @@ func TestTransform_NonUnstructuredInput_PassesThroughUnchanged(t *testing.T) {
 
 func TestBuildCacheEntries_OpaquePolicy_CachesGVKInFull(t *testing.T) {
 	entries := cacheEntries(t, []config.Policy{
-		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+		testutils.PolicyWithExpressions("node-not-ready", testutils.NodeGVK, testutils.NodeNotReadyPredicate, ""),
 		// Reads the object as a whole: the fields it touches are not derivable,
 		// so Node must be cached in full.
-		policyWithExpressions("node-opaque", nodeGVK, `size(resource) > 3`, ""),
-		policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, ""),
+		testutils.PolicyWithExpressions("node-opaque", testutils.NodeGVK, `size(resource) > 3`, ""),
+		testutils.PolicyWithExpressions("pod-health", testutils.PodGVK, `resource.status.phase != 'Running'`, ""),
 	})
 
-	require.Contains(t, entries, nodeGVK)
-	require.Nil(t, entries[nodeGVK].transform)
-	require.NotNil(t, entries[podGVK].transform)
+	require.Contains(t, entries, testutils.NodeGVK)
+	require.Nil(t, entries[testutils.NodeGVK].transform)
+	require.NotNil(t, entries[testutils.PodGVK].transform)
 }
 
 // TestBuildCacheEntries_LookupOfWatchedGVK_UnionsBothPathSets is the fail-open
@@ -235,14 +229,14 @@ func TestBuildCacheEntries_OpaquePolicy_CachesGVKInFull(t *testing.T) {
 // absent field.
 func TestBuildCacheEntries_LookupOfWatchedGVK_UnionsBothPathSets(t *testing.T) {
 	entries := cacheEntries(t, []config.Policy{
-		policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, ""),
-		policyWithExpressions("node-owns-pod", nodeGVK,
+		testutils.PolicyWithExpressions("pod-health", testutils.PodGVK, `resource.status.phase != 'Running'`, ""),
+		testutils.PolicyWithExpressions("node-owns-pod", testutils.NodeGVK,
 			`lookup('v1', 'Pod', 'default', 'device-plugin').spec.nodeName == resource.metadata.name`, ""),
 	})
 
-	require.True(t, entries[podGVK].servesLookups)
+	require.True(t, entries[testutils.PodGVK].servesLookups)
 
-	pod := prunedObject(t, entries[podGVK].transform, map[string]any{
+	pod := prunedObject(t, entries[testutils.PodGVK].transform, map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Pod",
 		"metadata":   map[string]any{"name": "device-plugin", "namespace": "default"},
@@ -265,13 +259,13 @@ func TestBuildCacheEntries_LookupOfWatchedGVK_UnionsBothPathSets(t *testing.T) {
 // than the entry that transform prunes.
 func TestBuildCacheEntries_WholeObjectLookup_LeavesWatchTransformInPlace(t *testing.T) {
 	entries := cacheEntries(t, []config.Policy{
-		policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, ""),
-		policyWithExpressions("node-owns-pod", nodeGVK,
+		testutils.PolicyWithExpressions("pod-health", testutils.PodGVK, `resource.status.phase != 'Running'`, ""),
+		testutils.PolicyWithExpressions("node-owns-pod", testutils.NodeGVK,
 			`size(lookup('v1', 'Pod', 'default', 'device-plugin')) > 3`, ""),
 	})
 
-	require.NotNil(t, entries[podGVK].transform)
-	require.False(t, entries[podGVK].servesLookups)
+	require.NotNil(t, entries[testutils.PodGVK].transform)
+	require.False(t, entries[testutils.PodGVK].servesLookups)
 }
 
 // TestBuildCacheEntries_WholeObjectLookupOfUnwatchedGVK_HasNoEntry keeps the
@@ -279,23 +273,23 @@ func TestBuildCacheEntries_WholeObjectLookup_LeavesWatchTransformInPlace(t *test
 // and the lookup that names it cannot be served from a pruned entry.
 func TestBuildCacheEntries_WholeObjectLookupOfUnwatchedGVK_HasNoEntry(t *testing.T) {
 	entries := cacheEntries(t, []config.Policy{
-		policyWithExpressions("node-owns-pod", nodeGVK,
+		testutils.PolicyWithExpressions("node-owns-pod", testutils.NodeGVK,
 			`size(lookup('v1', 'Pod', 'default', 'device-plugin')) > 3`, ""),
 	})
 
-	require.NotContains(t, entries, podGVK)
+	require.NotContains(t, entries, testutils.PodGVK)
 }
 
 func TestBuildCacheEntries_DisabledPolicy_IsIgnored(t *testing.T) {
-	opaque := policyWithExpressions("node-opaque", nodeGVK, `size(resource) > 3`, "")
+	opaque := testutils.PolicyWithExpressions("node-opaque", testutils.NodeGVK, `size(resource) > 3`, "")
 	opaque.Enabled = false
 
 	entries := cacheEntries(t, []config.Policy{
-		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+		testutils.PolicyWithExpressions("node-not-ready", testutils.NodeGVK, testutils.NodeNotReadyPredicate, ""),
 		opaque,
 	})
 
-	require.NotNil(t, entries[nodeGVK].transform)
+	require.NotNil(t, entries[testutils.NodeGVK].transform)
 }
 
 func TestFieldTree_RedundantPaths_CollapseIntoRetainedSubtree(t *testing.T) {
@@ -343,25 +337,6 @@ func transformForGVK(
 	require.NotNil(t, entries[gvk].transform)
 
 	return entries[gvk].transform
-}
-
-func policyWithExpressions(name string, gvk schema.GroupVersionKind, predicate, nodeAssociation string) config.Policy {
-	p := config.Policy{
-		Name:    name,
-		Enabled: true,
-		Resource: config.ResourceSpec{
-			Group:   gvk.Group,
-			Version: gvk.Version,
-			Kind:    gvk.Kind,
-		},
-		Predicate: config.PredicateSpec{Expression: predicate},
-	}
-
-	if nodeAssociation != "" {
-		p.NodeAssociation = &config.AssociationSpec{Expression: nodeAssociation}
-	}
-
-	return p
 }
 
 func jsonSize(t *testing.T, obj *unstructured.Unstructured) int {

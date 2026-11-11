@@ -47,6 +47,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/testutils"
 )
 
 // TestNodeNotReadyPolicy_PrunedCacheEntry_EvaluatesAndPublishes takes the
@@ -65,7 +66,7 @@ func TestNodeNotReadyPolicy_PrunedCacheEntry_EvaluatesAndPublishes(t *testing.T)
 	t.Cleanup(cancel)
 
 	policies := []config.Policy{
-		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+		testutils.PolicyWithExpressions("node-not-ready", testutils.NodeGVK, testutils.NodeNotReadyPredicate, ""),
 	}
 
 	restConfig := startEnvtest(t)
@@ -175,7 +176,7 @@ func TestLookup_GVKWithoutCacheEntry_StartsNoInformer(t *testing.T) {
 
 	// The policy names no GVK in a lookup, so nothing but Node is cached.
 	policies := []config.Policy{
-		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+		testutils.PolicyWithExpressions("node-not-ready", testutils.NodeGVK, testutils.NodeNotReadyPredicate, ""),
 	}
 
 	restConfig := startEnvtest(t)
@@ -232,7 +233,7 @@ func TestLookup_LiteralGVK_ReadsFromPrunedCacheEntry(t *testing.T) {
 	t.Cleanup(cancel)
 
 	policies := []config.Policy{
-		policyWithExpressions("node-owns-device-plugin", nodeGVK,
+		testutils.PolicyWithExpressions("node-owns-device-plugin", testutils.NodeGVK,
 			`lookup('v1', 'Pod', 'default', '`+podName+`').spec.nodeName == resource.metadata.name`, ""),
 	}
 
@@ -240,7 +241,7 @@ func TestLookup_LiteralGVK_ReadsFromPrunedCacheEntry(t *testing.T) {
 
 	plan, err := buildCachePlan(restConfig, policies, time.Hour)
 	require.NoError(t, err)
-	require.Equal(t, []schema.GroupVersionKind{podGVK}, plan.lookupGVKs)
+	require.Equal(t, []schema.GroupVersionKind{testutils.PodGVK}, plan.lookupGVKs)
 
 	informedKinds := newKindRecorder(&plan.options)
 
@@ -276,7 +277,7 @@ func TestLookup_LiteralGVK_ReadsFromPrunedCacheEntry(t *testing.T) {
 	// has caught up, which is what leaving the API reader out would trip over.
 	// Waiting here is what the first evaluation of a running monitor declines
 	// to do.
-	warmLookupInformer(t, ctx, cachedPods, podGVK)
+	warmLookupInformer(t, ctx, cachedPods, testutils.PodGVK)
 
 	compiled, err := celEnv.Compile(policies[0].Predicate.Expression)
 	require.NoError(t, err)
@@ -292,7 +293,7 @@ func TestLookup_LiteralGVK_ReadsFromPrunedCacheEntry(t *testing.T) {
 
 	// The entry holds what the expression reads off the pod and nothing else.
 	cachedPod := &unstructured.Unstructured{}
-	cachedPod.SetGroupVersionKind(podGVK)
+	cachedPod.SetGroupVersionKind(testutils.PodGVK)
 
 	require.NoError(t, cachedPods.Get(ctx,
 		types.NamespacedName{Namespace: "default", Name: podName}, cachedPod))
@@ -395,14 +396,14 @@ func newTestReconciler(
 	require.NoError(t, err)
 
 	return controller.NewResourceReconciler(
-		c, evaluator, publisher, annotations.NewManager(c), policies, nodeGVK,
+		c, evaluator, publisher, annotations.NewManager(c), policies, testutils.NodeGVK,
 	)
 }
 
 func getCachedNode(t *testing.T, ctx context.Context, c cache.Cache, name string) *unstructured.Unstructured {
 	t.Helper()
 
-	node := newUnstructuredForGVK(nodeGVK).(*unstructured.Unstructured)
+	node := newUnstructuredForGVK(testutils.NodeGVK).(*unstructured.Unstructured)
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: name}, node))
 
 	return node
@@ -431,7 +432,7 @@ func awaitCachedReadyCondition(t *testing.T, ctx context.Context, c cache.Cache,
 	t.Helper()
 
 	require.Eventually(t, func() bool {
-		node := newUnstructuredForGVK(nodeGVK).(*unstructured.Unstructured)
+		node := newUnstructuredForGVK(testutils.NodeGVK).(*unstructured.Unstructured)
 		if err := c.Get(ctx, types.NamespacedName{Name: name}, node); err != nil {
 			return false
 		}

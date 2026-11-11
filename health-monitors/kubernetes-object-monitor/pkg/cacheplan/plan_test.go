@@ -23,48 +23,49 @@ import (
 
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/testutils"
 )
 
 func TestBuild_NamedNamespaces_AreSortedAndDeduplicated(t *testing.T) {
 	plan := buildPlan(t,
-		namespacedPolicy("b", podGVK, "monitoring"),
-		namespacedPolicy("a", podGVK, "gpu-operator"),
-		namespacedPolicy("c", podGVK, "monitoring"),
+		namespacedPolicy("b", testutils.PodGVK, "monitoring"),
+		namespacedPolicy("a", testutils.PodGVK, "gpu-operator"),
+		namespacedPolicy("c", testutils.PodGVK, "monitoring"),
 	)
 
-	assert.Equal(t, []string{"gpu-operator", "monitoring"}, plan[podGVK].Namespaces)
+	assert.Equal(t, []string{"gpu-operator", "monitoring"}, plan[testutils.PodGVK].Namespaces)
 }
 
 func TestBuild_PolicyWithoutNamespace_CachesClusterWide(t *testing.T) {
 	plan := buildPlan(t,
-		namespacedPolicy("a", podGVK, "gpu-operator"),
-		namespacedPolicy("b", podGVK, ""),
+		namespacedPolicy("a", testutils.PodGVK, "gpu-operator"),
+		namespacedPolicy("b", testutils.PodGVK, ""),
 	)
 
-	assert.Nil(t, plan[podGVK].Namespaces)
+	assert.Nil(t, plan[testutils.PodGVK].Namespaces)
 }
 
 func TestBuild_LookupOfClusterWideGVK_ReadsTheCache(t *testing.T) {
 	plan := buildPlan(t,
-		policyWithExpressions("node-owns-pod", nodeGVK,
+		testutils.PolicyWithExpressions("node-owns-pod", testutils.NodeGVK,
 			`lookup('v1', 'Pod', 'default', 'device-plugin').spec.nodeName == resource.metadata.name`, ""),
 	)
 
-	require.Contains(t, plan, podGVK)
-	assert.True(t, plan[podGVK].LookupsFromCache)
-	assert.NotNil(t, plan[podGVK].Transform)
-	assert.False(t, plan[nodeGVK].LookupsFromCache)
+	require.Contains(t, plan, testutils.PodGVK)
+	assert.True(t, plan[testutils.PodGVK].LookupsFromCache)
+	assert.NotNil(t, plan[testutils.PodGVK].Transform)
+	assert.False(t, plan[testutils.NodeGVK].LookupsFromCache)
 }
 
 func TestBuild_LookupOfNamespaceRestrictedGVK_ReadsTheAPI(t *testing.T) {
 	plan := buildPlan(t,
-		namespacedPolicy("pod-health", podGVK, "gpu-operator"),
-		policyWithExpressions("node-owns-pod", nodeGVK,
+		namespacedPolicy("pod-health", testutils.PodGVK, "gpu-operator"),
+		testutils.PolicyWithExpressions("node-owns-pod", testutils.NodeGVK,
 			`lookup('v1', 'Pod', 'monitoring', 'device-plugin').spec.nodeName == resource.metadata.name`, ""),
 	)
 
-	assert.Equal(t, []string{"gpu-operator"}, plan[podGVK].Namespaces)
-	assert.False(t, plan[podGVK].LookupsFromCache)
+	assert.Equal(t, []string{"gpu-operator"}, plan[testutils.PodGVK].Namespaces)
+	assert.False(t, plan[testutils.PodGVK].LookupsFromCache)
 }
 
 func buildPlan(t *testing.T, policies ...config.Policy) map[schema.GroupVersionKind]Entry {
@@ -77,7 +78,7 @@ func buildPlan(t *testing.T, policies ...config.Policy) map[schema.GroupVersionK
 }
 
 func namespacedPolicy(name string, gvk schema.GroupVersionKind, namespace string) config.Policy {
-	p := policyWithExpressions(name, gvk, `resource.status.phase != 'Running'`, "")
+	p := testutils.PolicyWithExpressions(name, gvk, `resource.status.phase != 'Running'`, "")
 	p.Resource.Namespace = namespace
 
 	return p
