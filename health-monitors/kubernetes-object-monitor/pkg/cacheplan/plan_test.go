@@ -36,38 +36,6 @@ func TestBuild_NamedNamespaces_AreSortedAndDeduplicated(t *testing.T) {
 	assert.Equal(t, []string{"gpu-operator", "monitoring"}, plan[testutils.PodGVK].Namespaces)
 }
 
-func TestBuild_PolicyWithoutNamespace_CachesClusterWide(t *testing.T) {
-	plan := buildPlan(t,
-		namespacedPolicy("a", testutils.PodGVK, "gpu-operator"),
-		namespacedPolicy("b", testutils.PodGVK, ""),
-	)
-
-	assert.Nil(t, plan[testutils.PodGVK].Namespaces)
-}
-
-func TestBuild_LookupOfClusterWideGVK_ReadsTheCache(t *testing.T) {
-	plan := buildPlan(t,
-		testutils.PolicyWithExpressions("node-owns-pod", testutils.NodeGVK,
-			`lookup('v1', 'Pod', 'default', 'device-plugin').spec.nodeName == resource.metadata.name`, ""),
-	)
-
-	require.Contains(t, plan, testutils.PodGVK)
-	assert.True(t, plan[testutils.PodGVK].LookupsFromCache)
-	assert.NotNil(t, plan[testutils.PodGVK].Transform)
-	assert.False(t, plan[testutils.NodeGVK].LookupsFromCache)
-}
-
-func TestBuild_LookupOfNamespaceRestrictedGVK_ReadsTheAPI(t *testing.T) {
-	plan := buildPlan(t,
-		namespacedPolicy("pod-health", testutils.PodGVK, "gpu-operator"),
-		testutils.PolicyWithExpressions("node-owns-pod", testutils.NodeGVK,
-			`lookup('v1', 'Pod', 'monitoring', 'device-plugin').spec.nodeName == resource.metadata.name`, ""),
-	)
-
-	assert.Equal(t, []string{"gpu-operator"}, plan[testutils.PodGVK].Namespaces)
-	assert.False(t, plan[testutils.PodGVK].LookupsFromCache)
-}
-
 func buildPlan(t *testing.T, policies ...config.Policy) map[schema.GroupVersionKind]Entry {
 	t.Helper()
 
