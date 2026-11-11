@@ -301,6 +301,34 @@ func TestLookedUpPrunesOnlyObjectsServedFromTheCache(t *testing.T) {
 	})
 }
 
+func TestLoadSuiteDecodesIntegersAsInt64(t *testing.T) {
+	policies := []config.Policy{{
+		Name:      "odd-replicas",
+		Enabled:   true,
+		Resource:  config.ResourceSpec{Group: "apps", Version: "v1", Kind: "Deployment"},
+		Predicate: config.PredicateSpec{Expression: `resource.spec.replicas % 2 == 1`},
+	}}
+
+	suite, err := LoadSuite(writeFile(t, `
+cases:
+  - name: three replicas
+    policy: odd-replicas
+    resource:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: d, namespace: default}
+      spec: {replicas: 3}
+    expect:
+      match: true
+`))
+	require.NoError(t, err)
+
+	results, err := Run(context.Background(), policies, suite)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Empty(t, results[0].Failures)
+}
+
 func TestRunReportsMatchWhenNodeAssociationFails(t *testing.T) {
 	policies := []config.Policy{{
 		Name:            "failed-pod",

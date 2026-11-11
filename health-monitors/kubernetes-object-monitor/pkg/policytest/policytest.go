@@ -23,6 +23,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utiljson "k8s.io/apimachinery/pkg/util/json"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -97,6 +99,10 @@ func LoadSuite(path string) (*Suite, error) {
 		return nil, fmt.Errorf("test file %s has no cases", path)
 	}
 
+	if err := decodeIntegers(&s); err != nil {
+		return nil, fmt.Errorf("parse test file %s: %w", path, err)
+	}
+
 	seen := make(map[string]bool, len(s.Cases))
 
 	for i, c := range s.Cases {
@@ -108,6 +114,38 @@ func LoadSuite(path string) (*Suite, error) {
 	}
 
 	return &s, nil
+}
+
+// decodeIntegers re-decodes the objects and case resources so whole numbers are
+// int64, as they are in the unstructured objects the monitor's cache returns.
+// The YAML decoder makes every number a float64.
+func decodeIntegers(s *Suite) error {
+	for i := range s.Objects {
+		if err := asUnstructuredJSON(&s.Objects[i]); err != nil {
+			return fmt.Errorf("object %d: %w", i, err)
+		}
+	}
+
+	for i := range s.Cases {
+		if err := asUnstructuredJSON(&s.Cases[i].Resource); err != nil {
+			return fmt.Errorf("case %q: %w", s.Cases[i].Name, err)
+		}
+	}
+
+	return nil
+}
+
+func asUnstructuredJSON(m *map[string]any) error {
+	if *m == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(*m)
+	if err != nil {
+		return err
+	}
+
+	return utiljson.Unmarshal(data, m)
 }
 
 // countDocuments returns how many non-empty YAML documents data holds.
