@@ -20,10 +20,6 @@ on:
   schedule:
     - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
   workflow_dispatch: {}
-  # TEMPORARY: test on the copy-pr-bot branch of #2361. Remove before merge.
-  push:
-    branches:
-      - pull-request/2361
 
 permissions:
   contents: read
@@ -59,14 +55,16 @@ jobs:
             echo "::error::No successful run of publish.yml on main"
             exit 1
           fi
-          images=$(./scripts/retry.sh scripts/published-images.sh "main-${sha:0:7}" | jq -c '[.[] | select(.large)]')  # TEMPORARY
+          images=$(./scripts/retry.sh scripts/published-images.sh "main-${sha:0:7}")
           echo "images=${images}" >> "${GITHUB_OUTPUT}"
           jq -r '.[] | "\(.ref) \(.size_mb) MB"' <<< "${images}"
 
   scan:
     needs: find-images
-    runs-on: ${{ matrix.image.large && 'linux-amd64-cpu32' || 'ubuntu-latest' }}  # TEMPORARY
-    timeout-minutes: 90
+    # Grype needs about 16 GB of memory to scan the largest images, and a GitHub-hosted runner has
+    # 16 GB in total.
+    runs-on: ${{ matrix.image.large && 'linux-amd64-cpu32' || 'ubuntu-latest' }}
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write
@@ -81,50 +79,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # TEMPORARY: sample memory and disk while the image is scanned directly.
-      - name: Sample memory and disk
-        run: |
-          nproc; free -m; df -h /
-          nohup bash -c 'while sleep 10; do echo "$(date +%T) used=$(free -m | awk "/Mem/{print \$3}")MB disk_used=$(df -BG --output=used / | tail -1)"; done' > "${RUNNER_TEMP}/samples.log" 2>&1 &
-
-      # Grype does not finish a scan of the largest images on a GitHub-hosted runner. For those, scan
-      # the SBOM that the publish workflow attested, after a check of its signature.
-      - name: Load the Cosign version
-        id: versions
-        if: matrix.image.large
-        run: echo "cosign=$(yq '.container_tools.cosign' .versions.yaml)" >> "${GITHUB_OUTPUT}"
-
-      - name: Install Cosign
-        if: matrix.image.large
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
-        with:
-          cosign-release: ${{ steps.versions.outputs.cosign }}
-
-      - name: Get the SBOM of the image
-        id: sbom
-        if: matrix.image.large
-        env:
-          IMAGE: ${{ matrix.image.ref }}
-        run: |
-          set -euo pipefail
-          ./scripts/retry.sh cosign verify-attestation --type cyclonedx \
-            --certificate-identity-regexp '^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/(heads|tags)/' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "${IMAGE}" > "${RUNNER_TEMP}/attestations.json"
-          head -1 "${RUNNER_TEMP}/attestations.json" | jq -r .payload | base64 -d | jq .predicate \
-            > "${RUNNER_TEMP}/sbom.cdx.json"
-          echo "file=${RUNNER_TEMP}/sbom.cdx.json" >> "${GITHUB_OUTPUT}"
-
       # The registry: prefix makes Grype pull the image itself, without a copy in the Docker daemon.
       - name: Scan the image
         uses: ./.github/actions/security-scan
         with:
-          image: registry:${{ matrix.image.ref }}  # TEMPORARY: scan the large images directly
+          image: registry:${{ matrix.image.ref }}
           severity-cutoff: high
           category: ${{ matrix.image.category }}
-
-      - name: Show the samples  # TEMPORARY
-        if: always()
-        run: |
-          cat "${RUNNER_TEMP}/samples.log"
-          echo "peak used: $(grep -o 'used=[0-9]*' "${RUNNER_TEMP}/samples.log" | cut -d= -f2 | sort -n | tail -1)MB"
