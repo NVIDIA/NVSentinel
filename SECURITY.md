@@ -52,10 +52,15 @@ The daily scan also reads [`.grype.yaml`](.grype.yaml), which excludes the paths
 {
   "vulnerability": { "name": "CVE-YYYY-NNNNN" },
   "timestamp": "2026-11-11T00:00:00Z",
-  "products": [{ "@id": "pkg:oci/gpu-reset" }],
+  "products": [
+    {
+      "@id": "pkg:oci/gpu-reset",
+      "subcomponents": [{ "@id": "pkg:deb/ubuntu/libexample1@1.2.3?arch=amd64&distro=ubuntu-24.04" }]
+    }
+  ],
   "status": "not_affected",
   "justification": "vulnerable_code_not_in_execute_path",
-  "impact_statement": "The library is in the CUDA base image, but gpu-reset never loads it."
+  "impact_statement": "libexample1 is in the CUDA base image, but gpu-reset never loads it."
 }
 ```
 
@@ -63,8 +68,8 @@ Each statement has these fields:
 
 - `vulnerability.name`: the ID that Grype reports.
 - `timestamp`: when the statement was written.
-- `products`: the images that the statement applies to. Name an image by the last part of its repository, for example `pkg:oci/gpu-reset` for `ghcr.io/nvidia/nvsentinel/gpu-reset`. Without `subcomponents`, the statement applies to the vulnerability in every package of the image.
-- `subcomponents` (optional, in each product): the packages that the statement applies to, by the PURL that Grype reports, for example `{ "@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04" }`. After an update to another version, the PURL no longer matches, so remove the statement.
+- `products`: the images that the statement applies to. Name an image by the last part of its repository, for example `pkg:oci/gpu-reset` for `ghcr.io/nvidia/nvsentinel/gpu-reset`.
+- `subcomponents`, in each product: the packages that the reason covers, by the PURL that Grype reports. After an update to another version, the PURL no longer matches, so remove the statement. A statement without `subcomponents` applies to the vulnerability in every package of the image, so leave them out only when the reason covers every package.
 - `status`: `not_affected`.
 - `justification`: one of the [OpenVEX justifications](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md#status-justifications), for example `vulnerable_code_not_in_execute_path`.
 - `impact_statement`: why the vulnerability does not affect the image, so that a reviewer can check it.
