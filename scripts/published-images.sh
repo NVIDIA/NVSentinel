@@ -20,7 +20,7 @@
 #
 # The list comes from the same sources as the publish workflow: the ko build in scripts/buildko.sh,
 # and the container_name and tag_suffix of the Docker build matrix in publish.yml. Each entry has
-# name, ref (the image reference), category (a code scanning category) and large (true above 4 GiB).
+# name, ref (the image reference), category (a code scanning category) and size_mb.
 # The script fails when an image does not exist for the tag. Run it from the repository root, with
 # curl, jq and yq on the PATH.
 
@@ -34,7 +34,6 @@ fi
 tag=$1
 registry=ghcr.io
 repository=nvidia/nvsentinel
-large_bytes=$((4 * 1024 * 1024 * 1024))
 
 # name|tag suffix for each published image.
 images() {
@@ -69,8 +68,8 @@ while IFS='|' read -r name suffix; do
   fi
 
   entries+=("$(jq -cn --arg name "${name}${suffix}" --arg ref "${registry}/${repository}/${name}:${reference}" \
-    --argjson size "${size}" --argjson large "$((size > large_bytes ? 1 : 0))" \
-    '{name: $name, ref: $ref, category: ("grype-image-" + $name), size_mb: ($size / 1048576 | floor), large: ($large == 1)}')")
+    --argjson size "${size}" \
+    '{name: $name, ref: $ref, category: ("grype-image-" + $name), size_mb: ($size / 1048576 | floor)}')")
 done < <(images)
 
 printf '%s\n' "${entries[@]}" | jq -cs '.'

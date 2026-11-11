@@ -27,7 +27,7 @@ permissions:
 jobs:
   find-images:
     if: github.repository == 'nvidia/nvsentinel'
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu32
     timeout-minutes: 10
     permissions:
       contents: read
@@ -61,9 +61,7 @@ jobs:
 
   scan:
     needs: find-images
-    # Grype needs about 16 GB of memory to scan the largest images, and a GitHub-hosted runner has
-    # 16 GB in total.
-    runs-on: ${{ matrix.image.large && 'linux-amd64-cpu32' || 'ubuntu-latest' }}
+    runs-on: linux-amd64-cpu32
     timeout-minutes: 30
     permissions:
       contents: read
