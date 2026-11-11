@@ -92,7 +92,7 @@ func LoadSuite(path string) (*Suite, error) {
 	}
 
 	var s Suite
-	if err := yaml.UnmarshalStrict(data, &s); err != nil {
+	if err := yaml.UnmarshalStrict(data, &s, useNumber); err != nil {
 		return nil, fmt.Errorf("parse test file %s: %w", path, err)
 	}
 
@@ -117,9 +117,15 @@ func LoadSuite(path string) (*Suite, error) {
 	return &s, nil
 }
 
+// useNumber keeps numbers as json.Number so decodeIntegers sees them exactly as
+// written.
+func useNumber(d *json.Decoder) *json.Decoder {
+	d.UseNumber()
+	return d
+}
+
 // decodeIntegers re-decodes the objects and case resources so whole numbers are
 // int64, as they are in the unstructured objects the monitor's cache returns.
-// The YAML decoder makes every number a float64.
 func decodeIntegers(s *Suite) error {
 	for i := range s.Objects {
 		if err := asUnstructuredJSON(&s.Objects[i]); err != nil {

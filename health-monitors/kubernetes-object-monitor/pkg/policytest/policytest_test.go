@@ -358,11 +358,12 @@ cases:
       apiVersion: apps/v1
       kind: Deployment
       metadata: {name: d, namespace: default}
-      spec: {replicas: 3}
+      spec: {replicas: 3, revisionHistoryLimit: 9007199254740993}
     expect:
       match: true
 `))
 	require.NoError(t, err)
+	assert.Equal(t, int64(9007199254740993), suite.Cases[0].Resource["spec"].(map[string]any)["revisionHistoryLimit"])
 
 	results, err := Run(context.Background(), policies, suite)
 	require.NoError(t, err)
