@@ -55,8 +55,8 @@ func TestHybridChangeStream_PollsWhileListenUnavailable(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(changelogQuery)).WillReturnRows(changelogRows())
 	watcher.Start(ctx)
 
-	// The empty poll establishes readiness even though LISTEN keeps retrying the refused port.
-	require.Eventually(t, watcher.IsReady, 2*time.Second, 10*time.Millisecond)
+	// Once the failed LISTEN attempt falls back to polling, the empty poll establishes readiness.
+	require.Eventually(t, watcher.IsReady, 10*time.Second, 10*time.Millisecond)
 	// A second poll proves the fallback stays active while Listen is blocked.
 	require.Eventually(t, func() bool {
 		return mock.ExpectationsWereMet() == nil
@@ -106,18 +106,30 @@ func TestFetch_ReadFailureOverridesActiveListener(t *testing.T) {
 			watcher.listenerConnected, watcher.listenerSubscribed = true, true
 			require.True(t, watcher.IsReady())
 			fetch := func() error { return watcher.fetchNewChanges(context.Background()) }
+			query := changelogQuery
 			if byID {
-				fetch = func() error { return watcher.fetchChangeByID(context.Background(), 1) }
+				watcher.addNotifiedID(1)
+				fetch = func() error { return watcher.fetchNotifiedRows(context.Background()) }
+				query = "SELECT id, record_id, operation, old_values, new_values, changed_at"
 			}
-			mock.ExpectQuery(changelogQuery).WillReturnError(sql.ErrConnDone)
+			mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnError(sql.ErrConnDone)
 			require.Error(t, fetch())
 			require.False(t, watcher.IsReady(), "LISTEN cannot compensate for an unreadable query pool")
-			mock.ExpectQuery(changelogQuery).WillReturnRows(changelogRows())
+			mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(changelogRows())
 			require.NoError(t, fetch())
 			require.True(t, watcher.IsReady())
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+func TestReadinessDoesNotWaitForLongCatchUp(t *testing.T) {
+	watcher := NewPostgreSQLChangeStreamWatcher(nil, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.listenerConnected = true
+	watcher.listenerSubscribed = true
+	watcher.catchUpPending = true
+
+	require.True(t, watcher.IsReady(), "an active listener can report readiness while ordered catch-up drains")
 }
 
 func TestProcessNotification_ReconnectCatchesUpBeforeNewNotification(t *testing.T) {
@@ -133,7 +145,9 @@ func TestProcessNotification_ReconnectCatchesUpBeforeNewNotification(t *testing.
 	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when.Add(time.Second), int64(2)).
 		WillReturnRows(changelogRows())
 	watcher.processNotification(context.Background(), nil)
-	require.Len(t, watcher.events, 1, "a reconnect must recover the missed row immediately")
+	require.True(t, watcher.catchUpPending, "the listener marks the subscription gap for the fetch loop")
+	require.NoError(t, watcher.readChangelog(context.Background()))
+	require.Len(t, watcher.events, 1, "the fetch loop recovers the missed row")
 	require.Equal(t, []byte("2"), (<-watcher.events).ResumeToken)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -155,20 +169,29 @@ func TestProcessNotification_FailedCatchUpCannotSkipMissedRows(t *testing.T) {
 	watcher.lastTimestamp, watcher.lastEventID = when, 1
 	mock.ExpectQuery(changelogQuery).WillReturnError(sql.ErrConnDone)
 	watcher.processNotification(context.Background(), nil)
+	require.Error(t, watcher.catchUpAfterSubscribe(context.Background()))
 	require.False(t, watcher.IsReady())
 	require.True(t, watcher.catchUpPending)
-	// Two batches must be drained before fetching the newer notified row.
+	// The adaptive poll can retry and drain two batches without another NOTIFY.
 	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when, int64(1)).
 		WillReturnRows(healthEventRow(changelogRows(), 2, when.Add(time.Second)))
 	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when.Add(time.Second), int64(2)).
 		WillReturnRows(healthEventRow(changelogRows(), 3, when.Add(2*time.Second)))
 	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when.Add(2*time.Second), int64(3)).
 		WillReturnRows(changelogRows())
-	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, int64(4)).
+	interval := 5 * time.Second
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	watcher.pollAccordingToNotificationHealth(context.Background(), ticker, &interval)
+	require.False(t, watcher.catchUpPending)
+
+	// A subsequent notification is queued, and the normal poll delivers its row in order.
+	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when.Add(2*time.Second), int64(3)).
 		WillReturnRows(healthEventRow(changelogRows(), 4, when.Add(3*time.Second)))
 	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, when.Add(3*time.Second), int64(4)).
 		WillReturnRows(changelogRows())
 	watcher.processNotification(context.Background(), &pq.Notification{Extra: `{"id":4,"table":"health_events","operation":"INSERT"}`})
+	require.NoError(t, watcher.readChangelog(context.Background()))
 	require.Len(t, watcher.events, 3)
 	for _, id := range []string{"2", "3", "4"} {
 		require.Equal(t, []byte(id), (<-watcher.events).ResumeToken)
@@ -189,7 +212,13 @@ func TestListenLoop_StartupCatchesUpWithoutNotification(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	go func() { defer close(done); watcher.listenLoop(ctx) }()
-	require.Eventually(t, watcher.IsReady, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool {
+		watcher.mu.RLock()
+		pending := watcher.catchUpPending
+		watcher.mu.RUnlock()
+
+		return !pending && mock.ExpectationsWereMet() == nil
+	}, time.Second, time.Millisecond)
 	cancel()
 	select {
 	case <-done:

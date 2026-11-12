@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 )
 
 type fakeLagWatcher struct {
@@ -33,6 +34,19 @@ type fakeLagWatcher struct {
 func (f fakeLagWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
 	return f.lastEmptyBatch, f.lastEventRead
 }
+
+func (fakeLagWatcher) IsReady() bool { return true }
+
+type trippedStartupBreaker struct{}
+
+func (trippedStartupBreaker) AddCordonEvent(string)                           {}
+func (trippedStartupBreaker) IsTripped(context.Context) (bool, error)         { return true, nil }
+func (trippedStartupBreaker) ForceState(context.Context, breaker.State) error { return nil }
+func (trippedStartupBreaker) CurrentState() breaker.State                     { return breaker.StateTripped }
+func (trippedStartupBreaker) GetCursorMode(context.Context) (breaker.CursorMode, error) {
+	return breaker.CursorModeResume, nil
+}
+func (trippedStartupBreaker) SetCursorMode(context.Context, breaker.CursorMode) error { return nil }
 
 func TestReconciler_ReadinessChecker(t *testing.T) {
 	r := &Reconciler{}
@@ -50,4 +64,33 @@ func TestReconciler_ReadinessChecker(t *testing.T) {
 
 	err = checker.Ready(ctx)
 	require.NoError(t, err)
+}
+
+func TestReadiness_DatastoreCanBeReadyWhileTrippedStartupHaltsRollout(t *testing.T) {
+	checker := server.NewDatastoreReadinessChecker(prometheus.NewRegistry())
+	checker.SetWatcher(fakeLagWatcher{})
+	r := &Reconciler{
+		config: ReconcilerConfig{CircuitBreakerEnabled: true},
+		cb:     trippedStartupBreaker{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startupDone := make(chan error, 1)
+	go func() { startupDone <- r.checkCircuitBreakerAtStartup(ctx) }()
+
+	select {
+	case err := <-startupDone:
+		t.Fatalf("TRIPPED startup should halt until cancellation, got %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	// Readiness reports datastore capability, not whether Fault Quarantine is dequeuing events.
+	require.NoError(t, checker.Ready(ctx))
+
+	cancel()
+	select {
+	case err := <-startupDone:
+		require.ErrorContains(t, err, "circuit breaker is TRIPPED at startup")
+	case <-time.After(time.Second):
+		t.Fatal("TRIPPED startup did not stop after cancellation")
+	}
 }

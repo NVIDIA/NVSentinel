@@ -1,0 +1,92 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Scans the latest images from main every week for known vulnerabilities, and reports the findings
+# as code scanning alerts in the Security tab, with one category for each image.
+name: Weekly Image Scan
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  find-images:
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      images: ${{ steps.images.outputs.images }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Images from main are tagged main-<short commit>. Scan the images of the latest commit that
+      # published successfully. A manual run of publish.yml publishes the tag it is given instead, so
+      # only runs from a push count.
+      - name: Find the images of the latest publish from main
+        id: images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha=$(gh run list -R "${REPOSITORY}" --workflow publish.yml --branch main --event push \
+            --status success --limit 1 --json headSha --jq '.[0].headSha')
+          if [ -z "${sha}" ]; then
+            echo "::error::No successful run of publish.yml on main"
+            exit 1
+          fi
+          # Read the image list from the published commit, in case a later commit adds or removes an
+          # image.
+          ./scripts/retry.sh git fetch -q --depth=1 origin "${sha}"
+          git checkout -q "${sha}" -- scripts/buildko.sh .github/workflows/publish.yml
+          images=$(./scripts/retry.sh scripts/published-images.sh "main-${sha:0:7}")
+          echo "images=${images}" >> "${GITHUB_OUTPUT}"
+          jq -r '.[] | "\(.ref) \(.size_mb) MB"' <<< "${images}"
+
+  scan:
+    needs: find-images
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.find-images.outputs.images) }}
+    name: scan (${{ matrix.image.name }})
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The registry: prefix makes Grype pull the image itself, without a copy in the Docker daemon.
+      - name: Scan the image
+        uses: ./.github/actions/security-scan
+        with:
+          image: registry:${{ matrix.image.ref }}
+          severity-cutoff: high
+          category: ${{ matrix.image.category }}
+          vex: .openvex.json

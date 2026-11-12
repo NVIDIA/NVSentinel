@@ -141,9 +141,22 @@ func InsertManyIdempotentWith(
 // failure, so the caller retries it.
 var pqDocumentErrorClasses = map[pqerror.Class]bool{"22": true, "23": true}
 
+// pqPermanentClass is SQLSTATE class 22, data exception: a value the column or
+// its type cannot take, such as a string longer than its VARCHAR column
+// (22001) or a NUL character, which JSONB cannot store (22P05). Every resend
+// of the same document gets the same answer.
+const pqPermanentClass pqerror.Class = "22"
+
+// pqPermanentCodes are the integrity constraint violations that depend on the
+// document alone: a NOT NULL column it leaves empty, or a CHECK constraint it
+// fails. A foreign key or exclusion violation depends on other rows and can
+// pass later, and a unique violation is reported as a duplicate.
+var pqPermanentCodes = map[pqerror.Code]bool{pqerror.NotNullViolation: true, pqerror.CheckViolation: true}
+
 // ClassifyPostgresDocumentError converts the server's answer about one
 // document into a BulkDocumentError, marking a unique violation as a duplicate
-// on the named constraint. It reports false for anything that is not such an
+// on the named constraint and an answer every resend of the document would get
+// again as permanent. It reports false for anything that is not such an
 // answer: not a PostgreSQL error at all, or a PostgreSQL error whose SQLSTATE
 // class concerns the connection or the server rather than the document.
 func ClassifyPostgresDocumentError(documentIndex int, err error) (datastore.BulkDocumentError, bool) {
@@ -152,7 +165,11 @@ func ClassifyPostgresDocumentError(documentIndex int, err error) (datastore.Bulk
 		return datastore.BulkDocumentError{}, false
 	}
 
-	docErr := datastore.BulkDocumentError{DocumentIndex: documentIndex, Message: pqErr.Message}
+	docErr := datastore.BulkDocumentError{
+		DocumentIndex: documentIndex,
+		Message:       pqErr.Message,
+		Permanent:     pqErr.Code.Class() == pqPermanentClass || pqPermanentCodes[pqErr.Code],
+	}
 
 	if pqErr.Code == pqerror.UniqueViolation {
 		docErr.IndexName = pqErr.Constraint
