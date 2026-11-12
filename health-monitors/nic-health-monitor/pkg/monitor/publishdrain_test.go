@@ -45,6 +45,22 @@ func (c *hangingClient) HealthEventOccurredV1(
 	}
 }
 
+// wedgingClient wedges every publish until its context ends, counting the
+// sends it was handed.
+type wedgingClient struct {
+	publishes int
+}
+
+func (c *wedgingClient) HealthEventOccurredV1(
+	ctx context.Context, _ *pb.HealthEvents, _ ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	c.publishes++
+
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
 // TestCheckPollStalls_CancelledContextStillPublishesStall: the stall event is
 // the only record that the node was blind, and liveness lands SIGTERM on
 // this monitor precisely while that event is still trying to deliver, so
@@ -59,6 +75,7 @@ func TestCheckPollStalls_CancelledContextStillPublishesStall(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	m.armPublishDrain()
 	m.checkPollStalls(ctx)
 
 	events := client.stallEvents()
@@ -78,6 +95,8 @@ func TestRunChecks_CancelledContextStillPublishes(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	m.armPublishDrain()
+
 	require.NoError(t, m.RunStateChecks(ctx))
 
 	assert.True(t, check.committed, "delivered on the drain window, so the transition is consumed")
@@ -86,7 +105,7 @@ func TestRunChecks_CancelledContextStillPublishes(t *testing.T) {
 
 // TestRunChecks_WedgedPublishIsBoundedByDrainWindow: detaching from the
 // cancellation must not turn a wedged connector into an unbounded wait at
-// shutdown; the publish ends with its window and the transition stays
+// shutdown; the publish ends with the window and the transition stays
 // staged for the next poll.
 func TestRunChecks_WedgedPublishIsBoundedByDrainWindow(t *testing.T) {
 	client := &hangingClient{release: make(chan struct{})}
@@ -97,11 +116,71 @@ func TestRunChecks_WedgedPublishIsBoundedByDrainWindow(t *testing.T) {
 		[]checks.TransactionalCheck{check}, time.Second)
 	m.publishDrain = 50 * time.Millisecond
 
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.armPublishDrain()
+
 	start := time.Now()
-	require.NoError(t, m.RunStateChecks(context.Background()))
+	require.NoError(t, m.RunStateChecks(ctx))
 
 	assert.Less(t, time.Since(start), 5*time.Second,
 		"the drain window bounds how long shutdown waits on one publish")
 	assert.False(t, check.committed, "undelivered, so the transition stays staged")
 	assert.Equal(t, 1, check.discardCalls)
+}
+
+// TestRunChecks_ShutdownPublishesShareOneWindow: the drain is one deadline
+// armed at the cancellation, not a fresh window per publish. Two checks
+// with events during shutdown must together cost one window — the loops
+// can start another poll after the cancellation, so per-publish windows
+// would stack past the pod's termination grace period.
+func TestRunChecks_ShutdownPublishesShareOneWindow(t *testing.T) {
+	client := &wedgingClient{}
+	first, second := &stagedTestCheck{}, &stagedTestCheck{}
+	m := NewNICHealthMonitor("node1", client, "127.0.0.1:5555",
+		[]checks.TransactionalCheck{first, second}, time.Second)
+	m.publishDrain = 100 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.armPublishDrain()
+
+	start := time.Now()
+	require.NoError(t, m.RunStateChecks(ctx))
+
+	assert.Less(t, time.Since(start), 160*time.Millisecond,
+		"two shutdown publishes share one window, not one each")
+	assert.Equal(t, 1, client.publishes,
+		"the first publish spent the window; the second never reached the wire")
+	assert.Equal(t, 1, first.discardCalls, "both publishes were attempted")
+	assert.Equal(t, 1, second.discardCalls, "the second failed fast on the spent window")
+	assert.False(t, first.committed)
+	assert.False(t, second.committed)
+}
+
+// TestRunChecks_LiveContextIsNotCappedByDrainWindow: the drain bounds only
+// publishes that start after the cancellation. A steady-state publish
+// keeps the caller's context, so a direct-mode batch that waits out a slow
+// connector inside its retry window still delivers.
+func TestRunChecks_LiveContextIsNotCappedByDrainWindow(t *testing.T) {
+	release := make(chan struct{})
+	client := &hangingClient{release: release}
+
+	// The connector answers well after the drain window has passed.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		close(release)
+	}()
+
+	check := &stagedTestCheck{}
+	m := NewNICHealthMonitor("node1", client, "127.0.0.1:5555",
+		[]checks.TransactionalCheck{check}, time.Second)
+	m.publishDrain = 50 * time.Millisecond
+
+	start := time.Now()
+	require.NoError(t, m.RunStateChecks(context.Background()))
+
+	assert.True(t, check.committed, "delivered on the live context, not the drain window")
+	assert.Greater(t, time.Since(start), m.publishDrain,
+		"the publish outlived the drain window, so nothing capped it")
 }

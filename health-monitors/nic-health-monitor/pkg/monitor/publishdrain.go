@@ -19,29 +19,56 @@ import (
 	"time"
 )
 
-// defaultPublishDrain is the window a publish keeps after the shutdown
-// context is cancelled. The events nearest shutdown are the ones nothing
+// defaultPublishDrain is the window every shutdown publish shares, armed
+// once at SIGTERM. The events nearest shutdown are the ones nothing
 // else can report: the poll-stall event is the only record that the node
 // was blind while liveness restarted this container, and a poll that
 // completes during shutdown carries the recoveries that ended the stall.
 // On the cancelled context the publisher drops a batch for good — a
 // retrying send dies at once, a batch produced after the cancel is never
-// sent — so each publish runs on a context of its own: detached from the
-// cancellation, bounded by this window.
+// sent — so a publish that starts after the cancellation runs detached
+// from it, bounded by this window.
 //
-// The window is per publish, not per shutdown: a connector that stays
-// wedged can consume one window per publish, and the pod's termination
-// grace period remains the outer bound. The chart renders
+// One deadline covers the whole shutdown, not one window per publish: the
+// loops can start another poll after the cancellation (the select between
+// ctx.Done and the ticker picks randomly while both are ready), so
+// per-publish windows could stack past the pod's termination grace
+// period. A publish that starts before the cancellation runs on the
+// caller's context alone — a direct-mode batch keeps its full retry
+// window, so the drain never caps steady-state publishes. The pod's
+// termination grace period remains the outer bound; the chart renders
 // terminationGracePeriodSeconds as 30s with this window written into its
 // budget, and the rest of shutdown (metrics server 5s grace, loops
-// stopping) fits beside 10s.
+// stopping) fits beside it.
 const defaultPublishDrain = 10 * time.Second
 
-// publishDrainContext returns the context a publish runs on: detached from
-// parent's cancellation, so a send on the wire or a retry in a backoff
-// keeps its chance to deliver once SIGTERM lands, and bounded by the drain
-// window, so a connector that never answers cannot hold shutdown open.
-// Values are preserved; only cancellation is cut.
+// armPublishDrain sets the shared deadline every post-cancellation publish
+// draws on. Runs in ArmPublishDrain's callback at the cancellation, and
+// directly in tests that cancel their own context.
+func (m *NICHealthMonitor) armPublishDrain() {
+	m.shutdownDeadline.Store(time.Now().Add(m.publishDrain).UnixNano())
+}
+
+// ArmPublishDrain arms the shutdown publish-drain clock against ctx: the
+// moment ctx is cancelled, one deadline is set at now plus the drain
+// window, and every publish after that draws on the time left on it. Call
+// once, with the process-lifetime context.
+func (m *NICHealthMonitor) ArmPublishDrain(ctx context.Context) {
+	context.AfterFunc(ctx, m.armPublishDrain)
+}
+
+// publishDrainContext returns the context a publish runs on. Before the
+// cancellation that is the caller's context unchanged — only a publish
+// that starts after SIGTERM needs to outlive the cancellation, and it
+// then keeps its chance to deliver on the wire or in a retry until the
+// shared deadline ends, so a connector that never answers cannot hold
+// shutdown open past the window. Values are preserved; only the
+// cancellation is cut.
 func (m *NICHealthMonitor) publishDrainContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(parent), m.publishDrain)
+	ns := m.shutdownDeadline.Load()
+	if ns == 0 {
+		return parent, func() {}
+	}
+
+	return context.WithTimeout(context.WithoutCancel(parent), time.Until(time.Unix(0, ns)))
 }

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
@@ -53,9 +54,13 @@ type NICHealthMonitor struct {
 
 	stateInterval time.Duration
 
-	// publishDrain bounds how long each publish keeps trying past the
-	// shutdown context's cancellation; see defaultPublishDrain.
+	// publishDrain is the size of the one window shutdown publishes
+	// share; see defaultPublishDrain.
 	publishDrain time.Duration
+
+	// shutdownDeadline is the unix-nano deadline armed at SIGTERM that
+	// every post-cancellation publish draws on; zero until then.
+	shutdownDeadline atomic.Int64
 
 	// stall is nil unless EnablePollStallDetection turned it on.
 	stall *pollStall
