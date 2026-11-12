@@ -51,4 +51,4 @@ data:
   UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: "25"
   MONGODB_COLLECTION_EXPIRY_SECONDS: {{ include "mongodb-store.collectionExpirySeconds" . | quote }}
   MONGODB_OPLOG_SIZE_MB: {{ include "mongodb-store.oplogSizeMB" . | quote }}
-  MONGODB_OPLOG_ALLOW_SHRINK: {{ ternary "true" "false" (eq (.Values.oplogAllowShrink | toString) "true") | quote }}
+  MONGODB_OPLOG_ALLOW_SHRINK: {{ include "mongodb-store.oplogAllowShrink" . | quote }}

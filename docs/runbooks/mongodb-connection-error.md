@@ -13,7 +13,7 @@ MongoDB connection failure can occur due to the following reasons:
    - Expired certificates
 
 ### 2. **Initialization Job Not Completed**
-   - `create-mongodb-database-<seconds>-<scriptHash>` job failed or still running (`-l app.kubernetes.io/name=create-mongodb-database`)
+   - `create-mongodb-database-<seconds>-<hash>` job failed or still running (`-l app.kubernetes.io/name=create-mongodb-database`)
    - Job creates required database, collections, and indexes
    - Without successful completion, MongoDB pod can't initialize properly
 
@@ -165,7 +165,7 @@ kubectl -n nvsentinel delete pvc -l app.kubernetes.io/name=mongodb
 ### Issue 2: Initialization Job Failed
 
 ```bash
-# Check job status (name is create-mongodb-database-<seconds>-<scriptHash>)
+# Check job status (name is create-mongodb-database-<seconds>-<hash>)
 kubectl -n nvsentinel get job -l app.kubernetes.io/name=create-mongodb-database
 
 # Check job logs
