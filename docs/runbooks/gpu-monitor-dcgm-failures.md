@@ -21,7 +21,7 @@ If there is no GPU Health Monitor pod on the node at all, this runbook does not 
 ### 1. Check GPU Monitor Logs
 
 ```bash
-kubectl logs -n nvsentinel {GPU_MONITOR_POD} --tail=50 | grep -i dcgm
+kubectl logs -n nvsentinel {GPU_HEALTH_MONITOR_POD} --tail=50 | grep -i dcgm
 ```
 
 Look for:
@@ -40,7 +40,7 @@ helm get values nvsentinel -n nvsentinel --all | grep -A 14 "^  dcgm:"
 The mode is `operator-service` (the default), `external-hostengine`, or `embedded-mode`. To confirm what the pod actually runs, read its arguments:
 
 ```bash
-kubectl get pod -n nvsentinel {GPU_MONITOR_POD} -o yaml | grep -E "dcgm-addr|dcgm-mode" -A 1
+kubectl get pod -n nvsentinel {GPU_HEALTH_MONITOR_POD} -o yaml | grep -E "dcgm-addr|dcgm-mode" -A 1
 ```
 
 `--dcgm-mode` tells you which family the pod is in, and `--dcgm-addr` separates the two remote modes:
@@ -59,12 +59,14 @@ Then diagnose against the source the mode actually uses:
 
 ### 3. Verify DCGM Pod Running (operator-service only)
 
+`{DCGM_NS}` is the namespace in the `--dcgm-addr` value from step 2.
+
 ```bash
 # Check DCGM pod on affected node
-kubectl get pods -n gpu-operator -l app=nvidia-dcgm -o wide
+kubectl get pods -n {DCGM_NS} -l app=nvidia-dcgm -o wide
 
 # Check DCGM logs
-kubectl logs -n gpu-operator {DCGM_POD} --tail=30
+kubectl logs -n {DCGM_NS} {DCGM_POD} --tail=30
 ```
 
 DCGM pod must be `Running` on the same node as the failing GPU monitor.
@@ -75,7 +77,7 @@ Test DCGM connectivity from within the gpu-health-monitor pod:
 
 ```bash
 # Exec into the GPU monitor pod
-kubectl exec -it -n nvsentinel {GPU_MONITOR_POD} -- /bin/bash
+kubectl exec -it -n nvsentinel {GPU_HEALTH_MONITOR_POD} -- /bin/bash
 
 # Use the address the pod was given in --dcgm-addr, read in step 2. The values
 # below are the chart defaults; a custom global.dcgm.service.endpoint changes the
@@ -103,6 +105,8 @@ If DCGM commands fail, check the items for your mode:
 - **`external-hostengine`** — `nv-hostengine` is running on the node and listening on the configured port; the monitor pod has `hostNetwork: true`; a host firewall does not block the port.
 - **`embedded-mode`** — `runtimeClassName` names the cluster's NVIDIA RuntimeClass; the container is privileged; `nvidia-smi -L` inside the pod lists the GPUs. Without GPU and driver injection the embedded engine cannot start.
 
+If `dcgmi` works but the monitor still logs `Duplicate key passed to function` or `Max limit reached for the object`, go to [Stale DCGM Field Groups](#stale-dcgm-field-groups).
+
 ### 5. Verify Resolution
 
 ```bash
@@ -111,7 +115,7 @@ kubectl describe node {NODE_NAME} | grep GpuDcgmConnectivityFailure
 # Should show: Status: False (or condition absent)
 
 # Watch GPU monitor logs for health checks
-kubectl logs -n nvsentinel {GPU_MONITOR_POD} -f | grep "Publish DCGM"
+kubectl logs -n nvsentinel {GPU_HEALTH_MONITOR_POD} -f | grep "Publish DCGM"
 ```
 
 ## No Monitor Pod on the Node
@@ -152,6 +156,43 @@ Also check that the node is not opted out. Labeler removes its detection labels 
 ```bash
 kubectl get node {NODE_NAME} -o jsonpath='{.metadata.labels}' | tr ',' '\n' | grep -E "managed|dcgm.version"
 ```
+
+## Stale DCGM Field Groups
+
+This failure applies to `operator-service` and `external-hostengine`. In these modes the monitor connects to a hostengine that it does not own, and that hostengine outlives the monitor pod.
+
+The hostengine deletes the field groups of a client only when it sees the client connection close. If the connection drops silently, for example when a network policy or a network fault drops the TCP flow, the hostengine keeps the old groups. Each stale group stays until the hostengine restarts.
+
+**Symptoms:**
+- Node condition `GpuDcgmConnectivityFailure` stays `True`
+- Step 4 passes: `dcgmi` reaches the hostengine
+- GPU monitor logs show one of these errors on each retry:
+  - `Error getting DCGM handle: Duplicate key passed to function`. A stale field group still holds the name that the monitor uses. Older monitor versions do not delete it.
+  - `Error getting DCGM handle: Max limit reached for the object`. The hostengine has no free slots. It allows 64 field groups and 64 entity groups in total, for all clients.
+- Metric `dcgm_api_failures_total{error_name="dcgm_initialize_monitoring"}` increases. This metric counts every setup failure after the monitor connects, so other causes are possible. Use the log errors above to confirm the cause. Older monitor versions do not have this metric value. A failed connection increments `error_name="ErrorInitDCGMHandle"` instead.
+
+List the field groups and the entity groups on the hostengine. Run the commands in the GPU monitor pod. `dcgmi` accepts only one address. If the `--dcgm-addr` value from step 2 has one address, use it for `{DCGM_ADDR}`. If it has more than one, use the address from the last `Successfully created DCGM handle to` log line:
+
+```bash
+kubectl logs -n nvsentinel {GPU_HEALTH_MONITOR_POD} | grep "Successfully created DCGM handle to" | tail -1
+kubectl exec -n nvsentinel {GPU_HEALTH_MONITOR_POD} -- dcgmi fieldgroup -l --host {DCGM_ADDR}
+kubectl exec -n nvsentinel {GPU_HEALTH_MONITOR_POD} -- dcgmi group -l --host {DCGM_ADDR}
+```
+
+Each output shows the total, for example `8 field groups found.` The monitor creates one entity group named `dcgm_health` and one field group named `nvsentinel_field_monitors`. Monitor versions v1.10.0 to v1.20.0 name the field group `gpu_temp_limit`. More than one group with the same monitor name confirms this failure. A total close to 64 in either list only indicates this failure, because the active groups of other clients also count. Before you restart the hostengine, read the group names in each list and identify the stale groups. The `Duplicate key passed to function` error needs only one stale group. In this case, one field group with the monitor field-group name confirms this failure, whatever the totals are.
+
+Newer monitor versions delete stale groups by name. Each time the monitor connects, it first deletes every entity group named `dcgm_health` and every field group named `nvsentinel_field_monitors`. Then it creates new groups with these names. It also deletes every field group named `gpu_temp_limit`, which older versions leave after an unclean stop. The monitor selects these groups by name, not by owner. If another client uses one of these names, the monitor also deletes the group of that client. Groups with other names stay. Metric `dcgm_api_failures_total{error_name="stale_group_cleanup"}` increases when the monitor cannot list or delete a group. The monitor tries again at the next connection.
+
+**Resolution:** restart the hostengine. The restart deletes all stale groups.
+
+- **`operator-service`** — delete the DCGM pod on the node. The GPU Operator DaemonSet creates a new one.
+
+  ```bash
+  kubectl delete pod -n {DCGM_NS} {DCGM_POD}
+  ```
+- **`external-hostengine`** — restart `nv-hostengine` with the method that your platform uses to manage it.
+
+The restart disconnects all DCGM clients on the node. The monitor connects again without a restart. Other clients, such as `dcgm-exporter`, can restart one time. Then do [step 5](#5-verify-resolution). If NVSentinel cordoned the node because of this condition, see [Cordoned Nodes](cordoned-nodes.md).
 
 ## Unresponsive DCGM
 
