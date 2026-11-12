@@ -57,6 +57,8 @@ go_tools:
   deadcode: 'v0.52.0'
   # renovate: datasource=github-releases depName=google/go-containerregistry depType=go_tools
   crane: 'v0.22.1'
+  # renovate: datasource=go depName=golang.org/x/vuln depType=go_tools
+  govulncheck: 'v1.9.0'
   # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools depType=go_tools
   controller_gen: 'v0.23.0'
 
