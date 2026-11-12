@@ -44,7 +44,7 @@ The daily scan also reads [`.grype.yaml`](.grype.yaml), which excludes the paths
 
 - If the vulnerability affects NVSentinel, update the dependency or the base image that contains it.
 - If a vulnerability in a dependency of the repository does not affect NVSentinel, update the dependency anyway. The scans report only vulnerabilities that have a fix, and the repository sets the version of each dependency.
-- If a vulnerability in an image does not affect NVSentinel, open a pull request that adds a statement to [`.openvex.json`](.openvex.json). A maintainer reviews the statement in the pull request. After the merge, the weekly scan no longer reports the vulnerability for that image, and its alert closes at the next scan. Images published after the merge carry the statement in their [OpenVEX attestation](#openvex-attestation).
+- If a vulnerability in an image does not affect NVSentinel, open a pull request that adds a statement to [`.openvex.json`](.openvex.json). A maintainer reviews the statement in the pull request. After the merge, the weekly scan no longer reports the vulnerability for that image, and its alert closes at the next scan.
 
 ### Add a Statement
 
@@ -95,7 +95,6 @@ NVSentinel provides supply chain security artifacts for all container images:
 
 - **SBOM Attestation**: Complete inventory of packages, libraries, and components
 - **SLSA Build Provenance**: Verifiable build information (how and where images were created)
-- **OpenVEX Attestation**: The vulnerabilities that do not affect the image, from [`.openvex.json`](.openvex.json)
 
 ### Setup
 
@@ -134,34 +133,6 @@ cosign verify-attestation \
 That identity is the same one the in-cluster policies enforce, so a check that passes here matches what the admission controller will accept.
 
 Images are not signed with `cosign sign`, so there is no standalone image signature to verify. Verifying this attestation authenticates the SBOM contents — it does not establish how the image was built. Build provenance comes from the SLSA attestation below.
-
-### OpenVEX Attestation
-
-Each image carries the [`.openvex.json`](.openvex.json) of the commit it was built from as a Sigstore attestation. The document lists the vulnerabilities that do not affect NVSentinel, as described in [Handle a Reported Vulnerability](#handle-a-reported-vulnerability).
-
-**Retrieve the OpenVEX attestation**:
-
-```shell
-cosign verify-attestation \
-  --type openvex \
-  --certificate-identity-regexp '^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/(heads|tags)/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  "$IMAGE_DIGEST" \
-  | jq -se 'map(.payload | @base64d | fromjson | .predicate) | max_by(.version)' > nvsentinel.openvex.json
-```
-
-An image can have more than one OpenVEX attestation, for example when a release has the same image as a publish from `main`. The command keeps the document with the highest `version`.
-
-**Scan the image with it**, so that the scanner leaves out the vulnerabilities in the document:
-
-```shell
-grype "$IMAGE_DIGEST" --vex nvsentinel.openvex.json
-trivy image --vex nvsentinel.openvex.json "$IMAGE_DIGEST"
-```
-
-Trivy can also find the attestation itself with `--vex oci`, but it does not verify the signature.
-
-The attestation holds the document as it was when the image was published. Statements added later are only in `.openvex.json` on `main`, which you can pass to the scanner in the same way.
 
 ### SLSA Build Provenance
 
