@@ -183,6 +183,15 @@ tests:
       - hasDocuments:
           count: 1
 
+  # Room for 20 s of requests in flight and queue drain plus four 5 s
+  # shutdown steps before SIGKILL.
+  - it: gives the DaemonSet's pod the grace period its shutdown needs
+    template: templates/daemonset.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 45
+
   # A --reuse-values upgrade from a release without the two keys keeps
   # today's behaviour: the DaemonSet and no server Deployment or RBAC.
   - it: keeps the DaemonSet and no Deployment when both keys are absent

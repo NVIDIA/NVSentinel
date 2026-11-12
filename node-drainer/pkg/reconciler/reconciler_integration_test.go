@@ -2335,7 +2335,6 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 		Kind:                  "DrainRequest",
 		StatusConditionType:   "Complete",
 		StatusConditionStatus: "True",
-		Timeout:               config.Duration{Duration: 30 * time.Minute},
 	}
 
 	setup := setupCustomDrainTest(t, customDrainCfg)
@@ -2425,7 +2424,6 @@ func TestReconciler_CustomDrainDryRun(t *testing.T) {
 		Kind:                  "DrainRequest",
 		StatusConditionType:   "Complete",
 		StatusConditionStatus: "True",
-		Timeout:               config.Duration{Duration: 30 * time.Minute},
 	}
 
 	setup := setupCustomDrainTest(t, customDrainCfg)
@@ -2477,7 +2475,6 @@ func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
 		Kind:                  "DrainRequest",
 		StatusConditionType:   "Complete",
 		StatusConditionStatus: "True",
-		Timeout:               config.Duration{Duration: 30 * time.Minute},
 	}
 
 	setup := setupCustomDrainTest(t, customDrainCfg)
@@ -2569,7 +2566,6 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		Kind:                  "FakeResource",
 		StatusConditionType:   "Complete",
 		StatusConditionStatus: "True",
-		Timeout:               config.Duration{Duration: 30 * time.Minute},
 	}
 
 	ctx := context.Background()
