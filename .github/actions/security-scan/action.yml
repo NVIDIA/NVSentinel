@@ -13,13 +13,19 @@
 # limitations under the License.
 
 name: 'Vulnerability Scan'
-description: 'Scan a path with Grype and upload the findings to the GitHub Security tab'
+description: 'Scan a path or an image with Grype and upload the findings to the GitHub Security tab'
 
 inputs:
   path:
-    description: 'Path to scan'
+    description: 'Path to scan, when image is empty'
     required: false
     default: '.'
+  # In an image, Grype matches a Go binary to a Go vulnerability only when the binary contains the
+  # vulnerable symbols.
+  image:
+    description: 'Image to scan instead of the path, for example ghcr.io/nvidia/nvsentinel/janitor:v1.0.0'
+    required: false
+    default: ''
   # Every finding is reported. This only sets the alert level: findings at or above the cutoff are
   # errors and the others are warnings.
   severity-cutoff:
@@ -39,7 +45,8 @@ runs:
       id: scan
       uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
       with:
-        path: ${{ inputs.path }}
+        path: ${{ inputs.image == '' && inputs.path || '' }}
+        image: ${{ inputs.image }}
         severity-cutoff: ${{ inputs.severity-cutoff }}
         output-format: sarif
         only-fixed: true
@@ -50,3 +57,25 @@ runs:
       with:
         sarif_file: ${{ steps.scan.outputs.sarif }}
         category: ${{ inputs.category }}
+
+    # Counts the findings for the run summary. The severity comes from the security-severity score
+    # of each finding, banded the same way as in the Security tab.
+    - name: Summarize the findings
+      shell: bash
+      env:
+        SARIF: ${{ steps.scan.outputs.sarif }}
+        CATEGORY: ${{ inputs.category }}
+      run: |
+        set -euo pipefail
+        jq -r --arg category "${CATEGORY}" '
+          .runs[0] as $run
+          | (reduce ($run.tool.driver.rules // [])[] as $rule ({};
+              .[$rule.id] = ($rule.properties["security-severity"] // "0" | tonumber))) as $score
+          | [($run.results // [])[] | $score[.ruleId] // 0
+             | if . >= 9 then "Critical" elif . >= 7 then "High" elif . >= 4 then "Medium"
+               elif . > 0 then "Low" else "Unknown" end] as $levels
+          | ["Critical", "High", "Medium", "Low", "Unknown"] as $names
+          | "### \($category)\n\n| " + ($names | join(" | ")) + " | Total |\n|" + ("---|" * 6) + "\n| "
+            + ([$names[] as $n | $levels | map(select(. == $n)) | length | tostring] | join(" | "))
+            + " | \($levels | length) |\n"
+        ' "${SARIF}" >> "${GITHUB_STEP_SUMMARY}"
