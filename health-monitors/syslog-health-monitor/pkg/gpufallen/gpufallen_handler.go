@@ -43,6 +43,7 @@ func NewGPUFallenHandler(nodeName, defaultAgentName,
 		recentXIDs:            make(map[string]xidRecord),
 		xidWindow:             5 * time.Minute, // Remember XIDs for 5 minutes
 		cancelCleanup:         cancel,
+		XIDCheckEnabled:       true,
 	}
 
 	// Start background cleanup goroutine to prevent unbounded memory growth
@@ -70,8 +71,11 @@ func (h *GPUFallenHandler) SetXIDWindow(window time.Duration) {
 
 // ProcessLine processes a single syslog line and returns any generated health events.
 func (h *GPUFallenHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
-	// First check if this is an XID message and track it
-	h.trackXIDIfPresent(message)
+	// First check if this is an XID message and track it. A fallen off the bus line is
+	// skipped after a recent XID only because the XID check reports that fault.
+	if h.XIDCheckEnabled {
+		h.trackXIDIfPresent(message)
+	}
 
 	// Check if this is a GPU falling off error
 	event := h.parseGPUFallenError(message)

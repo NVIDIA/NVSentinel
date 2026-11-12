@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -2002,4 +2003,51 @@ func TestBootIDChange_RejectedFlushDoesNotBlockTheChecks(t *testing.T) {
 	persisted, err := os.ReadFile(stateFilePath)
 	require.NoError(t, err)
 	require.Contains(t, string(persisted), pending, "the new BootID is persisted")
+}
+
+// TestGPUFallenOffSuppressionNeedsXIDCheck: the GPU fallen off check skips a
+// fallen off the bus line after a recent XID on the same GPU only when the XID
+// check runs and reports that XID; on its own it keeps the event.
+func TestGPUFallenOffSuppressionNeedsXIDCheck(t *testing.T) {
+	xidLine := "NVRM: Xid (PCI:0000:b3:00): 79, pid='<unknown>', name=<unknown>, GPU has fallen off the bus."
+	fallenLine := "NVRM: The NVIDIA GPU 0000:b3:00.0 fallen off the bus and is not responding to commands."
+
+	for _, tc := range []struct {
+		name       string
+		checks     []string
+		wantReport bool
+	}{
+		{name: "GPU fallen off check only", checks: []string{GPUFallenOffCheck}, wantReport: true},
+		{name: "with the XID check", checks: []string{XIDErrorCheck, GPUFallenOffCheck}, wantReport: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			factory := NewFakeJournalFactory()
+
+			var checks []CheckDefinition
+
+			for _, name := range tc.checks {
+				path := "/journal/" + name
+				factory.AddJournal(path, NewFakeJournal())
+				checks = append(checks, CheckDefinition{Name: name, JournalPath: path})
+			}
+
+			testStateFile := filepath.Join(t.TempDir(), "state.json")
+
+			sm, err := NewSyslogMonitorWithFactory(TEST_NODE, checks, &mockPlatformConnectorClient{},
+				TEST_AGENT, TEST_COMPONENT, "60s", testStateFile, factory,
+				"http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+				"", "", nil, "tcp://test", 30*time.Minute)
+			require.NoError(t, err)
+
+			handler := sm.checkToHandlerMap[GPUFallenOffCheck]
+			require.NotNil(t, handler)
+
+			_, err = handler.ProcessLine(xidLine)
+			require.NoError(t, err)
+
+			events, err := handler.ProcessLine(fallenLine)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantReport, events != nil)
+		})
+	}
 }
