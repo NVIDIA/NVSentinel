@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.27.3-trixie@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.3-trixie@sha256:af1bfc2614ebb1dbd31af514b78740fd678850e76498762b425ecee4c5c6ea80 AS builder
 
 ARG VERSION="dev"
 ARG GIT_COMMIT="none"
@@ -38,7 +38,7 @@ COPY metadata-collector/ .
 # package main, so adding one breaks the image while `go build ./...` and the tests still pass.
 RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o metadata-collector .
 
-FROM nvcr.io/nvidia/cuda:13.4.3-base-ubuntu22.04@sha256:7416c5229cb6c5b2e7cd7a5930ec97db03f3e064d56b8abacf525f6b4da0b271
+FROM nvcr.io/nvidia/cuda:13.5.0-base-ubuntu22.04@sha256:4df174aaa911425cc8ab5beb6f897dfeafa92f03884c25176db134743f6e3736
 
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
 
