@@ -66,6 +66,14 @@ type BulkDocumentError struct {
 	// Duplicate is true when the failure is a duplicate-key violation.
 	Duplicate bool
 
+	// Permanent is true when the server rejected the document for what it
+	// contains, so every attempt to store the same document gets the same
+	// answer: a value its column or type cannot take, or a constraint that
+	// looks at the document alone. A caller can drop such a document instead
+	// of retrying it. A duplicate is reported by Duplicate instead, since whether
+	// it repeats depends on the documents already stored.
+	Permanent bool
+
 	// Message is the provider error message for this document.
 	Message string
 }
@@ -86,10 +94,11 @@ const maxFailureMessageLength = 256
 // insert is ordered and stops at that document: InsertedCount documents before
 // it were stored, DuplicateCount were resends skipped, and the documents after
 // it were not attempted; the caller's retry of the whole batch stores them in
-// order and meets the stored ones as duplicates (a duplicate on another unique
-// index is the one answer a retry cannot change, and the deployment platform
-// connector refuses such a batch for good). Failed carries the server's
-// answer about the document, so the reason survives into logs.
+// order and meets the stored ones as duplicates (a retry cannot change a
+// duplicate on another unique index or an answer marked Permanent, so the
+// platform connector's store loop drops that document and stores the ones
+// after it). Failed carries the server's answer about the document, so the
+// reason survives into logs.
 //
 //nolint:errname // cross-module API name, consumed outside this module; mirrors mongo.BulkWriteException
 type BulkWriteFailure struct {
