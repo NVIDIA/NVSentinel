@@ -88,3 +88,10 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: mongodb-store.job.activeDeadlineSeconds must be an integer
+
+  - it: rejects a boolean deadline instead of turning it into 0
+    set:
+      mongodb-store.job.activeDeadlineSeconds: false
+    asserts:
+      - failedTemplate:
+          errorPattern: mongodb-store.job.activeDeadlineSeconds must be an integer

@@ -34,6 +34,9 @@ silently drop the deadline). 0 is valid and means "no deadline": callers omit th
 {{- if or (kindIs "invalid" $raw) (eq ($raw | toString) "") -}}
 {{- $raw = .default -}}
 {{- end -}}
+{{- if kindIs "bool" $raw -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
 {{- if kindIs "string" $raw -}}
 {{- if not (regexMatch "^[0-9]+$" $raw) -}}
 {{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}

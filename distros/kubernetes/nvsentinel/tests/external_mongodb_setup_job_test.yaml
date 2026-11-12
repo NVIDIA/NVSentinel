@@ -125,3 +125,10 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: global.datastore.setupJob.activeDeadlineSeconds must be an integer
+
+  - it: rejects a boolean deadline instead of turning it into 0
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: false
+    asserts:
+      - failedTemplate:
+          errorPattern: global.datastore.setupJob.activeDeadlineSeconds must be an integer
