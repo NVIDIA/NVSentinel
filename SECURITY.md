@@ -137,7 +137,7 @@ Images are not signed with `cosign sign`, so there is no standalone image signat
 
 ### OpenVEX Attestation
 
-Each image carries the [`.openvex.json`](.openvex.json) of the commit it was built from as a Sigstore attestation. The document lists the vulnerabilities that do not affect NVSentinel, as described in [Handle a Reported Vulnerability](#handle-a-reported-vulnerability).
+Each publish attaches the [`.openvex.json`](.openvex.json) of its commit to the image as a Sigstore attestation. The document lists the vulnerabilities that do not affect NVSentinel, as described in [Handle a Reported Vulnerability](#handle-a-reported-vulnerability).
 
 **Retrieve the OpenVEX attestation**:
 
@@ -150,7 +150,7 @@ cosign verify-attestation \
   | jq -se 'map(.payload | @base64d | fromjson | .predicate) | max_by(.version)' > nvsentinel.openvex.json
 ```
 
-An image can have more than one OpenVEX attestation, for example when a release has the same image as a publish from `main`. The command keeps the document with the highest `version`.
+An image can have more than one OpenVEX attestation. A later publish can build the same image, for example a release of a commit that was already published from `main`, and attach the document of its commit. The command keeps the document with the highest `version`.
 
 **Scan the image with it**, so that the scanner leaves out the vulnerabilities in the document:
 
@@ -161,7 +161,7 @@ trivy image --vex nvsentinel.openvex.json "$IMAGE_DIGEST"
 
 Trivy can also find the attestation itself with `--vex oci`, but it does not verify the signature.
 
-The attestation holds the document as it was when the image was published. Statements added later are only in `.openvex.json` on `main`, which you can pass to the scanner in the same way.
+An attestation does not change after the publish. To also get the statements added since the last publish of the image, pass `.openvex.json` from `main` to the scanner in the same way.
 
 ### SLSA Build Provenance
 
