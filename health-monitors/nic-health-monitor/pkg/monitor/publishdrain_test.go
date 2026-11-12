@@ -94,12 +94,38 @@ func TestRunChecks_CancelledContextStillPublishes(t *testing.T) {
 		[]checks.TransactionalCheck{check}, time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// Through the real registration: once the cancellation lands, the AfterFunc
+	// callback and the poll race to arm the deadline, and both orders must
+	// deliver.
+	m.ArmPublishDrain(ctx)
 	cancel()
-	m.armPublishDrain()
 
 	require.NoError(t, m.RunStateChecks(ctx))
 
 	assert.True(t, check.committed, "delivered on the drain window, so the transition is consumed")
+	assert.Len(t, client.events, 1)
+}
+
+// TestRunChecks_CancelledBeforeTheArmStillPublishes: the AfterFunc callback
+// runs in its own goroutine, so a poll can reach the publish with the
+// cancellation already landed and the deadline still unarmed. The publish
+// path must arm the window itself in that order — handing back the
+// cancelled parent would drop the batch for good, the exact loss the drain
+// exists to prevent.
+func TestRunChecks_CancelledBeforeTheArmStillPublishes(t *testing.T) {
+	client := &capturingClient{}
+	check := &stagedTestCheck{}
+	m := NewNICHealthMonitor("node1", client, "127.0.0.1:5555",
+		[]checks.TransactionalCheck{check}, time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// The deadline stays unarmed: this publish stands in for one that the
+	// AfterFunc callback has not reached yet.
+
+	require.NoError(t, m.RunStateChecks(ctx))
+
+	assert.True(t, check.committed, "the publish path armed the window when it saw the cancellation")
 	assert.Len(t, client.events, 1)
 }
 

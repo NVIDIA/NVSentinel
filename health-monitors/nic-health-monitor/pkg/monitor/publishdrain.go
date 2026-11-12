@@ -43,10 +43,13 @@ import (
 const defaultPublishDrain = 10 * time.Second
 
 // armPublishDrain sets the shared deadline every post-cancellation publish
-// draws on. Runs in ArmPublishDrain's callback at the cancellation, and
-// directly in tests that cancel their own context.
+// draws on. Two racers can set it — ArmPublishDrain's AfterFunc callback,
+// and publishDrainContext, which can observe a cancellation that callback
+// goroutine has not run for yet — so the store is a compare-and-swap on
+// zero: whichever sees the cancellation first fixes the window, and the
+// one that arrives late cannot push it out.
 func (m *NICHealthMonitor) armPublishDrain() {
-	m.shutdownDeadline.Store(time.Now().Add(m.publishDrain).UnixNano())
+	m.shutdownDeadline.CompareAndSwap(0, time.Now().Add(m.publishDrain).UnixNano())
 }
 
 // ArmPublishDrain arms the shutdown publish-drain clock against ctx: the
@@ -65,10 +68,19 @@ func (m *NICHealthMonitor) ArmPublishDrain(ctx context.Context) {
 // shutdown open past the window. Values are preserved; only the
 // cancellation is cut.
 func (m *NICHealthMonitor) publishDrainContext(parent context.Context) (context.Context, context.CancelFunc) {
-	ns := m.shutdownDeadline.Load()
-	if ns == 0 {
-		return parent, func() {}
+	if m.shutdownDeadline.Load() == 0 {
+		if parent.Err() == nil {
+			return parent, func() {}
+		}
+
+		// The cancellation is ahead of the AfterFunc callback's goroutine,
+		// so this publish would run on the cancelled parent and drop for
+		// good. Arm the deadline here; the compare-and-swap keeps the late
+		// callback from moving it.
+		m.armPublishDrain()
 	}
+
+	ns := m.shutdownDeadline.Load()
 
 	return context.WithTimeout(context.WithoutCancel(parent), time.Until(time.Unix(0, ns)))
 }
