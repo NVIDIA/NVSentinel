@@ -732,7 +732,7 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 						changedAt,
 					)
 				mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-					WithArgs(tableName, int64(452)).
+					WithArgs(tableName, lookupIDs(452), changedAt.Add(time.Second), int64(453)).
 					WillReturnRows(rows)
 			},
 		},
@@ -770,6 +770,8 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 				Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
 			})
 			require.NoError(t, err)
+			// handleNotification only records the id; the fetch loop fetches the row.
+			require.NoError(t, watcher.fetchNotifiedRows(ctx))
 
 			select {
 			case event := <-watcher.events:
@@ -780,7 +782,9 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 			}
 
 			assert.Equal(t, int64(453), watcher.lastEventID, "bookmark must not move backwards")
-			assert.Equal(t, tt.expectRecentlySeen452, watcher.hasRecentlySeenEventID(452))
+
+			_, recentlySeen452 := watcher.recentEventIDs[452]
+			assert.Equal(t, tt.expectRecentlySeen452, recentlySeen452)
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
@@ -818,21 +822,20 @@ func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *t
 			changedAt,
 		)
 	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-		WithArgs(tableName, int64(452)).
+		WithArgs(tableName, lookupIDs(452), changedAt.Add(time.Second), int64(451)).
 		WillReturnRows(notifiedRows)
 
 	// The normal timestamp cursor would miss the notified row because its changed_at
 	// is behind the current bookmark timestamp, so it is fetched by id. It is a late
 	// commit, and delivering it must not move the cursor back to its older changed_at
-	// (the guarantee from #1469), so the poll that follows starts from the same cursor.
-	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-		WithArgs(tableName, changedAt.Add(time.Second), int64(451)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}))
+	// (the guarantee from #1469).
 
 	err = watcher.handleNotification(ctx, &pq.Notification{
 		Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
 	})
 	require.NoError(t, err)
+	// handleNotification only records the id; the fetch loop fetches the row.
+	require.NoError(t, watcher.fetchNotifiedRows(ctx))
 
 	select {
 	case event := <-watcher.events:
@@ -845,7 +848,7 @@ func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *t
 	// already read, which the next poll then read again.
 	assert.Equal(t, changedAt.Add(time.Second), watcher.lastTimestamp, "a late row must not move the cursor back")
 	assert.Equal(t, int64(451), watcher.lastEventID)
-	assert.True(t, watcher.hasRecentlySeenEventID(452))
+	assert.Contains(t, watcher.recentEventIDs, int64(452))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -1011,10 +1014,11 @@ func TestAdvancePosition_EqualChangedAt_OrdersByID(t *testing.T) {
 	assert.Equal(t, int64(7), watcher.lastEventID)
 
 	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(4)).
+		WithArgs(healthEventsTable, lookupIDs(4), same, int64(7)).
 		WillReturnRows(healthEventRow(changelogRows(), 4, same))
 
-	require.NoError(t, watcher.fetchChangeByID(ctx, 4))
+	watcher.addNotifiedID(4)
+	require.NoError(t, watcher.fetchNotifiedRows(ctx))
 	assert.Equal(t, same, watcher.lastTimestamp)
 	assert.Equal(t, int64(7), watcher.lastEventID)
 
@@ -1220,6 +1224,9 @@ func TestHandleNotification_ReadRowAboveCursorID_IsSkipped(t *testing.T) {
 	require.NoError(t, watcher.handleNotification(context.Background(), &pq.Notification{
 		Extra: `{"id":151,"table":"health_events","operation":"INSERT"}`,
 	}))
+	// handleNotification only records the id; the fetch loop fetches the row. sqlmock fails a
+	// lookup it isn't told to expect.
+	require.NoError(t, watcher.fetchNotifiedRows(context.Background()))
 
 	assert.Equal(t, []string{"151", "1", "2", "3"}, drainTokens(watcher))
 	assert.Equal(t, base.Add(3*time.Second), watcher.lastTimestamp)
