@@ -307,7 +307,7 @@ Turns the connector on. Disabled by default, like the other optional connectors.
 Address of the receiving gRPC server, as `host:port`. Required when the connector is enabled.
 
 #### maxRetries
-Retry attempts with exponential backoff before the connector drops the event. Total send attempts are `1 + maxRetries`. The per-RPC timeout is fixed at 10 seconds; a target that does not answer inside that window counts as a failure and is retried.
+Retry attempts with exponential backoff before the connector drops the event. Total send attempts are `1 + maxRetries`. The per-RPC timeout is fixed at 10 seconds; a target that does not answer inside that window counts as a failure and is retried. The connector holds a failed batch and retries it before it takes the next batch, so a newer batch cannot overtake a pending fault or recovery. A batch that fails while the queues drain at shutdown is retried too. A batch that the target refuses with InvalidArgument, PermissionDenied or Unimplemented gets the same answer on every attempt, so the connector does not retry it. It drops the batch at once and logs it at Error. When its loop has not finished 10 seconds into shutdown, the connector logs at Error the number of batches that it leaves in its queue, as the store connector does. The deployment platform connector does not use this queue. It sends each batch once, so `maxRetries` has no effect there.
 
 #### tokenPath
 Path to a projected Kubernetes ServiceAccount token. When set, the connector attaches the token as a Bearer header on every RPC, and the receiving server validates it with the TokenReview API. Empty disables authentication, which matches the other internal NVSentinel gRPC connections.
@@ -337,6 +337,8 @@ platformConnector:
 ```
 
 When a PostgreSQL client certificate is mounted, the platform connector runs a `fix-cert-permissions` init container first, because the PostgreSQL client rejects a key file that is group-readable or world-readable. `mongodbStore.maxRetries` bounds the retries on a failed store write before the event is dropped.
+
+The store connector holds a failed batch and retries it before it takes the next batch, so a newer batch cannot overtake a pending fault or recovery. An event that the datastore rejects for its content, such as a check name longer than its PostgreSQL column, gets the same answer on every attempt. The store connector does not retry it. It drops that event, logs it at Error, and stores the events after it in the batch. At shutdown, the loops get up to 10 seconds to finish before the datastore client closes. The store connector logs at Error each batch that it drops during a write, and the batches still queued when its loop stops as one Error line with their count. A connector that does not stop within 5 seconds after that is left behind. Shutdown then closes the connections and logs at Error the number of batches that the connector still holds. The deployment platform connector does not use this queue. It writes each batch once per request, so the retries above and `mongodbStore.maxRetries` do not apply there.
 
 To rotate certificates without restarting pods, see [Client Certificate Rotation](./README.md#client-certificate-rotation).
 
@@ -376,7 +378,7 @@ Retry delays start at 500 milliseconds, double after each failure, and are cappe
 
 Maximum processing time for the whole batch, including Kubernetes API calls and inner retry delays. The default is `1m`. Omission or a zero duration selects the default. Positive duration strings up to `5m` are accepted; negative, invalid, and larger durations are rejected.
 
-The connector holds the current batch while retrying. Newer batches cannot overtake a pending fault or recovery. This pauses consumption of the Kubernetes queue while other connector queues continue independently. Cancellation and connector shutdown interrupt API calls and backoff.
+The connector holds the current batch while retrying. Newer batches cannot overtake a pending fault or recovery. This pauses consumption of the Kubernetes queue while other connector queues continue independently. Cancellation interrupts API calls and backoff. At shutdown, the connector writes the batches that its queue holds, as the other connectors do. When the loops have not finished after 10 seconds, shutdown interrupts the API calls and the backoff. This holds even when the queue is empty, because the loop can still be writing a batch that it already took from the queue.
 
 For a five-minute outage window, configure both limits:
 
@@ -453,7 +455,7 @@ A publisher on `publishTo: deployment` gets its connection settings from the cha
 - The pause between two attempts is at most 30 seconds. The client retries the connection at most 10 seconds apart. Thus the client delivers a batch within about 30 seconds after the deployment platform connector comes back.
 - A monitor can stop waiting earlier, because its context ended or its own timeout expired. The client then withdraws the batch at once, also when the batch is already on the wire.
 - An attempt can be cut or time out after the batch is stored. This can leave a duplicate next to the event that the monitor sends again. The deployment platform connector tolerates this duplicate.
-- The deployment platform connector can refuse a batch for good. It does this when the batch is invalid or names a node that the monitor may not report on. The client then reports the batch as rejected at once and does not retry. The syslog monitor skips such a journal entry. The NIC monitor and the health events analyzer drop the event and count it.
+- The deployment platform connector can refuse a batch for good. It does this when the batch is invalid, when the datastore rejects it for its content, or when it names a node that the monitor may not report on. The client then reports the batch as rejected at once and does not retry. When the datastore rejects an event for its content, the events before it in the batch can already be stored, and the events after it are not stored. The syslog monitor skips such a journal entry. The NIC monitor and the health events analyzer drop the event and count it.
 - `nvsentinel_health_events_publisher_dropped_total` counts the drops by reason. See [METRICS.md](../METRICS.md#health-event-publisher).
 
 The deployment platform connector has its own network policy for the gRPC port. The metrics port is open through the chart's `metrics-access` policy, like for the other components. The gRPC port admits these pods:
