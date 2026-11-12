@@ -68,8 +68,8 @@ Each statement has these fields:
 
 - `vulnerability.name`: the ID that Grype reports.
 - `timestamp`: when the statement was written.
-- `products`: the images that the statement applies to. Name an image by the last part of its repository, for example `pkg:oci/gpu-reset` for `ghcr.io/nvidia/nvsentinel/gpu-reset`.
-- `subcomponents`, in each product: the packages that the reason covers, by the PURL that Grype reports. After an update to another version, the PURL no longer matches, so remove the statement. A statement without `subcomponents` applies to the vulnerability in every package of the image, so leave them out only when the reason covers every package.
+- `products`: the images that the statement applies to. Name an image by the last part of its repository, for example `pkg:oci/gpu-reset` for `ghcr.io/nvidia/nvsentinel/gpu-reset`. The statement applies to every tag of the image. If a change makes the reason untrue, for example when the image starts to load the package, remove the statement in the same pull request.
+- `subcomponents`, in each product: the packages that the reason covers, by the PURL that Grype reports. After an update to another version, the PURL no longer matches, so remove that subcomponent. Remove a product that has no subcomponents left, and a statement that has no products left. A statement without `subcomponents` applies to the vulnerability in every package of the image, so leave them out only when the reason covers every package.
 - `status`: `not_affected`.
 - `justification`: one of the [OpenVEX justifications](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md#status-justifications), for example `vulnerable_code_not_in_execute_path`.
 - `impact_statement`: why the vulnerability does not affect the image, so that a reviewer can check it.
