@@ -147,8 +147,10 @@ cosign verify-attestation \
   --certificate-identity-regexp '^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/(heads|tags)/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "$IMAGE_DIGEST" \
-  | jq -r .payload | base64 -d | jq .predicate > nvsentinel.openvex.json
+  | jq -se 'map(.payload | @base64d | fromjson | .predicate) | max_by(.version)' > nvsentinel.openvex.json
 ```
+
+An image can have more than one OpenVEX attestation, for example when a release has the same image as a publish from `main`. The command keeps the document with the highest `version`.
 
 **Scan the image with it**, so that the scanner leaves out the vulnerabilities in the document:
 
