@@ -89,3 +89,4 @@ jobs:
           image: registry:${{ matrix.image.ref }}
           severity-cutoff: high
           category: ${{ matrix.image.category }}
+          vex: .openvex.json
