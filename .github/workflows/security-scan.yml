@@ -20,6 +20,8 @@ on:
   schedule:
     - cron: '30 7 * * *'  # daily at 07:30 UTC, runs on the default branch only
   workflow_dispatch: {}
+  push:
+    branches: [pull-request/2355]
 
 permissions:
   contents: read
