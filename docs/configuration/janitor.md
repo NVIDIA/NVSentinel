@@ -237,6 +237,7 @@ janitor:
           hostDriverRootPath: "/run/nvidia/driver"
           driverRoot: "/run/nvidia/driver"
           driverBinPath: ""
+          jobTemplatePatch: {}
           image:
             repository: ghcr.io/nvidia/nvsentinel/gpu-reset
             tag: ""
@@ -391,6 +392,70 @@ janitor:
 ```
 
 The reset fails while any process holds the GPU open. If another GPU client runs on the node, for example a DRA kubelet plugin, add its operand to the spec as well.
+
+### resetJob.jobTemplatePatch
+Changes the GPU reset Job. Use it to add host mounts, init containers or a service account, to wrap the reset command, or to give the Job a longer deadline. It is empty by default, which leaves the Job unchanged.
+
+Janitor applies the value as a Kubernetes strategic merge patch on top of the built-in Job, after the other `resetJob` keys. If the patch and a `resetJob` key set the same field, the patch wins. Janitor checks the patch when it starts: a misspelled field, a field name in the wrong case or a value of the wrong type stops janitor with an error.
+
+Some fields are specific to each reset, so janitor always sets them itself and ignores the patch for them: the Job name, namespace and owner labels, `nodeName`, and `NVIDIA_GPU_RESETS` in each container and init container.
+
+#### How lists merge
+
+A strategic merge patch does not replace a list. It matches the items in your patch with the built-in items by a key:
+
+- `containers`, `initContainers`, `volumes` and `env` match by `name`. Use a new name to add an item. Use the name of a built-in item, such as `gpu-reset`, to change that item: only the fields you set change, and the others stay as they are.
+- `volumeMounts` match by `mountPath`, not by name. If you give a built-in mount a different `mountPath`, you get a second mount and the first one stays. To move the driver mount, use `hostDriverRootPath` and `driverRoot` instead.
+- `tolerations` have no key, so a patch that sets `tolerations` replaces the whole list. The built-in list has one toleration, `operator: Exists`, which keeps the reset pod running on a node with a `NoExecute` taint. Include it in your list to keep it.
+- To switch a built-in env var that has a value, such as `UPLOAD_URL_BASE`, to `valueFrom`, also set `value: null`. Otherwise the variable has both `value` and `valueFrom`, and the API server rejects the Job.
+- To remove a built-in item, list it by its key and add `$patch: delete`.
+
+#### Example
+
+```yaml
+janitor:
+  config:
+    controllers:
+      gpuReset:
+        resetJob:
+          jobTemplatePatch:
+            spec:
+              activeDeadlineSeconds: 900
+              template:
+                spec:
+                  serviceAccountName: provider-reset
+                  volumes:
+                    - name: host-systemd
+                      hostPath:
+                        path: /run/systemd
+                    - name: reset-hooks
+                      configMap:
+                        name: provider-reset-hooks
+                        defaultMode: 0755
+                  initContainers:
+                    - name: stop-provider-daemonsets
+                      image: provider/reset-hooks:1.0
+                  containers:
+                    - name: gpu-reset
+                      command: ["/hooks/reset-with-restore.sh"]
+                      volumeMounts:
+                        - name: host-systemd
+                          mountPath: /run/systemd
+                        - name: reset-hooks
+                          mountPath: /hooks
+```
+
+This patch makes the deadline 900 seconds, adds a service account, two volumes and an init container, and runs the reset through a wrapper script. The `gpu-reset` container keeps everything else: its image, environment, security context and built-in mounts.
+
+The reset image does not contain the wrapper, so you must supply it. Here it comes from the `provider-reset-hooks` ConfigMap in the janitor namespace, mounted at `/hooks`. You can also build your own image on top of the reset image.
+
+#### Before you set a patch
+
+- Keep the reset in the Job. Janitor takes the Job result as the reset result, so a wrapper must run the reset and exit with its exit code.
+- Create everything the patch refers to, such as the ServiceAccount, in the janitor namespace. If something is missing, you find out only when a reset runs, on a node that is already cordoned and drained.
+- Undo any host changes that the Job makes. Janitor restores only the GPU services that it stopped.
+- Set `gpuReset.timeout` higher than the Job's `activeDeadlineSeconds` plus the time janitor needs before it starts the Job: stopping the GPU services, and waiting for node labels that another controller holds. The timeout starts when the GPUReset starts. If you delete a GPUReset, janitor waits for a running Job only until the timeout, and then restores the GPU services even if the Job is still running. Do not delete a GPUReset while its Job runs.
+- Try a patch on one node before you use it across the cluster.
 
 ### resetJob.image
 Container image for the GPU reset Job. Leave `tag` empty to use the chart default.

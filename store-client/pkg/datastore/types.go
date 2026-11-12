@@ -99,6 +99,31 @@ type HealthEventStatus struct {
 	FaultRemediated           *bool                  `json:"faultremediated"`
 	LastRemediationTimestamp  *timestamppb.Timestamp `json:"lastremediationtimestamp,omitempty"`
 	SpanIds                   map[string]string      `json:"spanids,omitempty"`
+	// A nil decision leaves the stored decision unchanged in UpdateHealthEventStatus.
+	DrainDecision       *DrainDecision       `json:"draindecision,omitempty"`
+	RemediationDecision *RemediationDecision `json:"remediationdecision,omitempty"`
+}
+
+// DrainDecision is the drain decision that node-drainer records for an event before it acts.
+type DrainDecision struct {
+	RuleSet    string  `json:"ruleset,omitempty" bson:"ruleset,omitempty"`
+	Method     string  `json:"method,omitempty" bson:"method,omitempty"`
+	Stopped    bool    `json:"stopped,omitempty" bson:"stopped,omitempty"`
+	Scope      *Entity `json:"scope,omitempty" bson:"scope,omitempty"`
+	ReusedFrom string  `json:"reusedfrom,omitempty" bson:"reusedfrom,omitempty"`
+}
+
+// RemediationDecision is the remediation decision that fault-remediation records for an event before it acts.
+type RemediationDecision struct {
+	RuleSet string `json:"ruleset,omitempty" bson:"ruleset,omitempty"`
+	Action  string `json:"action,omitempty" bson:"action,omitempty"`
+	Stopped bool   `json:"stopped,omitempty" bson:"stopped,omitempty"`
+}
+
+// Entity identifies an impacted hardware entity, such as a GPU.
+type Entity struct {
+	EntityType  string `json:"entitytype" bson:"entitytype"`
+	EntityValue string `json:"entityvalue" bson:"entityvalue"`
 }
 
 // HealthEventWithStatus wraps a health event with status information

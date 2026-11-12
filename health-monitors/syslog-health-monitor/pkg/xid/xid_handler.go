@@ -218,6 +218,8 @@ before writing the syslog event). However, we do not want to conditionally add e
 healthy event generation nor do we want to add custom logic to allow the fault-quarantine-module to clear conditions on
 a subset of impacted entities recovering.
 */
+
+// createHealthEventFromResponse builds fault and recovery events from a decoded XID response.
 func (xidHandler *XIDHandler) createHealthEventFromResponse(
 	xidResp *parser.Response,
 	message string,
@@ -268,7 +270,7 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 		ComponentClass:     xidHandler.defaultComponentClass,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		EntitiesImpacted:   entities,
-		Message:            message,
+		Message:            appendInvestigatoryGuidance(message, xidResp.Result.InvestigatoryAction),
 		IsFatal:            xidHandler.determineFatality(recommendedAction),
 		IsHealthy:          false,
 		NodeName:           xidHandler.nodeName,
@@ -291,6 +293,17 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 		Version: 1,
 		Events:  events,
 	}
+}
+
+// appendInvestigatoryGuidance appends a trimmed investigatory action to the XID
+// message. It preserves the original message when the action is blank.
+func appendInvestigatoryGuidance(message, action string) string {
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return message
+	}
+
+	return message + ", Investigatory Action=" + action
 }
 
 // buildHealthyRecoveryEvent creates an unscoped healthy event for the same

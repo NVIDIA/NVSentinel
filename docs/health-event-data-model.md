@@ -27,6 +27,7 @@ health monitor is represented as a `HealthEvent`, and every downstream module
 - [Entity (Impacted Resources)](#entity-impacted-resources)
 - [Storage Wrapper: HealthEventWithStatus](#storage-wrapper-healtheventwithstatus)
 - [HealthEventStatus Lifecycle](#healtheventstatus-lifecycle)
+- [Drain and Remediation Decisions](#drain-and-remediation-decisions)
 - [CRD Projection: HealthEventResource](#crd-projection-healtheventresource)
 - [External Remediation Request](#external-remediation-request)
 - [Tracing Correlation](#tracing-correlation)
@@ -243,6 +244,8 @@ message HealthEventStatus {
   google.protobuf.BoolValue faultRemediated = 5;
   google.protobuf.Timestamp lastRemediationTimestamp = 6;
   map<string, string> spanIds = 7;
+  DrainDecision drainDecision = 8;
+  RemediationDecision remediationDecision = 9;
 }
 ```
 
@@ -257,6 +260,28 @@ Each field is written by a specific module at a specific pipeline stage:
 | `faultRemediated` | **fault-remediation** | `BoolValue` — `nil` (absent) = not yet processed; `true` = repair CR created and confirmed; `false` = repair failed or skipped |
 | `lastRemediationTimestamp` | **fault-remediation** | When the remediation CR was last created |
 | `spanIds` | **all modules** | Distributed tracing span IDs per service (e.g. `{"platform-connector": "abc123", "fault-quarantine": "def456"}`) |
+| `drainDecision` | **node-drainer** | The drain method chosen for the event. No module writes this field yet. See [ADR-064](designs/064-node-and-device-selection.md) |
+| `remediationDecision` | **fault-remediation** | The remediation action chosen for the event, written before the log collector and the maintenance CR. See [ADR-064](designs/064-node-and-device-selection.md) |
+
+### Drain and Remediation Decisions
+
+`drainDecision` is the drain decision that node-drainer records for an event before it acts:
+
+- `ruleSet`: the rule set that applies, which is the winner or the rule set of the `reusedFrom` event. Empty for the default.
+- `method`: `BuiltIn` or `Custom`. Empty when stopped.
+- `stopped`: true when a stop rule set matched.
+- `scope`: the entity type and value of a partial drain. Empty for a drain of the full node.
+- `reusedFrom`: the event of the quarantine session whose method this event uses. Empty when this event selected it.
+
+`remediationDecision` is the remediation decision that fault-remediation records for an event before it acts:
+
+- `ruleSet`: the rule set that won. Empty when no rule set matched.
+- `action`: an entry of `maintenance.actions`. Empty when stopped.
+- `stopped`: true when a stop rule set matched.
+
+A status update that omits a decision does not change the saved decision. Omit means the field is nil. A present decision replaces the saved decision. Each module sends only the fields it owns.
+
+MongoDB and PostgreSQL store these field names in lowercase, as they store the other status fields. For example, the keys are `draindecision`, `ruleset` and `scope.entitytype`.
 
 ### OperationStatus values (`userPodsEvictionStatus.status`)
 
