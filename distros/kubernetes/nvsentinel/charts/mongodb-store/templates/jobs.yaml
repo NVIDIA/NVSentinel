@@ -46,6 +46,31 @@ subjects:
   name: mongodb-job-sa
   namespace: {{ .Release.Namespace }}
 ---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Name is create-mongodb-database-<ttl>-<hash>. Label: create-mongodb-database
+  name: {{ include "mongodb-store.initJobName" . }}
+  labels:
+    app.kubernetes.io/name: create-mongodb-database
+    app.kubernetes.io/component: mongodb-init
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    # Argo: recreate this immutable Job on sync if the first run Failed and the
+    # name (TTL / oplog / script / pod template hash) did not change. Do not add
+    # helm.sh/hook.
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
+spec:
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 600
+  template:
+{{- include "mongodb-store.initJobPodTemplate" . }}
+{{- /*
+The pod template is a named template so that mongodb-store.initJobName can hash
+it. spec.template of a Job is immutable: any change here must give a new name.
+Its local variables are set inside the define, which cannot see the caller's.
+*/}}
+{{- define "mongodb-store.initJobPodTemplate" }}
 {{- $helperImages := .Values.mongodb.helperImages }}
 {{- $rootUsername := "root" }}
 {{- $issuerSecret := "mongo-root-ca-secret" }}
@@ -58,24 +83,6 @@ subjects:
   {{- $passwordSecretName = "internal-mongodb-users" }}
   {{- $passwordSecretKey = "MONGODB_DATABASE_ADMIN_PASSWORD" }}
 {{- end }}
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  # Name is create-mongodb-database-<ttl>-<scriptHash>. Label: create-mongodb-database
-  name: {{ include "mongodb-store.initJobName" . }}
-  labels:
-    app.kubernetes.io/name: create-mongodb-database
-    app.kubernetes.io/component: mongodb-init
-    app.kubernetes.io/instance: {{ .Release.Name }}
-  annotations:
-    # Argo: recreate this immutable Job on sync if the first run Failed and the
-    # name (TTL / oplog / script hash) did not change. Do not add helm.sh/hook.
-    argocd.argoproj.io/sync-options: Force=true,Replace=true
-spec:
-  ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 600
-  template:
     spec:
       serviceAccountName: mongodb-job-sa
       {{- with .Values.global.imagePullSecrets }}
@@ -506,3 +513,4 @@ spec:
         {{- toYaml . | nindent 8 }}
 {{- end }}
       restartPolicy: OnFailure
+{{- end }}

@@ -426,9 +426,9 @@ A completed Job is immutable. Changing `oplogSizeMB` (or the replica-member list
 
 ### HealthEvents TTL
 
-`collectionExpirySeconds` (default `2592000` / 30d). Same key for external Mongo. The init Job is `create-mongodb-database-<seconds>-<scriptHash>` (`-l app.kubernetes.io/name=create-mongodb-database`).
+`collectionExpirySeconds` (default `2592000` / 30d). Same key for external Mongo. The init Job is `create-mongodb-database-<seconds>-<hash>` (`-l app.kubernetes.io/name=create-mongodb-database`).
 
-A completed Job is immutable. TTL, oplog size, and a hash of the mongosh init script are in the Job name so Helm/Argo create a new Job when expiry, oplog, or indexes change. Argo also has `Force=true,Replace=true` so a Failed first run is recreated on sync. For Helm, if you need to rerun the same script, delete the Job by that label and upgrade.
+A completed Job is immutable, so the Job gets a new name when it must change. The name holds the TTL and one hash. The hash covers the oplog size and the rendered Job pod template, which includes the mongosh init script. Helm and Argo CD create a new Job when the TTL, the oplog size or the indexes change. They also create a new Job when the Job pod changes, for example `mongodb.nodeSelector`, tolerations, images or `global.imagePullSecrets`. Argo also has `Force=true,Replace=true` so a Failed first run is recreated on sync. For Helm, if you need to rerun the same script, delete the Job by that label and upgrade.
 
 ```yaml
 mongodb-store:

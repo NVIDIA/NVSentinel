@@ -1,0 +1,129 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# spec.template of a Job is immutable. The init Job name hashes the rendered
+# pod template, so a pod template change must give a new name, and an
+# unrelated change must keep the old one.
+#
+# helm-unittest cannot compare two renders, so the default name is pinned
+# here. A change to the Job pod template, or to a default value that feeds the
+# name, changes it: update the pinned name in the first test. The other tests
+# reuse it through the YAML alias *defaultName.
+#
+# Lives in the umbrella suite because the Job calls umbrella helpers, so it
+# cannot render with the subchart alone.
+suite: mongodb init Job name
+templates:
+  - charts/mongodb-store/templates/jobs.yaml
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+set:
+  global.mongodbStore.enabled: true
+  mongodb-store.useBitnami: true
+  mongodb-store.usePerconaOperator: false
+tests:
+  - it: has the pinned default name
+    asserts:
+      - equal:
+          path: metadata.name
+          # &defaultName names this value; the tests below reuse it as *defaultName.
+          value: &defaultName create-mongodb-database-2592000-45f2eda4
+        documentSelector:
+          path: kind
+          value: Job
+
+  - it: keeps the name when a value outside the Job changes
+    set:
+      mongodb-store.mongodb.resources.limits.cpu: "2"
+    asserts:
+      - equal:
+          path: metadata.name
+          value: *defaultName
+        documentSelector:
+          path: kind
+          value: Job
+
+  - it: changes the name when mongodb.nodeSelector changes
+    set:
+      mongodb-store.mongodb.nodeSelector:
+        pool: a
+    asserts:
+      - notEqual:
+          path: metadata.name
+          value: *defaultName
+        documentSelector:
+          path: kind
+          value: Job
+
+  - it: changes the name when job.nodeSelector changes
+    set:
+      mongodb-store.job.nodeSelector:
+        pool: b
+    asserts:
+      - notEqual:
+          path: metadata.name
+          value: *defaultName
+        documentSelector:
+          path: kind
+          value: Job
+
+  - it: changes the name when mongodb.jobTolerations changes
+    set:
+      mongodb-store.mongodb.jobTolerations:
+        - key: dedicated
+          operator: Exists
+    asserts:
+      - notEqual:
+          path: metadata.name
+          value: *defaultName
+        documentSelector:
+          path: kind
+          value: Job
+
+  - it: changes the name when job.tolerations changes
+    set:
+      mongodb-store.job.tolerations:
+        - key: dedicated
+          operator: Exists
+    asserts:
+      - notEqual:
+          path: metadata.name
+          value: *defaultName
+        documentSelector:
+          path: kind
+          value: Job
+
+  - it: changes the name when a helper image changes
+    set:
+      mongodb-store.mongodb.helperImages.mongosh.tag: "0.0.0-test"
+    asserts:
+      - notEqual:
+          path: metadata.name
+          value: *defaultName
+        documentSelector:
+          path: kind
+          value: Job
+
+  - it: changes the name when imagePullSecrets changes
+    set:
+      global.imagePullSecrets:
+        - name: regcred
+    asserts:
+      - notEqual:
+          path: metadata.name
+          value: *defaultName
+        documentSelector:
+          path: kind
+          value: Job
