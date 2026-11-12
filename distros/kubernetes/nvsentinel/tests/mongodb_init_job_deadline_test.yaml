@@ -95,3 +95,18 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: mongodb-store.job.activeDeadlineSeconds must be an integer
+
+  - it: rejects a fractional deadline instead of turning it into 0
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 0.5
+    asserts:
+      - failedTemplate:
+          errorPattern: mongodb-store.job.activeDeadlineSeconds must be an integer
+
+  - it: rejects a non-scalar deadline instead of turning it into 0
+    set:
+      mongodb-store.job.activeDeadlineSeconds:
+        nested: 1
+    asserts:
+      - failedTemplate:
+          errorPattern: mongodb-store.job.activeDeadlineSeconds must be an integer

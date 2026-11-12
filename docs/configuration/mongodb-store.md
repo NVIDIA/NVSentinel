@@ -228,7 +228,17 @@ global:
       activeDeadlineSeconds: 600
 ```
 
-Raising the value does not restart a Job that already failed. Delete the failed Job (`kubectl delete job -l app.kubernetes.io/name=create-mongodb-database -n {namespace}`) and run `helm upgrade` again.
+Raising the value does not restart a Job that already failed. Delete the failed Job and run `helm upgrade` again. For the mongodb-store Job:
+
+```bash
+kubectl delete job -l app.kubernetes.io/name=create-mongodb-database -n {namespace}
+```
+
+For the external MongoDB setup Job:
+
+```bash
+kubectl delete job -l app.kubernetes.io/name=external-mongodb-setup -n {namespace}
+```
 
 ## Configuration Reference
 
