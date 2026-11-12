@@ -1157,6 +1157,7 @@ func TestIsTripped_NoGPUNodes_StaysClosed(t *testing.T) {
 func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {
 	ctx := context.Background()
 	b := newNoGPUNodeBreaker(t, ctx)
+	b.cfg.K8sClient.(*testK8sClient).cordonedNodes = 1
 
 	b.AddCordonEvent("node-outside-gpu-label")
 
@@ -1166,6 +1167,31 @@ func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {
 	require.Equal(t, StateTripped, b.CurrentState())
 	assert.Equal(t, map[string]float64{string(boundNoGPUNodes): 1},
 		gaugeSeries(t, metrics.FaultQuarantineBreakerThresholdNodes))
+}
+
+func TestIsTripped_NoGPUNodesAfterCordonedNodeDeleted_StaysClosed(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+
+	b.AddCordonEvent("last-gpu-node-replaced")
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, tripped, "a cordon of a node that is gone must not trip the breaker")
+	require.Equal(t, StateClosed, b.CurrentState())
+}
+
+func TestIsTripped_NoGPUNodesCordonedLookupFails_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+	b.cfg.K8sClient.(*testK8sClient).cordonedNodesErr = fmt.Errorf("informer cache not synced")
+
+	b.AddCordonEvent("node-outside-gpu-label")
+
+	tripped, err := b.IsTripped(ctx)
+	require.Error(t, err)
+	require.False(t, tripped)
+	require.Equal(t, StateClosed, b.CurrentState())
 }
 
 func TestIsTripped_GPUNodeJoinsAfterZero_UsesNodeCount(t *testing.T) {

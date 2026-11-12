@@ -453,8 +453,10 @@ func (b *slidingWindowBreaker) getTotalNodes(ctx context.Context) (int, error) {
 }
 
 // isTrippedByRecentCordons is called when no GPU nodes are counted. It trips if the window
-// holds any cordon, since that means gpuNodeLabel does not match the nodes being
-// quarantined. Otherwise the breaker stays CLOSED.
+// holds a cordon and a node NVSentinel quarantined is still in the cluster, since that means
+// gpuNodeLabel does not match the nodes being quarantined. A quarantined node that has since
+// been deleted is not evidence of that: replacing the last GPU node after quarantining it
+// leaves a cordon in the window and no GPU nodes. Otherwise the breaker stays CLOSED.
 func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bool, error) {
 	b.mu.Lock()
 	b.slideWindow(time.Now())
@@ -463,7 +465,20 @@ func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bo
 
 	metrics.SetFaultQuarantineBreakerThresholdNodes(1, string(boundNoGPUNodes))
 
-	if recentCordonedNodes == 0 {
+	cordonedNodes := 0
+
+	if recentCordonedNodes > 0 {
+		var err error
+
+		cordonedNodes, err = b.cfg.K8sClient.GetCordonedNodes(ctx)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to get cordoned node count", "error", err)
+
+			return false, fmt.Errorf("failed to get cordoned node count: %w", err)
+		}
+	}
+
+	if cordonedNodes == 0 {
 		metrics.SetFaultQuarantineBreakerUtilization(0)
 		metrics.SetFaultQuarantineBreakerState(string(StateClosed))
 
@@ -471,7 +486,7 @@ func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bo
 	}
 
 	slog.ErrorContext(ctx, "Circuit breaker: nodes were cordoned but no GPU nodes are counted; tripping",
-		"recentCordonedNodes", recentCordonedNodes)
+		"recentCordonedNodes", recentCordonedNodes, "cordonedNodes", cordonedNodes)
 
 	if err := b.ForceState(ctx, StateTripped); err != nil {
 		return true, fmt.Errorf("error forcing circuit breaker state to TRIPPED: %w", err)
