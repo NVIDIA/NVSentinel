@@ -748,7 +748,9 @@ func (r *Reconciler) handleEvent(
 
 	taintsToBeApplied = reconcileTaintsWithNode(ctx, node, taintsToBeApplied)
 
-	annotationsMap := r.prepareAnnotations(ctx, node, taintsToBeApplied, labelsToBeApplied, &labelsMap, &isCordoned, isNodeQuarantined)
+	annotationsMap := r.prepareAnnotations(
+		ctx, node, taintsToBeApplied, labelsToBeApplied, &labelsMap, &isCordoned, isNodeQuarantined,
+	)
 
 	// Dry run skips the same events as a live run, so it records only quarantines that would happen.
 	if !isNodeQuarantined {
