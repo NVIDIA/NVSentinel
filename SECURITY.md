@@ -30,7 +30,7 @@ NVSentinel does not currently maintain long-term-support branches. Security and 
 Two scans check NVSentinel with [Grype](https://github.com/anchore/grype) and report each vulnerability that has a fix as a code scanning alert in the Security tab of the repository:
 
 - The daily scan checks the dependencies in the repository: the `go.mod` and `poetry.lock` file of each module.
-- The weekly scan checks each published container image, including the packages of its base image.
+- The weekly scan checks the container images of the latest publish from `main`, including the packages of their base images. It does not scan the images of a release.
 
 Grype compares the version of each package with its vulnerability database. It does not check whether NVSentinel calls the vulnerable code. For Go, both scans do more:
 
@@ -42,6 +42,7 @@ The daily scan also reads [`.grype.yaml`](.grype.yaml), which excludes the paths
 ### Handle a Reported Vulnerability
 
 - If the vulnerability affects NVSentinel, update the dependency or the base image that contains it.
+- If a vulnerability in a dependency of the repository does not affect NVSentinel, update the dependency anyway. The scans report only vulnerabilities that have a fix, and the repository sets the version of each dependency.
 - If a vulnerability in an image does not affect NVSentinel, open a pull request that adds a statement to [`.openvex.json`](.openvex.json). A maintainer reviews the statement in the pull request. After the merge, the weekly scan no longer reports the vulnerability for that image, and its alert closes at the next scan.
 
 ### Add a Statement
