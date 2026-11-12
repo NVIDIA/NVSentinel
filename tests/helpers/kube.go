@@ -2287,6 +2287,27 @@ func SetNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey, labe
 	})
 }
 
+// setNodeLabelAllowEmpty sets a node label even when the value is empty.
+// Unlike SetNodeLabel, an empty value does not delete the key: Kubernetes
+// permits empty label values, so restoring a pre-existing empty-valued
+// label must keep the key present rather than remove it.
+func setNodeLabelAllowEmpty(ctx context.Context, c klient.Client, nodeName, labelKey string) error {
+	return retry.RetryOnConflict(ConflictBackoff, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			return err
+		}
+
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+
+		node.Labels[labelKey] = ""
+
+		return c.Resources().Update(ctx, node)
+	})
+}
+
 func SetNodeAnnotation(ctx context.Context, c klient.Client, nodeName, annotationKey, annotationValue string) error {
 	return retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
