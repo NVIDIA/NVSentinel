@@ -16,6 +16,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nic"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvidiasmi"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 )
 
@@ -74,18 +76,33 @@ type nvmlClient interface {
 
 // Collector gathers GPU metadata from a node using NVML and nvidia-smi.
 type Collector struct {
-	nvml    nvmlClient
-	nicTopo NICTopoCollector
+	nvml      nvmlClient
+	nicTopo   NICTopoCollector
+	abandoned []string
 }
 
 func NewCollector(nvmlWrapper nvmlClient, topo NICTopoCollector) *Collector {
 	return &Collector{nvml: nvmlWrapper, nicTopo: topo}
 }
 
+// The collection steps that run nvidia-smi, as reported by AbandonedSteps.
+const (
+	StepNVLink = "nvlink"
+	StepTopo   = "topo"
+)
+
+// AbandonedSteps returns the steps of the last Collect whose nvidia-smi did not exit after its
+// timeout. Collect continues without them and leaves their fields empty; see CarryOver.
+func (c *Collector) AbandonedSteps() []string {
+	return c.abandoned
+}
+
 // Collect gathers GPU metadata via NVML (device info, NVLink topology,
 // NVSwitch PCIs, and for driver ≥ R560 the chassis serial) and enriches
 // it with the nvidia-smi topo -m matrix.
 func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
+	c.abandoned = nil
+
 	count, err := c.nvml.GetDeviceCount()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GPU device count: %w", err)
@@ -136,6 +153,10 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 	if err != nil {
 		slog.Warn("Failed to collect NIC topology matrix, nic_topology will be empty",
 			"error", err)
+
+		if errors.Is(err, nvidiasmi.ErrAbandoned) {
+			c.abandoned = append(c.abandoned, StepTopo)
+		}
 
 		return
 	}
@@ -213,6 +234,10 @@ func (c *Collector) prepareTopologyData(
 	parsedTopology, err := c.nvml.ParseNVLinkTopologyWithContext(ctx)
 	if err != nil {
 		slog.Warn("Failed to parse nvidia-smi topology, remote link IDs will be -1", "error", err)
+
+		if errors.Is(err, nvidiasmi.ErrAbandoned) {
+			c.abandoned = append(c.abandoned, StepNVLink)
+		}
 
 		parsedTopology = make(map[int]nvml.GPUNVLinkTopology)
 	}

@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -109,7 +110,7 @@ func main() {
 		})
 	}
 
-	metadata, err := runCollector(ctx)
+	metadata, err := runCollector(ctx, newNvidiaSmiAbandonedCounter(prometheus.DefaultRegisterer))
 	if err != nil {
 		slog.Error("Metadata collector failed", "error", err)
 		cancel()
@@ -212,7 +213,7 @@ func pollPodDevices(ctx context.Context, podDeviceMapper mapper.PodDeviceMapper,
 	}
 }
 
-func runCollector(ctx context.Context) (*model.GPUMetadata, error) {
+func runCollector(ctx context.Context, abandoned *prometheus.CounterVec) (*model.GPUMetadata, error) {
 	slog.Info("Initializing NVML")
 
 	nvmlWrapper := &nvml.NVMLWrapper{}
@@ -241,6 +242,14 @@ func runCollector(ctx context.Context) (*model.GPUMetadata, error) {
 		"nvswitch_count", len(metadata.NVSwitches),
 	)
 
+	if steps := metadataCollector.AbandonedSteps(); len(steps) > 0 {
+		for _, step := range steps {
+			abandoned.WithLabelValues(step).Inc()
+		}
+
+		carryOverPrevious(*outputPath, metadata, steps)
+	}
+
 	slog.Info("Writing metadata to file", "output_path", *outputPath)
 
 	metadataWriter, err := writer.NewWriter(*outputPath)
@@ -255,4 +264,34 @@ func runCollector(ctx context.Context) (*model.GPUMetadata, error) {
 	slog.Info("Successfully wrote GPU metadata", "output_path", *outputPath)
 
 	return metadata, nil
+}
+
+// carryOverPrevious fills the fields of abandoned nvidia-smi steps from the metadata file of an
+// earlier run, before this run overwrites it. Without a usable previous file they stay empty.
+func carryOverPrevious(path string, metadata *model.GPUMetadata, steps []string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		slog.Warn("nvidia-smi was abandoned and no previous metadata could be read, so its fields will be empty",
+			"steps", steps, "error", err)
+
+		return
+	}
+
+	var previous model.GPUMetadata
+	if err := json.Unmarshal(data, &previous); err != nil {
+		slog.Warn("nvidia-smi was abandoned and the previous metadata could not be parsed, so its fields will be empty",
+			"steps", steps, "error", err)
+
+		return
+	}
+
+	if !collector.CarryOver(&previous, metadata, steps) {
+		slog.Warn("nvidia-smi was abandoned and the previous metadata lists different GPUs, so its fields will be empty",
+			"steps", steps)
+
+		return
+	}
+
+	slog.Warn("nvidia-smi was abandoned, so its fields were carried over from the previous metadata",
+		"steps", steps, "previous_timestamp", previous.Timestamp)
 }

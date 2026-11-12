@@ -25,6 +25,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nic"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvidiasmi"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 )
 
@@ -45,6 +46,7 @@ type fakeNVMLClient struct {
 	driverVersion         string
 	chassisSerial         *string
 	getChassisSerialCalls int
+	nvlinkErr             error
 }
 
 // GetDeviceCount returns the configured device count.
@@ -62,9 +64,9 @@ func (f *fakeNVMLClient) BuildDeviceMap() (map[string]gonvml.Device, error) {
 	return map[string]gonvml.Device{}, nil
 }
 
-// ParseNVLinkTopologyWithContext returns an empty topology map.
+// ParseNVLinkTopologyWithContext returns an empty topology map and the configured error.
 func (f *fakeNVMLClient) ParseNVLinkTopologyWithContext(context.Context) (map[int]nvml.GPUNVLinkTopology, error) {
-	return map[int]nvml.GPUNVLinkTopology{}, nil
+	return map[int]nvml.GPUNVLinkTopology{}, f.nvlinkErr
 }
 
 // GetGPUInfo returns a stub GPUInfo for the given index.
@@ -195,6 +197,20 @@ func TestCollectTopoFailureLeavesTopologyEmpty(t *testing.T) {
 	metadata, err := collector.Collect(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, metadata.NICTopology)
+	assert.Empty(t, collector.AbandonedSteps(), "a failure that exited is not an abandonment")
+}
+
+// TestCollectRecordsAbandonedSteps verifies that nvidia-smi steps abandoned on a wedged driver
+// are reported, so the caller can count them and carry over the previous values.
+func TestCollectRecordsAbandonedSteps(t *testing.T) {
+	abandoned := fmt.Errorf("run nvidia-smi: %w", nvidiasmi.ErrAbandoned)
+	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03", nvlinkErr: abandoned}
+
+	collector := NewCollector(fake, &fakeNICTopoCollector{err: abandoned})
+
+	_, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{StepNVLink, StepTopo}, collector.AbandonedSteps())
 }
 
 // TestCollectNoNICsLeavesTopologyEmptyButPopulatesNUMA verifies that a
@@ -273,4 +289,3 @@ func TestCheckGPUCountMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "3 GPU columns")
 	assert.Contains(t, err.Error(), "1 GPUs")
 }
-

@@ -64,3 +64,14 @@ func newCollectionCompletedGauge(reg prometheus.Registerer) prometheus.Gauge {
 			"Collection can block on a wedged GPU driver, so 0 long after process start means it has stalled.",
 	})
 }
+
+// newNvidiaSmiAbandonedCounter makes a degraded collection visible: collection still completes
+// when nvidia-smi is abandoned on a wedged driver, so the completed timestamp alone reads healthy.
+func newNvidiaSmiAbandonedCounter(reg prometheus.Registerer) *prometheus.CounterVec {
+	return promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+		Name: "metadata_collector_nvidia_smi_abandoned_total",
+		Help: "nvidia-smi runs that did not exit after their timeout and were abandoned, by command. " +
+			"Their fields are carried over from the previous metadata file when it lists the same GPUs, " +
+			"and left empty otherwise.",
+	}, []string{"command"})
+}
