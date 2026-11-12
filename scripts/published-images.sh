@@ -35,12 +35,21 @@ tag=$1
 registry=ghcr.io
 repository=nvidia/nvsentinel
 
-# name|tag suffix for each published image.
-images() {
-  awk '/^ko build/{f=1} f' scripts/buildko.sh | grep -oE '\./[a-z0-9/_-]+' | xargs -n1 basename | sed 's/$/|/'
-  yq '.jobs[].strategy.matrix.include[]? | select(.container_name) | .container_name + "|" + (.tag_suffix // "")' \
-    .github/workflows/publish.yml | sed 's|^nvsentinel/||'
-}
+# name|tag suffix for each published image. Both lists must have images. An empty list means that
+# buildko.sh or publish.yml changed in a way that this script does not read.
+ko_images=$(awk '/^ko build/{f=1} f' scripts/buildko.sh | grep -oE '\./[a-z0-9/_-]+' | xargs -n1 basename |
+  sed 's/$/|/') || ko_images=
+docker_images=$(yq '.jobs[].strategy.matrix.include[]? | select(.container_name) |
+  .container_name + "|" + (.tag_suffix // "")' .github/workflows/publish.yml | sed 's|^nvsentinel/||') ||
+  docker_images=
+if [ -z "${ko_images}" ]; then
+  echo "found no ko images in scripts/buildko.sh" >&2
+  exit 1
+fi
+if [ -z "${docker_images}" ]; then
+  echo "found no Docker images in .github/workflows/publish.yml" >&2
+  exit 1
+fi
 
 # Compressed size of the linux/amd64 image of name:reference, from the registry API.
 amd64_size() {
@@ -70,6 +79,6 @@ while IFS='|' read -r name suffix; do
   entries+=("$(jq -cn --arg name "${name}${suffix}" --arg ref "${registry}/${repository}/${name}:${reference}" \
     --argjson size "${size}" \
     '{name: $name, ref: $ref, category: ("grype-image-" + $name), size_mb: ($size / 1048576 | floor)}')")
-done < <(images)
+done <<< "${ko_images}"$'\n'"${docker_images}"
 
 printf '%s\n' "${entries[@]}" | jq -cs '.'
