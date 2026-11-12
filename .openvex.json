@@ -5,25 +5,5 @@
   "role": "Document Creator",
   "timestamp": "2026-11-11T00:00:00Z",
   "version": 1,
-  "statements": [
-    {
-      "vulnerability": {
-        "name": "CVE-2026-109518"
-      },
-      "timestamp": "2026-11-12T00:00:00Z",
-      "products": [
-        {
-          "@id": "pkg:oci/gpu-reset",
-          "subcomponents": [
-            {
-              "@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"
-            }
-          ]
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Temporary statement to test the image scan."
-    }
-  ]
+  "statements": []
 }

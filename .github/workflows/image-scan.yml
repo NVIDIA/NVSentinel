@@ -20,8 +20,6 @@ on:
   schedule:
     - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
   workflow_dispatch: {}
-  push:
-    branches: [pull-request/2355]
 
 permissions:
   contents: read
