@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
@@ -85,7 +86,7 @@ func nvlinkPresentLinkCount(device nvml.Device) *int {
 	}
 
 	field := fields[0]
-	if ret := nvml.Return(field.NvmlReturn); ret != nvml.SUCCESS {
+	if ret := nvml.Return(field.NvmlReturn); ret != nvml.SUCCESS { //nolint:gosec // G115: safe NVML status.
 		slog.Error("NVML field read failed",
 			"field_id", field.FieldId,
 			"error", nvml.ErrorString(ret))
@@ -93,25 +94,67 @@ func nvlinkPresentLinkCount(device nvml.Device) *int {
 		return nil
 	}
 
-	var count int
-	switch nvml.ValueType(field.ValueType) {
-	case nvml.VALUE_TYPE_UNSIGNED_INT:
-		count = int(binary.NativeEndian.Uint32(field.Value[:4]))
-	case nvml.VALUE_TYPE_UNSIGNED_LONG, nvml.VALUE_TYPE_UNSIGNED_LONG_LONG:
-		count = int(binary.NativeEndian.Uint64(field.Value[:8]))
-	default:
-		slog.Error("NVML field has unexpected value type",
+	rawCount, ok := decodeNVLinkPresentLinkCount(field)
+	if !ok {
+		slog.Error("NVML field has unsupported value or type",
 			"field_id", field.FieldId,
 			"value_type", field.ValueType)
 
 		return nil
 	}
 
+	if rawCount > math.MaxInt {
+		slog.Error("NVML field value exceeds platform int range",
+			"field_id", field.FieldId,
+			"value", rawCount)
+
+		return nil
+	}
+
+	count := int(rawCount) //nolint:gosec // G115: bounded to math.MaxInt above.
+
 	slog.Info("NVML NVLink present link count",
 		"field_id", field.FieldId,
 		"value", count)
 
 	return &count
+}
+
+func decodeNVLinkPresentLinkCount(field nvml.FieldValue) (uint64, bool) {
+	switch nvml.ValueType(field.ValueType) { //nolint:gosec // G115: NVML enum value always fits int32.
+	case nvml.VALUE_TYPE_UNSIGNED_INT:
+		return uint64(binary.NativeEndian.Uint32(field.Value[:4])), true
+	case nvml.VALUE_TYPE_UNSIGNED_LONG, nvml.VALUE_TYPE_UNSIGNED_LONG_LONG:
+		return binary.NativeEndian.Uint64(field.Value[:8]), true
+	case nvml.VALUE_TYPE_UNSIGNED_SHORT:
+		return uint64(binary.NativeEndian.Uint16(field.Value[:2])), true
+	case nvml.VALUE_TYPE_SIGNED_INT:
+		return decodeNonNegativeInt32(field.Value[:4])
+	case nvml.VALUE_TYPE_SIGNED_LONG_LONG:
+		return decodeNonNegativeInt64(field.Value[:8])
+	case nvml.VALUE_TYPE_DOUBLE, nvml.VALUE_TYPE_COUNT:
+		return 0, false
+	}
+
+	return 0, false
+}
+
+func decodeNonNegativeInt32(value []byte) (uint64, bool) {
+	var decoded int32
+	if err := binary.Read(bytes.NewReader(value), binary.NativeEndian, &decoded); err != nil || decoded < 0 {
+		return 0, false
+	}
+
+	return uint64(decoded), true //nolint:gosec // G115: guarded non-negative above.
+}
+
+func decodeNonNegativeInt64(value []byte) (uint64, bool) {
+	var decoded int64
+	if err := binary.Read(bytes.NewReader(value), binary.NativeEndian, &decoded); err != nil || decoded < 0 {
+		return 0, false
+	}
+
+	return uint64(decoded), true //nolint:gosec // G115: guarded non-negative above.
 }
 
 type NVMLWrapper struct{}
