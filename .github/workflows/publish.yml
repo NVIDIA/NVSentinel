@@ -238,6 +238,21 @@ jobs:
           image_digest: ${{ matrix.image.digest }}
           registry_password: ${{ secrets.GITHUB_TOKEN }}
 
+  # Reports the vulnerabilities in the images of a release as code scanning alerts for its tag. No
+  # job depends on it, so its findings do not block the release.
+  scan-release-images:
+    if: github.repository == 'nvidia/nvsentinel' && github.event_name == 'push' && github.ref_type == 'tag'
+    needs:
+      - build-images-docker
+      - build-images-ko
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/image-scan.yml
+    with:
+      tag: ${{ github.ref_name }}
+
   e2e-test:
     if: github.repository == 'nvidia/nvsentinel'
     name: "E2E Test Published Images"

@@ -27,12 +27,13 @@ NVSentinel does not currently maintain long-term-support branches. Security and 
 
 ## Vulnerability Scanning
 
-Two scans check NVSentinel with [Grype](https://github.com/anchore/grype) and report each vulnerability that has a fix as a code scanning alert in the Security tab of the repository:
+Three scans check NVSentinel with [Grype](https://github.com/anchore/grype) and report each vulnerability that has a fix as a code scanning alert in the Security tab of the repository:
 
 - The daily scan checks the dependencies in the repository: the `go.mod` and `poetry.lock` file of each module.
-- The weekly scan checks the container images of the latest publish from `main`, such as `ghcr.io/nvidia/nvsentinel/janitor:main-<sha>`, including the packages of their base images. It does not scan release images, such as `janitor:v1.22.0`.
+- The weekly scan checks the container images of the latest publish from `main`, such as `ghcr.io/nvidia/nvsentinel/janitor:main-<sha>`, including the packages of their base images.
+- The release scan checks the container images of a release once, when they are published, such as `janitor:v1.22.0`. Its alerts are listed under the release tag. It does not block the release.
 
-Grype compares the version of each package with its vulnerability database. It does not check whether NVSentinel calls the vulnerable code. For Go, both scans do more:
+Grype compares the version of each package with its vulnerability database. It does not check whether NVSentinel calls the vulnerable code. For Go, the scans do more:
 
 - In the repository, the daily scan first runs [govulncheck](https://go.dev/doc/security/vuln/) on each Go module. govulncheck follows the call graph of the module, and the scan does not report a Go vulnerability whose vulnerable code the module does not call. govulncheck uses the Go vulnerability database, which can add a new advisory later than Grype's database. Until then, Grype still reports that vulnerability.
 - In an image, Grype reports a Go vulnerability only when the binary contains the vulnerable code.
@@ -43,7 +44,7 @@ The daily scan also reads [`.grype.yaml`](.grype.yaml), which excludes the paths
 
 - If the vulnerability affects NVSentinel, update the dependency or the base image that contains it.
 - If a vulnerability in a dependency of the repository does not affect NVSentinel, update the dependency anyway. The scans report only vulnerabilities that have a fix, and the repository sets the version of each dependency.
-- If a vulnerability in an image does not affect NVSentinel, open a pull request that adds a statement to [`.openvex.json`](.openvex.json). A maintainer reviews the statement in the pull request. After the merge, the weekly scan no longer reports the vulnerability for that image, and its alert closes at the next scan.
+- If a vulnerability in an image does not affect NVSentinel, open a pull request that adds a statement to [`.openvex.json`](.openvex.json). A maintainer reviews the statement in the pull request. After the merge, the weekly scan no longer reports the vulnerability for that image, and its alert closes at the next scan. Images published after the merge carry the statement in their [OpenVEX attestation](#openvex-attestation).
 
 ### Add a Statement
 
@@ -94,6 +95,7 @@ NVSentinel provides supply chain security artifacts for all container images:
 
 - **SBOM Attestation**: Complete inventory of packages, libraries, and components
 - **SLSA Build Provenance**: Verifiable build information (how and where images were created)
+- **OpenVEX Attestation**: The vulnerabilities that do not affect the image, from [`.openvex.json`](.openvex.json)
 
 ### Setup
 
@@ -132,6 +134,32 @@ cosign verify-attestation \
 That identity is the same one the in-cluster policies enforce, so a check that passes here matches what the admission controller will accept.
 
 Images are not signed with `cosign sign`, so there is no standalone image signature to verify. Verifying this attestation authenticates the SBOM contents — it does not establish how the image was built. Build provenance comes from the SLSA attestation below.
+
+### OpenVEX Attestation
+
+Each image carries the [`.openvex.json`](.openvex.json) of the commit it was built from as a Sigstore attestation. The document lists the vulnerabilities that do not affect NVSentinel, as described in [Handle a Reported Vulnerability](#handle-a-reported-vulnerability).
+
+**Retrieve the OpenVEX attestation**:
+
+```shell
+cosign verify-attestation \
+  --type openvex \
+  --certificate-identity-regexp '^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/(heads|tags)/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "$IMAGE_DIGEST" \
+  | jq -r .payload | base64 -d | jq .predicate > nvsentinel.openvex.json
+```
+
+**Scan the image with it**, so that the scanner leaves out the vulnerabilities in the document:
+
+```shell
+grype "$IMAGE_DIGEST" --vex nvsentinel.openvex.json
+trivy image --vex nvsentinel.openvex.json "$IMAGE_DIGEST"
+```
+
+Trivy can also find the attestation itself with `--vex oci`, but it does not verify the signature.
+
+The attestation holds the document as it was when the image was published. Statements added later are only in `.openvex.json` on `main`, which you can pass to the scanner in the same way.
 
 ### SLSA Build Provenance
 

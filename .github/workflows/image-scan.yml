@@ -13,13 +13,20 @@
 # limitations under the License.
 
 # Scans the latest images from main every week for known vulnerabilities, and reports the findings
-# as code scanning alerts in the Security tab, with one category for each image.
+# as code scanning alerts in the Security tab, with one category for each image. publish.yml also
+# calls it with the tag of each release, to scan the release images.
 name: Weekly Image Scan
 
 on:
   schedule:
     - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
   workflow_dispatch: {}
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to scan, for example v1.2.3. The caller checks out this tag.'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -40,27 +47,34 @@ jobs:
         with:
           persist-credentials: false
 
-      # Images from main are tagged main-<short commit>. Scan the images of the latest commit that
-      # published successfully. A manual run of publish.yml publishes the tag it is given instead, so
-      # only runs from a push count.
-      - name: Find the images of the latest publish from main
+      # Images from main are tagged main-<short commit>. Without a release tag, scan the images of the
+      # latest commit that published successfully. A manual run of publish.yml publishes the tag it is
+      # given instead, so only runs from a push count.
+      - name: Find the images
         id: images
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          sha=$(gh run list -R "${REPOSITORY}" --workflow publish.yml --branch main --event push \
-            --status success --limit 1 --json headSha --jq '.[0].headSha')
-          if [ -z "${sha}" ]; then
-            echo "::error::No successful run of publish.yml on main"
-            exit 1
+          if [ -n "${RELEASE_TAG}" ]; then
+            # The checkout is the release tag, so the image list is the one of the release.
+            tag=${RELEASE_TAG}
+          else
+            sha=$(gh run list -R "${REPOSITORY}" --workflow publish.yml --branch main --event push \
+              --status success --limit 1 --json headSha --jq '.[0].headSha')
+            if [ -z "${sha}" ]; then
+              echo "::error::No successful run of publish.yml on main"
+              exit 1
+            fi
+            # Read the image list from the published commit, in case a later commit adds or removes
+            # an image.
+            ./scripts/retry.sh git fetch -q --depth=1 origin "${sha}"
+            git checkout -q "${sha}" -- scripts/buildko.sh .github/workflows/publish.yml
+            tag="main-${sha:0:7}"
           fi
-          # Read the image list from the published commit, in case a later commit adds or removes an
-          # image.
-          ./scripts/retry.sh git fetch -q --depth=1 origin "${sha}"
-          git checkout -q "${sha}" -- scripts/buildko.sh .github/workflows/publish.yml
-          images=$(./scripts/retry.sh scripts/published-images.sh "main-${sha:0:7}")
+          images=$(./scripts/retry.sh scripts/published-images.sh "${tag}")
           echo "images=${images}" >> "${GITHUB_OUTPUT}"
           jq -r '.[] | "\(.ref) \(.size_mb) MB"' <<< "${images}"
 
