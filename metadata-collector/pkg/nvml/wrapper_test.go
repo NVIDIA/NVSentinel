@@ -32,7 +32,7 @@ func TestNvlinkPresentLinkCount(t *testing.T) {
 		outerRet  nvml.Return
 		fieldRet  nvml.Return
 		valueType nvml.ValueType
-		expected  *int
+		expected  *uint64
 	}{
 		{
 			name:      "zero on L40",
@@ -40,7 +40,7 @@ func TestNvlinkPresentLinkCount(t *testing.T) {
 			outerRet:  nvml.SUCCESS,
 			fieldRet:  nvml.SUCCESS,
 			valueType: nvml.VALUE_TYPE_UNSIGNED_INT,
-			expected:  intPtr(0),
+			expected:  uint64Ptr(0),
 		},
 		{
 			name:      "nonzero on H100",
@@ -48,7 +48,7 @@ func TestNvlinkPresentLinkCount(t *testing.T) {
 			outerRet:  nvml.SUCCESS,
 			fieldRet:  nvml.SUCCESS,
 			valueType: nvml.VALUE_TYPE_UNSIGNED_INT,
-			expected:  intPtr(18),
+			expected:  uint64Ptr(18),
 		},
 		{
 			name:      "outer call fails",
@@ -98,6 +98,6 @@ func TestNvlinkPresentLinkCount(t *testing.T) {
 	}
 }
 
-func intPtr(value int) *int {
+func uint64Ptr(value uint64) *uint64 {
 	return &value
 }
