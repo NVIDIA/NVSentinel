@@ -31,9 +31,10 @@ import (
 //
 // The window is per publish, not per shutdown: a connector that stays
 // wedged can consume one window per publish, and the pod's termination
-// grace period remains the outer bound. The chart leaves
-// terminationGracePeriodSeconds at the 30s default, and the rest of
-// shutdown (metrics server 5s grace, loops stopping) fits beside 10s.
+// grace period remains the outer bound. The chart renders
+// terminationGracePeriodSeconds as 30s with this window written into its
+// budget, and the rest of shutdown (metrics server 5s grace, loops
+// stopping) fits beside 10s.
 const defaultPublishDrain = 10 * time.Second
 
 // publishDrainContext returns the context a publish runs on: detached from
