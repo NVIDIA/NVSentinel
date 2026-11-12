@@ -260,7 +260,7 @@ Each field is written by a specific module at a specific pipeline stage:
 | `faultRemediated` | **fault-remediation** | `BoolValue` — `nil` (absent) = not yet processed; `true` = repair CR created and confirmed; `false` = repair failed or skipped |
 | `lastRemediationTimestamp` | **fault-remediation** | When the remediation CR was last created |
 | `spanIds` | **all modules** | Distributed tracing span IDs per service (e.g. `{"platform-connector": "abc123", "fault-quarantine": "def456"}`) |
-| `drainDecision` | **node-drainer** | The drain method chosen for the event. No module writes this field yet. See [ADR-064](designs/064-node-and-device-selection.md) |
+| `drainDecision` | **node-drainer** | The drain method chosen for the event. node-drainer writes `ruleSet`, `method` and `scope` once, only when no decision is stored, and before it reads or evicts pods or creates a custom drain CR. Every drain action follows the stored record. See [ADR-064](designs/064-node-and-device-selection.md) |
 | `remediationDecision` | **fault-remediation** | The remediation action chosen for the event, written before the log collector and the maintenance CR. See [ADR-064](designs/064-node-and-device-selection.md) |
 
 ### Drain and Remediation Decisions
@@ -272,6 +272,8 @@ Each field is written by a specific module at a specific pipeline stage:
 - `stopped`: true when a stop rule set matched.
 - `scope`: the entity type and value of a partial drain. Empty for a drain of the full node.
 - `reusedFrom`: the event of the quarantine session whose method this event uses. Empty when this event selected it.
+
+node-drainer writes `ruleSet`, `method` and `scope` before it acts. `ruleSet` is `custom-drain-node-selector` when `customDrain.nodeSelector` selects `Custom`. It is empty when the default method is used. `scope` is the entity of a partial drain. node-drainer writes no `scope` for a drain of the full node.
 
 `remediationDecision` is the remediation decision that fault-remediation records for an event before it acts:
 
