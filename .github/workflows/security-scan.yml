@@ -49,7 +49,7 @@ jobs:
 
   malware-scan:
     if: github.repository == 'nvidia/nvsentinel'
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu32
     timeout-minutes: 30
     permissions:
       contents: read

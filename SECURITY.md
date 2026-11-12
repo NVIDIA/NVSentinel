@@ -30,7 +30,7 @@ NVSentinel does not currently maintain long-term-support branches. Security and 
 Two scans check NVSentinel with [Grype](https://github.com/anchore/grype) and report each vulnerability that has a fix as a code scanning alert in the Security tab of the repository:
 
 - The daily scan checks the dependencies in the repository: the `go.mod` and `poetry.lock` file of each module.
-- The weekly scan checks the container images of the latest publish from `main`, including the packages of their base images. It does not scan the images of a release.
+- The weekly scan checks the container images of the latest publish from `main`, such as `ghcr.io/nvidia/nvsentinel/janitor:main-<sha>`, including the packages of their base images. It does not scan release images, such as `janitor:v1.22.0`.
 
 Grype compares the version of each package with its vulnerability database. It does not check whether NVSentinel calls the vulnerable code. For Go, both scans do more:
 
