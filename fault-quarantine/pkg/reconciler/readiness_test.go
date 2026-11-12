@@ -37,10 +37,25 @@ func (f fakeLagWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
 
 func (fakeLagWatcher) IsReady() bool { return true }
 
-type trippedStartupBreaker struct{}
+type trippedStartupBreaker struct {
+	entered chan struct{}
+	release chan struct{}
+}
 
-func (trippedStartupBreaker) AddCordonEvent(string)                           {}
-func (trippedStartupBreaker) IsTripped(context.Context) (bool, error)         { return true, nil }
+func (trippedStartupBreaker) AddCordonEvent(string) {}
+func (b trippedStartupBreaker) IsTripped(ctx context.Context) (bool, error) {
+	if b.entered != nil {
+		close(b.entered)
+	}
+	if b.release != nil {
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+		}
+	}
+
+	return true, nil
+}
 func (trippedStartupBreaker) ForceState(context.Context, breaker.State) error { return nil }
 func (trippedStartupBreaker) CurrentState() breaker.State                     { return breaker.StateTripped }
 func (trippedStartupBreaker) GetCursorMode(context.Context) (breaker.CursorMode, error) {
@@ -69,9 +84,10 @@ func TestReconciler_ReadinessChecker(t *testing.T) {
 func TestReadiness_DatastoreCanBeReadyWhileTrippedStartupHaltsRollout(t *testing.T) {
 	checker := server.NewDatastoreReadinessChecker(prometheus.NewRegistry())
 	checker.SetWatcher(fakeLagWatcher{})
+	cb := trippedStartupBreaker{entered: make(chan struct{}), release: make(chan struct{})}
 	r := &Reconciler{
 		config: ReconcilerConfig{CircuitBreakerEnabled: true},
-		cb:     trippedStartupBreaker{},
+		cb:     cb,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -79,12 +95,18 @@ func TestReadiness_DatastoreCanBeReadyWhileTrippedStartupHaltsRollout(t *testing
 	go func() { startupDone <- r.checkCircuitBreakerAtStartup(ctx) }()
 
 	select {
+	case <-cb.entered:
+	case <-time.After(time.Second):
+		t.Fatal("startup did not inspect the TRIPPED circuit breaker")
+	}
+	// Readiness reports datastore capability, not whether Fault Quarantine is dequeuing events.
+	require.NoError(t, checker.Ready(ctx))
+	close(cb.release)
+	select {
 	case err := <-startupDone:
 		t.Fatalf("TRIPPED startup should halt until cancellation, got %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	// Readiness reports datastore capability, not whether Fault Quarantine is dequeuing events.
-	require.NoError(t, checker.Ready(ctx))
 
 	cancel()
 	select {

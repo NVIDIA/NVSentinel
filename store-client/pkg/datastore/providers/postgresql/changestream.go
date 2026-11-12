@@ -125,7 +125,6 @@ type PostgreSQLChangeStreamWatcher struct {
 	listener           *pq.Listener // LISTEN connection for notifications
 	listenerConnected  bool
 	listenerSubscribed bool
-	listenerInitial    chan struct{}
 	pollReady          bool
 	readFailed         bool
 	catchUpPending     bool
@@ -210,34 +209,22 @@ func (w *PostgreSQLChangeStreamWatcher) markCatchUpPending() {
 	w.mu.Unlock()
 }
 
-func (w *PostgreSQLChangeStreamWatcher) signalListenerInitialState() {
-	if w.listenerInitial == nil {
-		return
-	}
-
-	select {
-	case w.listenerInitial <- struct{}{}:
-	default:
-	}
-}
-
 // NewPostgreSQLChangeStreamWatcher creates a new PostgreSQL change stream watcher
 func NewPostgreSQLChangeStreamWatcher(
 	db *sql.DB, clientName string, tableName string, connString string, mode ChangeStreamMode,
 ) *PostgreSQLChangeStreamWatcher {
 	return &PostgreSQLChangeStreamWatcher{
-		db:              db,
-		clientName:      clientName,
-		tableName:       tableName,
-		connString:      connString,
-		mode:            mode,
-		events:          make(chan datastore.EventWithToken, 100),
-		stopCh:          make(chan struct{}),
-		pollInterval:    10 * time.Millisecond, // Aggressive poll interval (used in polling and fallback modes)
-		listenerInitial: make(chan struct{}, 1),
-		recentEventIDs:  make(map[int64]time.Time),
-		wake:            make(chan struct{}, 1),
-		retryDelay:      fetchRetryDelay,
+		db:             db,
+		clientName:     clientName,
+		tableName:      tableName,
+		connString:     connString,
+		mode:           mode,
+		events:         make(chan datastore.EventWithToken, 100),
+		stopCh:         make(chan struct{}),
+		pollInterval:   10 * time.Millisecond, // Aggressive poll interval (used in polling and fallback modes)
+		recentEventIDs: make(map[int64]time.Time),
+		wake:           make(chan struct{}, 1),
+		retryDelay:     fetchRetryDelay,
 	}
 }
 
@@ -629,7 +616,6 @@ func (w *PostgreSQLChangeStreamWatcher) listenerEventCallback() pq.EventCallback
 				"status", "reconnected")
 		case pq.ListenerEventConnectionAttemptFailed:
 			w.setListenerConnected(false)
-			w.signalListenerInitialState()
 			slog.Error("LISTEN connection attempt failed",
 				"client", w.clientName,
 				"mode", w.mode,
@@ -713,7 +699,6 @@ func (w *PostgreSQLChangeStreamWatcher) subscribeListener(ctx context.Context, l
 	w.catchUpPending = true
 	w.catchUpGeneration++
 	w.mu.Unlock()
-	w.signalListenerInitialState()
 
 	return nil
 }
@@ -1209,14 +1194,9 @@ func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Conte
 		"client", w.clientName,
 		"initialInterval", checkInterval)
 
-	// On startup, wait for LISTEN to be subscribed or for its first connection attempt to fail
-	// before polling. The first path closes the setup gap with a subscribed listener; the second
-	// enables the polling fallback if LISTEN is unavailable.
-	if !w.waitForListenerInitialState(ctx, stopCh) {
-		return
-	}
-
-	// Establish readiness and catch up now that LISTEN is subscribed or unavailable.
+	// Poll immediately, without waiting for LISTEN setup. A stalled handshake must not hold up
+	// reads from the healthy query pool. Once LISTEN subscribes, its catch-up barrier drains rows
+	// visible across the setup gap.
 	if err := w.fetchNewChanges(ctx); err != nil {
 		slog.Error("Initial fallback poll failed", "client", w.clientName, "error", err)
 	}
@@ -1231,22 +1211,6 @@ func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Conte
 			w.pollAccordingToNotificationHealth(ctx, ticker, &checkInterval)
 		}
 	}
-}
-
-func (w *PostgreSQLChangeStreamWatcher) waitForListenerInitialState(ctx context.Context, stopCh <-chan struct{}) bool {
-	if w.listenerInitial == nil {
-		return true
-	}
-
-	select {
-	case <-w.listenerInitial:
-		return true
-	case <-ctx.Done():
-	case <-stopCh:
-	case <-w.stopCh:
-	}
-
-	return false
 }
 
 func (w *PostgreSQLChangeStreamWatcher) pollAccordingToNotificationHealth(
@@ -1376,6 +1340,8 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChangesFor(ctx context.Context, 
 	// since. Where moving up to the newest row is safe, that row is read before the poll.
 	headTS, headID, headKnown, err := w.readChangelogHead(ctx, w.mayMoveToNewestRow(reader, sqlFilterClause != ""))
 	if err != nil {
+		w.setPollReady(false)
+
 		return err
 	}
 

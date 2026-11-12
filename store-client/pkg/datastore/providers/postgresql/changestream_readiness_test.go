@@ -26,6 +26,8 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
 func TestHybridChangeStream_PollsWhileListenUnavailable(t *testing.T) {
@@ -130,6 +132,62 @@ func TestReadinessDoesNotWaitForLongCatchUp(t *testing.T) {
 	watcher.catchUpPending = true
 
 	require.True(t, watcher.IsReady(), "an active listener can report readiness while ordered catch-up drains")
+}
+
+func TestAdaptiveFallbackPoller_PollsWhileListenerSetupStalls(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "postgres://stalled", ModeHybrid)
+	mock.ExpectQuery(regexp.QuoteMeta(changelogQuery)).WillReturnRows(changelogRows())
+	mock.ExpectQuery(regexp.QuoteMeta(changelogQuery)).WillReturnRows(changelogRows())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watcher.adaptiveFallbackPoller(ctx, stopCh)
+	}()
+
+	// No listener subscription arrives, representing a stalled handshake. Polling still
+	// establishes readiness and repeats while LISTEN setup remains blocked.
+	require.Eventually(t, watcher.IsReady, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, 7*time.Second, 25*time.Millisecond)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("adaptive fallback poller did not stop after cancellation")
+	}
+}
+
+func TestFetchNewChanges_HeadReadFailureClearsReadiness(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	watcher.pipeline = client.NewPostgreSQLPipelineBuilder().BuildAllHealthEventInsertsPipeline()
+	watcher.lastNotifyTime = time.Now()
+	watcher.listenerConnected = true
+	watcher.listenerSubscribed = true
+
+	mock.ExpectQuery("SELECT changed_at, id FROM datastore_changelog").WillReturnError(sql.ErrConnDone)
+	require.Error(t, watcher.fetchNewChangesFor(context.Background(), fetchLoopReader))
+	require.False(t, watcher.IsReady(), "a head query failure means a fetch cannot be considered healthy")
+
+	mock.ExpectQuery(regexp.QuoteMeta(changelogQuery)).WillReturnRows(changelogRows())
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	interval := 30 * time.Second
+	watcher.pollAccordingToNotificationHealth(context.Background(), ticker, &interval)
+	require.True(t, watcher.IsReady(), "a later successful poll restores readiness")
+	require.Equal(t, 5*time.Second, interval, "a failed listener-side read must force fallback polling")
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestProcessNotification_ReconnectCatchesUpBeforeNewNotification(t *testing.T) {
