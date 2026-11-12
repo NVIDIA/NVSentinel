@@ -229,6 +229,8 @@ type HealthEventStatus struct {
 	FaultRemediated           *wrapperspb.BoolValue  `protobuf:"bytes,5,opt,name=faultRemediated,proto3" json:"faultRemediated,omitempty"`
 	LastRemediationTimestamp  *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=lastRemediationTimestamp,proto3" json:"lastRemediationTimestamp,omitempty"`
 	SpanIds                   map[string]string      `protobuf:"bytes,7,rep,name=spanIds,proto3" json:"spanIds,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	DrainDecision             *DrainDecision         `protobuf:"bytes,8,opt,name=drainDecision,proto3" json:"drainDecision,omitempty"`
+	RemediationDecision       *RemediationDecision   `protobuf:"bytes,9,opt,name=remediationDecision,proto3" json:"remediationDecision,omitempty"`
 	unknownFields             protoimpl.UnknownFields
 	sizeCache                 protoimpl.SizeCache
 }
@@ -312,6 +314,164 @@ func (x *HealthEventStatus) GetSpanIds() map[string]string {
 	return nil
 }
 
+func (x *HealthEventStatus) GetDrainDecision() *DrainDecision {
+	if x != nil {
+		return x.DrainDecision
+	}
+	return nil
+}
+
+func (x *HealthEventStatus) GetRemediationDecision() *RemediationDecision {
+	if x != nil {
+		return x.RemediationDecision
+	}
+	return nil
+}
+
+// DrainDecision is the drain decision that node-drainer records for an event before it acts.
+type DrainDecision struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Rule set that applies: the winner, or the rule set of the reusedFrom event. Empty for the default.
+	RuleSet string `protobuf:"bytes,1,opt,name=ruleSet,proto3" json:"ruleSet,omitempty"`
+	// BuiltIn or Custom. Empty when stopped.
+	Method  string `protobuf:"bytes,2,opt,name=method,proto3" json:"method,omitempty"`
+	Stopped bool   `protobuf:"varint,3,opt,name=stopped,proto3" json:"stopped,omitempty"`
+	// Entity type and value of a partial drain. Empty for a drain of the full node.
+	Scope *Entity `protobuf:"bytes,4,opt,name=scope,proto3" json:"scope,omitempty"`
+	// Event of the quarantine session whose method this event uses. Empty when this event selected it.
+	ReusedFrom    string `protobuf:"bytes,5,opt,name=reusedFrom,proto3" json:"reusedFrom,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DrainDecision) Reset() {
+	*x = DrainDecision{}
+	mi := &file_health_event_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DrainDecision) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DrainDecision) ProtoMessage() {}
+
+func (x *DrainDecision) ProtoReflect() protoreflect.Message {
+	mi := &file_health_event_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DrainDecision.ProtoReflect.Descriptor instead.
+func (*DrainDecision) Descriptor() ([]byte, []int) {
+	return file_health_event_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *DrainDecision) GetRuleSet() string {
+	if x != nil {
+		return x.RuleSet
+	}
+	return ""
+}
+
+func (x *DrainDecision) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *DrainDecision) GetStopped() bool {
+	if x != nil {
+		return x.Stopped
+	}
+	return false
+}
+
+func (x *DrainDecision) GetScope() *Entity {
+	if x != nil {
+		return x.Scope
+	}
+	return nil
+}
+
+func (x *DrainDecision) GetReusedFrom() string {
+	if x != nil {
+		return x.ReusedFrom
+	}
+	return ""
+}
+
+// RemediationDecision is the remediation decision that fault-remediation records for an event before it acts.
+type RemediationDecision struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Rule set that won. Empty when no rule set matched.
+	RuleSet string `protobuf:"bytes,1,opt,name=ruleSet,proto3" json:"ruleSet,omitempty"`
+	// Entry of maintenance.actions. Empty when stopped.
+	Action        string `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	Stopped       bool   `protobuf:"varint,3,opt,name=stopped,proto3" json:"stopped,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemediationDecision) Reset() {
+	*x = RemediationDecision{}
+	mi := &file_health_event_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemediationDecision) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemediationDecision) ProtoMessage() {}
+
+func (x *RemediationDecision) ProtoReflect() protoreflect.Message {
+	mi := &file_health_event_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemediationDecision.ProtoReflect.Descriptor instead.
+func (*RemediationDecision) Descriptor() ([]byte, []int) {
+	return file_health_event_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *RemediationDecision) GetRuleSet() string {
+	if x != nil {
+		return x.RuleSet
+	}
+	return ""
+}
+
+func (x *RemediationDecision) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *RemediationDecision) GetStopped() bool {
+	if x != nil {
+		return x.Stopped
+	}
+	return false
+}
+
 // HealthEventWithStatus combines HealthEvent and HealthEventStatus for CRD generation.
 type HealthEventWithStatus struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
@@ -324,7 +484,7 @@ type HealthEventWithStatus struct {
 
 func (x *HealthEventWithStatus) Reset() {
 	*x = HealthEventWithStatus{}
-	mi := &file_health_event_proto_msgTypes[2]
+	mi := &file_health_event_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -336,7 +496,7 @@ func (x *HealthEventWithStatus) String() string {
 func (*HealthEventWithStatus) ProtoMessage() {}
 
 func (x *HealthEventWithStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_health_event_proto_msgTypes[2]
+	mi := &file_health_event_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -349,7 +509,7 @@ func (x *HealthEventWithStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthEventWithStatus.ProtoReflect.Descriptor instead.
 func (*HealthEventWithStatus) Descriptor() ([]byte, []int) {
-	return file_health_event_proto_rawDescGZIP(), []int{2}
+	return file_health_event_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *HealthEventWithStatus) GetCreatedAt() *timestamppb.Timestamp {
@@ -383,7 +543,7 @@ type HealthEvents struct {
 
 func (x *HealthEvents) Reset() {
 	*x = HealthEvents{}
-	mi := &file_health_event_proto_msgTypes[3]
+	mi := &file_health_event_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -395,7 +555,7 @@ func (x *HealthEvents) String() string {
 func (*HealthEvents) ProtoMessage() {}
 
 func (x *HealthEvents) ProtoReflect() protoreflect.Message {
-	mi := &file_health_event_proto_msgTypes[3]
+	mi := &file_health_event_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -408,7 +568,7 @@ func (x *HealthEvents) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthEvents.ProtoReflect.Descriptor instead.
 func (*HealthEvents) Descriptor() ([]byte, []int) {
-	return file_health_event_proto_rawDescGZIP(), []int{3}
+	return file_health_event_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *HealthEvents) GetVersion() uint32 {
@@ -435,7 +595,7 @@ type Entity struct {
 
 func (x *Entity) Reset() {
 	*x = Entity{}
-	mi := &file_health_event_proto_msgTypes[4]
+	mi := &file_health_event_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -447,7 +607,7 @@ func (x *Entity) String() string {
 func (*Entity) ProtoMessage() {}
 
 func (x *Entity) ProtoReflect() protoreflect.Message {
-	mi := &file_health_event_proto_msgTypes[4]
+	mi := &file_health_event_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -460,7 +620,7 @@ func (x *Entity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Entity.ProtoReflect.Descriptor instead.
 func (*Entity) Descriptor() ([]byte, []int) {
-	return file_health_event_proto_rawDescGZIP(), []int{4}
+	return file_health_event_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Entity) GetEntityType() string {
@@ -503,7 +663,7 @@ type HealthEvent struct {
 
 func (x *HealthEvent) Reset() {
 	*x = HealthEvent{}
-	mi := &file_health_event_proto_msgTypes[5]
+	mi := &file_health_event_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -515,7 +675,7 @@ func (x *HealthEvent) String() string {
 func (*HealthEvent) ProtoMessage() {}
 
 func (x *HealthEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_health_event_proto_msgTypes[5]
+	mi := &file_health_event_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -528,7 +688,7 @@ func (x *HealthEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthEvent.ProtoReflect.Descriptor instead.
 func (*HealthEvent) Descriptor() ([]byte, []int) {
-	return file_health_event_proto_rawDescGZIP(), []int{5}
+	return file_health_event_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *HealthEvent) GetVersion() uint32 {
@@ -667,7 +827,7 @@ type BehaviourOverrides struct {
 
 func (x *BehaviourOverrides) Reset() {
 	*x = BehaviourOverrides{}
-	mi := &file_health_event_proto_msgTypes[6]
+	mi := &file_health_event_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -679,7 +839,7 @@ func (x *BehaviourOverrides) String() string {
 func (*BehaviourOverrides) ProtoMessage() {}
 
 func (x *BehaviourOverrides) ProtoReflect() protoreflect.Message {
-	mi := &file_health_event_proto_msgTypes[6]
+	mi := &file_health_event_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -692,7 +852,7 @@ func (x *BehaviourOverrides) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BehaviourOverrides.ProtoReflect.Descriptor instead.
 func (*BehaviourOverrides) Descriptor() ([]byte, []int) {
-	return file_health_event_proto_rawDescGZIP(), []int{6}
+	return file_health_event_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *BehaviourOverrides) GetForce() bool {
@@ -721,7 +881,7 @@ type HealthEventResource struct {
 
 func (x *HealthEventResource) Reset() {
 	*x = HealthEventResource{}
-	mi := &file_health_event_proto_msgTypes[7]
+	mi := &file_health_event_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -733,7 +893,7 @@ func (x *HealthEventResource) String() string {
 func (*HealthEventResource) ProtoMessage() {}
 
 func (x *HealthEventResource) ProtoReflect() protoreflect.Message {
-	mi := &file_health_event_proto_msgTypes[7]
+	mi := &file_health_event_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -746,7 +906,7 @@ func (x *HealthEventResource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthEventResource.ProtoReflect.Descriptor instead.
 func (*HealthEventResource) Descriptor() ([]byte, []int) {
-	return file_health_event_proto_rawDescGZIP(), []int{7}
+	return file_health_event_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *HealthEventResource) GetSpec() *HealthEvent {
@@ -771,7 +931,7 @@ const file_health_event_proto_rawDesc = "" +
 	"datamodels\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1egoogle/protobuf/wrappers.proto\x1aNgithub.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto\"C\n" +
 	"\x0fOperationStatus\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xdc\x04\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xf0\x05\n" +
 	"\x11HealthEventStatus\x12(\n" +
 	"\x0fnodeQuarantined\x18\x01 \x01(\tR\x0fnodeQuarantined\x12X\n" +
 	"\x19quarantineFinishTimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x19quarantineFinishTimestamp\x12S\n" +
@@ -779,10 +939,24 @@ const file_health_event_proto_rawDesc = "" +
 	"\x14drainFinishTimestamp\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x14drainFinishTimestamp\x12D\n" +
 	"\x0ffaultRemediated\x18\x05 \x01(\v2\x1a.google.protobuf.BoolValueR\x0ffaultRemediated\x12V\n" +
 	"\x18lastRemediationTimestamp\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x18lastRemediationTimestamp\x12D\n" +
-	"\aspanIds\x18\a \x03(\v2*.datamodels.HealthEventStatus.SpanIdsEntryR\aspanIds\x1a:\n" +
+	"\aspanIds\x18\a \x03(\v2*.datamodels.HealthEventStatus.SpanIdsEntryR\aspanIds\x12?\n" +
+	"\rdrainDecision\x18\b \x01(\v2\x19.datamodels.DrainDecisionR\rdrainDecision\x12Q\n" +
+	"\x13remediationDecision\x18\t \x01(\v2\x1f.datamodels.RemediationDecisionR\x13remediationDecision\x1a:\n" +
 	"\fSpanIdsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd9\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa5\x01\n" +
+	"\rDrainDecision\x12\x18\n" +
+	"\aruleSet\x18\x01 \x01(\tR\aruleSet\x12\x16\n" +
+	"\x06method\x18\x02 \x01(\tR\x06method\x12\x18\n" +
+	"\astopped\x18\x03 \x01(\bR\astopped\x12(\n" +
+	"\x05scope\x18\x04 \x01(\v2\x12.datamodels.EntityR\x05scope\x12\x1e\n" +
+	"\n" +
+	"reusedFrom\x18\x05 \x01(\tR\n" +
+	"reusedFrom\"a\n" +
+	"\x13RemediationDecision\x12\x18\n" +
+	"\aruleSet\x18\x01 \x01(\tR\aruleSet\x12\x16\n" +
+	"\x06action\x18\x02 \x01(\tR\x06action\x12\x18\n" +
+	"\astopped\x18\x03 \x01(\bR\astopped\"\xd9\x01\n" +
 	"\x15HealthEventWithStatus\x128\n" +
 	"\tcreatedAt\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\vhealthEvent\x18\x02 \x01(\v2\x17.datamodels.HealthEventR\vhealthEvent\x12K\n" +
@@ -862,51 +1036,56 @@ func file_health_event_proto_rawDescGZIP() []byte {
 }
 
 var file_health_event_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_health_event_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_health_event_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_health_event_proto_goTypes = []any{
 	(ProcessingStrategy)(0),       // 0: datamodels.ProcessingStrategy
 	(RecommendedAction)(0),        // 1: datamodels.RecommendedAction
 	(*OperationStatus)(nil),       // 2: datamodels.OperationStatus
 	(*HealthEventStatus)(nil),     // 3: datamodels.HealthEventStatus
-	(*HealthEventWithStatus)(nil), // 4: datamodels.HealthEventWithStatus
-	(*HealthEvents)(nil),          // 5: datamodels.HealthEvents
-	(*Entity)(nil),                // 6: datamodels.Entity
-	(*HealthEvent)(nil),           // 7: datamodels.HealthEvent
-	(*BehaviourOverrides)(nil),    // 8: datamodels.BehaviourOverrides
-	(*HealthEventResource)(nil),   // 9: datamodels.HealthEventResource
-	nil,                           // 10: datamodels.HealthEventStatus.SpanIdsEntry
-	nil,                           // 11: datamodels.HealthEvent.MetadataEntry
-	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
-	(*wrapperspb.BoolValue)(nil),  // 13: google.protobuf.BoolValue
-	(*emptypb.Empty)(nil),         // 14: google.protobuf.Empty
+	(*DrainDecision)(nil),         // 4: datamodels.DrainDecision
+	(*RemediationDecision)(nil),   // 5: datamodels.RemediationDecision
+	(*HealthEventWithStatus)(nil), // 6: datamodels.HealthEventWithStatus
+	(*HealthEvents)(nil),          // 7: datamodels.HealthEvents
+	(*Entity)(nil),                // 8: datamodels.Entity
+	(*HealthEvent)(nil),           // 9: datamodels.HealthEvent
+	(*BehaviourOverrides)(nil),    // 10: datamodels.BehaviourOverrides
+	(*HealthEventResource)(nil),   // 11: datamodels.HealthEventResource
+	nil,                           // 12: datamodels.HealthEventStatus.SpanIdsEntry
+	nil,                           // 13: datamodels.HealthEvent.MetadataEntry
+	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(*wrapperspb.BoolValue)(nil),  // 15: google.protobuf.BoolValue
+	(*emptypb.Empty)(nil),         // 16: google.protobuf.Empty
 }
 var file_health_event_proto_depIdxs = []int32{
-	12, // 0: datamodels.HealthEventStatus.quarantineFinishTimestamp:type_name -> google.protobuf.Timestamp
+	14, // 0: datamodels.HealthEventStatus.quarantineFinishTimestamp:type_name -> google.protobuf.Timestamp
 	2,  // 1: datamodels.HealthEventStatus.userPodsEvictionStatus:type_name -> datamodels.OperationStatus
-	12, // 2: datamodels.HealthEventStatus.drainFinishTimestamp:type_name -> google.protobuf.Timestamp
-	13, // 3: datamodels.HealthEventStatus.faultRemediated:type_name -> google.protobuf.BoolValue
-	12, // 4: datamodels.HealthEventStatus.lastRemediationTimestamp:type_name -> google.protobuf.Timestamp
-	10, // 5: datamodels.HealthEventStatus.spanIds:type_name -> datamodels.HealthEventStatus.SpanIdsEntry
-	12, // 6: datamodels.HealthEventWithStatus.createdAt:type_name -> google.protobuf.Timestamp
-	7,  // 7: datamodels.HealthEventWithStatus.healthEvent:type_name -> datamodels.HealthEvent
-	3,  // 8: datamodels.HealthEventWithStatus.healthEventStatus:type_name -> datamodels.HealthEventStatus
-	7,  // 9: datamodels.HealthEvents.events:type_name -> datamodels.HealthEvent
-	1,  // 10: datamodels.HealthEvent.recommendedAction:type_name -> datamodels.RecommendedAction
-	6,  // 11: datamodels.HealthEvent.entitiesImpacted:type_name -> datamodels.Entity
-	11, // 12: datamodels.HealthEvent.metadata:type_name -> datamodels.HealthEvent.MetadataEntry
-	12, // 13: datamodels.HealthEvent.generatedTimestamp:type_name -> google.protobuf.Timestamp
-	8,  // 14: datamodels.HealthEvent.quarantineOverrides:type_name -> datamodels.BehaviourOverrides
-	8,  // 15: datamodels.HealthEvent.drainOverrides:type_name -> datamodels.BehaviourOverrides
-	0,  // 16: datamodels.HealthEvent.processingStrategy:type_name -> datamodels.ProcessingStrategy
-	7,  // 17: datamodels.HealthEventResource.spec:type_name -> datamodels.HealthEvent
-	3,  // 18: datamodels.HealthEventResource.status:type_name -> datamodels.HealthEventStatus
-	5,  // 19: datamodels.PlatformConnector.HealthEventOccurredV1:input_type -> datamodels.HealthEvents
-	14, // 20: datamodels.PlatformConnector.HealthEventOccurredV1:output_type -> google.protobuf.Empty
-	20, // [20:21] is the sub-list for method output_type
-	19, // [19:20] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	14, // 2: datamodels.HealthEventStatus.drainFinishTimestamp:type_name -> google.protobuf.Timestamp
+	15, // 3: datamodels.HealthEventStatus.faultRemediated:type_name -> google.protobuf.BoolValue
+	14, // 4: datamodels.HealthEventStatus.lastRemediationTimestamp:type_name -> google.protobuf.Timestamp
+	12, // 5: datamodels.HealthEventStatus.spanIds:type_name -> datamodels.HealthEventStatus.SpanIdsEntry
+	4,  // 6: datamodels.HealthEventStatus.drainDecision:type_name -> datamodels.DrainDecision
+	5,  // 7: datamodels.HealthEventStatus.remediationDecision:type_name -> datamodels.RemediationDecision
+	8,  // 8: datamodels.DrainDecision.scope:type_name -> datamodels.Entity
+	14, // 9: datamodels.HealthEventWithStatus.createdAt:type_name -> google.protobuf.Timestamp
+	9,  // 10: datamodels.HealthEventWithStatus.healthEvent:type_name -> datamodels.HealthEvent
+	3,  // 11: datamodels.HealthEventWithStatus.healthEventStatus:type_name -> datamodels.HealthEventStatus
+	9,  // 12: datamodels.HealthEvents.events:type_name -> datamodels.HealthEvent
+	1,  // 13: datamodels.HealthEvent.recommendedAction:type_name -> datamodels.RecommendedAction
+	8,  // 14: datamodels.HealthEvent.entitiesImpacted:type_name -> datamodels.Entity
+	13, // 15: datamodels.HealthEvent.metadata:type_name -> datamodels.HealthEvent.MetadataEntry
+	14, // 16: datamodels.HealthEvent.generatedTimestamp:type_name -> google.protobuf.Timestamp
+	10, // 17: datamodels.HealthEvent.quarantineOverrides:type_name -> datamodels.BehaviourOverrides
+	10, // 18: datamodels.HealthEvent.drainOverrides:type_name -> datamodels.BehaviourOverrides
+	0,  // 19: datamodels.HealthEvent.processingStrategy:type_name -> datamodels.ProcessingStrategy
+	9,  // 20: datamodels.HealthEventResource.spec:type_name -> datamodels.HealthEvent
+	3,  // 21: datamodels.HealthEventResource.status:type_name -> datamodels.HealthEventStatus
+	7,  // 22: datamodels.PlatformConnector.HealthEventOccurredV1:input_type -> datamodels.HealthEvents
+	16, // 23: datamodels.PlatformConnector.HealthEventOccurredV1:output_type -> google.protobuf.Empty
+	23, // [23:24] is the sub-list for method output_type
+	22, // [22:23] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_health_event_proto_init() }
@@ -920,7 +1099,7 @@ func file_health_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_health_event_proto_rawDesc), len(file_health_event_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -266,7 +266,7 @@ global:
 
   # CSP Health Monitor - monitors cloud provider maintenance events
   # Detects scheduled maintenance windows from cloud provider APIs
-  # Supports: GCP (Compute Engine), AWS (EC2)
+  # Supports: GCP (Compute Engine), AWS (EC2), Akamai (LKE)
   # Requires: Cloud provider credentials configured
   cspHealthMonitor:
     enabled: false
@@ -783,6 +783,21 @@ fault-quarantine:
         key: "nvsentinel.dgxc.nvidia.com/nvcre-cert-failed"
         value: "true"
         effect: "NoSchedule"
+
+    # Example rule 7: Quarantine nodes with fatal health events analyzer errors
+    - enabled: true
+      version: "1"
+      name: "Health events analyzer fatal error ruleset"
+      match:
+        all:
+          - kind: "HealthEvent"
+            expression: "event.agent == 'health-events-analyzer' && event.isFatal == true"
+          - kind: "Node"
+            expression: |
+              !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+              !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
+      cordon:
+        shouldCordon: true
 
 ################################################################################
 # NODE-DRAINER MODULE CONFIGURATION

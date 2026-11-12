@@ -20,7 +20,7 @@ NVSentinel is built as a set of independent modules that coordinate through a sh
 
 - **GPU health monitor** watches for thermal issues, ECC errors, and XID events via DCGM
 - **Syslog health monitor** parses system logs for kernel panics, driver crashes, and NVLink errors
-- **CSP health monitor** polls cloud provider APIs (AWS, GCP, Azure, OCI) for scheduled maintenance and hardware events
+- **CSP health monitor** polls cloud provider APIs (AWS, GCP, Azure, OCI, Akamai Cloud) for scheduled maintenance and hardware events
 - **Kubernetes object monitor** evaluates CEL expressions against any Kubernetes resource to generate health events from custom signals
 
 **Platform connectors** receive health events via gRPC, validate them, persist them to the data store, and update Kubernetes node conditions.
@@ -64,7 +64,7 @@ NVSentinel is designed to work with any GPU supported by the NVIDIA GPU Operator
 
 ```bash
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.30.0 \
+  --version v1.31.0 \
   --namespace nvsentinel \
   --create-namespace
 ```
