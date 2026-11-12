@@ -74,3 +74,17 @@ tests:
       - equal:
           path: spec.activeDeadlineSeconds
           value: 1800
+
+  - it: rejects a non-numeric deadline instead of dropping it
+    set:
+      mongodb-store.job.activeDeadlineSeconds: soon
+    asserts:
+      - failedTemplate:
+          errorPattern: mongodb-store.job.activeDeadlineSeconds must be an integer
+
+  - it: rejects a negative deadline
+    set:
+      mongodb-store.job.activeDeadlineSeconds: -5
+    asserts:
+      - failedTemplate:
+          errorPattern: mongodb-store.job.activeDeadlineSeconds must be an integer

@@ -24,6 +24,32 @@ Nil/empty → 2592000. Strings must be base-10 digits in 0–2147483647 (int("ab
 {{- end }}
 
 {{/*
+activeDeadlineSeconds for a MongoDB setup Job. Takes a dict with "raw" (the
+configured value), "default" and "key" (the values path, for the error message).
+Nil/empty -> default. Strings must be base-10 digits (int("abc") is 0, which would
+silently drop the deadline). 0 is valid and means "no deadline": callers omit the field.
+*/}}
+{{- define "nvsentinel.jobActiveDeadlineSeconds" -}}
+{{- $raw := .raw -}}
+{{- if or (kindIs "invalid" $raw) (eq ($raw | toString) "") -}}
+{{- $raw = .default -}}
+{{- end -}}
+{{- if kindIs "string" $raw -}}
+{{- if not (regexMatch "^[0-9]+$" $raw) -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
+{{- if or (gt (len $raw) 10) (and (eq (len $raw) 10) (gt $raw "2147483647")) -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
+{{- end -}}
+{{- $v := int $raw -}}
+{{- if or (lt $v 0) (gt $v 2147483647) -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
+{{- $v -}}
+{{- end }}
+
+{{/*
 <release>-external-mongodb-setup-<ttl>-<scriptHash> so a TTL or init-script
 change is a new Job, not a patch on a completed one.
 */}}

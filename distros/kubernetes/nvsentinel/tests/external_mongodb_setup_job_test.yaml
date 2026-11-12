@@ -82,9 +82,9 @@ tests:
           path: spec.activeDeadlineSeconds
           value: 600
 
-  - it: takes the deadline from mongodb-store.job.activeDeadlineSeconds
+  - it: takes the deadline from global.datastore.setupJob.activeDeadlineSeconds
     set:
-      mongodb-store.job.activeDeadlineSeconds: 3600
+      global.datastore.setupJob.activeDeadlineSeconds: 3600
     asserts:
       - equal:
           path: spec.activeDeadlineSeconds
@@ -92,14 +92,36 @@ tests:
 
   - it: omits the deadline when set to 0
     set:
-      mongodb-store.job.activeDeadlineSeconds: 0
+      global.datastore.setupJob.activeDeadlineSeconds: 0
     asserts:
       - notExists:
           path: spec.activeDeadlineSeconds
 
   - it: omits the deadline when given the string "0"
     set:
-      mongodb-store.job.activeDeadlineSeconds: "0"
+      global.datastore.setupJob.activeDeadlineSeconds: "0"
     asserts:
       - notExists:
           path: spec.activeDeadlineSeconds
+
+  - it: ignores mongodb-store.job.activeDeadlineSeconds
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 3600
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 600
+
+  - it: rejects a non-numeric deadline instead of dropping it
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: soon
+    asserts:
+      - failedTemplate:
+          errorPattern: global.datastore.setupJob.activeDeadlineSeconds must be an integer
+
+  - it: rejects a negative deadline
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: -5
+    asserts:
+      - failedTemplate:
+          errorPattern: global.datastore.setupJob.activeDeadlineSeconds must be an integer

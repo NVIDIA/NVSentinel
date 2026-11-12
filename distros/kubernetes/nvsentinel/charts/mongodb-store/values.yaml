@@ -77,6 +77,9 @@ job:
   # Failed and is not re-created by Helm, so keep it long enough for cold nodes
   # where image pulls queue up before MongoDB can start.
   # Set to 0 to omit the deadline.
+  # Raising the value does not restart a Job that already failed: delete the
+  # Job (kubectl delete job -l app.kubernetes.io/name=create-mongodb-database)
+  # and run helm upgrade again.
   activeDeadlineSeconds: 1800
 
 # NetworkPolicy configuration
