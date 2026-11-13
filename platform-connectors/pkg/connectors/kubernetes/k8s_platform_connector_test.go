@@ -785,6 +785,163 @@ func TestGPUReplacementRecoveryClearsOldUUIDCondition(t *testing.T) {
 	assert.Empty(t, k8sConnector.aggregateEventMessages(messages, events))
 }
 
+func TestAggregateEventMessages_SameGPUUUID(t *testing.T) {
+	const (
+		uuid2 = "GPU-8614c5d9-371d-1d8a-9bab-78d0434427ec"
+		// uuidTwin shares the first 8 characters of uuid2, which is all that a
+		// UUID shortened by compaction keeps.
+		uuidTwin  = "GPU-8614c5d9-0000-0000-0000-000000000000"
+		gpu2Fault = "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:2 PCI:0000:45:00.0 GPU_UUID:" + uuid2 +
+			" GPU 2's NVLink link 8 is down Recommended Action=COMPONENT_RESET"
+		gpu5Fault = "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:5 PCI:0000:8b:00.0 " +
+			"GPU_UUID:GPU-5555aaaa-371d-1d8a-9bab-78d0434427ec GPU 5's NVLink link 8 is down " +
+			"Recommended Action=COMPONENT_RESET"
+		gpu2FaultNamesOtherCode = "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:2 PCI:0000:45:00.0 GPU_UUID:" + uuid2 +
+			" GPU 2's NVLink link 8 is down, ErrorCode:DCGM_FR_PCI_REPLAY_RATE was cleared " +
+			"Recommended Action=COMPONENT_RESET"
+		shortenedGPU2Fault = "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:2 PCI:0000:45:00.0 GPU_UUID:GPU-8614... ... " +
+			"Recommended Action=COMPONENT_RESET"
+		emptyUUIDFault = "ErrorCode:DCGM_FR_NVLINK_DOWN GPU:2 PCI:0000:45:00.0 GPU_UUID: " +
+			"GPU 2's NVLink link 8 is down Recommended Action=COMPONENT_RESET"
+		switchFault = "ErrorCode:12028 PCI:0000:c1:00.0 GPU_UUID:" + uuid2 + " link fault Recommended Action=RESTART_VM"
+		link8Fault  = "ErrorCode:12028 NVSWITCH:3 PCI:0000:c1:00.0 NVLINK:8 GPU:2 GPU_UUID:" + uuid2 +
+			" link fault Recommended Action=CONTACT_SUPPORT"
+		link9Fault = "ErrorCode:12028 NVSWITCH:3 PCI:0000:c1:00.0 NVLINK:9 GPU:2 GPU_UUID:" + uuid2 +
+			" link fault Recommended Action=CONTACT_SUPPORT"
+		link9FaultNamesLink8 = "ErrorCode:12028 NVSWITCH:3 PCI:0000:c1:00.0 NVLINK:9 GPU:2 GPU_UUID:" + uuid2 +
+			" link fault, peer NVLINK:8 is up Recommended Action=CONTACT_SUPPORT"
+	)
+
+	gpu := func(index, pci, uuid string) []*protos.Entity {
+		return []*protos.Entity{
+			{EntityType: "GPU", EntityValue: index},
+			{EntityType: "PCI", EntityValue: pci},
+			{EntityType: "GPU_UUID", EntityValue: uuid},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		class      string
+		errorCodes []string
+		entities   []*protos.Entity
+		messages   []string
+		expected   []string
+	}{
+		{
+			name:     "GPU index changed after reboot clears the fault of the same GPU",
+			entities: gpu("1", "0000:45:00.0", uuid2),
+			messages: []string{gpu2Fault},
+		},
+		{
+			name:     "PCI address changed clears the fault of the same GPU",
+			entities: gpu("2", "0000:46:00.0", uuid2),
+			messages: []string{gpu2Fault},
+		},
+		{
+			name:     "GPU index changed keeps the faults of other GPUs",
+			entities: gpu("1", "0000:45:00.0", uuid2),
+			messages: []string{gpu2Fault, gpu5Fault},
+			expected: []string{gpu5Fault},
+		},
+		{
+			name:     "other GPU now at the faulty GPU index keeps the fault",
+			entities: gpu("2", "0000:49:00.0", "GPU-77777777-371d-1d8a-9bab-78d0434427ec"),
+			messages: []string{gpu2Fault},
+			expected: []string{gpu2Fault},
+		},
+		{
+			name:     "shortened UUID is not matched by its prefix",
+			entities: gpu("4", "0000:85:00.0", uuidTwin),
+			messages: []string{shortenedGPU2Fault},
+			expected: []string{shortenedGPU2Fault},
+		},
+		{
+			name:     "shortened UUID entry still clears through GPU index and PCI address",
+			entities: gpu("2", "0000:45:00.0", uuid2),
+			messages: []string{shortenedGPU2Fault},
+		},
+		{
+			name:       "same UUID with a different error code keeps the fault",
+			errorCodes: []string{"DCGM_FR_PCI_REPLAY_RATE"},
+			entities:   gpu("1", "0000:45:00.0", uuid2),
+			messages:   []string{gpu2Fault},
+			expected:   []string{gpu2Fault},
+		},
+		{
+			name:       "same UUID with a matching error code clears the fault",
+			errorCodes: []string{"DCGM_FR_NVLINK_DOWN"},
+			entities:   gpu("1", "0000:45:00.0", uuid2),
+			messages:   []string{gpu2Fault},
+		},
+		{
+			name:       "error code named only in the diagnostic text does not match",
+			errorCodes: []string{"DCGM_FR_PCI_REPLAY_RATE"},
+			entities:   gpu("1", "0000:45:00.0", uuid2),
+			messages:   []string{gpu2FaultNamesOtherCode},
+			expected:   []string{gpu2FaultNamesOtherCode},
+		},
+		{
+			name:     "empty UUID does not match another GPU with an empty UUID",
+			entities: gpu("5", "0000:8b:00.0", ""),
+			messages: []string{emptyUUIDFault},
+			expected: []string{emptyUUIDFault},
+		},
+		{
+			name: "GPU index changed clears only the fault on the same NVLink",
+			entities: []*protos.Entity{
+				{EntityType: "NVSWITCH", EntityValue: "3"},
+				{EntityType: "PCI", EntityValue: "0000:c1:00.0"},
+				{EntityType: "NVLINK", EntityValue: "8"},
+				{EntityType: "GPU", EntityValue: "1"},
+				{EntityType: "GPU_UUID", EntityValue: uuid2},
+			},
+			messages: []string{link8Fault, link9Fault},
+			expected: []string{link9Fault},
+		},
+		{
+			name: "entity named only in the diagnostic text does not match",
+			entities: []*protos.Entity{
+				{EntityType: "NVSWITCH", EntityValue: "3"},
+				{EntityType: "PCI", EntityValue: "0000:c1:00.0"},
+				{EntityType: "NVLINK", EntityValue: "8"},
+				{EntityType: "GPU", EntityValue: "1"},
+				{EntityType: "GPU_UUID", EntityValue: uuid2},
+			},
+			messages: []string{link9FaultNamesLink8},
+			expected: []string{link9FaultNamesLink8},
+		},
+		{
+			name:  "non-GPU component class still requires every entity",
+			class: "NVSWITCH",
+			entities: []*protos.Entity{
+				{EntityType: "PCI", EntityValue: "0000:c0:00.0"},
+				{EntityType: "GPU_UUID", EntityValue: uuid2},
+			},
+			messages: []string{switchFault},
+			expected: []string{switchFault},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			class := tc.class
+			if class == "" {
+				class = "GPU"
+			}
+
+			events := []*protos.HealthEvent{{
+				ComponentClass:   class,
+				IsHealthy:        true,
+				ErrorCode:        tc.errorCodes,
+				EntitiesImpacted: tc.entities,
+			}}
+
+			assert.Equal(t, tc.expected, k8sConnector.aggregateEventMessages(slices.Clone(tc.messages), events))
+		})
+	}
+}
+
 func TestLegacyGPURecovery(t *testing.T) {
 	gpu0 := []*protos.Entity{
 		{EntityType: "GPU", EntityValue: "0"},
