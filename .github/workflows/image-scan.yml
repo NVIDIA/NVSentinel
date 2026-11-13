@@ -13,20 +13,16 @@
 # limitations under the License.
 
 # Scans the latest images from main every week for known vulnerabilities, and reports the findings
-# as code scanning alerts in the Security tab, with one category for each image. publish.yml also
-# calls it with the tag of each release, to scan the release images.
+# as code scanning alerts in the Security tab, with one category for each image. On a tag, it scans
+# the images of that tag instead: publish.yml calls it on each release tag, and a manual run on a
+# tag scans that release again.
 name: Weekly Image Scan
 
 on:
   schedule:
     - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
   workflow_dispatch: {}
-  workflow_call:
-    inputs:
-      tag:
-        description: 'Release tag to scan, for example v1.2.3. The caller checks out this tag.'
-        required: true
-        type: string
+  workflow_call: {}
 
 permissions:
   contents: read
@@ -55,7 +51,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           set -euo pipefail
           if [ -n "${RELEASE_TAG}" ]; then

@@ -250,8 +250,6 @@ jobs:
       actions: read
       security-events: write
     uses: ./.github/workflows/image-scan.yml
-    with:
-      tag: ${{ github.ref_name }}
 
   e2e-test:
     if: github.repository == 'nvidia/nvsentinel'
