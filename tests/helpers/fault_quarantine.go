@@ -256,6 +256,7 @@ func applyNodeLabelsBeforeRestart(ctx context.Context, t *testing.T, client klie
 		} else {
 			err = SetNodeLabel(ctx, client, nodeName, key, value)
 		}
+
 		require.NoError(t, err)
 	}
 
