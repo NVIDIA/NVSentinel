@@ -106,7 +106,9 @@ node.status.allocatable.exists(r,
   : -1
 ```
 
-GFD writes its labels as [one set](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/internal/lm/output.go#L90-L171) that NFD applies [in one patch](https://github.com/kubernetes-sigs/node-feature-discovery/blob/v0.20.1/pkg/nfd-master/nfd-master.go#L1218-L1232), so the product test and the count agree. The test also covers `-MIG-INVALID`, set with a count of 0 [when the layout does not fit the single strategy](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/internal/lm/mig-strategy.go#L193-L239). A skipped node teaches nobody, keeps its labels, and counts in `labeler_device_count_skipped_updates_total` as `missing_source`.
+GFD writes its labels as [one set](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/internal/lm/output.go#L90-L171) that NFD applies [in one patch](https://github.com/kubernetes-sigs/node-feature-discovery/blob/v0.20.1/pkg/nfd-master/nfd-master.go#L1218-L1232), so the product test and the count agree. The test also covers `-MIG-INVALID`, set with a count of 0 [when the layout does not fit the single strategy](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/internal/lm/mig-strategy.go#L193-L239). A skipped node teaches nobody and counts in `labeler_device_count_skipped_updates_total` as `missing_source`.
+
+A count that such a node keeps stays live for the [ADR-043 policy](043-expected-device-count-labels.md#consumer-policy). A node that entered MIG short of a GPU stays matched after the GPU returns. A policy added later requests `RESTART_VM` for that old shortfall. The class therefore sets a new field, `uncountedExpression`, that is true while the device plugin advertises GPUs and the product contains `-MIG-`. When no source applies and it returns true, the labeler removes `current` and keeps `expected` and the relearn record's partition annotation. The policy needs both labels, so it stops matching, and the Kubernetes Object Monitor publishes a healthy event for a node it had matched. A source that is only absent for a while, such as a restarting device plugin, keeps both labels, as ADR-043 requires.
 
 ### If the instance check is wanted
 
@@ -148,7 +150,7 @@ Phase two uses a convention, not a parent field. An event about an instance list
 - A fleet that latched the instance count, as the #1914 fleet did, recovers through the relearn instead of a pinned override.
 - The labeler change needs the relearn record's partition rule. Without it, a node that leaves MIG carries its instance count back to the plain partition.
 - That change alters chart defaults and label values on MIG nodes on purpose, to match the chart comment that the class counts physical GPUs. The maintainers own that choice.
-- A node with DRA MIG rises to its GPU count, which the labeler learns without help. A single strategy node with MIG active is no longer counted and keeps its labels until removed.
+- A node with DRA MIG rises to its GPU count, which the labeler learns without help. A single strategy node with MIG active is no longer counted, and the labeler removes its `current` label.
 - A deployment with its own `classes` list keeps its expressions, and the docs give the new ones. No label or Helm key is renamed or removed, as `AGENTS.md` requires.
 
 ## Rationale
@@ -172,7 +174,7 @@ The kernel XID line has a [form with `GPU-I` and `GPU-CI`](https://github.com/NV
 
 ### Negative
 
-- The single strategy, the GPU Operator default, has no GPU count until question 3 is answered. With chart defaults its nodes get no GPU count labels.
+- The single strategy, the GPU Operator default, has no GPU count until question 3 is answered. With chart defaults its nodes carry no `current` GPU count label, so a shortfall flagged before MIG is cleared.
 - The labeler logs a warning at each reconcile of a skipped node.
 - The DRA driver does not publish a GPU in MIG mode [that has no instances](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/v0.5.1/site/content/docs/concepts/gpu-allocation.md?plain=1#L70-L72), so that GPU counts as missing. Its slices keep listing old instances until the kubelet plugin restarts.
 - Until the layout is restored, a reset leaves a GPU in MIG mode without instances. Under the single strategy the whole node then offers no MIG device.
@@ -217,7 +219,7 @@ The GPU class keeps counting instances under the single strategy, and the partit
 
 ### Follow-up PRs
 
-1. The labeler's GPU class counts GPUs, with the expressions above in `values.yaml`, `values-full.yaml` and the labeler docs, and a test for each MIG form.
+1. The labeler gains `uncountedExpression`. Its GPU class counts GPUs, with the expressions above in `values.yaml`, `values-full.yaml` and the labeler docs, and a test for each MIG form.
 2. The metadata collector records the instances of each GPU in `gpu_metadata.json`.
 3. The metadata collector writes parent GPU UUIDs into the pod device annotation, one release before the next item.
 4. Node-drainer learns the MIG resource names and DeviceClass for partial drains.
