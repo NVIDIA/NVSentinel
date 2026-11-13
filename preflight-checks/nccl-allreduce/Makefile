@@ -22,7 +22,6 @@ include ../../make/common.mk
 include ../../make/python.mk
 include ../../make/docker.mk
 
-PYTORCH_VERSION ?= 26.09-py3@sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6
 IMAGE_NAME := preflight-nccl-allreduce
 
 .PHONY: all
@@ -84,7 +83,6 @@ docker-build: setup-buildx
 		--platform $(PLATFORMS) \
 		-f $(MODULE_PATH)/Dockerfile \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(IMAGE_NAME):$(SAFE_REF_NAME) \
-		--build-arg PYTORCH_VERSION=$(PYTORCH_VERSION) \
 		--network=host \
 		$(DOCKER_LOAD_ARG) \
 		.
@@ -95,7 +93,6 @@ docker-publish: setup-buildx
 		--platform $(PLATFORMS) \
 		-f $(MODULE_PATH)/Dockerfile \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(IMAGE_NAME):$(SAFE_REF_NAME) \
-		--build-arg PYTORCH_VERSION=$(PYTORCH_VERSION) \
 		--network=host \
 		--push \
 		.

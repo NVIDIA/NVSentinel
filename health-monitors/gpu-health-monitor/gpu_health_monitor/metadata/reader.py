@@ -263,6 +263,28 @@ class MetadataReader:
         log.debug(f"GPU {gpu_id} not found in metadata")
         return NVLinkDownExpectation.UNKNOWN
 
+    def has_verified_no_nvlink_hardware(self, gpu_id: int) -> bool:
+        """Return True only when field 91 explicitly reports zero NVLinks."""
+        self._ensure_loaded()
+
+        if not self._metadata:
+            return False
+
+        gpus = self._metadata.get("gpus", [])
+        for gpu in gpus:
+            if gpu.get("gpu_id") != gpu_id:
+                continue
+
+            present = self._as_link_count(
+                gpu.get("nvlink_present_link_count"),
+                gpu_id,
+                "nvlink_present_link_count",
+            )
+            return present == 0
+
+        log.debug(f"GPU {gpu_id} not found in metadata")
+        return False
+
     def get_chassis_serial(self) -> Optional[str]:
         """Get chassis serial number.
 

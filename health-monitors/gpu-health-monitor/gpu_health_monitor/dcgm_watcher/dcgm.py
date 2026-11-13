@@ -41,6 +41,12 @@ DCGM_IMEX_UNHEALTHY_ERROR_CODE = 122
 # severity and recovery handling before this watch can be enabled safely.
 DCGM_CONNECTX_HEALTH_WATCH_BIT = 0x1000
 
+NVLINK_ABSENCE_SUPPRESSIBLE_ERROR_CODES = frozenset(
+    {
+        "DCGM_FR_NVLINK_DOWN",
+        "DCGM_FR_FABRIC_PROBE_STATE",
+    }
+)
 # Names of the groups that the monitor creates on the hostengine. Only one monitor
 # connects to each hostengine, so a group with one of these names that is already
 # there belongs to an earlier connection of the monitor.
@@ -494,11 +500,12 @@ class DCGMWatcher:
             if had_failures and not details.entity_failures:
                 details.status = types.HealthStatus.PASS
 
-    def _is_nvlink_down_false_positive(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
-        """Return True when a DCGM_FR_NVLINK_DOWN incident is a false positive
-        because all NVLink links down is expected steady state for this GPU.
+    def _is_nvlink_absence_false_positive(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
+        """Return True when an NVLink-watch incident is a false positive because
+        this GPU has no NVLink hardware.
 
-        Two expected-down cases exist (see MetadataReader.classify_nvlink_down):
+        DCGM_FR_NVLINK_DOWN has two expected-down cases (see
+        MetadataReader.classify_nvlink_down):
           - NO_NVLINK_HARDWARE (L40, A40): unambiguous, always suppressed.
           - UNBRIDGED_PCIE (A100/H100 PCIe with zero active links): from
             metadata alone this is indistinguishable from a card whose NVLink
@@ -506,22 +513,38 @@ class DCGMWatcher:
             ONLY when the operator has explicitly asserted the fleet runs
             unbridged PCIe cards (--suppress-nvlink-down-unbridged-pcie).
 
+        DCGM_FR_FABRIC_PROBE_STATE is also meaningless on GPUs with no NVLink
+        silicon (for example, DCGM cannot query fabric state on an L40). It
+        is suppressed only for the unambiguous NO_NVLINK_HARDWARE case.
+
         The check runs per incident (not on the aggregated entity failure) so
-        a genuine non-NVLINK_DOWN incident on the same GPU and watch is never
-        dropped alongside the false positive.
+        a genuine incident under another error code on the same GPU and watch
+        is never dropped alongside the false positive.
 
         Fails closed: when the expectation cannot be established (no metadata
         reader, metadata unavailable, GPU not found, malformed counts, or an
         SXM system whose links may simply not have trained yet) the incident
         is never suppressed.
         """
-        if watch_name != "DCGM_HEALTH_WATCH_NVLINK" or error_code != "DCGM_FR_NVLINK_DOWN":
+        if watch_name != "DCGM_HEALTH_WATCH_NVLINK" or error_code not in NVLINK_ABSENCE_SUPPRESSIBLE_ERROR_CODES:
             return False
 
         if self._metadata_reader is None:
             return False
 
         expectation = self._metadata_reader.classify_nvlink_down(gpu_id)
+
+        if error_code == "DCGM_FR_FABRIC_PROBE_STATE":
+            if (
+                expectation is NVLinkDownExpectation.NO_NVLINK_HARDWARE
+                and self._metadata_reader.has_verified_no_nvlink_hardware(gpu_id)
+            ):
+                log.info(f"Suppressing DCGM_FR_FABRIC_PROBE_STATE for GPU {gpu_id}: {expectation.value}")
+                metrics.dcgm_health_check_suppressed_incidents.labels(
+                    f"DCGM_FR_FABRIC_PROBE_STATE_{expectation.value.upper()}"
+                ).inc()
+                return True
+            return False
 
         if expectation is NVLinkDownExpectation.NVLINK_IN_USE:
             return False
@@ -777,7 +800,7 @@ class DCGMWatcher:
                 # Per-incident suppression: a suppressed incident must neither
                 # degrade the watch status nor land in the accumulator, while
                 # other incidents on the same GPU and watch are kept.
-                if entity_group_id == dcgm_fields.DCGM_FE_GPU and self._is_nvlink_down_false_positive(
+                if entity_group_id == dcgm_fields.DCGM_FE_GPU and self._is_nvlink_absence_false_positive(
                     watch_name, entity_id, error_code
                 ):
                     continue
