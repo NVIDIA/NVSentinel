@@ -30,6 +30,13 @@ const (
 	DrainStatusDrained   = "drained"
 	DrainStatusCancelled = "cancelled"
 	DrainStatusSkipped   = "skipped"
+
+	// ProcessingErrors error_type values for a recorded drain method that cannot be carried out.
+	// The method stays as recorded. node-drainer waits and tries again.
+	ErrorTypeRecordedCustomDrainUnavailable = "recorded_custom_drain_unavailable"
+	ErrorTypeRecordedBuiltInNoPodPolicies   = "recorded_builtin_no_pod_policies"
+	ErrorTypeRecordedDrainMethodUnknown     = "recorded_drain_method_unknown"
+	ErrorTypeRecordDrainDecision            = "record_drain_decision_error"
 )
 
 var (
