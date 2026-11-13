@@ -24,7 +24,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
@@ -452,18 +454,37 @@ func (b *slidingWindowBreaker) getTotalNodes(ctx context.Context) (int, error) {
 	return totalNodes, nil
 }
 
-// isTrippedByRecentCordons is called when no GPU nodes are counted. It trips if the window
-// holds any cordon, since that means gpuNodeLabel does not match the nodes being
-// quarantined. Otherwise the breaker stays CLOSED.
+// isTrippedByRecentCordons is called when no GPU nodes are counted. It trips if a node cordoned
+// in the window is still in the cluster, since that means gpuNodeLabel does not match the nodes
+// being quarantined. A cordoned node that has since been deleted is not evidence of that:
+// replacing the last GPU node after quarantining it leaves a cordon in the window and no GPU
+// nodes. Otherwise the breaker stays CLOSED.
 func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bool, error) {
 	b.mu.Lock()
 	b.slideWindow(time.Now())
-	recentCordonedNodes := b.sumBuckets()
+	recentCordonedNodes := slices.Collect(maps.Keys(b.nodeToIndex))
 	b.mu.Unlock()
 
 	metrics.SetFaultQuarantineBreakerThresholdNodes(1, string(boundNoGPUNodes))
 
-	if recentCordonedNodes == 0 {
+	presentNode := ""
+
+	for _, name := range recentCordonedNodes {
+		exists, err := b.cfg.K8sClient.NodeExists(ctx, name)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to check whether a cordoned node exists", "node", name, "error", err)
+
+			return false, fmt.Errorf("failed to check whether node %s exists: %w", name, err)
+		}
+
+		if exists {
+			presentNode = name
+
+			break
+		}
+	}
+
+	if presentNode == "" {
 		metrics.SetFaultQuarantineBreakerUtilization(0)
 		metrics.SetFaultQuarantineBreakerState(string(StateClosed))
 
@@ -471,7 +492,7 @@ func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bo
 	}
 
 	slog.ErrorContext(ctx, "Circuit breaker: nodes were cordoned but no GPU nodes are counted; tripping",
-		"recentCordonedNodes", recentCordonedNodes)
+		"recentCordonedNodes", len(recentCordonedNodes), "node", presentNode)
 
 	if err := b.ForceState(ctx, StateTripped); err != nil {
 		return true, fmt.Errorf("error forcing circuit breaker state to TRIPPED: %w", err)

@@ -194,6 +194,20 @@ func (c *FaultQuarantineClient) GetCordonedNodes(ctx context.Context) (int, erro
 	return len(quarantinedNodes), nil
 }
 
+// NodeExists reports whether the node is in the NodeInformer cache.
+func (c *FaultQuarantineClient) NodeExists(ctx context.Context, name string) (bool, error) {
+	_, err := c.NodeInformer.GetNode(name)
+	if errors.IsNotFound(err) {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("failed to get node %s from informer: %w", name, err)
+	}
+
+	return true, nil
+}
+
 func (c *FaultQuarantineClient) SetLabelKeys(cordonedReasonKey, uncordonedReasonKey string) {
 	c.cordonedReasonLabelKey = cordonedReasonKey
 	c.uncordonedReasonLabelKey = uncordonedReasonKey
