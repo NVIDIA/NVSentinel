@@ -33,7 +33,7 @@ usePerconaOperator: false
 
 # TTL expireAfterSeconds. Default 2592000 (30d); production often 604800 (7d).
 # Also used for external Mongo. Unset/null → 2592000 (int(nil) is 0, immediate expiry).
-# Job name is create-mongodb-database-<seconds>-<scriptHash> (-l app.kubernetes.io/name=create-mongodb-database).
+# Job name is create-mongodb-database-<seconds>-<hash> (-l app.kubernetes.io/name=create-mongodb-database).
 collectionExpirySeconds: 2592000
 
 # PVC size. Default 8Gi is for development.

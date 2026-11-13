@@ -141,12 +141,17 @@ Direct-connection hostnames for replSetResizeOplog (must run on every member).
 {{- end }}
 
 {{/*
-create-mongodb-database-<ttl>-<scriptHash> so a TTL, oplog size, or init-script
-change is a new Job, not a patch on a completed one.
+create-mongodb-database-<ttl>-<hash> so a TTL, oplog size or pod template change
+is a new Job, not a patch on a completed one. The hash has two inputs:
+- the rendered pod template (mongodb-store.initJobPodTemplate in jobs.yaml),
+  because spec.template of a Job is immutable. It also contains the init and
+  oplog scripts and the replica-member list.
+- oplogSizeMB, because it reaches the Job only through the mongodb-config
+  ConfigMap, not the pod template.
 */}}
 {{- define "mongodb-store.initJobName" -}}
 {{- $ttl := include "mongodb-store.collectionExpirySeconds" . | toString -}}
-{{- $hash := printf "%s\n%s\n%s\n%s\n%s" (include "mongodb-store.oplogSizeMB" .) (include "mongodb-store.oplogMemberHosts" .) (include "mongodb-store.initEval" .) (include "mongodb-store.oplogEval" .) (include "mongodb-store.oplogResizeEnabled" .) | sha256sum | trunc 8 -}}
+{{- $hash := printf "%s\n%s" (include "mongodb-store.oplogSizeMB" .) (include "mongodb-store.initJobPodTemplate" .) | sha256sum | trunc 8 -}}
 {{- printf "create-mongodb-database-%s-%s" $ttl $hash | trunc 63 -}}
 {{- end }}
 

@@ -72,7 +72,7 @@ kubectl get job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 If the MongoDB job needs to be rerun:
 
 ```bash
-# Delete by label (name is create-mongodb-database-<seconds>-<scriptHash>), then re-sync / helm upgrade
+# Delete by label (name is create-mongodb-database-<seconds>-<hash>), then re-sync / helm upgrade
 kubectl delete job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 ```
 
