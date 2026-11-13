@@ -125,6 +125,16 @@ def _entities(identity: EntityIdentity) -> list[platformconnector_pb2.Entity]:
     return [platformconnector_pb2.Entity(entityType=entity_type, entityValue=value) for entity_type, value in identity]
 
 
+def _names_same_gpu(identity: EntityIdentity, published: EntityIdentity) -> bool:
+    """True when no entity type has one value in identity and another in published.
+
+    A PCI address or UUID that the metadata lookup did not find, now or when
+    the fault was published, does not count as another GPU.
+    """
+    published_values = dict(published)
+    return all(published_values.get(entity_type, value) == value for entity_type, value in identity)
+
+
 @dataclasses.dataclass
 class EntityCacheEntry:
     active_errors: set[str] = dataclasses.field(default_factory=set)
@@ -764,11 +774,20 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             identity = _entity_identity(entities_impacted)
 
                             entry = pending_cache_updates.get(key, self.entity_cache.get(key))
-                            if entry is None or failure_details.code not in entry.active_errors:
+                            active = entry is not None and failure_details.code in entry.active_errors
+                            published = entry.error_entities.get(failure_details.code, []) if active else []
+                            # An active fault is published again when the metadata file now names another
+                            # GPU at this index, so remediation acts on the GPU that is there. The events
+                            # published before stay active until the fault clears: fault-quarantine and the
+                            # node condition clear a GPU fault by index and PCI address, so a recovery for
+                            # the old GPU could also clear the new event.
+                            if not active or (
+                                published and not any(_names_same_gpu(identity, before) for before in published)
+                            ):
                                 existing_errors = set(entry.active_errors) if entry else set()
                                 existing_errors.add(failure_details.code)
                                 error_entities = dict(entry.error_entities) if entry else {}
-                                error_entities[failure_details.code] = [identity]
+                                error_entities[failure_details.code] = [*published, identity]
                                 pending_cache_updates[key] = EntityCacheEntry(
                                     active_errors=existing_errors, error_entities=error_entities
                                 )

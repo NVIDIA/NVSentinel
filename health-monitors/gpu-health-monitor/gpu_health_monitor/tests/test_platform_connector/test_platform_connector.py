@@ -1627,6 +1627,46 @@ class TestPlatformConnectors(unittest.TestCase):
         # Then the GPU recovers.
         assert faults[0] in [entities(event) for event in poll(None)]
 
+    def test_health_event_fault_is_published_again_for_the_gpu_in_rewritten_metadata(self) -> None:
+        """A fault that lasts across the rewrite is published again for the board now in slot 0, so a GPU
+        reset goes to that board. A copy without a UUID or PCI address for slot 0 names no other board.
+        The event for the old board is not recovered while the fault lasts: fault-quarantine and the node
+        condition clear a GPU fault by index and PCI address, so that recovery would also clear the new
+        event. When the fault clears, both events are recovered."""
+        rewrite, poll = self._processor_on_metadata(
+            self._metadata_with_gpus(
+                (0, "GPU-aaaaaaaa-0000-0000-0000-000000000000", "0000:17:00.0"),
+                (1, "GPU-bbbbbbbb-0000-0000-0000-000000000000", "0000:2a:00.0"),
+            ),
+            gpu_ids=[0, 1],
+        )
+        poll(0)
+        rewrite(
+            self._metadata_with_gpus(
+                (0, "GPU-cccccccc-0000-0000-0000-000000000000", "0000:17:00.0"),
+                (1, "GPU-bbbbbbbb-0000-0000-0000-000000000000", "0000:2a:00.0"),
+            )
+        )
+
+        def uuid(event: platformconnector_pb2.HealthEvent) -> str | None:
+            uuids = [entity.entityValue for entity in event.entitiesImpacted if entity.entityType == "GPU_UUID"]
+            return uuids[0] if uuids else None
+
+        events = poll(0)
+        assert len(events) == 1 and not events[0].isHealthy, events
+        assert uuid(events[0]) == "GPU-cccccccc-0000-0000-0000-000000000000"
+        assert events[0].recommendedAction == platformconnector_pb2.COMPONENT_RESET
+
+        rewrite(self._metadata_with_gpus((0, "", ""), (1, "GPU-bbbbbbbb-0000-0000-0000-000000000000", "0000:2a:00.0")))
+        assert poll(0) == []
+
+        recoveries = poll(None)
+        assert all(event.isHealthy for event in recoveries)
+        assert sorted(uuid(event) for event in recoveries) == [
+            "GPU-aaaaaaaa-0000-0000-0000-000000000000",
+            "GPU-cccccccc-0000-0000-0000-000000000000",
+        ]
+
     def test_health_event_poll_checks_metadata_file_once(self) -> None:
         """A poll looks up every GPU once per watch but checks the metadata file only once."""
         with self._running_connector() as (servicer, processor):
