@@ -660,6 +660,34 @@
     },
     {
       "vulnerability": {
+        "name": "CVE-2026-82560"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libperl5.38t64@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/perl-modules-5.38@5.38.2-3.2ubuntu0.6?arch=all&distro=ubuntu-24.04&upstream=perl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/perl@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). perl comes with the base image. The check never runs perl. The nccl-tests binary, NCCL and the CUDA runtime do not load libperl."
+    },
+    {
+      "vulnerability": {
         "name": "CVE-2026-85091"
       },
       "timestamp": "2026-11-13T00:00:00Z",
@@ -1721,6 +1749,44 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
       "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). This pip is bundled inside Nsight Systems in the PyTorch base image. The check never runs Nsight Systems or pip."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-wqgw-9xfh-qf2g"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-xcvg-w56q-r89m"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
     },
     {
       "vulnerability": {
