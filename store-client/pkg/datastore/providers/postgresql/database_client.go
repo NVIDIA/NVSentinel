@@ -1018,6 +1018,10 @@ func (c *PostgreSQLDatabaseClient) NewChangeStreamWatcher(
 	// c.connString is populated via NewPostgreSQLDatabaseClientWithConnString()
 	watcher := NewPostgreSQLChangeStreamWatcher(c.db, tokenConfig.ClientName, c.tableName, c.connString, ModeHybrid)
 
+	if err := watcher.initializeResumePosition(ctx); err != nil {
+		return nil, fmt.Errorf("initialize PostgreSQL watcher position: %w", err)
+	}
+
 	// Apply pipeline filter if provided
 	// Two-layer filtering:
 	// 1. Server-side: SQL WHERE clause (built from w.pipeline in fetchNewChanges)
