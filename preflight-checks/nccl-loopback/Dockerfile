@@ -73,16 +73,6 @@ ARG NCCL_TESTS_VERSION
 
 RUN rm -f /usr/local/bin/uv /usr/local/bin/uvx
 
-# Upgrade the packages of the base image that have a critical or high vulnerability with a fix. Only
-# the named packages are upgraded, so the CUDA and NCCL packages of the base image do not change.
-# pillow 13.0.0 is not in the pip constraints of the base image, and torchvision accepts it.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends --only-upgrade \
-        apt apt-utils libapt-pkg6.0t64 curl libcurl3t64-gnutls libcurl4t64 libpcre2-8-0 \
-        openssh-client zlib1g zlib1g-dev libbrotli1 libcares2 \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir pillow==13.0.0
-
 # Build nccl-tests from source
 # Uses NCCL bundled with PyTorch image for version compatibility
 # NVCC_GENCODE targets modern data center GPUs:
