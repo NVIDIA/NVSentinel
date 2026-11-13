@@ -79,7 +79,12 @@ userNamespaces:
   - name: "*"
     # Eviction mode determines how pods are evicted:
     # - "Immediate": Pod is evicted immediately without waiting for graceful termination
-    # - "AllowCompletion": Wait for pod to complete gracefully (respects terminationGracePeriodSeconds)
+    # - "AllowCompletion": Do not evict. Poll until the pods exit on their own, with no
+    #   deadline -- deleteAfterTimeoutMinutes does not apply to this mode. Suitable for
+    #   workloads that terminate by themselves (Jobs, batch); a Deployment or StatefulSet
+    #   pod never will, so each event requeues with exponential backoff (requeueBackoffBase,
+    #   doubling, capped at 2m) for the life of the process. Alert on
+    #   node_drainer_awaiting_completion_event_timestamp_seconds to catch that.
     # - "DeleteAfterTimeout": Wait for deleteAfterTimeoutMinutes, then force delete if still running
     mode: "AllowCompletion"
 
@@ -166,10 +171,6 @@ customDrain:
 
   # Expected condition status value indicating completion (e.g., "True")
   statusConditionStatus: ""
-
-  # Timeout duration for waiting for CR completion (e.g., "30m")
-  # After this timeout, the drain is considered failed
-  timeout: "30m"
 
 # Pod priority for this component. Overridden by the matching global when that is set.
 priorityClassName: ""

@@ -505,7 +505,6 @@ func (r *Reconciler) initializeQuarantineMetrics(ctx context.Context) {
 }
 
 // checkCircuitBreakerAtStartup checks if circuit breaker is tripped at startup
-// Returns error if retry exhaustion occurs (should restart pod)
 // Blocks indefinitely if circuit breaker is tripped (wait for manual intervention)
 func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
 	if !r.breakerActive() {
@@ -514,10 +513,6 @@ func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
 
 	tripped, err := r.cb.IsTripped(ctx)
 	if err != nil {
-		if errors.Is(err, breaker.ErrRetryExhausted) {
-			return err
-		}
-
 		slog.ErrorContext(ctx, "Error checking if circuit breaker is tripped", "error", err)
 		<-ctx.Done()
 
@@ -745,9 +740,17 @@ func (r *Reconciler) handleEvent(
 		return nil, errors.Join(evaluationErr, err)
 	}
 
-	annotationsMap := r.prepareAnnotations(ctx, node, taintsToBeApplied, labelsToBeApplied, &labelsMap, &isCordoned)
-
+	// Decide whether the rules quarantine the node before reconciling taints with the node's own taints, so
+	// a fault whose only action is a taint the node already carries still starts a session and gets the
+	// quarantined status. reconcileTaintsWithNode then drops such a taint so applyTaints does not overwrite
+	// the operator's own taint and removeTaints does not delete it at unquarantine.
 	isNodeQuarantined := len(taintsToBeApplied) > 0 || len(labelsToBeApplied) > 0 || isCordoned.Load()
+
+	taintsToBeApplied = reconcileTaintsWithNode(ctx, node, taintsToBeApplied)
+
+	annotationsMap := r.prepareAnnotations(
+		ctx, node, taintsToBeApplied, labelsToBeApplied, &labelsMap, &isCordoned, isNodeQuarantined,
+	)
 
 	// Dry run skips the same events as a live run, so it records only quarantines that would happen.
 	if !isNodeQuarantined {
@@ -1196,12 +1199,11 @@ func (r *Reconciler) prepareAnnotations(
 	labelsToBeApplied []config.AppliedLabel,
 	labelsMap *sync.Map,
 	isCordoned *atomic.Bool,
+	quarantined bool,
 ) map[string]string {
 	annotationsMap := map[string]string{}
 
 	if len(taintsToBeApplied) > 0 {
-		markPreExistingTaints(node, taintsToBeApplied)
-
 		taintsJsonStr, err := json.Marshal(taintsToBeApplied)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to marshal taints for annotation", "error", err)
@@ -1237,7 +1239,9 @@ func (r *Reconciler) prepareAnnotations(
 		}
 	}
 
-	if len(taintsToBeApplied) > 0 || len(labelsToBeApplied) > 0 || isCordoned.Load() {
+	// Use the pre-filter quarantine decision so a fault whose only action is a taint the node already
+	// carries (dropped by reconcileTaintsWithNode) still gets the quarantined state label.
+	if quarantined {
 		labelsMap.Store(string(statemanager.NVSentinelStateLabelKey), string(statemanager.QuarantinedLabelValue))
 	}
 
@@ -1245,17 +1249,38 @@ func (r *Reconciler) prepareAnnotations(
 }
 
 // markPreExistingTaints sets PreExisting on any taint that already exists with the same key, value, and effect.
-func markPreExistingTaints(node *corev1.Node, taintsToBeApplied []config.Taint) {
-	existingTaints := make(map[config.Taint]bool, len(node.Spec.Taints))
+// reconcileTaintsWithNode reconciles the taints to apply with the node's current taints and returns the
+// set to apply. Both the fresh-quarantine path (handleEvent) and the already-quarantined path
+// (sessionTaintsToAdd) use it so they stay in sync:
+//   - A taint already on the node with the same key, value and effect is kept and marked PreExisting, so
+//     the session-end release leaves it in place.
+//   - A taint whose key and effect are already on the node with a different value is dropped with a
+//     warning, so applyTaints does not overwrite an operator's own taint and removeTaints does not
+//     delete it at unquarantine.
+func reconcileTaintsWithNode(ctx context.Context, node *corev1.Node, desired []config.Taint) []config.Taint {
+	onNodeValue := make(map[keyEffectTaint]string, len(node.Spec.Taints))
 	for _, t := range node.Spec.Taints {
-		existingTaints[config.Taint{Key: t.Key, Value: t.Value, Effect: string(t.Effect)}] = true
+		onNodeValue[keyEffectTaint{Key: t.Key, Effect: string(t.Effect)}] = t.Value
 	}
 
-	for i, t := range taintsToBeApplied {
-		if existingTaints[config.Taint{Key: t.Key, Value: t.Value, Effect: t.Effect}] {
-			taintsToBeApplied[i].PreExisting = true
+	taints := make([]config.Taint, 0, len(desired))
+
+	for _, t := range desired {
+		if value, exists := onNodeValue[keyEffectTaint{Key: t.Key, Effect: t.Effect}]; exists {
+			if value != t.Value {
+				slog.WarnContext(ctx, "Skipping rule taint because the node has the same taint key with another value",
+					"node", node.Name, "taint", t, "nodeTaintValue", value)
+
+				continue
+			}
+
+			t.PreExisting = true
 		}
+
+		taints = append(taints, t)
 	}
+
+	return taints
 }
 
 // applyQuarantine applies quarantine actions to a node (taints, cordon, annotations)
@@ -1705,34 +1730,18 @@ func (r *Reconciler) sessionTaintsToAdd(
 		}
 	}
 
-	onNode := make(map[keyEffectTaint]string, len(node.Spec.Taints))
-	for _, t := range node.Spec.Taints {
-		onNode[keyEffectTaint{Key: t.Key, Effect: string(t.Effect)}] = t.Value
-	}
-
-	taints := make([]config.Taint, 0, len(desired))
+	notRecorded := make([]config.Taint, 0, len(desired))
 
 	for _, t := range desired {
-		identity := keyEffectTaint{Key: t.Key, Effect: t.Effect}
-		if recorded[identity] {
+		if recorded[keyEffectTaint{Key: t.Key, Effect: t.Effect}] {
 			continue
 		}
 
-		if value, exists := onNode[identity]; exists {
-			if value != t.Value {
-				slog.WarnContext(ctx, "Skipping rule taint because the node has the same taint key with another value",
-					"node", node.Name, "taint", t, "nodeTaintValue", value)
-
-				continue
-			}
-
-			t.PreExisting = true
-		}
-
-		taints = append(taints, t)
+		notRecorded = append(notRecorded, t)
 	}
 
-	return taints, nil
+	// Reconcile the not-yet-recorded taints with the node the same way the fresh-quarantine path does.
+	return reconcileTaintsWithNode(ctx, node, notRecorded), nil
 }
 
 // addSessionCordon adds a cordon to update when the event's rule sets require one and the

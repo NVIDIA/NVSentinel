@@ -10,12 +10,20 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 - [Labeler Module](#labeler)
 - [Janitor](#janitor)
 - [Platform Connectors](#platform-connectors)
+- [Health Events Analyzer](#health-events-analyzer)
+- [Event Exporter](#event-exporter)
+- [Lifecycle Manager](#lifecycle-manager)
+- [Metadata Collector](#metadata-collector)
+- [Commons](#commons)
 - [Health Monitors](#health-monitors)
   - [Health Event Publisher](#health-event-publisher)
   - [GPU Health Monitor](#gpu-health-monitor)
   - [NIC Health Monitor](#nic-health-monitor)
   - [Syslog Health Monitor](#syslog-health-monitor)
   - [CSP Health Monitor](#csp-health-monitor)
+  - [NVCRE Certification Monitor](#nvcre-certification-monitor)
+  - [Kubernetes Object Monitor](#kubernetes-object-monitor)
+  - [Slurm Drain Monitor](#slurm-drain-monitor)
 - [Change Stream Metrics](#change-stream-metrics)
 
 ---
@@ -43,6 +51,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_nodes_manually_uncordoned_total` | Counter | `node` | Total number of manually uncordons for nodes |
 | `fault_quarantine_nodes_manually_untainted_total` | Counter | `node` | Total number of manual taint removals for nodes |
 | `fault_quarantine_current_quarantined_nodes` | Gauge | `node` | Current number of quarantined nodes |
+| `fault_quarantine_dry_run_actions_total` | Counter | `action` | Total number of quarantine and unquarantine actions skipped by dry run |
 
 ### Taint and Cordon Metrics
 
@@ -50,6 +59,8 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `fault_quarantine_taints_applied_total` | Counter | `taint_key`, `taint_effect` | Total number of taints applied to nodes |
 | `fault_quarantine_taints_removed_total` | Counter | `taint_key`, `taint_effect` | Total number of taints removed from nodes |
+| `fault_quarantine_labels_applied_total` | Counter | `label_key` | Total number of quarantine labels applied to nodes |
+| `fault_quarantine_labels_removed_total` | Counter | `label_key` | Total number of quarantine labels removed from nodes |
 | `fault_quarantine_cordons_applied_total` | Counter | - | Total number of cordons applied to nodes |
 | `fault_quarantine_cordons_removed_total` | Counter | - | Total number of cordons removed from nodes |
 | `fault_quarantine_node_quarantine_duration_seconds` | Histogram | - | Time from health event generation to node quarantine completion. Buckets: Prometheus DefBuckets |
@@ -68,10 +79,9 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `fault_quarantine_breaker_state` | Gauge | `state` | State of the fault quarantine breaker |
 | `fault_quarantine_breaker_utilization` | Gauge | - | Fraction of GPU nodes cordoned within the circuit breaker's sliding window |
-| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, or `fleetSize` when clamped) |
-| `fault_quarantine_get_total_nodes_duration_seconds` | Histogram | `result` | Duration of getTotalNodesWithRetry calls in seconds |
-| `fault_quarantine_get_total_nodes_errors_total` | Counter | `error_type` | Total number of errors from getTotalNodesWithRetry |
-| `fault_quarantine_get_total_nodes_retry_attempts` | Histogram | - | Number of retry attempts needed for getTotalNodesWithRetry (buckets: 0, 1, 2, 3, 5, 10) |
+| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, `fleetSize` when clamped, or `noGPUNodes` when no GPU nodes are counted and any recent cordon trips it) |
+| `fault_quarantine_get_total_nodes_duration_seconds` | Histogram | `result` | Duration of getTotalNodes calls in seconds |
+| `fault_quarantine_get_total_nodes_errors_total` | Counter | `error_type` | Total number of errors from getTotalNodes |
 
 ---
 
@@ -83,9 +93,11 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `node_drainer_events_received_total` | Counter | - | Total number of events received from the watcher |
 | `node_drainer_events_replayed_total` | Counter | - | Total number of in-progress events replayed at startup |
-| `node_drainer_events_processed_total` | Counter | `drain_status`, `node` | Total number of events processed by drain status outcome. Drain status values: `drained`, `cancelled`, `skipped` |
+| `node_drainer_events_processed_total` | Counter | `drain_status`, `node`, `drain_scope` | Total number of events processed by drain status outcome and drain scope. Drain status values: `drained`, `cancelled`, `skipped` |
 | `node_drainer_cancelled_event_total` | Counter | `node`, `check_name` | Total number of cancelled drain events (due to manual uncordon or healthy recovery) |
 | `node_drainer_processing_errors_total` | Counter | `error_type`, `node` | Total number of errors encountered during event processing and node draining |
+| `node_drainer_queue_items_assigned_total` | Counter | `priority`, `reason` | Total number of ready queue items assigned by priority and reason |
+| `node_drainer_custom_drain_crd_not_found_total` | Counter | `node` | Total number of custom drain operations that failed because the CRD was not found in the cluster |
 | `node_drainer_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
 | `node_drainer_queue_depth` | Gauge | - | Total number of pending events in the queue |
 | `node_drainer_pod_eviction_duration_seconds` | Histogram | - | Time from event receipt by node-drainer to successful pod eviction completion. Buckets: Exponential (0.1s, factor 2, 23 buckets, up to ~3 days) |
@@ -95,7 +107,9 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `node_drainer_waiting_for_timeout` | Gauge | `node` | Shows if node drainer operation is waiting for timeout before force deletion (1=waiting, 0=not waiting) |
+| `node_drainer_awaiting_completion_event_timestamp_seconds` | Gauge | `node` | Unix time of the health event behind an `allowCompletion` drain that is still waiting on pods. This mode has no deadline, so alert on `time() -` this value; see [AllowCompletion Drain Metric](configuration/node-drainer.md#allowcompletion-drain-metric) for its caveats. |
 | `node_drainer_force_delete_pods_after_timeout` | Counter | `node`, `namespace` | Total number of node drainer operations that reached timeout and force deleted pods |
+| `node_drainer_partial_drains_total` | Counter | `node`, `entity_type`, `entity_value` | Total number of partial drains by the entity they targeted. Disabled by default; enable via [`node-drainer.partialDrainEntityMetricEnabled`](configuration/node-drainer.md#partial-drain-entity-metric) |
 
 ---
 
@@ -148,6 +162,11 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `labeler_events_processed_total` | Counter | `status` | Total number of pod events processed. Status values: `success`, `failed` |
 | `labeler_node_update_failures_total` | Counter | - | Total number of node update failures during reconciliation |
 | `labeler_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
+| `labeler_device_count_current` | Gauge | `node`, `class` | Current device count observed for a node and device class |
+| `labeler_device_count_expected` | Gauge | `class`, `partition` | Expected device count for a device class and hardware partition |
+| `labeler_device_count_source` | Gauge | `node`, `class`, `source` | Source that counted a node's devices for a device class (1 for the selected source) |
+| `labeler_device_count_skipped_updates_total` | Counter | `class`, `reason` | Total number of skipped device-count label updates |
+| `labeler_node_labels_skipped_managed_total` | Counter | - | Node label reconcile attempts skipped because the node is opted out of NVSentinel management |
 
 ---
 
@@ -159,6 +178,25 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `janitor_actions_count` | Counter | `action_type`, `status`, `node` | Total number of janitor actions by type and status. Action types: `reboot`, `terminate`. Status values: `started`, `succeeded`, `failed` |
 | `janitor_action_mttr_seconds` | Histogram | `action_type` | Time from CR creation to action completion (Mean Time To Repair). Uses exponential buckets (10, 2, 10) for log-scale MTTR measurement |
+
+### GPU Reset Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `gpu_reset_requests_total` | Counter | `node` | Total number of GPU reset requests initiated |
+| `gpu_reset_requests_completed_total` | Counter | `node`, `status` | Total number of completed GPU reset requests, labeled by their final status |
+| `gpu_reset_duration_seconds` | Histogram | `node`, `status` | The end-to-end duration of GPU reset workflows, from controller acknowledgment to completion, labeled by their final status |
+| `gpu_reset_active_requests` | Gauge | `node` | The number of GPU reset requests currently in progress |
+| `gpu_reset_failure_reasons_total` | Counter | `node`, `reason` | Total number of GPU reset failures, labeled by the specific reason |
+| `janitor_ttl_deletions_total` | Counter | `kind` | Total number of CRs deleted by the TTL reconciler, labeled by kind |
+
+### External Remediation Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `nvsentinel_external_remediation_total` | Counter | `phase`, `result` | Lifecycle transitions of ExternalRemediationRequest objects, labeled by phase and outcome |
+| `nvsentinel_external_remediation_open` | Gauge | `node`, `recommended_action`, `state` | Currently-open ExternalRemediationRequest objects by node, action, and substate |
+| `nvsentinel_external_remediation_age_seconds` | Histogram | `recommended_action`, `result` | Age of an ExternalRemediationRequest at close time |
 
 ---
 
@@ -237,6 +275,7 @@ Both roles of the platform connector, the node-local DaemonSet and the deploymen
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `platform_connector_request_duration_seconds` | Histogram | `outcome` | Duration of health event batch requests that reached the handler, by outcome: `ok` (acknowledged), `rejected` (the batch is invalid), `failed` (the connector returned an error while processing the batch; the caller retries). Both roles expose it: on the node-local DaemonSet the connector is the set of ring buffers, which always accept, so a batch is `ok` once queued unless it is invalid; on the deployment platform connector the store connector's write decides when config.json enables one, while the node update and the sink are best effort and never fail a batch, so without a store every batch that passed validation is `ok`. |
+| `platform_connector_health_events_received_total` | Counter | `processing_strategy`, `is_healthy` | The total number of health events that the platform connector has received, by processing strategy and event health |
 | `platform_connector_deployment_refusals_total` | Counter | `reason` | Batches refused before the handler saw them: `index_unverified` (this replica has a store connector and has not verified the idempotency index; the caller retries) or `idempotency_key` (the idempotency-key header is missing or malformed) |
 | `platform_connector_store_batches_total` | Counter | `outcome` | Batches written to the datastore by either role: `stored`, or `duplicate` (a resend, or a retried batch, whose events already existed; treated like a store) |
 | `platform_connector_best_effort_failures_total` | Counter | `connector`, `reason` | Deployment platform connector only: work a best-effort connector (`kubernetes` node conditions and Events, `grpcsink` forwards) did not finish although the batch was acknowledged: `failed` or `timeout`; the node shows the old state until the monitor next reports |
@@ -256,6 +295,108 @@ These metrics track the internal ring buffer workqueue performance:
 | `platform_connector_workqueue_unfinished_work_seconds_{name}` | Gauge | `workqueue` | The total time in seconds of work in progress in Platform connector workqueue |
 
 **Note:** `{name}` in the metric names is replaced with the actual workqueue name at runtime.
+
+### gRPC Sink Connector Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `grpc_sink_platform_connector_send_total` | Counter | `status` | The total number of health event sends to the gRPC sink by status |
+| `grpc_sink_platform_connector_send_duration_milliseconds` | Histogram | - | Duration of gRPC sink sends in milliseconds |
+| `grpc_sink_platform_connector_retry_total` | Counter | - | The total number of retried health event sends to the gRPC sink |
+
+### Transformer Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `nvsentinel_overrides_applied_total` | Counter | `rule_name`, `field` | Total number of overrides applied by rule and field |
+| `nvsentinel_override_evaluation_errors_total` | Counter | - | Total number of override rule evaluation errors |
+| `nvsentinel_platform_connector_dedup_store_and_analyse_total` | Counter | `check`, `err_code` | Total number of duplicate health events marked STORE_AND_ANALYSE by deduplication |
+| `nvsentinel_platform_connector_metadata_skip_label_gated_total` | Counter | - | Total health events gated to STORE_ONLY because the target node carries the configured skip label |
+| `nvsentinel_platform_connector_metadata_lookup_failures_total` | Counter | - | Total metadata lookup failures where the event proceeded ungated (fail-open) |
+
+---
+
+## Health Events Analyzer
+
+### Event Processing Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `health_event_analyzer_events_received_total` | Counter | `node_name` | Total number of events received from the watcher |
+| `health_event_analyzer_events_successfully_processed_total` | Counter | - | Total number of events successfully processed |
+| `health_event_analyzer_event_processing_errors` | Counter | `error_type` | Total number of errors encountered during event processing |
+| `fatal_event_publishing_errors` | Counter | `error_type` | Total number of errors that occurred while publishing events to UDS |
+| `fatal_events_published_total` | Counter | `entity_value` | Total number of times a fatal event is published for an entity |
+| `recovery_events_published_total` | Counter | `rule_name`, `node_name` | Total number of recovery health events accepted by the platform connector, including republishes awaiting storage |
+| `rule_matched_total` | Counter | `rule_name`, `node_name` | Total number of times a rule matched for a node |
+| `rule_matched_entity_total` | Counter | `rule_name`, `node_name`, `entity_type`, `entity_value` | Total number of times a rule matched, labeled by the entity it selected on (recorded when ruleMatchedEntityMetricEnabled is set) |
+| `health_event_analyzer_rule_skipped_total` | Counter | `rule_name` | Total number of rule evaluations skipped because the rule's when expression was false |
+| `health_event_analyzer_rule_when_errors_total` | Counter | `rule_name` | Total number of times a rule's when expression failed to evaluate. The rule was evaluated anyway |
+| `mongo_query_execution_duration_seconds` | Histogram | `rule_name` | Histogram of MongoDB pipeline execution durations |
+| `health_event_analyzer_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
+
+---
+
+## Event Exporter
+
+### Event Export Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `health_events_exporter_events_received_total` | Counter | - | Total number of health events received from the change stream |
+| `health_events_exporter_events_published_total` | Counter | `status` | Total number of events published to the sink. Status values: `success`, `failure` |
+| `health_events_exporter_publish_duration_seconds` | Histogram | - | Histogram of event publish latency in seconds |
+| `health_events_exporter_transform_errors_total` | Counter | - | Total number of errors transforming events to CloudEvents format |
+| `health_events_exporter_publish_errors_total` | Counter | `error_type` | Total number of errors publishing events to the sink |
+| `health_events_exporter_token_refresh_errors_total` | Counter | - | Total number of OIDC token refresh errors |
+| `health_events_exporter_events_filtered_total` | Counter | - | Total number of events not published because the filter expression evaluated false |
+| `health_events_exporter_filter_errors_total` | Counter | - | Total number of filter evaluation errors. The event is exported anyway (counts events that bypassed the filter) |
+| `health_events_exporter_resume_token_update_timestamp` | Gauge | - | Timestamp of the last resume token update (Unix seconds) |
+| `health_events_exporter_backfill_in_progress` | Gauge | - | 1 during backfill, 0 otherwise |
+| `health_events_exporter_backfill_events_processed_total` | Counter | - | Total number of events processed during backfill |
+| `health_events_exporter_backfill_duration_seconds` | Histogram | - | Histogram of backfill operation duration in seconds |
+
+---
+
+## Lifecycle Manager
+
+### Validation Request Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `validation_requests_total` | Counter | - | Total number of ValidationRequests initiated |
+| `validation_requests_completed_total` | Counter | `status` | Total number of completed ValidationRequests, labeled by their final status. Status values: `success`, `failure` |
+| `validation_requests_duration_seconds` | Histogram | `status` | The end-to-end duration of ValidationRequests, labeled by their final status |
+| `new_node_validation_batches_total` | Counter | `status` | Total number of new node validation batch flush attempts, labeled by status |
+| `new_node_validation_batch_size` | Histogram | - | Number of nodes included in each new node validation batch that succeeded |
+
+---
+
+## Metadata Collector
+
+### Collection Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `metadata_collector_collection_completed_timestamp_seconds` | Gauge | - | Unix time GPU metadata collection completed, or 0 while it is still running. Collection can block on a wedged GPU driver, so 0 long after process start means it has stalled |
+
+### Pod Mapper Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `metadata_collector_pod_mapper_failures_total` | Counter | - | Pod device mapper poll cycles that failed |
+| `metadata_collector_pod_mapper_consecutive_failures` | Gauge | - | Consecutive failed pod device mapper poll cycles, reset to 0 by any success. The container exits when this reaches `--pod-mapper-max-consecutive-failures` |
+
+---
+
+## Commons
+
+### Feature Flag and State Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `nvsentinel_feature_flag_enabled` | Gauge | `service`, `flag` | Reports whether a feature flag is enabled (1) or disabled (0) |
+| `nvsentinel_state_transition_unexpected_total` | Counter | `from_state`, `to_state`, `node` | Total number of unexpected state transitions detected (race conditions or bugs) |
 
 ---
 
@@ -279,26 +420,32 @@ The Go health monitors send their events through the shared publishing client (`
 
 These metrics track GPU health events detected via DCGM (Data Center GPU Manager):
 
-| Metric Name                                       | Type      | Labels                             | Description                                                                                               |
-|---------------------------------------------------|-----------|------------------------------------|-----------------------------------------------------------------------------------------------------------|
-| `dcgm_health_events_publish_time_to_grpc_channel` | Histogram | `operation_name`                   | Amount of time spent in publishing DCGM health events on the gRPC channel                                 |
-| `health_events_insertion_to_uds_succeed`          | Counter   | -                                  | Total number of successful insertions of health events to UDS                                             |
-| `health_events_insertion_to_uds_error`            | Counter   | -                                  | Total number of failed insertions of health events to UDS                                                 |
-| `health_events_insertion_skipped_pc_unavailable`  | Counter   | -                                  | Sends skipped because the node-local platform connector socket was missing                                |
-| `health_events_direct_publish_succeed`            | Counter   | -                                  | Batches the deployment platform connector acknowledged (direct mode)                          |
-| `health_events_direct_publish_dropped`            | Counter   | `reason`                           | Direct-mode batches given up on; the same reasons as the Go publisher's `dropped_total`                   |
-| `health_events_direct_publish_retries`            | Counter   | -                                  | Direct-mode send attempts that failed and were retried                                                    |
-| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `error_code`, `is_fatal`, `processing_strategy` | Total number of active GPU health events at any given time. `is_fatal` is `true` or `false`, the same as the `isFatal` that gpu-health-monitor sends (`recommendedAction` is not `NONE`). Use it to exclude informational events from alerts. The value comes from the gpu-health-monitor error-code mapping. `processing_strategy` is the processing strategy that gpu-health-monitor sends with the event, for example `EXECUTE_REMEDIATION` or `STORE_ONLY`. The global `processingStrategy` sets it, and a per-check setting can change it to `STORE_ONLY`, for example for `GpuThermalMarginWatch`, `GpuPowerBrakeWatch` and `GpuDcgmUnresponsive`. When the value is `STORE_ONLY`, no NVSentinel module acts on the event. When the value is `EXECUTE_REMEDIATION`, gpu-health-monitor requests action, but platform-connectors can still change the strategy. For example, it sets `STORE_ONLY` for a node with the `nvsentinel.dgxc.nvidia.com/managed=false` label. Like `is_fatal`, this label shows what gpu-health-monitor sends, not the final decision. |
-| `dcgm_health_active_switch_events`                | Gauge     | `event_type`, `switch_id`, `error_code` | Total number of active NVSwitch health events at any given time. Separate from `dcgm_health_active_events` because switch and GPU ids are distinct sequences that both start at 0 |
-| `dcgm_api_latency`                                | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
-| `dcgm_reconcile_time`                             | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
-| `number_of_health_watches`                        | Gauge     | -                                  | Number of DCGM health watches available                                                                   |
-| `number_of_fields`                                | Gauge     | -                                  | Number of available DCGM fields to monitor                                                                |
-| `callback_failures`                               | Counter   | `class_name`, `func_name`          | Number of times a callback function has thrown an exception                                               |
-| `callback_success`                                | Counter   | `class_name`, `func_name`          | Number of times a callback function has successfully completed                                            |
-| `dcgm_api_failures`                               | Counter   | `error_name`                       | Number of DCGM API errors                                                                                 |
-| `dcgm_health_check_unknown_system_skipped`        | Counter   | -                                  | Number of DCGM health check incidents skipped due to unrecognized system value                            |
-| `dcgm_probe_hangs`                                | Counter   | `operation_name`                   | Number of DCGM probes that exceeded the watchdog deadline without returning                                |
+| Metric Name                                             | Type      | Labels                             | Description                                                                                               |
+|---------------------------------------------------------|-----------|------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `dcgm_health_events_publish_time_to_grpc_channel`       | Histogram | `operation_name`                   | Amount of time spent in publishing DCGM health events on the gRPC channel                                 |
+| `health_events_insertion_to_uds_succeed_total`          | Counter   | -                                  | Total number of successful insertions of health events to UDS                                             |
+| `health_events_insertion_to_uds_error_total`            | Counter   | -                                  | Total number of failed insertions of health events to UDS                                                 |
+| `health_events_insertion_skipped_pc_unavailable_total`  | Counter   | -                                  | Sends skipped because the node-local platform connector socket was missing                                |
+| `health_events_direct_publish_succeed_total`            | Counter   | -                                  | Batches the deployment platform connector acknowledged (direct mode)                                      |
+| `health_events_direct_publish_dropped_total`            | Counter   | `reason`                           | Direct-mode batches given up on; the same reasons as the Go publisher's `dropped_total`                   |
+| `health_events_direct_publish_retries_total`            | Counter   | -                                  | Direct-mode send attempts that failed and were retried                                                    |
+| `dcgm_connectivity_consecutive_observations`           | Gauge     | `result`                           | Consecutive DCGM connectivity observations by result                                                      |
+| `dcgm_health_active_events`                             | Gauge     | `event_type`, `gpu_id`, `error_code`, `is_fatal`, `processing_strategy` | Total number of active GPU health events at any given time. `is_fatal` is `true` or `false`, the same as the `isFatal` that gpu-health-monitor sends (`recommendedAction` is not `NONE`). Use it to exclude informational events from alerts. The value comes from the gpu-health-monitor error-code mapping. `processing_strategy` is the processing strategy that gpu-health-monitor sends with the event, for example `EXECUTE_REMEDIATION` or `STORE_ONLY`. The global `processingStrategy` sets it, and a per-check setting can change it to `STORE_ONLY`, for example for `GpuThermalMarginWatch`, `GpuPowerBrakeWatch` and `GpuDcgmUnresponsive`. When the value is `STORE_ONLY`, no NVSentinel module acts on the event. When the value is `EXECUTE_REMEDIATION`, gpu-health-monitor requests action, but platform-connectors can still change the strategy. For example, it sets `STORE_ONLY` for a node with the `nvsentinel.dgxc.nvidia.com/managed=false` label. Like `is_fatal`, this label shows what gpu-health-monitor sends, not the final decision. |
+| `dcgm_health_active_switch_events`                      | Gauge     | `event_type`, `switch_id`, `error_code` | Total number of active NVSwitch health events at any given time. Separate from `dcgm_health_active_events` because switch and GPU ids are distinct sequences that both start at 0 |
+| `dcgm_health_check_suppressed_incidents_total`          | Counter   | `error_code`                       | Number of DCGM health check incidents suppressed due to a non-actionable error code                       |
+| `dcgm_health_check_debounced_incidents_total`           | Counter   | `error_code`, `gpu_id`             | Number of DCGM health check polls where an error code was withheld for a GPU because it had not yet persisted for its configured minimum consecutive polls |
+| `dcgm_api_latency`                                      | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
+| `dcgm_reconcile_time`                                   | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
+| `number_of_health_watches`                              | Gauge     | -                                  | Number of DCGM health watches available                                                                   |
+| `number_of_fields`                                      | Gauge     | -                                  | Number of available DCGM fields to monitor                                                                |
+| `callback_failures_total`                               | Counter   | `class_name`, `func_name`          | Number of times a callback function has thrown an exception                                               |
+| `callback_success_total`                                | Counter   | `class_name`, `func_name`          | Number of times a callback function has successfully completed                                            |
+| `dcgm_api_failures_total`                               | Counter   | `error_name`                       | Number of DCGM API errors                                                                                 |
+| `dcgm_health_check_unknown_system_skipped_total`        | Counter   | -                                  | Number of DCGM health check incidents skipped due to unrecognized system value                            |
+| `dcgm_probe_hangs_total`                                | Counter   | `operation_name`                   | Number of DCGM probes that exceeded the watchdog deadline without returning                               |
+| `gpu_temp_limit_margin_blank_total`                     | Counter   | -                                  | Number of poll cycles where DCGM field 153 (T.Limit) returned a blank value                                |
+| `gpu_temp_limit_slowdown_threshold_missing_total`       | Counter   | -                                  | Number of poll cycles where slowdown T.Limit metadata from NVML field 194 is missing                      |
+| `gpu_power_brake_reasons_blank_total`                   | Counter   | -                                  | Number of GPU polls where DCGM clocks-event-reasons was missing or blank, so GpuPowerBrakeWatch could not be evaluated |
 
 ---
 
@@ -306,7 +453,14 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
+| `nic_health_monitor_devices_discovered` | Gauge | `node`, `check` | Number of NIC devices discovered in sysfs |
+| `nic_health_monitor_health_events_sent_total` | Counter | `node`, `check`, `is_fatal` | Total number of health events sent to the platform connector |
+| `nic_health_monitor_poll_cycle_duration_seconds` | Histogram | `node`, `category` | Duration of each poll cycle in seconds |
 | `nic_health_monitor_poll_cycle_last_completed_timestamp_seconds` | Gauge | `node`, `category` | Unix timestamp initialized at monitor startup and advanced after each completed poll cycle (`state` or `counter`). Use `time() - metric` to measure how long the category has gone without completing a poll, including a stall in the first poll. |
+| `nic_health_monitor_state_check_errors_total` | Counter | `node`, `check`, `device`, `port` | Total number of state check error events |
+| `nic_health_monitor_port_state_blips_total` | Counter | `node`, `check`, `device`, `port` | Ports that turned unhealthy and recovered before the port-state hold-down reported them |
+| `nic_health_monitor_counter_threshold_breaches_total` | Counter | `node`, `counter`, `device`, `port`, `is_fatal` | Total number of counter threshold breaches detected |
+| `nic_health_monitor_first_poll_deferred_total` | Counter | `node`, `check` | Polls deferred before the first evaluation because devices were unreadable |
 
 ---
 
@@ -323,6 +477,8 @@ XID (GPU Error ID) errors are NVIDIA GPU driver errors:
 | `syslog_health_monitor_xid_errors` | Counter | `node`, `err_code` | Total number of XID errors found |
 | `syslog_health_monitor_xid_processing_errors` | Counter | `error_type`, `node` | Total number of errors encountered during XID processing |
 | `syslog_health_monitor_xid_processing_latency_seconds` | Histogram | - | Histogram of XID processing latency |
+| `syslog_health_monitor_cancellations_emitted_total` | Counter | `check`, `source_error_code`, `target_error_code` | Total number of synthetic cancellation health events emitted by configured rules |
+| `syslog_health_monitor_xid_empty_driver_version_total` | Counter | `node` | Total number of XID decode requests issued with an empty driver version |
 
 #### SXID Error Metrics
 
@@ -337,6 +493,12 @@ SXID errors are NVSwitch-related errors:
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `syslog_health_monitor_gpu_fallen_errors` | Counter | `node` | Total number of GPU fallen off bus errors detected |
+
+#### NIC Driver Error Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `syslog_health_monitor_nic_driver_errors` | Counter | `node`, `event`, `severity` | Total number of NIC driver/firmware errors detected from kernel logs |
 
 ---
 
@@ -390,6 +552,41 @@ The CSP health monitor tracks cloud provider maintenance events and node health 
 | `csp_health_monitor_trigger_uds_send_errors_total` | Counter | - | Total number of errors encountered when sending events via UDS |
 | `csp_health_monitor_node_not_ready_timeout_total` | Counter | `node_name` | Total number of nodes that remained not ready after the timeout period |
 | `csp_health_monitor_node_readiness_monitoring_started_total` | Counter | `node_name` | Total number of times background node readiness monitoring was started |
+
+---
+
+### NVCRE Certification Monitor
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `nvcre_certification_monitor_sweep_errors_total` | Counter | `error_type` | Total number of errors hit during reconciliation sweeps over Certification CRs, by error type |
+| `nvcre_certification_monitor_sweep_duration_seconds` | Histogram | - | Duration of a reconciliation sweep over Certification CRs |
+| `nvcre_certification_monitor_health_events_published_total` | Counter | `node`, `is_healthy` | Total number of health events published to platform-connectors, by node and health state |
+| `nvcre_certification_monitor_health_event_publish_errors_total` | Counter | `node`, `is_healthy` | Total number of health events that could not be published to platform-connectors, by node and health state |
+| `nvcre_certification_monitor_active_failures` | Gauge | - | Number of (node, variant, reason) certification failures asserted by terminal Certification CRs |
+| `nvcre_certification_monitor_malformed_node_annotations` | Gauge | - | Number of nodes skipped in the last sweep because their cert-failures annotation is unparsable |
+
+---
+
+### Kubernetes Object Monitor
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `k8s_object_monitor_policy_matches_total` | Counter | `policy_name`, `node`, `resource_kind` | Total number of times a policy matched (predicate=true), indicating detected issues by node |
+| `k8s_object_monitor_policy_evaluation_errors_total` | Counter | `policy_name`, `error_type` | Policy evaluation errors |
+| `k8s_object_monitor_health_events_publish_errors_total` | Counter | `policy_name`, `error_type` | Errors publishing health events to Platform Connector via gRPC |
+| `k8s_object_monitor_reconciliation_errors_total` | Counter | `resource_kind`, `error_type` | Controller reconciliation errors |
+
+---
+
+### Slurm Drain Monitor
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `slurm_drain_monitor_external_drains_detected_total` | Counter | `pattern_name` | Total number of external Slurm drains detected by pattern |
+| `slurm_drain_monitor_parse_matches_total` | Counter | `pattern_name` | Total number of parse matches by pattern name |
+| `slurm_drain_monitor_reconciliation_errors_total` | Counter | `error_type` | Controller reconciliation errors |
+| `slurm_drain_monitor_health_events_publish_errors_total` | Counter | `error_type` | Errors publishing health events to Platform Connector via gRPC |
 
 ---
 

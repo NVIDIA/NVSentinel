@@ -17,6 +17,7 @@ package postgresql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -731,7 +732,7 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 						changedAt,
 					)
 				mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-					WithArgs(tableName, int64(452)).
+					WithArgs(tableName, lookupIDs(452), changedAt.Add(time.Second), int64(453)).
 					WillReturnRows(rows)
 			},
 		},
@@ -769,6 +770,8 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 				Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
 			})
 			require.NoError(t, err)
+			// handleNotification only records the id; the fetch loop fetches the row.
+			require.NoError(t, watcher.fetchNotifiedRows(ctx))
 
 			select {
 			case event := <-watcher.events:
@@ -779,7 +782,9 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 			}
 
 			assert.Equal(t, int64(453), watcher.lastEventID, "bookmark must not move backwards")
-			assert.Equal(t, tt.expectRecentlySeen452, watcher.hasRecentlySeenEventID(452))
+
+			_, recentlySeen452 := watcher.recentEventIDs[452]
+			assert.Equal(t, tt.expectRecentlySeen452, recentlySeen452)
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
@@ -817,19 +822,20 @@ func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *t
 			changedAt,
 		)
 	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-		WithArgs(tableName, int64(452)).
+		WithArgs(tableName, lookupIDs(452), changedAt.Add(time.Second), int64(451)).
 		WillReturnRows(notifiedRows)
 
 	// The normal timestamp cursor would miss the notified row because its changed_at
-	// is behind the current bookmark timestamp.
-	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-		WithArgs(tableName, changedAt, int64(452)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}))
+	// is behind the current bookmark timestamp, so it is fetched by id. It is a late
+	// commit, and delivering it must not move the cursor back to its older changed_at
+	// (the guarantee from #1469).
 
 	err = watcher.handleNotification(ctx, &pq.Notification{
 		Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
 	})
 	require.NoError(t, err)
+	// handleNotification only records the id; the fetch loop fetches the row.
+	require.NoError(t, watcher.fetchNotifiedRows(ctx))
 
 	select {
 	case event := <-watcher.events:
@@ -838,8 +844,393 @@ func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *t
 		t.Fatal("expected notified changelog row to be delivered")
 	}
 
-	assert.Equal(t, int64(452), watcher.lastEventID)
-	assert.True(t, watcher.hasRecentlySeenEventID(452))
+	// Before the cursor followed poll order, it moved to (changedAt, 452) here: behind rows
+	// already read, which the next poll then read again.
+	assert.Equal(t, changedAt.Add(time.Second), watcher.lastTimestamp, "a late row must not move the cursor back")
+	assert.Equal(t, int64(451), watcher.lastEventID)
+	assert.Contains(t, watcher.recentEventIDs, int64(452))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// healthEventRow adds a changelog row for health_events with an empty document.
+func healthEventRow(rows *sqlmock.Rows, id int64, changedAt time.Time) *sqlmock.Rows {
+	return rows.AddRow(id, fmt.Sprintf("record-%d", id), "INSERT", nil, `{"document":{}}`, changedAt)
+}
+
+// pollHighIDEarlyRowFirst runs one poll that returns row 151 first, because its changed_at is
+// the earliest, and then rows 1 to 3. A writer that started first but got its changelog id
+// last leaves such a row: changed_at is when the transaction started, and the id is taken
+// when the changelog trigger runs at the end of the statement.
+func pollHighIDEarlyRowFirst(
+	t *testing.T, mock sqlmock.Sqlmock, watcher *PostgreSQLChangeStreamWatcher, base time.Time,
+) {
+	t.Helper()
+
+	rows := changelogRows()
+	healthEventRow(rows, 151, base.Add(500*time.Millisecond))
+
+	for id := int64(1); id <= 3; id++ {
+		healthEventRow(rows, id, base.Add(time.Duration(id)*time.Second))
+	}
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base, int64(0)).
+		WillReturnRows(rows)
+
+	require.NoError(t, watcher.fetchNewChanges(context.Background()))
+}
+
+func drainTokens(watcher *PostgreSQLChangeStreamWatcher) []string {
+	var tokens []string
+
+	for len(watcher.events) > 0 {
+		tokens = append(tokens, string((<-watcher.events).ResumeToken))
+	}
+
+	return tokens
+}
+
+// After a batch whose first row has the highest id and the earliest changed_at, the cursor must
+// be the last row read, so the next poll starts after it. With the old id-only rule the cursor
+// stayed at (row 151's changed_at, 151): the next poll read rows 1 to 3 again, and with a full
+// batch of such rows no poll ever got past them.
+func TestFetchNewChanges_HighIDEarlyRow_CursorFollowsPollOrder(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+	watcher.lastTimestamp = base
+
+	pollHighIDEarlyRowFirst(t, mock, watcher, base)
+
+	assert.Equal(t, base.Add(3*time.Second), watcher.lastTimestamp)
+	assert.Equal(t, int64(3), watcher.lastEventID)
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(3*time.Second), int64(3)).
+		WillReturnRows(healthEventRow(changelogRows(), 4, base.Add(4*time.Second)))
+
+	require.NoError(t, watcher.fetchNewChanges(context.Background()))
+
+	assert.Equal(t, []string{"151", "1", "2", "3", "4"}, drainTokens(watcher))
+	assert.Equal(t, base.Add(4*time.Second), watcher.lastTimestamp)
+	assert.Equal(t, int64(4), watcher.lastEventID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A full batch of rows behind a high-id early row is what stalled the stream for good. With the
+// old id rule the cursor stayed on row 151, the next batch was rows 1 to 100, all with lower ids,
+// and every poll after that returned the same 100 rows, so rows 101 to 150 were never delivered.
+// Each poll here gets what the real query returns for the position the watcher asks from: the
+// first 100 rows after it in (changed_at, id) order.
+func TestFetchNewChanges_FullBatchBehindHighIDRow_StreamDrains(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	const pollLimit = 100 // the LIMIT in fetchNewChanges
+
+	type position struct {
+		changedAt time.Time
+		id        int64
+	}
+
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+	watcher.lastTimestamp = base
+
+	// The changelog in poll order: row 151 has the earliest changed_at, then rows 1 to 150.
+	at := func(id int64) time.Time { return base.Add(time.Duration(id) * time.Second) }
+	changelog := []position{{changedAt: base.Add(500 * time.Millisecond), id: 151}}
+
+	for id := int64(1); id <= 150; id++ {
+		changelog = append(changelog, position{changedAt: at(id), id: id})
+	}
+
+	var (
+		polledFrom []position
+		delivered  []string
+	)
+
+	for range 3 {
+		from := position{changedAt: watcher.lastTimestamp, id: watcher.lastEventID}
+		polledFrom = append(polledFrom, from)
+
+		batch, n := changelogRows(), 0
+
+		for _, row := range changelog {
+			afterFrom := row.changedAt.After(from.changedAt) ||
+				(row.changedAt.Equal(from.changedAt) && row.id > from.id)
+			if afterFrom && n < pollLimit {
+				healthEventRow(batch, row.id, row.changedAt)
+				n++
+			}
+		}
+
+		mock.ExpectQuery(changelogQuery).
+			WithArgs(healthEventsTable, from.changedAt, from.id).
+			WillReturnRows(batch)
+
+		require.NoError(t, watcher.fetchNewChanges(context.Background()))
+
+		delivered = append(delivered, drainTokens(watcher)...)
+	}
+
+	// The first batch is row 151 and rows 1 to 99, so the next poll starts after row 99. The
+	// second batch is rows 100 to 150, and the third poll finds nothing after row 150.
+	assert.Equal(t, []position{{base, 0}, {at(99), 99}, {at(150), 150}}, polledFrom)
+
+	unique := make(map[string]struct{}, len(delivered))
+	for _, token := range delivered {
+		unique[token] = struct{}{}
+	}
+
+	assert.Equal(t, len(changelog), len(unique), "rows delivered")
+	assert.Equal(t, len(changelog), len(delivered), "deliveries")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Rows that share a changed_at move the cursor by id, and one with the same changed_at and a
+// lower id, delivered late from its NOTIFY, does not move it back.
+func TestAdvancePosition_EqualChangedAt_OrdersByID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	same := time.Date(2026, 11, 1, 9, 0, 0, 123000000, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+	watcher.lastTimestamp = same
+	watcher.lastEventID = 5
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, same, int64(5)).
+		WillReturnRows(healthEventRow(healthEventRow(changelogRows(), 6, same), 7, same))
+
+	require.NoError(t, watcher.fetchNewChanges(ctx))
+	assert.Equal(t, same, watcher.lastTimestamp)
+	assert.Equal(t, int64(7), watcher.lastEventID)
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, lookupIDs(4), same, int64(7)).
+		WillReturnRows(healthEventRow(changelogRows(), 4, same))
+
+	watcher.addNotifiedID(4)
+	require.NoError(t, watcher.fetchNotifiedRows(ctx))
+	assert.Equal(t, same, watcher.lastTimestamp)
+	assert.Equal(t, int64(7), watcher.lastEventID)
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, same, int64(7)).
+		WillReturnRows(changelogRows())
+
+	require.NoError(t, watcher.fetchNewChanges(ctx))
+	assert.Equal(t, []string{"6", "7", "4"}, drainTokens(watcher))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPositionAfter_OrdersByChangedAtThenID(t *testing.T) {
+	cursorTS := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		ts   time.Time
+		id   int64
+		want bool
+	}{
+		{name: "later changed_at, lower id", ts: cursorTS.Add(time.Microsecond), id: 1, want: true},
+		{name: "earlier changed_at, higher id", ts: cursorTS.Add(-time.Microsecond), id: 1000, want: false},
+		{name: "same changed_at, higher id", ts: cursorTS, id: 11, want: true},
+		{name: "same changed_at, same id", ts: cursorTS, id: 10, want: false},
+		{name: "same changed_at, lower id", ts: cursorTS, id: 9, want: false},
+		{name: "same instant in another zone, higher id", ts: cursorTS.In(time.FixedZone("UTC-5", -5*3600)), id: 11, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, positionAfter(tt.ts, tt.id, cursorTS, 10))
+		})
+	}
+}
+
+// Acknowledging row 151 after the batch above must not move the cursor back to it: its id is
+// above the cursor's, but its changed_at is behind rows already read, and the next poll would
+// deliver them again. The ack must not look the row up either. The watcher has read it, so the
+// cursor is already past it, and by the time the ack comes the row may have been purged, which
+// would fail the ack for good. sqlmock rejects any statement it isn't told to expect, so a
+// lookup here fails the test. The saved resume position is the cursor.
+func TestMarkProcessed_ReadHighIDEarlyRow_AcksWithoutLookupAndKeepsCursor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+	watcher.lastTimestamp = base
+
+	pollHighIDEarlyRowFirst(t, mock, watcher, base)
+
+	mock.ExpectExec("UPDATE datastore_changelog SET processed").
+		WithArgs(int64(151), healthEventsTable).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	tokenJSON, err := json.Marshal(map[string]any{
+		"timestamp": base.Add(3 * time.Second).Format(time.RFC3339Nano), "eventID": int64(3),
+	})
+	require.NoError(t, err)
+	mock.ExpectExec("INSERT INTO resume_tokens").
+		WithArgs("test-client", tokenJSON).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	require.NoError(t, watcher.MarkProcessed(ctx, []byte("151")))
+	assert.Equal(t, base.Add(3*time.Second), watcher.lastTimestamp)
+	assert.Equal(t, int64(3), watcher.lastEventID)
+
+	mock.ExpectQuery(changelogQuery).
+		WithArgs(healthEventsTable, base.Add(3*time.Second), int64(3)).
+		WillReturnRows(changelogRows())
+
+	require.NoError(t, watcher.fetchNewChanges(ctx))
+	assert.Equal(t, []string{"151", "1", "2", "3"}, drainTokens(watcher))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// After a restart the watcher resumes from the saved token. An ack for a row at or below the
+// token's id must not look the row up: it was read before the restart and may be purged. An ack
+// above it is for a row this watcher hasn't read, so its changed_at decides whether the cursor
+// moves.
+func TestMarkProcessed_AfterResume_AcksAtOrBelowTokenIDWithoutLookup(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+
+	mock.ExpectQuery("SELECT resume_token FROM resume_tokens").
+		WithArgs("test-client").
+		WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).
+			AddRow(`{"eventID": 42, "timestamp": "2026-11-01T09:00:00Z"}`))
+	require.NoError(t, watcher.loadResumePosition(ctx))
+
+	savedToken := func(ts time.Time, id int64) []byte {
+		t.Helper()
+
+		tokenJSON, err := json.Marshal(map[string]any{"timestamp": ts.Format(time.RFC3339Nano), "eventID": id})
+		require.NoError(t, err)
+
+		return tokenJSON
+	}
+
+	// Row 42 was read before the restart: no lookup, and the cursor stays.
+	mock.ExpectExec("UPDATE datastore_changelog SET processed").
+		WithArgs(int64(42), healthEventsTable).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO resume_tokens").
+		WithArgs("test-client", savedToken(base, 42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	require.NoError(t, watcher.MarkProcessed(ctx, []byte("42")))
+	assert.Equal(t, base, watcher.lastTimestamp)
+	assert.Equal(t, int64(42), watcher.lastEventID)
+
+	// Row 43 wasn't: its changed_at is looked up, and the cursor moves to it.
+	mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
+		WithArgs(int64(43)).
+		WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(base.Add(time.Second)))
+	mock.ExpectExec("UPDATE datastore_changelog SET processed").
+		WithArgs(int64(43), healthEventsTable).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO resume_tokens").
+		WithArgs("test-client", savedToken(base.Add(time.Second), 43)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	require.NoError(t, watcher.MarkProcessed(ctx, []byte("43")))
+	assert.Equal(t, base.Add(time.Second), watcher.lastTimestamp)
+	assert.Equal(t, int64(43), watcher.lastEventID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An ack for a row this watcher hasn't read, such as one from before a restart, needs the row's
+// changed_at to decide whether the cursor moves. If that lookup fails, the ack must fail and
+// change nothing. After pollHighIDEarlyRowFirst the cursor's id is 3, below an id already read,
+// so a guessed timestamp would have moved the cursor to (guess, 200), past rows never delivered.
+func TestMarkProcessed_UnreadRowLookupFails_ReturnsErrorAndKeepsCursor(t *testing.T) {
+	tests := []struct {
+		name    string
+		respond func(*sqlmock.ExpectedQuery)
+		wantErr error
+	}{
+		{
+			name:    "row missing",
+			respond: func(q *sqlmock.ExpectedQuery) { q.WillReturnRows(sqlmock.NewRows([]string{"changed_at"})) },
+			wantErr: sql.ErrNoRows,
+		},
+		{
+			name:    "query fails",
+			respond: func(q *sqlmock.ExpectedQuery) { q.WillReturnError(sql.ErrConnDone) },
+			wantErr: sql.ErrConnDone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			ctx := context.Background()
+			base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+			watcher.lastTimestamp = base
+
+			pollHighIDEarlyRowFirst(t, mock, watcher, base)
+
+			// No UPDATE and no save are expected, and sqlmock rejects any statement it doesn't expect.
+			tt.respond(mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").WithArgs(int64(200)))
+
+			require.ErrorIs(t, watcher.MarkProcessed(ctx, []byte("200")), tt.wantErr)
+			assert.Equal(t, base.Add(3*time.Second), watcher.lastTimestamp)
+			assert.Equal(t, int64(3), watcher.lastEventID)
+
+			mock.ExpectQuery(changelogQuery).
+				WithArgs(healthEventsTable, base.Add(3*time.Second), int64(3)).
+				WillReturnRows(changelogRows())
+
+			require.NoError(t, watcher.fetchNewChanges(ctx))
+			assert.Equal(t, []string{"151", "1", "2", "3"}, drainTokens(watcher))
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+// The NOTIFY for row 151 can arrive after a poll has read it. Its id is above the cursor's, but
+// the row was read, so it must not be fetched and delivered again.
+func TestHandleNotification_ReadRowAboveCursorID_IsSkipped(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+	watcher.lastTimestamp = base
+
+	pollHighIDEarlyRowFirst(t, mock, watcher, base)
+
+	require.NoError(t, watcher.handleNotification(context.Background(), &pq.Notification{
+		Extra: `{"id":151,"table":"health_events","operation":"INSERT"}`,
+	}))
+	// handleNotification only records the id; the fetch loop fetches the row. sqlmock fails a
+	// lookup it isn't told to expect.
+	require.NoError(t, watcher.fetchNotifiedRows(context.Background()))
+
+	assert.Equal(t, []string{"151", "1", "2", "3"}, drainTokens(watcher))
+	assert.Equal(t, base.Add(3*time.Second), watcher.lastTimestamp)
+	assert.Equal(t, int64(3), watcher.lastEventID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

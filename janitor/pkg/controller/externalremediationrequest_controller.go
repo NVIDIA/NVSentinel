@@ -63,6 +63,8 @@ const (
 	eventReasonReleaseTaintApplied   = "ReleaseTaintApplied"
 	eventReasonReleaseTaintRemoved   = "ReleaseTaintRemoved"
 	eventReasonOperatorDeleteRequest = "OperatorDeleteRequested"
+	eventReasonCompletedDeleted      = "CompletedRequestDeleted"
+	eventReasonOwnerNodeDeleted      = "OwnerNodeDeleted"
 	eventReasonNodeNotFound          = "NodeNotFound"
 
 	// closeReason* qualifiers disambiguate which cleanup path closed the ExtRR
@@ -278,24 +280,37 @@ func (r *ExternalRemediationRequestReconciler) dispatch(
 		return r.reconcileCleanupAfterComplete(ctx, extrrObj)
 
 	case meta.IsStatusConditionFalse(conds, ConditionExternalRemediationComplete):
+		markOpen(extrrObj)
 		return r.reconcileNoOpOnFalse(ctx, extrrObj)
 
 	default:
 		// Steady state: Released=True awaiting the external system.
+		markOpen(extrrObj)
 		return ctrl.Result{}, nil
 	}
+}
+
+// markOpen re-asserts the open gauge on every reconcile of an open ExtRR.
+// After a janitor restart or leader change the in-memory gauge starts empty,
+// and the initial resync reconciles every ExtRR, which rebuilds it.
+func markOpen(extrrObj *nvsentinelv1.ExternalRemediationRequest) {
+	metrics.GlobalMetrics.SetExtRROpen(extrrNodeLabel(extrrObj), recommendedActionLabel(extrrObj),
+		metrics.ExtRROpenStateAwaiting, true)
 }
 
 // nodeLockRequeue matches the sibling janitor controllers' lock-retry cadence.
 const nodeLockRequeue = 2 * time.Second
 
 // reconcileApply applies the release taint + managed=false in one PATCH then
-// transitions NVSentinelOwnershipReleased=True. Node not found → terminal
-// Released=False (no retry, see ADR-040); already-applied → idempotent fast
-// path. Other API errors propagate and controller-runtime requeues with backoff.
+// transitions NVSentinelOwnershipReleased=True. A missing or replacement Node
+// is terminal Released=False (no retry, see ADR-040); already-applied uses an
+// idempotent fast path. Other API errors propagate and controller-runtime
+// requeues with backoff.
 //
 // Assumes the caller (dispatch) already acquired the cross-controller
-// node-level lock, so any taint at our key on this Node is ours.
+// node-level lock, so a release taint with another ExtRR's name is stale and
+// is replaced. reconcileCleanup removes only a taint whose value is this
+// ExtRR's name, so the taint value must always be ours after apply.
 func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -304,14 +319,20 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, nodeName)
+			return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, nodeName,
+				fmt.Sprintf("target node %q does not exist", nodeName))
 		}
 
 		return ctrl.Result{}, fmt.Errorf("get node %q for ExtRR %q: %w", nodeName, extrrObj.Name, err)
 	}
 
-	// We hold the lock, so any taint at our key is ours.
-	if findTaintByKey(node.Spec.Taints, ReleaseTaintKey) != nil &&
+	if !nodeMatchesOwner(extrrObj, &node) {
+		return ctrl.Result{}, r.transitionToReleaseFailure(ctx, extrrObj, nodeName,
+			fmt.Sprintf("target node %q was replaced; refusing to release the replacement node", nodeName))
+	}
+
+	taint := findTaintByKeyAndEffect(node.Spec.Taints, ReleaseTaintKey, corev1.TaintEffectNoSchedule)
+	if taint != nil && taint.Value == extrrObj.Name &&
 		node.Labels[managed.ManagedLabelKey] == managed.ManagedLabelValueFalse {
 		slog.InfoContext(ctx, "release taint and managed=false label already in place; transitioning condition",
 			"extrr", extrrObj.Name, "node", nodeName)
@@ -322,21 +343,12 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 		return ctrl.Result{}, r.transitionToReleaseSuccess(ctx, extrrObj, msg)
 	}
 
-	nodeToUpdate := node.DeepCopy()
-
-	if findTaintByKey(nodeToUpdate.Spec.Taints, ReleaseTaintKey) == nil {
-		nodeToUpdate.Spec.Taints = append(nodeToUpdate.Spec.Taints, corev1.Taint{
-			Key:    ReleaseTaintKey,
-			Value:  extrrObj.Name,
-			Effect: corev1.TaintEffectNoSchedule,
-		})
+	if taint != nil && taint.Value != extrrObj.Name {
+		slog.WarnContext(ctx, "replacing stale release taint owned by another ExtRR",
+			"extrr", extrrObj.Name, "node", nodeName, "staleOwner", taint.Value)
 	}
 
-	if nodeToUpdate.Labels == nil {
-		nodeToUpdate.Labels = map[string]string{}
-	}
-
-	nodeToUpdate.Labels[managed.ManagedLabelKey] = managed.ManagedLabelValueFalse
+	nodeToUpdate := withReleaseMarkers(&node, extrrObj.Name)
 
 	if err := r.Patch(ctx, nodeToUpdate, client.StrategicMergeFrom(&node)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch node %q with release taint + managed=false: %w", nodeName, err)
@@ -351,17 +363,39 @@ func (r *ExternalRemediationRequestReconciler) reconcileApply(
 	return ctrl.Result{}, r.transitionToReleaseSuccess(ctx, extrrObj, msg)
 }
 
-// transitionToReleaseFailure terminates the apply path when the target Node
-// doesn't exist. Sets NVSentinelOwnershipReleased=False + Status.CompletionTime
-// in two patches; the CompletionTime stamp short-circuits dispatch on
-// subsequent reconciles. The external system can still drive close via
-// Complete=True or operator delete. There's no useful retry: if the Node
-// isn't there at apply time, waiting won't bring it back.
-func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
-	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest, nodeName string,
-) error {
-	message := fmt.Sprintf("target node %q does not exist", nodeName)
+// withReleaseMarkers returns a copy of node with exactly one release taint,
+// valued extrrName, and the managed=false label.
+func withReleaseMarkers(node *corev1.Node, extrrName string) *corev1.Node {
+	updated := node.DeepCopy()
 
+	if taint := findTaintByKeyAndEffect(updated.Spec.Taints, ReleaseTaintKey,
+		corev1.TaintEffectNoSchedule); taint == nil || taint.Value != extrrName {
+		updated.Spec.Taints = append(removeTaintByKeyAndEffect(updated.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule), corev1.Taint{
+			Key:    ReleaseTaintKey,
+			Value:  extrrName,
+			Effect: corev1.TaintEffectNoSchedule,
+		})
+	}
+
+	if updated.Labels == nil {
+		updated.Labels = map[string]string{}
+	}
+
+	updated.Labels[managed.ManagedLabelKey] = managed.ManagedLabelValueFalse
+
+	return updated
+}
+
+// transitionToReleaseFailure terminates the apply path when the target Node
+// instance is missing. This includes replacement by a new Node with the same
+// name. It sets NVSentinelOwnershipReleased=False + Status.CompletionTime in
+// two patches; the CompletionTime stamp short-circuits dispatch on subsequent
+// reconciles. The external system can still drive close via Complete=True or
+// operator delete. Waiting cannot bring the original Node instance back.
+func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
+	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest, nodeName, message string,
+) error {
 	changed, err := r.transitionReleased(ctx, extrrObj, metav1.ConditionFalse, ReasonNodeNotFound, message)
 	if err != nil {
 		return err
@@ -371,7 +405,7 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseFailure(
 		return nil
 	}
 
-	slog.WarnContext(ctx, "target node not found; failing ExtRR apply",
+	slog.WarnContext(ctx, "target node unavailable; failing ExtRR apply",
 		"extrr", extrrObj.Name, "node", nodeName)
 
 	metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseReleased, metrics.ExtRRResultNodeNotFound)
@@ -399,8 +433,7 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 	}
 
 	metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseReleased, metrics.ExtRRResultSuccess)
-	metrics.GlobalMetrics.AdjustExtRROpen(extrrNodeLabel(extrrObj), recommendedActionLabel(extrrObj),
-		metrics.ExtRROpenStateAwaiting, 1)
+	markOpen(extrrObj)
 	r.emitEvent(extrrObj, corev1.EventTypeNormal, eventReasonReleaseTaintApplied, message)
 
 	return nil
@@ -408,7 +441,7 @@ func (r *ExternalRemediationRequestReconciler) transitionToReleaseSuccess(
 
 // reconcileCleanupAfterComplete scrubs the Node when Complete=True; the ExtRR
 // stays as a historical record until an operator deletes it. Business
-// metrics (closed + external_response + ExtRROpen-1 + age) fire on first
+// metrics (closed + external_response + ExtRROpen=0 + age) fire on first
 // observation of Complete=True regardless of whether the Node still exists,
 // so terminate-style remediations (the external system deleting the Node as
 // part of the repair) stay observable. Gated on Status.CompletionTime == nil
@@ -444,7 +477,7 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupAfterComplete(
 // reconcileCleanupOnDeletion runs the cleanup PATCH then drops the finalizer.
 // The close metric fires on first invocation regardless of whether the cleanup
 // PATCH actually mutated the Node — gated by Status.CompletionTime so a
-// previous Complete=True close doesn't get double-counted as operator_deleted.
+// previous close (Complete=True or NodeNotFound) is not counted twice.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (ctrl.Result, error) {
@@ -452,16 +485,18 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 		return ctrl.Result{}, nil
 	}
 
-	r.emitEvent(extrrObj, corev1.EventTypeNormal, eventReasonOperatorDeleteRequest,
-		"deletion requested; running cleanup before releasing finalizer")
+	closeResult, err := r.announceDeletion(ctx, extrrObj)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	changed, err := r.reconcileCleanup(ctx, extrrObj)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if extrrObj.Status == nil || extrrObj.Status.CompletionTime == nil {
-		r.recordCloseMetrics(extrrObj, metrics.ExtRRResultOperatorDeleted)
+	if closeResult != metrics.ExtRRResultNone {
+		r.recordCloseMetrics(extrrObj, closeResult)
 
 		if _, err := r.markCompletionTime(ctx, extrrObj); err != nil {
 			return ctrl.Result{}, err
@@ -497,9 +532,70 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanupOnDeletion(
 	return ctrl.Result{}, nil
 }
 
-// recordCloseMetrics fires the close counter, decrements ExtRROpen, and
+// announceDeletion emits the event that explains why the ExtRR is being
+// deleted and returns the closed{result} to record, or ExtRRResultNone when
+// the ExtRR was already closed. Who issued the delete (operator, TTL, or
+// garbage collector) is not recorded on the object, so the cause is inferred
+// from the ExtRR's state and its target Node.
+func (r *ExternalRemediationRequestReconciler) announceDeletion(
+	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
+) (string, error) {
+	if extrrObj.Status != nil && extrrObj.Status.CompletionTime != nil {
+		r.emitEvent(extrrObj, corev1.EventTypeNormal, eventReasonCompletedDeleted,
+			"request already completed; releasing finalizer")
+
+		return metrics.ExtRRResultNone, nil
+	}
+
+	nodeName := extrrObj.Spec.HealthEvent.NodeName
+
+	nodeDeleted, err := r.ownerNodeDeleted(ctx, extrrObj)
+	if err != nil {
+		return metrics.ExtRRResultNone, err
+	}
+
+	if nodeDeleted {
+		r.emitEvent(extrrObj, corev1.EventTypeWarning, eventReasonOwnerNodeDeleted,
+			fmt.Sprintf("target node %q was deleted or replaced while the request was open", nodeName))
+
+		return metrics.ExtRRResultNodeDeleted, nil
+	}
+
+	r.emitEvent(extrrObj, corev1.EventTypeNormal, eventReasonOperatorDeleteRequest,
+		"deletion requested; running cleanup before releasing finalizer")
+
+	return metrics.ExtRRResultOperatorDeleted, nil
+}
+
+// ownerNodeDeleted reports whether the target Node is gone, is terminating, or
+// was replaced by a Node with the same name but a different UID than the
+// ExtRR's Node owner reference. Without a Node owner reference only absence
+// and termination are detected.
+func (r *ExternalRemediationRequestReconciler) ownerNodeDeleted(
+	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
+) (bool, error) {
+	nodeName := extrrObj.Spec.HealthEvent.NodeName
+
+	var node corev1.Node
+	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+
+		return false, fmt.Errorf("get node %q for ExtRR %q deletion: %w", nodeName, extrrObj.Name, err)
+	}
+
+	if !node.DeletionTimestamp.IsZero() {
+		return true, nil
+	}
+
+	return !nodeMatchesOwner(extrrObj, &node), nil
+}
+
+// recordCloseMetrics fires the close counter, sets ExtRROpen to 0, and
 // observes the age histogram. Idempotency is the caller's responsibility
-// (via Status.CompletionTime).
+// (via Status.CompletionTime). Setting 0 is safe even when the ExtRR never
+// reached Released=True (for example, deleted before apply).
 func (r *ExternalRemediationRequestReconciler) recordCloseMetrics(
 	extrrObj *nvsentinelv1.ExternalRemediationRequest, result string,
 ) {
@@ -507,7 +603,7 @@ func (r *ExternalRemediationRequestReconciler) recordCloseMetrics(
 	action := recommendedActionLabel(extrrObj)
 
 	metrics.GlobalMetrics.IncExtRRTotal(metrics.ExtRRPhaseClosed, result)
-	metrics.GlobalMetrics.AdjustExtRROpen(node, action, metrics.ExtRROpenStateAwaiting, -1)
+	metrics.GlobalMetrics.SetExtRROpen(node, action, metrics.ExtRROpenStateAwaiting, false)
 
 	if !extrrObj.CreationTimestamp.IsZero() {
 		metrics.GlobalMetrics.ObserveExtRRAge(action, result,
@@ -557,8 +653,11 @@ func (r *ExternalRemediationRequestReconciler) markCompletionTime(
 }
 
 // reconcileCleanup removes the release taint and the managed label from the
-// Node. Returns true when the PATCH mutated the Node. The node-level lock
-// guarantees we own the taint at our key, so no value-match check is needed.
+// Node. Returns true when the PATCH mutated the Node. It acts only when the
+// release taint value equals this ExtRR's name. Cleanup can run again after
+// the node lock is released (for example, when a completed ExtRR is deleted),
+// and by then the Node may carry another ExtRR's taint, an operator-set
+// managed label, or be a replacement Node with the same name.
 func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 	ctx context.Context, extrrObj *nvsentinelv1.ExternalRemediationRequest,
 ) (bool, error) {
@@ -576,23 +675,32 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 		return false, fmt.Errorf("get node %q for ExtRR %q cleanup: %w", nodeName, extrrObj.Name, err)
 	}
 
-	nodeToUpdate := node.DeepCopy()
-	changed := false
+	if !nodeMatchesOwner(extrrObj, &node) {
+		slog.InfoContext(ctx, "target Node was replaced; leaving replacement node unchanged",
+			"extrr", extrrObj.Name, "node", nodeName, "nodeUID", node.UID)
 
-	if findTaintByKey(nodeToUpdate.Spec.Taints, ReleaseTaintKey) != nil {
-		nodeToUpdate.Spec.Taints = removeTaintByKey(nodeToUpdate.Spec.Taints, ReleaseTaintKey)
-		changed = true
-	}
-
-	if _, ok := nodeToUpdate.Labels[managed.ManagedLabelKey]; ok {
-		delete(nodeToUpdate.Labels, managed.ManagedLabelKey)
-
-		changed = true
-	}
-
-	if !changed {
 		return false, nil
 	}
+
+	taint := findTaintByKeyAndEffect(node.Spec.Taints, ReleaseTaintKey, corev1.TaintEffectNoSchedule)
+	if taint == nil {
+		slog.InfoContext(ctx, "release taint not present; leaving node unchanged",
+			"extrr", extrrObj.Name, "node", nodeName)
+
+		return false, nil
+	}
+
+	if taint.Value != extrrObj.Name {
+		slog.InfoContext(ctx, "release taint belongs to another ExtRR; leaving node unchanged",
+			"extrr", extrrObj.Name, "node", nodeName, "taintOwner", taint.Value)
+
+		return false, nil
+	}
+
+	nodeToUpdate := node.DeepCopy()
+	nodeToUpdate.Spec.Taints = removeTaintByKeyAndEffect(nodeToUpdate.Spec.Taints, ReleaseTaintKey,
+		corev1.TaintEffectNoSchedule)
+	delete(nodeToUpdate.Labels, managed.ManagedLabelKey)
 
 	if err := r.Patch(ctx, nodeToUpdate, client.StrategicMergeFrom(&node)); err != nil {
 		return false, fmt.Errorf("patch node %q for ExtRR %q cleanup: %w", nodeName, extrrObj.Name, err)
@@ -602,6 +710,21 @@ func (r *ExternalRemediationRequestReconciler) reconcileCleanup(
 		"extrr", extrrObj.Name, "node", nodeName)
 
 	return true, nil
+}
+
+// nodeMatchesOwner returns false when the live Node is not the Node instance
+// that owns the ExtRR. ExtRRs without a Node owner reference keep the
+// name-based behavior for backward compatibility and manual integrations.
+func nodeMatchesOwner(
+	extrrObj *nvsentinelv1.ExternalRemediationRequest, node *corev1.Node,
+) bool {
+	for _, ref := range extrrObj.GetOwnerReferences() {
+		if ref.APIVersion == "v1" && ref.Kind == "Node" && ref.Name == node.Name {
+			return ref.UID == node.UID
+		}
+	}
+
+	return true
 }
 
 // reconcileNoOpOnFalse is the asymmetric half of ADR-040: Complete=False
@@ -629,12 +752,15 @@ func (r *ExternalRemediationRequestReconciler) reconcileNoOpOnFalse(
 	return ctrl.Result{}, nil
 }
 
-// removeTaintByKey allocates a fresh slice — safe to patch without aliasing.
-func removeTaintByKey(taints []corev1.Taint, key string) []corev1.Taint {
+// removeTaintByKeyAndEffect allocates a fresh slice — safe to patch without
+// aliasing. A taint is identified by both key and effect.
+func removeTaintByKeyAndEffect(
+	taints []corev1.Taint, key string, effect corev1.TaintEffect,
+) []corev1.Taint {
 	out := make([]corev1.Taint, 0, len(taints))
 
 	for i := range taints {
-		if taints[i].Key != key {
+		if taints[i].Key != key || taints[i].Effect != effect {
 			out = append(out, taints[i])
 		}
 	}
@@ -642,11 +768,13 @@ func removeTaintByKey(taints []corev1.Taint, key string) []corev1.Taint {
 	return out
 }
 
-// findTaintByKey returns a pointer into the input slice — don't mutate in place
-// if the slice will be patched later.
-func findTaintByKey(taints []corev1.Taint, key string) *corev1.Taint {
+// findTaintByKeyAndEffect returns a pointer into the input slice. Do not mutate
+// it in place if the slice will be patched later.
+func findTaintByKeyAndEffect(
+	taints []corev1.Taint, key string, effect corev1.TaintEffect,
+) *corev1.Taint {
 	for i := range taints {
-		if taints[i].Key == key {
+		if taints[i].Key == key && taints[i].Effect == effect {
 			return &taints[i]
 		}
 	}
