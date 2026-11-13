@@ -1,4 +1,5 @@
 # Tutorial: Integrating Node Problem Detector
+> **Note:** For a generic guide on this pattern, see [Integrating External Health Detectors](integrating-external-health-detectors.md).
 
 This tutorial installs Kubernetes
 [node-problem-detector (NPD)](https://github.com/kubernetes/node-problem-detector),
