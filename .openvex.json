@@ -3,7 +3,308 @@
   "@id": "https://github.com/NVIDIA/NVSentinel/.openvex.json",
   "author": "NVIDIA NVSentinel maintainers",
   "role": "Document Creator",
-  "timestamp": "2026-11-11T00:00:00Z",
-  "version": 1,
-  "statements": []
+  "timestamp": "2026-11-13T00:00:00Z",
+  "version": 2,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "GHSA-27vj-qcqg-25rc"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/fsspec@2026.2.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). fsspec is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-6q48-6c7w-9gw2"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/certifi@2026.7.22"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). certifi is a Python CA bundle that comes with the PyTorch base image. The check never runs Python, so nothing reads it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-cg8m-r9f2-5wm2"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/black@26.10.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). black is a Python formatter that comes with the PyTorch base image. The check never runs Python or black."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-pjvx-prjx-h659"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/nbconvert@7.17.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). nbconvert is a Jupyter tool that comes with the PyTorch base image. The check never runs Python or Jupyter."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-v4x8-3wr5-3wq8"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/filelock@4.0.12"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). filelock is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-wf93-45jw-7689"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pip@26.0.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). This pip is bundled inside Nsight Systems in the PyTorch base image. The check never runs Nsight Systems or pip."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6603"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6605"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6607"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6608"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6610"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6611"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6612"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6613"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6617"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    }
+  ]
 }
