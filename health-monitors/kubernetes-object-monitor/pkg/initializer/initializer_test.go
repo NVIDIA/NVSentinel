@@ -23,7 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/testutils"
 )
 
 func TestBuildManagerOptions_CacheSyncTimeout_PreservesConfiguredValue(t *testing.T) {
@@ -82,12 +81,12 @@ func TestBuildCachePlan_PolicyWithoutNamespace_CachesGVKClusterWide(t *testing.T
 
 func TestBuildCachePlan_WatchedGVKs_EachGetATransform(t *testing.T) {
 	plan, err := buildCachePlanWithRESTMapper(testRESTMapper(), []config.Policy{
-		testutils.PolicyWithExpressions("node-not-ready", testutils.NodeGVK, testutils.NodeNotReadyPredicate, ""),
-		testutils.PolicyWithExpressions("pod-health", testutils.PodGVK, `resource.status.phase != 'Running'`, ""),
+		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+		policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, ""),
 	}, time.Minute)
 	require.NoError(t, err)
 
-	for _, gvk := range []schema.GroupVersionKind{testutils.NodeGVK, testutils.PodGVK} {
+	for _, gvk := range []schema.GroupVersionKind{nodeGVK, podGVK} {
 		byObj, ok := byObjectForGVK(plan.options, gvk)
 		require.True(t, ok, "no cache entry for %s", gvk)
 		require.NotNil(t, byObj.Transform, "no transform for %s", gvk)
@@ -96,27 +95,27 @@ func TestBuildCachePlan_WatchedGVKs_EachGetATransform(t *testing.T) {
 
 func TestBuildCachePlan_UnderivablePolicyFields_OmitTransform(t *testing.T) {
 	plan, err := buildCachePlanWithRESTMapper(testRESTMapper(), []config.Policy{
-		testutils.PolicyWithExpressions("node-opaque", testutils.NodeGVK, `size(resource) > 3`, ""),
+		policyWithExpressions("node-opaque", nodeGVK, `size(resource) > 3`, ""),
 	}, time.Minute)
 	require.NoError(t, err)
 
-	byObj, ok := byObjectForGVK(plan.options, testutils.NodeGVK)
+	byObj, ok := byObjectForGVK(plan.options, nodeGVK)
 	require.True(t, ok)
 	require.Nil(t, byObj.Transform)
 }
 
 func TestBuildCachePlan_LiteralGVKLookup_GetsAClusterWideEntry(t *testing.T) {
 	plan, err := buildCachePlanWithRESTMapper(testRESTMapper(), []config.Policy{
-		testutils.PolicyWithExpressions("node-owns-pod", testutils.NodeGVK,
+		policyWithExpressions("node-owns-pod", nodeGVK,
 			`lookup('v1', 'Pod', 'default', 'device-plugin').spec.nodeName == resource.metadata.name`, ""),
 	}, time.Minute)
 	require.NoError(t, err)
 
-	require.Equal(t, []schema.GroupVersionKind{testutils.PodGVK}, plan.lookupGVKs)
+	require.Equal(t, []schema.GroupVersionKind{podGVK}, plan.lookupGVKs)
 
 	// A lookup names whichever namespace it likes, so the entry has to hold
 	// them all.
-	byObj, ok := byObjectForGVK(plan.options, testutils.PodGVK)
+	byObj, ok := byObjectForGVK(plan.options, podGVK)
 	require.True(t, ok, "no cache entry for the looked-up GVK")
 	require.Nil(t, byObj.Namespaces)
 	require.NotNil(t, byObj.Transform)
@@ -127,19 +126,19 @@ func TestBuildCachePlan_LiteralGVKLookup_GetsAClusterWideEntry(t *testing.T) {
 // lookup() is free to name any other namespace, and reading an entry that does
 // not hold it fails, so such a GVK keeps reading through the API.
 func TestBuildCachePlan_NamespaceRestrictedLookupGVK_ReadsThroughAPI(t *testing.T) {
-	podsInOneNamespace := testutils.PolicyWithExpressions("pod-health", testutils.PodGVK, `resource.status.phase != 'Running'`, "")
+	podsInOneNamespace := policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, "")
 	podsInOneNamespace.Resource.Namespace = "gpu-operator"
 
 	plan, err := buildCachePlanWithRESTMapper(testRESTMapper(), []config.Policy{
 		podsInOneNamespace,
-		testutils.PolicyWithExpressions("node-owns-pod", testutils.NodeGVK,
+		policyWithExpressions("node-owns-pod", nodeGVK,
 			`lookup('v1', 'Pod', 'monitoring', 'device-plugin').spec.nodeName == resource.metadata.name`, ""),
 	}, time.Minute)
 	require.NoError(t, err)
 
 	require.Empty(t, plan.lookupGVKs)
 
-	byObj, ok := byObjectForGVK(plan.options, testutils.PodGVK)
+	byObj, ok := byObjectForGVK(plan.options, podGVK)
 	require.True(t, ok)
 	require.Contains(t, byObj.Namespaces, "gpu-operator")
 }

@@ -14,9 +14,7 @@
 
 // Package policytest evaluates policies against test cases offline, with no cluster.
 // Each case gives a resource and the expected predicate result and node; lookup()
-// resolves against the objects the test file lists. Both are pruned the way the
-// monitor's cache prunes them, so a policy sees the same fields it sees in the
-// cluster.
+// resolves against the objects the test file lists.
 package policytest
 
 import (
@@ -31,14 +29,12 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	utiljson "k8s.io/apimachinery/pkg/util/json"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
 
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cacheplan"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
@@ -207,14 +203,7 @@ func hasIdentity(u *unstructured.Unstructured) bool {
 // Run evaluates every case against the policies with policy.Evaluator.Evaluate,
 // the same call the monitor's reconciler makes.
 func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, error) {
-	compiler, err := celenv.NewCompilerEnvironment()
-	if err != nil {
-		return nil, fmt.Errorf("create CEL compiler: %w", err)
-	}
-
-	plan := cacheplan.Build(compiler, policies)
-
-	objects, err := clusterObjects(plan, s.Objects)
+	objects, err := clusterObjects(s.Objects)
 	if err != nil {
 		return nil, err
 	}
@@ -238,18 +227,15 @@ func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, err
 
 	results := make([]Result, 0, len(s.Cases))
 	for _, c := range s.Cases {
-		results = append(results, runCase(ctx, evaluator, plan, byName, c))
+		results = append(results, runCase(ctx, evaluator, byName, c))
 	}
 
 	return results, nil
 }
 
-// clusterObjects validates the test file's objects and returns them as lookup()
-// sees them in the cluster.
-func clusterObjects(
-	plan map[schema.GroupVersionKind]cacheplan.Entry,
-	manifests []map[string]any,
-) ([]client.Object, error) {
+// clusterObjects validates the test file's objects and returns them for the fake
+// client that lookup() reads.
+func clusterObjects(manifests []map[string]any) ([]client.Object, error) {
 	type objectKey struct {
 		apiVersion, kind, namespace, name string
 	}
@@ -271,44 +257,20 @@ func clusterObjects(
 
 		seen[key] = i
 
-		cached, err := clusterObject(plan, u)
-		if err != nil {
-			return nil, fmt.Errorf("object %d: %w", i, err)
+		if u.GetDeletionTimestamp() != nil && len(u.GetFinalizers()) == 0 {
+			return nil, fmt.Errorf("object %d: metadata.deletionTimestamp is set without finalizers, "+
+				"which the API server never serves", i)
 		}
 
-		objects = append(objects, cached)
+		objects = append(objects, u)
 	}
 
 	return objects, nil
 }
 
-// clusterObject returns u as lookup() sees it, in a form the fake client accepts.
-func clusterObject(
-	plan map[schema.GroupVersionKind]cacheplan.Entry,
-	u *unstructured.Unstructured,
-) (*unstructured.Unstructured, error) {
-	if u.GetDeletionTimestamp() != nil && len(u.GetFinalizers()) == 0 {
-		return nil, errors.New("metadata.deletionTimestamp is set without finalizers, which the API server never serves")
-	}
-
-	cached, err := lookedUp(plan, u)
-	if err != nil {
-		return nil, err
-	}
-
-	// The fake client rejects a terminating object without finalizers, and the
-	// cache transform drops them unless a policy reads them.
-	if cached != u && cached.GetDeletionTimestamp() != nil && len(cached.GetFinalizers()) == 0 {
-		cached.SetFinalizers(u.GetFinalizers())
-	}
-
-	return cached, nil
-}
-
 func runCase(
 	ctx context.Context,
 	evaluator *policy.Evaluator,
-	plan map[schema.GroupVersionKind]cacheplan.Entry,
 	byName map[string]config.Policy,
 	c Case,
 ) Result {
@@ -317,12 +279,6 @@ func runCase(
 
 	if failure := checkScope(byName, c.Policy, resource); failure != "" {
 		r.Failures = append(r.Failures, failure)
-		return r
-	}
-
-	resource, err := pruned(plan[resource.GroupVersionKind()], resource)
-	if err != nil {
-		r.Failures = append(r.Failures, err.Error())
 		return r
 	}
 
@@ -346,40 +302,6 @@ func runCase(
 	return r
 }
 
-// lookedUp returns obj as lookup() sees it in the cluster: pruned when the
-// monitor serves lookups of its GVK from the cache, whole when it reads the API.
-func lookedUp(
-	plan map[schema.GroupVersionKind]cacheplan.Entry,
-	obj *unstructured.Unstructured,
-) (*unstructured.Unstructured, error) {
-	entry, ok := plan[obj.GroupVersionKind()]
-	if !ok || !entry.LookupsFromCache {
-		return obj, nil
-	}
-
-	return pruned(entry, obj)
-}
-
-// pruned returns a copy of obj with the fields the entry's cache transform
-// drops removed, or obj itself when the GVK is cached whole.
-func pruned(entry cacheplan.Entry, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
-	if entry.Transform == nil {
-		return obj, nil
-	}
-
-	out, err := entry.Transform(obj.DeepCopy())
-	if err != nil {
-		return nil, fmt.Errorf("prune %s %s: %w", obj.GetKind(), obj.GetName(), err)
-	}
-
-	u, ok := out.(*unstructured.Unstructured)
-	if !ok {
-		return nil, fmt.Errorf("prune %s %s: transform returned %T", obj.GetKind(), obj.GetName(), out)
-	}
-
-	return u, nil
-}
-
 // checkScope reports why the monitor would never evaluate the resource with the
 // policy, or "" when it would.
 func checkScope(byName map[string]config.Policy, name string, resource *unstructured.Unstructured) string {
@@ -393,9 +315,9 @@ func checkScope(byName map[string]config.Policy, name string, resource *unstruct
 	}
 
 	gvk := resource.GroupVersionKind()
-	if gvk != p.Resource.GroupVersionKind() {
+	if got := resourceGVK(gvk.Group, gvk.Version, gvk.Kind); got != p.Resource.GVK() {
 		return fmt.Sprintf("resource is %s but policy %q watches %s, so the monitor never evaluates it",
-			resourceGVK(gvk.Group, gvk.Version, gvk.Kind), p.Name, p.Resource.GVK())
+			got, p.Name, p.Resource.GVK())
 	}
 
 	if !p.Resource.MatchesNamespace(resource.GetNamespace()) {

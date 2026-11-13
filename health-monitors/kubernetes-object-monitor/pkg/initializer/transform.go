@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package cacheplan
+package initializer
 
 import (
 	"log/slog"
@@ -121,7 +121,7 @@ func derivePolicyFieldPaths(compiler *celenv.Environment, policies []config.Poli
 			continue
 		}
 
-		watched := derived.forGVK(policy.Resource.GroupVersionKind())
+		watched := derived.forGVK(policyGVK(policy))
 		watched.watched = true
 
 		for _, expression := range policyExpressions(policy) {

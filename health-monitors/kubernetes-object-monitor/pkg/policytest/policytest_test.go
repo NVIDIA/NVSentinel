@@ -23,10 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cacheplan"
-	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 )
 
@@ -305,41 +302,6 @@ func TestRunRejectsDuplicateObjects(t *testing.T) {
 	_, err := Run(context.Background(), podPolicies(), suite)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "object 1 duplicates object 0 (v1 Node /node-a)")
-}
-
-func TestLookedUpPrunesOnlyObjectsServedFromTheCache(t *testing.T) {
-	compiler, err := celenv.NewCompilerEnvironment()
-	require.NoError(t, err)
-
-	t.Run("served from the cache", func(t *testing.T) {
-		node := &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "v1", "kind": "Node",
-			"metadata": map[string]any{"name": "node-a"},
-			"spec":     map[string]any{"unschedulable": true, "podCIDR": "10.0.0.0/24"},
-		}}
-
-		got, err := lookedUp(cacheplan.Build(compiler, podPolicies()), node)
-		require.NoError(t, err)
-		assert.NotContains(t, got.Object["spec"], "podCIDR")
-		assert.Contains(t, node.Object["spec"], "podCIDR", "the test file's object must not be modified")
-	})
-
-	t.Run("read through the API", func(t *testing.T) {
-		policies := append(podPolicies(), config.Policy{
-			Name:      "pod-lookup",
-			Enabled:   true,
-			Resource:  config.ResourceSpec{Version: "v1", Kind: "Node"},
-			Predicate: config.PredicateSpec{Expression: `lookup("v1", "Pod", "other", "p").status.phase == "Failed"`},
-		})
-		pod := &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "v1", "kind": "Pod",
-			"metadata": map[string]any{"name": "p", "namespace": "other", "labels": map[string]any{"app": "x"}},
-		}}
-
-		got, err := lookedUp(cacheplan.Build(compiler, policies), pod)
-		require.NoError(t, err)
-		assert.Contains(t, got.Object["metadata"], "labels")
-	})
 }
 
 func TestLoadSuiteDecodesIntegersAsInt64(t *testing.T) {

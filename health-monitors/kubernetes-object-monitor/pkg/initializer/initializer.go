@@ -18,8 +18,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,7 +47,6 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cacheplan"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
@@ -228,12 +229,12 @@ func buildCachePlanWithRESTMapper(
 		SyncPeriod: &resyncPeriod,
 	}
 
-	anyEnabled, err := validatePolicyScopes(restMapper, policies)
+	scopes, err := collectWatchScopes(restMapper, policies)
 	if err != nil {
 		return cachePlan{}, err
 	}
 
-	if !anyEnabled {
+	if len(scopes.watched) == 0 {
 		return cachePlan{options: opts}, nil
 	}
 
@@ -242,7 +243,7 @@ func buildCachePlanWithRESTMapper(
 		return cachePlan{}, fmt.Errorf("failed to create CEL environment for cache field derivation: %w", err)
 	}
 
-	entries := cacheplan.Build(compiler, policies)
+	entries := buildCacheEntries(compiler, policies)
 
 	// Every GVK the policies reach gets an entry, cluster-scoped ones included,
 	// because the entry is where the transform lives. Namespaces stays nil to
@@ -253,50 +254,83 @@ func buildCachePlanWithRESTMapper(
 	var lookupGVKs []schema.GroupVersionKind
 
 	for gvk, entry := range entries {
-		var namespaces map[string]cache.Config
-
-		if entry.Namespaces != nil {
-			namespaces = make(map[string]cache.Config, len(entry.Namespaces))
-			for _, ns := range entry.Namespaces {
-				namespaces[ns] = cache.Config{}
-			}
-		}
+		namespaces := scopes.namespaces[gvk]
 
 		opts.ByObject[newUnstructuredForGVK(gvk)] = cache.ByObject{
 			Namespaces: namespaces,
-			Transform:  entry.Transform,
+			Transform:  entry.transform,
 		}
 
-		if entry.LookupsFromCache {
-			lookupGVKs = append(lookupGVKs, gvk)
+		if !entry.servesLookups {
+			continue
 		}
+
+		// A lookup names any namespace it likes, and reading an entry that
+		// holds only some of them fails for the rest.
+		if namespaces != nil {
+			slog.Info("Reading lookup() through the API: the GVK is cached for named namespaces only",
+				"gvk", gvk.String(), "namespaces", slices.Sorted(maps.Keys(namespaces)))
+
+			continue
+		}
+
+		lookupGVKs = append(lookupGVKs, gvk)
 	}
 
 	return cachePlan{options: opts, lookupGVKs: lookupGVKs}, nil
 }
 
-// validatePolicyScopes rejects an enabled policy that sets resource.namespace on a
-// cluster-scoped kind, and reports whether any policy is enabled.
-func validatePolicyScopes(restMapper meta.RESTMapper, policies []config.Policy) (bool, error) {
-	anyEnabled := false
+// watchScopes is the namespace scope each watched GVK is cached at.
+type watchScopes struct {
+	watched map[schema.GroupVersionKind]bool
+	// namespaces holds the cache configuration per namespace for a GVK watched
+	// in named namespaces only. A GVK cached cluster-wide is absent from it.
+	namespaces map[schema.GroupVersionKind]map[string]cache.Config
+}
+
+// collectWatchScopes reads the resource stanza of every enabled policy to work
+// out which GVKs are watched and at which namespace scope. One policy naming no
+// namespace caches the GVK cluster-wide whatever the others ask for, since a
+// wider cache answers their reads too.
+func collectWatchScopes(restMapper meta.RESTMapper, policies []config.Policy) (watchScopes, error) {
+	scopes := watchScopes{
+		watched:    make(map[schema.GroupVersionKind]bool),
+		namespaces: make(map[schema.GroupVersionKind]map[string]cache.Config),
+	}
+
+	clusterWide := make(map[schema.GroupVersionKind]bool)
 
 	for _, p := range policies {
 		if !p.Enabled {
 			continue
 		}
 
-		anyEnabled = true
+		gvk := policyGVK(p)
+		scopes.watched[gvk] = true
 
 		if p.Resource.Namespace == "" {
+			clusterWide[gvk] = true
+			delete(scopes.namespaces, gvk)
+
 			continue
 		}
 
-		if err := validateResourceNamespaceScope(restMapper, p, p.Resource.GroupVersionKind()); err != nil {
-			return false, err
+		if err := validateResourceNamespaceScope(restMapper, p, gvk); err != nil {
+			return watchScopes{}, err
 		}
+
+		if clusterWide[gvk] {
+			continue
+		}
+
+		if scopes.namespaces[gvk] == nil {
+			scopes.namespaces[gvk] = make(map[string]cache.Config)
+		}
+
+		scopes.namespaces[gvk][p.Resource.Namespace] = cache.Config{}
 	}
 
-	return anyEnabled, nil
+	return scopes, nil
 }
 
 func validateResourceNamespaceScope(
@@ -431,11 +465,19 @@ func groupPoliciesByGVK(policies []config.Policy) map[schema.GroupVersionKind][]
 			continue
 		}
 
-		gvk := p.Resource.GroupVersionKind()
+		gvk := policyGVK(p)
 		result[gvk] = append(result[gvk], p)
 	}
 
 	return result
+}
+
+func policyGVK(p config.Policy) schema.GroupVersionKind {
+	return schema.GroupVersionKind{
+		Group:   p.Resource.Group,
+		Version: p.Resource.Version,
+		Kind:    p.Resource.Kind,
+	}
 }
 
 func newUnstructuredForGVK(gvk schema.GroupVersionKind) client.Object {
