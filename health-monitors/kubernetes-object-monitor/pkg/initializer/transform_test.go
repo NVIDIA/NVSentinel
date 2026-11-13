@@ -195,6 +195,55 @@ func TestTransform_NodeAssociationExpression_FieldsAreRetained(t *testing.T) {
 	}, pruned.Object)
 }
 
+// TestTransform_RecoveryPredicate_FieldsAreRetained covers a recovery
+// predicate that reads fields the predicate does not: pruning them away would
+// keep the match forever.
+func TestTransform_RecoveryPredicate_FieldsAreRetained(t *testing.T) {
+	p := policyWithExpressions("xfs-shutdown", nodeGVK,
+		`resource.status.conditions.exists(c, c.type == "XfsShutdown" && c.status != "False")`, "")
+	p.RecoveryPredicate = &config.PredicateSpec{
+		Expression: `"recovery.example.com/xfs" in resource.metadata.annotations &&
+			resource.status.conditions.exists(c,
+				c.type == "XfsShutdown" &&
+				c.status == "False" &&
+				timestamp(string(resource.metadata.annotations["recovery.example.com/xfs"])) >
+					timestamp(c.lastTransitionTime))`,
+	}
+
+	transform := transformForGVK(t, nodeGVK, []config.Policy{p})
+
+	pruned := prunedObject(t, transform, map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Node",
+		"metadata": map[string]any{
+			"name": "gpu-node-0042",
+			"annotations": map[string]any{
+				"recovery.example.com/xfs":     "2026-10-01T12:00:00Z",
+				"node.alpha.kubernetes.io/ttl": "0",
+			},
+		},
+		"status": map[string]any{
+			"conditions": []any{map[string]any{
+				"type":               "XfsShutdown",
+				"status":             "False",
+				"reason":             "XfsHasNotShutDown",
+				"lastTransitionTime": "2026-10-01T11:00:00Z",
+			}},
+		},
+	})
+
+	annotations, found, err := unstructured.NestedStringMap(pruned.Object, "metadata", "annotations")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, map[string]string{"recovery.example.com/xfs": "2026-10-01T12:00:00Z"}, annotations)
+
+	conditions, found, err := unstructured.NestedSlice(pruned.Object, "status", "conditions")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, conditions, 1)
+	require.Equal(t, "2026-10-01T11:00:00Z", conditions[0].(map[string]any)["lastTransitionTime"])
+}
+
 func TestTransform_NonUnstructuredInput_PassesThroughUnchanged(t *testing.T) {
 	transform := transformForGVK(t, nodeGVK, []config.Policy{
 		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),

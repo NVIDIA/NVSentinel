@@ -81,6 +81,11 @@ policies:
   #     # Access the resource via 'resource' variable
   #     expression: |
   #       has(resource.status.state) && resource.status.state == "Failed"
+  #   recoveryPredicate:
+  #     # Optional: CEL expression that must also be true before a matched
+  #     # resource is reported healthy. Until then the match is kept.
+  #     expression: |
+  #       has(resource.status.state) && resource.status.state == "Succeeded"
   #   nodeAssociation:
   #     # Optional: CEL expression to map this resource to a specific node
   #     # This is useful for resources that run on specific nodes

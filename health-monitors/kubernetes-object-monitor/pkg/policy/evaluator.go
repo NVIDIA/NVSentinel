@@ -29,6 +29,7 @@ import (
 type Evaluator struct {
 	celEnv             *celenv.Environment
 	compiledPredicates map[string]*cel.Ast
+	compiledRecovery   map[string]*cel.Ast
 	compiledNodeAssoc  map[string]*cel.Ast
 }
 
@@ -36,6 +37,7 @@ func NewEvaluator(env *celenv.Environment, policies []config.Policy) (*Evaluator
 	e := &Evaluator{
 		celEnv:             env,
 		compiledPredicates: make(map[string]*cel.Ast),
+		compiledRecovery:   make(map[string]*cel.Ast),
 		compiledNodeAssoc:  make(map[string]*cel.Ast),
 	}
 
@@ -51,6 +53,16 @@ func NewEvaluator(env *celenv.Environment, policies []config.Policy) (*Evaluator
 		}
 
 		e.compiledPredicates[policy.Name] = ast
+
+		if policy.RecoveryPredicate != nil {
+			recoveryAst, err := env.Compile(policy.RecoveryPredicate.Expression)
+			if err != nil {
+				slog.Error("Failed to compile recovery predicate", "policy", policy.Name, "error", err)
+				return nil, fmt.Errorf("policy %q: failed to compile recovery predicate: %w", policy.Name, err)
+			}
+
+			e.compiledRecovery[policy.Name] = recoveryAst
+		}
 
 		if policy.NodeAssociation != nil {
 			nodeAst, err := env.Compile(policy.NodeAssociation.Expression)
@@ -76,6 +88,31 @@ func (e *Evaluator) EvaluatePredicate(
 		return false, fmt.Errorf("policy %q not found or not enabled", policyName)
 	}
 
+	return e.evaluateBool(ctx, ast, resource, "predicate")
+}
+
+// EvaluateRecoveryPredicate reports whether a matched resource whose predicate
+// no longer matches may be reported healthy. A policy without a recovery
+// predicate recovers as soon as its predicate stops matching.
+func (e *Evaluator) EvaluateRecoveryPredicate(
+	ctx context.Context,
+	policyName string,
+	resource *unstructured.Unstructured,
+) (bool, error) {
+	ast, ok := e.compiledRecovery[policyName]
+	if !ok {
+		return true, nil
+	}
+
+	return e.evaluateBool(ctx, ast, resource, "recovery predicate")
+}
+
+func (e *Evaluator) evaluateBool(
+	ctx context.Context,
+	ast *cel.Ast,
+	resource *unstructured.Unstructured,
+	what string,
+) (bool, error) {
 	result, err := e.celEnv.Evaluate(ast, resource.Object, ctx)
 	if err != nil {
 		return false, fmt.Errorf("evaluation failed: %w", err)
@@ -83,7 +120,7 @@ func (e *Evaluator) EvaluatePredicate(
 
 	boolResult, ok := result.(types.Bool)
 	if !ok {
-		return false, fmt.Errorf("predicate did not return boolean, got %T", result)
+		return false, fmt.Errorf("%s did not return boolean, got %T", what, result)
 	}
 
 	return bool(boolResult), nil

@@ -68,8 +68,8 @@ func validatePolicy(policy Policy) error {
 		return fmt.Errorf("policy %q: resource.kind is required", policy.Name)
 	}
 
-	if policy.Predicate.Expression == "" {
-		return fmt.Errorf("policy %q: predicate.expression is required", policy.Name)
+	if err := validatePredicates(policy); err != nil {
+		return err
 	}
 
 	if policy.HealthEvent.ComponentClass == "" {
@@ -94,6 +94,18 @@ func validatePolicy(policy Policy) error {
 	if err := validateBehaviourOverrides(policy.Name, "drainOverrides",
 		policy.HealthEvent.DrainOverrides); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func validatePredicates(policy Policy) error {
+	if policy.Predicate.Expression == "" {
+		return fmt.Errorf("policy %q: predicate.expression is required", policy.Name)
+	}
+
+	if policy.RecoveryPredicate != nil && policy.RecoveryPredicate.Expression == "" {
+		return fmt.Errorf("policy %q: recoveryPredicate.expression is required when recoveryPredicate is set", policy.Name)
 	}
 
 	return nil
