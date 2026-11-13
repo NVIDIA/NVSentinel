@@ -152,9 +152,11 @@ func TestAdaptiveFallbackPoller_PollsWhileListenerSetupStalls(t *testing.T) {
 		watcher.adaptiveFallbackPoller(ctx, stopCh)
 	}()
 
-	// No listener subscription arrives, representing a stalled handshake. Polling still
-	// establishes readiness and repeats while LISTEN setup remains blocked.
-	require.Eventually(t, watcher.IsReady, time.Second, 10*time.Millisecond)
+	// No listener subscription arrives, representing a stalled handshake. The fallback waits
+	// for its first five-second tick, then establishes readiness while LISTEN remains blocked.
+	require.Never(t, watcher.IsReady, 4*time.Second, 10*time.Millisecond,
+		"fallback must not race LISTEN setup with an immediate query")
+	require.Eventually(t, watcher.IsReady, 2*time.Second, 10*time.Millisecond)
 	require.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, 7*time.Second, 25*time.Millisecond)
 
 	cancel()

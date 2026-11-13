@@ -1194,13 +1194,6 @@ func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Conte
 		"client", w.clientName,
 		"initialInterval", checkInterval)
 
-	// Poll immediately, without waiting for LISTEN setup. A stalled handshake must not hold up
-	// reads from the healthy query pool. Once LISTEN subscribes, its catch-up barrier drains rows
-	// visible across the setup gap.
-	if err := w.fetchNewChanges(ctx); err != nil {
-		slog.Error("Initial fallback poll failed", "client", w.clientName, "error", err)
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
