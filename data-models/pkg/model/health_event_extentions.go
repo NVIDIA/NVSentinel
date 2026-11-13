@@ -37,6 +37,18 @@ const (
 	Cancelled          Status = "Cancelled"
 )
 
+// Drain method names recorded on HealthEventStatus.drainDecision.
+// BuiltIn is the eviction node-drainer does itself. Custom is the custom drain CR.
+const (
+	DrainMethodBuiltIn = "BuiltIn"
+	DrainMethodCustom  = "Custom"
+)
+
+// CustomDrainNodeSelectorRuleSet is the rule set name ADR-064 gives to a drain
+// selected by the deprecated customDrain.nodeSelector. Recording it now keeps
+// the stored name the same when that selector becomes a real rule set.
+const CustomDrainNodeSelectorRuleSet = "custom-drain-node-selector"
+
 type HealthEventWithStatus struct {
 	CreatedAt         time.Time                 `bson:"createdAt"`
 	HealthEvent       *protos.HealthEvent       `bson:"healthevent,omitempty"`
