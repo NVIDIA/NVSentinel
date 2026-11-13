@@ -24,6 +24,42 @@ Nil/empty → 2592000. Strings must be base-10 digits in 0–2147483647 (int("ab
 {{- end }}
 
 {{/*
+activeDeadlineSeconds for a MongoDB setup Job. Takes a dict with "raw" (the
+configured value), "default" and "key" (the values path, for the error message).
+Nil/empty -> default. Strings must be base-10 digits and numbers must be whole
+(int("abc"), int 0.5 and int {} are all 0, which would silently drop the deadline). 0 is valid and means "no deadline": callers omit the field.
+*/}}
+{{- define "nvsentinel.jobActiveDeadlineSeconds" -}}
+{{- $raw := .raw -}}
+{{- if or (kindIs "invalid" $raw) (eq ($raw | toString) "") -}}
+{{- $raw = .default -}}
+{{- end -}}
+{{- if kindIs "bool" $raw -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
+{{- if kindIs "string" $raw -}}
+{{- if not (regexMatch "^[0-9]+$" $raw) -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
+{{- if or (gt (len $raw) 10) (and (eq (len $raw) 10) (gt $raw "2147483647")) -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
+{{- end -}}
+{{- if kindIs "float64" $raw -}}
+{{- if or (ne $raw (floor $raw)) (lt $raw 0.0) (gt $raw 2147483647.0) -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
+{{- else if not (or (kindIs "string" $raw) (kindIs "int" $raw) (kindIs "int64" $raw)) -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
+{{- $v := int $raw -}}
+{{- if or (lt $v 0) (gt $v 2147483647) -}}
+{{- fail (printf "%s must be an integer from 0 through 2147483647, got %v" .key $raw) -}}
+{{- end -}}
+{{- $v -}}
+{{- end }}
+
+{{/*
 <release>-external-mongodb-setup-<ttl>-<scriptHash> so a TTL or init-script
 change is a new Job, not a patch on a completed one.
 */}}
