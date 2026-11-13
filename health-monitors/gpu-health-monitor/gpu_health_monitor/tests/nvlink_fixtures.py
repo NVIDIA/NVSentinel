@@ -35,6 +35,7 @@ A100_PCIE_UNBRIDGED: Final[dict] = {
     "nvlinks": [],
     "nvlink_link_count": 12,
     "nvlink_active_link_count": 0,
+    "nvlink_present_link_count": 12,
 }
 
 H100_SXM_TRAINED: Final[dict] = {
@@ -44,6 +45,7 @@ H100_SXM_TRAINED: Final[dict] = {
     "nvlinks": [],
     "nvlink_link_count": 18,
     "nvlink_active_link_count": 18,
+    "nvlink_present_link_count": 18,
 }
 
 L40_NO_NVLINK: Final[dict] = {
@@ -53,6 +55,7 @@ L40_NO_NVLINK: Final[dict] = {
     "nvlinks": [],
     "nvlink_link_count": 0,
     "nvlink_active_link_count": 0,
+    "nvlink_present_link_count": 0,
 }
 
 
