@@ -137,6 +137,20 @@ When tracing is enabled, Helm injects these environment variables into every NVS
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `<global.tracing.endpoint>` |
 | `OTEL_EXPORTER_OTLP_INSECURE` | `<global.tracing.insecure>` |
 
+### Resource Attributes
+
+Every span carries resource attributes that identify the module that sent it:
+
+| Attribute | Source |
+|-----------|--------|
+| `service.name` | The module name, for example `node-drainer` |
+| `service.version` | The version of the module build |
+| `telemetry.sdk.*` | The OpenTelemetry SDK name, language and version |
+
+Each module also reads the standard `OTEL_RESOURCE_ATTRIBUTES` variable, so attributes set there, for example `deployment.environment.name=production`, appear on every span. A module skips an attribute that it cannot parse, logs a warning, and continues to send traces. The module always sets `service.name` and `service.version` itself, so `OTEL_SERVICE_NAME` or `OTEL_RESOURCE_ATTRIBUTES` cannot rename a service.
+
+To add the pod, namespace and node to spans, enable the `k8sattributes` processor in your collector (`otelcol.processor.k8sattributes` in Grafana Alloy). It adds `k8s.pod.name`, `k8s.namespace.name` and `k8s.node.name` from the connection of the sending pod.
+
 ### Prerequisites
 
 - An OpenTelemetry Collector (e.g., Grafana Alloy, vanilla OTel Collector) accessible from the NVSentinel namespace
