@@ -83,7 +83,9 @@ node-drainer:
   partialDrainEnabled: true
 ```
 
-Post-remediation validation in fault-quarantine needs to know whether an event was drained partially. `fault-quarantine.validation.partialDrainEnabled` defaults to `false`, the same as this setting. If you enable partial drain here, enable it there too so a partial drain never counts as a full drain, or set `global.partialDrainEnabled`, which overrides both subchart values:
+Post-remediation validation in fault-quarantine needs to know whether an event was drained partially. `fault-quarantine.validation.partialDrainEnabled` defaults to `false`, the same as this setting. If you enable partial drain here, enable it there too so a partial drain never counts as a full drain, or set `global.partialDrainEnabled`, which overrides both subchart values.
+
+For an event that has a recorded drain decision, the already-drained check reads that record. `fault-quarantine.validation.partialDrainEnabled` then applies only to an event that has no record:
 
 ```yaml
 global:
@@ -266,8 +268,10 @@ startup.
 node-drainer chooses the drain method once for each health event and records it on the event. For
 a partial drain, the record also holds the entity that is drained, for example a GPU UUID. Later
 passes drain the recorded entity, so a change to `partialDrainEnabled` during the drain does not
-change what is drained. It
-stores the record before it reads, evicts or deletes a pod, and before it creates a custom drain CR.
+change what is drained. The already-drained check reads that recorded scope for each earlier event.
+A record with no scope is a full drain. An event with no record still uses `partialDrainEnabled`.
+node-drainer stores the record before it reads, evicts or deletes a pod, and before it creates a
+custom drain CR.
 Every drain action then follows the stored record. If two node-drainer passes choose at the same
 time, only the first record is kept, and the other pass follows it. A label change during the drain
 does not change the method. node-drainer chooses the method of a new event from the labels at the
@@ -275,9 +279,12 @@ time that event starts. A drain that is already in progress when node-drainer is
 record. The first pass after the upgrade chooses the method again and records it.
 
 If the method is `Custom` and the CR of another event has already drained the node, node-drainer
-marks the event drained and records no method. If the CR of the event itself completed before a
-method was recorded, as for a drain that started before node-drainer recorded decisions,
-node-drainer records `Custom`, then marks the event drained.
+marks the event drained and records only the scope. It records no method, because this event did not
+drain the node. An event that node-drainer marks `AlreadyDrained` because an earlier drain covered it
+records that scope in the same update as the status, when the event has no decision yet. A full drain
+records a decision with no scope and no method. An event that already has a decision keeps it. If
+the CR of the event itself completed before a method was recorded, as for a drain that started
+before node-drainer recorded decisions, node-drainer records `Custom`, then marks the event drained.
 
 A node the cache cannot resolve is retried rather than assigned a path. Only the label keys the
 selector references are retained in the node cache.

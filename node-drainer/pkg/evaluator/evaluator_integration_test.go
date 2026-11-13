@@ -599,6 +599,34 @@ func TestEvaluator_IsNodeAlreadyDrained(t *testing.T) {
 			expectedErrMessage:       "no supported entities for a partial drain found",
 			expectedIsAlreadyDrained: false,
 		},
+		{
+			name:     "recorded partial drain stays partial when partial drain is turned off",
+			nodeName: "test-node",
+			annotationHealthEvents: []*protos.HealthEvent{
+				{Id: "68ba1f82edf24b925c99cce8"},
+			},
+			healthEventsFromStore: [][]datastore.HealthEventWithStatus{
+				{recordedPartialDrain("GPU-0")},
+			},
+			partialDrainEnabled:      false,
+			expectedIsAlreadyDrained: false,
+		},
+		{
+			name:     "recorded partial drain still covers the same entity when partial drain is turned off",
+			nodeName: "test-node",
+			annotationHealthEvents: []*protos.HealthEvent{
+				{Id: "68ba1f82edf24b925c99cce8"},
+			},
+			partialDrainEntity: &protos.Entity{
+				EntityType:  "GPU_UUID",
+				EntityValue: "GPU-0",
+			},
+			healthEventsFromStore: [][]datastore.HealthEventWithStatus{
+				{recordedPartialDrain("GPU-0")},
+			},
+			partialDrainEnabled:      false,
+			expectedIsAlreadyDrained: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -790,4 +818,25 @@ func TestPartialDrainEntity_PartialDrainDisabled_ReturnsNilWithoutError(t *testi
 
 	require.NoError(t, err)
 	assert.Nil(t, entity)
+}
+
+func recordedPartialDrain(entityValue string) datastore.HealthEventWithStatus {
+	return datastore.HealthEventWithStatus{
+		HealthEventStatus: datastore.HealthEventStatus{
+			NodeQuarantined: ptr.To(datastore.Quarantined),
+			UserPodsEvictionStatus: datastore.OperationStatus{
+				Status: datastore.StatusSucceeded,
+			},
+			DrainDecision: &datastore.DrainDecision{
+				Scope: &datastore.Entity{EntityType: "GPU_UUID", EntityValue: entityValue},
+			},
+		},
+		HealthEvent: &protos.HealthEvent{
+			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			EntitiesImpacted: []*protos.Entity{{
+				EntityType:  "GPU_UUID",
+				EntityValue: entityValue,
+			}},
+		},
+	}
 }

@@ -1893,6 +1893,117 @@ func TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess(t *testing.T) {
 	assert.GreaterOrEqual(t, afterSkipped, beforeSkipped+1, "EventsProcessed with drain_status=skipped should increment for already drained nodes")
 }
 
+// TestReconciler_CoveredAlreadyDrainedRecordsScope stores the scope of a partial event in the
+// same update that marks it AlreadyDrained. The earlier event completed a full drain.
+func TestReconciler_CoveredAlreadyDrainedRecordsScope(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	nodeName := "scope-record-node"
+	prepareCoveredNode(t, setup, nodeName)
+
+	updates := recordStatusUpdates(setup.mockCollection, 1)
+
+	event := partialQuarantinedEvent(nodeName, model.AlreadyQuarantined)
+	require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
+		setup.healthEventStore, nodeName))
+
+	require.Len(t, updates.writes, 1)
+	assertScopeOnlyDecision(t, updates.writes[0], "GPU-0")
+	assert.Nil(t, updates.filters[0]["healtheventstatus.draindecision"])
+
+	partialSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName,
+		string(evaluator.DrainScopePartial))
+	require.GreaterOrEqual(t, partialSkipped, 1.0)
+}
+
+// TestReconciler_CoveredAlreadyDrainedKeepsExistingRecord does not replace a decision that is
+// already stored on the event.
+func TestReconciler_CoveredAlreadyDrainedKeepsExistingRecord(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	nodeName := "scope-kept-node"
+	prepareCoveredNode(t, setup, nodeName)
+
+	updates := recordStatusUpdates(setup.mockCollection, 1)
+	event := partialQuarantinedEvent(nodeName, model.AlreadyQuarantined)
+	event["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = &protos.DrainDecision{
+		Method: model.DrainMethodBuiltIn,
+		Scope:  &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-0"},
+	}
+
+	require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
+		setup.healthEventStore, nodeName))
+
+	require.Len(t, updates.writes, 1)
+	_, wroteDecision := updates.writes[0]["healtheventstatus.draindecision"]
+	assert.False(t, wroteDecision, "an event that already has a record keeps it")
+	assertEvictionStatus(t, updates.writes[0], model.AlreadyDrained)
+}
+
+// TestReconciler_CoveredAlreadyDrainedRequeuesWhenRecordExists loses the compare-and-set because
+// another writer stored a decision first. The status stays unchanged and the pass is retried.
+func TestReconciler_CoveredAlreadyDrainedRequeuesWhenRecordExists(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	nodeName := "scope-race-node"
+	prepareCoveredNode(t, setup, nodeName)
+	recordStatusUpdates(setup.mockCollection, 0)
+
+	event := partialQuarantinedEvent(nodeName, model.AlreadyQuarantined)
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+	require.ErrorContains(t, err, "already recorded")
+}
+
+// TestReconciler_HealthyAndSkipRecordNoScope keeps a healthy event and a skipped event free of a
+// drain decision. Neither one was covered by an earlier drain.
+func TestReconciler_HealthyAndSkipRecordNoScope(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	tests := []struct {
+		name   string
+		mutate func(*protos.HealthEvent)
+	}{
+		{
+			name:   "healthy",
+			mutate: func(event *protos.HealthEvent) { event.IsHealthy = true },
+		},
+		{
+			name: "skip",
+			mutate: func(event *protos.HealthEvent) {
+				event.DrainOverrides = &protos.BehaviourOverrides{Skip: true}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updates := recordStatusUpdates(setup.mockCollection, 1)
+			event := createHealthEvent(healthEventOptions{
+				nodeName:        tt.name + "-node",
+				nodeQuarantined: model.Quarantined,
+			})
+			tt.mutate(event["healthevent"].(*protos.HealthEvent))
+
+			require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
+				setup.healthEventStore, tt.name+"-node"))
+
+			require.Len(t, updates.writes, 1)
+			_, wroteDecision := updates.writes[0]["healtheventstatus.draindecision"]
+			assert.False(t, wroteDecision)
+			assertEvictionStatus(t, updates.writes[0], model.AlreadyDrained)
+		})
+	}
+}
+
 // Helper functions for reading Prometheus metrics
 
 func getCounterValue(t *testing.T, counter prometheus.Counter) float64 {
@@ -3199,4 +3310,81 @@ func (s *decisionAlreadyRecordedStore) UpdateDocument(
 	}
 
 	return s.mockDataStore.UpdateDocument(ctx, filter, update)
+}
+
+type statusUpdateCapture struct {
+	writes  []map[string]any
+	filters []map[string]any
+}
+
+func recordStatusUpdates(collection *MockMongoCollection, matched int64) *statusUpdateCapture {
+	capture := &statusUpdateCapture{}
+	collection.UpdateDocumentFunc = func(_ context.Context, filter, update any) (*sdkclient.UpdateResult, error) {
+		if filterMap, ok := filter.(map[string]any); ok {
+			capture.filters = append(capture.filters, filterMap)
+		}
+
+		if updateMap, ok := update.(map[string]any); ok {
+			if setMap, ok := updateMap["$set"].(map[string]any); ok {
+				capture.writes = append(capture.writes, setMap)
+			}
+		}
+
+		return &sdkclient.UpdateResult{MatchedCount: matched, ModifiedCount: matched}, nil
+	}
+
+	return capture
+}
+
+func prepareCoveredNode(t *testing.T, setup *testSetup, nodeName string) {
+	t.Helper()
+
+	annotationValue, err := createHealthEventAnnotationsMap([]*protos.HealthEvent{{Id: "previous-event"}})
+	require.NoError(t, err)
+	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, map[string]string{"test": "true"},
+		map[string]string{common.QuarantineHealthEventAnnotationKey: annotationValue})
+	waitForNodeInInformer(t, setup.informersInstance, nodeName)
+
+	setup.healthEventStore.healthEvents = []datastore.HealthEventWithStatus{{
+		HealthEventStatus: datastore.HealthEventStatus{
+			NodeQuarantined: ptr.To(datastore.Quarantined),
+			UserPodsEvictionStatus: datastore.OperationStatus{
+				Status: datastore.StatusSucceeded,
+			},
+			DrainDecision: &datastore.DrainDecision{Method: model.DrainMethodBuiltIn},
+		},
+		HealthEvent: &protos.HealthEvent{RecommendedAction: protos.RecommendedAction_RESTART_VM},
+	}}
+}
+
+func partialQuarantinedEvent(nodeName string, status model.Status) map[string]any {
+	return createHealthEvent(healthEventOptions{
+		nodeName:          nodeName,
+		nodeQuarantined:   status,
+		recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		entitiesImpacted: []*protos.Entity{{
+			EntityType:  "GPU_UUID",
+			EntityValue: "GPU-0",
+		}},
+	})
+}
+
+func assertScopeOnlyDecision(t *testing.T, setMap map[string]any, entityValue string) {
+	t.Helper()
+
+	stored, ok := setMap["healtheventstatus.draindecision"].(*datastore.DrainDecision)
+	require.True(t, ok)
+	assert.Empty(t, stored.Method)
+	require.NotNil(t, stored.Scope)
+	assert.Equal(t, "GPU_UUID", stored.Scope.EntityType)
+	assert.Equal(t, entityValue, stored.Scope.EntityValue)
+	assertEvictionStatus(t, setMap, model.AlreadyDrained)
+}
+
+func assertEvictionStatus(t *testing.T, setMap map[string]any, status model.Status) {
+	t.Helper()
+
+	statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, string(status), statusMap["status"])
 }
