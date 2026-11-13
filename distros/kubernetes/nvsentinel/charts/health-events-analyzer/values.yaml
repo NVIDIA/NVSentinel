@@ -141,10 +141,10 @@ config: |
 
   [[rules]]
   name = "RepeatedXIDErrorOnSameGPU"
-  description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
+  description = "Detect occurrence of XID errors (any XID except 45 and those the Xid catalogue resolves as IGNORE or RESTART_APP) on the same GPU 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
   recommended_action = "CONTACT_SUPPORT"
   evaluate_rule = {{ .Values.enableRepeatedXIDErrorOnSameGPURule }}
-  when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45'))"
+  when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || !(event.errorCode[0] in ['8', '11', '13', '14', '25', '31', '32', '37', '38', '39', '40', '41', '43', '44', '45', '60', '63', '66', '67', '68', '69', '70', '71', '72', '75', '76', '77', '80', '82', '83', '84', '85', '86', '88', '89', '92', '93', '94', '96', '97', '98', '99', '100', '101', '102', '103', '104', '105', '106', '107', '108', '121', '126', '127', '128', '129', '130', '131', '132', '133', '134', '135', '137', '139', '141', '152', '153', '157', '160', '161']))"
   stage = [
     '''
     {
@@ -177,18 +177,7 @@ config: |
         "$expr": {
           "$and": [
             {"$eq": ["this.healthevent.checkname", "SysLogsXIDError"]},
-            {
-              "$ne": [
-                "this.healthevent.errorcode.0",
-                "31"
-              ]
-            },
-            {
-              "$ne": [
-                "this.healthevent.errorcode.0",
-                "45"
-              ]
-            }
+            {"$not": [{"$in": ["this.healthevent.errorcode.0", ["8", "11", "13", "14", "25", "31", "32", "37", "38", "39", "40", "41", "43", "44", "45", "60", "63", "66", "67", "68", "69", "70", "71", "72", "75", "76", "77", "80", "82", "83", "84", "85", "86", "88", "89", "92", "93", "94", "96", "97", "98", "99", "100", "101", "102", "103", "104", "105", "106", "107", "108", "121", "126", "127", "128", "129", "130", "131", "132", "133", "134", "135", "137", "139", "141", "152", "153", "157", "160", "161"]]}]}
           ]
         }
       }
@@ -197,9 +186,12 @@ config: |
     # Candidate docs must also be XID events so non-XID unhealthy events on
     # the same node are not merged into GPU burst counts.
     #
-    # Excluded codes: 31 has its own dedicated rules; 45 is preemptive channel cleanup that
-    # the Xid catalogue resolves as "Not Solo: IGNORE (follow other Xid)", and a repeat is
-    # never solo.
+    # Excluded codes: every XID whose Xid catalogue immediate action is IGNORE ("No Action
+    # required") or RESTART_APP ("RESET_GPU or RESTART_BM is not deemed necessary"), so a
+    # crash-looping application repeating them does not escalate a healthy GPU; 31 and 13
+    # also have their own dedicated rules. 45 is preemptive channel cleanup that the Xid
+    # catalogue resolves as "Not Solo: IGNORE (follow other Xid)", and a repeat is never solo.
+    # Keep this list, the when condition and the gate stage above in sync.
     '''
     {
       "$match": {
@@ -208,7 +200,7 @@ config: |
         "healthevent.nodename": "this.healthevent.nodename",
         "$expr": {
           "$and": [
-            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "45"]]}]},
+            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["8", "11", "13", "14", "25", "31", "32", "37", "38", "39", "40", "41", "43", "44", "45", "60", "63", "66", "67", "68", "69", "70", "71", "72", "75", "76", "77", "80", "82", "83", "84", "85", "86", "88", "89", "92", "93", "94", "96", "97", "98", "99", "100", "101", "102", "103", "104", "105", "106", "107", "108", "121", "126", "127", "128", "129", "130", "131", "132", "133", "134", "135", "137", "139", "141", "152", "153", "157", "160", "161"]]}]},
             {
               "$gt": [
                 {

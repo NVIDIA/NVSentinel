@@ -356,9 +356,9 @@ func TestRepeatedXIDOnSameGPU(t *testing.T) {
 		t.Log("Waiting 22s to create burst gap (>20s required)")
 		time.Sleep(22 * time.Second)
 
-		// Burst 3: XID 13 (non-sticky) creates new burst after 16s gap
-		// Burst 3 contents: XID 13, 31
-		// Expectations: XID 31 triggers (appears in Burst 1 and Burst 3)
+		// XID 13 and XID 31 after the burst gap. Both are excluded from RepeatedXIDErrorOnSameGPU
+		// (the Xid catalogue resolves them as RESTART_APP, and each has its own dedicated rules),
+		// so neither forms a burst for this rule.
 		errorCodes = []string{helpers.ERRORCODE_13, helpers.ERRORCODE_31}
 		for _, errorCode := range errorCodes {
 			helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(testNodeName).
@@ -373,10 +373,9 @@ func TestRepeatedXIDOnSameGPU(t *testing.T) {
 
 		time.Sleep(5 * time.Second)
 
-		// Burst 3 (continued): XID 13 arrives again after 5s gap (< 20s), stays in same burst
-		// Burst 3 final contents: XID 13 (x2), 31 (x1)
-		// Expectations: XID 13 will NOT trigger (only appears in Burst 3, and targetXidCount=2 in maxBurst),
-		// 				 XID 31 will also not trigger as we are excluding XID 31 from RepeatedXIDErrorOnSameGPU rule
+		// XID 13 again after a 5s gap.
+		// Expectations: neither XID 13 nor XID 31 triggers, so the condition still lists only
+		// 120, 119 and 48.
 		helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(testNodeName).
 			WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
 			WithCheckName("SysLogsXIDError").

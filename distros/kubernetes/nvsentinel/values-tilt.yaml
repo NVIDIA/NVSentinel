@@ -588,10 +588,10 @@ health-events-analyzer:
 
     [[rules]]
     name = "RepeatedXIDErrorOnSameGPU"
-    description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
+    description = "Detect occurrence of XID errors (any XID except 45 and those the Xid catalogue resolves as IGNORE or RESTART_APP) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
-    when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || (event.errorCode[0] != '31' && event.errorCode[0] != '45'))"
+    when = "event.checkName == 'SysLogsXIDError' && (size(event.errorCode) == 0 || !(event.errorCode[0] in ['8', '11', '13', '14', '25', '31', '32', '37', '38', '39', '40', '41', '43', '44', '45', '60', '63', '66', '67', '68', '69', '70', '71', '72', '75', '76', '77', '80', '82', '83', '84', '85', '86', '88', '89', '92', '93', '94', '96', '97', '98', '99', '100', '101', '102', '103', '104', '105', '106', '107', '108', '121', '126', '127', '128', '129', '130', '131', '132', '133', '134', '135', '137', '139', '141', '152', '153', '157', '160', '161']))"
     stage = [
       '''
       {
@@ -625,7 +625,7 @@ health-events-analyzer:
             "$and": [
               {"$eq": ["this.healthevent.checkname", "SysLogsXIDError"]},
               {
-              "$not": [{"$in": ["this.healthevent.errorcode.0", ["31", "45"]]}]
+              "$not": [{"$in": ["this.healthevent.errorcode.0", ["8", "11", "13", "14", "25", "31", "32", "37", "38", "39", "40", "41", "43", "44", "45", "60", "63", "66", "67", "68", "69", "70", "71", "72", "75", "76", "77", "80", "82", "83", "84", "85", "86", "88", "89", "92", "93", "94", "96", "97", "98", "99", "100", "101", "102", "103", "104", "105", "106", "107", "108", "121", "126", "127", "128", "129", "130", "131", "132", "133", "134", "135", "137", "139", "141", "152", "153", "157", "160", "161"]]}]
               }
             ]
           }
@@ -646,7 +646,7 @@ health-events-analyzer:
           "healthevent.nodename": "this.healthevent.nodename",
           "$expr": {
           "$and": [
-            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "45"]]}]},
+            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["8", "11", "13", "14", "25", "31", "32", "37", "38", "39", "40", "41", "43", "44", "45", "60", "63", "66", "67", "68", "69", "70", "71", "72", "75", "76", "77", "80", "82", "83", "84", "85", "86", "88", "89", "92", "93", "94", "96", "97", "98", "99", "100", "101", "102", "103", "104", "105", "106", "107", "108", "121", "126", "127", "128", "129", "130", "131", "132", "133", "134", "135", "137", "139", "141", "152", "153", "157", "160", "161"]]}]},
             {
               "$gt": [
                 {
