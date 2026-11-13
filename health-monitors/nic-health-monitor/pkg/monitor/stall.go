@@ -240,7 +240,11 @@ func stallMessage(stalled map[string]time.Duration) string {
 // events.
 func (m *NICHealthMonitor) publishStallEvent(ctx context.Context, evt *pb.HealthEvent) bool {
 	batch := &pb.HealthEvents{Version: 1, Events: []*pb.HealthEvent{evt}}
-	if err := m.pub.Publish(ctx, batch); err != nil {
+
+	pubCtx, cancel := m.publishDrainContext(ctx)
+	defer cancel()
+
+	if err := m.pub.Publish(pubCtx, batch); err != nil {
 		if errors.Is(err, healthpub.ErrPublishRejected) {
 			slog.Error("Platform connector rejected NIC poll stall event for good; dropping it",
 				"is_healthy", evt.IsHealthy, "error", err)
