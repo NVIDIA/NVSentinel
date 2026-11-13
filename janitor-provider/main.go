@@ -207,7 +207,7 @@ func realMain() int {
 	ctrllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 	slog.Info("Starting janitor-provider", "version", version, "commit", commit, "date", date)
 
-	if err := tracing.InitTracing("janitor-provider"); err != nil {
+	if err := tracing.InitTracing("janitor-provider", tracing.WithServiceVersion(version)); err != nil {
 		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 

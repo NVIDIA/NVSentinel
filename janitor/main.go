@@ -107,7 +107,7 @@ func main() {
 		slog.Warn("Failed to initialize audit logger", "error", err)
 	}
 
-	if err := tracing.InitTracing("janitor"); err != nil {
+	if err := tracing.InitTracing("janitor", tracing.WithServiceVersion(version)); err != nil {
 		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 

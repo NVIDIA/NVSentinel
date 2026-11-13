@@ -480,7 +480,7 @@ func main() {
 		slog.Warn("Failed to initialize audit logger", "error", err)
 	}
 
-	if err := tracing.InitTracing("lifecycle-manager"); err != nil {
+	if err := tracing.InitTracing("lifecycle-manager", tracing.WithServiceVersion(version)); err != nil {
 		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 

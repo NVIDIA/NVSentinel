@@ -85,7 +85,7 @@ func main() {
 		slog.Warn("Failed to initialize audit logger", "error", err)
 	}
 
-	if err := tracing.InitTracing("fault-remediation"); err != nil {
+	if err := tracing.InitTracing("fault-remediation", tracing.WithServiceVersion(version)); err != nil {
 		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 
