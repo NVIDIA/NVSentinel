@@ -27,6 +27,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/writer"
 )
 
 // scriptedMapper returns the given results in order, then blocks the poll loop from making
@@ -336,4 +340,28 @@ func TestCollectionCompletedGauge_StartsAtZero(t *testing.T) {
 
 	gauge.SetToCurrentTime()
 	assert.InDelta(t, float64(time.Now().Unix()), testutil.ToFloat64(gauge), 5)
+}
+
+func TestCarryOverPrevious(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gpu_metadata.json")
+	degraded := func() *model.GPUMetadata {
+		return &model.GPUMetadata{GPUs: []model.GPUInfo{{UUID: "GPU-a", NUMANode: -1}}}
+	}
+
+	metadata := degraded()
+	carryOverPrevious(path, metadata, []string{collector.StepTopo})
+	assert.Equal(t, degraded(), metadata, "no previous file leaves the fields empty")
+
+	previous := &model.GPUMetadata{
+		GPUs:        []model.GPUInfo{{UUID: "GPU-a", NUMANode: 1}},
+		NICTopology: map[string][]string{"mlx5_0": {"PIX"}},
+	}
+
+	metadataWriter, err := writer.NewWriter(path)
+	require.NoError(t, err)
+	require.NoError(t, metadataWriter.Write(previous))
+
+	carryOverPrevious(path, metadata, []string{collector.StepTopo})
+	assert.Equal(t, previous.NICTopology, metadata.NICTopology)
+	assert.Equal(t, 1, metadata.GPUs[0].NUMANode)
 }
