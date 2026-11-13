@@ -42,6 +42,8 @@ The daily scan also reads [`.grype.yaml`](.grype.yaml), which excludes the paths
 
 ### Handle a Reported Vulnerability
 
+Handle each vulnerability of critical or high severity as follows. The scans also report vulnerabilities of lower severity, but those need no update and no statement.
+
 - If the vulnerability affects NVSentinel, update the dependency or the base image that contains it.
 - If a vulnerability in a dependency of the repository does not affect NVSentinel, update the dependency anyway. The scans report only vulnerabilities that have a fix, and the repository sets the version of each dependency.
 - If a vulnerability in an image does not affect NVSentinel, open a pull request that adds a statement to [`.openvex.json`](.openvex.json). A maintainer reviews the statement in the pull request. After the merge, the weekly scan no longer reports the vulnerability for that image, and its alert closes at the next scan. Images published after the merge carry the statement in their [OpenVEX attestation](#openvex-attestation).
@@ -78,11 +80,12 @@ Each statement has these fields:
 
 Also increase the `version` of the document by one, and set its `timestamp` to the time of the change.
 
-To get the ID and the PURL of each finding in an image, run Grype on the image:
+To get the ID and the PURL of each critical or high finding in an image, run Grype on the image:
 
 ```shell
 grype ghcr.io/nvidia/nvsentinel/gpu-reset:<tag> --only-fixed -o json \
-  | jq -r '.matches[] | "\(.vulnerability.id) \(.artifact.purl)"'
+  | jq -r '.matches[] | select(.vulnerability.severity == "Critical" or .vulnerability.severity == "High")
+      | "\(.vulnerability.id) \(.artifact.purl)"'
 ```
 
 ## Product Security Resources
