@@ -88,6 +88,18 @@ type testK8sClient struct {
 	// quarantine informer index; tests set it directly to drive the standing bound.
 	cordonedNodes    int
 	cordonedNodesErr error
+
+	// existingNodes is what NodeExists reports. Production reads it from the node informer.
+	existingNodes map[string]bool
+	nodeExistsErr error
+}
+
+func (c *testK8sClient) NodeExists(ctx context.Context, name string) (bool, error) {
+	if c.nodeExistsErr != nil {
+		return false, c.nodeExistsErr
+	}
+
+	return c.existingNodes[name], nil
 }
 
 func (c *testK8sClient) GetCordonedNodes(ctx context.Context) (int, error) {
@@ -1157,7 +1169,7 @@ func TestIsTripped_NoGPUNodes_StaysClosed(t *testing.T) {
 func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {
 	ctx := context.Background()
 	b := newNoGPUNodeBreaker(t, ctx)
-	b.cfg.K8sClient.(*testK8sClient).cordonedNodes = 1
+	b.cfg.K8sClient.(*testK8sClient).existingNodes = map[string]bool{"node-outside-gpu-label": true}
 
 	b.AddCordonEvent("node-outside-gpu-label")
 
@@ -1167,6 +1179,23 @@ func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {
 	require.Equal(t, StateTripped, b.CurrentState())
 	assert.Equal(t, map[string]float64{string(boundNoGPUNodes): 1},
 		gaugeSeries(t, metrics.FaultQuarantineBreakerThresholdNodes))
+}
+
+// The quarantine annotation reaches the informer index only when the watch event for the patched
+// node arrives, so a second event can be checked before the first cordon is counted there.
+func TestIsTripped_NoGPUNodesWithCordonNotYetIndexed_Trips(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+	k8sClient := b.cfg.K8sClient.(*testK8sClient)
+	k8sClient.cordonedNodes = 0
+	k8sClient.existingNodes = map[string]bool{"node-a": true}
+
+	b.AddCordonEvent("node-a")
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.True(t, tripped, "a cordoned node still in the cluster must trip the breaker before its annotation is indexed")
+	require.Equal(t, StateTripped, b.CurrentState())
 }
 
 func TestIsTripped_NoGPUNodesAfterCordonedNodeDeleted_StaysClosed(t *testing.T) {
@@ -1184,7 +1213,7 @@ func TestIsTripped_NoGPUNodesAfterCordonedNodeDeleted_StaysClosed(t *testing.T) 
 func TestIsTripped_NoGPUNodesCordonedLookupFails_ReturnsError(t *testing.T) {
 	ctx := context.Background()
 	b := newNoGPUNodeBreaker(t, ctx)
-	b.cfg.K8sClient.(*testK8sClient).cordonedNodesErr = fmt.Errorf("informer cache not synced")
+	b.cfg.K8sClient.(*testK8sClient).nodeExistsErr = fmt.Errorf("informer cache not synced")
 
 	b.AddCordonEvent("node-outside-gpu-label")
 

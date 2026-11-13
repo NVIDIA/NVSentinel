@@ -79,7 +79,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `fault_quarantine_breaker_state` | Gauge | `state` | State of the fault quarantine breaker |
 | `fault_quarantine_breaker_utilization` | Gauge | - | Fraction of GPU nodes cordoned within the circuit breaker's sliding window |
-| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, `fleetSize` when clamped, or `noGPUNodes` when no GPU nodes are counted and a recent cordon of a node still in the cluster trips it) |
+| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, `fleetSize` when clamped, or `noGPUNodes` when no GPU nodes are counted and a node cordoned in the window is still in the cluster, which trips it) |
 | `fault_quarantine_get_total_nodes_duration_seconds` | Histogram | `result` | Duration of getTotalNodes calls in seconds |
 | `fault_quarantine_get_total_nodes_errors_total` | Counter | `error_type` | Total number of errors from getTotalNodes |
 

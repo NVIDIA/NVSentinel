@@ -39,6 +39,8 @@ type K8sClientOperations interface {
 	// too, for example GPU operator upgrade flows, and those must not consume this
 	// breaker's budget.
 	GetCordonedNodes(ctx context.Context) (int, error)
+	// NodeExists reports whether the node is in the cluster.
+	NodeExists(ctx context.Context, name string) (bool, error)
 	EnsureCircuitBreakerConfigMap(ctx context.Context, name, namespace string, initialStatus State) error
 	ReadCircuitBreakerState(ctx context.Context, name, namespace string) (State, error)
 	WriteCircuitBreakerState(ctx context.Context, name, namespace string, status State) error
