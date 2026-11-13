@@ -54,6 +54,10 @@ type GPUFallenHandler struct {
 	recentXIDs            map[string]xidRecord // pciAddr -> XID record
 	xidWindow             time.Duration        // how long to remember XID errors
 	cancelCleanup         context.CancelFunc   // stops the cleanup goroutine
+
+	// XIDCheckEnabled says whether the XID check reports XIDs on this node. Set it before
+	// the first ProcessLine call.
+	XIDCheckEnabled bool
 }
 
 // gpuFallenErrorEvent represents a parsed GPU fallen off bus error event
