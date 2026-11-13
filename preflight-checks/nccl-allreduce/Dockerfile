@@ -20,10 +20,6 @@
 # Build from repository root:
 #   docker build -t preflight-nccl-allreduce -f preflight-checks/nccl-allreduce/Dockerfile .
 
-# PyTorch version determines CUDA runtime version - must match cluster's GPU driver
-# See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
-#   26.09-py3 = CUDA 13.4.1, NCCL 2.31.2 (Ubuntu 24.04, Python 3.12)
-ARG PYTORCH_VERSION=26.09-py3@sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6
 ARG VERSION="0.1.0"
 
 # =============================================================================
@@ -62,11 +58,11 @@ RUN poetry export --format requirements.txt --output constraints.txt --without-h
 # - NCCL library optimized for data center GPUs
 # - CUDA toolkit and drivers
 # - PyTorch distributed with NCCL backend
+#
+# The PyTorch version sets the CUDA version, which the GPU driver of the cluster must support.
+# See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
 # =============================================================================
-# Digest-pinned through the ARG value (tag@sha256). The tag is a build-matrix parameter (see
-# Makefile) used to produce image variants. Dependabot cannot update an ARG, so update the tag
-# and the digest together by hand.
-FROM nvcr.io/nvidia/pytorch:${PYTORCH_VERSION} AS runtime
+FROM nvcr.io/nvidia/pytorch:26.09-py3@sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6 AS runtime
 
 ARG VERSION
 
