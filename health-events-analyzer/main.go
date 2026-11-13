@@ -55,7 +55,7 @@ func main() {
 	logger.SetDefaultStructuredLoggerWithTraceCorrelation("health-events-analyzer", version)
 	slog.Info("Starting health-events-analyzer", "version", version, "commit", commit, "date", date)
 
-	if err := tracing.InitTracing(tracing.ServiceHealthEventsAnalyzer); err != nil {
+	if err := tracing.InitTracing(tracing.ServiceHealthEventsAnalyzer, tracing.WithServiceVersion(version)); err != nil {
 		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 
