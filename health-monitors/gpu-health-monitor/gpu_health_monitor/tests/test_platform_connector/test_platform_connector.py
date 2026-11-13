@@ -23,7 +23,7 @@ import json
 import os
 import shutil
 import tempfile
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from concurrent import futures
 import dcgm_fields
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
@@ -1459,12 +1459,14 @@ class TestPlatformConnectors(unittest.TestCase):
         ]
         return metadata
 
-    def _fault_after_metadata_rewrite(
-        self, metadata_before: dict, metadata_after: dict, gpu_ids: list[int], failing_gpu_id: int
-    ) -> platformconnector_pb2.HealthEvent:
-        """Publishes a healthy poll with metadata_before on disk, replaces the file with metadata_after
-        the way metadata-collector does, then publishes a double-bit ECC error on failing_gpu_id and
-        returns the fault event."""
+    def _processor_on_metadata(
+        self, metadata: dict, gpu_ids: list[int]
+    ) -> tuple[Callable[[dict], None], Callable[..., list[platformconnector_pb2.HealthEvent]]]:
+        """Starts the event processor on a metadata file that holds metadata, like the previous boot's
+        file after a reboot. Returns rewrite(metadata), which replaces the file the way metadata-collector
+        does, and poll(failing_gpu_id, codes), which runs one poll that reports codes, a double-bit ECC
+        error unless given, on failing_gpu_id, or every watch healthy when failing_gpu_id is None, and
+        returns the events that poll published."""
         metadata_dir = tempfile.TemporaryDirectory()
         self.addCleanup(metadata_dir.cleanup)
         metadata_path = os.path.join(metadata_dir.name, "gpu_metadata.json")
@@ -1492,7 +1494,7 @@ class TestPlatformConnectors(unittest.TestCase):
         )
 
         # After a reboot the hostPath still holds the previous boot's file.
-        write_like_metadata_collector(metadata_before)
+        write_like_metadata_collector(metadata)
         processor = platform_connector.PlatformConnectorEventProcessor(
             config=platform_connector.PlatformConnectorConfig(
                 socket_path=socket_path,
@@ -1506,28 +1508,41 @@ class TestPlatformConnectors(unittest.TestCase):
         )
         self.addCleanup(processor.close)
 
+        def poll(
+            failing_gpu_id: int | None, codes: tuple[str, ...] = ("DCGM_FR_VOLATILE_DBE_DETECTED",)
+        ) -> list[platformconnector_pb2.HealthEvent]:
+            dcgm_health_events = watcher._get_health_status_dict()
+            if failing_gpu_id is not None:
+                dcgm_health_events["DCGM_HEALTH_WATCH_MEM"] = dcgmtypes.HealthDetails(
+                    status=dcgmtypes.HealthStatus.FAIL,
+                    entity_failures={
+                        failing_gpu_id: [
+                            dcgm.types.ErrorDetails(code=code, message=f"{code} on GPU {failing_gpu_id}")
+                            for code in codes
+                        ]
+                    },
+                )
+            healthEventProcessor.health_events = None
+            processor.health_event_occurred(dcgm_health_events, gpu_ids)
+            return list(healthEventProcessor.health_events or [])
+
+        return write_like_metadata_collector, poll
+
+    def _fault_after_metadata_rewrite(
+        self, metadata_before: dict, metadata_after: dict, gpu_ids: list[int], failing_gpu_id: int
+    ) -> platformconnector_pb2.HealthEvent:
+        """Publishes a healthy poll with metadata_before on disk, replaces the file with metadata_after
+        the way metadata-collector does, then publishes a double-bit ECC error on failing_gpu_id and
+        returns the fault event."""
+        rewrite, poll = self._processor_on_metadata(metadata_before, gpu_ids)
+
         # The first poll finds every watch healthy and reads the file for the healthy events.
-        processor.health_event_occurred(watcher._get_health_status_dict(), gpu_ids)
+        poll(None)
 
         # metadata-collector starts, collects and replaces the file.
-        write_like_metadata_collector(metadata_after)
+        rewrite(metadata_after)
 
-        dcgm_health_events = watcher._get_health_status_dict()
-        dcgm_health_events["DCGM_HEALTH_WATCH_MEM"] = dcgmtypes.HealthDetails(
-            status=dcgmtypes.HealthStatus.FAIL,
-            entity_failures={
-                failing_gpu_id: [
-                    dcgm.types.ErrorDetails(
-                        code="DCGM_FR_VOLATILE_DBE_DETECTED",
-                        message=f"Volatile double-bit ECC error on GPU {failing_gpu_id}",
-                    )
-                ]
-            },
-        )
-        healthEventProcessor.health_events = None
-        processor.health_event_occurred(dcgm_health_events, gpu_ids)
-
-        faults = [event for event in healthEventProcessor.health_events or [] if not event.isHealthy]
+        faults = [event for event in poll(failing_gpu_id) if not event.isHealthy]
         assert len(faults) == 1
         return faults[0]
 
@@ -1578,6 +1593,39 @@ class TestPlatformConnectors(unittest.TestCase):
             "PCI": "0000:3d:00.0",
             "GPU_UUID": "GPU-22222222-0000-0000-0000-000000000000",
         }
+
+    def test_health_event_recovery_after_metadata_rewrite_names_the_gpu_of_its_fault(self) -> None:
+        """Faults published from the previous boot's file name the slot of the board that is gone. After the
+        rewrite, the recovery of one error code and the recovery of the GPU must name that slot: a recovery
+        that names 3d:00 leaves the fault on 2a:00 in fault-quarantine and in the node condition."""
+        dbe, pages = "DCGM_FR_VOLATILE_DBE_DETECTED", "DCGM_FR_PENDING_PAGE_RETIREMENTS"
+        rewrite, poll = self._processor_on_metadata(
+            self._metadata_with_gpus(
+                (0, "GPU-00000000-0000-0000-0000-000000000000", "0000:17:00.0"),
+                (1, "GPU-11111111-0000-0000-0000-000000000000", "0000:2a:00.0"),
+                (2, "GPU-22222222-0000-0000-0000-000000000000", "0000:3d:00.0"),
+            ),
+            gpu_ids=[0, 1],
+        )
+
+        def entities(event: platformconnector_pb2.HealthEvent) -> dict[str, str]:
+            return {entity.entityType: entity.entityValue for entity in event.entitiesImpacted}
+
+        faults = [entities(event) for event in poll(1, (dbe, pages)) if not event.isHealthy]
+        # The previous boot's file lists the board at 2a:00 as DCGM id 1.
+        assert [fault["PCI"] for fault in faults] == ["0000:2a:00.0", "0000:2a:00.0"]
+
+        rewrite(
+            self._metadata_with_gpus(
+                (0, "GPU-00000000-0000-0000-0000-000000000000", "0000:17:00.0"),
+                (1, "GPU-22222222-0000-0000-0000-000000000000", "0000:3d:00.0"),
+            )
+        )
+        # The double-bit error clears while the page retirements stay pending.
+        recoveries = [event for event in poll(1, (pages,)) if event.isHealthy]
+        assert [(list(event.errorCode), entities(event)) for event in recoveries] == [([dbe], faults[0])]
+        # Then the GPU recovers.
+        assert faults[0] in [entities(event) for event in poll(None)]
 
     def test_health_event_poll_checks_metadata_file_once(self) -> None:
         """A poll looks up every GPU once per watch but checks the metadata file only once."""
