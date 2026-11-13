@@ -112,11 +112,13 @@ A count that such a node keeps stays live for the [ADR-043 policy](043-expected-
 
 ### If the instance check is wanted
 
-The instance check is a second class, `mig`, disabled in the chart. It writes `nvsentinel.dgxc.nvidia.com/mig.count.current` and `.expected` from the GFD rows of the instance column. Its partitions add `nvidia.com/mig.config`, the layout the MIG manager applies, and the profiles GFD shows. Between the label change and the stop of GFD, which [follows `pending`](https://github.com/NVIDIA/mig-parted/blob/v0.15.1/pkg/mig/reconfigure/reconfigure.go#L127-L173), a node has the new layout label and the old GFD labels. The profiles keep that node in a partition of its own. Layouts with the same profiles and different counts still share one.
+The instance check is a second class, `mig`, disabled in the chart. It writes `nvsentinel.dgxc.nvidia.com/mig.count.current` and `.expected` from the GFD rows of the instance column. Its partitions add `nvidia.com/mig.config`, the layout the MIG manager applies, and the profiles GFD shows. From the label change until GFD writes the new layout, a node can carry the new layout label with the old GFD labels. The MIG manager sets `pending` only [after it checks the new layout](https://github.com/NVIDIA/mig-parted/blob/v0.15.1/pkg/mig/reconfigure/reconfigure.go#L127-L173). GFD [defaults to the NodeFeature API](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/cmd/gpu-feature-discovery/main.go#L100-L105), and with it GFD [keeps its labels when it stops](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/cmd/gpu-feature-discovery/main.go#L240-L258) until it writes again, usually after `success`. No label marks that time, and when both layouts use the same profiles the node shares the partition of settled nodes.
 
 It skips a `-MIG-INVALID` node, so it misses a GPU that lost all its instances. A Kubernetes Object Monitor policy on that product can flag it. Since layout changes move nodes between partitions, it needs the relearn record's partition rule. It leaves out the DRA driver, which finds instances [only when its kubelet plugin starts](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/v0.5.1/site/content/docs/concepts/gpu-allocation.md?plain=1#L66-L69). Labels per profile wait, because a total per layout already shows a missing instance.
 
 The relearn record's settled expression applies only between `pending` and the final state. In that time the MIG manager [stops GFD, DCGM and other GPU clients](https://github.com/NVIDIA/mig-parted/blob/v0.15.1/pkg/mig/reconfigure/reconfigure.go#L373-L417) and later [restarts them](https://github.com/NVIDIA/mig-parted/blob/v0.15.1/pkg/mig/reconfigure/reconfigure.go#L542-L581).
+
+The class therefore holds a node through a layout change, from the moment its `nvidia.com/mig.config` differs from the layout in its partition annotation. The change ends when the node is settled and GFD reports a count other than its `mig.count.current` label. Until then, and while it is not settled, the class writes neither label for the node, so `current` keeps the pre-change count. The node teaches nobody, and after the change it relearns in its new partition. A change that keeps the count leaves the node out of learning, with labels that stay right.
 
 ### Fault-quarantine and node-drainer
 
@@ -179,7 +181,7 @@ The kernel XID line has a [form with `GPU-I` and `GPU-CI`](https://github.com/NV
 - The DRA driver does not publish a GPU in MIG mode [that has no instances](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/v0.5.1/site/content/docs/concepts/gpu-allocation.md?plain=1#L70-L72), so that GPU counts as missing. Its slices keep listing old instances until the kubelet plugin restarts.
 - Until the layout is restored, a reset leaves a GPU in MIG mode without instances. Under the single strategy the whole node then offers no MIG device.
 - In phase one a contained error names only the GPU, so an operator cannot tell which instance it hit.
-- The instance check adds two labels on MIG nodes and depends on the relearn record. It misses a GPU that lost all its instances.
+- The instance check adds two labels on MIG nodes and depends on the relearn record. It misses a GPU that lost all its instances. A count that changes for another reason before the MIG manager applies a new layout ends that change early.
 - The MIG manager also stops the GPU Operator's DCGM, so a gpu-health-monitor in the default `operator-service` mode can report the fatal `GpuDcgmConnectivityFailure`. The default rules then cordon the node. This was read from the code, not reproduced.
 
 ### Mitigations
