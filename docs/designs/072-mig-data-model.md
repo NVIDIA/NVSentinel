@@ -126,9 +126,10 @@ Fault-quarantine keys each entity of an event separately (`HealthEventKey` in `h
 
 Node-drainer keeps keying on the GPU UUID, and the pod device annotation maps an instance to its GPU.
 
-- The metadata collector appends the parent `GPU-<uuid>` of each MIG device a pod holds, next to the device ID. The device plugin reports an instance [by its MIG UUID](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/internal/rm/devices.go#L60-L90), and a DRA MIG device is named [`gpu-<parent minor>-mig-...`](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/v0.5.1/cmd/gpu-kubelet-plugin/mig.go#L119-L122).
+- The metadata collector appends the parent `GPU-<uuid>` of each MIG device a pod holds, next to the device ID. The device plugin reports an instance [by its MIG UUID](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/internal/rm/devices.go#L60-L90), and a DRA MIG device is named [`gpu-<parent minor>-mig-...`](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/v0.5.1/cmd/gpu-kubelet-plugin/mig.go#L119-L122). The collector writes the MIG devices of a pod only together with the parents of all of them.
 - The `GPU_UUID` entry in `EntityTypeToResourceNames` covers the [`nvidia.com/mig-<profile>`](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/internal/rm/rm.go#L145) names by prefix, and the [`mig.nvidia.com`](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/v0.5.1/deployments/helm/dra-driver-nvidia-gpu/templates/deviceclass-mig.yaml) DeviceClass. Each place that reads the entry matches exact names today, so each one changes.
-- Both roll out in one Helm release, so the collector change ships one release before node-drainer learns the MIG names. Otherwise node-drainer must treat an unannotated MIG pod as not using the entity, or it fails each partial drain on that node (`informers.go` L486-L495).
+- A pod holds MIG devices when it requests an `nvidia.com/mig-<profile>` resource, claims from the `mig.nvidia.com` DeviceClass, or its annotation names a MIG device. Node-drainer accepts the annotation of such a pod only when it lists a MIG device and a `GPU-` UUID. Otherwise it returns the missing-annotation error (`informers.go` L486-L495), during the rollout and after it. The partial drain then does not complete (`informers.go` L1196-L1197), and the GPU is not reset. A stale annotation from an older collector or a failing mapper therefore stops the drain instead of hiding the pod.
+- Both roll out in one Helm release, so the collector change ships one release before node-drainer learns the MIG names. The error then does not stop partial drains during an upgrade.
 
 A `COMPONENT_RESET` of a GPU then drains each pod on its instances. The reset removes the instances. Under the single strategy the device plugin then [treats the layout as invalid](https://github.com/NVIDIA/k8s-device-plugin/blob/v0.20.1/internal/rm/device_map.go#L90-L97) and GFD marks the node `-MIG-INVALID`. The MIG manager applies a layout only [when it starts or its label changes](https://github.com/NVIDIA/mig-parted/blob/v0.15.1/cmd/nvidia-mig-manager/main.go#L556-L585), so a follow-up has to decide how the layout is restored.
 
@@ -180,6 +181,7 @@ The kernel XID line has a [form with `GPU-I` and `GPU-CI`](https://github.com/NV
 - The labeler logs a warning at each reconcile of a skipped node.
 - The DRA driver does not publish a GPU in MIG mode [that has no instances](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/v0.5.1/site/content/docs/concepts/gpu-allocation.md?plain=1#L70-L72), so that GPU counts as missing. Its slices keep listing old instances until the kubelet plugin restarts.
 - Until the layout is restored, a reset leaves a GPU in MIG mode without instances. Under the single strategy the whole node then offers no MIG device.
+- A MIG pod that the collector has not annotated stops partial drains on its node, as an unannotated GPU pod does today.
 - In phase one a contained error names only the GPU, so an operator cannot tell which instance it hit.
 - The instance check adds two labels on MIG nodes and depends on the relearn record. It misses a GPU that lost all its instances. A count that changes for another reason before the MIG manager applies a new layout ends that change early.
 - The MIG manager also stops the GPU Operator's DCGM, so a gpu-health-monitor in the default `operator-service` mode can report the fatal `GpuDcgmConnectivityFailure`. The default rules then cordon the node. This was read from the code, not reproduced.
@@ -224,7 +226,7 @@ The GPU class keeps counting instances under the single strategy, and the partit
 1. The labeler gains `uncountedExpression`. Its GPU class counts GPUs, with the expressions above in `values.yaml`, `values-full.yaml` and the labeler docs, and a test for each MIG form.
 2. The metadata collector records the instances of each GPU in `gpu_metadata.json`.
 3. The metadata collector writes parent GPU UUIDs into the pod device annotation, one release before the next item.
-4. Node-drainer learns the MIG resource names and DeviceClass for partial drains.
+4. Node-drainer learns the MIG resource names and DeviceClass for partial drains, and the annotation it accepts for a MIG pod.
 5. After reproducing it, the gpu-health-monitor holds `GpuDcgmConnectivityFailure` while `nvidia.com/mig.config.state` is `pending` or `rebooting`.
 6. Fault-remediation decides how the layout is restored after a reset, before the device plugin and GFD return, and how the DRA kubelet plugin restarts.
 7. The labeler chart gets the instance check, if the first question says so.
