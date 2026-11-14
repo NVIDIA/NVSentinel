@@ -107,6 +107,10 @@ spec:
             - name: GENERIC_REBOOT_IMAGE_PULL_SECRETS
               value: {{ .Values.csp.generic.imagePullSecrets | quote }}
             {{- end }}
+            {{- if .Values.csp.generic.rebootJobPriorityClassName }}
+            - name: GENERIC_REBOOT_JOB_PRIORITY_CLASS_NAME
+              value: {{ .Values.csp.generic.rebootJobPriorityClassName | quote }}
+            {{- end }}
             {{- end }}
             {{- if eq (lower (.Values.csp.provider | default "kind")) "label" }}
             # Label provider environment variables (key=value specs)
