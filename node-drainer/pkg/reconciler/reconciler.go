@@ -50,8 +50,9 @@ import (
 
 // Document field and update-operator names used in datastore queries.
 const (
-	fieldID = "_id"
-	opSet   = "$set"
+	fieldID          = "_id"
+	opSet            = "$set"
+	drainDecisionKey = "healtheventstatus.draindecision"
 )
 
 type eventStatus struct {
@@ -422,19 +423,9 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 	r.markEventInProgress(ctx, eventID, nodeName, healthEventWithStatus.CreatedAt)
 
-	actionResult, err := r.evaluator.EvaluateEventWithDatabase(ctx, healthEventWithStatus, database, healthEventStore)
+	actionResult, err := r.evaluateEvent(ctx, healthEventWithStatus, event, database, healthEventStore, nodeName)
 	if err != nil {
-		_, span := tracing.StartSpan(ctx, "node_drainer.evaluate_event")
-		defer span.End()
-
-		metrics.ProcessingErrors.WithLabelValues("evaluate_event_error", nodeName).Inc()
-		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("node_drainer.error.type", "evaluate_event_error"),
-			attribute.String("node_drainer.error.message", err.Error()),
-		)
-
-		return fmt.Errorf("failed to evaluate event: %w", err)
+		return err
 	}
 
 	slog.InfoContext(ctx, "Evaluated action for node",
@@ -456,6 +447,130 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 	}
 
 	return err
+}
+
+// evaluateEvent returns the drain action for this pass. When the event has no drain decision,
+// the evaluator stores the one it chooses through recordNewDrainDecision before it returns an
+// action, so nothing drains before the store.
+func (r *Reconciler) evaluateEvent(ctx context.Context, healthEvent model.HealthEventWithStatus,
+	event datastore.Event, database queue.DataStore, healthEventStore datastore.HealthEventStore, nodeName string,
+) (*evaluator.DrainActionResult, error) {
+	recordDecision := func(ctx context.Context, decision *protos.DrainDecision) error {
+		if err := r.recordNewDrainDecision(ctx, decision, event, database, nodeName); err != nil {
+			return err
+		}
+
+		healthEvent.HealthEventStatus.DrainDecision = decision
+
+		return nil
+	}
+
+	actionResult, err := r.evaluator.EvaluateEventWithDatabase(ctx, healthEvent, database, healthEventStore,
+		recordDecision)
+	if err == nil {
+		return actionResult, nil
+	}
+
+	// recordNewDrainDecision counts its own failures, and a lost race is a requeue, not an error.
+	if !errors.Is(err, evaluator.ErrDrainDecisionNotRecorded) {
+		_, span := tracing.StartSpan(ctx, "node_drainer.evaluate_event")
+		defer span.End()
+
+		metrics.ProcessingErrors.WithLabelValues("evaluate_event_error", nodeName).Inc()
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("node_drainer.error.type", "evaluate_event_error"),
+			attribute.String("node_drainer.error.message", err.Error()),
+		)
+	}
+
+	return nil, fmt.Errorf("failed to evaluate event: %w", err)
+}
+
+// recordNewDrainDecision stores the method, the rule set, and the scope of a partial drain.
+// A drain of the full node stores no scope.
+// A failed write returns an error so the queue retries and nothing is drained yet.
+// The update names only draindecision, so a remediation decision on the same event stays.
+// The write matches only while draindecision is unset. During a rolling update two node-drainer
+// pods can decide the same event with different config; the one that loses requeues and follows
+// the stored decision on its next pass instead of overwriting it.
+func (r *Reconciler) recordNewDrainDecision(ctx context.Context, decision *protos.DrainDecision,
+	event datastore.Event, database queue.DataStore, nodeName string) error {
+	if decision.GetMethod() == "" {
+		metrics.ProcessingErrors.WithLabelValues(metrics.ErrorTypeRecordDrainDecision, nodeName).Inc()
+
+		return fmt.Errorf("drain decision for node %s has no method to record", nodeName)
+	}
+
+	ctx, span := tracing.StartSpan(ctx, "node_drainer.record_drain_decision")
+	defer span.End()
+
+	documentID, err := utils.ExtractDocumentIDNative(event)
+	if err != nil {
+		metrics.ProcessingErrors.WithLabelValues(metrics.ErrorTypeRecordDrainDecision, nodeName).Inc()
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("node_drainer.error.type", "extract_document_id_error"),
+			attribute.String("node_drainer.error.message", err.Error()),
+		)
+
+		return fmt.Errorf("failed to extract document ID for drain decision: %w", err)
+	}
+
+	stored := &datastore.DrainDecision{
+		RuleSet:    decision.GetRuleSet(),
+		Method:     decision.GetMethod(),
+		Stopped:    decision.GetStopped(),
+		ReusedFrom: decision.GetReusedFrom(),
+	}
+
+	if scope := decision.GetScope(); scope != nil {
+		stored.Scope = &datastore.Entity{EntityType: scope.GetEntityType(), EntityValue: scope.GetEntityValue()}
+	}
+
+	filter := map[string]any{
+		fieldID:          documentID,
+		drainDecisionKey: nil,
+	}
+	update := map[string]any{opSet: map[string]any{
+		drainDecisionKey: stored,
+	}}
+
+	result, err := database.UpdateDocument(ctx, filter, update)
+	if err != nil {
+		metrics.ProcessingErrors.WithLabelValues(metrics.ErrorTypeRecordDrainDecision, nodeName).Inc()
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("node_drainer.error.type", metrics.ErrorTypeRecordDrainDecision),
+			attribute.String("node_drainer.error.message", err.Error()),
+		)
+
+		return fmt.Errorf("failed to record drain decision for node %s: %w", nodeName, err)
+	}
+
+	if result == nil || result.MatchedCount == 0 {
+		slog.WarnContext(ctx, "Drain decision already recorded by another writer, requeueing to follow it",
+			"node", nodeName,
+			"method", decision.GetMethod(),
+			"ruleSet", decision.GetRuleSet())
+		span.SetAttributes(attribute.Bool("node_drainer.drain.decision_already_recorded", true))
+
+		return fmt.Errorf("drain decision for node %s already recorded, requeueing to follow it", nodeName)
+	}
+
+	slog.InfoContext(ctx, "Recorded drain decision",
+		"node", nodeName,
+		"method", decision.GetMethod(),
+		"ruleSet", decision.GetRuleSet(),
+		"scopeEntityType", decision.GetScope().GetEntityType(),
+		"scopeEntityValue", decision.GetScope().GetEntityValue())
+
+	span.SetAttributes(
+		attribute.String("node_drainer.drain.method", decision.GetMethod()),
+		attribute.String("node_drainer.drain.ruleset", decision.GetRuleSet()),
+	)
+
+	return nil
 }
 
 func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainActionResult,
@@ -765,12 +880,23 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 			)
 		}
 
+		// Re-asserted every poll from the event itself, so this is the instant the wait began
+		// no matter how many times the item has been requeued. Several events can be queued for
+		// one node while it drains; the helper keeps the earliest event's time so a newer event's
+		// polls cannot hide an older wait, and skips events that carry no creation time.
+		metrics.RecordNodeDrainAwaitingCompletionEventTimestamp(nodeName, healthEvent.CreatedAt)
+
 		slog.InfoContext(ctx, "Pods still running on node, requeuing for later check",
 			"node", nodeName,
 			"remainingPods", remainingPods)
 
 		return fmt.Errorf("waiting for pods to complete: %d pods remaining", len(remainingPods))
 	}
+
+	// Removed as soon as completion is observed, not left to ClearNodeDraining on a later pass:
+	// this branch requeues for the status update, so the series would otherwise keep reporting a
+	// wait for one more interval after the pods are already gone.
+	metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 
 	slog.InfoContext(ctx, "All pods completed on node", "node", nodeName)
 
@@ -870,6 +996,11 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		if !nodeLabelModified {
 			return fmt.Errorf("failed to update node %s label to %s: %w", nodeName, terminalDrainLabelValue, err)
 		}
+
+		// The validation error is returned after the label is written, so the node label is
+		// terminal even though ClearNodeDraining was skipped above. Drop the waiting series
+		// here rather than leave a false wait behind.
+		metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 	} else {
 		r.queueManager.ClearNodeDraining(nodeName)
 	}
@@ -895,6 +1026,11 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 				attribute.String("node_drainer.error.type", "update_nvsentinel_state_label"),
 				attribute.String("node_drainer.error.message", err.Error()),
 			)
+
+			// The unquarantine ends the wait whether or not the label removal lands, and the
+			// caller returns without requeueing, so the removal is never retried. Drop the
+			// waiting series here rather than leave a false wait behind.
+			metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 		} else {
 			r.queueManager.ClearNodeDraining(nodeName)
 		}
@@ -1248,6 +1384,11 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
 		tracing.RecordError(span, err)
+
+		// The cancelled status is already persisted and this event is not requeued, so the
+		// label removal is never retried. Drop the waiting series here rather than leave a
+		// false wait behind.
+		metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 	} else {
 		r.queueManager.ClearNodeDraining(nodeName)
 	}

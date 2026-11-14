@@ -48,16 +48,15 @@ type CustomDrainConfig struct {
 	// NodeSelector restricts custom drain to the nodes it matches, using standard
 	// label selector syntax. Nodes that do not match keep the built-in eviction path.
 	// An empty selector sends every node through custom drain.
-	NodeSelector          string   `toml:"nodeSelector"`
-	TemplateMountPath     string   `toml:"templateMountPath"`
-	TemplateFileName      string   `toml:"templateFileName"`
-	Namespace             string   `toml:"namespace"`
-	Timeout               Duration `toml:"timeout"`
-	ApiGroup              string   `toml:"apiGroup"`
-	Version               string   `toml:"version"`
-	Kind                  string   `toml:"kind"`
-	StatusConditionType   string   `toml:"statusConditionType"`
-	StatusConditionStatus string   `toml:"statusConditionStatus"`
+	NodeSelector          string `toml:"nodeSelector"`
+	TemplateMountPath     string `toml:"templateMountPath"`
+	TemplateFileName      string `toml:"templateFileName"`
+	Namespace             string `toml:"namespace"`
+	ApiGroup              string `toml:"apiGroup"`
+	Version               string `toml:"version"`
+	Kind                  string `toml:"kind"`
+	StatusConditionType   string `toml:"statusConditionType"`
+	StatusConditionStatus string `toml:"statusConditionStatus"`
 }
 
 type TomlConfig struct {
@@ -175,10 +174,6 @@ func validateCustomDrainConfig(config *TomlConfig) error {
 		if value == "" {
 			return fmt.Errorf("customDrain.%s is required when customDrain.enabled=true", field)
 		}
-	}
-
-	if config.CustomDrain.Timeout.Duration == 0 {
-		config.CustomDrain.Timeout.Duration = 3600 * time.Second
 	}
 
 	return nil

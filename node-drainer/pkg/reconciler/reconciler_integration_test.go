@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -1078,11 +1079,22 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	require.NoError(t, err)
 
 	createPod(setup.ctx, t, setup.client, "completion-test", "running-pod", nodeName, v1.PodRunning, nil, nil, nil)
-	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
+	// A known past creation time rather than "now", so the assertion below can be exact: a
+	// poll-time value would also be positive, but `time() - start` could then never cross an
+	// elapsed-time threshold and the alert would not fire.
+	eventCreatedAt := time.Now().Add(-2 * time.Hour)
+	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName, eventCreatedAt)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
 
 	time.Sleep(5 * time.Second)
+
+	// allowCompletion has no deadline, so this timestamp is the only signal that the drain is
+	// waiting rather than stuck. It must carry the event's creation time while the pod runs.
+	require.Eventually(t, func() bool {
+		return gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionEventTimestamp, nodeName) &&
+			getGaugeVecValue(t, metrics.NodeDrainAwaitingCompletionEventTimestamp, nodeName) == float64(eventCreatedAt.Unix())
+	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion timestamp should carry the event's creation time while a pod is still running")
 
 	updatedPod, err := setup.client.CoreV1().Pods("completion-test").Get(setup.ctx, "running-pod", metav1.GetOptions{})
 	require.NoError(t, err)
@@ -1107,6 +1119,12 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	}, 10*time.Second, 500*time.Millisecond)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainSucceededLabelValue)
+
+	// Removed once the node stops draining, so time() minus a stale timestamp cannot keep an
+	// alert firing after the drain finished.
+	require.Eventually(t, func() bool {
+		return !gaugeVecHasSeries(metrics.NodeDrainAwaitingCompletionEventTimestamp, nodeName)
+	}, 10*time.Second, 500*time.Millisecond, "awaiting-completion series should be removed once the node stops draining")
 }
 
 // TestReconciler_MultipleNodesRequeue validates concurrent draining of multiple nodes through the queue.
@@ -1280,7 +1298,7 @@ func (m *MockMongoCollection) UpdateDocument(ctx context.Context, filter any, up
 	if m.UpdateDocumentFunc != nil {
 		return m.UpdateDocumentFunc(ctx, filter, update)
 	}
-	return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
+	return &sdkclient.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
 }
 
 func (m *MockMongoCollection) FindDocument(ctx context.Context, filter any, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error) {
@@ -1509,6 +1527,13 @@ func setupRequeueTest(t *testing.T, userNamespaces []config.UserNamespace) *requ
 
 func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConfig) *testSetup {
 	t.Helper()
+
+	return setupCustomDrain(t, customDrainConfig, nil)
+}
+
+func setupCustomDrain(t *testing.T, customDrainConfig config.CustomDrainConfig,
+	userNamespaces []config.UserNamespace) *testSetup {
+	t.Helper()
 	ctx := t.Context()
 
 	testEnv := envtest.Environment{
@@ -1540,12 +1565,16 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 		return err == nil
 	}, 10*time.Second, 500*time.Millisecond, "CRD should be registered")
 
+	customDrainNodes, err := config.CompileCustomDrainNodeSelector(customDrainConfig)
+	require.NoError(t, err)
+
 	tomlConfig := config.TomlConfig{
 		EvictionTimeoutInSeconds:  config.Duration{Duration: 30 * time.Second},
 		SystemNamespaces:          "kube-*",
 		DeleteAfterTimeoutMinutes: 5,
 		NotReadyTimeoutMinutes:    2,
 		DrainGPUPods:              false,
+		UserNamespaces:            userNamespaces,
 		CustomDrain:               customDrainConfig,
 		PartialDrainEnabled:       true,
 	}
@@ -1574,7 +1603,7 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 		false,
 		false,
 		tomlConfig.SystemNamespaces,
-		nil,
+		customDrainNodes.LabelKeys(),
 	)
 	require.NoError(t, err)
 
@@ -1697,12 +1726,17 @@ func createHealthEvent(opts healthEventOptions) map[string]any {
 }
 
 func enqueueHealthEvent(ctx context.Context, t *testing.T, queueMgr queue.EventQueueManager,
-	collection *MockMongoCollection, healthEventStore datastore.HealthEventStore, nodeName string) {
+	collection *MockMongoCollection, healthEventStore datastore.HealthEventStore, nodeName string,
+	createdAt ...time.Time) {
 	t.Helper()
-	event := createHealthEvent(healthEventOptions{
+	opts := healthEventOptions{
 		nodeName:        nodeName,
 		nodeQuarantined: model.Quarantined,
-	})
+	}
+	if len(createdAt) > 0 {
+		opts.createdAt = createdAt[0]
+	}
+	event := createHealthEvent(opts)
 	// Store event in collection so the worker can fetch it by _id via lazy fetch.
 	if id, ok := event["_id"]; ok {
 		collection.StoreDocument(fmt.Sprintf("%v", id), event)
@@ -1885,6 +1919,40 @@ func getGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 	err := gauge.Write(metric)
 	require.NoError(t, err)
 	return metric.Gauge.GetValue()
+}
+
+// gaugeVecHasSeries reports whether the vector currently has a series for these label values.
+// GetMetricWithLabelValues cannot answer this: it creates the series as a side effect, so a
+// removed series would look present at zero.
+func gaugeVecHasSeries(gaugeVec *prometheus.GaugeVec, labelValues ...string) bool {
+	ch := make(chan prometheus.Metric)
+
+	go func() {
+		gaugeVec.Collect(ch)
+		close(ch)
+	}()
+
+	found := false
+
+	// Drains the channel even after a match: returning early would leave Collect blocked on an
+	// unbuffered send, leaking the goroutine for the rest of the test binary.
+	for m := range ch {
+		dtoMetric := &dto.Metric{}
+		if err := m.Write(dtoMetric); err != nil {
+			continue
+		}
+
+		values := make([]string, 0, len(dtoMetric.Label))
+		for _, label := range dtoMetric.Label {
+			values = append(values, label.GetValue())
+		}
+
+		if slices.Equal(values, labelValues) {
+			found = true
+		}
+	}
+
+	return found
 }
 
 func getGaugeVecValue(t *testing.T, gaugeVec *prometheus.GaugeVec, labelValues ...string) float64 {
@@ -2128,7 +2196,7 @@ func TestReconciler_UnQuarantineCancellationDoesNotCancelFreshSession(t *testing
 			}
 		}
 
-		return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
+		return &sdkclient.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
 	}
 
 	err = setup.reconciler.ProcessEventGeneric(setup.ctx, freshEvent, setup.mockCollection,
@@ -2185,7 +2253,7 @@ func TestReconciler_UnQuarantineCutoffStillCancelsUntrackedOldEventsAfterFreshSe
 			}
 		}
 
-		return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
+		return &sdkclient.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
 	}
 
 	err := setup.reconciler.ProcessEventGeneric(setup.ctx, freshEvent, setup.mockCollection,
@@ -2237,7 +2305,7 @@ func TestReconciler_UnQuarantineCutoffDoesNotCancelFreshTimeoutEviction(t *testi
 			}
 		}
 
-		return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
+		return &sdkclient.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
 	}
 
 	err := setup.reconciler.ProcessEventGeneric(setup.ctx, freshEvent, setup.mockCollection,
@@ -2267,7 +2335,6 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 		Kind:                  "DrainRequest",
 		StatusConditionType:   "Complete",
 		StatusConditionStatus: "True",
-		Timeout:               config.Duration{Duration: 30 * time.Minute},
 	}
 
 	setup := setupCustomDrainTest(t, customDrainCfg)
@@ -2357,7 +2424,6 @@ func TestReconciler_CustomDrainDryRun(t *testing.T) {
 		Kind:                  "DrainRequest",
 		StatusConditionType:   "Complete",
 		StatusConditionStatus: "True",
-		Timeout:               config.Duration{Duration: 30 * time.Minute},
 	}
 
 	setup := setupCustomDrainTest(t, customDrainCfg)
@@ -2409,7 +2475,6 @@ func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
 		Kind:                  "DrainRequest",
 		StatusConditionType:   "Complete",
 		StatusConditionStatus: "True",
-		Timeout:               config.Duration{Duration: 30 * time.Minute},
 	}
 
 	setup := setupCustomDrainTest(t, customDrainCfg)
@@ -2501,7 +2566,6 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		Kind:                  "FakeResource",
 		StatusConditionType:   "Complete",
 		StatusConditionStatus: "True",
-		Timeout:               config.Duration{Duration: 30 * time.Minute},
 	}
 
 	ctx := context.Background()
@@ -2626,4 +2690,513 @@ func TestMetrics_PodEvictionDuration(t *testing.T) {
 	afterEvictionDuration := getHistogramCount(t, metrics.PodEvictionDuration)
 	assert.GreaterOrEqual(t, afterEvictionDuration, beforeEvictionDuration+1,
 		"PodEvictionDuration histogram should record at least one observation")
+}
+
+// TestReconciler_DrainDecision_LabelChangeKeepsMethod records Custom on the first pass,
+// then removes the selector label. The next pass still uses the custom drain CR.
+func TestReconciler_DrainDecision_LabelChangeKeepsMethod(t *testing.T) {
+	nodeName := "label-change-node"
+	setup := startScopedCustomDrain(t, nodeName)
+
+	store := &recordingDataStore{mockDataStore: setup.mockDB}
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
+	requireCustomDrainCR(t, setup, nodeName)
+	applyRecordedDrainDecision(t, event, store.updates)
+
+	removeNodeLabel(t, setup, nodeName, "scheduler")
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for retry delay")
+	assert.Equal(t, 1, drainDecisionUpdateCount(store.updates))
+
+	require.Never(t, func() bool {
+		pod, getErr := setup.client.CoreV1().Pods("app-ns").Get(setup.ctx, "app-pod", metav1.GetOptions{})
+		return getErr != nil || pod.DeletionTimestamp != nil
+	}, 2*time.Second, 100*time.Millisecond, "a label change must not evict pods on a recorded custom drain")
+}
+
+// TestReconciler_DrainDecision_InProgressWithoutRecord evaluates a custom drain that started
+// before node-drainer recorded decisions: the event is in progress with no record, and its
+// custom drain CR already exists. It records the method once, follows the existing CR without a
+// second one, and a later label change does not replace that record.
+func TestReconciler_DrainDecision_InProgressWithoutRecord(t *testing.T) {
+	nodeName := "upgrade-drain-node"
+	setup := startScopedCustomDrain(t, nodeName)
+
+	store := &recordingDataStore{mockDataStore: setup.mockDB}
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	status := event["healtheventstatus"].(*protos.HealthEventStatus)
+	require.Nil(t, status.DrainDecision)
+	require.Equal(t, string(model.StatusInProgress), status.UserPodsEvictionStatus.GetStatus())
+	setup.mockDB.storeEvent(nodeName, event)
+	createCustomDrainCRWithoutRecord(t, setup, event)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for retry delay")
+
+	recorded := applyRecordedDrainDecision(t, event, store.updates)
+	assert.Equal(t, model.DrainMethodCustom, recorded.GetMethod())
+	assert.Equal(t, model.CustomDrainNodeSelectorRuleSet, recorded.GetRuleSet())
+	assert.Nil(t, recorded.GetScope(), "a drain of the full node stores no scope")
+
+	crs, listErr := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default").List(setup.ctx, metav1.ListOptions{})
+	require.NoError(t, listErr)
+	require.Len(t, crs.Items, 1, "the existing custom drain CR is followed, not created again")
+	assert.Equal(t, customdrain.GenerateCRName(nodeName, nodeName+"-event"), crs.Items[0].GetName())
+
+	pod, getErr := setup.client.CoreV1().Pods("app-ns").Get(setup.ctx, "app-pod", metav1.GetOptions{})
+	require.NoError(t, getErr)
+	assert.Nil(t, pod.DeletionTimestamp, "a custom drain in progress must not evict pods")
+
+	removeNodeLabel(t, setup, nodeName, "scheduler")
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for retry delay")
+	assert.Equal(t, 1, drainDecisionUpdateCount(store.updates))
+	assert.Equal(t, model.DrainMethodCustom, status.DrainDecision.GetMethod())
+}
+
+// TestReconciler_DrainDecision_WriteFailureDoesNotDrain stops before the custom drain CR
+// when the decision cannot be stored.
+func TestReconciler_DrainDecision_WriteFailureDoesNotDrain(t *testing.T) {
+	cfg := testCustomDrainConfig("")
+	setup := setupCustomDrainTest(t, cfg)
+
+	nodeName := "write-failure-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "app-ns")
+	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	store := &failDrainDecisionStore{mockDataStore: setup.mockDB}
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	beforeWriteErrors := getCounterVecValue(t, metrics.ProcessingErrors, metrics.ErrorTypeRecordDrainDecision, nodeName)
+	beforeEvaluateErrors := getCounterVecValue(t, metrics.ProcessingErrors, "evaluate_event_error", nodeName)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "injected drain decision write failure")
+	assert.Equal(t, beforeWriteErrors+1,
+		getCounterVecValue(t, metrics.ProcessingErrors, metrics.ErrorTypeRecordDrainDecision, nodeName))
+	assert.Equal(t, beforeEvaluateErrors,
+		getCounterVecValue(t, metrics.ProcessingErrors, "evaluate_event_error", nodeName),
+		"a failed decision write is counted once, as a write error")
+
+	crs, listErr := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default").List(setup.ctx, metav1.ListOptions{})
+	require.NoError(t, listErr)
+	assert.Empty(t, crs.Items)
+
+	pod, getErr := setup.client.CoreV1().Pods("app-ns").Get(setup.ctx, "app-pod", metav1.GetOptions{})
+	require.NoError(t, getErr)
+	assert.Nil(t, pod.DeletionTimestamp)
+}
+
+// TestReconciler_DrainDecision_NoDocumentIDDoesNotDrain stops before the custom drain CR when
+// the event has no document ID to store the decision on, and counts it as a write error.
+func TestReconciler_DrainDecision_NoDocumentIDDoesNotDrain(t *testing.T) {
+	cfg := testCustomDrainConfig("")
+	setup := setupCustomDrainTest(t, cfg)
+
+	nodeName := "no-document-id-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "app-ns")
+	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	store := &recordingDataStore{mockDataStore: setup.mockDB}
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	delete(event, "_id")
+	setup.mockDB.storeEvent(nodeName, event)
+
+	beforeWriteErrors := getCounterVecValue(t, metrics.ProcessingErrors, metrics.ErrorTypeRecordDrainDecision, nodeName)
+	beforeEvaluateErrors := getCounterVecValue(t, metrics.ProcessingErrors, "evaluate_event_error", nodeName)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to extract document ID for drain decision")
+	assert.Equal(t, beforeWriteErrors+1,
+		getCounterVecValue(t, metrics.ProcessingErrors, metrics.ErrorTypeRecordDrainDecision, nodeName))
+	assert.Equal(t, beforeEvaluateErrors,
+		getCounterVecValue(t, metrics.ProcessingErrors, "evaluate_event_error", nodeName),
+		"a decision with no document ID is counted once, as a write error")
+	assert.Zero(t, drainDecisionUpdateCount(store.updates))
+
+	crs, listErr := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default").List(setup.ctx, metav1.ListOptions{})
+	require.NoError(t, listErr)
+	assert.Empty(t, crs.Items)
+
+	pod, getErr := setup.client.CoreV1().Pods("app-ns").Get(setup.ctx, "app-pod", metav1.GetOptions{})
+	require.NoError(t, getErr)
+	assert.Nil(t, pod.DeletionTimestamp)
+}
+
+// TestReconciler_DrainDecision_LostRaceFollowsStoredDecision models two node-drainer pods
+// during a rolling update. This pod picks Custom, but another pod already stored BuiltIn.
+// This pod must not create the custom drain CR or overwrite the record, and its next pass
+// must follow the stored BuiltIn decision.
+func TestReconciler_DrainDecision_LostRaceFollowsStoredDecision(t *testing.T) {
+	nodeName := "lost-race-node"
+	setup := startScopedCustomDrain(t, nodeName)
+
+	store := &decisionAlreadyRecordedStore{mockDataStore: setup.mockDB}
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	beforeEvaluateErrors := getCounterVecValue(t, metrics.ProcessingErrors, "evaluate_event_error", nodeName)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already recorded")
+	assert.Equal(t, beforeEvaluateErrors,
+		getCounterVecValue(t, metrics.ProcessingErrors, "evaluate_event_error", nodeName),
+		"losing the decision race is a requeue, not an evaluation error")
+	require.Len(t, store.decisionFilters, 1)
+	guard, hasGuard := store.decisionFilters[0]["healtheventstatus.draindecision"]
+	assert.True(t, hasGuard, "the decision write must match only an unset decision")
+	assert.Nil(t, guard)
+
+	crs, listErr := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default").List(setup.ctx, metav1.ListOptions{})
+	require.NoError(t, listErr)
+	assert.Empty(t, crs.Items, "the losing writer must not create a custom drain CR")
+
+	pod, getErr := setup.client.CoreV1().Pods("app-ns").Get(setup.ctx, "app-pod", metav1.GetOptions{})
+	require.NoError(t, getErr)
+	assert.Nil(t, pod.DeletionTimestamp, "the losing writer must not evict pods")
+
+	event["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = &protos.DrainDecision{
+		Method: model.DrainMethodBuiltIn,
+	}
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Len(t, store.decisionFilters, 1, "a stored decision is followed, not written again")
+
+	require.Eventually(t, func() bool {
+		pod, getErr := setup.client.CoreV1().Pods("app-ns").Get(setup.ctx, "app-pod", metav1.GetOptions{})
+		return getErr != nil || pod.DeletionTimestamp != nil
+	}, 10*time.Second, 100*time.Millisecond, "the stored BuiltIn decision should evict the pod")
+
+	crs, listErr = setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default").List(setup.ctx, metav1.ListOptions{})
+	require.NoError(t, listErr)
+	assert.Empty(t, crs.Items, "a stored BuiltIn decision must not create a custom drain CR")
+}
+
+// TestReconciler_DrainDecision_CompletedCRWithoutRecordRecordsCustom covers the custom drain CR
+// of an event that completed with no record, as a drain that started before node-drainer
+// recorded decisions leaves it. The pass records Custom, then marks the event drained.
+func TestReconciler_DrainDecision_CompletedCRWithoutRecordRecordsCustom(t *testing.T) {
+	nodeName := "completed-cr-node"
+	setup := startScopedCustomDrain(t, nodeName)
+
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
+	requireCustomDrainCR(t, setup, nodeName)
+	completeCustomDrainCR(t, setup, nodeName)
+
+	event["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = nil
+	store := &recordingDataStore{mockDataStore: setup.mockDB}
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, 1, drainDecisionUpdateCount(store.updates))
+
+	recorded := latestDrainDecision(t, store.updates)
+	assert.Equal(t, model.DrainMethodCustom, recorded["method"])
+	assert.Equal(t, model.CustomDrainNodeSelectorRuleSet, recorded["ruleset"])
+	assert.NotContains(t, recorded, "scope", "a drain of the full node stores no scope")
+}
+
+// TestReconciler_DrainDecision_PartialDrainRecordsScope stores the entity of a partial drain as
+// the scope of the decision, with the lowercase keys that the store uses.
+func TestReconciler_DrainDecision_PartialDrainRecordsScope(t *testing.T) {
+	nodeName := "partial-scope-node"
+	setup := startScopedCustomDrain(t, nodeName)
+
+	store := &recordingDataStore{mockDataStore: setup.mockDB}
+	event := createHealthEvent(healthEventOptions{
+		nodeName:          nodeName,
+		nodeQuarantined:   model.Quarantined,
+		recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		entitiesImpacted:  []*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-123"}},
+	})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
+
+	recorded := latestDrainDecision(t, store.updates)
+	assert.Equal(t, model.DrainMethodCustom, recorded["method"])
+	assert.Equal(t, map[string]any{"entitytype": "GPU_UUID", "entityvalue": "GPU-123"}, recorded["scope"])
+}
+
+// startScopedCustomDrain starts a reconciler whose custom drain is scoped to scheduler=slurm, with
+// one matching node that runs one pod. It returns once the cache shows the label and the pod.
+func startScopedCustomDrain(t *testing.T, nodeName string) *testSetup {
+	t.Helper()
+
+	setup := setupCustomDrain(t, testCustomDrainConfig("scheduler=slurm"), []config.UserNamespace{
+		{Name: "*", Mode: config.ModeImmediateEvict},
+	})
+
+	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName,
+		map[string]string{"scheduler": "slurm"}, nil)
+	createNamespace(setup.ctx, t, setup.client, "app-ns")
+	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil, nil)
+	waitForCachedNodeLabel(t, setup.informersInstance, nodeName, "scheduler", "slurm")
+	require.Eventually(t, func() bool {
+		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode(setup.ctx, "app-ns", nodeName, nil)
+		return err == nil && len(pods) == 1
+	}, 30*time.Second, 50*time.Millisecond, "pod should be visible to the drainer before the label change")
+
+	return setup
+}
+
+// testCustomDrainConfig returns custom drain settings for the test DrainRequest CRD and template.
+func testCustomDrainConfig(nodeSelector string) config.CustomDrainConfig {
+	return config.CustomDrainConfig{
+		Enabled:               true,
+		NodeSelector:          nodeSelector,
+		TemplateMountPath:     "../customdrain/testdata",
+		TemplateFileName:      "drain-template.yaml",
+		Namespace:             "default",
+		ApiGroup:              "drain.example.com",
+		Version:               "v1alpha1",
+		Kind:                  "DrainRequest",
+		StatusConditionType:   "Complete",
+		StatusConditionStatus: "True",
+	}
+}
+
+// drainRequestGVR is the resource of the test DrainRequest CRD.
+func drainRequestGVR() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: "drain.example.com", Version: "v1alpha1", Resource: "drainrequests"}
+}
+
+// requireCustomDrainCR waits until the custom drain CR of the default test event exists.
+func requireCustomDrainCR(t *testing.T, setup *testSetup, nodeName string) {
+	t.Helper()
+
+	crName := customdrain.GenerateCRName(nodeName, nodeName+"-event")
+	require.Eventually(t, func() bool {
+		_, err := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
+		return err == nil
+	}, 10*time.Second, 200*time.Millisecond, "DrainRequest CR should be created")
+}
+
+// createCustomDrainCRWithoutRecord creates the custom drain CR of the event through the custom
+// drain client and stores no drain decision, as node-drainer did before it recorded decisions.
+func createCustomDrainCRWithoutRecord(t *testing.T, setup *testSetup, event map[string]any) {
+	t.Helper()
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(setup.restConfig)
+	require.NoError(t, err)
+
+	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
+	client, err := customdrain.NewClient(testCustomDrainConfig("scheduler=slurm"), setup.dynamicClient, restMapper, false)
+	require.NoError(t, err)
+
+	healthEvent := event["healthevent"].(*protos.HealthEvent)
+	_, err = client.CreateDrainCR(setup.ctx, customdrain.TemplateData{HealthEvent: healthEvent, EventID: healthEvent.Id})
+	require.NoError(t, err)
+}
+
+// completeCustomDrainCR sets the Complete condition on that CR, as the drain plugin does.
+func completeCustomDrainCR(t *testing.T, setup *testSetup, nodeName string) {
+	t.Helper()
+
+	crName := customdrain.GenerateCRName(nodeName, nodeName+"-event")
+	resource := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default")
+
+	cr, err := resource.Get(setup.ctx, crName, metav1.GetOptions{})
+	require.NoError(t, err)
+	require.NoError(t, unstructured.SetNestedField(cr.Object, []any{
+		map[string]any{
+			"type":               "Complete",
+			"status":             "True",
+			"lastTransitionTime": time.Now().Format(time.RFC3339),
+			"reason":             "DrainSucceeded",
+			"message":            "All pods drained",
+		},
+	}, "status", "conditions"))
+
+	_, err = resource.UpdateStatus(setup.ctx, cr, metav1.UpdateOptions{})
+	require.NoError(t, err)
+}
+
+// removeNodeLabel deletes the label from the node and waits until the cache no longer has it.
+func removeNodeLabel(t *testing.T, setup *testSetup, nodeName, key string) {
+	t.Helper()
+
+	node, err := setup.client.CoreV1().Nodes().Get(setup.ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	delete(node.Labels, key)
+	_, err = setup.client.CoreV1().Nodes().Update(setup.ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	waitForCachedNodeLabel(t, setup.informersInstance, nodeName, key, "")
+}
+
+// waitForCachedNodeLabel waits until the node cache shows the label value. An empty value means
+// the label is absent.
+func waitForCachedNodeLabel(t *testing.T, inf *informers.Informers, nodeName, key, value string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := inf.GetNode(nodeName)
+		if err != nil {
+			return false
+		}
+
+		return node.Labels[key] == value
+	}, 30*time.Second, 50*time.Millisecond, "node %s label %s=%q should be visible in the cache", nodeName, key, value)
+}
+
+// applyRecordedDrainDecision copies the last stored decision onto the event, so the next pass
+// sees the record as it would read it from the store. It returns that decision.
+func applyRecordedDrainDecision(t *testing.T, event map[string]any, updates []map[string]any) *protos.DrainDecision {
+	t.Helper()
+
+	raw, err := json.Marshal(latestDrainDecision(t, updates))
+	require.NoError(t, err)
+
+	var decision protos.DrainDecision
+	require.NoError(t, json.Unmarshal(raw, &decision))
+	require.NotEmpty(t, decision.GetMethod())
+
+	event["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = &decision
+
+	return &decision
+}
+
+// latestDrainDecision returns the last decision write as the store encodes it, and checks its
+// lowercase store keys.
+func latestDrainDecision(t *testing.T, updates []map[string]any) map[string]any {
+	t.Helper()
+
+	var decision map[string]any
+
+	for _, update := range updates {
+		setMap, ok := update["$set"].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		value, ok := setMap["healtheventstatus.draindecision"]
+		if !ok {
+			continue
+		}
+
+		raw, err := json.Marshal(value)
+		require.NoError(t, err)
+
+		decision = nil
+		require.NoError(t, json.Unmarshal(raw, &decision))
+	}
+
+	require.NotNil(t, decision, "drain decision should be written before the drain action")
+	_, hasRuleset := decision["ruleset"]
+	_, hasCamelRuleSet := decision["ruleSet"]
+	assert.True(t, hasRuleset, "stored rule set key is ruleset")
+	assert.False(t, hasCamelRuleSet)
+	_, hasMethod := decision["method"]
+	assert.True(t, hasMethod)
+
+	return decision
+}
+
+// drainDecisionUpdateCount counts the updates that write the drain decision.
+func drainDecisionUpdateCount(updates []map[string]any) int {
+	count := 0
+
+	for _, update := range updates {
+		setMap, ok := update["$set"].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if _, ok := setMap["healtheventstatus.draindecision"]; ok {
+			count++
+		}
+	}
+
+	return count
+}
+
+// recordingDataStore keeps every update so a test can replay the stored decision.
+type recordingDataStore struct {
+	*mockDataStore
+	mu      sync.Mutex
+	updates []map[string]any
+}
+
+// UpdateDocument keeps the update, then applies it to the mock store.
+func (s *recordingDataStore) UpdateDocument(ctx context.Context, filter, update any) (*sdkclient.UpdateResult, error) {
+	if updateMap, ok := update.(map[string]any); ok {
+		s.mu.Lock()
+		s.updates = append(s.updates, updateMap)
+		s.mu.Unlock()
+	}
+
+	return s.mockDataStore.UpdateDocument(ctx, filter, update)
+}
+
+// failDrainDecisionStore rejects the decision write and leaves every other update alone.
+type failDrainDecisionStore struct {
+	*mockDataStore
+}
+
+// UpdateDocument fails a decision write and applies every other update.
+func (s *failDrainDecisionStore) UpdateDocument(ctx context.Context, filter, update any) (*sdkclient.UpdateResult, error) {
+	updateMap, ok := update.(map[string]any)
+	if ok {
+		if setMap, setOK := updateMap["$set"].(map[string]any); setOK {
+			if _, hasDecision := setMap["healtheventstatus.draindecision"]; hasDecision {
+				return nil, fmt.Errorf("injected drain decision write failure")
+			}
+		}
+	}
+
+	return s.mockDataStore.UpdateDocument(ctx, filter, update)
+}
+
+// decisionAlreadyRecordedStore matches no document on the decision write, as when another
+// writer stored a decision first. It keeps each decision filter and leaves other updates alone.
+type decisionAlreadyRecordedStore struct {
+	*mockDataStore
+	mu              sync.Mutex
+	decisionFilters []map[string]any
+}
+
+// UpdateDocument keeps the filter of a decision write and matches no document for it.
+func (s *decisionAlreadyRecordedStore) UpdateDocument(
+	ctx context.Context, filter, update any,
+) (*sdkclient.UpdateResult, error) {
+	updateMap, ok := update.(map[string]any)
+	if ok {
+		if setMap, setOK := updateMap["$set"].(map[string]any); setOK {
+			if _, hasDecision := setMap["healtheventstatus.draindecision"]; hasDecision {
+				filterMap, _ := filter.(map[string]any)
+
+				s.mu.Lock()
+				s.decisionFilters = append(s.decisionFilters, filterMap)
+				s.mu.Unlock()
+
+				return &sdkclient.UpdateResult{}, nil
+			}
+		}
+	}
+
+	return s.mockDataStore.UpdateDocument(ctx, filter, update)
 }
