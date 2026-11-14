@@ -2023,6 +2023,70 @@ func TestReconciler_CancelledEventWithOngoingDrain(t *testing.T) {
 	assert.Nil(t, pod.DeletionTimestamp, "pod should not be deleted after cancellation")
 }
 
+// TestReconciler_StoredCancelledEventAfterRestart_DoesNotDrain covers a restart of node-drainer
+// after fault-quarantine marked a session Cancelled and before the drain wrote its terminal
+// status. The startup scan queues the event with its stored Cancelled status, and the new
+// reconciler holds no cancellation in memory. The event must end Cancelled without a drain.
+func TestReconciler_StoredCancelledEventAfterRestart_DoesNotDrain(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "immediate-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	nodeName := testutils.GenerateTestNodeName("cancelled-after-restart")
+	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName,
+		map[string]string{statemanager.NVSentinelStateLabelKey: string(statemanager.DrainingLabelValue)}, nil)
+	createNamespace(setup.ctx, t, setup.client, "immediate-test")
+	createPod(setup.ctx, t, setup.client, "immediate-test", "user-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	var (
+		mu             sync.Mutex
+		evictionStatus string
+	)
+
+	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, _ any, update any) (*sdkclient.UpdateResult, error) {
+		if updateMap, ok := update.(map[string]any); ok {
+			if setMap, ok := updateMap["$set"].(map[string]any); ok {
+				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any); ok {
+					mu.Lock()
+					evictionStatus = fmt.Sprintf("%v", statusMap["status"])
+					mu.Unlock()
+				}
+			}
+		}
+
+		return &sdkclient.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
+	}
+
+	beforeCancelled := getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check")
+
+	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore,
+		healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Cancelled})
+	require.NoError(t, err)
+
+	mu.Lock()
+	assert.Equal(t, string(model.Cancelled), evictionStatus, "the drain must end with the Cancelled status")
+	mu.Unlock()
+
+	assert.Equal(t, beforeCancelled+1, getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check"),
+		"CancelledEvent metric should increment")
+
+	require.Eventually(t, func() bool {
+		node, err := setup.client.CoreV1().Nodes().Get(setup.ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
+
+		return !exists
+	}, 15*time.Second, 500*time.Millisecond, "the draining label should be removed")
+
+	require.Never(t, func() bool {
+		pod, err := setup.client.CoreV1().Pods("immediate-test").Get(setup.ctx, "user-pod", metav1.GetOptions{})
+		return err != nil || pod.DeletionTimestamp != nil
+	}, 3*time.Second, 200*time.Millisecond, "the pod of a cancelled session must not be evicted")
+}
+
 // TestReconciler_UnQuarantinedEventCancelsOngoingDrain validates that UnQuarantined events cancel all in-progress drains for a node
 func TestReconciler_UnQuarantinedEventCancelsOngoingDrain(t *testing.T) {
 	setup := setupRequeueTest(t, []config.UserNamespace{
