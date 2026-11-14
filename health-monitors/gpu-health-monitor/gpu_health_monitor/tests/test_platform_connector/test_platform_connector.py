@@ -1464,9 +1464,9 @@ class TestPlatformConnectors(unittest.TestCase):
     ) -> tuple[Callable[[dict], None], Callable[..., list[platformconnector_pb2.HealthEvent]]]:
         """Starts the event processor on a metadata file that holds metadata, like the previous boot's
         file after a reboot. Returns rewrite(metadata), which replaces the file the way metadata-collector
-        does, and poll(failing_gpu_id, codes), which runs one poll that reports codes, a double-bit ECC
-        error unless given, on failing_gpu_id, or every watch healthy when failing_gpu_id is None, and
-        returns the events that poll published."""
+        does, and poll(failing, codes), which runs one poll that reports codes, a double-bit ECC error
+        unless given, on the GPU id failing, or the codes that failing maps each GPU id to, or every watch
+        healthy when failing is None, and returns the events that poll published."""
         metadata_dir = tempfile.TemporaryDirectory()
         self.addCleanup(metadata_dir.cleanup)
         metadata_path = os.path.join(metadata_dir.name, "gpu_metadata.json")
@@ -1509,17 +1509,19 @@ class TestPlatformConnectors(unittest.TestCase):
         self.addCleanup(processor.close)
 
         def poll(
-            failing_gpu_id: int | None, codes: tuple[str, ...] = ("DCGM_FR_VOLATILE_DBE_DETECTED",)
+            failing: int | dict[int, tuple[str, ...]] | None,
+            codes: tuple[str, ...] = ("DCGM_FR_VOLATILE_DBE_DETECTED",),
         ) -> list[platformconnector_pb2.HealthEvent]:
             dcgm_health_events = watcher._get_health_status_dict()
-            if failing_gpu_id is not None:
+            failing_codes = {failing: codes} if isinstance(failing, int) else failing or {}
+            if failing_codes:
                 dcgm_health_events["DCGM_HEALTH_WATCH_MEM"] = dcgmtypes.HealthDetails(
                     status=dcgmtypes.HealthStatus.FAIL,
                     entity_failures={
-                        failing_gpu_id: [
-                            dcgm.types.ErrorDetails(code=code, message=f"{code} on GPU {failing_gpu_id}")
-                            for code in codes
+                        gpu_id: [
+                            dcgm.types.ErrorDetails(code=code, message=f"{code} on GPU {gpu_id}") for code in gpu_codes
                         ]
+                        for gpu_id, gpu_codes in failing_codes.items()
                     },
                 )
             healthEventProcessor.health_events = None
@@ -1666,6 +1668,49 @@ class TestPlatformConnectors(unittest.TestCase):
             "GPU-aaaaaaaa-0000-0000-0000-000000000000",
             "GPU-cccccccc-0000-0000-0000-000000000000",
         ]
+
+    def test_health_event_recovery_leaves_out_a_uuid_that_rewritten_metadata_gives_to_another_gpu(self) -> None:
+        """When the board at 17:00 does not come up after the reboot, the board at 2a:00 becomes DCGM id 0.
+        The faults of id 1 published from the previous boot's file name the UUID of that board. Their
+        recoveries leave that UUID out and clear them by index and PCI address: the node condition also
+        clears a GPU fault by UUID alone, so they would also clear the fault of id 0."""
+        dbe, pages = "DCGM_FR_VOLATILE_DBE_DETECTED", "DCGM_FR_PENDING_PAGE_RETIREMENTS"
+        uuid_a, uuid_b = "GPU-aaaaaaaa-0000-0000-0000-000000000000", "GPU-bbbbbbbb-0000-0000-0000-000000000000"
+        rewrite, poll = self._processor_on_metadata(
+            self._metadata_with_gpus(
+                (0, "GPU-00000000-0000-0000-0000-000000000000", "0000:17:00.0"),
+                (1, uuid_a, "0000:2a:00.0"),
+                (2, uuid_b, "0000:3d:00.0"),
+            ),
+            gpu_ids=[0, 1],
+        )
+
+        def events(failing: dict[int, tuple[str, ...]]) -> list[tuple[bool, list[str], dict[str, str]]]:
+            return [
+                (
+                    event.isHealthy,
+                    list(event.errorCode),
+                    {entity.entityType: entity.entityValue for entity in event.entitiesImpacted},
+                )
+                for event in poll(failing)
+            ]
+
+        poll(1, (dbe, pages))
+        rewrite(self._metadata_with_gpus((0, uuid_a, "0000:2a:00.0"), (1, uuid_b, "0000:3d:00.0")))
+        # Board a, now id 0, fails too, and the faults of id 1 are published again for board b.
+        board_a = {"GPU": "0", "PCI": "0000:2a:00.0", "GPU_UUID": uuid_a}
+        board_b = {"GPU": "1", "PCI": "0000:3d:00.0", "GPU_UUID": uuid_b}
+        assert events({0: (dbe,), 1: (dbe, pages)}) == [
+            (False, [dbe], board_a),
+            (False, [dbe], board_b),
+            (False, [pages], board_b),
+        ]
+
+        old_slot = {"GPU": "1", "PCI": "0000:2a:00.0"}
+        # The double-bit error of id 1 clears while its page retirements stay pending.
+        assert events({0: (dbe,), 1: (pages,)}) == [(True, [dbe], old_slot), (True, [dbe], board_b)]
+        # Then id 1 recovers while board a still fails.
+        assert events({0: (dbe,)}) == [(True, [], old_slot), (True, [], board_b)]
 
     def test_health_event_poll_checks_metadata_file_once(self) -> None:
         """A poll looks up every GPU once per watch but checks the metadata file only once."""

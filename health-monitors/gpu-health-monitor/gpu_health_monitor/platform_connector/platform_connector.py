@@ -261,6 +261,22 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
         return f"{check_name}|{entity_type}|{entity_value}"
 
+    def _recovery_entities(
+        self, identity: EntityIdentity, gpu_id: int, gpu_ids: list[int]
+    ) -> list[platformconnector_pb2.Entity]:
+        """The entities of a recovery for the fault of gpu_id that was published with identity.
+
+        The node condition also clears a GPU fault by its GPU UUID alone. When
+        the metadata file now gives the UUID of identity to another GPU, the
+        fault was published from an older copy, so the recovery leaves the UUID
+        out and clears the fault by its GPU index and PCI address. A recovery
+        with the UUID would also clear the faults of the GPU that has it now.
+        """
+        uuid = dict(identity).get("GPU_UUID")
+        if uuid and any(other != gpu_id and self._metadata_reader.get_gpu_uuid(other) == uuid for other in gpu_ids):
+            identity = tuple(entity for entity in identity if entity[0] != "GPU_UUID")
+        return _entities(identity)
+
     def _is_fatal_label(self, error_code: str) -> str:
         """is_fatal label value for a DCGM health-watch error code.
 
@@ -695,7 +711,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         to a stale cache. The GPU metadata file is checked once per poll, so
         every lookup of the poll reads the same copy. A recovery names the
         entities that its fault was published with, also when the file changed
-        since.
+        since, but not a GPU UUID that the file now gives to another GPU.
         """
         with self._event_lock, self._metadata_reader.pinned():
             self._publish_health_snapshot(health_details, gpu_ids, switch_ids)
@@ -870,7 +886,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                                 generatedTimestamp=timestamp,
                                                 isHealthy=True,
                                                 errorCode=[recovered_code],
-                                                entitiesImpacted=_entities(recovered_identity),
+                                                entitiesImpacted=self._recovery_entities(
+                                                    recovered_identity, gpu_id, gpu_ids
+                                                ),
                                                 message=(
                                                     f"GPU {self._get_dcgm_watch(watch_name)} watch no longer reports "
                                                     f"{recovered_code}"
@@ -927,7 +945,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                         isFatal=False,
                                         isHealthy=True,
                                         errorCode=[],
-                                        entitiesImpacted=_entities(recovered_identity),
+                                        entitiesImpacted=self._recovery_entities(recovered_identity, gpu_id, gpu_ids),
                                         message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
                                         recommendedAction=platformconnector_pb2.NONE,
                                         nodeName=self._node_name,
