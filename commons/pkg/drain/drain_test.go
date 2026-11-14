@@ -136,10 +136,9 @@ func TestIsNodeDrained_UsesRecordedScope(t *testing.T) {
 			want:                false,
 		},
 		{
-			name:   "a covered already-drained event still covers the same entity",
-			events: []*protos.HealthEvent{{Id: "event-a"}, {Id: "event-b"}},
+			name:   "a covered already-drained event alone still covers the same entity",
+			events: []*protos.HealthEvent{{Id: "event-b"}},
 			stored: map[string]datastore.HealthEventWithStatus{
-				"event-a": storedDrain("event-a", componentReset(gpu0), datastore.StatusSucceeded, recordedPartial("GPU-0")),
 				"event-b": storedDrain("event-b", componentReset(gpu0), datastore.AlreadyDrained, recordedPartial("GPU-0")),
 			},
 			current:             gpu0,

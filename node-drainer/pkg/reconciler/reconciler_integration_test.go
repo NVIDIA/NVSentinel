@@ -1911,6 +1911,7 @@ func TestReconciler_CoveredAlreadyDrainedRecordsScope(t *testing.T) {
 
 	require.Len(t, updates.writes, 1)
 	assertScopeOnlyDecision(t, updates.writes[0], "GPU-0")
+	require.Contains(t, updates.filters[0], "healtheventstatus.draindecision")
 	assert.Nil(t, updates.filters[0]["healtheventstatus.draindecision"])
 
 	partialSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName,
@@ -1953,12 +1954,17 @@ func TestReconciler_CoveredAlreadyDrainedRequeuesWhenRecordExists(t *testing.T) 
 
 	nodeName := "scope-race-node"
 	prepareCoveredNode(t, setup, nodeName)
-	recordStatusUpdates(setup.mockCollection, 0)
+	updates := recordStatusUpdates(setup.mockCollection, 0)
 
 	event := partialQuarantinedEvent(nodeName, model.AlreadyQuarantined)
 	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
 		setup.healthEventStore, nodeName)
 	require.ErrorContains(t, err, "already recorded")
+
+	require.Len(t, updates.filters, 1)
+	require.Contains(t, updates.filters[0], "healtheventstatus.draindecision",
+		"the update must match only while no decision is stored")
+	assert.Nil(t, updates.filters[0]["healtheventstatus.draindecision"])
 }
 
 // TestReconciler_HealthyAndSkipRecordNoScope keeps a healthy event and a skipped event free of a
