@@ -31,7 +31,7 @@ GPU and NVSwitch topology information collection:
 4. Builds NVSwitch fabric map
 5. Writes comprehensive metadata to JSON file
 
-The JSON file persists on the node and is read by health monitors via a shared volume.
+The JSON file persists on the node and is read by health monitors via a shared volume. The collector writes it again each time it starts, so after a reboot the file lists the previous boot's GPUs until the collector has run; the GPU and syslog health monitors read the new copy once it is written.
 
 GPU-to-pod mapping annotation:
 
