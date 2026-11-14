@@ -1231,9 +1231,16 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, node.Status.Allocatable, cachedNode.Status.Allocatable)
 			assert.Equal(t, node.Status.Capacity, cachedNode.Status.Capacity)
-			assert.Empty(t, cachedNode.Annotations)
 			assert.Empty(t, cachedNode.Spec)
 			assert.Nil(t, cachedNode.Status.Conditions)
+
+			// Of the annotations, the cache keeps only the partition annotation
+			// that the labeler writes with the expected label.
+			require.Eventually(t, func() bool {
+				cachedNode, err := labeler.getNodeFromCache(node.Name)
+				return err == nil && maps.Equal(cachedNode.Annotations,
+					map[string]string{ratchetPartitionAnnotation: "default"})
+			}, 30*time.Second, 100*time.Millisecond)
 		}
 
 		stop()

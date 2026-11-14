@@ -386,6 +386,8 @@ func TestDeviceCountSources_ModeChange_KeepsExpectedCount(t *testing.T) {
 		)
 	}
 
+	require.True(t, reconcile(draSlices), "GPUCluster mode records the partition of the existing labels")
+	require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel])
 	require.False(t, reconcile(draSlices), "GPUCluster mode keeps the existing labels")
 
 	require.False(t, reconcile(nil), "no source is available while the operators switch mode")
@@ -397,6 +399,9 @@ func TestDeviceCountSources_ModeChange_KeepsExpectedCount(t *testing.T) {
 
 	node.Status.Allocatable = testDevicePluginGPUs("8")
 
+	require.True(t, reconcile(nil), "ClusterPolicy mode records its own partition")
+	require.Equal(t, "8", node.Labels[testGPUCountCurrentLabel])
+	require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel])
 	require.False(t, reconcile(nil), "ClusterPolicy mode reports the same count")
 
 	node.Labels[testGFDGPUCount] = "7"
