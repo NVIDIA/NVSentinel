@@ -85,4 +85,4 @@ jobs:
               | [.vulnerability.id, .artifact.type, .artifact.name, .artifact.version, .artifact.purl,
                  .artifact.locations[0].path] | @tsv' "${out}/plain.json" | sort -u
             echo '```'
-          } >> "${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
