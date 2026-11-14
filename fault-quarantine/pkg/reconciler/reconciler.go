@@ -32,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/workqueue"
 
 	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
@@ -121,6 +122,10 @@ type Reconciler struct {
 	uncordonedReasonLabelKey    string
 	uncordonedTimestampLabelKey string
 	readinessChecker            *server.DatastoreReadinessChecker
+
+	// cancelQueue holds the nodes whose ended quarantine session still has to be cancelled
+	// in the datastore (cancel_retry.go).
+	cancelQueue workqueue.TypedRateLimitingInterface[string]
 }
 
 var (
@@ -153,6 +158,7 @@ func NewReconciler(
 		cb:                        circuitBreaker,
 		resetResumeTokenForCreate: client.ResetResumeTokenForCreate,
 		setColdStartCutoff:        client.SetColdStartCutoff,
+		cancelQueue:               newCancelQueue(),
 	}
 
 	return r
@@ -253,6 +259,10 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	}
 
 	slog.InfoContext(ctx, "Node informer started and synced")
+
+	r.queuePendingCancellations(ctx)
+
+	go r.runCancelQueue(ctx)
 
 	ruleSetEvals, rulesetsConfig, err := r.prepareEventProcessing(ctx, ds)
 	if err != nil {
@@ -2542,6 +2552,9 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	newAnnotations := map[string]string{
 		common.QuarantinedNodeUncordonedManuallyAnnotationKey: common.QuarantinedNodeUncordonedManuallyAnnotationValue,
 	}
+	if r.eventWatcher != nil {
+		maps.Copy(newAnnotations, cancellationPendingAnnotation())
+	}
 
 	if err := r.k8sClient.HandleManualUncordonCleanup(
 		ctx,
@@ -2569,22 +2582,9 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	metrics.CurrentQuarantinedNodes.WithLabelValues(nodeName).Set(0)
 	metrics.TotalNodesManuallyUncordoned.WithLabelValues(nodeName).Inc()
 
-	// Cancel latest quarantining events (if eventWatcher is available)
+	// The cleanup set the pending annotation. The worker cancels the session in the datastore.
 	if r.eventWatcher != nil {
-		slog.DebugContext(ctx, "Calling CancelLatestQuarantiningEvents for manual uncordon", "node", nodeName)
-
-		if err := r.eventWatcher.CancelLatestQuarantiningEvents(ctx, nodeName, "Manual uncordoning detected"); err != nil {
-			slog.ErrorContext(ctx, "Failed to cancel latest quarantining events for manually uncordoned node",
-				"node", nodeName, "error", err)
-			metrics.ProcessingErrors.WithLabelValues("mongodb_cancel_quarantine_error").Inc()
-			tracing.RecordError(span, err)
-			span.SetAttributes(
-				attribute.String("fault_quarantine.error.type", "mongodb_cancel_quarantine_error"),
-				attribute.String("fault_quarantine.error.message", err.Error()),
-			)
-		} else {
-			slog.DebugContext(ctx, "Successfully cancelled latest quarantining events", "node", nodeName)
-		}
+		r.queueEndedSessionCancellation(ctx, nodeName, "Manual uncordoning detected")
 	} else {
 		slog.WarnContext(ctx, "eventWatcher is NIL - cannot cancel quarantining events in database", "node", nodeName)
 	}
@@ -2618,7 +2618,13 @@ func (r *Reconciler) handleDryRunQuarantineOnNodeChange(
 
 	annotationsToRemove = append(annotationsToRemove, labelAnnotationsToRemove...)
 
-	if err := r.k8sClient.HandleManualUntaintCleanup(ctx, nodeName, annotationsToRemove, nil, nil); err != nil {
+	var pendingAnnotations map[string]string
+	if r.eventWatcher != nil {
+		pendingAnnotations = cancellationPendingAnnotation()
+	}
+
+	if err := r.k8sClient.HandleManualUntaintCleanup(
+		ctx, nodeName, annotationsToRemove, pendingAnnotations, nil); err != nil {
 		metrics.ProcessingErrors.WithLabelValues("dry_run_quarantine_cleanup_error").Inc()
 		return fmt.Errorf("failed to discard dry-run quarantine on node %s: %w", nodeName, err)
 	}
@@ -2630,10 +2636,7 @@ func (r *Reconciler) handleDryRunQuarantineOnNodeChange(
 		return nil
 	}
 
-	if err := r.eventWatcher.CancelLatestQuarantiningEvents(ctx, nodeName, "Dry-run quarantine discarded"); err != nil {
-		slog.ErrorContext(ctx, "Failed to cancel dry-run quarantining events", "node", nodeName, "error", err)
-		metrics.ProcessingErrors.WithLabelValues("mongodb_cancel_quarantine_error").Inc()
-	}
+	r.queueEndedSessionCancellation(ctx, nodeName, "Dry-run quarantine discarded")
 
 	return nil
 }
@@ -2691,6 +2694,9 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 	newAnnotations := map[string]string{
 		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey: common.QuarantinedNodeIsUntaintedManuallyAnnotationValue,
 	}
+	if r.eventWatcher != nil {
+		maps.Copy(newAnnotations, cancellationPendingAnnotation())
+	}
 
 	if err := r.k8sClient.HandleManualUntaintCleanup(
 		ctx,
@@ -2717,22 +2723,9 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 	metrics.TotalNodesManuallyUntainted.WithLabelValues(nodeName).Inc()
 	slog.InfoContext(ctx, "Set currentQuarantinedNodes to 0 after manual untaint", "node", nodeName)
 
-	// Cancel latest quarantining events (if eventWatcher is available)
+	// The cleanup set the pending annotation. The worker cancels the session in the datastore.
 	if r.eventWatcher != nil {
-		slog.DebugContext(ctx, "Calling CancelLatestQuarantiningEvents for manual untaint", "node", nodeName)
-
-		if err := r.eventWatcher.CancelLatestQuarantiningEvents(ctx, nodeName, "Manual untainting detected"); err != nil {
-			slog.ErrorContext(ctx, "Failed to cancel latest quarantining events for manually untainted node",
-				"node", nodeName, "error", err)
-			metrics.ProcessingErrors.WithLabelValues("mongodb_cancel_quarantine_error").Inc()
-			tracing.RecordError(span, err)
-			span.SetAttributes(
-				attribute.String("fault_quarantine.error.type", "mongodb_cancel_quarantine_error"),
-				attribute.String("fault_quarantine.error.message", err.Error()),
-			)
-		} else {
-			slog.DebugContext(ctx, "Successfully cancelled latest quarantining events", "node", nodeName)
-		}
+		r.queueEndedSessionCancellation(ctx, nodeName, "Manual untainting detected")
 	}
 
 	slog.InfoContext(ctx, "Successfully completed manual untaint handling", "node", nodeName)

@@ -49,6 +49,9 @@ const (
 	// Marks quarantine annotations written in dry run, where nothing was applied.
 	QuarantineHealthEventDryRunAnnotationKey   = "quarantineHealthEventDryRun"
 	QuarantineHealthEventDryRunAnnotationValue = "True"
+	// Marks a node whose ended quarantine session is not cancelled in the datastore yet.
+	QuarantineCancellationPendingAnnotationKey   = "quarantineCancellationPending"
+	QuarantineCancellationPendingAnnotationValue = "True"
 
 	ServiceName = "NVSentinel"
 )
@@ -71,4 +74,5 @@ var QuarantineAnnotationKeys = []string{
 	QuarantinedNodeIsUntaintedManuallyAnnotationKey,
 	QuarantineValidationHealthEventAnnotationKey,
 	QuarantineHealthEventDryRunAnnotationKey,
+	QuarantineCancellationPendingAnnotationKey,
 }
