@@ -175,9 +175,8 @@ func evictionStatusWritten(statuses ...string) datastore.Element {
 }
 
 // BuildQuarantinedAndDrainedNodesPipeline creates a pipeline for remediation-ready nodes
-// This watches for insert/update events where both quarantine and eviction status indicate the
-// node is ready for reboot, or where the node has been unquarantined and needs cleanup, or where
-// quarantine was cancelled.
+// This watches for update events that finish a drain or cancel a quarantine, and for insert
+// events whose quarantine and eviction status indicate the node is ready for reboot or cleanup.
 func (b *MongoDBPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
@@ -189,20 +188,13 @@ func (b *MongoDBPipelineBuilder) BuildQuarantinedAndDrainedNodesPipeline() datas
 					datastore.D(
 						datastore.E(fieldOperationType, "update"),
 						datastore.E("$or", datastore.A(
+							// A drain that finished, for remediation or for cleanup after an
+							// unquarantine. The update branch must not filter on fullDocument:
+							// the looked-up document changes or expires, and MongoDB cannot resume
+							// after an event that no longer matches. fault-remediation reads the
+							// document again and decides from its current quarantine status.
 							datastore.D(
 								evictionStatusWritten(string(model.StatusSucceeded), string(model.AlreadyDrained)),
-								datastore.E("fullDocument.healtheventstatus.userpodsevictionstatus.status", datastore.D(
-									datastore.E(opIn, datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
-								)),
-								datastore.E("fullDocument.healtheventstatus.nodequarantined", datastore.D(
-									datastore.E(opIn, datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
-								)),
-							),
-							// Watch for unquarantine events (for annotation cleanup)
-							datastore.D(
-								evictionStatusWritten(string(model.StatusSucceeded)),
-								datastore.E("fullDocument.healtheventstatus.nodequarantined", string(model.UnQuarantined)),
-								datastore.E("fullDocument.healtheventstatus.userpodsevictionstatus.status", string(model.StatusSucceeded)),
 							),
 							// Watch for cancelled quarantine events (for annotation cleanup)
 							datastore.D(
