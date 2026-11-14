@@ -14,9 +14,10 @@
 
 package topology
 
-// DefaultProcNetRoutePath is the host's /proc/net/route as seen inside
-// the container (the DaemonSet bind-mounts /proc at /nvsentinel/proc).
-const DefaultProcNetRoutePath = "/nvsentinel/proc/net/route"
+// DefaultProcNetRoutePath reads the host PID 1 network namespace through
+// the DaemonSet's /proc bind mount. /proc/net resolves through self/net
+// to the reading process's network namespace.
+const DefaultProcNetRoutePath = "/nvsentinel/proc/1/net/route"
 
 // Role is one of Compute, Storage, or Management.
 type Role int
