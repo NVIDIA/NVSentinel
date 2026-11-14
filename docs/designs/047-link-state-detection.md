@@ -328,7 +328,7 @@ The classification of each NIC uses a **three-step decision** built from four co
 
 1. **Step 1 — Management gate (NUMA locality, Section 4.1)**: Is the NIC on a CPU socket that hosts GPUs? If not, exclude it.
 2. **Step 2 — Compute vs Storage (topo matrix + link layer, Section 4.2)**: For NICs that pass Step 1, consult the `nvidia-smi topo -m` GPU↔NIC relationship. If the topo matrix shows PCIe proximity (PIX/PXB), classify as Compute. Otherwise, use the NIC's **link layer** as a tiebreaker: InfiniBand NICs are Compute fabric; Ethernet NICs are Storage.
-3. **Step 3 — Default route exclusion (Section 4.2)**: If the NIC carries the host's default IP route, classify as Management regardless of topo or link layer. This catches management NICs that share a NUMA node with GPUs (e.g., on-prem L40S, GB200). The classifier reads the host's `/proc/net/route` (bind-mounted at `/nvsentinel/proc/net/route`) at startup to resolve the default route interface.
+3. **Step 3 — Default route exclusion (Section 4.2)**: If the NIC carries the host's default IP route, classify as Management regardless of topo or link layer. This catches management NICs that share a NUMA node with GPUs (e.g., on-prem L40S, GB200). The classifier reads `/nvsentinel/proc/1/net/route` at startup to resolve the host's default route interface. The DaemonSet bind-mounts host `/proc` at `/nvsentinel/proc`; PID 1 selects the host network namespace.
 
 These steps use four **complementary signals**, each covering platforms where the others fail:
 
