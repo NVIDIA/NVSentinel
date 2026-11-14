@@ -3,7 +3,3982 @@
   "@id": "https://github.com/NVIDIA/NVSentinel/.openvex.json",
   "author": "NVIDIA NVSentinel maintainers",
   "role": "Document Creator",
-  "timestamp": "2026-11-11T00:00:00Z",
-  "version": 1,
-  "statements": []
+  "timestamp": "2026-11-13T00:00:00Z",
+  "version": 3,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2026-103111"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). libpcre2-8 comes with the base image. The nccl-tests binary, NCCL and the CUDA runtime do not load it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-106553"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). openssh-client comes with the base image. The check never runs ssh."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-106555"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). openssh-client comes with the base image. The check never runs ssh."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-106583"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). openssh-client comes with the base image. The check never runs ssh."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-109518"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/apt-utils@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). apt comes with the base image. The check never runs apt, and the image does not install packages at run time."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-111497"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libbrotli1@1.1.0-2build2?arch=amd64&distro=ubuntu-24.04&upstream=brotli"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). libbrotli1 comes with the base image, as a dependency of libcurl. The nccl-tests binary, NCCL and the CUDA runtime do not load it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112390"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112391"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112392"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112393"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112394"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112395"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112396"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112397"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112398"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112399"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112400"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112401"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112402"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112403"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112404"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112405"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112406"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112891"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112892"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112893"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112894"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112895"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112896"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112897"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112900"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112901"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112902"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-69184"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libcares2@1.27.0-1.0ubuntu1?arch=amd64&distro=ubuntu-24.04&upstream=c-ares"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). libcares2 comes with the base image. The nccl-tests binary, NCCL and the CUDA runtime do not load it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-82560"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libperl5.38t64@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/perl-modules-5.38@5.38.2-3.2ubuntu0.6?arch=all&distro=ubuntu-24.04&upstream=perl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/perl@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). perl comes with the base image. The check never runs perl. The nccl-tests binary, NCCL and the CUDA runtime do not load libperl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-85091"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/zlib1g-dev@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). zlib comes with the base image. The nccl-tests binary, NCCL and the CUDA runtime do not load libz, and zlib1g-dev holds only headers and a static library that the nccl-tests build does not link."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-86145"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). libpcre2-8 comes with the base image. The nccl-tests binary, NCCL and the CUDA runtime do not load it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-86409"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). curl and libcurl come with the base image. The check never runs curl. The nccl-tests binary, NCCL and the CUDA runtime do not load libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-86414"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). curl and libcurl come with the base image. The check never runs curl. The nccl-tests binary, NCCL and the CUDA runtime do not load libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-87862"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). curl and libcurl come with the base image. The check never runs curl. The nccl-tests binary, NCCL and the CUDA runtime do not load libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-87863"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). curl and libcurl come with the base image. The check never runs curl. The nccl-tests binary, NCCL and the CUDA runtime do not load libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-87864"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). curl and libcurl come with the base image. The check never runs curl. The nccl-tests binary, NCCL and the CUDA runtime do not load libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-89157"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). libpcre2-8 comes with the base image. The nccl-tests binary, NCCL and the CUDA runtime do not load it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-89161"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). libpcre2-8 comes with the base image. The nccl-tests binary, NCCL and the CUDA runtime do not load it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-92388"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). curl and libcurl come with the base image. The check never runs curl. The nccl-tests binary, NCCL and the CUDA runtime do not load libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-92389"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). curl and libcurl come with the base image. The check never runs curl. The nccl-tests binary, NCCL and the CUDA runtime do not load libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-92391"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). curl and libcurl come with the base image. The check never runs curl. The nccl-tests binary, NCCL and the CUDA runtime do not load libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-94266"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). curl and libcurl come with the base image. The check never runs curl. The nccl-tests binary, NCCL and the CUDA runtime do not load libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96637"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96639"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96640"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96642"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96643"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96644"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96778"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-22hg-r758-rrw9"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-27h8-gf7j-v5hc"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-27vj-qcqg-25rc"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/fsspec@2026.2.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). fsspec is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-332p-7hrc-92wf"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-3j72-p6qg-6xp7"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-58r4-6rv3-gfh8"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-5x8w-8jj5-q52h"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-5xm2-6676-qcp9"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-65qm-jvmh-6pqg"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-6q48-6c7w-9gw2"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/certifi@2026.7.22"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). certifi is a Python CA bundle that comes with the PyTorch base image. The check never runs Python, so nothing reads it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-78g4-xqwv-q3g8"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-7mwm-ghpf-9vrm"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-8g5g-8vmr-9782"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-9v9v-9qvf-h2hj"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-c6hw-5grf-ff96"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-cg8m-r9f2-5wm2"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/black@26.10.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). black is a Python formatter that comes with the PyTorch base image. The check never runs Python or black."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-cp9v-662q-vvx9"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-f2g6-542v-9j58"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-g4qv-2jxx-769h"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-g7cr-3p24-7wf7"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-g842-9rc4-69pw"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-gg2r-wvfm-q9rx"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-j4m9-6w36-pw47"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-jg86-v3jv-hrpm"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-mrfp-p49p-3hf2"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-p4wg-p73j-c528"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-pchr-8j38-3x4p"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-pjvx-prjx-h659"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/nbconvert@7.17.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). nbconvert is a Jupyter tool that comes with the PyTorch base image. The check never runs Python or Jupyter."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-q45j-58j2-45rg"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-v4x8-3wr5-3wq8"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/filelock@4.0.12"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). filelock is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-v9pv-5gc8-w2m6"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-w889-685w-c8fh"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-wf93-45jw-7689"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pip@26.0.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). This pip is bundled inside Nsight Systems in the PyTorch base image. The check never runs Nsight Systems or pip."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-wqgw-9xfh-qf2g"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-xcvg-w56q-r89m"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-xvh5-g6gv-559v"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6603"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6605"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6607"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6608"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6610"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6611"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6612"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6613"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6617"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. The check never runs Python or wandb."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-103111"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. libpcre2-8 comes with the base image. None of these processes loads it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-106553"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. openssh-client comes with the base image. The check never runs ssh."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-106555"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. openssh-client comes with the base image. The check never runs ssh."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-106583"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. openssh-client comes with the base image. The check never runs ssh."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-109518"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/apt-utils@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. apt comes with the base image. The check never runs apt."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-111497"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libbrotli1@1.1.0-2build2?arch=amd64&distro=ubuntu-24.04&upstream=brotli"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. libbrotli1 comes with the base image, as a dependency of libcurl. None of these processes loads it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112390"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112391"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112392"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112393"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112394"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112395"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112396"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112397"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112398"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112399"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112400"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112401"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112402"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112403"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112404"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112405"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112406"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112891"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112892"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112893"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112894"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112895"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112896"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112897"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112900"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112901"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112902"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-69184"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libcares2@1.27.0-1.0ubuntu1?arch=amd64&distro=ubuntu-24.04&upstream=c-ares"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. libcares2 comes with the base image. None of these processes loads it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-82560"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libperl5.38t64@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/perl-modules-5.38@5.38.2-3.2ubuntu0.6?arch=all&distro=ubuntu-24.04&upstream=perl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/perl@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. perl comes with the base image. The check never runs perl, and none of these processes loads libperl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-85091"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/zlib1g-dev@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Python loads libz, but calls only its deflate, inflate and checksum functions. The vulnerable gz_vacate() is reached only through the gzip file functions gzwrite(), gzprintf() and gzvprintf(), and none of the loaded libraries imports a gz* function. zlib1g-dev holds headers and a static library that nothing in the image links at run time."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-86145"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. libpcre2-8 comes with the base image. None of these processes loads it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-86409"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. curl and libcurl come with the base image. The check never runs curl, and none of these processes loads libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-86414"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. curl and libcurl come with the base image. The check never runs curl, and none of these processes loads libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-87862"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. curl and libcurl come with the base image. The check never runs curl, and none of these processes loads libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-87863"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. curl and libcurl come with the base image. The check never runs curl, and none of these processes loads libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-87864"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. curl and libcurl come with the base image. The check never runs curl, and none of these processes loads libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-89157"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. libpcre2-8 comes with the base image. None of these processes loads it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-89161"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. libpcre2-8 comes with the base image. None of these processes loads it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-92388"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. curl and libcurl come with the base image. The check never runs curl, and none of these processes loads libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-92389"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. curl and libcurl come with the base image. The check never runs curl, and none of these processes loads libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-92391"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. curl and libcurl come with the base image. The check never runs curl, and none of these processes loads libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-94266"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. curl and libcurl come with the base image. The check never runs curl, and none of these processes loads libcurl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96637"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96639"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96640"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96642"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96643"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96644"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-96778"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-22hg-r758-rrw9"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-27h8-gf7j-v5hc"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-27vj-qcqg-25rc"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/fsspec@2026.2.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. fsspec comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-332p-7hrc-92wf"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-3j72-p6qg-6xp7"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-58r4-6rv3-gfh8"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-5x8w-8jj5-q52h"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-5xm2-6676-qcp9"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-65qm-jvmh-6pqg"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-6q48-6c7w-9gw2"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/certifi@2026.7.22"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. certifi is a Python CA bundle that comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-78g4-xqwv-q3g8"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-7mwm-ghpf-9vrm"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-8g5g-8vmr-9782"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-9v9v-9qvf-h2hj"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-c6hw-5grf-ff96"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-cg8m-r9f2-5wm2"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/black@26.10.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. black is a Python formatter that comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-cp9v-662q-vvx9"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-f2g6-542v-9j58"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-g4qv-2jxx-769h"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-g7cr-3p24-7wf7"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-g842-9rc4-69pw"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-gg2r-wvfm-q9rx"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-j4m9-6w36-pw47"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-jg86-v3jv-hrpm"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-mrfp-p49p-3hf2"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-p4wg-p73j-c528"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-pchr-8j38-3x4p"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-pjvx-prjx-h659"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/nbconvert@7.17.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. nbconvert is a Jupyter tool that comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-q45j-58j2-45rg"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-v4x8-3wr5-3wq8"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/filelock@4.0.12"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. filelock comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-v9pv-5gc8-w2m6"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-w889-685w-c8fh"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-wf93-45jw-7689"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pip@26.0.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. This pip is bundled inside Nsight Systems in the PyTorch base image. The check never runs Nsight Systems or pip."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-wqgw-9xfh-qf2g"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-xcvg-w56q-r89m"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-xvh5-g6gv-559v"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pillow@12.3.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6603"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. None of these processes imports wandb or runs wandb-core."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6605"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. None of these processes imports wandb or runs wandb-core."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6607"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. None of these processes imports wandb or runs wandb-core."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6608"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. None of these processes imports wandb or runs wandb-core."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6610"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. None of these processes imports wandb or runs wandb-core."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6611"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. None of these processes imports wandb or runs wandb-core."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6612"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. None of these processes imports wandb or runs wandb-core."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6613"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. None of these processes imports wandb or runs wandb-core."
+    },
+    {
+      "vulnerability": {
+        "name": "GO-2026-6617"
+      },
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/net@v0.59.0"
+            },
+            {
+              "@id": "pkg:golang/stdlib@1.27.1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. The vulnerable code is in wandb-core, the Go binary of the wandb Python package that comes with the PyTorch base image. None of these processes imports wandb or runs wandb-core."
+    }
+  ]
 }

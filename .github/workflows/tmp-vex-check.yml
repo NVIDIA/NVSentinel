@@ -1,0 +1,88 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# TEMPORARY: removed before #2388 merges. Scans the published images with the .openvex.json of the
+# pull request and lists the critical and high findings with their PURLs in the job summary.
+name: tmp-vex-check
+
+on:
+  push:
+    branches: [pull-request/2388]
+
+permissions:
+  contents: read
+
+jobs:
+  find-images:
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 10
+    outputs:
+      images: ${{ steps.images.outputs.images }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - id: images
+        run: |
+          set -euo pipefail
+          images=$(./scripts/retry.sh scripts/published-images.sh main-99e0295 \
+            | jq -c '[.[] | select(.category | test("dcgm-4\\.x|dcgm-diag|nccl-"))]')
+          echo "images=${images}" >> "${GITHUB_OUTPUT}"
+          jq -r '.[] | .ref' <<< "${images}"
+
+  scan:
+    needs: find-images
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.find-images.outputs.images) }}
+    name: scan (${{ matrix.image.name }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          REF: ${{ matrix.image.ref }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/out"
+          mkdir -p "${out}" && chmod 777 "${out}" && cp .openvex.json "${out}/"
+          grype() {
+            docker run --rm -v "${out}:/out" anchore/grype:v0.118.0 "registry:${REF}" --only-fixed -q "$@"
+          }
+          grype -o sarif=/out/plain.sarif -o json=/out/plain.json
+          grype --vex /out/.openvex.json -o sarif=/out/vex.sarif -o json=/out/vex.json
+          count() {
+            jq -r '.runs[0] as $r
+              | (reduce ($r.tool.driver.rules // [])[] as $x ({}; .[$x.id] = ($x.properties["security-severity"] | tonumber))) as $s
+              | [$r.results[] | $s[.ruleId]]
+              | "\(map(select(. >= 9)) | length) critical, \(map(select(. >= 7 and . < 9)) | length) high"' "$1"
+          }
+          {
+            echo "## ${REF}"
+            echo "- without .openvex.json: $(count "${out}/plain.sarif")"
+            echo "- with .openvex.json: $(count "${out}/vex.sarif")"
+            echo
+            echo "Critical and high findings without .openvex.json (id, type, name, version, purl, path):"
+            echo '```text'
+            jq -r '.runs[0].tool.driver.rules[] | select((.properties["security-severity"] | tonumber) >= 7) | .id' \
+              "${out}/plain.sarif" | sort -u > "${out}/ids.txt"
+            jq -r --rawfile r "${out}/ids.txt" '($r | split("\n") | map(select(length > 0))) as $ids
+              | .matches[] | (.vulnerability.id + "-" + .artifact.name) as $k | select($ids | index($k))
+              | [.vulnerability.id, .artifact.type, .artifact.name, .artifact.version, .artifact.purl,
+                 .artifact.locations[0].path] | @tsv' "${out}/plain.json" | sort -u
+            echo '```'
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
