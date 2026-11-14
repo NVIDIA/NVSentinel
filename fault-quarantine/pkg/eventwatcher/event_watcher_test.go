@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -948,4 +949,163 @@ func TestStart_ColdStartCancellation_DoesNotEnterWatchLoop(t *testing.T) {
 		require.NoError(t, watcher.Start(ctx))
 		assert.True(t, changeStream.closed)
 	}
+}
+
+// cancelStoreStub answers like the MongoDB client: FindOne never fails, and a failed query
+// or a missing document shows when the result is decoded. Like the store, the lookup finds
+// the latest event only when the filter takes its status. decodeErrs and updateErrs fail
+// those calls in order.
+type cancelStoreStub struct {
+	client.DatabaseClient
+	latest      map[string]any
+	decodeErrs  []error
+	decodeCalls int
+	updateErrs  []error
+	updateCalls int
+}
+
+func (s *cancelStoreStub) FindOne(_ context.Context, filter any, _ *client.FindOneOptions) (client.SingleResult, error) {
+	status, _ := s.latest["healthEventStatus"].(map[string]any)["nodeQuarantined"].(string)
+
+	builder, ok := filter.(*query.Builder)
+	if !ok {
+		return nil, fmt.Errorf("unexpected filter %T", filter)
+	}
+
+	rendered, err := json.Marshal(builder.ToMongo())
+	if err != nil {
+		return nil, err
+	}
+
+	return &cancelResultStub{store: s, missing: !strings.Contains(string(rendered), `"`+status+`"`)}, nil
+}
+
+func (s *cancelStoreStub) UpdateManyDocuments(_ context.Context, _ any, _ any) (*client.UpdateResult, error) {
+	s.updateCalls++
+
+	if index := s.updateCalls - 1; index < len(s.updateErrs) && s.updateErrs[index] != nil {
+		return nil, s.updateErrs[index]
+	}
+
+	return &client.UpdateResult{MatchedCount: 2, ModifiedCount: 2}, nil
+}
+
+type cancelResultStub struct {
+	store   *cancelStoreStub
+	missing bool
+}
+
+func (r *cancelResultStub) Decode(value any) error {
+	r.store.decodeCalls++
+
+	if index := r.store.decodeCalls - 1; index < len(r.store.decodeErrs) && r.store.decodeErrs[index] != nil {
+		return r.store.decodeErrs[index]
+	}
+
+	if r.missing {
+		return client.ErrNoDocuments
+	}
+
+	encoded, err := json.Marshal(r.store.latest)
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal(encoded, value)
+}
+
+func (r *cancelResultStub) Err() error { return nil }
+
+func latestSessionEvent(status model.Status) map[string]any {
+	return map[string]any{
+		"_id":               "event-uuid",
+		"createdAt":         time.Now().UTC().Add(-time.Minute),
+		"healthEvent":       map[string]any{"nodeName": "node-a"},
+		"healthEventStatus": map[string]any{"nodeQuarantined": string(status)},
+	}
+}
+
+func TestCancelLatestQuarantiningEvents_RetriesFailedStoreCalls(t *testing.T) {
+	transient := errors.New("(NotWritablePrimary) not primary")
+
+	tests := []struct {
+		name            string
+		latestStatus    model.Status
+		decodeErrs      []error
+		updateErrs      []error
+		wantErr         bool
+		wantDecodeCalls int
+		wantUpdateCalls int
+	}{
+		{
+			name:            "an update that fails once is retried",
+			latestStatus:    model.Quarantined,
+			updateErrs:      []error{transient},
+			wantDecodeCalls: 1,
+			wantUpdateCalls: 2,
+		},
+		{
+			name:            "a lookup that fails once is retried",
+			latestStatus:    model.Quarantined,
+			decodeErrs:      []error{transient},
+			wantDecodeCalls: 2,
+			wantUpdateCalls: 1,
+		},
+		{
+			name:            "an update that keeps failing returns its error",
+			latestStatus:    model.Quarantined,
+			updateErrs:      []error{transient, transient, transient, transient},
+			wantErr:         true,
+			wantDecodeCalls: 1,
+			wantUpdateCalls: liveRecoveryStoreRetryAttempts,
+		},
+		{
+			name:            "a lookup that finds no event is not retried",
+			latestStatus:    model.Cancelled,
+			wantDecodeCalls: 1,
+			wantUpdateCalls: 0,
+		},
+		{
+			name:            "a session that a healthy event ended is left alone",
+			latestStatus:    model.UnQuarantined,
+			wantDecodeCalls: 1,
+			wantUpdateCalls: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &cancelStoreStub{
+				latest:     latestSessionEvent(tt.latestStatus),
+				decodeErrs: tt.decodeErrs,
+				updateErrs: tt.updateErrs,
+			}
+			watcher := NewEventWatcher(nil, store, time.Minute, &objectIDStoreStub{})
+
+			err := watcher.CancelLatestQuarantiningEvents(context.Background(), "node-a", "Manual uncordoning detected")
+			if tt.wantErr {
+				require.ErrorIs(t, err, transient)
+			} else {
+				require.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.wantDecodeCalls, store.decodeCalls, "lookups")
+			assert.Equal(t, tt.wantUpdateCalls, store.updateCalls, "updates")
+		})
+	}
+}
+
+func TestCancelLatestQuarantiningEvents_StopsAtTheCallersDeadline(t *testing.T) {
+	store := &cancelStoreStub{
+		latest:     latestSessionEvent(model.Quarantined),
+		updateErrs: []error{errors.New("not primary"), errors.New("not primary"), errors.New("not primary")},
+	}
+	watcher := NewEventWatcher(nil, store, time.Minute, &objectIDStoreStub{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := watcher.CancelLatestQuarantiningEvents(ctx, "node-a", "test")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, store.updateCalls, liveRecoveryStoreRetryAttempts, "the retry must stop at the deadline")
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -827,6 +828,28 @@ func (w *EventWatcher) updateNodeQuarantineStatus(
 	return nil
 }
 
+// quarantiningEvent is the part of a stored event that a cancellation reads.
+type quarantiningEvent struct {
+	ID          string    `bson:"_id" json:"_id"`
+	CreatedAt   time.Time `bson:"createdAt" json:"createdAt"`
+	HealthEvent struct {
+		NodeName           string            `bson:"nodename" json:"nodeName"`
+		GeneratedTimestamp *dbTimestamp      `bson:"generatedtimestamp" json:"generatedTimestamp"`
+		Metadata           map[string]string `bson:"metadata" json:"metadata"`
+		RecommendedAction  int32             `bson:"recommendedaction" json:"recommendedAction"`
+	} `bson:"healthevent" json:"healthEvent"`
+	HealthEventStatus struct {
+		NodeQuarantined           string            `bson:"nodequarantined" json:"nodeQuarantined"`
+		QuarantineFinishTimestamp *dbTimestamp      `bson:"quarantinefinishtimestamp,omitempty" json:"quarantineFinishTimestamp"` //nolint:lll
+		DrainFinishTimestamp      *dbTimestamp      `bson:"drainfinishtimestamp,omitempty" json:"drainFinishTimestamp"`
+		SpanIDs                   map[string]string `bson:"spanids"`
+	} `bson:"healtheventstatus" json:"healthEventStatus"`
+}
+
+// CancelLatestQuarantiningEvents marks the events of the latest quarantine session of a node
+// Cancelled. The session starts at the latest Quarantined event and holds the
+// AlreadyQuarantined events after it. The store calls retry a failure and keep the caller's
+// deadline.
 func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	ctx context.Context,
 	nodeName string,
@@ -840,47 +863,8 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		attribute.String("fault_quarantine.cancel.reason", reason),
 	)
 
-	// Find the latest Quarantined or UnQuarantined event to check current state of node
-	filter := query.New().Build(query.And(
-		query.Eq("healthevent.nodename", nodeName),
-		query.In("healtheventstatus.nodequarantined",
-			[]any{string(model.Quarantined), string(model.UnQuarantined)}),
-	))
-
-	findOptions := &client.FindOneOptions{
-		Sort: map[string]any{"createdAt": -1},
-	}
-
-	var latestEvent struct {
-		ID          string    `bson:"_id" json:"_id"`
-		CreatedAt   time.Time `bson:"createdAt" json:"createdAt"`
-		HealthEvent struct {
-			NodeName           string            `bson:"nodename" json:"nodeName"`
-			GeneratedTimestamp *dbTimestamp      `bson:"generatedtimestamp" json:"generatedTimestamp"`
-			Metadata           map[string]string `bson:"metadata" json:"metadata"`
-			RecommendedAction  int32             `bson:"recommendedaction" json:"recommendedAction"`
-		} `bson:"healthevent" json:"healthEvent"`
-		HealthEventStatus struct {
-			NodeQuarantined           string            `bson:"nodequarantined" json:"nodeQuarantined"`
-			QuarantineFinishTimestamp *dbTimestamp      `bson:"quarantinefinishtimestamp,omitempty" json:"quarantineFinishTimestamp"` //nolint:lll
-			DrainFinishTimestamp      *dbTimestamp      `bson:"drainfinishtimestamp,omitempty" json:"drainFinishTimestamp"`
-			SpanIDs                   map[string]string `bson:"spanids"`
-		} `bson:"healtheventstatus" json:"healthEventStatus"`
-	}
-
-	result, err := w.databaseClient.FindOne(ctx, filter, findOptions)
+	latestEvent, found, err := w.findLatestQuarantiningEvent(ctx, nodeName)
 	if err != nil {
-		if errors.Is(err, client.ErrNoDocuments) {
-			slog.WarnContext(ctx, "No quarantining/unquarantining events found for node", "node", nodeName)
-
-			span.SetAttributes(
-				attribute.String("fault_quarantine.error.type", "no_quarantining_events_found"),
-				attribute.String("fault_quarantine.error.message", err.Error()),
-			)
-
-			return nil
-		}
-
 		slog.ErrorContext(ctx, "Error finding latest quarantining event", "node", nodeName, "error", err)
 		tracing.RecordError(span, err)
 		span.SetAttributes(
@@ -891,27 +875,14 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		return fmt.Errorf("error finding latest quarantining event for node %s: %w", nodeName, err)
 	}
 
-	if err := result.Decode(&latestEvent); err != nil {
-		if errors.Is(err, client.ErrNoDocuments) || client.IsNoDocumentsError(err) {
-			slog.WarnContext(ctx, "No quarantining/unquarantining events found for node", "node", nodeName)
+	if !found {
+		slog.WarnContext(ctx, "No quarantining/unquarantining events found for node", "node", nodeName)
 
-			span.SetAttributes(
-				attribute.String("fault_quarantine.error.type", "no_quarantining_events_found"),
-				attribute.String("fault_quarantine.error.message", err.Error()),
-			)
-
-			return nil
-		}
-
-		slog.ErrorContext(ctx, "Error decoding latest event", "node", nodeName, "error", err)
-
-		tracing.RecordError(span, err)
 		span.SetAttributes(
-			attribute.String("fault_quarantine.error.type", "error_decoding_latest_quarantining_event"),
-			attribute.String("fault_quarantine.error.message", err.Error()),
+			attribute.String("fault_quarantine.error.type", "no_quarantining_events_found"),
 		)
 
-		return fmt.Errorf("error decoding latest quarantining event for node %s: %w", nodeName, err)
+		return nil
 	}
 
 	slog.DebugContext(ctx, "Found latest event",
@@ -920,8 +891,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		"status", latestEvent.HealthEventStatus.NodeQuarantined)
 
 	// Only cancel if latest status is Quarantined (not if already UnQuarantined by healthy event)
-	if latestEvent.HealthEventStatus.NodeQuarantined == "" ||
-		latestEvent.HealthEventStatus.NodeQuarantined != string(model.Quarantined) {
+	if latestEvent.HealthEventStatus.NodeQuarantined != string(model.Quarantined) {
 		slog.InfoContext(ctx, "Latest event is not Quarantined, no events to cancel", "node", nodeName)
 
 		span.SetAttributes(
@@ -936,10 +906,13 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	platformConnectorSpanId := tracing.ParentSpanID(
 		latestEvent.HealthEventStatus.SpanIDs, tracing.ServicePlatformConnector)
 
-	ctx, eventSpan := tracing.StartSpanWithLinkFromTraceContext(
+	_, eventSpan := tracing.StartSpanWithLinkFromTraceContext(
 		context.Background(), latestTraceID, platformConnectorSpanId,
 		"fault_quarantine.cancel_latest_quarantining_events")
 	defer eventSpan.End()
+
+	// The store calls keep the caller's deadline and cancellation.
+	ctx = trace.ContextWithSpan(ctx, eventSpan)
 
 	// Update all events from the current quarantine session (Quarantined + AlreadyQuarantined)
 	// This includes the first event and all subsequent events that occurred after it
@@ -956,7 +929,18 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		},
 	}
 
-	updateResult, err := w.databaseClient.UpdateManyDocuments(ctx, updateFilter, update)
+	// A multi-document update is not a retryable write for the MongoDB driver, so a primary
+	// election fails it once. The update only moves Quarantined and AlreadyQuarantined events
+	// to Cancelled, so running it again is safe.
+	var updateResult *client.UpdateResult
+
+	err = retryLiveRecoveryStoreOperation(ctx, func() error {
+		var updateErr error
+
+		updateResult, updateErr = w.databaseClient.UpdateManyDocuments(ctx, updateFilter, update)
+
+		return updateErr
+	})
 	if err != nil {
 		tracing.RecordError(eventSpan, err)
 		eventSpan.SetAttributes(
@@ -972,14 +956,16 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		"firstEventId", latestEvent.ID,
 		"documentsUpdated", updateResult.ModifiedCount)
 
-	emitCancelledRemediationDuration(
-		latestEvent.HealthEvent.NodeName,
-		protos.RecommendedAction(latestEvent.HealthEvent.RecommendedAction).String(),
-		latestEvent.HealthEvent.GeneratedTimestamp,
-		latestEvent.HealthEventStatus.QuarantineFinishTimestamp,
-		latestEvent.HealthEventStatus.DrainFinishTimestamp,
-		nodeName,
-	)
+	if updateResult.ModifiedCount > 0 {
+		emitCancelledRemediationDuration(
+			latestEvent.HealthEvent.NodeName,
+			protos.RecommendedAction(latestEvent.HealthEvent.RecommendedAction).String(),
+			latestEvent.HealthEvent.GeneratedTimestamp,
+			latestEvent.HealthEventStatus.QuarantineFinishTimestamp,
+			latestEvent.HealthEventStatus.DrainFinishTimestamp,
+			nodeName,
+		)
+	}
 
 	eventSpan.SetAttributes(
 		attribute.String("fault_quarantine.event.node_quarantined", string(model.Cancelled)),
@@ -987,6 +973,49 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	)
 
 	return nil
+}
+
+// findLatestQuarantiningEvent returns the latest Quarantined or UnQuarantined event of a node,
+// retrying a failed read. The MongoDB client reports a failed query from Decode, so the lookup
+// and the decode retry together. Finding no event is an answer, so it returns found=false
+// without a retry.
+func (w *EventWatcher) findLatestQuarantiningEvent(
+	ctx context.Context,
+	nodeName string,
+) (quarantiningEvent, bool, error) {
+	filter := query.New().Build(query.And(
+		query.Eq("healthevent.nodename", nodeName),
+		query.In("healtheventstatus.nodequarantined",
+			[]any{string(model.Quarantined), string(model.UnQuarantined)}),
+	))
+	findOptions := &client.FindOneOptions{Sort: map[string]any{"createdAt": -1}}
+
+	var (
+		latestEvent quarantiningEvent
+		found       bool
+	)
+
+	err := retryLiveRecoveryStoreOperation(ctx, func() error {
+		latestEvent, found = quarantiningEvent{}, false
+
+		result, err := w.databaseClient.FindOne(ctx, filter, findOptions)
+		if err == nil {
+			err = result.Decode(&latestEvent)
+		}
+
+		switch {
+		case err == nil:
+			found = true
+
+			return nil
+		case errors.Is(err, client.ErrNoDocuments) || client.IsNoDocumentsError(err):
+			return nil
+		default:
+			return err
+		}
+	})
+
+	return latestEvent, found, err
 }
 
 func emitCancelledRemediationDuration(
