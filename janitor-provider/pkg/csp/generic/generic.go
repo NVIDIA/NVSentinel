@@ -71,6 +71,9 @@ type Config struct {
 	RebootJobPullSecrets []string
 	// WriteSyslog writes an attribution entry to host syslog before rebooting when true.
 	WriteSyslog bool
+	// RebootJobPriorityClassName is the PriorityClass of the reboot Job's pod. Empty leaves
+	// the pod without a priority class.
+	RebootJobPriorityClassName string
 }
 
 // Client is the generic bare-metal implementation of the CSP Client interface.
@@ -269,9 +272,10 @@ func (c *Client) buildRebootJob(nodeName, crName, preRebootBootID string) *batch
 					},
 				},
 				Spec: corev1.PodSpec{
-					NodeName:         nodeName,
-					RestartPolicy:    corev1.RestartPolicyNever,
-					ImagePullSecrets: buildImagePullSecrets(c.config.RebootJobPullSecrets),
+					NodeName:          nodeName,
+					RestartPolicy:     corev1.RestartPolicyNever,
+					PriorityClassName: c.config.RebootJobPriorityClassName,
+					ImagePullSecrets:  buildImagePullSecrets(c.config.RebootJobPullSecrets),
 					Tolerations: []corev1.Toleration{
 						{Operator: corev1.TolerationOpExists},
 					},
@@ -605,11 +609,12 @@ func loadConfigFromEnv() Config {
 	}
 
 	return Config{
-		RebootImage:          image,
-		UseSysrqReboot:       useSysrqReboot,
-		RebootJobNamespace:   namespace,
-		RebootJobTTL:         ttl,
-		RebootJobPullSecrets: pullSecrets,
-		WriteSyslog:          writeSyslog,
+		RebootImage:                image,
+		UseSysrqReboot:             useSysrqReboot,
+		RebootJobNamespace:         namespace,
+		RebootJobTTL:               ttl,
+		RebootJobPullSecrets:       pullSecrets,
+		WriteSyslog:                writeSyslog,
+		RebootJobPriorityClassName: strings.TrimSpace(os.Getenv("GENERIC_REBOOT_JOB_PRIORITY_CLASS_NAME")),
 	}
 }
