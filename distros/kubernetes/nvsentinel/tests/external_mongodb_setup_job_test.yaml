@@ -75,3 +75,60 @@ tests:
       - matchRegex:
           path: metadata.name
           pattern: ^customer-production-gpu-external-mongodb-setup-[0-9]+-[0-9a-f]{8}$
+
+  - it: gives the Job a 10 minute deadline by default
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 600
+
+  - it: takes the deadline from global.datastore.setupJob.activeDeadlineSeconds
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: 3600
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 3600
+
+  - it: omits the deadline when set to 0
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: 0
+    asserts:
+      - notExists:
+          path: spec.activeDeadlineSeconds
+
+  - it: omits the deadline when given the string "0"
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: "0"
+    asserts:
+      - notExists:
+          path: spec.activeDeadlineSeconds
+
+  - it: ignores mongodb-store.job.activeDeadlineSeconds
+    set:
+      mongodb-store.job.activeDeadlineSeconds: 3600
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 600
+
+  - it: rejects a non-numeric deadline instead of dropping it
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: soon
+    asserts:
+      - failedTemplate:
+          errorPattern: global.datastore.setupJob.activeDeadlineSeconds must be an integer
+
+  - it: rejects a negative deadline
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: -5
+    asserts:
+      - failedTemplate:
+          errorPattern: global.datastore.setupJob.activeDeadlineSeconds must be an integer
+
+  - it: rejects a boolean deadline instead of turning it into 0
+    set:
+      global.datastore.setupJob.activeDeadlineSeconds: false
+    asserts:
+      - failedTemplate:
+          errorPattern: global.datastore.setupJob.activeDeadlineSeconds must be an integer
