@@ -47,7 +47,7 @@ helm upgrade --install nvsentinel {chart-path} \
 | Datastore provider | `global.datastore.*` |
 | In-cluster PostgreSQL | `postgresql.*` |
 
-Server TLS, `pg_hba`, and init scripts are under `postgresql.primary.*` (see the example values file).
+Server TLS and `pg_hba` are under `postgresql.primary.*` (see the example values file). The modules create the schema when they start, so the example sets no init script.
 
 ### The `postgresql` subchart is upstream
 
@@ -62,7 +62,6 @@ The keys NVSentinel's own example sets are these:
 | `postgresql.auth.postgresPassword` | Password for the `postgres` user. Supply it through `auth.existingSecret` rather than in values — see [Secrets](#secrets) below |
 | `postgresql.primary.tls.*` | Server certificate, key and CA, and the Secret holding them |
 | `postgresql.primary.pgHbaConfiguration` | Client authentication rules. This is what enforces certificate authentication |
-| `postgresql.primary.initdb.scripts` | Schema creation, run once on first start |
 
 Anything else the upstream chart offers — replication, backups, resource presets, `ldap`, `audit`, network policy — is available and unmodified, but NVSentinel does not test it and the NVSentinel version does not pin your usage of it.
 
