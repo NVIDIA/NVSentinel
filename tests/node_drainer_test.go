@@ -317,6 +317,21 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 			require.Fail(t, "timed out waiting desired label changes")
 		}
 
+		const partialMessage = "NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]"
+
+		var entityType, entityValue, method string
+
+		require.Eventually(t, func() bool {
+			var ok bool
+			entityType, entityValue, method, ok = helpers.HealthEventDrainScope(ctx, t, client.RESTConfig(), client,
+				testCtx.NodeName, partialMessage)
+
+			return ok
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "covered event should record its drain scope")
+		require.Equal(t, "GPU_UUID", entityType)
+		require.Equal(t, "GPU-455d8f70-2051-db6c-0430-ffc457bff834", entityValue)
+		require.Empty(t, method, "a covered event records the scope and no method")
+
 		t.Log("Phase 2: Pods not leveraging impacted GPU should not be drained")
 		helpers.AssertPodsNeverDeleted(ctx, t, client, "immediate-test", immediateEvictionPods)
 

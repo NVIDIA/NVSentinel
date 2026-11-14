@@ -458,6 +458,104 @@ func postgresDrainMethod(
 	return method, true
 }
 
+// HealthEventDrainScope reads the drain scope of the newest AlreadyDrained event that matches.
+// entityType and entityValue are empty when that event recorded a drain of the full node.
+// ok is false until the document is visible. method is empty when the event recorded no method.
+func HealthEventDrainScope(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client, nodeName, message string,
+) (entityType, entityValue, method string, ok bool) {
+	t.Helper()
+
+	if podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client); found {
+		return mongoDrainScope(ctx, t, restConfig, client, podName, nodeName, message)
+	}
+
+	if podName, found := postgresPrimaryPodName(ctx, t, client); found {
+		return postgresDrainScope(ctx, t, restConfig, podName, nodeName, message)
+	}
+
+	t.Logf("No MongoDB or PostgreSQL pod found for drain scope lookup")
+
+	return "", "", "", false
+}
+
+// mongoDrainScope reads the scope of the newest AlreadyDrained event from MongoDB.
+func mongoDrainScope(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client,
+	mongoPod, nodeName, message string,
+) (string, string, string, bool) {
+	t.Helper()
+
+	js := fmt.Sprintf(`
+		db = db.getSiblingDB("%s");
+		const doc = db.HealthEvents.find({
+			"healthevent.nodename": %q,
+			"healthevent.message": %q,
+			"healtheventstatus.userpodsevictionstatus.status": "AlreadyDrained"
+		}).sort({ createdAt: -1 }).limit(1).toArray()[0];
+		if (!doc || !doc.healtheventstatus || !doc.healtheventstatus.draindecision) {
+			print("NOT_READY");
+		} else {
+			const decision = doc.healtheventstatus.draindecision;
+			const scope = decision.scope || {};
+			print((scope.entitytype || "") + "\t" + (scope.entityvalue || "") + "\t" + (decision.method || ""));
+		}
+	`, MongoDBDatabase, nodeName, message)
+
+	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
+
+	return parseDrainScope(stdout)
+}
+
+// postgresDrainScope reads the scope of the newest AlreadyDrained event from PostgreSQL.
+func postgresDrainScope(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, podName, nodeName, message string,
+) (string, string, string, bool) {
+	t.Helper()
+
+	query := fmt.Sprintf(`
+		SELECT CASE
+			WHEN document #> '{healtheventstatus,draindecision}' IS NULL THEN 'NOT_READY'
+			ELSE COALESCE(document #>> '{healtheventstatus,draindecision,scope,entitytype}', '')
+				|| E'\t' || COALESCE(document #>> '{healtheventstatus,draindecision,scope,entityvalue}', '')
+				|| E'\t' || COALESCE(document #>> '{healtheventstatus,draindecision,method}', '')
+			END
+		FROM health_events
+		WHERE node_name = '%s'
+		  AND document #>> '{healthevent,message}' = '%s'
+		  AND document #>> '{healtheventstatus,userpodsevictionstatus,status}' = 'AlreadyDrained'
+		ORDER BY created_at DESC
+		LIMIT 1;
+	`, sqlLiteral(nodeName), sqlLiteral(message))
+
+	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
+		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
+	if err != nil {
+		t.Logf("PostgreSQL drain scope lookup failed: %v stderr=%s", err, stderr)
+
+		return "", "", "", false
+	}
+
+	return parseDrainScope(stdout)
+}
+
+// parseDrainScope splits the entity type, entity value, and method returned by a scope lookup.
+func parseDrainScope(stdout string) (string, string, string, bool) {
+	// Keep tabs. A full-node record is three empty fields separated by tabs, and TrimSpace
+	// would delete that line.
+	text := strings.Trim(stdout, "\r\n ")
+	if text == "" || strings.Contains(text, "NOT_READY") {
+		return "", "", "", false
+	}
+
+	parts := strings.Split(text, "\t")
+	if len(parts) != 3 {
+		return "", "", "", false
+	}
+
+	return parts[0], parts[1], parts[2], true
+}
+
 // postgresPrimaryPodName returns the running PostgreSQL primary pod in the NVSentinel namespace.
 // found is false when the cluster uses MongoDB instead.
 func postgresPrimaryPodName(ctx context.Context, t *testing.T, client klient.Client) (string, bool) {

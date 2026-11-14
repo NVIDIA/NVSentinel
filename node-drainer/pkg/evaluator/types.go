@@ -88,12 +88,14 @@ type DrainActionResult struct {
 	Status             model.Status  // For ActionUpdateStatus and ActionCancel
 	PartialDrainEntity *protos.Entity
 	PodFilter          informers.PodFilter
-	// DrainDecision is the stored method that this action follows. It is nil when no method
-	// applies, as for a skip or a wait for the node cache.
+	// DrainDecision is the decision this action records or follows. It is nil when no decision
+	// applies, as for a skip, a healthy event, or a wait for the node cache. A covered
+	// AlreadyDrained result carries a decision with only Scope set. A nil Scope is a drain of
+	// the full node.
 	DrainDecision *protos.DrainDecision
 	// drainedByOtherCR marks an AlreadyDrained result that comes from the CR of another event.
-	// This event made no drain decision, so it gets no record. A result from the CR of this
-	// event still gets one.
+	// This event records only the drain scope, not a method. A result from the CR of this
+	// event still records the method.
 	drainedByOtherCR bool
 }
 
