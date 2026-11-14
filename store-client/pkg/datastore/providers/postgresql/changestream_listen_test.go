@@ -419,11 +419,7 @@ func TestFetchNewChanges_OverlappingReads_DeliverEachRowOnce(t *testing.T) {
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base, int64(0)).
 		WillReturnRows(listenTestRows(base, 1, 2, 3))
-	// A second read that starts while the first one is delivering row 1 reads from row 1.
-	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, base.Add(time.Second), int64(1)).
-		WillReturnRows(listenTestRows(base, 2, 3))
-	// A second read that waits for the first one reads from row 3.
+	// The second read waits for the first one to deliver all three rows, then starts at row 3.
 	mock.ExpectQuery(changelogQuery).
 		WithArgs(healthEventsTable, base.Add(3*time.Second), int64(3)).
 		WillReturnRows(changelogRows())
@@ -432,12 +428,14 @@ func TestFetchNewChanges_OverlappingReads_DeliverEachRowOnce(t *testing.T) {
 
 	go func() { done <- watcher.fetchNewChanges(ctx) }()
 
+	first := <-watcher.events
+	assert.Equal(t, []byte("1"), first.ResumeToken)
 	require.Eventually(t, func() bool {
 		watcher.mu.RLock()
 		defer watcher.mu.RUnlock()
 
 		return watcher.lastEventID == 1
-	}, 5*time.Second, time.Millisecond, "the first read must reach row 1")
+	}, 5*time.Second, time.Millisecond, "the read position advances after row 1 is delivered")
 
 	go func() { done <- watcher.fetchNewChanges(ctx) }()
 
@@ -448,16 +446,21 @@ func TestFetchNewChanges_OverlappingReads_DeliverEachRowOnce(t *testing.T) {
 		return watcher.lastEventID != 1
 	}, 300*time.Millisecond, time.Millisecond, "a read must wait while another one is delivering")
 
-	var tokens []string
+	tokens := []string{string(first.ResumeToken)}
 
-	for finished := 0; finished < 2; {
+	for range 2 {
 		select {
 		case event := <-watcher.events:
 			tokens = append(tokens, string(event.ResumeToken))
+		case <-time.After(5 * time.Second):
+			t.Fatalf("reads did not finish, delivered %v", tokens)
+		}
+	}
+
+	for range 2 {
+		select {
 		case err := <-done:
 			require.NoError(t, err)
-
-			finished++
 		case <-time.After(5 * time.Second):
 			t.Fatalf("reads did not finish, delivered %v", tokens)
 		}
@@ -532,8 +535,11 @@ func TestListenLoop_LateRowNotifiedDuringLongCatchUp_IsDelivered(t *testing.T) {
 	notifyAll(rowRange(1001, 1600))
 	assert.Equal(t, tokensFor(rowRange(21, 120)), takeTokens(t, watcher, 100, 5*time.Second))
 
-	// The second poll delivers once the position is at its first row. Another 600 rows past the
-	// position are notified and then the late row, 1201 ids since the catch-up started.
+	// The second poll blocks on row 121 until it is delivered; cursor advancement must follow it.
+	assert.Equal(t, []string{"121"}, takeTokens(t, watcher, 1, 5*time.Second))
+
+	// Another 600 rows past the position are notified and then the late row, 1201 ids since the
+	// catch-up started.
 	require.Eventually(t, func() bool {
 		watcher.mu.RLock()
 		defer watcher.mu.RUnlock()
@@ -541,7 +547,7 @@ func TestListenLoop_LateRowNotifiedDuringLongCatchUp_IsDelivered(t *testing.T) {
 		return watcher.lastEventID == 121
 	}, 5*time.Second, time.Millisecond)
 	notifyAll(append(rowRange(1601, 2200), lateID))
-	assert.Equal(t, tokensFor(rowRange(121, 220)), takeTokens(t, watcher, 100, 5*time.Second))
+	assert.Equal(t, tokensFor(rowRange(122, 220)), takeTokens(t, watcher, 99, 5*time.Second))
 
 	assert.Equal(t, tokensFor([]int64{lateID}), takeTokens(t, watcher, 1, 5*time.Second),
 		"the late row must be delivered")

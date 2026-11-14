@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"strconv"
 	"sync"
 	"time"
@@ -82,8 +83,10 @@ const (
 // PostgreSQLChangeStreamWatcher implements ChangeStreamWatcher for PostgreSQL
 // Supports three modes: polling (original), notify (LISTEN/NOTIFY), and hybrid (recommended)
 //
-// Resume Strategy: Uses timestamp-based resume (like MongoDB) for reliable replay of time-window events.
-// The resume token stores both `lastTimestamp` and `lastEventID` for precise positioning.
+// Resume Strategy: Uses a (changed_at, id) resume position for ordered polling and stores both
+// values in the resume token. This is best-effort replay: neither field is assigned at commit, so
+// a transaction that commits after the cursor has passed its sort position can be missed if its
+// NOTIFY was not received.
 //
 // Filtering Strategy: Two-layer filtering for optimal performance:
 // 1. Server-side: SQL WHERE clause filters events in the database query (reduces volume)
@@ -94,9 +97,15 @@ type PostgreSQLChangeStreamWatcher struct {
 	tableName      string
 	events         chan datastore.EventWithToken
 	stopCh         chan struct{}
+	startOnce      sync.Once
+	closeOnce      sync.Once
+	workerMu       sync.Mutex
+	workerWG       sync.WaitGroup
+	workerCancel   context.CancelFunc
 	lastEventID    int64        // For tie-breaking when timestamps are equal
 	lastTimestamp  time.Time    // Primary resume position (timestamp-based, like MongoDB)
-	mu             sync.RWMutex // Protects lastEventID, lastTimestamp, highestReadEventID, and lastNotifyTime
+	mu             sync.RWMutex // Protects position, highestReadEventID, notification, and readiness state
+	listenerMu     sync.RWMutex // Protects listener
 	pollInterval   time.Duration
 	pipelineFilter *PipelineFilter // Application-side filter (fallback for edge cases)
 	pipeline       any             // Raw pipeline for SQL filter building
@@ -112,10 +121,16 @@ type PostgreSQLChangeStreamWatcher struct {
 	resumeRetryInterval time.Duration // Initial legacy lookup retry delay; overridden in tests
 
 	// Hybrid mode fields
-	mode           ChangeStreamMode
-	listener       *pq.Listener // LISTEN connection for notifications
-	lastNotifyTime time.Time    // Last time we received a NOTIFY
-	connString     string       // Connection string for LISTEN
+	mode               ChangeStreamMode
+	listener           *pq.Listener // LISTEN connection for notifications
+	listenerConnected  bool
+	listenerSubscribed bool
+	pollReady          bool
+	readFailed         bool
+	catchUpPending     bool
+	catchUpGeneration  uint64
+	lastNotifyTime     time.Time // Last time we received a NOTIFY
+	connString         string    // Connection string for LISTEN
 
 	// lag carries the two timestamps change_stream_lag_seconds is derived from. See ADR-054.
 	lag lagstate.Tracker
@@ -128,9 +143,8 @@ type PostgreSQLChangeStreamWatcher struct {
 	unreadIDs   map[int64]struct{} // the notified ids no read has returned yet
 	droppedIDs  int                // notified ids not kept since the last lookup, because notifiedIDs was full
 
-	// fetchMu lets one goroutine read the changelog and deliver what it read at a time. The
-	// fallback poller and the fetch loop would otherwise read the same rows from the same
-	// position and deliver them twice.
+	// fetchMu serializes cursor reads and event delivery. The fallback poller and fetch loop
+	// would otherwise read the same rows from the same position and deliver them twice.
 	fetchMu sync.Mutex
 
 	// retryDelay is fetchRetryDelay, which tests shorten.
@@ -142,6 +156,57 @@ type PostgreSQLChangeStreamWatcher struct {
 // treat as "unknown" rather than as caught up: see ADR-054.
 func (w *PostgreSQLChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
 	return w.lag.LagState()
+}
+
+// IsReady reports whether a subscribed listener or successful poll can process events.
+// A failed database read overrides an active LISTEN connection until a read succeeds.
+func (w *PostgreSQLChangeStreamWatcher) IsReady() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return !w.readFailed && ((w.listenerConnected && w.listenerSubscribed) || w.pollReady)
+}
+
+func (w *PostgreSQLChangeStreamWatcher) listenerIsActive() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return w.listenerConnected && w.listenerSubscribed
+}
+
+func (w *PostgreSQLChangeStreamWatcher) isStopped() bool {
+	select {
+	case <-w.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) setListenerConnected(connected bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if connected && w.isStopped() {
+		connected = false
+	}
+
+	w.listenerConnected = connected
+}
+
+func (w *PostgreSQLChangeStreamWatcher) setPollReady(ready bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.pollReady = ready
+	w.readFailed = !ready
+}
+
+func (w *PostgreSQLChangeStreamWatcher) markCatchUpPending() {
+	w.mu.Lock()
+	w.catchUpPending = true
+	w.catchUpGeneration++
+	w.mu.Unlock()
 }
 
 // NewPostgreSQLChangeStreamWatcher creates a new PostgreSQL change stream watcher
@@ -170,67 +235,95 @@ func (w *PostgreSQLChangeStreamWatcher) Events() <-chan datastore.EventWithToken
 
 // Start starts the change stream watcher
 func (w *PostgreSQLChangeStreamWatcher) Start(ctx context.Context) {
-	// Load last processed event ID
-	if err := w.loadResumePosition(ctx); err != nil {
-		slog.Error("Failed to load resume position", "client", w.clientName, "error", err)
-	}
+	w.startOnce.Do(func() {
+		if w.isStopped() {
+			return
+		}
 
-	// Preserve replay after load errors; only cancellation prevents startup.
-	if ctx.Err() != nil {
+		// Load last processed event ID
+		if err := w.loadResumePosition(ctx); err != nil {
+			slog.Error("Failed to load resume position", "client", w.clientName, "error", err)
+		}
+
+		// A cancelled legacy resume lookup must not launch a worker.
+		if ctx.Err() != nil {
+			return
+		}
+
+		switch w.mode {
+		case ModePolling:
+			slog.Info("Starting PostgreSQL changestream in POLLING mode",
+				"client", w.clientName,
+				"mode", "polling",
+				"pollInterval", w.pollInterval,
+				"description", "Queries changelog table every interval")
+
+			w.startWorker(ctx, w.pollForChanges)
+
+		case ModeNotify:
+			slog.Info("Starting PostgreSQL changestream in LISTEN/NOTIFY mode (experimental)",
+				"client", w.clientName,
+				"mode", "notify",
+				"description", "Uses PostgreSQL NOTIFY for instant notifications")
+
+			w.startWorker(ctx, w.listenForNotifications)
+
+		case ModeHybrid:
+			hasConnString := w.connString != ""
+			effectiveMode := "hybrid-notify"
+
+			if !hasConnString {
+				effectiveMode = "hybrid-degraded-to-polling"
+				slog.Warn("PostgreSQL changestream HYBRID mode degraded to POLLING (no connString)",
+					"client", w.clientName,
+					"mode", effectiveMode,
+					"reason", "connString is empty, cannot create LISTEN connection",
+					"fallbackBehavior", "will use polling only")
+			} else {
+				slog.Info("Starting PostgreSQL changestream in HYBRID mode (LISTEN/NOTIFY + adaptive fallback)",
+					"client", w.clientName,
+					"mode", effectiveMode,
+					"fallbackPollInterval", w.pollInterval,
+					"description", "Uses LISTEN/NOTIFY with intelligent polling fallback")
+			}
+
+			w.startWorker(ctx, w.hybridChangeStream)
+
+		default:
+			slog.Error("Unknown changestream mode, defaulting to polling",
+				"client", w.clientName,
+				"requestedMode", w.mode,
+				"actualMode", "polling-fallback")
+
+			w.startWorker(ctx, w.pollForChanges)
+		}
+	})
+}
+
+func (w *PostgreSQLChangeStreamWatcher) startWorker(
+	ctx context.Context,
+	run func(context.Context),
+) {
+	w.workerMu.Lock()
+	defer w.workerMu.Unlock()
+
+	if w.isStopped() {
 		return
 	}
 
-	switch w.mode {
-	case ModePolling:
-		slog.Info("Starting PostgreSQL changestream in POLLING mode",
-			"client", w.clientName,
-			"mode", "polling",
-			"pollInterval", w.pollInterval,
-			"description", "Queries changelog table every interval")
+	workerCtx, cancel := context.WithCancel(ctx)
+	w.workerCancel = cancel
+	w.workerWG.Add(1)
 
-		go w.pollForChanges(ctx)
+	go func() {
+		defer w.workerWG.Done()
 
-	case ModeNotify:
-		slog.Info("Starting PostgreSQL changestream in LISTEN/NOTIFY mode (experimental)",
-			"client", w.clientName,
-			"mode", "notify",
-			"description", "Uses PostgreSQL NOTIFY for instant notifications")
-
-		go w.listenForNotifications(ctx)
-
-	case ModeHybrid:
-		hasConnString := w.connString != ""
-		effectiveMode := "hybrid-notify"
-
-		if !hasConnString {
-			effectiveMode = "hybrid-degraded-to-polling"
-			slog.Warn("PostgreSQL changestream HYBRID mode degraded to POLLING (no connString)",
-				"client", w.clientName,
-				"mode", effectiveMode,
-				"reason", "connString is empty, cannot create LISTEN connection",
-				"fallbackBehavior", "will use polling only")
-		} else {
-			slog.Info("Starting PostgreSQL changestream in HYBRID mode (LISTEN/NOTIFY + adaptive fallback)",
-				"client", w.clientName,
-				"mode", effectiveMode,
-				"fallbackPollInterval", w.pollInterval,
-				"description", "Uses LISTEN/NOTIFY with intelligent polling fallback")
-		}
-
-		go w.hybridChangeStream(ctx)
-
-	default:
-		slog.Error("Unknown changestream mode, defaulting to polling",
-			"client", w.clientName,
-			"requestedMode", w.mode,
-			"actualMode", "polling-fallback")
-
-		go w.pollForChanges(ctx)
-	}
+		run(workerCtx)
+	}()
 }
 
 // MarkProcessed marks events as processed up to the given token
-// Uses timestamp-based resume for reliable replay
+// Uses the persisted (changed_at, id) position for best-effort replay.
 func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
 	var eventID int64
 
@@ -355,11 +448,21 @@ func (w *PostgreSQLChangeStreamWatcher) timestampForAck(ctx context.Context, eve
 
 // Close closes the change stream watcher
 func (w *PostgreSQLChangeStreamWatcher) Close(ctx context.Context) error {
-	close(w.stopCh)
-	close(w.events)
+	w.closeOnce.Do(func() {
+		w.workerMu.Lock()
+		close(w.stopCh)
 
-	// Close LISTEN connection if in notify or hybrid mode
-	w.closeListener()
+		if w.workerCancel != nil {
+			w.workerCancel()
+		}
+
+		w.closeListener()
+		w.workerMu.Unlock()
+
+		w.workerWG.Wait()
+		w.setPollReady(false)
+		close(w.events)
+	})
 
 	return nil
 }
@@ -391,8 +494,32 @@ func (w *PostgreSQLChangeStreamWatcher) pollForChanges(ctx context.Context) {
 
 // hybridChangeStream implements hybrid mode: LISTEN/NOTIFY with adaptive fallback polling
 func (w *PostgreSQLChangeStreamWatcher) hybridChangeStream(ctx context.Context) {
+	if w.connString == "" {
+		w.pollForChanges(ctx)
+
+		return
+	}
+
+	adaptiveStopCh := make(chan struct{})
+	adaptiveCtx, cancelAdaptive := context.WithCancel(ctx)
+
+	adaptiveDone := make(chan struct{})
+	go func() {
+		defer close(adaptiveDone)
+
+		w.adaptiveFallbackPoller(adaptiveCtx, adaptiveStopCh)
+	}()
+
 	// Initialize LISTEN connection
 	if err := w.initializeListener(ctx); err != nil {
+		close(adaptiveStopCh)
+		cancelAdaptive()
+		<-adaptiveDone
+
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+
 		slog.Error("Failed to initialize LISTEN connection, degrading to POLLING-ONLY mode",
 			"client", w.clientName,
 			"requestedMode", "hybrid",
@@ -405,18 +532,12 @@ func (w *PostgreSQLChangeStreamWatcher) hybridChangeStream(ctx context.Context) 
 		return
 	}
 
+	defer func() {
+		close(adaptiveStopCh)
+		cancelAdaptive()
+		<-adaptiveDone
+	}()
 	defer w.closeListener()
-
-	// Initialize last notify time to now (assume NOTIFY is working initially)
-	w.mu.Lock()
-	w.lastNotifyTime = time.Now()
-	w.mu.Unlock()
-
-	// Start adaptive fallback polling in a separate goroutine
-	adaptiveStopCh := make(chan struct{})
-	defer close(adaptiveStopCh)
-
-	go w.adaptiveFallbackPoller(ctx, adaptiveStopCh)
 
 	// Main loop: listen for notifications
 	w.listenLoop(ctx)
@@ -441,51 +562,23 @@ func (w *PostgreSQLChangeStreamWatcher) listenForNotifications(ctx context.Conte
 
 // initializeListener sets up the pq.Listener for LISTEN/NOTIFY
 func (w *PostgreSQLChangeStreamWatcher) initializeListener(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if w.connString == "" {
 		return fmt.Errorf("connString is empty, cannot create LISTEN connection")
 	}
 
-	// Event callback for listener lifecycle events
-	eventCallback := func(ev pq.ListenerEventType, err error) {
-		switch ev {
-		case pq.ListenerEventConnected:
-			slog.Info("LISTEN connection established",
-				"client", w.clientName,
-				"mode", w.mode,
-				"channel", notifyChannel,
-				"status", "connected")
-		case pq.ListenerEventDisconnected:
-			slog.Warn("LISTEN connection lost, will reconnect",
-				"client", w.clientName,
-				"mode", w.mode,
-				"channel", notifyChannel,
-				"status", "disconnected",
-				"error", err)
-		case pq.ListenerEventReconnected:
-			slog.Info("LISTEN connection restored",
-				"client", w.clientName,
-				"mode", w.mode,
-				"channel", notifyChannel,
-				"status", "reconnected")
-		case pq.ListenerEventConnectionAttemptFailed:
-			slog.Error("LISTEN connection attempt failed",
-				"client", w.clientName,
-				"mode", w.mode,
-				"channel", notifyChannel,
-				"status", "connection-failed",
-				"error", err)
-		}
+	// Create listener with automatic reconnection.
+	// minReconnectInterval: 10s, maxReconnectInterval: 1min.
+	listener := pq.NewListener(w.connString, 10*time.Second, time.Minute, w.listenerEventCallback())
+	if err := w.registerListener(ctx, listener); err != nil {
+		return err
 	}
 
-	// Create listener with automatic reconnection
-	// minReconnectInterval: 10s, maxReconnectInterval: 1min
-	w.listener = pq.NewListener(w.connString, 10*time.Second, time.Minute, eventCallback)
-
-	// Subscribe to the notification channel
-	if err := w.listener.Listen(notifyChannel); err != nil {
-		w.listener.Close()
-
-		return fmt.Errorf("failed to LISTEN on channel %s: %w", notifyChannel, err)
+	if err := w.subscribeListener(ctx, listener); err != nil {
+		return err
 	}
 
 	slog.Info("Successfully subscribed to NOTIFY channel",
@@ -495,22 +588,185 @@ func (w *PostgreSQLChangeStreamWatcher) initializeListener(ctx context.Context) 
 	return nil
 }
 
+func (w *PostgreSQLChangeStreamWatcher) listenerEventCallback() pq.EventCallbackType {
+	return func(ev pq.ListenerEventType, err error) {
+		switch ev {
+		case pq.ListenerEventConnected:
+			w.setListenerConnected(true)
+			slog.Info("LISTEN connection established",
+				"client", w.clientName,
+				"mode", w.mode,
+				"channel", notifyChannel,
+				"status", "connected")
+		case pq.ListenerEventDisconnected:
+			w.setListenerConnected(false)
+			slog.Warn("LISTEN connection lost, will reconnect",
+				"client", w.clientName,
+				"mode", w.mode,
+				"channel", notifyChannel,
+				"status", "disconnected",
+				"error", err)
+		case pq.ListenerEventReconnected:
+			w.markCatchUpPending()
+			w.setListenerConnected(true)
+			slog.Info("LISTEN connection restored",
+				"client", w.clientName,
+				"mode", w.mode,
+				"channel", notifyChannel,
+				"status", "reconnected")
+		case pq.ListenerEventConnectionAttemptFailed:
+			w.setListenerConnected(false)
+			slog.Error("LISTEN connection attempt failed",
+				"client", w.clientName,
+				"mode", w.mode,
+				"channel", notifyChannel,
+				"status", "connection-failed",
+				"error", err)
+		}
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) registerListener(ctx context.Context, listener *pq.Listener) error {
+	w.listenerMu.Lock()
+	defer w.listenerMu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		_ = listener.Close()
+
+		return err
+	}
+
+	select {
+	case <-w.stopCh:
+		_ = listener.Close()
+
+		return context.Canceled
+	default:
+	}
+
+	w.listener = listener
+
+	return nil
+}
+
+func (w *PostgreSQLChangeStreamWatcher) subscribeListener(ctx context.Context, listener *pq.Listener) error {
+	listenResult := make(chan error, 1)
+	go func() {
+		listenResult <- listener.Listen(notifyChannel)
+	}()
+
+	select {
+	case err := <-listenResult:
+		if err != nil {
+			w.closeListenerIfCurrent(listener)
+
+			return fmt.Errorf("failed to LISTEN on channel %s: %w", notifyChannel, err)
+		}
+	case <-ctx.Done():
+		w.closeListenerIfCurrent(listener)
+
+		if err := <-listenResult; err != nil {
+			slog.Debug("LISTEN stopped during context cancellation", "client", w.clientName, "error", err)
+		}
+
+		return ctx.Err()
+	case <-w.stopCh:
+		w.closeListenerIfCurrent(listener)
+
+		if err := <-listenResult; err != nil {
+			slog.Debug("LISTEN stopped while watcher was closing", "client", w.clientName, "error", err)
+		}
+
+		return context.Canceled
+	}
+
+	if err := ctx.Err(); err != nil {
+		w.closeListenerIfCurrent(listener)
+
+		return err
+	}
+
+	select {
+	case <-w.stopCh:
+		w.closeListenerIfCurrent(listener)
+
+		return context.Canceled
+	default:
+	}
+
+	w.mu.Lock()
+	w.listenerSubscribed = true
+	w.catchUpPending = true
+	w.catchUpGeneration++
+	w.mu.Unlock()
+
+	return nil
+}
+
 // closeListener closes the LISTEN connection
 func (w *PostgreSQLChangeStreamWatcher) closeListener() {
-	if w.listener != nil {
-		if err := w.listener.Close(); err != nil {
-			slog.Warn("Error closing LISTEN connection",
-				"client", w.clientName,
-				"error", err)
-		} else {
-			slog.Info("Closed LISTEN connection",
-				"client", w.clientName)
-		}
+	w.listenerMu.Lock()
+	listener := w.listener
+	w.listener = nil
+	w.listenerMu.Unlock()
+
+	w.mu.Lock()
+	w.listenerConnected = false
+	w.listenerSubscribed = false
+	w.pollReady = false
+	w.mu.Unlock()
+
+	if listener != nil {
+		w.closeListenerConnection(listener)
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) closeListenerIfCurrent(listener *pq.Listener) {
+	w.listenerMu.Lock()
+	if w.listener != listener {
+		w.listenerMu.Unlock()
+
+		return
+	}
+
+	w.listener = nil
+	w.listenerMu.Unlock()
+
+	w.mu.Lock()
+	w.listenerConnected = false
+	w.listenerSubscribed = false
+	w.mu.Unlock()
+
+	w.closeListenerConnection(listener)
+}
+
+func (w *PostgreSQLChangeStreamWatcher) closeListenerConnection(listener *pq.Listener) {
+	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		slog.Warn("Error closing LISTEN connection",
+			"client", w.clientName,
+			"error", err)
+	} else {
+		slog.Info("Closed LISTEN connection",
+			"client", w.clientName)
 	}
 }
 
 // listenLoop is the main event loop for receiving NOTIFY messages
 func (w *PostgreSQLChangeStreamWatcher) listenLoop(ctx context.Context) {
+	w.listenerMu.RLock()
+	listener := w.listener
+	w.listenerMu.RUnlock()
+
+	if listener == nil {
+		slog.Error("LISTEN loop cannot start without an initialized listener", "client", w.clientName)
+
+		return
+	}
+
+	// Drain the gap between the first poll and subscription before advancing
+	// the cursor to any newly notified row.
+	w.processNotification(ctx, nil)
+
 	slog.Info("Started LISTEN loop",
 		"client", w.clientName)
 
@@ -533,30 +789,80 @@ func (w *PostgreSQLChangeStreamWatcher) listenLoop(ctx context.Context) {
 
 			return
 
-		case notification := <-w.listener.Notify:
-			if notification != nil {
-				// Update last notify time for adaptive fallback
-				w.mu.Lock()
-				w.lastNotifyTime = time.Now()
-				w.mu.Unlock()
+		case notification, ok := <-listener.Notify:
+			if !ok {
+				slog.Warn("LISTEN notification channel closed", "client", w.clientName)
 
-				// Handle the notification
-				if err := w.handleNotification(ctx, notification); err != nil {
-					slog.Error("Error handling notification",
-						"client", w.clientName,
-						"error", err)
-				}
+				return
 			}
+
+			w.processNotification(ctx, notification)
 
 		case <-time.After(90 * time.Second):
 			// Keepalive ping to ensure connection is alive
 			go func() {
-				if err := w.listener.Ping(); err != nil {
+				if err := listener.Ping(); err != nil {
 					slog.Warn("LISTEN ping failed",
 						"client", w.clientName,
 						"error", err)
 				}
 			}()
+		}
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) processNotification(ctx context.Context, notification *pq.Notification) {
+	if notification == nil {
+		w.markCatchUpPending()
+		w.wakeFetchLoop()
+
+		return
+	}
+
+	// Update last notify time for adaptive fallback.
+	w.mu.Lock()
+	w.lastNotifyTime = time.Now()
+	w.mu.Unlock()
+
+	if err := w.handleNotification(ctx, notification); err != nil {
+		slog.Error("Error handling notification",
+			"client", w.clientName,
+			"error", err)
+	}
+}
+
+// catchUpAfterSubscribe drains every batch before a newer notification can move
+// the cursor past rows written while LISTEN was unavailable. Keep the barrier on
+// failure so the next notification retries instead of skipping the missing rows.
+func (w *PostgreSQLChangeStreamWatcher) catchUpAfterSubscribe(ctx context.Context) error {
+	for {
+		w.mu.RLock()
+		pending, generation := w.catchUpPending, w.catchUpGeneration
+		timestamp, id := w.lastTimestamp, w.lastEventID
+		w.mu.RUnlock()
+
+		if !pending {
+			return nil
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if err := w.fetchNewChanges(ctx); err != nil {
+			return err
+		}
+
+		w.mu.Lock()
+
+		caughtUp := timestamp.Equal(w.lastTimestamp) && id == w.lastEventID && generation == w.catchUpGeneration
+		if caughtUp {
+			w.catchUpPending = false
+		}
+		w.mu.Unlock()
+
+		if caughtUp {
+			return nil
 		}
 	}
 }
@@ -747,6 +1053,7 @@ func (w *PostgreSQLChangeStreamWatcher) readChangelog(ctx context.Context) error
 	for {
 		w.mu.RLock()
 		lastTimestamp, lastEventID := w.lastTimestamp, w.lastEventID
+		catchUpPending, catchUpGeneration := w.catchUpPending, w.catchUpGeneration
 		w.mu.RUnlock()
 
 		if err := w.fetchNewChangesFor(ctx, fetchLoopReader); err != nil {
@@ -758,6 +1065,14 @@ func (w *PostgreSQLChangeStreamWatcher) readChangelog(ctx context.Context) error
 		}
 
 		if !w.positionMovedFrom(lastTimestamp, lastEventID) || ctx.Err() != nil {
+			if catchUpPending && ctx.Err() == nil {
+				w.mu.Lock()
+				if w.catchUpGeneration == catchUpGeneration {
+					w.catchUpPending = false
+				}
+				w.mu.Unlock()
+			}
+
 			return ctx.Err()
 		}
 	}
@@ -804,6 +1119,9 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRows(ctx context.Context) e
 
 	// One query looks every id up, so no lookup starts after the stop check above.
 	events, err := w.queryNotifiedRows(ctx, ids)
+
+	w.setPollReady(err == nil)
+
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -864,6 +1182,10 @@ func (w *PostgreSQLChangeStreamWatcher) keepNotifiedIDs(ids []int64, dropped int
 func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Context, stopCh chan struct{}) {
 	// Start with infrequent polling (30s) assuming NOTIFY is working
 	checkInterval := 30 * time.Second
+	if !w.listenerIsActive() {
+		checkInterval = 5 * time.Second
+	}
+
 	ticker := time.NewTicker(checkInterval)
 
 	defer ticker.Stop()
@@ -879,57 +1201,87 @@ func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Conte
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			// Check when we last received a NOTIFY
-			w.mu.RLock()
-			timeSinceLastNotify := time.Since(w.lastNotifyTime)
-			lastEventID := w.lastEventID
-			w.mu.RUnlock()
-
-			// Determine if NOTIFY seems to be working
-			if timeSinceLastNotify > notifySilentAfter {
-				// NOTIFY might be silent or broken, poll more aggressively
-				newInterval := 5 * time.Second
-
-				if checkInterval != newInterval {
-					slog.Warn("HYBRID MODE: NOTIFY appears silent, increasing fallback poll frequency",
-						"client", w.clientName,
-						"mode", "hybrid-active-fallback",
-						"timeSinceLastNotify", timeSinceLastNotify,
-						"oldInterval", checkInterval,
-						"newInterval", newInterval,
-						"reason", "No NOTIFY received for >30s")
-					checkInterval = newInterval
-					ticker.Reset(checkInterval)
-				}
-
-				// Perform fallback poll
-				slog.Debug("Executing fallback poll (NOTIFY silent)",
-					"client", w.clientName,
-					"mode", "hybrid-polling",
-					"lastEventID", lastEventID)
-
-				if err := w.fetchNewChangesFor(ctx, fallbackReader); err != nil {
-					slog.Error("Fallback poll failed",
-						"client", w.clientName,
-						"error", err)
-				}
-			} else {
-				// NOTIFY is working well, reduce fallback polling
-				newInterval := 30 * time.Second
-				if checkInterval != newInterval {
-					slog.Info("HYBRID MODE: NOTIFY is healthy, reducing fallback poll frequency",
-						"client", w.clientName,
-						"mode", "hybrid-notify-active",
-						"timeSinceLastNotify", timeSinceLastNotify,
-						"oldInterval", checkInterval,
-						"newInterval", newInterval,
-						"reason", "NOTIFY working well")
-					checkInterval = newInterval
-					ticker.Reset(checkInterval)
-				}
-			}
+			w.pollAccordingToNotificationHealth(ctx, ticker, &checkInterval)
 		}
 	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) pollAccordingToNotificationHealth(
+	ctx context.Context,
+	ticker *time.Ticker,
+	checkInterval *time.Duration,
+) {
+	w.mu.RLock()
+	lastNotifyTime := w.lastNotifyTime
+	timeSinceLastNotify := time.Since(lastNotifyTime)
+	lastEventID := w.lastEventID
+	pending := w.catchUpPending
+	w.mu.RUnlock()
+
+	if !pending && !lastNotifyTime.IsZero() && timeSinceLastNotify <= notifySilentAfter && w.IsReady() {
+		w.reduceFallbackPolling(ticker, checkInterval, timeSinceLastNotify)
+
+		return
+	}
+
+	w.increaseFallbackPolling(ticker, checkInterval, timeSinceLastNotify)
+	slog.Debug("Executing fallback poll (NOTIFY silent)",
+		"client", w.clientName,
+		"mode", "hybrid-polling",
+		"lastEventID", lastEventID)
+
+	poll := func(ctx context.Context) error { return w.fetchNewChangesFor(ctx, fallbackReader) }
+	if pending {
+		poll = w.catchUpAfterSubscribe
+	}
+
+	if err := poll(ctx); err != nil {
+		slog.Error("Fallback poll failed",
+			"client", w.clientName,
+			"error", err)
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) increaseFallbackPolling(
+	ticker *time.Ticker,
+	checkInterval *time.Duration,
+	timeSinceLastNotify time.Duration,
+) {
+	newInterval := 5 * time.Second
+	if *checkInterval == newInterval {
+		return
+	}
+
+	slog.Warn("HYBRID MODE: NOTIFY appears silent, increasing fallback poll frequency",
+		"client", w.clientName,
+		"mode", "hybrid-active-fallback",
+		"timeSinceLastNotify", timeSinceLastNotify,
+		"oldInterval", *checkInterval,
+		"newInterval", newInterval,
+		"reason", "No NOTIFY received for >30s")
+	*checkInterval = newInterval
+	ticker.Reset(*checkInterval)
+}
+
+func (w *PostgreSQLChangeStreamWatcher) reduceFallbackPolling(
+	ticker *time.Ticker,
+	checkInterval *time.Duration,
+	timeSinceLastNotify time.Duration,
+) {
+	newInterval := 30 * time.Second
+	if *checkInterval == newInterval {
+		return
+	}
+
+	slog.Info("HYBRID MODE: NOTIFY is healthy, reducing fallback poll frequency",
+		"client", w.clientName,
+		"mode", "hybrid-notify-active",
+		"timeSinceLastNotify", timeSinceLastNotify,
+		"oldInterval", *checkInterval,
+		"newInterval", newInterval,
+		"reason", "NOTIFY working well")
+	*checkInterval = newInterval
+	ticker.Reset(*checkInterval)
 }
 
 // changelogReader names the loop a poll is made for. Only the fetch loop's polls may move a
@@ -981,6 +1333,8 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChangesFor(ctx context.Context, 
 	// since. Where moving up to the newest row is safe, that row is read before the poll.
 	headTS, headID, headKnown, err := w.readChangelogHead(ctx, w.mayMoveToNewestRow(reader, sqlFilterClause != ""))
 	if err != nil {
+		w.setPollReady(false)
+
 		return err
 	}
 
@@ -1011,6 +1365,7 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChangesFor(ctx context.Context, 
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {
+		w.setPollReady(false)
 		slog.Error("Failed to query changelog", "client", w.clientName, "error", err)
 
 		return fmt.Errorf("failed to query changelog: %w", err)
@@ -1019,6 +1374,7 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChangesFor(ctx context.Context, 
 
 	events, err := w.processChangelogRows(rows)
 	if err != nil {
+		w.setPollReady(false)
 		slog.Error("Failed to process changelog rows", "client", w.clientName, "error", err)
 
 		return err
@@ -1045,11 +1401,12 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChangesFor(ctx context.Context, 
 	}
 
 	if err := w.sendEventsToChannel(ctx, events); err != nil {
+		w.setPollReady(false)
+
 		return err
 	}
 
-	// The move is made inside this read, before the lookup after the poll takes any id, so that
-	// lookup asks for every row the move went past.
+	w.setPollReady(true)
 	w.moveToNewestRowAfterShortBatch(headTS, headID, headKnown, len(events))
 
 	return nil
@@ -1219,12 +1576,8 @@ func (w *PostgreSQLChangeStreamWatcher) processChangelogRows(rows *sql.Rows) ([]
 
 		events = append(events, eventWithToken)
 
-		// NOTE: Do NOT update lastEventID here!
-		// lastEventID should only be updated in sendEventsToChannel() after the event
-		// is successfully sent to the channel. This ensures that:
-		// 1. Filtered events don't advance the resume position
-		// 2. Events are only marked as "seen" after they're actually delivered
-		// 3. MarkProcessed() with empty token uses the correct position
+		// Do not advance the cursor while scanning. sendEventsToChannel advances it
+		// after delivery, or after the pipeline filter consumes the row.
 	}
 
 	if err := rows.Err(); err != nil {
@@ -1563,12 +1916,10 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 	filteredCount := 0
 
 	for _, event := range events {
-		// Extract event ID and timestamp from event for tracking
-		// CRITICAL FIX: Update position BEFORE filtering to prevent deadlock.
-		// This matches MongoDB's behavior where resume tokens advance independently of filtering.
-		eventID := w.advancePosition(event)
-
 		if w.pipelineFilter != nil && !w.pipelineFilter.MatchesEvent(event) {
+			// Filtered rows are consumed without delivery, so they still advance
+			// the resume position.
+			eventID := w.advancePosition(event)
 			slog.Debug("Event filtered out by pipeline", "client", w.clientName, "eventID", eventID)
 
 			filteredCount++
@@ -1579,6 +1930,9 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 		select {
 		case w.events <- event:
 			sentCount++
+			// Advance only after delivery. A cancelled or stopped send must be
+			// replayable from the previous resume position.
+			w.advancePosition(event)
 		case <-ctx.Done():
 			slog.Debug("Context cancelled while sending event", "client", w.clientName)
 
@@ -1644,7 +1998,7 @@ func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWit
 
 	w.mu.Unlock()
 
-	slog.Debug("Advanced position before filtering", "client", w.clientName, "eventID", eventID)
+	slog.Debug("Advanced changelog position", "client", w.clientName, "eventID", eventID)
 
 	return eventID
 }
@@ -1733,8 +2087,8 @@ func parseEventIDFromToken(token map[string]any) (int64, bool) {
 	return int64(eventIDFloat), true
 }
 
-// loadResumePosition loads the last processed position from resume tokens table
-// Uses timestamp-based resume (like MongoDB) for reliable replay of time-window events
+// loadResumePosition loads the last processed position from the resume_tokens table. The
+// timestamp and ID form a polling position, but do not guarantee replay in commit order.
 func (w *PostgreSQLChangeStreamWatcher) loadResumePosition(ctx context.Context) error {
 	query := `SELECT resume_token FROM resume_tokens WHERE client_name = $1`
 
@@ -2258,6 +2612,11 @@ func (a *PostgreSQLChangeStreamAdapter) LagState() (lastEmptyBatch, lastEventRea
 	return a.watcher.LagState()
 }
 
+// IsReady delegates readiness to the underlying PostgreSQL watcher.
+func (a *PostgreSQLChangeStreamAdapter) IsReady() bool {
+	return a.watcher.IsReady()
+}
+
 // PostgreSQLChangeStreamWatcherWithUnwrap wraps PostgreSQLChangeStreamWatcher
 // and provides the Unwrap() method without creating interface conflicts.
 // This wrapper implements datastore.ChangeStreamWatcher and can be unwrapped to client.ChangeStreamWatcher.
@@ -2307,6 +2666,11 @@ func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Close(ctx context.Context) err
 // LagState delegates to the wrapped watcher so lag survives the wrapper.
 func (w *PostgreSQLChangeStreamWatcherWithUnwrap) LagState() (lastEmptyBatch, lastEventRead time.Time) {
 	return w.watcher.LagState()
+}
+
+// IsReady delegates readiness to the underlying PostgreSQL watcher.
+func (w *PostgreSQLChangeStreamWatcherWithUnwrap) IsReady() bool {
+	return w.watcher.IsReady()
 }
 
 // Every type a consumer can be handed must report lag, or the assertion that looks for it
