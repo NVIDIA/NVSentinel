@@ -74,7 +74,7 @@ rules:
   - update
   - patch
   - delete
-{{- if .Values.controllers.maintenanceRequest.enabled }}
+# Leader election records an Event on the Lease.
 - apiGroups:
   - ""
   resources:
@@ -82,6 +82,7 @@ rules:
   verbs:
   - create
   - patch
+{{- if .Values.controllers.maintenanceRequest.enabled }}
 - apiGroups:
   - nvsentinel.dgxc.nvidia.com
   resources:

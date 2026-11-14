@@ -58,6 +58,16 @@ tests:
     set:
       controllers.maintenanceRequest.enabled: false
     asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - events
+            verbs:
+              - create
+              - patch
       - notContains:
           path: rules
           content:
