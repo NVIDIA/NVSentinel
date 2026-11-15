@@ -16,12 +16,93 @@ package tracing
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
+
+// shutdownErrProcessor is a span processor whose Shutdown returns err.
+type shutdownErrProcessor struct {
+	err error
+}
+
+func (p shutdownErrProcessor) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
+func (p shutdownErrProcessor) OnEnd(sdktrace.ReadOnlySpan)                     {}
+func (p shutdownErrProcessor) Shutdown(context.Context) error                  { return p.err }
+func (p shutdownErrProcessor) ForceFlush(context.Context) error                { return nil }
+
+func providerWithShutdownErr(err error) *sdktrace.TracerProvider {
+	return sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(shutdownErrProcessor{err: err}))
+}
+
+func TestShutdownTracing_ProviderErrors_ReturnsEveryError(t *testing.T) {
+	errChild := errors.New("child-only flush failed")
+	errPrimary := errors.New("primary flush failed")
+
+	tests := []struct {
+		name       string
+		child      *sdktrace.TracerProvider
+		primary    *sdktrace.TracerProvider
+		wantErrors []error
+	}{
+		{
+			name: "not initialized",
+		},
+		{
+			name:    "both providers shut down cleanly",
+			child:   providerWithShutdownErr(nil),
+			primary: providerWithShutdownErr(nil),
+		},
+		{
+			name:       "child-only provider fails",
+			child:      providerWithShutdownErr(errChild),
+			primary:    providerWithShutdownErr(nil),
+			wantErrors: []error{errChild},
+		},
+		{
+			name:       "primary provider fails",
+			child:      providerWithShutdownErr(nil),
+			primary:    providerWithShutdownErr(errPrimary),
+			wantErrors: []error{errPrimary},
+		},
+		{
+			name:       "both providers fail",
+			child:      providerWithShutdownErr(errChild),
+			primary:    providerWithShutdownErr(errPrimary),
+			wantErrors: []error{errChild, errPrimary},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prevChild, prevPrimary := childOnlyTracerProvider, tracerProvider
+
+			t.Cleanup(func() {
+				childOnlyTracerProvider, tracerProvider = prevChild, prevPrimary
+			})
+
+			childOnlyTracerProvider, tracerProvider = tt.child, tt.primary
+
+			err := ShutdownTracing(context.Background())
+
+			if len(tt.wantErrors) == 0 {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+
+			for _, want := range tt.wantErrors {
+				assert.ErrorIs(t, err, want)
+			}
+		})
+	}
+}
 
 func TestSpanCreation(t *testing.T) {
 	tracer = nil
