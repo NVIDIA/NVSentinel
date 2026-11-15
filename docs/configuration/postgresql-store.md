@@ -49,6 +49,8 @@ helm upgrade --install nvsentinel {chart-path} \
 
 Server TLS and `pg_hba` are under `postgresql.primary.*` (see the example values file). The modules create the schema when they start, so the example sets no init script.
 
+Older versions of the example file created `resume_tokens` from an init script, with a `last_event_id` column where the modules expect `resume_token`. On such an install the modules log `Failed to save resume position` and receive the whole changelog again after each restart. To repair it, run `DROP TABLE resume_tokens;` in the NVSentinel database and restart the modules. The old table holds no saved positions, and the modules create it again with the right columns when they start.
+
 ### The `postgresql` subchart is upstream
 
 Everything under `postgresql.` other than `postgresql.enabled` belongs to the vendored [Bitnami PostgreSQL chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql) (chart 15.5.38, PostgreSQL 16.4.0), not to NVSentinel. Its full value reference is the upstream chart's own documentation and `distros/kubernetes/nvsentinel/charts/postgresql/values.yaml`; this page does not repeat it.
