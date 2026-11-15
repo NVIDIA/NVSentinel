@@ -80,6 +80,8 @@ type EventWatcher struct {
 	// healthEventStore lists stored events with their IDs. The cancellation of a session needs
 	// the IDs, and a PostgreSQL document does not hold its own ID.
 	healthEventStore datastore.HealthEventStore
+	// nodeLocks keeps the processing of the events of a node out of a cancellation of the node.
+	nodeLocks nodeLocks
 }
 
 type LastProcessedObjectIDStore interface {
@@ -604,6 +606,9 @@ func (w *EventWatcher) processHealthEvent(
 
 	startTime := time.Now()
 
+	unlock := w.nodeLocks.lock(healthEventWithStatus.HealthEvent.GetNodeName())
+	defer unlock()
+
 	var sourceDocIDs []string
 
 	if healthEventWithStatus.HealthEvent.GetIsHealthy() && w.fetchDocIDsFn != nil {
@@ -970,10 +975,11 @@ func (w *EventWatcher) findSessionStart(
 
 // CancelQuarantineSession marks Cancelled the Quarantined event startID and the
 // AlreadyQuarantined events after it. It leaves the session alone when a healthy event ended it,
-// and when the first event of a newer quarantine of the node is in the store by the time it
-// reads, so it does not cancel the newer quarantine. The first event is cancelled last: a call
-// that fails part of the way leaves it Quarantined, and a later call cancels the rest. The store
-// calls retry a failure and keep the caller's deadline.
+// and when a newer quarantine of the node started, so it does not cancel the newer quarantine. It
+// holds the node from its first read to its last write, so no event of the node is processed in
+// between. The first event is cancelled last: a call that fails part of the way leaves it
+// Quarantined, and a later call cancels the rest. The store calls retry a failure and keep the
+// caller's deadline.
 func (w *EventWatcher) CancelQuarantineSession(
 	ctx context.Context,
 	nodeName string,
@@ -987,6 +993,9 @@ func (w *EventWatcher) CancelQuarantineSession(
 		attribute.String("fault_quarantine.node_name", nodeName),
 		attribute.String("fault_quarantine.cancel.reason", reason),
 	)
+
+	unlock := w.nodeLocks.lock(nodeName)
+	defer unlock()
 
 	eventIDs, cancel, err := w.sessionToCancel(ctx, nodeName, startID)
 	if err != nil {
@@ -1067,11 +1076,10 @@ func (w *EventWatcher) CancelQuarantineSession(
 }
 
 // sessionToCancel returns the IDs of the AlreadyQuarantined events of the session that starts
-// with startID, and whether to cancel the session. It reads those events before it looks for a
-// later Quarantined or UnQuarantined event. An event of a newer session that is AlreadyQuarantined
-// by the first read has its Quarantined first event in the store by then, so the second read
-// finds the newer session and nothing is cancelled. An event written after the first read is not
-// in the list.
+// with startID, and whether to cancel the session. The caller holds the node, so no event of the
+// node gets a status while it reads. A newer session shows as a later Quarantined event, or,
+// when the status write of its first event failed, as a later event in the quarantine
+// annotation of the node.
 func (w *EventWatcher) sessionToCancel(ctx context.Context, nodeName, startID string) ([]any, bool, error) {
 	start, found, err := w.findSessionEvent(ctx, nodeName, startID)
 	if err != nil {
@@ -1094,21 +1102,9 @@ func (w *EventWatcher) sessionToCancel(ctx context.Context, nodeName, startID st
 		return nil, false, err
 	}
 
-	next, found, err := w.findNextSessionStart(ctx, nodeName, start)
-	if err != nil {
+	leaveAlone, err := w.sessionFollowed(ctx, nodeName, start)
+	if err != nil || leaveAlone {
 		return nil, false, err
-	}
-
-	if found {
-		if next.status == model.UnQuarantined {
-			slog.InfoContext(ctx, "A healthy event ended the session, no events to cancel",
-				"node", nodeName, "eventID", startID)
-		} else {
-			slog.WarnContext(ctx, "A newer quarantine of the node started before the ended session was "+
-				"cancelled; the earlier health events stay active", "node", nodeName, "eventID", startID)
-		}
-
-		return nil, false, nil
 	}
 
 	eventIDs := make([]any, 0, len(events))
@@ -1120,6 +1116,36 @@ func (w *EventWatcher) sessionToCancel(ctx context.Context, nodeName, startID st
 	}
 
 	return eventIDs, true, nil
+}
+
+// sessionFollowed reports whether a healthy event ended the session that starts with start, or a
+// newer quarantine of the node started. Then the session is left alone.
+func (w *EventWatcher) sessionFollowed(ctx context.Context, nodeName string, start sessionEvent) (bool, error) {
+	next, found, err := w.findNextSessionStart(ctx, nodeName, start)
+	if err != nil {
+		return false, err
+	}
+
+	if found && next.status == model.UnQuarantined {
+		slog.InfoContext(ctx, "A healthy event ended the session, no events to cancel",
+			"node", nodeName, "eventID", start.id)
+
+		return true, nil
+	}
+
+	if !found {
+		found, err = w.quarantinedAfter(ctx, nodeName, start)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	if found {
+		slog.WarnContext(ctx, "A newer quarantine of the node started before the ended session was "+
+			"cancelled; the earlier health events stay active", "node", nodeName, "eventID", start.id)
+	}
+
+	return found, nil
 }
 
 // findNextSessionStart returns the first Quarantined or UnQuarantined event of a node after
@@ -1140,6 +1166,37 @@ func (w *EventWatcher) findNextSessionStart(
 	}
 
 	return later[len(later)-1], true, nil
+}
+
+// quarantinedAfter reports whether the quarantine annotation of the node names an event of the
+// node after start. A newer quarantine whose first event failed its status write shows only
+// there, and its later events are AlreadyQuarantined.
+func (w *EventWatcher) quarantinedAfter(ctx context.Context, nodeName string, start sessionEvent) (bool, error) {
+	if w.fetchDocIDsFn == nil {
+		return false, nil
+	}
+
+	var ids []any
+
+	for _, id := range w.fetchDocIDsFn(ctx, nodeName) {
+		if common.IsRecordID(id) {
+			ids = append(ids, id)
+		}
+	}
+
+	if len(ids) == 0 {
+		return false, nil
+	}
+
+	events, err := w.listSessionEvents(ctx, query.And(
+		query.In("_id", ids),
+		query.Eq("healthevent.nodename", nodeName),
+	), nil)
+	if err != nil {
+		return false, err
+	}
+
+	return slices.ContainsFunc(events, start.before), nil
 }
 
 // cancelEvents marks the events that match the filter Cancelled. A multi-document update is not

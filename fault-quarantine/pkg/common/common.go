@@ -14,7 +14,11 @@
 
 package common
 
-import "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+import (
+	"regexp"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+)
 
 // As part of the quarantineValidationHealthEvent annotation, we keep track of HealthEvents which contributed the
 // tests and the tests themselves. We will use the HealthEvent ID to check if the node was fully drained as part
@@ -77,4 +81,13 @@ var QuarantineAnnotationKeys = []string{
 	QuarantineValidationHealthEventAnnotationKey,
 	QuarantineHealthEventDryRunAnnotationKey,
 	QuarantineCancellationPendingAnnotationKey,
+}
+
+// recordIDPattern matches a MongoDB ObjectID and a PostgreSQL UUID.
+var recordIDPattern = regexp.MustCompile(
+	`^([0-9a-fA-F]{24}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
+
+// IsRecordID reports whether id is a MongoDB ObjectID or a PostgreSQL UUID.
+func IsRecordID(id string) bool {
+	return recordIDPattern.MatchString(id)
 }

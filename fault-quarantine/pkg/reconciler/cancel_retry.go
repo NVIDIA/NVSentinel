@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -63,10 +62,6 @@ const (
 	pendingSessionSeparator = ";"
 	sessionIDSeparator      = ","
 )
-
-// recordIDPattern matches a MongoDB ObjectID and a PostgreSQL UUID.
-var recordIDPattern = regexp.MustCompile(
-	`^([0-9a-fA-F]{24}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
 
 func newCancelQueue() workqueue.TypedRateLimitingInterface[string] {
 	return workqueue.NewTypedRateLimitingQueue(
@@ -126,7 +121,7 @@ func quarantineEventIDs(value string) []string {
 // sessionFromIDs names a session by its record IDs, sorted, or as the latest session when none
 // is a MongoDB or PostgreSQL record ID, as with an older fault-quarantine.
 func sessionFromIDs(ids []string) string {
-	ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return !isRecordID(id) })
+	ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return !common.IsRecordID(id) })
 	if len(ids) == 0 {
 		return common.QuarantineCancellationLatestSession
 	}
@@ -134,11 +129,6 @@ func sessionFromIDs(ids []string) string {
 	slices.Sort(ids)
 
 	return strings.Join(slices.Compact(ids), sessionIDSeparator)
-}
-
-// isRecordID reports whether id is a MongoDB ObjectID or a PostgreSQL UUID.
-func isRecordID(id string) bool {
-	return recordIDPattern.MatchString(id)
 }
 
 // pendingSessions splits the value of the pending annotation into its sessions.

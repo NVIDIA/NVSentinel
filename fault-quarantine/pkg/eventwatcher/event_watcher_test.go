@@ -19,8 +19,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
@@ -960,8 +963,8 @@ func TestStart_ColdStartCancellation_DoesNotEnterWatchLoop(t *testing.T) {
 // PostgreSQL document, the decoded document holds no ID and an earlier createdAt than the one the
 // store orders by. findErrs, listErrs and updateErrs fail those calls in order. The first
 // partialUpdates failed updates write the first event they match before they fail, as a
-// multi-document update can. beforeList runs before each list with its number, and onUpdate once
-// before the first update, so a test can write events while the cancellation runs.
+// multi-document update can. beforeList runs before each list with its number, so a test can
+// write events while the cancellation runs.
 type sessionStore struct {
 	client.DatabaseClient
 	datastore.HealthEventStore
@@ -974,7 +977,6 @@ type sessionStore struct {
 	updateCalls    int
 	partialUpdates int
 	beforeList     func(s *sessionStore, call int)
-	onUpdate       func(s *sessionStore)
 }
 
 type storedEvent struct {
@@ -1069,10 +1071,22 @@ func storedField(event *storedEvent, field string) any {
 	}
 }
 
+// hexID is a MongoDB ObjectID, which the query builder renders for an ID in hex.
+type hexID interface{ Hex() string }
+
+// storedValue reads an ObjectID of a filter as the hex ID the store holds.
+func storedValue(operand any) any {
+	if id, ok := operand.(hexID); ok {
+		return id.Hex()
+	}
+
+	return operand
+}
+
 func valueMatches(value any, condition any) bool {
 	operators, ok := condition.(map[string]any)
 	if !ok {
-		return value == condition
+		return value == storedValue(condition)
 	}
 
 	for operator, operand := range operators {
@@ -1080,7 +1094,7 @@ func valueMatches(value any, condition any) bool {
 
 		switch operator {
 		case "$in":
-			matches = slices.Contains(operand.([]any), value)
+			matches = slices.ContainsFunc(operand.([]any), func(item any) bool { return storedValue(item) == value })
 		case "$gt":
 			matches = value.(time.Time).After(operand.(time.Time))
 		case "$gte":
@@ -1188,11 +1202,6 @@ func (s *sessionStore) FindHealthEventsByQueryBatched(
 
 func (s *sessionStore) UpdateManyDocuments(_ context.Context, filter any, _ any) (*client.UpdateResult, error) {
 	s.updateCalls++
-
-	if s.onUpdate != nil {
-		s.onUpdate(s)
-		s.onUpdate = nil
-	}
 
 	matched, err := s.matching(filter)
 	if err != nil {
@@ -1445,29 +1454,52 @@ func TestCancelQuarantineSession_CancelsOnlyThatSession(t *testing.T) {
 // A newer quarantine of the node is left alone, and so is the ended session before it: the
 // cancellation of any session of a node makes fault-remediation clear the remediation state of
 // the whole node, which belongs to the newer quarantine by then. Fault-quarantine writes the
-// first event of a session before any of its events is AlreadyQuarantined.
+// first event of a session before any of its events is AlreadyQuarantined. When that write
+// fails, the quarantine annotation of the node still names the first event.
 func TestCancelQuarantineSession_NewerQuarantineIsLeftAlone(t *testing.T) {
 	newerSession := func(s *sessionStore) {
 		s.addEvent("newer-start", model.Quarantined, 20)
 		s.addEvent("newer-later", model.AlreadyQuarantined, 21)
 	}
+	newerStartWithoutStatus := func(s *sessionStore) {
+		s.addEvent("6a1f00000000000000000020", "", 20)
+		s.addEvent("newer-later", model.AlreadyQuarantined, 21)
+	}
+
+	newer := map[string]model.Status{"newer-start": model.Quarantined, "newer-later": model.AlreadyQuarantined}
 
 	tests := []struct {
 		name           string
 		before         func(s *sessionStore)
 		beforeListCall int
-		onUpdate       func(s *sessionStore)
+		quarantineIDs  []string
+		wantOthers      map[string]model.Status
 		wantCancelled  bool
 	}{
-		{name: "the newer quarantine started before the cancellation", before: newerSession},
-		{name: "the newer quarantine starts as the events are read", beforeListCall: 2},
-		{name: "the newer quarantine starts between the two reads", beforeListCall: 3},
-		{name: "the newer quarantine starts before the first write", onUpdate: newerSession, wantCancelled: true},
+		{name: "the newer quarantine started before the cancellation", before: newerSession, wantOthers: newer},
+		{name: "the newer quarantine starts as the events are read", beforeListCall: 2, wantOthers: newer},
+		{name: "the newer quarantine starts between the two reads", beforeListCall: 3, wantOthers: newer},
+		{
+			name:          "the status write of the newer first event failed",
+			before:        newerStartWithoutStatus,
+			quarantineIDs: []string{"not-a-record-id", "6a1f00000000000000000020"},
+			wantOthers: map[string]model.Status{
+				"6a1f00000000000000000020": "",
+				"newer-later":              model.AlreadyQuarantined,
+			},
+		},
+		{
+			name:          "the quarantine annotation names no later event of the node",
+			before:        func(s *sessionStore) { s.addEvent("6a1f00000000000000000005", model.UnQuarantined, 5) },
+			quarantineIDs: []string{"6a1f00000000000000000005", "6a1f00000000000000000030", "6a1f00000000000000000099"},
+			wantOthers:     map[string]model.Status{"6a1f00000000000000000005": model.UnQuarantined},
+			wantCancelled: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := &sessionStore{onUpdate: tt.onUpdate}
+			store := &sessionStore{}
 			if tt.beforeListCall > 0 {
 				store.beforeList = func(s *sessionStore, call int) {
 					if call == tt.beforeListCall {
@@ -1477,29 +1509,103 @@ func TestCancelQuarantineSession_NewerQuarantineIsLeftAlone(t *testing.T) {
 			}
 
 			store.addEvent("start", model.Quarantined, 10)
-			store.addEvent("later", model.AlreadyQuarantined, 11)
+			store.addEvent("6a1f00000000000000000011", model.AlreadyQuarantined, 11)
 
 			if tt.before != nil {
 				tt.before(store)
 			}
 
+			store.addEventAt("node-b", "6a1f00000000000000000030", model.Quarantined, 30*time.Minute)
+
 			watcher := newSessionWatcher(store)
+			watcher.SetFetchDocIDsFn(func(context.Context, string) []string { return tt.quarantineIDs })
 
 			require.NoError(t, watcher.CancelQuarantineSession(context.Background(), "node-a", "start", "test"))
 
 			want := map[string]model.Status{
-				"start":       model.Quarantined,
-				"later":       model.AlreadyQuarantined,
-				"newer-start": model.Quarantined,
-				"newer-later": model.AlreadyQuarantined,
+				"start":                    model.Quarantined,
+				"6a1f00000000000000000011": model.AlreadyQuarantined,
+				"6a1f00000000000000000030": model.Quarantined,
 			}
 			if tt.wantCancelled {
-				want["start"], want["later"] = model.Cancelled, model.Cancelled
+				want["start"], want["6a1f00000000000000000011"] = model.Cancelled, model.Cancelled
 			}
 
+			maps.Copy(want, tt.wantOthers)
+
 			assert.Equal(t, want, store.statuses())
+
+			if !tt.wantCancelled {
+				assert.Zero(t, store.updateCalls, "nothing of the node is written")
+			}
 		})
 	}
+}
+
+// No event of the node gets processed while a session of the node is cancelled, so a newer
+// quarantine can't start between the check and the writes. Events of other nodes go on.
+func TestCancelQuarantineSession_HoldsTheNode(t *testing.T) {
+	reading := make(chan struct{})
+	release := make(chan struct{})
+
+	store := &sessionStore{}
+	store.beforeList = func(_ *sessionStore, call int) {
+		if call == 1 {
+			close(reading)
+			<-release
+		}
+	}
+	store.addEvent("start", model.Quarantined, 10)
+	store.addEvent("later", model.AlreadyQuarantined, 11)
+	watcher := newSessionWatcher(store)
+
+	var mu sync.Mutex
+
+	processed := map[string]bool{}
+
+	watcher.SetProcessEventCallback(func(_ context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		processed[event.HealthEvent.GetNodeName()] = true
+
+		return nil, nil
+	})
+
+	wasProcessed := func(nodeName string) func() bool {
+		return func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+
+			return processed[nodeName]
+		}
+	}
+
+	cancelled := make(chan error, 1)
+
+	go func() {
+		cancelled <- watcher.CancelQuarantineSession(context.Background(), "node-a", "start", "test")
+	}()
+
+	<-reading
+
+	for _, nodeName := range []string{"node-a", "node-b"} {
+		go func() {
+			_, _ = watcher.processHealthEvent(context.Background(), &model.HealthEventWithStatus{
+				HealthEvent:       &protos.HealthEvent{NodeName: nodeName},
+				HealthEventStatus: &protos.HealthEventStatus{},
+			}, "event-"+nodeName, "event-"+nodeName)
+		}()
+	}
+
+	require.Eventually(t, wasProcessed("node-b"), 5*time.Second, 5*time.Millisecond, "another node goes on")
+	require.Never(t, wasProcessed("node-a"), 200*time.Millisecond, 5*time.Millisecond,
+		"an event of the node waits for the cancellation")
+
+	close(release)
+	require.NoError(t, <-cancelled)
+	require.Eventually(t, wasProcessed("node-a"), 5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, model.Cancelled, store.statuses()["start"])
 }
 
 // A multi-document update can fail after it wrote part of the events. The first event of the
