@@ -158,13 +158,13 @@ csp:
     # Example: "123456789012"
     accountId: ""
     # IAM Role name for the janitor service account (IRSA)
-    # This role should have permissions to call EC2 RebootInstances
+    # This role should have permissions to call EC2 RebootInstances and TerminateInstances
     # Example: "eks-cluster-name-janitor" or "nvsentinel-janitor-role"
     iamRoleName: ""
     # Note: AWS credentials are typically provided via:
     # - IAM roles for service accounts (IRSA) - RECOMMENDED for EKS
     #   Requires accountId and iamRoleName to be set
-    #   The IAM role must have ec2:RebootInstances permission
+    #   The IAM role must have ec2:RebootInstances and ec2:TerminateInstances permissions
 
   # Google Cloud Platform (GCP) specific configuration (only required when provider=gcp)
   gcp:
