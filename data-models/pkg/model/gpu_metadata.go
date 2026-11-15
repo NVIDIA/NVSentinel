@@ -58,6 +58,12 @@ type GPUInfo struct {
 	// cross-check NVLinkLinkCount and the device name. nil means unknown.
 	NVLinkActiveLinkCount *int `json:"nvlink_active_link_count,omitempty"`
 
+	// NVLinkPresentLinkCount is the number of NVLink links physically present on
+	// the GPU, read from NVML_FI_DEV_NVLINK_LINK_COUNT. Unlike NVLinkLinkCount,
+	// it does not depend on GetNvLinkState succeeding. nil means the field could
+	// not be read; 0 means NVLink hardware is verified absent.
+	NVLinkPresentLinkCount *uint64 `json:"nvlink_present_link_count,omitempty"`
+
 	// NUMANode is the NUMA Affinity of the GPU, parsed from the
 	// `nvidia-smi topo -m` output. A value of -1 means the information
 	// was not available (e.g., older driver or single-socket system).

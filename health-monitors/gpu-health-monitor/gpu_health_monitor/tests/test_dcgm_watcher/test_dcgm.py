@@ -2263,6 +2263,13 @@ class TestSuppressNvlinkDownOnPcieGpus:
             dcgm_errors.DCGM_FR_NVLINK_DOWN,
         )
 
+    def _fabric_probe_incident(self, entity_id: int) -> "dcgm_structs.c_dcgmIncidentInfo_t":
+        return self._make_nvlink_incident(
+            entity_id,
+            f"GPU {entity_id}: Fabric State is NvmlTooOld (6). NVML version is too old to query Fabric Manager status",
+            dcgm_errors.DCGM_FR_FABRIC_PROBE_STATE,
+        )
+
     def _nvlink_threshold_incident(self, entity_id: int) -> "dcgm_structs.c_dcgmIncidentInfo_t":
         return self._make_nvlink_incident(
             entity_id,
@@ -2300,6 +2307,81 @@ class TestSuppressNvlinkDownOnPcieGpus:
 
         assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.PASS
         assert len(health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures) == 0
+
+    def test_suppress_fabric_probe_state_without_nvlink_hardware(self, tmp_path: Path) -> None:
+        """L40-class GPU: fabric probing has no hardware to inspect."""
+        reader = make_metadata_reader(tmp_path, [L40_NO_NVLINK])
+        watcher = self._make_watcher(metadata_reader=reader)
+
+        health_status = self._run_health_check(watcher, [self._fabric_probe_incident(0)])
+
+        assert health_status["DCGM_HEALTH_WATCH_NVLINK"].status == dcgm.types.HealthStatus.PASS
+        assert len(health_status["DCGM_HEALTH_WATCH_NVLINK"].entity_failures) == 0
+
+    @pytest.mark.parametrize(
+        "gpu",
+        [
+            pytest.param(A100_PCIE_UNBRIDGED, id="unbridged-pcie"),
+            pytest.param(H100_SXM_TRAINED, id="sxm-active-links"),
+            pytest.param({**H100_SXM_TRAINED, "nvlink_active_link_count": 0}, id="sxm-inactive-links"),
+        ],
+    )
+    def test_no_suppress_fabric_probe_state_when_nvlink_hardware_exists(self, tmp_path: Path, gpu: dict) -> None:
+        """Fabric state remains actionable whenever NVLink hardware exists."""
+        reader = make_metadata_reader(tmp_path, [gpu])
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(watcher, [self._fabric_probe_incident(0)])
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        assert details.entity_failures[0][0].code == "DCGM_FR_FABRIC_PROBE_STATE"
+
+    @pytest.mark.parametrize(
+        ("gpu", "suppresses"),
+        [
+            (L40_NO_NVLINK, True),
+            ({**L40_NO_NVLINK, "nvlink_present_link_count": 12}, False),
+            ({k: v for k, v in L40_NO_NVLINK.items() if k != "nvlink_present_link_count"}, False),
+        ],
+    )
+    def test_fabric_probe_state_requires_verified_zero_present_link_count(
+        self, tmp_path: Path, gpu: dict, suppresses: bool
+    ) -> None:
+        """Only an explicit field-91 zero suppresses fabric-probe state."""
+        reader = make_metadata_reader(tmp_path, [gpu])
+        watcher = self._make_watcher(metadata_reader=reader)
+
+        health_status = self._run_health_check(watcher, [self._fabric_probe_incident(0)])
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        if suppresses:
+            assert details.status == dcgm.types.HealthStatus.PASS
+            assert len(details.entity_failures) == 0
+        else:
+            assert details.status == dcgm.types.HealthStatus.FAIL
+            assert details.entity_failures[0][0].code == "DCGM_FR_FABRIC_PROBE_STATE"
+
+    def test_fabric_probe_suppression_preserves_genuine_incident(self, tmp_path: Path) -> None:
+        """Only the fabric-probe false positive is dropped on an L40-class GPU."""
+        reader = make_metadata_reader(tmp_path, [L40_NO_NVLINK])
+        watcher = self._make_watcher(metadata_reader=reader)
+
+        health_status = self._run_health_check(
+            watcher,
+            [self._fabric_probe_incident(0), self._nvlink_threshold_incident(0)],
+        )
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.FAIL
+        assert details.entity_failures == {
+            0: [
+                dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_ERROR_THRESHOLD",
+                    message="GPU 0 NVLink error threshold exceeded",
+                )
+            ]
+        }
 
     def test_no_suppress_unbridged_pcie_by_default(self, tmp_path: Path) -> None:
         """Unbridged A100 PCIe WITHOUT operator opt-in: NOT suppressed.
