@@ -52,6 +52,8 @@ const (
 	// Marks a node whose ended quarantine session is not cancelled in the datastore yet.
 	QuarantineCancellationPendingAnnotationKey   = "quarantineCancellationPending"
 	QuarantineCancellationPendingAnnotationValue = "True"
+	// Stands for the latest session of the node when the quarantine annotation names no event.
+	QuarantineCancellationLatestSession = "latest"
 
 	ServiceName = "NVSentinel"
 )

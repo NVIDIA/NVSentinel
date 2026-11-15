@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -26,9 +27,12 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -73,6 +77,9 @@ type EventWatcher struct {
 	coldStartCallback                     func(ctx context.Context) error
 	recoveredEventIDs                     sync.Map
 	recoveryOverlapCutoff                 time.Time
+	// healthEventStore lists stored events with their IDs. The cancellation of a session needs
+	// the IDs, and a PostgreSQL document does not hold its own ID.
+	healthEventStore datastore.HealthEventStore
 }
 
 type LastProcessedObjectIDStore interface {
@@ -118,6 +125,11 @@ func (w *EventWatcher) SetProcessEventCallback(callback func(ctx context.Context
 
 func (w *EventWatcher) SetFetchDocIDsFn(fn func(ctx context.Context, nodeName string) []string) {
 	w.fetchDocIDsFn = fn
+}
+
+// SetHealthEventStore sets the store that the cancellation of a session lists events from.
+func (w *EventWatcher) SetHealthEventStore(store datastore.HealthEventStore) {
+	w.healthEventStore = store
 }
 
 func (w *EventWatcher) SetColdStartCallback(callback func(ctx context.Context) error) {
@@ -846,13 +858,142 @@ type quarantiningEvent struct {
 	} `bson:"healtheventstatus" json:"healthEventStatus"`
 }
 
-// CancelLatestQuarantiningEvents marks the events of the latest quarantine session of a node
-// Cancelled. The session starts at the latest Quarantined event and holds the
-// AlreadyQuarantined events after it. The store calls retry a failure and keep the caller's
-// deadline.
-func (w *EventWatcher) CancelLatestQuarantiningEvents(
+// sessionListBatchSize is the batch size of the store lists of a cancellation.
+const sessionListBatchSize = 200
+
+// cancelBatchSize bounds the IDs of one update, below the PostgreSQL limit on bind parameters.
+const cancelBatchSize = 1000
+
+// FindQuarantineSession returns the first event of the quarantine session that holds the events
+// eventIDs, and whether that first event is still Quarantined. A session starts with a
+// Quarantined event and holds the AlreadyQuarantined events after it. The first event stays
+// Quarantined when a healthy event ends the session, and the healthy event is UnQuarantined. A
+// cancelled session is Cancelled, and its first event is cancelled last. When the first event
+// is among eventIDs, it is used as is. Otherwise the first event is the latest Quarantined or
+// UnQuarantined event before the earliest of eventIDs in the order of the store.
+// common.QuarantineCancellationLatestSession stands for the latest session of the node. The
+// store calls retry a failure and keep the caller's deadline.
+func (w *EventWatcher) FindQuarantineSession(
 	ctx context.Context,
 	nodeName string,
+	eventIDs []string,
+) (string, bool, error) {
+	if len(eventIDs) == 1 && eventIDs[0] == common.QuarantineCancellationLatestSession {
+		start, found, err := w.findSessionStart(ctx, nodeName, nil)
+		if err != nil {
+			return "", false, fmt.Errorf("error finding the latest quarantine session of node %s: %w", nodeName, err)
+		}
+
+		return start.id, found && start.status == model.Quarantined, nil
+	}
+
+	ids := make([]any, 0, len(eventIDs))
+	for _, id := range eventIDs {
+		ids = append(ids, id)
+	}
+
+	events, err := w.listSessionEvents(ctx, query.And(
+		query.In("_id", ids),
+		query.Eq("healthevent.nodename", nodeName),
+	), nil)
+	if err != nil {
+		return "", false, fmt.Errorf("error finding events %v of node %s: %w", eventIDs, nodeName, err)
+	}
+
+	if len(events) == 0 {
+		slog.WarnContext(ctx, "Events of an ended quarantine session not found", "node", nodeName, "eventIDs", eventIDs)
+		return "", false, nil
+	}
+
+	for _, event := range events {
+		if event.status == model.Quarantined {
+			return event.id, true, nil
+		}
+	}
+
+	return w.sessionOfLaterEvent(ctx, nodeName, events[0])
+}
+
+// sessionOfLaterEvent returns the first event of the session that holds a later event of the
+// session, and whether that first event is Quarantined. The later event can be
+// AlreadyQuarantined, already written by a cancellation, or still without a status.
+func (w *EventWatcher) sessionOfLaterEvent(
+	ctx context.Context,
+	nodeName string,
+	event sessionEvent,
+) (string, bool, error) {
+	start, found, err := w.findSessionStart(ctx, nodeName, &event)
+	if err != nil {
+		return "", false, fmt.Errorf("error finding the quarantine session of event %s: %w", event.id, err)
+	}
+
+	if !found {
+		slog.WarnContext(ctx, "No first event found before an event of an ended quarantine session",
+			"node", nodeName, "eventID", event.id)
+
+		return "", false, nil
+	}
+
+	return start.id, start.status == model.Quarantined, nil
+}
+
+// findSessionStart returns the latest Quarantined or UnQuarantined event of a node, before the
+// given event when one is set.
+func (w *EventWatcher) findSessionStart(
+	ctx context.Context,
+	nodeName string,
+	before *sessionEvent,
+) (sessionEvent, bool, error) {
+	conditions := []query.Condition{
+		query.Eq("healthevent.nodename", nodeName),
+		query.In("healtheventstatus.nodequarantined",
+			[]any{string(model.Quarantined), string(model.UnQuarantined)}),
+	}
+	if before != nil {
+		conditions = append(conditions, query.Lte("createdAt", before.createdAt))
+	}
+
+	starts, err := w.listSessionEvents(ctx, query.And(conditions...), nil)
+	if err != nil {
+		return sessionEvent{}, false, err
+	}
+
+	for i := len(starts) - 1; i >= 0; i-- {
+		if before == nil || starts[i].before(*before) {
+			return starts[i], true, nil
+		}
+	}
+
+	return sessionEvent{}, false, nil
+}
+
+// CancelLatestQuarantiningEvents cancels the latest quarantine session of a node, unless a
+// healthy event ended it.
+func (w *EventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error {
+	startID, quarantined, err := w.FindQuarantineSession(
+		ctx, nodeName, []string{common.QuarantineCancellationLatestSession})
+	if err != nil {
+		return err
+	}
+
+	if !quarantined {
+		slog.InfoContext(ctx, "Latest event is not Quarantined, no events to cancel", "node", nodeName)
+		return nil
+	}
+
+	return w.CancelQuarantineSession(ctx, nodeName, startID, reason)
+}
+
+// CancelQuarantineSession marks Cancelled the Quarantined event startID and the
+// AlreadyQuarantined events after it. It leaves the session alone when a healthy event ended it,
+// and when the first event of a newer quarantine of the node is in the store by the time it
+// reads, so it does not cancel the newer quarantine. The first event is cancelled last: a call
+// that fails part of the way leaves it Quarantined, and a later call cancels the rest. The store
+// calls retry a failure and keep the caller's deadline.
+func (w *EventWatcher) CancelQuarantineSession(
+	ctx context.Context,
+	nodeName string,
+	startID string,
 	reason string,
 ) error {
 	_, span := tracing.StartSpan(ctx, "fault_quarantine.cancel_latest_quarantining_events")
@@ -863,48 +1004,27 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		attribute.String("fault_quarantine.cancel.reason", reason),
 	)
 
-	latestEvent, found, err := w.findLatestQuarantiningEvent(ctx, nodeName)
+	eventIDs, cancel, err := w.sessionToCancel(ctx, nodeName, startID)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error finding latest quarantining event", "node", nodeName, "error", err)
 		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("fault_quarantine.error.type", "error_finding_latest_quarantining_event"),
-			attribute.String("fault_quarantine.error.message", err.Error()),
-		)
-
-		return fmt.Errorf("error finding latest quarantining event for node %s: %w", nodeName, err)
+		return fmt.Errorf("error finding the events of the session of node %s: %w", nodeName, err)
 	}
 
-	if !found {
-		slog.WarnContext(ctx, "No quarantining/unquarantining events found for node", "node", nodeName)
-
-		span.SetAttributes(
-			attribute.String("fault_quarantine.error.type", "no_quarantining_events_found"),
-		)
-
+	if !cancel {
 		return nil
 	}
 
-	slog.DebugContext(ctx, "Found latest event",
-		"node", nodeName,
-		"eventID", latestEvent.ID,
-		"status", latestEvent.HealthEventStatus.NodeQuarantined)
-
-	// Only cancel if latest status is Quarantined (not if already UnQuarantined by healthy event)
-	if latestEvent.HealthEventStatus.NodeQuarantined != string(model.Quarantined) {
-		slog.InfoContext(ctx, "Latest event is not Quarantined, no events to cancel", "node", nodeName)
-
-		span.SetAttributes(
-			attribute.String("fault_quarantine.error.type", "latest_event_not_quarantined"),
-			attribute.String("fault_quarantine.error.message", "latest event is not Quarantined"),
-		)
-
-		return nil
+	start, _, err := w.findQuarantiningEvent(ctx, query.And(
+		query.Eq("_id", startID),
+		query.Eq("healthevent.nodename", nodeName),
+	), nil)
+	if err != nil {
+		tracing.RecordError(span, err)
+		return fmt.Errorf("error reading the first event %s of node %s: %w", startID, nodeName, err)
 	}
 
-	latestTraceID := tracing.TraceIDFromMetadata(latestEvent.HealthEvent.Metadata)
-	platformConnectorSpanId := tracing.ParentSpanID(
-		latestEvent.HealthEventStatus.SpanIDs, tracing.ServicePlatformConnector)
+	latestTraceID := tracing.TraceIDFromMetadata(start.HealthEvent.Metadata)
+	platformConnectorSpanId := tracing.ParentSpanID(start.HealthEventStatus.SpanIDs, tracing.ServicePlatformConnector)
 
 	_, eventSpan := tracing.StartSpanWithLinkFromTraceContext(
 		context.Background(), latestTraceID, platformConnectorSpanId,
@@ -914,55 +1034,42 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	// The store calls keep the caller's deadline and cancellation.
 	ctx = trace.ContextWithSpan(ctx, eventSpan)
 
-	// Update all events from the current quarantine session (Quarantined + AlreadyQuarantined)
-	// This includes the first event and all subsequent events that occurred after it
-	updateFilter := query.New().Build(query.And(
-		query.Eq("healthevent.nodename", nodeName),
-		query.Gte("createdAt", latestEvent.CreatedAt),
-		query.In("healtheventstatus.nodequarantined",
-			[]any{string(model.Quarantined), string(model.AlreadyQuarantined)}),
-	))
+	var cancelled int64
 
-	update := map[string]any{
-		"$set": map[string]any{
-			"healtheventstatus.nodequarantined": string(model.Cancelled),
-		},
+	for batch := range slices.Chunk(eventIDs, cancelBatchSize) {
+		eventsResult, err := w.cancelEvents(ctx, query.And(
+			query.In("_id", batch),
+			query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
+		))
+		if err != nil {
+			tracing.RecordError(eventSpan, err)
+			return fmt.Errorf("error cancelling the events of the session of node %s: %w", nodeName, err)
+		}
+
+		cancelled += eventsResult.ModifiedCount
 	}
 
-	// A multi-document update is not a retryable write for the MongoDB driver, so a primary
-	// election fails it once. The update only moves Quarantined and AlreadyQuarantined events
-	// to Cancelled, so running it again is safe.
-	var updateResult *client.UpdateResult
-
-	err = retryLiveRecoveryStoreOperation(ctx, func() error {
-		var updateErr error
-
-		updateResult, updateErr = w.databaseClient.UpdateManyDocuments(ctx, updateFilter, update)
-
-		return updateErr
-	})
+	updateResult, err := w.cancelEvents(ctx, query.And(
+		query.Eq("_id", startID),
+		query.Eq("healtheventstatus.nodequarantined", string(model.Quarantined)),
+	))
 	if err != nil {
 		tracing.RecordError(eventSpan, err)
-		eventSpan.SetAttributes(
-			attribute.String("fault_quarantine.error.type", "error_cancelling_quarantining_events"),
-			attribute.String("fault_quarantine.error.message", err.Error()),
-		)
-
-		return fmt.Errorf("error cancelling quarantining events for node %s: %w", nodeName, err)
+		return fmt.Errorf("error cancelling the first event of the session of node %s: %w", nodeName, err)
 	}
 
 	slog.InfoContext(ctx, "Updated quarantining events to cancelled status",
 		"node", nodeName,
-		"firstEventId", latestEvent.ID,
-		"documentsUpdated", updateResult.ModifiedCount)
+		"firstEventId", startID,
+		"documentsUpdated", cancelled+updateResult.ModifiedCount)
 
 	if updateResult.ModifiedCount > 0 {
 		emitCancelledRemediationDuration(
-			latestEvent.HealthEvent.NodeName,
-			protos.RecommendedAction(latestEvent.HealthEvent.RecommendedAction).String(),
-			latestEvent.HealthEvent.GeneratedTimestamp,
-			latestEvent.HealthEventStatus.QuarantineFinishTimestamp,
-			latestEvent.HealthEventStatus.DrainFinishTimestamp,
+			start.HealthEvent.NodeName,
+			protos.RecommendedAction(start.HealthEvent.RecommendedAction).String(),
+			start.HealthEvent.GeneratedTimestamp,
+			start.HealthEventStatus.QuarantineFinishTimestamp,
+			start.HealthEventStatus.DrainFinishTimestamp,
 			nodeName,
 		)
 	}
@@ -975,32 +1082,124 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	return nil
 }
 
-// findLatestQuarantiningEvent returns the latest Quarantined or UnQuarantined event of a node,
-// retrying a failed read. The MongoDB client reports a failed query from Decode, so the lookup
-// and the decode retry together. Finding no event is an answer, so it returns found=false
-// without a retry.
-func (w *EventWatcher) findLatestQuarantiningEvent(
+// sessionToCancel returns the IDs of the AlreadyQuarantined events of the session that starts
+// with startID, and whether to cancel the session. It reads those events before it looks for a
+// later Quarantined or UnQuarantined event. An event of a newer session that is AlreadyQuarantined
+// by the first read has its Quarantined first event in the store by then, so the second read
+// finds the newer session and nothing is cancelled. An event written after the first read is not
+// in the list.
+func (w *EventWatcher) sessionToCancel(ctx context.Context, nodeName, startID string) ([]any, bool, error) {
+	start, found, err := w.findSessionEvent(ctx, nodeName, startID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if !found || start.status != model.Quarantined {
+		slog.InfoContext(ctx, "First event of the session is not Quarantined, no events to cancel",
+			"node", nodeName, "eventID", startID)
+
+		return nil, false, nil
+	}
+
+	events, err := w.listSessionEvents(ctx, query.And(
+		query.Eq("healthevent.nodename", nodeName),
+		query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
+		query.Gte("createdAt", start.createdAt),
+	), nil)
+	if err != nil {
+		return nil, false, err
+	}
+
+	next, found, err := w.findNextSessionStart(ctx, nodeName, start)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if found {
+		if next.status == model.UnQuarantined {
+			slog.InfoContext(ctx, "A healthy event ended the session, no events to cancel",
+				"node", nodeName, "eventID", startID)
+		} else {
+			slog.WarnContext(ctx, "A newer quarantine of the node started before the ended session was "+
+				"cancelled; the earlier health events stay active", "node", nodeName, "eventID", startID)
+		}
+
+		return nil, false, nil
+	}
+
+	eventIDs := make([]any, 0, len(events))
+
+	for _, event := range events {
+		if start.before(event) {
+			eventIDs = append(eventIDs, event.id)
+		}
+	}
+
+	return eventIDs, true, nil
+}
+
+// findNextSessionStart returns the first Quarantined or UnQuarantined event of a node after
+// start: the healthy event that ended its session, or the first event of a newer session.
+func (w *EventWatcher) findNextSessionStart(
 	ctx context.Context,
 	nodeName string,
-) (quarantiningEvent, bool, error) {
-	filter := query.New().Build(query.And(
+	start sessionEvent,
+) (sessionEvent, bool, error) {
+	later, err := w.listSessionEvents(ctx, query.And(
 		query.Eq("healthevent.nodename", nodeName),
 		query.In("healtheventstatus.nodequarantined",
 			[]any{string(model.Quarantined), string(model.UnQuarantined)}),
-	))
-	findOptions := &client.FindOneOptions{Sort: map[string]any{"createdAt": -1}}
+		query.Gte("createdAt", start.createdAt),
+	), start.before)
+	if err != nil || len(later) == 0 || !start.before(later[len(later)-1]) {
+		return sessionEvent{}, false, err
+	}
 
+	return later[len(later)-1], true, nil
+}
+
+// cancelEvents marks the events that match the filter Cancelled. A multi-document update is not
+// a retryable write for the MongoDB driver, so a primary election fails it once. The filter
+// takes only Quarantined or AlreadyQuarantined events, so running it again is safe.
+func (w *EventWatcher) cancelEvents(ctx context.Context, filter query.Condition) (*client.UpdateResult, error) {
+	update := map[string]any{
+		"$set": map[string]any{
+			"healtheventstatus.nodequarantined": string(model.Cancelled),
+		},
+	}
+
+	var updateResult *client.UpdateResult
+
+	err := retryLiveRecoveryStoreOperation(ctx, func() error {
+		var updateErr error
+
+		updateResult, updateErr = w.databaseClient.UpdateManyDocuments(ctx, query.New().Build(filter), update)
+
+		return updateErr
+	})
+
+	return updateResult, err
+}
+
+// findQuarantiningEvent returns the first event that matches the filter, retrying a failed
+// read. The MongoDB client reports a failed query from Decode, so the lookup and the decode
+// retry together. Finding no event is an answer, so it returns found=false without a retry.
+func (w *EventWatcher) findQuarantiningEvent(
+	ctx context.Context,
+	filter query.Condition,
+	findOptions *client.FindOneOptions,
+) (quarantiningEvent, bool, error) {
 	var (
-		latestEvent quarantiningEvent
-		found       bool
+		event quarantiningEvent
+		found bool
 	)
 
 	err := retryLiveRecoveryStoreOperation(ctx, func() error {
-		latestEvent, found = quarantiningEvent{}, false
+		event, found = quarantiningEvent{}, false
 
-		result, err := w.databaseClient.FindOne(ctx, filter, findOptions)
+		result, err := w.databaseClient.FindOne(ctx, query.New().Build(filter), findOptions)
 		if err == nil {
-			err = result.Decode(&latestEvent)
+			err = result.Decode(&event)
 		}
 
 		switch {
@@ -1015,7 +1214,99 @@ func (w *EventWatcher) findLatestQuarantiningEvent(
 		}
 	})
 
-	return latestEvent, found, err
+	return event, found, err
+}
+
+// sessionEvent is a stored event of a quarantine session. createdAt is the creation time the
+// store orders and filters by: the createdAt field in MongoDB and the created_at column in
+// PostgreSQL. The PostgreSQL document holds an earlier createdAt from platform-connectors, and
+// events of one MongoDB batch can share a millisecond, so events are ordered by createdAt and then
+// by ID, as the store lists them.
+type sessionEvent struct {
+	id        string
+	createdAt time.Time
+	status    model.Status
+}
+
+// before reports whether the event comes before other in the order of the store.
+func (e sessionEvent) before(other sessionEvent) bool {
+	if !e.createdAt.Equal(other.createdAt) {
+		return e.createdAt.Before(other.createdAt)
+	}
+
+	return e.id < other.id
+}
+
+// findSessionEvent returns the event eventID of a node.
+func (w *EventWatcher) findSessionEvent(ctx context.Context, nodeName, eventID string) (sessionEvent, bool, error) {
+	events, err := w.listSessionEvents(ctx, query.And(
+		query.Eq("_id", eventID),
+		query.Eq("healthevent.nodename", nodeName),
+	), nil)
+	if err != nil || len(events) == 0 {
+		return sessionEvent{}, false, err
+	}
+
+	return events[0], true, nil
+}
+
+// listSessionEvents returns the events that match the filter in the order of the store, retrying
+// a failed read. When stopAfter is set, the list ends with the first event it returns true for.
+func (w *EventWatcher) listSessionEvents(
+	ctx context.Context,
+	filter query.Condition,
+	stopAfter func(sessionEvent) bool,
+) ([]sessionEvent, error) {
+	if w.healthEventStore == nil {
+		return nil, errors.New("health event store is not configured")
+	}
+
+	var events []sessionEvent
+
+	errStop := errors.New("stop listing")
+
+	err := retryLiveRecoveryStoreOperation(ctx, func() error {
+		events = nil
+
+		err := w.healthEventStore.FindHealthEventsByQueryBatched(ctx, query.New().Build(filter), sessionListBatchSize,
+			func(records []datastore.HealthEventWithStatus) error {
+				for _, record := range records {
+					event, err := toSessionEvent(record)
+					if err != nil {
+						return err
+					}
+
+					events = append(events, event)
+
+					if stopAfter != nil && stopAfter(event) {
+						return errStop
+					}
+				}
+
+				return nil
+			})
+		if errors.Is(err, errStop) {
+			return nil
+		}
+
+		return err
+	})
+
+	return events, err
+}
+
+func toSessionEvent(record datastore.HealthEventWithStatus) (sessionEvent, error) {
+	id, err := utils.ExtractDocumentID(record.RawEvent)
+	if err != nil {
+		return sessionEvent{}, fmt.Errorf("error reading the ID of a stored event: %w", err)
+	}
+
+	event := sessionEvent{id: id, createdAt: record.CreatedAt}
+	if record.HealthEventStatus.NodeQuarantined != nil {
+		event.status = model.Status(*record.HealthEventStatus.NodeQuarantined)
+	}
+
+	return event, nil
 }
 
 func emitCancelledRemediationDuration(

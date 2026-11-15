@@ -236,12 +236,14 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	}
 
 	// Create event watcher with the new signature
-	r.eventWatcher = eventwatcher.NewEventWatcher(
+	eventWatcher := eventwatcher.NewEventWatcher(
 		oldWatcher,
 		databaseClient,
 		time.Second*30, // 30 second metric update interval
 		r,              // Reconciler implements LastProcessedObjectIDStore interface
 	)
+	eventWatcher.SetHealthEventStore(ds.HealthEventStore())
+	r.eventWatcher = eventWatcher
 
 	r.SetupNodeInformerCallbacks()
 

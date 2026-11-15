@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
@@ -951,62 +953,160 @@ func TestStart_ColdStartCancellation_DoesNotEnterWatchLoop(t *testing.T) {
 	}
 }
 
-// cancelStoreStub answers like the MongoDB client: FindOne never fails, and a failed query
-// or a missing document shows when the result is decoded. Like the store, the lookup finds
-// the latest event only when the filter takes its status. decodeErrs and updateErrs fail
-// those calls in order.
-type cancelStoreStub struct {
+// sessionStore is an in-memory store for the cancellation tests. It reads the filters that the
+// query builder renders for MongoDB and lists events like the health event store of both
+// databases, in the order of the store. Its FindOne answers like the MongoDB client: it never
+// fails, and a failed query or a missing document shows when the result is decoded. Like a
+// PostgreSQL document, the decoded document holds no ID and an earlier createdAt than the one the
+// store orders by. findErrs, listErrs and updateErrs fail those calls in order. The first
+// partialUpdates failed updates write the first event they match before they fail, as a
+// multi-document update can. beforeList runs before each list with its number, and onUpdate once
+// before the first update, so a test can write events while the cancellation runs.
+type sessionStore struct {
 	client.DatabaseClient
-	latest      map[string]any
-	decodeErrs  []error
-	decodeCalls int
-	updateErrs  []error
-	updateCalls int
+	datastore.HealthEventStore
+	events         []*storedEvent
+	findErrs       []error
+	findCalls      int
+	listErrs       []error
+	listCalls      int
+	updateErrs     []error
+	updateCalls    int
+	partialUpdates int
+	beforeList     func(s *sessionStore, call int)
+	onUpdate       func(s *sessionStore)
 }
 
-func (s *cancelStoreStub) FindOne(_ context.Context, filter any, _ *client.FindOneOptions) (client.SingleResult, error) {
-	status, _ := s.latest["healthEventStatus"].(map[string]any)["nodeQuarantined"].(string)
+type storedEvent struct {
+	id        string
+	node      string
+	status    model.Status
+	createdAt time.Time
+}
 
+var sessionTestStart = time.Date(2026, 11, 14, 22, 0, 0, 0, time.UTC)
+
+// addEvent stores an event of node-a created the given number of minutes after the test start.
+func (s *sessionStore) addEvent(id string, status model.Status, minute int) {
+	s.addEventAt("node-a", id, status, time.Duration(minute)*time.Minute)
+}
+
+// addEventAt stores an event of a node created the given time after the test start.
+func (s *sessionStore) addEventAt(node, id string, status model.Status, after time.Duration) {
+	s.events = append(s.events, &storedEvent{
+		id: id, node: node, status: status, createdAt: sessionTestStart.Add(after),
+	})
+}
+
+func (s *sessionStore) statuses() map[string]model.Status {
+	statuses := make(map[string]model.Status, len(s.events))
+	for _, event := range s.events {
+		statuses[event.id] = event.status
+	}
+
+	return statuses
+}
+
+func nextStoreErr(errs []error, calls int) error {
+	if index := calls - 1; index < len(errs) {
+		return errs[index]
+	}
+
+	return nil
+}
+
+func (s *sessionStore) matching(filter any) ([]*storedEvent, error) {
 	builder, ok := filter.(*query.Builder)
 	if !ok {
 		return nil, fmt.Errorf("unexpected filter %T", filter)
 	}
 
-	rendered, err := json.Marshal(builder.ToMongo())
-	if err != nil {
-		return nil, err
+	rendered := builder.ToMongo()
+
+	var matched []*storedEvent
+
+	for _, event := range s.events {
+		if eventMatches(event, rendered) {
+			matched = append(matched, event)
+		}
 	}
 
-	return &cancelResultStub{store: s, missing: !strings.Contains(string(rendered), `"`+status+`"`)}, nil
+	return matched, nil
 }
 
-func (s *cancelStoreStub) UpdateManyDocuments(_ context.Context, _ any, _ any) (*client.UpdateResult, error) {
-	s.updateCalls++
+func eventMatches(event *storedEvent, filter map[string]any) bool {
+	for field, condition := range filter {
+		if field == "$and" {
+			for _, part := range condition.([]any) {
+				if !eventMatches(event, part.(map[string]any)) {
+					return false
+				}
+			}
 
-	if index := s.updateCalls - 1; index < len(s.updateErrs) && s.updateErrs[index] != nil {
-		return nil, s.updateErrs[index]
+			continue
+		}
+
+		if !valueMatches(storedField(event, field), condition) {
+			return false
+		}
 	}
 
-	return &client.UpdateResult{MatchedCount: 2, ModifiedCount: 2}, nil
+	return true
 }
 
-type cancelResultStub struct {
-	store   *cancelStoreStub
-	missing bool
+func storedField(event *storedEvent, field string) any {
+	switch field {
+	case "_id":
+		return event.id
+	case "healthevent.nodename":
+		return event.node
+	case "healtheventstatus.nodequarantined":
+		return string(event.status)
+	case "createdAt":
+		return event.createdAt
+	default:
+		panic("unexpected field " + field)
+	}
 }
 
-func (r *cancelResultStub) Decode(value any) error {
-	r.store.decodeCalls++
-
-	if index := r.store.decodeCalls - 1; index < len(r.store.decodeErrs) && r.store.decodeErrs[index] != nil {
-		return r.store.decodeErrs[index]
+func valueMatches(value any, condition any) bool {
+	operators, ok := condition.(map[string]any)
+	if !ok {
+		return value == condition
 	}
 
-	if r.missing {
-		return client.ErrNoDocuments
+	for operator, operand := range operators {
+		var matches bool
+
+		switch operator {
+		case "$in":
+			matches = slices.Contains(operand.([]any), value)
+		case "$gt":
+			matches = value.(time.Time).After(operand.(time.Time))
+		case "$gte":
+			matches = !value.(time.Time).Before(operand.(time.Time))
+		case "$lte":
+			matches = !value.(time.Time).After(operand.(time.Time))
+		default:
+			panic("unexpected operator " + operator)
+		}
+
+		if !matches {
+			return false
+		}
 	}
 
-	encoded, err := json.Marshal(r.store.latest)
+	return true
+}
+
+// encodeStoredEvent renders the document of an event. Like a PostgreSQL document, it holds no ID
+// and an earlier createdAt than the one the store orders by.
+func encodeStoredEvent(event *storedEvent, value any) error {
+	encoded, err := json.Marshal(map[string]any{
+		"createdAt":         event.createdAt.Add(-5 * time.Millisecond),
+		"healthEvent":       map[string]any{"nodeName": event.node},
+		"healthEventStatus": map[string]any{"nodeQuarantined": string(event.status)},
+	})
 	if err != nil {
 		return err
 	}
@@ -1014,98 +1114,515 @@ func (r *cancelResultStub) Decode(value any) error {
 	return json.Unmarshal(encoded, value)
 }
 
-func (r *cancelResultStub) Err() error { return nil }
-
-func latestSessionEvent(status model.Status) map[string]any {
-	return map[string]any{
-		"_id":               "event-uuid",
-		"createdAt":         time.Now().UTC().Add(-time.Minute),
-		"healthEvent":       map[string]any{"nodeName": "node-a"},
-		"healthEventStatus": map[string]any{"nodeQuarantined": string(status)},
+func (s *sessionStore) FindOne(_ context.Context, filter any, options *client.FindOneOptions) (client.SingleResult, error) {
+	matched, err := s.matching(filter)
+	if err != nil {
+		return nil, err
 	}
+
+	newestFirst := options != nil && options.Sort != nil && options.Sort.(map[string]any)["createdAt"] == -1
+	slices.SortFunc(matched, func(a, b *storedEvent) int {
+		if newestFirst {
+			return b.createdAt.Compare(a.createdAt)
+		}
+
+		return a.createdAt.Compare(b.createdAt)
+	})
+
+	result := &sessionResult{store: s}
+	if len(matched) > 0 {
+		result.event = matched[0]
+	}
+
+	return result, nil
 }
 
-func TestCancelLatestQuarantiningEvents_RetriesFailedStoreCalls(t *testing.T) {
+// FindHealthEventsByQueryBatched lists like both stores: ordered by the store's creation time
+// and then by ID, with that creation time on each record.
+func (s *sessionStore) FindHealthEventsByQueryBatched(
+	_ context.Context, builder datastore.QueryBuilder, batchSize int,
+	fn func([]datastore.HealthEventWithStatus) error,
+) error {
+	s.listCalls++
+
+	if err := nextStoreErr(s.listErrs, s.listCalls); err != nil {
+		return err
+	}
+
+	if s.beforeList != nil {
+		s.beforeList(s, s.listCalls)
+	}
+
+	matched, err := s.matching(builder)
+	if err != nil {
+		return err
+	}
+
+	slices.SortFunc(matched, func(a, b *storedEvent) int {
+		if c := a.createdAt.Compare(b.createdAt); c != 0 {
+			return c
+		}
+
+		return strings.Compare(a.id, b.id)
+	})
+
+	for chunk := range slices.Chunk(matched, batchSize) {
+		records := make([]datastore.HealthEventWithStatus, 0, len(chunk))
+
+		for _, event := range chunk {
+			status := datastore.Status(event.status)
+			records = append(records, datastore.HealthEventWithStatus{
+				CreatedAt:         event.createdAt,
+				HealthEventStatus: datastore.HealthEventStatus{NodeQuarantined: &status},
+				RawEvent:          map[string]any{"id": event.id},
+			})
+		}
+
+		if err := fn(records); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *sessionStore) UpdateManyDocuments(_ context.Context, filter any, _ any) (*client.UpdateResult, error) {
+	s.updateCalls++
+
+	if s.onUpdate != nil {
+		s.onUpdate(s)
+		s.onUpdate = nil
+	}
+
+	matched, err := s.matching(filter)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := nextStoreErr(s.updateErrs, s.updateCalls); err != nil {
+		if s.partialUpdates > 0 && len(matched) > 0 {
+			s.partialUpdates--
+			matched[0].status = model.Cancelled
+		}
+
+		return nil, err
+	}
+
+	for _, event := range matched {
+		event.status = model.Cancelled
+	}
+
+	return &client.UpdateResult{MatchedCount: int64(len(matched)), ModifiedCount: int64(len(matched))}, nil
+}
+
+type sessionResult struct {
+	store *sessionStore
+	event *storedEvent
+}
+
+func (r *sessionResult) Decode(value any) error {
+	r.store.findCalls++
+
+	if err := nextStoreErr(r.store.findErrs, r.store.findCalls); err != nil {
+		return err
+	}
+
+	if r.event == nil {
+		return client.ErrNoDocuments
+	}
+
+	return encodeStoredEvent(r.event, value)
+}
+
+func (r *sessionResult) Err() error { return nil }
+
+func newSessionWatcher(store *sessionStore) *EventWatcher {
+	watcher := NewEventWatcher(nil, store, time.Minute, &objectIDStoreStub{})
+	watcher.SetHealthEventStore(store)
+
+	return watcher
+}
+
+func TestFindQuarantineSession_FindsTheSessionOfTheEvent(t *testing.T) {
 	transient := errors.New("(NotWritablePrimary) not primary")
 
 	tests := []struct {
 		name            string
-		latestStatus    model.Status
-		decodeErrs      []error
-		updateErrs      []error
-		wantErr         bool
-		wantDecodeCalls int
-		wantUpdateCalls int
+		eventID         string
+		listErrs        []error
+		wantStart       string
+		wantQuarantined bool
 	}{
+		{name: "the first event of a session", eventID: "start", wantStart: "start", wantQuarantined: true},
+		{name: "a later event of a session", eventID: "later", wantStart: "start", wantQuarantined: true},
 		{
-			name:            "an update that fails once is retried",
-			latestStatus:    model.Quarantined,
-			updateErrs:      []error{transient},
-			wantDecodeCalls: 1,
-			wantUpdateCalls: 2,
+			name: "a later event that a cancellation already wrote", eventID: "written",
+			wantStart: "start", wantQuarantined: true,
 		},
 		{
-			name:            "a lookup that fails once is retried",
-			latestStatus:    model.Quarantined,
-			decodeErrs:      []error{transient},
-			wantDecodeCalls: 2,
-			wantUpdateCalls: 1,
+			name: "a lookup that fails once is retried", eventID: "later", listErrs: []error{transient},
+			wantStart: "start", wantQuarantined: true,
 		},
 		{
-			name:            "an update that keeps failing returns its error",
-			latestStatus:    model.Quarantined,
-			updateErrs:      []error{transient, transient, transient, transient},
-			wantErr:         true,
-			wantDecodeCalls: 1,
-			wantUpdateCalls: liveRecoveryStoreRetryAttempts,
+			name: "an event of a session a healthy event ended", eventID: "older-later",
+			wantStart: "older-start", wantQuarantined: true,
 		},
+		{name: "a cancelled session with nothing before it", eventID: "cancelled-start"},
+		{name: "an event that is not stored", eventID: "missing"},
 		{
-			name:            "a lookup that finds no event is not retried",
-			latestStatus:    model.Cancelled,
-			wantDecodeCalls: 1,
-			wantUpdateCalls: 0,
-		},
-		{
-			name:            "a session that a healthy event ended is left alone",
-			latestStatus:    model.UnQuarantined,
-			wantDecodeCalls: 1,
-			wantUpdateCalls: 0,
+			name: "the latest session of the node", eventID: common.QuarantineCancellationLatestSession,
+			wantStart: "newer-start", wantQuarantined: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := &cancelStoreStub{
-				latest:     latestSessionEvent(tt.latestStatus),
-				decodeErrs: tt.decodeErrs,
-				updateErrs: tt.updateErrs,
-			}
-			watcher := NewEventWatcher(nil, store, time.Minute, &objectIDStoreStub{})
+			store := &sessionStore{listErrs: tt.listErrs}
+			store.addEvent("cancelled-start", model.Cancelled, 0)
+			store.addEvent("older-start", model.Quarantined, 2)
+			store.addEvent("older-later", model.AlreadyQuarantined, 3)
+			store.addEvent("older-healthy", model.UnQuarantined, 4)
+			store.addEvent("start", model.Quarantined, 10)
+			store.addEvent("later", model.AlreadyQuarantined, 11)
+			store.addEvent("written", model.Cancelled, 12)
+			store.addEvent("newer-start", model.Quarantined, 20)
+			watcher := newSessionWatcher(store)
 
-			err := watcher.CancelLatestQuarantiningEvents(context.Background(), "node-a", "Manual uncordoning detected")
-			if tt.wantErr {
-				require.ErrorIs(t, err, transient)
-			} else {
-				require.NoError(t, err)
-			}
-
-			assert.Equal(t, tt.wantDecodeCalls, store.decodeCalls, "lookups")
-			assert.Equal(t, tt.wantUpdateCalls, store.updateCalls, "updates")
+			start, quarantined, err := watcher.FindQuarantineSession(context.Background(), "node-a", []string{tt.eventID})
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantStart, start)
+			assert.Equal(t, tt.wantQuarantined, quarantined)
 		})
 	}
 }
 
-func TestCancelLatestQuarantiningEvents_StopsAtTheCallersDeadline(t *testing.T) {
-	store := &cancelStoreStub{
-		latest:     latestSessionEvent(model.Quarantined),
+func TestFindQuarantineSession_LatestSessionEndedByAHealthyEvent(t *testing.T) {
+	store := &sessionStore{}
+	store.addEvent("start", model.Quarantined, 0)
+	store.addEvent("healthy", model.UnQuarantined, 5)
+	watcher := newSessionWatcher(store)
+
+	_, quarantined, err := watcher.FindQuarantineSession(
+		context.Background(), "node-a", []string{common.QuarantineCancellationLatestSession})
+	require.NoError(t, err)
+	assert.False(t, quarantined)
+}
+
+// An event whose status write failed still has its place in the store, so it leads to its
+// session like an AlreadyQuarantined event.
+func TestFindQuarantineSession_EventWithoutStatus(t *testing.T) {
+	store := &sessionStore{}
+	store.addEvent("start", model.Quarantined, 10)
+	store.addEvent("later", "", 11)
+	watcher := newSessionWatcher(store)
+
+	start, quarantined, err := watcher.FindQuarantineSession(context.Background(), "node-a", []string{"later"})
+	require.NoError(t, err)
+	assert.Equal(t, "start", start)
+	assert.True(t, quarantined)
+}
+
+// The first event of the session is used as is when it is among the IDs. Events reach MongoDB
+// through more than one platform-connectors pod, so a later event of a batch can sort before
+// the first one, and only the stored status tells them apart.
+func TestFindQuarantineSession_FirstEventAmongTheIDs(t *testing.T) {
+	store := &sessionStore{}
+	store.addEvent("older-start", model.Quarantined, 0)
+	store.addEventAt("node-a", "older-healthy", model.UnQuarantined, 5*time.Minute)
+	store.addEventAt("node-a", "later", model.AlreadyQuarantined, 10*time.Minute)
+	store.addEventAt("node-a", "start", model.Quarantined, 10*time.Minute+3*time.Millisecond)
+	watcher := newSessionWatcher(store)
+
+	start, quarantined, err := watcher.FindQuarantineSession(
+		context.Background(), "node-a", []string{"later", "start", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, "start", start)
+	assert.True(t, quarantined)
+
+	_, quarantined, err = watcher.FindQuarantineSession(context.Background(), "node-a", []string{"missing"})
+	require.NoError(t, err)
+	assert.False(t, quarantined, "IDs that are not stored have nothing to cancel")
+}
+
+// The events of a long session are cancelled in batches, below the PostgreSQL limit on bind
+// parameters, and the first event still goes last.
+func TestCancelQuarantineSession_ManyEvents(t *testing.T) {
+	store := &sessionStore{}
+	store.addEvent("start", model.Quarantined, 10)
+
+	for i := range 2*cancelBatchSize + 1 {
+		store.addEventAt("node-a", fmt.Sprintf("later-%05d", i), model.AlreadyQuarantined,
+			11*time.Minute+time.Duration(i)*time.Millisecond)
+	}
+
+	watcher := newSessionWatcher(store)
+
+	require.NoError(t, watcher.CancelQuarantineSession(context.Background(), "node-a", "start", "test"))
+	assert.Equal(t, 4, store.updateCalls, "three batches of events, then the first event")
+
+	for id, status := range store.statuses() {
+		assert.Equal(t, model.Cancelled, status, id)
+	}
+}
+
+// Events of one batch are close together: a few milliseconds apart in PostgreSQL, where the
+// document holds an earlier createdAt than the column the store orders by, and often in the same
+// millisecond in MongoDB. The session follows the order of the store.
+func TestQuarantineSession_EventsOfOneBatch(t *testing.T) {
+	tests := []struct {
+		name string
+		gap  time.Duration
+	}{
+		{name: "a few milliseconds apart", gap: 2 * time.Millisecond},
+		{name: "in the same millisecond", gap: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// One batch ends the earlier session with a healthy event and starts the next one.
+			store := &sessionStore{}
+			store.addEvent("a-older-start", model.Quarantined, 0)
+			store.addEventAt("node-a", "a5-older-later", model.AlreadyQuarantined, 10*time.Minute)
+			store.addEventAt("node-a", "b-older-healthy", model.UnQuarantined, 10*time.Minute)
+			store.addEventAt("node-a", "c-start", model.Quarantined, 10*time.Minute+tt.gap)
+			store.addEventAt("node-a", "d-later", model.AlreadyQuarantined, 10*time.Minute+2*tt.gap)
+			watcher := newSessionWatcher(store)
+
+			start, quarantined, err := watcher.FindQuarantineSession(context.Background(), "node-a", []string{"d-later"})
+			require.NoError(t, err)
+			assert.Equal(t, "c-start", start)
+			assert.True(t, quarantined)
+
+			require.NoError(t, watcher.CancelQuarantineSession(context.Background(), "node-a", start, "test"))
+			assert.Equal(t, map[string]model.Status{
+				"a-older-start":   model.Quarantined,
+				"a5-older-later":  model.AlreadyQuarantined,
+				"b-older-healthy": model.UnQuarantined,
+				"c-start":         model.Cancelled,
+				"d-later":         model.Cancelled,
+			}, store.statuses())
+		})
+	}
+}
+
+func TestCancelQuarantineSession_CancelsOnlyThatSession(t *testing.T) {
+	transient := errors.New("(NotWritablePrimary) not primary")
+
+	tests := []struct {
+		name       string
+		updateErrs []error
+	}{
+		{name: "the writes work"},
+		{name: "an update that fails once is retried", updateErrs: []error{transient}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &sessionStore{updateErrs: tt.updateErrs}
+			store.addEvent("older-start", model.Quarantined, 0)
+			store.addEvent("older-later", model.AlreadyQuarantined, 1)
+			store.addEvent("older-healthy", model.UnQuarantined, 2)
+			store.addEvent("start", model.Quarantined, 10)
+			store.addEvent("later", model.AlreadyQuarantined, 11)
+			store.addEvent("last", model.AlreadyQuarantined, 12)
+			store.addEventAt("node-b", "other-node-later", model.AlreadyQuarantined, 11*time.Minute)
+			watcher := newSessionWatcher(store)
+
+			require.NoError(t, watcher.CancelQuarantineSession(context.Background(), "node-a", "start", "test"))
+			assert.Equal(t, map[string]model.Status{
+				"older-start":      model.Quarantined,
+				"older-later":      model.AlreadyQuarantined,
+				"older-healthy":    model.UnQuarantined,
+				"start":            model.Cancelled,
+				"later":            model.Cancelled,
+				"last":             model.Cancelled,
+				"other-node-later": model.AlreadyQuarantined,
+			}, store.statuses())
+		})
+	}
+}
+
+// A newer quarantine of the node is left alone, and so is the ended session before it: the
+// cancellation of any session of a node makes fault-remediation clear the remediation state of
+// the whole node, which belongs to the newer quarantine by then. Fault-quarantine writes the
+// first event of a session before any of its events is AlreadyQuarantined.
+func TestCancelQuarantineSession_NewerQuarantineIsLeftAlone(t *testing.T) {
+	newerSession := func(s *sessionStore) {
+		s.addEvent("newer-start", model.Quarantined, 20)
+		s.addEvent("newer-later", model.AlreadyQuarantined, 21)
+	}
+
+	tests := []struct {
+		name           string
+		before         func(s *sessionStore)
+		beforeListCall int
+		onUpdate       func(s *sessionStore)
+		wantCancelled  bool
+	}{
+		{name: "the newer quarantine started before the cancellation", before: newerSession},
+		{name: "the newer quarantine starts as the events are read", beforeListCall: 2},
+		{name: "the newer quarantine starts between the two reads", beforeListCall: 3},
+		{name: "the newer quarantine starts before the first write", onUpdate: newerSession, wantCancelled: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &sessionStore{onUpdate: tt.onUpdate}
+			if tt.beforeListCall > 0 {
+				store.beforeList = func(s *sessionStore, call int) {
+					if call == tt.beforeListCall {
+						newerSession(s)
+					}
+				}
+			}
+
+			store.addEvent("start", model.Quarantined, 10)
+			store.addEvent("later", model.AlreadyQuarantined, 11)
+
+			if tt.before != nil {
+				tt.before(store)
+			}
+
+			watcher := newSessionWatcher(store)
+
+			require.NoError(t, watcher.CancelQuarantineSession(context.Background(), "node-a", "start", "test"))
+
+			want := map[string]model.Status{
+				"start":       model.Quarantined,
+				"later":       model.AlreadyQuarantined,
+				"newer-start": model.Quarantined,
+				"newer-later": model.AlreadyQuarantined,
+			}
+			if tt.wantCancelled {
+				want["start"], want["later"] = model.Cancelled, model.Cancelled
+			}
+
+			assert.Equal(t, want, store.statuses())
+		})
+	}
+}
+
+// A multi-document update can fail after it wrote part of the events. The first event of the
+// session is written last, so it stays Quarantined, and any event of the session still leads to
+// it, so a later call cancels the rest.
+func TestCancelQuarantineSession_PartialWriteIsFinishedByTheNextCall(t *testing.T) {
+	transient := errors.New("(NotWritablePrimary) not primary")
+
+	store := &sessionStore{
+		updateErrs:     slices.Repeat([]error{transient}, liveRecoveryStoreRetryAttempts),
+		partialUpdates: 1,
+	}
+	store.addEvent("start", model.Quarantined, 10)
+	store.addEvent("later", model.AlreadyQuarantined, 11)
+	store.addEvent("last", model.AlreadyQuarantined, 12)
+	watcher := newSessionWatcher(store)
+
+	err := watcher.CancelQuarantineSession(context.Background(), "node-a", "start", "test")
+	require.ErrorIs(t, err, transient)
+
+	statuses := store.statuses()
+	assert.Equal(t, model.Quarantined, statuses["start"], "the first event is written last")
+	assert.Equal(t, model.Cancelled, statuses["later"], "the failed update wrote one event")
+	assert.Equal(t, model.AlreadyQuarantined, statuses["last"])
+
+	start, quarantined, err := watcher.FindQuarantineSession(context.Background(), "node-a", []string{"later"})
+	require.NoError(t, err)
+	require.True(t, quarantined)
+	require.Equal(t, "start", start, "the written event still leads to the session")
+
+	require.NoError(t, watcher.CancelQuarantineSession(context.Background(), "node-a", start, "test"))
+	assert.Equal(t, map[string]model.Status{
+		"start": model.Cancelled,
+		"later": model.Cancelled,
+		"last":  model.Cancelled,
+	}, store.statuses())
+}
+
+func TestCancelQuarantineSession_NothingToCancel(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(s *sessionStore)
+	}{
+		{
+			name: "a healthy event ended the session",
+			setup: func(s *sessionStore) {
+				s.addEvent("start", model.Quarantined, 10)
+				s.addEvent("later", model.AlreadyQuarantined, 11)
+				s.addEvent("healthy", model.UnQuarantined, 12)
+			},
+		},
+		{
+			name: "the session is already cancelled",
+			setup: func(s *sessionStore) {
+				s.addEvent("start", model.Cancelled, 10)
+				s.addEvent("later", model.AlreadyQuarantined, 11)
+			},
+		},
+		{
+			name:  "the first event is not stored",
+			setup: func(s *sessionStore) { s.addEvent("later", model.AlreadyQuarantined, 11) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &sessionStore{}
+			tt.setup(store)
+			before := store.statuses()
+			watcher := newSessionWatcher(store)
+
+			require.NoError(t, watcher.CancelQuarantineSession(context.Background(), "node-a", "start", "test"))
+			assert.Equal(t, before, store.statuses())
+			assert.Zero(t, store.updateCalls)
+		})
+	}
+}
+
+func TestCancelQuarantineSession_StopsAtTheCallersDeadline(t *testing.T) {
+	store := &sessionStore{
 		updateErrs: []error{errors.New("not primary"), errors.New("not primary"), errors.New("not primary")},
 	}
-	watcher := NewEventWatcher(nil, store, time.Minute, &objectIDStoreStub{})
+	store.addEvent("start", model.Quarantined, 10)
+	watcher := newSessionWatcher(store)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	err := watcher.CancelLatestQuarantiningEvents(ctx, "node-a", "test")
+	err := watcher.CancelQuarantineSession(ctx, "node-a", "start", "test")
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Less(t, store.updateCalls, liveRecoveryStoreRetryAttempts, "the retry must stop at the deadline")
+}
+
+func TestCancelQuarantineSession_ListThatFailsOnceIsRetried(t *testing.T) {
+	store := &sessionStore{listErrs: []error{errors.New("(NotWritablePrimary) not primary")}}
+	store.addEvent("start", model.Quarantined, 10)
+	store.addEvent("later", model.AlreadyQuarantined, 11)
+	watcher := newSessionWatcher(store)
+
+	require.NoError(t, watcher.CancelQuarantineSession(context.Background(), "node-a", "start", "test"))
+	assert.Equal(t, 4, store.listCalls, "three lists, and the first one is tried twice")
+	assert.Equal(t, map[string]model.Status{"start": model.Cancelled, "later": model.Cancelled}, store.statuses())
+}
+
+func TestCancelLatestQuarantiningEvents_CancelsTheLatestSession(t *testing.T) {
+	store := &sessionStore{}
+	store.addEvent("older-start", model.Quarantined, 0)
+	store.addEvent("healthy", model.UnQuarantined, 5)
+	store.addEvent("start", model.Quarantined, 10)
+	store.addEvent("later", model.AlreadyQuarantined, 11)
+	watcher := newSessionWatcher(store)
+
+	require.NoError(t, watcher.CancelLatestQuarantiningEvents(context.Background(), "node-a", "test"))
+	assert.Equal(t, map[string]model.Status{
+		"older-start": model.Quarantined,
+		"healthy":     model.UnQuarantined,
+		"start":       model.Cancelled,
+		"later":       model.Cancelled,
+	}, store.statuses())
+
+	store.addEvent("healthy-again", model.UnQuarantined, 20)
+	before := store.statuses()
+
+	require.NoError(t, watcher.CancelLatestQuarantiningEvents(context.Background(), "node-a", "test"))
+	assert.Equal(t, before, store.statuses(), "a session that a healthy event ended is left alone")
 }
