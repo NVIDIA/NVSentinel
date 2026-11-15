@@ -406,7 +406,7 @@ In dry run, fault-quarantine records what it would have done without cordoning, 
 
 When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it removes their annotations and cancels their quarantining events, so node-drainer does not act on them. A cordon someone else applied is left in place. The next fault on the node is quarantined for real.
 
-Cancelling the events is best-effort, as on the manual uncordon path. If it fails, fault-quarantine logs `Failed to cancel dry-run quarantining events` with the node name and increments `fault_quarantine_processing_errors_total{error_type="mongodb_cancel_quarantine_error"}`. The annotations are already gone, so a restart does not retry, and that node's events stay `Quarantined`, where node-drainer can still pick them up. After switching dry run off, check that counter. If it moved, set `healtheventstatus.nodequarantined` to `Cancelled` on the node's remaining `Quarantined` events before node-drainer acts on them.
+Cancelling the events works as on the manual uncordon path. If the write fails, fault-quarantine keeps trying in the background and again after a restart. Until the write succeeds, the node carries the `quarantineCancellationPending` annotation, and node-drainer can still pick up the node's events. After switching dry run off, check that no node still carries that annotation. See [Cancelling Break-Fix Workflows](../cancelling-breakfix.md).
 
 Before switching dry run off on a cluster that ran dry run on an earlier version:
 

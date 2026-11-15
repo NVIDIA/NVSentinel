@@ -49,10 +49,10 @@ const (
 	// Marks quarantine annotations written in dry run, where nothing was applied.
 	QuarantineHealthEventDryRunAnnotationKey   = "quarantineHealthEventDryRun"
 	QuarantineHealthEventDryRunAnnotationValue = "True"
-	// Marks a node whose ended quarantine session is not cancelled in the datastore yet.
-	QuarantineCancellationPendingAnnotationKey   = "quarantineCancellationPending"
-	QuarantineCancellationPendingAnnotationValue = "True"
-	// Stands for the latest session of the node when the quarantine annotation names no event.
+	// Lists the ended quarantine sessions of a node that are not cancelled in the datastore
+	// yet. Sessions are separated by semicolons and the record IDs of one session by commas.
+	QuarantineCancellationPendingAnnotationKey = "quarantineCancellationPending"
+	// Stands for the latest session of the node when the quarantine annotation names no record ID.
 	QuarantineCancellationLatestSession = "latest"
 
 	ServiceName = "NVSentinel"

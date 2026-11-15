@@ -101,7 +101,8 @@ type EventWatcherInterface interface {
 		ctx context.Context,
 		completions []coldstart.StoredEventCompletion,
 	) error
-	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error
+	FindQuarantineSession(ctx context.Context, nodeName string, eventIDs []string) (string, bool, error)
+	CancelQuarantineSession(ctx context.Context, nodeName string, startID string, reason string) error
 }
 
 func NewEventWatcher(
@@ -965,23 +966,6 @@ func (w *EventWatcher) findSessionStart(
 	}
 
 	return sessionEvent{}, false, nil
-}
-
-// CancelLatestQuarantiningEvents cancels the latest quarantine session of a node, unless a
-// healthy event ended it.
-func (w *EventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error {
-	startID, quarantined, err := w.FindQuarantineSession(
-		ctx, nodeName, []string{common.QuarantineCancellationLatestSession})
-	if err != nil {
-		return err
-	}
-
-	if !quarantined {
-		slog.InfoContext(ctx, "Latest event is not Quarantined, no events to cancel", "node", nodeName)
-		return nil
-	}
-
-	return w.CancelQuarantineSession(ctx, nodeName, startID, reason)
 }
 
 // CancelQuarantineSession marks Cancelled the Quarantined event startID and the

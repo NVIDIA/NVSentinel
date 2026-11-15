@@ -247,7 +247,7 @@ func TestE2E_DryRunSwitchedOffDiscardsQuarantineRecord(t *testing.T) {
 		cancelled []string
 	)
 	eventWatcher := &MockEventWatcher{
-		CancelLatestQuarantiningEventsFn: func(_ context.Context, node string, _ string) error {
+		CancelQuarantineSessionFn: func(_ context.Context, node string, _ string, _ string) error {
 			mu.Lock()
 			defer mu.Unlock()
 			cancelled = append(cancelled, node)
@@ -340,7 +340,7 @@ func TestE2E_DryRunOnCordonedNodeIsNotCountedAndIsDiscardedOnSwitch(t *testing.T
 		TomlConfig: dryRunRules(true, false),
 		DryRun:     false,
 		EventWatcher: &MockEventWatcher{
-			CancelLatestQuarantiningEventsFn: func(_ context.Context, node string, _ string) error {
+			CancelQuarantineSessionFn: func(_ context.Context, node string, _ string, _ string) error {
 				mu.Lock()
 				defer mu.Unlock()
 				cancelled = append(cancelled, node)

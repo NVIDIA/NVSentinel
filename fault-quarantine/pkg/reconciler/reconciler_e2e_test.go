@@ -17,6 +17,7 @@ package reconciler
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -752,9 +753,10 @@ func verifyUnquarantineLabels(t *testing.T, node *corev1.Node) {
 
 // MockEventWatcher is a test mock for EventWatcherInterface that can simulate various scenarios
 type MockEventWatcher struct {
-	CancelLatestQuarantiningEventsFn func(ctx context.Context, nodeName string, reason string) error
-	ProcessEventCallbackFn           func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error)
-	StartFn                          func(ctx context.Context) error
+	FindQuarantineSessionFn   func(ctx context.Context, nodeName string, eventIDs []string) (string, bool, error)
+	CancelQuarantineSessionFn func(ctx context.Context, nodeName string, startID string, reason string) error
+	ProcessEventCallbackFn    func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error)
+	StartFn                   func(ctx context.Context) error
 }
 
 type coldStartHealthEventStore struct {
@@ -958,9 +960,21 @@ func (m *MockEventWatcher) CompleteStoredEvents(
 	return nil
 }
 
-func (m *MockEventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error {
-	if m.CancelLatestQuarantiningEventsFn != nil {
-		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName, reason)
+// FindQuarantineSession treats the first event as the Quarantined first event of its session
+// unless FindQuarantineSessionFn is set.
+func (m *MockEventWatcher) FindQuarantineSession(
+	ctx context.Context, nodeName string, eventIDs []string,
+) (string, bool, error) {
+	if m.FindQuarantineSessionFn != nil {
+		return m.FindQuarantineSessionFn(ctx, nodeName, eventIDs)
+	}
+
+	return eventIDs[0], true, nil
+}
+
+func (m *MockEventWatcher) CancelQuarantineSession(ctx context.Context, nodeName string, startID string, reason string) error {
+	if m.CancelQuarantineSessionFn != nil {
+		return m.CancelQuarantineSessionFn(ctx, nodeName, startID, reason)
 	}
 	// Default behavior: simulate MongoDB document not found (returns nil as per the real implementation)
 	return nil
@@ -7052,7 +7066,7 @@ func TestE2E_ManualUncordonWithMissingMongoDoc(t *testing.T) {
 	t.Log("Setting up reconciler after simulated upgrade with eventWatcher")
 	r, _, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 	mockEventWatcher := &MockEventWatcher{}
-	mockEventWatcher.CancelLatestQuarantiningEventsFn = func(ctx context.Context, nodeName string, reason string) error {
+	mockEventWatcher.CancelQuarantineSessionFn = func(ctx context.Context, nodeName string, _ string, reason string) error {
 		return fmt.Errorf("error decoding latest quarantining event for node %s: mongo: no documents in result", nodeName)
 	}
 	mockEventWatcher.ProcessEventCallbackFn = func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
@@ -7124,22 +7138,26 @@ func TestE2E_ManualUncordonWithMissingMongoDoc(t *testing.T) {
 }
 
 // createQuarantinedE2ETestNode creates a node as fault-quarantine leaves it after a fatal
-// GpuXidError: cordoned, tainted and annotated, plus extra annotations.
-func createQuarantinedE2ETestNode(ctx context.Context, t *testing.T, nodeName, taintKey string, extra map[string]string) {
+// GpuXidError: cordoned, tainted and annotated, plus extra annotations. The event in the
+// quarantine annotation has the ID eventID, or none when eventID is empty.
+func createQuarantinedE2ETestNode(
+	ctx context.Context, t *testing.T, nodeName, taintKey, eventID string, extra map[string]string,
+) {
 	t.Helper()
 
 	quarantined := healthEventsAnnotation.NewHealthEventsAnnotationMap()
 	quarantined.AddOrUpdateEvent(&protos.HealthEvent{
-		NodeName: nodeName, Agent: "gpu-health-monitor", CheckName: "GpuXidError",
+		Id: eventID, NodeName: nodeName, Agent: "gpu-health-monitor", CheckName: "GpuXidError",
 		ComponentClass: "GPU", Version: 1, EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 	})
 	quarantinedBytes, err := json.Marshal(quarantined)
 	require.NoError(t, err)
 
 	annotations := map[string]string{
-		common.QuarantineHealthEventAnnotationKey:              string(quarantinedBytes),
-		common.QuarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"` + taintKey + `","Value":"true","Effect":"NoSchedule"}]`,
-		common.QuarantineHealthEventIsCordonedAnnotationKey:    "True",
+		common.QuarantineHealthEventAnnotationKey: string(quarantinedBytes),
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"` + taintKey +
+			`","Value":"true","Effect":"NoSchedule"}]`,
+		common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
 	}
 	maps.Copy(annotations, extra)
 
@@ -7148,15 +7166,18 @@ func createQuarantinedE2ETestNode(ctx context.Context, t *testing.T, nodeName, t
 	}, []corev1.Taint{{Key: taintKey, Value: "true", Effect: "NoSchedule"}}, true)
 }
 
-// cancelRecorder is an event watcher whose cancellation fails a set number of times per node
-// and counts the calls.
+// cancelRecorder is an event watcher that records the cancelled sessions. Its cancellation
+// fails a set number of times per node. starts maps a session ID to the first event of the
+// session when the two differ, and ended holds the sessions with nothing left to cancel.
 type cancelRecorder struct {
 	MockEventWatcher
 
-	mu       sync.Mutex
-	failures map[string]int
-	calls    map[string]int
-	done     map[string]bool
+	mu        sync.Mutex
+	failures  map[string]int
+	starts    map[string]string
+	ended     map[string]bool
+	calls     map[string][]string
+	cancelled map[string][]string
 }
 
 func newCancelRecorder(failures map[string]int) *cancelRecorder {
@@ -7164,18 +7185,41 @@ func newCancelRecorder(failures map[string]int) *cancelRecorder {
 		failures = map[string]int{}
 	}
 
-	recorder := &cancelRecorder{failures: failures, calls: map[string]int{}, done: map[string]bool{}}
-	recorder.CancelLatestQuarantiningEventsFn = func(_ context.Context, nodeName string, _ string) error {
+	recorder := &cancelRecorder{
+		failures:  failures,
+		starts:    map[string]string{},
+		ended:     map[string]bool{},
+		calls:     map[string][]string{},
+		cancelled: map[string][]string{},
+	}
+
+	recorder.FindQuarantineSessionFn = func(_ context.Context, _ string, eventIDs []string) (string, bool, error) {
 		recorder.mu.Lock()
 		defer recorder.mu.Unlock()
 
-		recorder.calls[nodeName]++
+		session := strings.Join(eventIDs, ",")
+		if recorder.ended[session] {
+			return eventIDs[0], false, nil
+		}
+
+		if startID, ok := recorder.starts[session]; ok {
+			return startID, true, nil
+		}
+
+		return eventIDs[0], true, nil
+	}
+
+	recorder.CancelQuarantineSessionFn = func(_ context.Context, nodeName string, startID string, _ string) error {
+		recorder.mu.Lock()
+		defer recorder.mu.Unlock()
+
+		recorder.calls[nodeName] = append(recorder.calls[nodeName], startID)
 		if recorder.failures[nodeName] > 0 {
 			recorder.failures[nodeName]--
 			return errors.New("(NotWritablePrimary) not primary")
 		}
 
-		recorder.done[nodeName] = true
+		recorder.cancelled[nodeName] = append(recorder.cancelled[nodeName], startID)
 
 		return nil
 	}
@@ -7183,11 +7227,23 @@ func newCancelRecorder(failures map[string]int) *cancelRecorder {
 	return recorder
 }
 
-func (c *cancelRecorder) snapshot(nodeName string) (int, bool) {
+// snapshot returns the cancel calls for a node and the sessions it cancelled.
+func (c *cancelRecorder) snapshot(nodeName string) ([]string, []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.calls[nodeName], c.done[nodeName]
+	return slices.Clone(c.calls[nodeName]), slices.Clone(c.cancelled[nodeName])
+}
+
+// newRecordID returns a random ID in the form of a MongoDB ObjectID.
+func newRecordID(t *testing.T) string {
+	t.Helper()
+
+	id := make([]byte, 12)
+	_, err := rand.Read(id)
+	require.NoError(t, err)
+
+	return hex.EncodeToString(id)
 }
 
 func nodeAnnotation(ctx context.Context, nodeName, key string) (string, bool) {
@@ -7203,8 +7259,9 @@ func nodeAnnotation(ctx context.Context, nodeName, key string) (string, bool) {
 
 // TestE2E_ManualCleanup_FailedCancellation_RetriesInBackground covers a manual uncordon or
 // untaint whose datastore cancellation fails. The node is cleaned right away, as before, so a
-// new fault starts a new session, and the cleanup marks the cancellation as pending. The
-// worker retries the cancellation until it is written and then removes the mark.
+// new fault starts a new session, and the cleanup adds the session to the pending annotation
+// by the event ID in its quarantine annotation. The worker retries the cancellation of that
+// session until it is written and then removes the annotation.
 func TestE2E_ManualCleanup_FailedCancellation_RetriesInBackground(t *testing.T) {
 	const xidTaintKey = "nvidia.com/gpu-xid-error"
 
@@ -7241,7 +7298,8 @@ func TestE2E_ManualCleanup_FailedCancellation_RetriesInBackground(t *testing.T) 
 			defer cancel()
 
 			nodeName := "test-node-" + generateShortTestID()
-			createQuarantinedE2ETestNode(ctx, t, nodeName, xidTaintKey, nil)
+			eventID := newRecordID(t)
+			createQuarantinedE2ETestNode(ctx, t, nodeName, xidTaintKey, eventID, nil)
 			defer func() {
 				_ = e2eTestClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
 			}()
@@ -7273,88 +7331,304 @@ func TestE2E_ManualCleanup_FailedCancellation_RetriesInBackground(t *testing.T) 
 			require.Eventually(t, func() bool {
 				manual, _ := nodeAnnotation(ctx, nodeName, tt.manualAnnotation)
 				quarantine, _ := nodeAnnotation(ctx, nodeName, common.QuarantineHealthEventAnnotationKey)
-				_, pending := nodeAnnotation(ctx, nodeName, common.QuarantineCancellationPendingAnnotationKey)
+				pending, _ := nodeAnnotation(ctx, nodeName, common.QuarantineCancellationPendingAnnotationKey)
 
-				return manual != "" && quarantine == "" && pending
+				return manual != "" && quarantine == "" && pending == eventID
 			}, eventuallyTimeout, eventuallyPollInterval,
-				"the node should be cleaned and marked while the cancellation fails")
+				"the node should be cleaned and its session marked while the cancellation fails")
 
 			require.Eventually(t, func() bool {
-				_, done := recorder.snapshot(nodeName)
+				_, cancelled := recorder.snapshot(nodeName)
 				_, pending := nodeAnnotation(ctx, nodeName, common.QuarantineCancellationPendingAnnotationKey)
 
-				return done && !pending
+				return len(cancelled) == 1 && !pending
 			}, 20*time.Second, eventuallyPollInterval,
-				"the cancellation should be retried until it is written, and the mark removed")
+				"the cancellation should be retried until it is written, and the annotation removed")
 
-			calls, _ := recorder.snapshot(nodeName)
-			assert.Equal(t, 3, calls, "two failed attempts and the one that worked")
+			calls, cancelled := recorder.snapshot(nodeName)
+			assert.Equal(t, []string{eventID, eventID, eventID}, calls, "two failed attempts and the one that worked")
+			assert.Equal(t, []string{eventID}, cancelled)
 		})
 	}
 }
 
-// TestE2E_PendingCancellation_NewQuarantineTakesOver checks that a pending cancellation does
-// not run on a node that is quarantined again: it would cancel the newer session. The mark
-// is removed, and a node without the mark is left alone.
-func TestE2E_PendingCancellation_NewQuarantineTakesOver(t *testing.T) {
-	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+// TestE2E_ManualUncordon_KeepsPendingSessions checks that the cleanup of a session adds it to
+// the sessions that are already pending. A quarantine annotation whose events have no record ID,
+// as an older fault-quarantine wrote it, stands for the latest session.
+func TestE2E_ManualUncordon_KeepsPendingSessions(t *testing.T) {
+	const xidTaintKey = "nvidia.com/gpu-xid-error"
+
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
 	defer cancel()
 
-	quarantinedAgain := "test-node-" + generateShortTestID()
-	createQuarantinedE2ETestNode(ctx, t, quarantinedAgain, "nvidia.com/gpu-xid-error", cancellationPendingAnnotation())
-
-	unmarked := "test-node-" + generateShortTestID()
-	createE2ETestNode(ctx, t, unmarked, nil, nil, nil, false)
-
-	// A quarantine annotation without any applied action is not a newer quarantine, so the
-	// ended session is still cancelled.
-	strayAnnotation := "test-node-" + generateShortTestID()
-	strayAnnotations := cancellationPendingAnnotation()
-	strayAnnotations[common.QuarantineHealthEventAnnotationKey] = `{"events":[]}`
-	createE2ETestNode(ctx, t, strayAnnotation, strayAnnotations, nil, nil, false)
-
+	nodeName := "test-node-" + generateShortTestID()
+	earlier := newRecordID(t)
+	createQuarantinedE2ETestNode(ctx, t, nodeName, xidTaintKey, "12345", map[string]string{
+		common.QuarantineCancellationPendingAnnotationKey: earlier,
+	})
 	defer func() {
-		for _, nodeName := range []string{quarantinedAgain, unmarked, strayAnnotation} {
-			_ = e2eTestClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
-		}
+		_ = e2eTestClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
 	}()
 
-	recorder := newCancelRecorder(nil)
+	// The cancellation keeps failing, so the annotation stays in place to be read.
+	recorder := newCancelRecorder(map[string]int{nodeName: 1000})
 	r, _, _, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
 		TomlConfig:   config.TomlConfig{LabelPrefix: "k8s.nvidia.com/"},
 		EventWatcher: recorder,
 	})
 
-	for _, nodeName := range []string{quarantinedAgain, unmarked, "test-node-gone-" + generateShortTestID()} {
-		require.NoError(t, r.cancelEndedSession(ctx, nodeName))
+	require.Eventually(t, func() bool {
+		node, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+		return err == nil && node.Spec.Unschedulable &&
+			node.Annotations[common.QuarantineCancellationPendingAnnotationKey] == earlier
+	}, eventuallyTimeout, eventuallyPollInterval, "Informer should see the quarantined node")
 
-		calls, _ := recorder.snapshot(nodeName)
-		assert.Zero(t, calls, "no cancellation for %s", nodeName)
+	require.NoError(t, retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		node.Spec.Unschedulable = false
+
+		_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+
+		return err
+	}))
+
+	require.Eventually(t, func() bool {
+		pending, _ := nodeAnnotation(ctx, nodeName, common.QuarantineCancellationPendingAnnotationKey)
+		return pending == earlier+";"+common.QuarantineCancellationLatestSession
+	}, eventuallyTimeout, eventuallyPollInterval, "both ended sessions should be pending")
+}
+
+func TestSessionFromIDs_NamesTheSessionByItsRecordIDs(t *testing.T) {
+	const (
+		objectID = "6af95b6cea9a1de24f941367"
+		uuid     = "02df9f97-50df-4b33-9c69-71b0113943ed"
+	)
+
+	tests := []struct {
+		name string
+		ids  []string
+		want string
+	}{
+		{name: "sorted and without repeats", ids: []string{uuid, objectID, uuid}, want: uuid + "," + objectID},
+		{name: "IDs that are not record IDs are dropped", ids: []string{"12345", objectID, ""}, want: objectID},
+		{name: "no record ID", ids: []string{"12345", "True"}, want: common.QuarantineCancellationLatestSession},
+		{name: "no ID", want: common.QuarantineCancellationLatestSession},
 	}
 
-	_, pending := nodeAnnotation(ctx, quarantinedAgain, common.QuarantineCancellationPendingAnnotationKey)
-	assert.False(t, pending, "the mark is removed from the node that is quarantined again")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sessionFromIDs(tt.ids))
+		})
+	}
+}
 
-	require.NoError(t, r.cancelEndedSession(ctx, strayAnnotation))
+// TestE2E_UncordonAndUntaintInOneUpdate_AddOneSession checks that an update that both uncordons
+// and untaints a node adds its session once. Both cleanups run for the update, and the second one
+// finds the node already cleaned.
+func TestE2E_UncordonAndUntaintInOneUpdate_AddOneSession(t *testing.T) {
+	const xidTaintKey = "nvidia.com/gpu-xid-error"
 
-	calls, done := recorder.snapshot(strayAnnotation)
-	assert.Equal(t, 1, calls, "a stray quarantine annotation does not stop the cancellation")
-	assert.True(t, done)
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
 
-	_, pending = nodeAnnotation(ctx, strayAnnotation, common.QuarantineCancellationPendingAnnotationKey)
-	assert.False(t, pending, "the mark is removed after the cancellation")
+	nodeName := "test-node-" + generateShortTestID()
+	eventID := newRecordID(t)
+	createQuarantinedE2ETestNode(ctx, t, nodeName, xidTaintKey, eventID, nil)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	}()
+
+	// The cancellation keeps failing, so the annotation stays in place to be read.
+	recorder := newCancelRecorder(map[string]int{nodeName: 1000})
+	r, _, _, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig:   config.TomlConfig{LabelPrefix: "k8s.nvidia.com/"},
+		EventWatcher: recorder,
+	})
+
+	require.Eventually(t, func() bool {
+		node, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+		return err == nil && node.Spec.Unschedulable && len(node.Spec.Taints) > 0
+	}, eventuallyTimeout, eventuallyPollInterval, "Informer should see the quarantined node")
+
+	require.NoError(t, retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		node.Spec.Unschedulable = false
+		node.Spec.Taints = nil
+
+		_, err = e2eTestClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+
+		return err
+	}))
+
+	require.Eventually(t, func() bool {
+		pending, _ := nodeAnnotation(ctx, nodeName, common.QuarantineCancellationPendingAnnotationKey)
+		return pending == eventID
+	}, eventuallyTimeout, eventuallyPollInterval, "the ended session should be pending")
+
+	require.Never(t, func() bool {
+		pending, _ := nodeAnnotation(ctx, nodeName, common.QuarantineCancellationPendingAnnotationKey)
+		return pending != eventID
+	}, 2*time.Second, eventuallyPollInterval, "the second cleanup adds no session")
+}
+
+// TestE2E_PendingCancellation_TiedToEndedSession checks that the worker cancels the sessions
+// named in the pending annotation, newest first, and no other.
+func TestE2E_PendingCancellation_TiedToEndedSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	pending := func(sessions ...string) map[string]string {
+		return map[string]string{common.QuarantineCancellationPendingAnnotationKey: strings.Join(sessions, ";")}
+	}
+
+	var (
+		laterEvent, firstEvent = newRecordID(t), newRecordID(t)
+		endedSession           = newRecordID(t)
+		olderSession           = newRecordID(t)
+		newerSession           = newRecordID(t)
+		nothingLeftSession     = newRecordID(t)
+	)
+
+	// The pending session is named by a later event of the session. The worker keeps that ID:
+	// after a failed write it still leads to the first event.
+	byLaterEvent := "test-node-" + generateShortTestID()
+	createE2ETestNode(ctx, t, byLaterEvent, pending(laterEvent), nil, nil, false)
+
+	// The worker does not decide from the node whether it is quarantined again; the event
+	// watcher does, from the store. The newer quarantine stays on the node.
+	quarantinedAgain := "test-node-" + generateShortTestID()
+	createQuarantinedE2ETestNode(ctx, t, quarantinedAgain, "nvidia.com/gpu-xid-error", newRecordID(t),
+		pending(endedSession))
+
+	// Two pending sessions: the newest is cancelled first, and an older one waits while it fails.
+	twoSessions := "test-node-" + generateShortTestID()
+	createE2ETestNode(ctx, t, twoSessions, pending(olderSession, newerSession), nil, nil, false)
+
+	nothingLeft := "test-node-" + generateShortTestID()
+	createE2ETestNode(ctx, t, nothingLeft, pending(nothingLeftSession), nil, nil, false)
+
+	// A session without an event ID cannot be told from a newer quarantine, so it is left alone
+	// on a node that is quarantined, and cancelled on a node that is not.
+	latestQuarantined := "test-node-" + generateShortTestID()
+	createQuarantinedE2ETestNode(ctx, t, latestQuarantined, "nvidia.com/gpu-xid-error", newRecordID(t),
+		pending(common.QuarantineCancellationLatestSession))
+
+	latestClean := "test-node-" + generateShortTestID()
+	createE2ETestNode(ctx, t, latestClean, pending(common.QuarantineCancellationLatestSession), nil, nil, false)
+
+	// A value that holds no record ID stands for the latest session.
+	notAnID := "test-node-" + generateShortTestID()
+	createE2ETestNode(ctx, t, notAnID, pending("True"), nil, nil, false)
+
+	unmarked := "test-node-" + generateShortTestID()
+	createE2ETestNode(ctx, t, unmarked, nil, nil, nil, false)
+
+	nodes := []string{
+		byLaterEvent, quarantinedAgain, twoSessions, nothingLeft, latestQuarantined, latestClean, notAnID, unmarked,
+	}
+	defer func() {
+		for _, nodeName := range nodes {
+			_ = e2eTestClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+		}
+	}()
+
+	recorder := newCancelRecorder(map[string]int{byLaterEvent: 1, twoSessions: 1})
+	recorder.starts[laterEvent] = firstEvent
+	recorder.ended[nothingLeftSession] = true
+
+	r, _, _, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig:   config.TomlConfig{LabelPrefix: "k8s.nvidia.com/"},
+		EventWatcher: recorder,
+	})
+
+	require.Error(t, r.cancelEndedSessions(ctx, byLaterEvent))
+
+	value, _ := nodeAnnotation(ctx, byLaterEvent, common.QuarantineCancellationPendingAnnotationKey)
+	assert.Equal(t, laterEvent, value, "the ID stays as the cleanup wrote it")
+
+	require.NoError(t, r.cancelEndedSessions(ctx, byLaterEvent))
+
+	calls, cancelled := recorder.snapshot(byLaterEvent)
+	assert.Equal(t, []string{firstEvent, firstEvent}, calls)
+	assert.Equal(t, []string{firstEvent}, cancelled)
+
+	require.NoError(t, r.cancelEndedSessions(ctx, quarantinedAgain))
+
+	_, cancelled = recorder.snapshot(quarantinedAgain)
+	assert.Equal(t, []string{endedSession}, cancelled)
+
+	quarantine, _ := nodeAnnotation(ctx, quarantinedAgain, common.QuarantineHealthEventAnnotationKey)
+	assert.NotEmpty(t, quarantine, "the newer quarantine stays on the node")
+
+	require.Error(t, r.cancelEndedSessions(ctx, twoSessions))
+
+	calls, _ = recorder.snapshot(twoSessions)
+	assert.Equal(t, []string{newerSession}, calls, "the older session waits for the newer one")
+
+	value, _ = nodeAnnotation(ctx, twoSessions, common.QuarantineCancellationPendingAnnotationKey)
+	assert.Equal(t, olderSession+";"+newerSession, value)
+
+	require.NoError(t, r.cancelEndedSessions(ctx, twoSessions))
+
+	_, cancelled = recorder.snapshot(twoSessions)
+	assert.Equal(t, []string{newerSession, olderSession}, cancelled, "newest first")
+
+	require.NoError(t, r.cancelEndedSessions(ctx, nothingLeft))
+
+	calls, _ = recorder.snapshot(nothingLeft)
+	assert.Empty(t, calls, "a session with nothing left is not written again")
+
+	require.NoError(t, r.cancelEndedSessions(ctx, latestQuarantined))
+
+	calls, _ = recorder.snapshot(latestQuarantined)
+	assert.Empty(t, calls, "a session without an event ID is left alone on a quarantined node")
+
+	require.NoError(t, r.cancelEndedSessions(ctx, latestClean))
+
+	_, cancelled = recorder.snapshot(latestClean)
+	assert.Equal(t, []string{common.QuarantineCancellationLatestSession}, cancelled)
+
+	require.NoError(t, r.cancelEndedSessions(ctx, notAnID))
+
+	_, cancelled = recorder.snapshot(notAnID)
+	assert.Equal(t, []string{common.QuarantineCancellationLatestSession}, cancelled)
+
+	for _, nodeName := range []string{
+		byLaterEvent, quarantinedAgain, twoSessions, nothingLeft, latestQuarantined, latestClean, notAnID,
+	} {
+		_, marked := nodeAnnotation(ctx, nodeName, common.QuarantineCancellationPendingAnnotationKey)
+		assert.False(t, marked, "the annotation is removed from %s", nodeName)
+	}
+
+	for _, nodeName := range []string{unmarked, "test-node-gone-" + generateShortTestID()} {
+		require.NoError(t, r.cancelEndedSessions(ctx, nodeName))
+
+		calls, _ = recorder.snapshot(nodeName)
+		assert.Empty(t, calls, "no cancellation for %s", nodeName)
+	}
 }
 
 // TestE2E_PendingCancellation_QueuedAtStart checks the recovery at start: a node that still
-// carries the mark gets its cancellation, and the mark is removed.
+// carries the annotation gets its cancellation, and the annotation is removed.
 func TestE2E_PendingCancellation_QueuedAtStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
 	marked := "test-node-" + generateShortTestID()
 	unmarked := "test-node-" + generateShortTestID()
+	session := newRecordID(t)
 
-	createE2ETestNode(ctx, t, marked, cancellationPendingAnnotation(), nil, nil, false)
+	createE2ETestNode(ctx, t, marked, map[string]string{
+		common.QuarantineCancellationPendingAnnotationKey: session,
+	}, nil, nil, false)
 	createE2ETestNode(ctx, t, unmarked, map[string]string{
 		common.QuarantinedNodeUncordonedManuallyAnnotationKey: common.QuarantinedNodeUncordonedManuallyAnnotationValue,
 	}, nil, nil, false)
@@ -7385,14 +7659,14 @@ func TestE2E_PendingCancellation_QueuedAtStart(t *testing.T) {
 	r.queuePendingCancellations(ctx)
 
 	require.Eventually(t, func() bool {
-		_, done := recorder.snapshot(marked)
+		_, cancelled := recorder.snapshot(marked)
 		_, pending := nodeAnnotation(ctx, marked, common.QuarantineCancellationPendingAnnotationKey)
 
-		return done && !pending
+		return slices.Equal(cancelled, []string{session}) && !pending
 	}, eventuallyTimeout, eventuallyPollInterval, "the marked node's cancellation should run at start")
 
 	calls, _ := recorder.snapshot(unmarked)
-	assert.Zero(t, calls, "a node without the mark is not cancelled at start")
+	assert.Empty(t, calls, "a node without the annotation is not cancelled at start")
 }
 
 // TestE2ECordonAndTaint_ManualUntaint tests:

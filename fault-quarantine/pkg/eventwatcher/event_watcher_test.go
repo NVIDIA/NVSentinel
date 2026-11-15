@@ -1603,26 +1603,3 @@ func TestCancelQuarantineSession_ListThatFailsOnceIsRetried(t *testing.T) {
 	assert.Equal(t, 4, store.listCalls, "three lists, and the first one is tried twice")
 	assert.Equal(t, map[string]model.Status{"start": model.Cancelled, "later": model.Cancelled}, store.statuses())
 }
-
-func TestCancelLatestQuarantiningEvents_CancelsTheLatestSession(t *testing.T) {
-	store := &sessionStore{}
-	store.addEvent("older-start", model.Quarantined, 0)
-	store.addEvent("healthy", model.UnQuarantined, 5)
-	store.addEvent("start", model.Quarantined, 10)
-	store.addEvent("later", model.AlreadyQuarantined, 11)
-	watcher := newSessionWatcher(store)
-
-	require.NoError(t, watcher.CancelLatestQuarantiningEvents(context.Background(), "node-a", "test"))
-	assert.Equal(t, map[string]model.Status{
-		"older-start": model.Quarantined,
-		"healthy":     model.UnQuarantined,
-		"start":       model.Cancelled,
-		"later":       model.Cancelled,
-	}, store.statuses())
-
-	store.addEvent("healthy-again", model.UnQuarantined, 20)
-	before := store.statuses()
-
-	require.NoError(t, watcher.CancelLatestQuarantiningEvents(context.Background(), "node-a", "test"))
-	assert.Equal(t, before, store.statuses(), "a session that a healthy event ended is left alone")
-}
