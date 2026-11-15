@@ -290,7 +290,7 @@ install-go-ci: ## Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd
 
 # Lint and test all modules (delegates to sub-Makefiles)
 .PHONY: lint-test-all
-lint-test-all: protos-lint license-headers-lint gomod-lint renovate-lint dead-code-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint gpu-reset-lint ## Lint and test all modules
+lint-test-all: protos-lint license-headers-lint gomod-lint renovate-lint openvex-lint dead-code-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint gpu-reset-lint ## Lint and test all modules
 
 # Health monitors lint-test (delegate to health-monitors/Makefile)
 .PHONY: health-monitors-lint-test-all
@@ -386,6 +386,11 @@ gomod-lint: ## Validate go.mod files for local module replace directives
 .PHONY: renovate-lint
 renovate-lint: ## Validate the Renovate configuration and .versions.yaml annotations
 	./scripts/validate-renovate.sh
+
+# Check .openvex.json. publish.yml attests it to every image, so a syntax error fails every publish.
+.PHONY: openvex-lint
+openvex-lint: ## Check that .openvex.json is valid JSON with a statements array
+	jq -e '.statements | type == "array"' .openvex.json > /dev/null
 
 # Check all Go modules for dead code
 .PHONY: dead-code-lint

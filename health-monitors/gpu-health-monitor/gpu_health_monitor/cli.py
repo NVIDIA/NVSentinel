@@ -135,8 +135,8 @@ def _init_event_processor(
         "on PCIe-named GPUs whose metadata shows zero active NVLink links. Leave false if "
         "any pool uses NVLink bridges: an unbridged card and a card whose bridge was dead at "
         "metadata-collection time are indistinguishable, so enabling this could mask a "
-        "bridge failure present at boot. GPUs with no NVLink silicon (L40, A40) are always "
-        "suppressed regardless of this flag."
+        "bridge failure present at boot. GPUs with no NVLink silicon (L40, A40) always "
+        "suppress DCGM_FR_NVLINK_DOWN and DCGM_FR_FABRIC_PROBE_STATE regardless of this flag."
     ),
 )
 def cli(

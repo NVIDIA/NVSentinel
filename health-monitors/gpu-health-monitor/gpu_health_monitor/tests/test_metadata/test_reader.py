@@ -344,6 +344,21 @@ def test_classify_no_nvlink_silicon(tmp_path: Path) -> None:
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.NO_NVLINK_HARDWARE
 
 
+@pytest.mark.parametrize(
+    ("gpu", "expected"),
+    [
+        (L40_NO_NVLINK, True),
+        ({**L40_NO_NVLINK, "nvlink_present_link_count": 12}, False),
+        ({k: v for k, v in L40_NO_NVLINK.items() if k != "nvlink_present_link_count"}, False),
+        ({**L40_NO_NVLINK, "nvlink_present_link_count": "invalid"}, False),
+    ],
+)
+def test_has_verified_no_nvlink_hardware(tmp_path: Path, gpu: dict, expected: bool) -> None:
+    """Only a valid explicit zero from field 91 verifies absence."""
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.has_verified_no_nvlink_hardware(0) is expected
+
+
 def test_classify_active_links_in_use(tmp_path: Path) -> None:
     """SXM GPU with trained links: NVLINK_IN_USE — a down report is genuine."""
     reader = make_metadata_reader(tmp_path, [H100_SXM_TRAINED])

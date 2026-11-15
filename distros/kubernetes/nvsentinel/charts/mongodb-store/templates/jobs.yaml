@@ -74,7 +74,11 @@ metadata:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 600
+  {{- $job := .Values.job | default dict }}
+  {{- $deadline := include "nvsentinel.jobActiveDeadlineSeconds" (dict "raw" $job.activeDeadlineSeconds "default" 1800 "key" "mongodb-store.job.activeDeadlineSeconds") | int }}
+  {{- if $deadline }}
+  activeDeadlineSeconds: {{ $deadline }}
+  {{- end }}
   template:
     spec:
       serviceAccountName: mongodb-job-sa
@@ -374,7 +378,7 @@ spec:
 
             # replSetResizeOplog is per-member; replica-set URI would only hit primary.
             # Percona databaseAdmin cannot run this; clusterAdmin can. Bitnami uses root.
-            # Bound retries so a down member cannot eat the 600s deadline (TTL still
+            # Bound retries so a down member cannot eat the Job deadline (TTL still
             # applies). Skip at most one unreachable member; never shrink unless
             # MONGODB_OPLOG_ALLOW_SHRINK=true (see oplogEval).
 {{- if eq (include "mongodb-store.oplogResizeEnabled" . | trim) "true" }}
