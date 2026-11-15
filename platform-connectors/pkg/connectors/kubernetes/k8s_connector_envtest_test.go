@@ -277,6 +277,92 @@ func TestK8sConnector_WithEnvtest_LegacyGPUConditionClears(t *testing.T) {
 	assert.Equal(t, "No Health Failures", condition.Message)
 }
 
+// TestK8sConnector_WithEnvtest_GPUIndexChangeClearsCondition checks that a GPU
+// whose index changed across a reboot clears its own fault through its UUID,
+// and that the fault of another GPU stays.
+func TestK8sConnector_WithEnvtest_GPUIndexChangeClearsCondition(t *testing.T) {
+	ctx := context.Background()
+	testEnv, cli := setupEnvtest(t)
+	defer testEnv.Stop()
+
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test-node"}}
+	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+	require.NoError(t, err, "failed to create node")
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
+
+	gpuEvent := func(healthy bool, index, pci, uuid string) *protos.HealthEvent {
+		event := &protos.HealthEvent{
+			CheckName:      "GpuNvlinkWatch",
+			ComponentClass: "GPU",
+			IsHealthy:      healthy,
+			IsFatal:        !healthy,
+			Message:        "GPU Nvlink watch reported no errors",
+			EntitiesImpacted: []*protos.Entity{
+				{EntityType: "GPU", EntityValue: index},
+				{EntityType: "PCI", EntityValue: pci},
+				{EntityType: "GPU_UUID", EntityValue: uuid},
+			},
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			RecommendedAction:  protos.RecommendedAction_NONE,
+			NodeName:           "test-node",
+		}
+
+		if !healthy {
+			event.ErrorCode = []string{"DCGM_FR_NVLINK_DOWN"}
+			event.Message = fmt.Sprintf("GPU %s's NVLink link 8 is down", index)
+			event.RecommendedAction = protos.RecommendedAction_COMPONENT_RESET
+		}
+
+		return event
+	}
+
+	const (
+		uuid2 = "GPU-8614c5d9-371d-1d8a-9bab-78d0434427ec"
+		uuid5 = "GPU-5555aaaa-371d-1d8a-9bab-78d0434427ec"
+	)
+
+	conditionOf := func() corev1.NodeCondition {
+		updated, getErr := cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
+		require.NoError(t, getErr, "failed to get node")
+
+		condition, _, found := findNodeCondition(updated, "GpuNvlinkWatch")
+		require.True(t, found, "GpuNvlinkWatch condition not found")
+
+		return condition
+	}
+
+	err = k8sConn.ProcessBatch(ctx, &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{
+		gpuEvent(false, "2", "0000:45:00.0", uuid2),
+		gpuEvent(false, "5", "0000:8b:00.0", uuid5),
+	}})
+	require.NoError(t, err, "failed to process fault events")
+	require.Equal(t, corev1.ConditionTrue, conditionOf().Status)
+
+	// After the reboot the same GPU (same PCI address and UUID) reports as GPU 1.
+	err = k8sConn.ProcessBatch(ctx, &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{
+		gpuEvent(true, "1", "0000:45:00.0", uuid2),
+	}})
+	require.NoError(t, err, "failed to process healthy event")
+
+	condition := conditionOf()
+	assert.Equal(t, corev1.ConditionTrue, condition.Status)
+	assert.NotContains(t, condition.Message, "GPU_UUID:"+uuid2+" ")
+	assert.Contains(t, condition.Message, "GPU_UUID:"+uuid5+" ")
+
+	err = k8sConn.ProcessBatch(ctx, &protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{
+		gpuEvent(true, "4", "0000:8b:00.0", uuid5),
+	}})
+	require.NoError(t, err, "failed to process healthy event")
+
+	condition = conditionOf()
+	assert.Equal(t, corev1.ConditionFalse, condition.Status)
+	assert.Equal(t, "No Health Failures", condition.Message)
+}
+
 func TestK8sConnector_WithEnvtest_NodeEventCreation(t *testing.T) {
 	ctx := context.Background()
 	testEnv, cli := setupEnvtest(t)

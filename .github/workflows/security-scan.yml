@@ -27,8 +27,8 @@ permissions:
 jobs:
   vulnerability-scan:
     if: github.repository == 'nvidia/nvsentinel'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 60
     permissions:
       contents: read
       security-events: write
@@ -38,16 +38,18 @@ jobs:
         with:
           persist-credentials: false
 
-      # Grype finds the go.mod and poetry.lock files of every module.
+      # Grype finds the go.mod and poetry.lock files of every module. govulncheck runs on each Go
+      # module first, so that Grype does not report a Go vulnerability whose code is not called.
       - name: Scan dependencies
         uses: ./.github/actions/security-scan
         with:
           severity-cutoff: medium
           category: grype-source
+          govulncheck: 'true'
 
   malware-scan:
     if: github.repository == 'nvidia/nvsentinel'
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu32
     timeout-minutes: 30
     permissions:
       contents: read

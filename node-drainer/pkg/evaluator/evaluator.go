@@ -30,6 +30,7 @@ import (
 	annotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -121,7 +122,8 @@ func checkPreconditions(ctx context.Context, healthEvent model.HealthEventWithSt
 
 // EvaluateEventWithDatabase evaluates using the new database-agnostic interface
 func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, healthEvent model.HealthEventWithStatus,
-	database queue.DataStore, healthEventStore datastore.HealthEventStore) (*DrainActionResult, error) {
+	database queue.DataStore, healthEventStore datastore.HealthEventStore,
+	recordDecision RecordDrainDecisionFunc) (*DrainActionResult, error) {
 	if result := checkPreconditions(ctx, healthEvent); result != nil {
 		return result, nil
 	}
@@ -129,7 +131,7 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	nodeName := healthEvent.HealthEvent.NodeName
 	statusStr := healthEvent.HealthEventStatus.NodeQuarantined
 
-	partialDrainEntity, err := drain.PartialDrainEntity(healthEvent.HealthEvent, e.config.PartialDrainEnabled)
+	partialDrainEntity, err := e.eventDrainScope(healthEvent)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to check if node should be partially drained",
 			"node", nodeName,
@@ -155,19 +157,174 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 		return result, nil
 	}
 
-	useCustomDrain, retry := e.shouldUseCustomDrain(ctx, nodeName)
+	decision, isNewDecision, retry := e.selectDrainMethod(ctx, healthEvent, partialDrainEntity)
 	if retry != nil {
 		return retry, nil
 	}
 
-	if useCustomDrain {
-		r, err := e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
-		return r, err
+	if isNewDecision {
+		return e.recordAndEvaluateNewDecision(ctx, decision, healthEvent, partialDrainEntity, recordDecision)
 	}
 
-	r, err := e.evaluateUserNamespaceActions(ctx, healthEvent, partialDrainEntity)
+	return e.evaluateRecordedDrainMethod(ctx, decision, healthEvent, partialDrainEntity)
+}
 
-	return r, err
+// eventDrainScope returns the partial drain entity of the event, or nil for a drain of the full
+// node. An event with a stored decision keeps the recorded scope, so a change to
+// partialDrainEnabled during the drain does not change what is drained.
+func (e *NodeDrainEvaluator) eventDrainScope(healthEvent model.HealthEventWithStatus) (*protos.Entity, error) {
+	if recorded := healthEvent.HealthEventStatus.GetDrainDecision(); recorded != nil {
+		return recorded.GetScope(), nil
+	}
+
+	return drain.PartialDrainEntity(healthEvent.HealthEvent, e.config.PartialDrainEnabled)
+}
+
+// selectDrainMethod chooses BuiltIn or Custom for this event. A new decision carries the
+// partial drain entity as its scope, and no scope for a drain of the full node.
+// A method already stored on the event is kept, so a label change during the drain
+// cannot switch it. The bool is true when this pass chose the method and it still
+// needs to be stored. The wait result means "not yet": the node is missing, or a
+// stored method cannot be carried out with the current configuration.
+func (e *NodeDrainEvaluator) selectDrainMethod(ctx context.Context, healthEvent model.HealthEventWithStatus,
+	partialDrainEntity *protos.Entity) (*protos.DrainDecision, bool, *DrainActionResult) {
+	nodeName := healthEvent.HealthEvent.NodeName
+
+	// Any stored decision counts, including one with no method, such as a stop (stopped: true).
+	// Treating it as absent would drain an event that must not drain.
+	if recorded := healthEvent.HealthEventStatus.GetDrainDecision(); recorded != nil {
+		if wait := e.guardRecordedDrainMethod(ctx, nodeName, recorded); wait != nil {
+			return nil, false, wait
+		}
+
+		return recorded, false, nil
+	}
+
+	useCustomDrain, retry := e.shouldUseCustomDrain(ctx, nodeName)
+	if retry != nil {
+		return nil, false, retry
+	}
+
+	decision := &protos.DrainDecision{Method: model.DrainMethodBuiltIn, Scope: partialDrainEntity}
+	if useCustomDrain {
+		decision.Method = model.DrainMethodCustom
+		if e.customDrainNodes.IsScoped() {
+			decision.RuleSet = model.CustomDrainNodeSelectorRuleSet
+		}
+	}
+
+	return decision, true, nil
+}
+
+// guardRecordedDrainMethod stops a pass that would drain against a stored method
+// the current configuration cannot perform. It does not choose a different method.
+func (e *NodeDrainEvaluator) guardRecordedDrainMethod(ctx context.Context, nodeName string,
+	recorded *protos.DrainDecision) *DrainActionResult {
+	switch recorded.GetMethod() {
+	case model.DrainMethodCustom:
+		if e.config.CustomDrain.Enabled && e.customDrainClient != nil {
+			return nil
+		}
+
+		e.countRecordedDrainGuard(ctx, nodeName, recorded, metrics.ErrorTypeRecordedCustomDrainUnavailable,
+			"Recorded custom drain cannot run because custom drain is unavailable")
+	case model.DrainMethodBuiltIn:
+		// With custom drain off, empty lists act as they do for an event with no record.
+		// With custom drain on and unscoped, validation requires empty lists, so the drain
+		// would complete without evicting any pod.
+		if !e.config.CustomDrain.Enabled || len(e.config.UserNamespaces) > 0 || len(e.config.PodDrainPolicies) > 0 {
+			return nil
+		}
+
+		e.countRecordedDrainGuard(ctx, nodeName, recorded, metrics.ErrorTypeRecordedBuiltInNoPodPolicies,
+			"Recorded built-in drain has no userNamespaces and no podDrainPolicies")
+	default:
+		e.countRecordedDrainGuard(ctx, nodeName, recorded, metrics.ErrorTypeRecordedDrainMethodUnknown,
+			"Recorded drain method is not supported")
+	}
+
+	return &DrainActionResult{Action: ActionWait, WaitDelay: time.Minute}
+}
+
+// countRecordedDrainGuard logs and counts a stored decision that the current configuration
+// cannot carry out, under the given processing error type.
+func (e *NodeDrainEvaluator) countRecordedDrainGuard(ctx context.Context, nodeName string,
+	recorded *protos.DrainDecision, errorType, message string) {
+	slog.ErrorContext(ctx, message,
+		"node", nodeName,
+		"method", recorded.GetMethod(),
+		"stopped", recorded.GetStopped())
+
+	metrics.ProcessingErrors.WithLabelValues(errorType, nodeName).Inc()
+}
+
+// recordAndEvaluateNewDecision stores a new decision, then returns the drain action for it.
+// The built-in checks can force-delete pods past their deadline, so they run only after the store.
+// The custom drain checks only read; they run first so that an event whose node the CR of another
+// event has already drained is marked AlreadyDrained and gets no decision. The completed CR of
+// this event still gets the Custom decision. That CR has no record when its drain started before
+// node-drainer recorded decisions.
+func (e *NodeDrainEvaluator) recordAndEvaluateNewDecision(ctx context.Context, decision *protos.DrainDecision,
+	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity,
+	recordDecision RecordDrainDecisionFunc) (*DrainActionResult, error) {
+	nodeName := healthEvent.HealthEvent.NodeName
+
+	if decision.GetMethod() != model.DrainMethodCustom {
+		if err := storeDrainDecision(ctx, recordDecision, decision, nodeName); err != nil {
+			return nil, err
+		}
+
+		return e.evaluateRecordedDrainMethod(ctx, decision, healthEvent, partialDrainEntity)
+	}
+
+	action, err := e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
+	if err != nil || action == nil || action.drainedByOtherCR {
+		return action, err
+	}
+
+	if err := storeDrainDecision(ctx, recordDecision, decision, nodeName); err != nil {
+		return nil, err
+	}
+
+	action.DrainDecision = decision
+
+	return action, nil
+}
+
+// storeDrainDecision calls the recorder and wraps any failure in ErrDrainDecisionNotRecorded.
+// A missing recorder is a failure, so a new decision is never acted on unstored.
+func storeDrainDecision(ctx context.Context, recordDecision RecordDrainDecisionFunc,
+	decision *protos.DrainDecision, nodeName string) error {
+	if recordDecision == nil {
+		return fmt.Errorf("%w: node %s has no drain decision recorder", ErrDrainDecisionNotRecorded, nodeName)
+	}
+
+	if err := recordDecision(ctx, decision); err != nil {
+		return fmt.Errorf("%w: %w", ErrDrainDecisionNotRecorded, err)
+	}
+
+	return nil
+}
+
+// evaluateRecordedDrainMethod selects the next drain action for the stored method.
+func (e *NodeDrainEvaluator) evaluateRecordedDrainMethod(ctx context.Context, decision *protos.DrainDecision,
+	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
+	var (
+		action *DrainActionResult
+		err    error
+	)
+
+	if decision.GetMethod() == model.DrainMethodCustom {
+		action, err = e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
+	} else {
+		action, err = e.evaluateUserNamespaceActions(ctx, healthEvent, partialDrainEntity)
+	}
+
+	if action != nil {
+		action.DrainDecision = decision
+	}
+
+	return action, err
 }
 
 // shouldUseCustomDrain reports whether the node is drained by the custom drain plugin
@@ -506,8 +663,9 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 				"node", nodeName)
 
 			return &DrainActionResult{
-				Action: ActionMarkAlreadyDrained,
-				Status: model.AlreadyDrained,
+				Action:           ActionMarkAlreadyDrained,
+				Status:           model.AlreadyDrained,
+				drainedByOtherCR: true,
 			}, nil
 		}
 

@@ -48,6 +48,7 @@ func TestClassifyMongoBulkWriteError(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, 1, failed.DocumentIndex)
 		assert.True(t, failed.Duplicate)
+		assert.False(t, failed.Permanent, "whether a duplicate repeats depends on the documents already stored")
 		assert.Equal(t, datastore.HealthEventIdempotencyIndexName, failed.IndexName)
 		assert.True(t, failed.DuplicateOn(datastore.HealthEventIdempotencyIndexName))
 	})
@@ -75,8 +76,22 @@ func TestClassifyMongoBulkWriteError(t *testing.T) {
 		failed, ok := classifyMongoBulkWriteError(bwe)
 		require.True(t, ok)
 		assert.False(t, failed.Duplicate)
+		assert.True(t, failed.Permanent, "the validator rejects the same document on every attempt")
 		assert.Empty(t, failed.IndexName)
 		assert.Equal(t, "Document failed validation", failed.Message)
+	})
+
+	t.Run("a write error from a server stepping down is not permanent", func(t *testing.T) {
+		bwe := mongo.BulkWriteException{
+			WriteErrors: []mongo.BulkWriteError{
+				{WriteError: mongo.WriteError{Index: 0, Code: 11602, Message: "InterruptedDueToReplStateChange"}},
+			},
+		}
+
+		failed, ok := classifyMongoBulkWriteError(bwe)
+		require.True(t, ok)
+		assert.False(t, failed.Duplicate)
+		assert.False(t, failed.Permanent, "a retry on the new primary can store the document")
 	})
 
 	t.Run("write concern errors are not per-document failures", func(t *testing.T) {

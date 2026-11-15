@@ -57,6 +57,9 @@ jobs:
           - component: renovate
             make_command: 'make renovate-lint'
             step_name: 'Validate Renovate configuration'
+          - component: openvex
+            make_command: 'make openvex-lint'
+            step_name: 'Validate .openvex.json'
           - component: dead-code
             make_command: 'make dead-code-lint'
             step_name: 'Check for dead code'
@@ -109,7 +112,7 @@ jobs:
 
       - name: Setup Helm
         if: matrix.component == 'helm-charts'
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e  # v5.1.0
         with:
           version: ${{ steps.helm-version.outputs.helm_version }}
 
