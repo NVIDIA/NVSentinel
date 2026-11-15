@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/client-go/kubernetes/fake"
@@ -284,5 +285,50 @@ func TestRingBuffer_EnqueueAfterShutdownIsNoOp(t *testing.T) {
 
 	if ringBuffer.CurrentLength() != 0 {
 		t.Errorf("Expected queue length 0 after shutdown, got %d", ringBuffer.CurrentLength())
+	}
+}
+
+// TestRingBuffer_RetryDelays_ReturnsTheConfiguredBackoff: a connector that
+// retries a batch in place backs off as the buffer was configured to.
+func TestRingBuffer_RetryDelays_ReturnsTheConfiguredBackoff(t *testing.T) {
+	base, maxDelay := NewRingBuffer("testDefaultDelays", context.Background()).RetryDelays()
+	if base != DefaultBaseDelay || maxDelay != DefaultMaxDelay {
+		t.Errorf("Expected the default backoff %v to %v, got %v to %v", DefaultBaseDelay, DefaultMaxDelay, base, maxDelay)
+	}
+
+	base, maxDelay = NewRingBuffer("testConfiguredDelays", context.Background(),
+		WithRetryConfig(10*time.Millisecond, 50*time.Millisecond)).RetryDelays()
+	if base != 10*time.Millisecond || maxDelay != 50*time.Millisecond {
+		t.Errorf("Expected the configured backoff 10ms to 50ms, got %v to %v", base, maxDelay)
+	}
+}
+
+// TestRingBuffer_CountRetry_CountsInTheRequeueSeries: an in-place retry counts
+// in the same retries series as a requeue through AddRateLimited, so the
+// queue's retries metric keeps moving for a connector that retries in place.
+func TestRingBuffer_CountRetry_CountsInTheRequeueSeries(t *testing.T) {
+	ringBuffer := NewRingBuffer("testCountRetry", context.Background(), WithRetryConfig(time.Millisecond, time.Millisecond))
+	defer ringBuffer.ShutDownHealthMetricQueue()
+
+	series := retriesCounter("testCountRetry")
+	before := testutil.ToFloat64(series)
+
+	ringBuffer.CountRetry()
+
+	if got := testutil.ToFloat64(series) - before; got != 1 {
+		t.Errorf("Expected CountRetry to add 1 to the retries series, got %v", got)
+	}
+
+	ringBuffer.Enqueue(NewQueuedHealthEvents(&protos.HealthEvents{}))
+
+	item, quit := ringBuffer.Dequeue()
+	if quit {
+		t.Fatal("queue signalled shutdown")
+	}
+
+	ringBuffer.AddRateLimited(item)
+
+	if got := testutil.ToFloat64(series) - before; got != 2 {
+		t.Errorf("Expected a requeue to count in the same series, got %v after both", got)
 	}
 }

@@ -41,6 +41,22 @@ DCGM_IMEX_UNHEALTHY_ERROR_CODE = 122
 # severity and recovery handling before this watch can be enabled safely.
 DCGM_CONNECTX_HEALTH_WATCH_BIT = 0x1000
 
+NVLINK_ABSENCE_SUPPRESSIBLE_ERROR_CODES = frozenset(
+    {
+        "DCGM_FR_NVLINK_DOWN",
+        "DCGM_FR_FABRIC_PROBE_STATE",
+    }
+)
+# Names of the groups that the monitor creates on the hostengine. Only one monitor
+# connects to each hostengine, so a group with one of these names that is already
+# there belongs to an earlier connection of the monitor.
+ENTITY_GROUP_NAME = "dcgm_health"
+FIELD_GROUP_NAME = "nvsentinel_field_monitors"
+# Name of the field group of releases v1.10.0 to v1.20.0. After an upgrade, no monitor
+# uses a group with this name, so a group that one of these releases left stays until
+# the monitor deletes it.
+LEGACY_FIELD_GROUP_NAME = "gpu_temp_limit"
+
 # How often the watchdog thread checks for an overdue probe.
 PROBE_WATCHDOG_INTERVAL_SECONDS = 1.0
 
@@ -225,6 +241,68 @@ class ProbeWatchdog:
                 self.poll_once()
             except Exception as e:
                 log.exception(f"Probe watchdog iteration failed: {e}")
+
+
+def _decode_group_name(name: bytes | str) -> str:
+    """Return the group name as text. DCGM returns group names as bytes."""
+    return name.decode("utf-8", errors="replace") if isinstance(name, bytes) else name
+
+
+def _entity_group_ids(handle: ctypes.c_void_p, name: str) -> list[int | None]:
+    """Return the IDs of the entity groups with this name. Entity-group names can repeat."""
+    group_ids = []
+    for group_id in dcgm_agent.dcgmGroupGetAllIds(handle):
+        info = dcgm_agent.dcgmGroupGetInfo(handle, ctypes.c_void_p(group_id))
+        if _decode_group_name(info.groupName) == name:
+            group_ids.append(group_id)
+    return group_ids
+
+
+def _field_group_ids(handle: ctypes.c_void_p, name: str) -> list[int | None]:
+    """Return the IDs of the field groups with this name."""
+    all_groups = dcgm_agent.dcgmFieldGroupGetAll(handle)
+    return [
+        info.fieldGroupId
+        for info in all_groups.fieldGroups[: all_groups.numFieldGroups]
+        if _decode_group_name(info.fieldGroupName) == name
+    ]
+
+
+def _delete_groups(
+    handle: ctypes.c_void_p,
+    name: str,
+    list_group_ids: Callable[[ctypes.c_void_p, str], list[int | None]],
+    destroy_group: Callable[[ctypes.c_void_p, ctypes.c_void_p], object],
+) -> None:
+    """Delete every group with this name. A failure is logged and counted."""
+    try:
+        group_ids = list_group_ids(handle, name)
+    except Exception as e:
+        log.warning("Failed to list DCGM groups named %s; stale groups stay until the next setup: %s", name, e)
+        metrics.dcgm_api_failures.labels("stale_group_cleanup").inc()
+        return
+    for group_id in group_ids:
+        try:
+            destroy_group(handle, ctypes.c_void_p(group_id))
+        except Exception as e:
+            log.warning("Failed to delete stale DCGM group %s (ID %s): %s", name, group_id, e)
+            metrics.dcgm_api_failures.labels("stale_group_cleanup").inc()
+            continue
+        log.info("Deleted stale DCGM group %s (ID %s)", name, group_id)
+
+
+def _delete_stale_groups(dcgm_handle: pydcgm.DcgmHandle) -> None:
+    """Delete the groups that earlier connections of the monitor left on the hostengine.
+
+    The hostengine keeps the groups of a connection that closed uncleanly. They count
+    against its limit of 64 groups of each kind, and the stale field group blocks a new
+    field group with the same name. The field group of an older release is also deleted.
+    A failure is logged and counted, and setup continues.
+    """
+    with metrics.dcgm_api_latency.labels("stale_group_cleanup").time():
+        _delete_groups(dcgm_handle.handle, ENTITY_GROUP_NAME, _entity_group_ids, dcgm_agent.dcgmGroupDestroy)
+        for name in (FIELD_GROUP_NAME, LEGACY_FIELD_GROUP_NAME):
+            _delete_groups(dcgm_handle.handle, name, _field_group_ids, dcgm_agent.dcgmFieldGroupDestroy)
 
 
 class DCGMWatcher:
@@ -422,11 +500,12 @@ class DCGMWatcher:
             if had_failures and not details.entity_failures:
                 details.status = types.HealthStatus.PASS
 
-    def _is_nvlink_down_false_positive(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
-        """Return True when a DCGM_FR_NVLINK_DOWN incident is a false positive
-        because all NVLink links down is expected steady state for this GPU.
+    def _is_nvlink_absence_false_positive(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
+        """Return True when an NVLink-watch incident is a false positive because
+        this GPU has no NVLink hardware.
 
-        Two expected-down cases exist (see MetadataReader.classify_nvlink_down):
+        DCGM_FR_NVLINK_DOWN has two expected-down cases (see
+        MetadataReader.classify_nvlink_down):
           - NO_NVLINK_HARDWARE (L40, A40): unambiguous, always suppressed.
           - UNBRIDGED_PCIE (A100/H100 PCIe with zero active links): from
             metadata alone this is indistinguishable from a card whose NVLink
@@ -434,22 +513,38 @@ class DCGMWatcher:
             ONLY when the operator has explicitly asserted the fleet runs
             unbridged PCIe cards (--suppress-nvlink-down-unbridged-pcie).
 
+        DCGM_FR_FABRIC_PROBE_STATE is also meaningless on GPUs with no NVLink
+        silicon (for example, DCGM cannot query fabric state on an L40). It
+        is suppressed only for the unambiguous NO_NVLINK_HARDWARE case.
+
         The check runs per incident (not on the aggregated entity failure) so
-        a genuine non-NVLINK_DOWN incident on the same GPU and watch is never
-        dropped alongside the false positive.
+        a genuine incident under another error code on the same GPU and watch
+        is never dropped alongside the false positive.
 
         Fails closed: when the expectation cannot be established (no metadata
         reader, metadata unavailable, GPU not found, malformed counts, or an
         SXM system whose links may simply not have trained yet) the incident
         is never suppressed.
         """
-        if watch_name != "DCGM_HEALTH_WATCH_NVLINK" or error_code != "DCGM_FR_NVLINK_DOWN":
+        if watch_name != "DCGM_HEALTH_WATCH_NVLINK" or error_code not in NVLINK_ABSENCE_SUPPRESSIBLE_ERROR_CODES:
             return False
 
         if self._metadata_reader is None:
             return False
 
         expectation = self._metadata_reader.classify_nvlink_down(gpu_id)
+
+        if error_code == "DCGM_FR_FABRIC_PROBE_STATE":
+            if (
+                expectation is NVLinkDownExpectation.NO_NVLINK_HARDWARE
+                and self._metadata_reader.has_verified_no_nvlink_hardware(gpu_id)
+            ):
+                log.info(f"Suppressing DCGM_FR_FABRIC_PROBE_STATE for GPU {gpu_id}: {expectation.value}")
+                metrics.dcgm_health_check_suppressed_incidents.labels(
+                    f"DCGM_FR_FABRIC_PROBE_STATE_{expectation.value.upper()}"
+                ).inc()
+                return True
+            return False
 
         if expectation is NVLinkDownExpectation.NVLINK_IN_USE:
             return False
@@ -593,7 +688,7 @@ class DCGMWatcher:
             supported_switches = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_SWITCH, True)
         log.info(f"supported switches are {supported_switches}")
 
-        dcgm_group = pydcgm.DcgmGroup(dcgm_handle, groupName="dcgm_health", groupType=dcgm_structs.DCGM_GROUP_EMPTY)
+        dcgm_group = pydcgm.DcgmGroup(dcgm_handle, groupName=ENTITY_GROUP_NAME, groupType=dcgm_structs.DCGM_GROUP_EMPTY)
         for gpu in supported_gpus:
             with metrics.dcgm_api_latency.labels("discovery_group_add_entity").time():
                 dcgm_group.AddEntity(dcgm_fields.DCGM_FE_GPU, gpu)
@@ -705,7 +800,7 @@ class DCGMWatcher:
                 # Per-incident suppression: a suppressed incident must neither
                 # degrade the watch status nor land in the accumulator, while
                 # other incidents on the same GPU and watch are kept.
-                if entity_group_id == dcgm_fields.DCGM_FE_GPU and self._is_nvlink_down_false_positive(
+                if entity_group_id == dcgm_fields.DCGM_FE_GPU and self._is_nvlink_absence_false_positive(
                     watch_name, entity_id, error_code
                 ):
                     continue
@@ -1116,6 +1211,7 @@ class DCGMWatcher:
         If any step after group creation fails the group is deleted before the
         exception propagates so that it does not leak on the DCGM server.
         """
+        _delete_stale_groups(dcgm_handle)
         dcgm_group, switch_ids = self._create_dcgm_group_with_all_entities(dcgm_handle)
         self._field_group = None
         self._thermal_since_timestamp = 0
@@ -1157,7 +1253,9 @@ class DCGMWatcher:
                 )
 
             if watched_fields:
-                self._field_group = pydcgm.DcgmFieldGroup(dcgm_handle, "nvsentinel_field_monitors", watched_fields)
+                # Field-group names must be unique across all clients of the hostengine.
+                # _delete_stale_groups deleted the field group of a stale connection.
+                self._field_group = pydcgm.DcgmFieldGroup(dcgm_handle, FIELD_GROUP_NAME, watched_fields)
                 update_freq_usec = self._poll_interval_seconds * 1_000_000
                 # Field monitors need only the newest sample. Other clients may
                 # retain more history; the thermal reader discards older samples.
@@ -1283,6 +1381,7 @@ class DCGMWatcher:
                                 )
                         except Exception as e:
                             log.error(f"Error getting DCGM handle: {e}")
+                            metrics.dcgm_api_failures.labels("dcgm_initialize_monitoring").inc()
                             self._report_connectivity_failed()
                             self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                             dcgm_handle = None

@@ -90,6 +90,17 @@ tests:
           path: spec.template.spec.containers[0].securityContext.seccompProfile.type
           value: RuntimeDefault
 
+  - it: must keep termination grace above the publish-drain budget
+    set:
+      global.metricsPort: 2112
+      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
+      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.pullPolicy: IfNotPresent
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 30
+
   - it: must mount host sysfs and procfs read-only
     set:
       global.metricsPort: 2112

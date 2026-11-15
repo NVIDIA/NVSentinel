@@ -1311,9 +1311,14 @@ func TestInProgressCREventRequeuedUntilTerminal(t *testing.T) {
 			mockWatcher := &MockChangeStreamWatcher{}
 
 			var statusWrites []datastore.HealthEventStatus
+			var decisions []datastore.RemediationDecision
 			mockStore := &MockHealthEventStore{
 				UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
 					assert.Equal(t, eventID, id)
+					if status.RemediationDecision != nil {
+						decisions = append(decisions, *status.RemediationDecision)
+						return nil
+					}
 					statusWrites = append(statusWrites, status)
 					return nil
 				},
@@ -1366,6 +1371,9 @@ func TestInProgressCREventRequeuedUntilTerminal(t *testing.T) {
 				assert.NotNil(t, statusWrites[0].FaultRemediated)
 				assert.True(t, *statusWrites[0].FaultRemediated)
 			}
+
+			// The decision is recorded on the first pass and not written again on the requeue.
+			assert.Equal(t, []datastore.RemediationDecision{{Action: "RESTART_BM"}}, decisions)
 		})
 	}
 }
@@ -2986,6 +2994,9 @@ func TestDeletedNodeRemediationEventMarkedTerminal(t *testing.T) {
 	mockStore := &MockHealthEventStore{
 		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
 			assert.Equal(t, eventID, id)
+			if status.RemediationDecision != nil {
+				return nil
+			}
 			assert.NotNil(t, status.FaultRemediated)
 			assert.False(t, *status.FaultRemediated)
 			updated = true
@@ -3069,4 +3080,128 @@ func TestParseHealthEventShouldNotMarkColdStartEventProcessedIfDocumentIDExtract
 	assert.ErrorContains(t, err, "error extracting document ID")
 	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
 	assert.Equal(t, 0, markProcessedCount, "expected cold-start event without resume token to not be marked processed")
+}
+
+func TestRecordRemediationDecision(t *testing.T) {
+	const eventID = "decision-event-id"
+
+	tests := []struct {
+		name          string
+		event         *protos.HealthEvent
+		status        *protos.HealthEventStatus
+		expectWrites  []datastore.RemediationDecision
+		expectedSaved *protos.RemediationDecision
+	}{
+		{
+			name:          "records the recommended action",
+			event:         &protos.HealthEvent{NodeName: "node-a", RecommendedAction: protos.RecommendedAction_RESTART_BM},
+			status:        &protos.HealthEventStatus{},
+			expectWrites:  []datastore.RemediationDecision{{Action: "RESTART_BM"}},
+			expectedSaved: &protos.RemediationDecision{Action: "RESTART_BM"},
+		},
+		{
+			name: "records the custom action of a CUSTOM event",
+			event: &protos.HealthEvent{
+				NodeName:                "node-a",
+				RecommendedAction:       protos.RecommendedAction_CUSTOM,
+				CustomRecommendedAction: "EXTERNAL_REPAIR",
+			},
+			status:        &protos.HealthEventStatus{},
+			expectWrites:  []datastore.RemediationDecision{{Action: "EXTERNAL_REPAIR"}},
+			expectedSaved: &protos.RemediationDecision{Action: "EXTERNAL_REPAIR"},
+		},
+		{
+			name:  "does not write a decision that is already recorded",
+			event: &protos.HealthEvent{NodeName: "node-a", RecommendedAction: protos.RecommendedAction_RESTART_BM},
+			status: &protos.HealthEventStatus{
+				RemediationDecision: &protos.RemediationDecision{Action: "RESTART_BM"},
+			},
+			expectedSaved: &protos.RemediationDecision{Action: "RESTART_BM"},
+		},
+		{
+			name:  "keeps a recorded decision that differs from the action of the event",
+			event: &protos.HealthEvent{NodeName: "node-a", RecommendedAction: protos.RecommendedAction_RESTART_BM},
+			status: &protos.HealthEventStatus{
+				RemediationDecision: &protos.RemediationDecision{Action: "EXTERNAL_REPAIR"},
+			},
+			expectedSaved: &protos.RemediationDecision{Action: "EXTERNAL_REPAIR"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{RemediationClient: &MockK8sClient{}}, false)
+
+			var writes []datastore.RemediationDecision
+			mockStore := &MockHealthEventStore{
+				UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+					assert.Equal(t, eventID, id)
+					require.NotNil(t, status.RemediationDecision)
+					assert.Nil(t, status.FaultRemediated, "the decision is written on its own")
+					writes = append(writes, *status.RemediationDecision)
+					return nil
+				},
+			}
+
+			healthEventDoc := &events.HealthEventDoc{
+				ID: eventID,
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					HealthEvent:       tt.event,
+					HealthEventStatus: tt.status,
+				},
+			}
+			eventWithToken := datastore.EventWithToken{
+				Event: testRawHealthEvent(eventID, tt.event.NodeName, tt.event.RecommendedAction),
+			}
+
+			err := r.recordRemediationDecision(context.Background(), mockStore, eventWithToken, healthEventDoc)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectWrites, writes)
+			assert.Equal(t, tt.expectedSaved.GetAction(), healthEventDoc.HealthEventStatus.GetRemediationDecision().GetAction())
+		})
+	}
+}
+
+// The record must be on the event before fault-remediation acts, so a failed write stops the pass.
+func TestRecordRemediationDecision_WriteError_StopsRemediation(t *testing.T) {
+	const eventID = "decision-event-id"
+
+	createCalls := 0
+	mockK8sClient := &MockK8sClient{
+		createMaintenanceResourceFn: func(context.Context, *events.HealthEventData,
+			*common.EquivalenceGroupConfig) (string, error) {
+			createCalls++
+			return "test-cr", nil
+		},
+	}
+	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{RemediationClient: mockK8sClient}, false)
+
+	writeErr := errors.New("datastore unavailable")
+	mockStore := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+			return writeErr
+		},
+	}
+
+	healthEventDoc := &events.HealthEventDoc{
+		ID: eventID,
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          "node-a",
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
+			},
+			HealthEventStatus: &protos.HealthEventStatus{},
+		},
+	}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(eventID, "node-a", protos.RecommendedAction_RESTART_BM),
+		ResumeToken: []byte("resume-token"),
+	}
+	mockWatcher := &MockChangeStreamWatcher{}
+
+	_, err := r.handleRemediationEvent(context.Background(), healthEventDoc, eventWithToken, mockWatcher, mockStore)
+	require.ErrorIs(t, err, writeErr)
+	assert.Zero(t, createCalls, "no CR may be created without the record")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Zero(t, markProcessedCount, "the event must stay unprocessed so that it is retried")
 }

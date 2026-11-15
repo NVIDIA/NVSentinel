@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 	"k8s.io/client-go/util/workqueue"
 
@@ -39,7 +40,7 @@ type QueuedHealthEvents struct {
 	Events            *protos.HealthEvents
 	ParentSpanContext trace.SpanContext
 	// BatchKey is the idempotency key prefix the store connector gives the
-	// batch on its first write attempt. A requeued batch keeps it, so a retried
+	// batch on its first write attempt. It stays on the batch, so a retried
 	// insert stores each event once.
 	BatchKey string
 }
@@ -52,6 +53,9 @@ type RingBuffer struct {
 	ringBufferIdentifier string
 	healthMetricQueue    workqueue.TypedRateLimitingInterface[*QueuedHealthEvents]
 	ctx                  context.Context
+	baseDelay            time.Duration
+	maxDelay             time.Duration
+	retries              prometheus.Counter
 }
 
 type Option func(*config)
@@ -95,7 +99,23 @@ func NewRingBuffer(ringBufferName string, ctx context.Context, opts ...Option) *
 		ringBufferIdentifier: ringBufferName,
 		healthMetricQueue:    queue,
 		ctx:                  ctx,
+		baseDelay:            cfg.baseDelay,
+		maxDelay:             cfg.maxDelay,
+		retries:              retriesCounter(ringBufferName),
 	}
+}
+
+// RetryDelays returns the first and the longest delay of the backoff the
+// buffer was configured with, for a connector that holds a failed batch and
+// retries it in place instead of requeueing it.
+func (rb *RingBuffer) RetryDelays() (time.Duration, time.Duration) {
+	return rb.baseDelay, rb.maxDelay
+}
+
+// CountRetry counts one in-place retry in the buffer's retries metric, the
+// series AddRateLimited counts a requeue in.
+func (rb *RingBuffer) CountRetry() {
+	rb.retries.Inc()
 }
 
 func (rb *RingBuffer) Enqueue(item *QueuedHealthEvents) {
@@ -152,8 +172,14 @@ func (rb *RingBuffer) NumRequeues(data *QueuedHealthEvents) int {
 	return rb.healthMetricQueue.NumRequeues(data)
 }
 
+// ShutDownHealthMetricQueue stops the buffer taking new batches. Dequeue
+// keeps returning the batches already queued and reports the shutdown once
+// the queue is empty, so the loop draining the buffer returns only after it
+// has processed them; a caller that needs them processed waits for that loop.
+// It does not wait itself, because a batch the loop holds while it retries a
+// write would keep ShutDownWithDrain waiting with no bound.
 func (rb *RingBuffer) ShutDownHealthMetricQueue() {
-	rb.healthMetricQueue.ShutDownWithDrain()
+	rb.healthMetricQueue.ShutDown()
 }
 
 func (rb *RingBuffer) CurrentLength() int {

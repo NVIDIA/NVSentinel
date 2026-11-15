@@ -72,6 +72,13 @@ func (prometheusMetricsProvider) NewWorkDurationMetric(name string) workqueue.Hi
 }
 
 func (prometheusMetricsProvider) NewRetriesMetric(name string) workqueue.CounterMetric {
+	return retriesCounter(name)
+}
+
+// retriesCounter is the retries series of the queue named name. The rate
+// limiter counts a requeue in it, and a connector that retries a batch in
+// place counts the retry there too (see RingBuffer.CountRetry).
+func retriesCounter(name string) prometheus.Counter {
 	return register(prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "platform_connector_workqueue_retries_total_" + name,
 		Help: "Total number of retries handled by Platform connector workqueue",

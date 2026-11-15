@@ -784,6 +784,21 @@ fault-quarantine:
         value: "true"
         effect: "NoSchedule"
 
+    # Example rule 7: Quarantine nodes with fatal health events analyzer errors
+    - enabled: true
+      version: "1"
+      name: "Health events analyzer fatal error ruleset"
+      match:
+        all:
+          - kind: "HealthEvent"
+            expression: "event.agent == 'health-events-analyzer' && event.isFatal == true"
+          - kind: "Node"
+            expression: |
+              !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+              !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
+      cordon:
+        shouldCordon: true
+
 ################################################################################
 # NODE-DRAINER MODULE CONFIGURATION
 #
@@ -1689,6 +1704,10 @@ janitor:
       
       # Write a reboot attribution message to the node's syslog before rebooting
       writeSyslog: false
+      
+      # PriorityClass for the reboot Job's pod (optional), e.g. system-node-critical so the
+      # kubelet admits the pod on a node under DiskPressure. Empty sets no priority class.
+      rebootJobPriorityClassName: ""
     
     # AWS-specific configuration (only needed when provider=aws)
     aws:
@@ -1712,7 +1731,7 @@ janitor:
       
       # Setup steps for AWS:
       # 1. Create IAM role with trust relationship to OIDC provider
-      # 2. Attach policy with ec2:RebootInstances permission
+      # 2. Attach policy with ec2:RebootInstances and ec2:TerminateInstances permissions
       # 3. Annotate service account with role ARN
       # 4. Janitor pods will use IRSA to assume the role
     

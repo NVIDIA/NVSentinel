@@ -107,6 +107,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `node_drainer_waiting_for_timeout` | Gauge | `node` | Shows if node drainer operation is waiting for timeout before force deletion (1=waiting, 0=not waiting) |
+| `node_drainer_awaiting_completion_event_timestamp_seconds` | Gauge | `node` | Unix time of the health event behind an `allowCompletion` drain that is still waiting on pods. This mode has no deadline, so alert on `time() -` this value; see [AllowCompletion Drain Metric](configuration/node-drainer.md#allowcompletion-drain-metric) for its caveats. |
 | `node_drainer_force_delete_pods_after_timeout` | Counter | `node`, `namespace` | Total number of node drainer operations that reached timeout and force deleted pods |
 | `node_drainer_partial_drains_total` | Counter | `node`, `entity_type`, `entity_value` | Total number of partial drains by the entity they targeted. Disabled by default; enable via [`node-drainer.partialDrainEntityMetricEnabled`](configuration/node-drainer.md#partial-drain-entity-metric) |
 

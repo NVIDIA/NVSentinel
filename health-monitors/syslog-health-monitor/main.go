@@ -510,7 +510,7 @@ func runPollingLoop(
 
 			return nil
 		case <-ticker.C:
-			slog.Info("Performing scheduled health check run...")
+			slog.Debug("Performing scheduled health check run...")
 
 			for {
 				// Mark alive before and after every attempt, not just on
