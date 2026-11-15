@@ -188,6 +188,13 @@ func initHandlers(
 		sm.checkToHandlerMap[check.Name] = handler
 	}
 
+	// A fallen off the bus line is skipped after a recent XID on the same GPU because the
+	// XID check reports that fault. Without the XID check nothing does, so keep the event.
+	if h, ok := sm.checkToHandlerMap[GPUFallenOffCheck].(*gpufallen.GPUFallenHandler); ok {
+		_, xidCheckEnabled := sm.checkToHandlerMap[XIDErrorCheck]
+		h.XIDCheckEnabled = xidCheckEnabled
+	}
+
 	return nil
 }
 
