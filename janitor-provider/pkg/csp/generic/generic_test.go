@@ -296,6 +296,25 @@ func TestBuildRebootJob_UsesSyslogWhenEnabled(t *testing.T) {
 	assert.Equal(t, "host-root", job.Spec.Template.Spec.Volumes[0].Name)
 }
 
+func TestBuildRebootJob_NoPriorityClassByDefault(t *testing.T) {
+	job := newTestClient().buildRebootJob("worker-1", "", "boot-id-abc")
+
+	assert.Empty(t, job.Spec.Template.Spec.PriorityClassName)
+}
+
+func TestBuildRebootJob_UsesConfiguredPriorityClass(t *testing.T) {
+	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
+		RebootImage:                "busybox:1.37",
+		RebootJobNamespace:         "test-ns",
+		RebootJobTTL:               3600,
+		RebootJobPriorityClassName: "system-node-critical",
+	})
+
+	job := client.buildRebootJob("worker-1", "", "boot-id-abc")
+
+	assert.Equal(t, "system-node-critical", job.Spec.Template.Spec.PriorityClassName)
+}
+
 func TestSendRebootSignal_EmptyBootID(t *testing.T) {
 	client := newTestClient()
 	ctx := context.Background()
@@ -761,6 +780,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		assert.Equal(t, "", config.RebootJobNamespace)
 		assert.Equal(t, int32(defaultRebootJobTTLSeconds), config.RebootJobTTL)
 		assert.False(t, config.WriteSyslog)
+		assert.Empty(t, config.RebootJobPriorityClassName)
 	})
 
 	t.Run("custom values", func(t *testing.T) {
@@ -770,6 +790,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		t.Setenv("GENERIC_REBOOT_JOB_TTL", "7200")
 		t.Setenv("GENERIC_REBOOT_IMAGE_PULL_SECRETS", "secret-a, secret-b")
 		t.Setenv("GENERIC_REBOOT_WRITE_SYSLOG", "true")
+		t.Setenv("GENERIC_REBOOT_JOB_PRIORITY_CLASS_NAME", " system-node-critical ")
 
 		config := loadConfigFromEnv()
 		assert.Equal(t, "custom-image:latest", config.RebootImage)
@@ -778,6 +799,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		assert.Equal(t, int32(7200), config.RebootJobTTL)
 		assert.Equal(t, []string{"secret-a", "secret-b"}, config.RebootJobPullSecrets)
 		assert.True(t, config.WriteSyslog)
+		assert.Equal(t, "system-node-critical", config.RebootJobPriorityClassName)
 	})
 
 	t.Run("invalid sysrq flag uses default", func(t *testing.T) {
