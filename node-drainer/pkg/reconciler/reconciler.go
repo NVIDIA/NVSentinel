@@ -1308,6 +1308,21 @@ func (r *Reconciler) trackCancelledEventLocked(eventID string, nodeName string, 
 	}
 }
 
+// newerDrainInProgress reports whether an event created after the given time is in progress on
+// the node.
+func (r *Reconciler) newerDrainInProgress(nodeName string, eventCreatedAt time.Time) bool {
+	r.nodeEventsMapMu.Lock()
+	defer r.nodeEventsMapMu.Unlock()
+
+	for _, trackedEvent := range r.nodeEventsMap[nodeName] {
+		if trackedEvent.status == model.StatusInProgress && trackedEvent.createdAt.After(eventCreatedAt) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func eventAtOrBeforeCutoff(eventCreatedAt time.Time, cutoff cancellationCutoff) bool {
 	if eventCreatedAt.IsZero() || cutoff.createdAt.IsZero() {
 		return true
@@ -1389,7 +1404,12 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 
 	r.deleteCustomDrainCRIfEnabled(ctx, nodeName, event)
 
-	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	// The draining label and state belong to the node, not to one event. A newer event that is
+	// still draining the node keeps them, so only its own completion or cancellation clears them.
+	if r.newerDrainInProgress(nodeName, healthEvent.CreatedAt) {
+		slog.InfoContext(ctx, "A newer drain of the node is in progress, keeping its draining label",
+			"node", nodeName, "eventID", eventID)
+	} else if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		nodeName, statemanager.DrainingLabelValue, true); err != nil {
 		slog.ErrorContext(ctx, "Failed to remove draining label for cancelled event",
 			"node", nodeName,

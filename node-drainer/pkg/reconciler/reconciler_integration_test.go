@@ -2087,6 +2087,46 @@ func TestReconciler_StoredCancelledEventAfterRestart_DoesNotDrain(t *testing.T) 
 	}, 3*time.Second, 200*time.Millisecond, "the pod of a cancelled session must not be evicted")
 }
 
+// TestReconciler_CancelledEventKeepsDrainingLabelOfNewerDrain checks that a cancelled event
+// leaves the draining label and state to a newer event that is still draining the node.
+func TestReconciler_CancelledEventKeepsDrainingLabelOfNewerDrain(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "timeout-*", Mode: config.ModeDeleteAfterTimeout},
+	}, false)
+
+	nodeName := testutils.GenerateTestNodeName("cancelled-older-event")
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "timeout-test")
+	createPod(setup.ctx, t, setup.client, "timeout-test", "user-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	now := time.Now()
+
+	// The newer event starts a drain that waits for the timeout, so it stays in progress.
+	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore,
+		healthEventOptions{
+			nodeName: nodeName, eventID: nodeName + "-newer", nodeQuarantined: model.Quarantined, createdAt: now,
+		})
+	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
+
+	beforeCancelled := getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check")
+
+	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore,
+		healthEventOptions{
+			nodeName: nodeName, eventID: nodeName + "-older", nodeQuarantined: model.Cancelled,
+			createdAt: now.Add(-time.Minute),
+		})
+	require.NoError(t, err)
+
+	assert.Equal(t, beforeCancelled+1, getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check"),
+		"the older event is cancelled")
+
+	require.Never(t, func() bool {
+		node, err := setup.client.CoreV1().Nodes().Get(setup.ctx, nodeName, metav1.GetOptions{})
+		return err != nil ||
+			node.Labels[statemanager.NVSentinelStateLabelKey] != string(statemanager.DrainingLabelValue)
+	}, 2*time.Second, 200*time.Millisecond, "the newer drain keeps the draining label")
+}
+
 // TestReconciler_UnQuarantinedEventCancelsOngoingDrain validates that UnQuarantined events cancel all in-progress drains for a node
 func TestReconciler_UnQuarantinedEventCancelsOngoingDrain(t *testing.T) {
 	setup := setupRequeueTest(t, []config.UserNamespace{
