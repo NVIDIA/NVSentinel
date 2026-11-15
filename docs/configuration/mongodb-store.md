@@ -209,6 +209,37 @@ kubectl get pods -n {namespace} -l app.kubernetes.io/component=mongod
 
 The `perconaservermongodb` resource must reach `ready`, and the init Job (`-l app.kubernetes.io/name=create-mongodb-database`) must complete.
 
+### Init Job deadline
+
+The init Job that creates the database users (`create-mongodb-database`) fails once it runs longer than `activeDeadlineSeconds`. On a cold node, image pulls can queue long enough to hit it, and Helm does not re-create a failed Job. Set the deadline next to `nodeSelector` and `tolerations`:
+
+```yaml
+mongodb-store:
+  job:
+    activeDeadlineSeconds: 1800   # default; 0 omits the deadline
+```
+
+With an external MongoDB (`mongodbStore.enabled=false`), the setup Job reads its own value instead (default `600`):
+
+```yaml
+global:
+  datastore:
+    setupJob:
+      activeDeadlineSeconds: 600
+```
+
+Raising the value does not restart a Job that already failed. Delete the failed Job and run `helm upgrade` again. For the mongodb-store Job:
+
+```bash
+kubectl delete job -l app.kubernetes.io/name=create-mongodb-database -n {namespace}
+```
+
+For the external MongoDB setup Job:
+
+```bash
+kubectl delete job -l app.kubernetes.io/name=external-mongodb-setup -n {namespace}
+```
+
 ## Configuration Reference
 
 ### Module Enable/Disable
