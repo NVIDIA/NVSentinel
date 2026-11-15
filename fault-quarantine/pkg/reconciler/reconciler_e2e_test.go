@@ -7167,13 +7167,15 @@ func createQuarantinedE2ETestNode(
 }
 
 // cancelRecorder is an event watcher that records the cancelled sessions. Its cancellation
-// fails a set number of times per node. starts maps a session ID to the first event of the
-// session when the two differ, and ended holds the sessions with nothing left to cancel.
+// fails a set number of times per node, and failAt fails one call of a node, counted from 1.
+// starts maps a session ID to the first event of the session when the two differ, and ended
+// holds the sessions with nothing left to cancel.
 type cancelRecorder struct {
 	MockEventWatcher
 
 	mu        sync.Mutex
 	failures  map[string]int
+	failAt    map[string]int
 	starts    map[string]string
 	ended     map[string]bool
 	calls     map[string][]string
@@ -7187,6 +7189,7 @@ func newCancelRecorder(failures map[string]int) *cancelRecorder {
 
 	recorder := &cancelRecorder{
 		failures:  failures,
+		failAt:    map[string]int{},
 		starts:    map[string]string{},
 		ended:     map[string]bool{},
 		calls:     map[string][]string{},
@@ -7216,6 +7219,10 @@ func newCancelRecorder(failures map[string]int) *cancelRecorder {
 		recorder.calls[nodeName] = append(recorder.calls[nodeName], startID)
 		if recorder.failures[nodeName] > 0 {
 			recorder.failures[nodeName]--
+			return errors.New("(NotWritablePrimary) not primary")
+		}
+
+		if recorder.failAt[nodeName] == len(recorder.calls[nodeName]) {
 			return errors.New("(NotWritablePrimary) not primary")
 		}
 
@@ -7569,6 +7576,7 @@ func TestE2E_PendingCancellation_TiedToEndedSession(t *testing.T) {
 	var (
 		laterEvent, firstEvent = newRecordID(t), newRecordID(t)
 		endedSession           = newRecordID(t)
+		oldestSession          = newRecordID(t)
 		olderSession           = newRecordID(t)
 		newerSession           = newRecordID(t)
 		nothingLeftSession     = newRecordID(t)
@@ -7585,9 +7593,10 @@ func TestE2E_PendingCancellation_TiedToEndedSession(t *testing.T) {
 	createQuarantinedE2ETestNode(ctx, t, quarantinedAgain, "nvidia.com/gpu-xid-error", newRecordID(t),
 		pending(endedSession))
 
-	// Two pending sessions: the newest is cancelled first, and an older one waits while it fails.
-	twoSessions := "test-node-" + generateShortTestID()
-	createE2ETestNode(ctx, t, twoSessions, pending(olderSession, newerSession), nil, nil, false)
+	// Three pending sessions: the newest is cancelled first, and an older one waits while the
+	// next one fails. The sessions left stay apart.
+	threeSessions := "test-node-" + generateShortTestID()
+	createE2ETestNode(ctx, t, threeSessions, pending(oldestSession, olderSession, newerSession), nil, nil, false)
 
 	nothingLeft := "test-node-" + generateShortTestID()
 	createE2ETestNode(ctx, t, nothingLeft, pending(nothingLeftSession), nil, nil, false)
@@ -7609,7 +7618,7 @@ func TestE2E_PendingCancellation_TiedToEndedSession(t *testing.T) {
 	createE2ETestNode(ctx, t, unmarked, nil, nil, nil, false)
 
 	nodes := []string{
-		byLaterEvent, quarantinedAgain, twoSessions, nothingLeft, latestQuarantined, latestClean, notAnID, unmarked,
+		byLaterEvent, quarantinedAgain, threeSessions, nothingLeft, latestQuarantined, latestClean, notAnID, unmarked,
 	}
 	defer func() {
 		for _, nodeName := range nodes {
@@ -7617,7 +7626,8 @@ func TestE2E_PendingCancellation_TiedToEndedSession(t *testing.T) {
 		}
 	}()
 
-	recorder := newCancelRecorder(map[string]int{byLaterEvent: 1, twoSessions: 1})
+	recorder := newCancelRecorder(map[string]int{byLaterEvent: 1})
+	recorder.failAt[threeSessions] = 2
 	recorder.starts[laterEvent] = firstEvent
 	recorder.ended[nothingLeftSession] = true
 
@@ -7645,18 +7655,19 @@ func TestE2E_PendingCancellation_TiedToEndedSession(t *testing.T) {
 	quarantine, _ := nodeAnnotation(ctx, quarantinedAgain, common.QuarantineHealthEventAnnotationKey)
 	assert.NotEmpty(t, quarantine, "the newer quarantine stays on the node")
 
-	require.Error(t, r.cancelEndedSessions(ctx, twoSessions))
+	require.Error(t, r.cancelEndedSessions(ctx, threeSessions))
 
-	calls, _ = recorder.snapshot(twoSessions)
-	assert.Equal(t, []string{newerSession}, calls, "the older session waits for the newer one")
+	calls, cancelled = recorder.snapshot(threeSessions)
+	assert.Equal(t, []string{newerSession, olderSession}, calls, "the oldest session waits for the older one")
+	assert.Equal(t, []string{newerSession}, cancelled)
 
-	value, _ = nodeAnnotation(ctx, twoSessions, common.QuarantineCancellationPendingAnnotationKey)
-	assert.Equal(t, olderSession+";"+newerSession, value)
+	value, _ = nodeAnnotation(ctx, threeSessions, common.QuarantineCancellationPendingAnnotationKey)
+	assert.Equal(t, oldestSession+";"+olderSession, value, "the sessions left stay apart")
 
-	require.NoError(t, r.cancelEndedSessions(ctx, twoSessions))
+	require.NoError(t, r.cancelEndedSessions(ctx, threeSessions))
 
-	_, cancelled = recorder.snapshot(twoSessions)
-	assert.Equal(t, []string{newerSession, olderSession}, cancelled, "newest first")
+	_, cancelled = recorder.snapshot(threeSessions)
+	assert.Equal(t, []string{newerSession, olderSession, oldestSession}, cancelled, "newest first")
 
 	require.NoError(t, r.cancelEndedSessions(ctx, nothingLeft))
 
@@ -7679,7 +7690,7 @@ func TestE2E_PendingCancellation_TiedToEndedSession(t *testing.T) {
 	assert.Equal(t, []string{common.QuarantineCancellationLatestSession}, cancelled)
 
 	for _, nodeName := range []string{
-		byLaterEvent, quarantinedAgain, twoSessions, nothingLeft, latestQuarantined, latestClean, notAnID,
+		byLaterEvent, quarantinedAgain, threeSessions, nothingLeft, latestQuarantined, latestClean, notAnID,
 	} {
 		_, marked := nodeAnnotation(ctx, nodeName, common.QuarantineCancellationPendingAnnotationKey)
 		assert.False(t, marked, "the annotation is removed from %s", nodeName)

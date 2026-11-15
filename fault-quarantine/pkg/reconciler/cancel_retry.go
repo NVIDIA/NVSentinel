@@ -315,7 +315,7 @@ func (r *Reconciler) removePendingSession(ctx context.Context, nodeName, session
 
 		sessions := slices.DeleteFunc(pendingSessions(value), func(session string) bool { return session == sessionID })
 		if len(sessions) > 0 {
-			node.Annotations[common.QuarantineCancellationPendingAnnotationKey] = strings.Join(sessions, ",")
+			node.Annotations[common.QuarantineCancellationPendingAnnotationKey] = strings.Join(sessions, pendingSessionSeparator)
 		} else {
 			delete(node.Annotations, common.QuarantineCancellationPendingAnnotationKey)
 		}

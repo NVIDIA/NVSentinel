@@ -360,6 +360,14 @@ func TestE2E_DryRunOnCordonedNodeIsNotCountedAndIsDiscardedOnSwitch(t *testing.T
 	require.NoError(t, err)
 	assert.True(t, n.Spec.Unschedulable, "the existing cordon is not fault-quarantine's to remove")
 
+	// The worker cancels the session after the cleanup.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return len(cancelled) > 0
+	}, statusCheckTimeout, statusCheckPollInterval, "the discarded session should be cancelled")
+
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, []string{nodeName}, cancelled)
