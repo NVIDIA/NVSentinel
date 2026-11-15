@@ -7426,6 +7426,83 @@ func TestSessionFromIDs_NamesTheSessionByItsRecordIDs(t *testing.T) {
 	}
 }
 
+// TestPendingCancellationAnnotation_ReadsTheGivenNode checks that the session comes from the
+// annotations the handler read, not from the node in the cache, which the first cleanup of the
+// same update may have cleaned already.
+func TestPendingCancellationAnnotation_ReadsTheGivenNode(t *testing.T) {
+	first, later, pending := newRecordID(t), newRecordID(t), newRecordID(t)
+
+	quarantine := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	quarantine.AddOrUpdateEvent(&protos.HealthEvent{
+		Id: first, NodeName: "node-a", CheckName: "GpuXidError", IsFatal: true,
+		EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+	})
+	quarantine.AddOrUpdateEvent(&protos.HealthEvent{
+		Id: later, NodeName: "node-a", CheckName: "GpuXidError", IsFatal: true,
+		EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
+	})
+
+	quarantineValue, err := json.Marshal(quarantine)
+	require.NoError(t, err)
+
+	oldFormat, err := json.Marshal(&protos.HealthEvent{Id: first, NodeName: "node-a", CheckName: "GpuXidError"})
+	require.NoError(t, err)
+
+	session := strings.Join(slices.Sorted(slices.Values([]string{first, later})), ",")
+
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		want        string
+	}{
+		{
+			name:        "a quarantined node",
+			annotations: map[string]string{common.QuarantineHealthEventAnnotationKey: string(quarantineValue)},
+			want:        session,
+		},
+		{
+			name: "a session already pending",
+			annotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey:         string(quarantineValue),
+				common.QuarantineCancellationPendingAnnotationKey: pending,
+			},
+			want: pending + ";" + session,
+		},
+		{
+			name: "the same session already pending",
+			annotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey:         string(quarantineValue),
+				common.QuarantineCancellationPendingAnnotationKey: session,
+			},
+			want: session,
+		},
+		{
+			name:        "the old single event format",
+			annotations: map[string]string{common.QuarantineHealthEventAnnotationKey: string(oldFormat)},
+			want:        first,
+		},
+		{
+			name:        "an annotation that does not parse",
+			annotations: map[string]string{common.QuarantineHealthEventAnnotationKey: "{not json"},
+			want:        common.QuarantineCancellationLatestSession,
+		},
+		{
+			name:        "a clean node",
+			annotations: map[string]string{common.QuarantineCancellationPendingAnnotationKey: pending},
+			want:        pending,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want,
+				pendingCancellationAnnotation(tt.annotations)[common.QuarantineCancellationPendingAnnotationKey])
+		})
+	}
+
+	assert.Nil(t, pendingCancellationAnnotation(map[string]string{}), "a clean node with nothing pending")
+}
+
 // TestE2E_UncordonAndUntaintInOneUpdate_AddOneSession checks that an update that both uncordons
 // and untaints a node adds its session once. Both cleanups run for the update, and the second one
 // finds the node already cleaned.

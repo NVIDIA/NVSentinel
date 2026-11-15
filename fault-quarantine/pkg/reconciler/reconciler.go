@@ -2555,7 +2555,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		common.QuarantinedNodeUncordonedManuallyAnnotationKey: common.QuarantinedNodeUncordonedManuallyAnnotationValue,
 	}
 	if r.eventWatcher != nil {
-		maps.Copy(newAnnotations, r.pendingCancellationAnnotation(ctx, nodeName, annotations))
+		maps.Copy(newAnnotations, pendingCancellationAnnotation(annotations))
 	}
 
 	if err := r.k8sClient.HandleManualUncordonCleanup(
@@ -2622,7 +2622,7 @@ func (r *Reconciler) handleDryRunQuarantineOnNodeChange(
 
 	var pendingAnnotations map[string]string
 	if r.eventWatcher != nil {
-		pendingAnnotations = r.pendingCancellationAnnotation(ctx, nodeName, annotations)
+		pendingAnnotations = pendingCancellationAnnotation(annotations)
 	}
 
 	if err := r.k8sClient.HandleManualUntaintCleanup(
@@ -2697,7 +2697,7 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey: common.QuarantinedNodeIsUntaintedManuallyAnnotationValue,
 	}
 	if r.eventWatcher != nil {
-		maps.Copy(newAnnotations, r.pendingCancellationAnnotation(ctx, nodeName, annotations))
+		maps.Copy(newAnnotations, pendingCancellationAnnotation(annotations))
 	}
 
 	if err := r.k8sClient.HandleManualUntaintCleanup(

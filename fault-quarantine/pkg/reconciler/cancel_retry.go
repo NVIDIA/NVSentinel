@@ -16,6 +16,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -29,7 +30,9 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 )
 
@@ -71,18 +74,13 @@ func newCancelQueue() workqueue.TypedRateLimitingInterface[string] {
 }
 
 // pendingCancellationAnnotation is added in the cleanup of an ended session. It keeps the
-// sessions that are already pending from the annotations the handler read, and adds the
-// session that ends now. A node without a quarantine annotation has no session to add, as when
-// one node update both uncordons and untaints and the second cleanup finds the first one done.
-func (r *Reconciler) pendingCancellationAnnotation(
-	ctx context.Context,
-	nodeName string,
-	annotations map[string]string,
-) map[string]string {
+// sessions that are already pending and adds the session that ends now, both from the
+// annotations the handler read. A node without a quarantine annotation has no session to add.
+func pendingCancellationAnnotation(annotations map[string]string) map[string]string {
 	sessions := pendingSessions(annotations[common.QuarantineCancellationPendingAnnotationKey])
 
 	if !isEmptyHealthEventAnnotation(annotations[common.QuarantineHealthEventAnnotationKey]) {
-		session := sessionFromIDs(r.sourceDocIDsFromAnnotation(ctx, nodeName))
+		session := sessionFromIDs(quarantineEventIDs(annotations[common.QuarantineHealthEventAnnotationKey]))
 		if !slices.Contains(sessions, session) {
 			sessions = append(sessions, session)
 		}
@@ -95,6 +93,34 @@ func (r *Reconciler) pendingCancellationAnnotation(
 	return map[string]string{
 		common.QuarantineCancellationPendingAnnotationKey: strings.Join(sessions, pendingSessionSeparator),
 	}
+}
+
+// quarantineEventIDs returns the event IDs of a quarantine annotation. The cleanup reads them from
+// the same copy of the node as the rest of its update. When one update both uncordons and
+// untaints a node, the second cleanup then adds the same session as the first, even when the
+// node in the cache is already clean.
+func quarantineEventIDs(value string) []string {
+	var healthEventsMap healthEventsAnnotation.HealthEventsAnnotationMap
+
+	if err := json.Unmarshal([]byte(value), &healthEventsMap); err != nil {
+		var event protos.HealthEvent
+		if json.Unmarshal([]byte(value), &event) != nil {
+			return nil
+		}
+
+		healthEventsMap = *healthEventsAnnotation.NewHealthEventsAnnotationMap()
+		healthEventsMap.AddOrUpdateEvent(&event)
+	}
+
+	ids := make([]string, 0, len(healthEventsMap.Events))
+
+	for _, event := range healthEventsMap.Events {
+		if event.GetId() != "" {
+			ids = append(ids, event.GetId())
+		}
+	}
+
+	return ids
 }
 
 // sessionFromIDs names a session by its record IDs, sorted, or as the latest session when none
