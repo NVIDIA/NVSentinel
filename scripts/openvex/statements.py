@@ -19,8 +19,9 @@
   statements.py prune SCAN.json...  remove the packages that the scanned images no longer have
   statements.py format              rewrite the document in the repository format
 
-add: each row of ROWS.tsv has five tab-separated fields: the vulnerability ID and the PURL that Grype
-reports, the image, the justification and the impact statement. Lines that start with # are skipped.
+add: each row of ROWS.tsv has five tab-separated fields: the vulnerability ID that Grype reports, the
+image, the PURL that Grype reports, the justification and the impact statement. Lines that start with #
+are skipped.
 For example:
 
   CVE-2026-86138  gpu-reset  pkg:deb/ubuntu/libxml2@2.9.14?arch=amd64&distro=ubuntu-24.04  vulnerable_code_not_in_execute_path  libxml2 is a library of the base image that no NVSentinel process loads.
