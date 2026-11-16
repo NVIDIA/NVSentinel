@@ -8374,6 +8374,100 @@ func TestE2E_PreExistingTaint(t *testing.T) {
 	assert.True(t, hasTaint, "Pre-existing taint should be preserved after recovery")
 }
 
+func TestE2E_PreExistingTaintDifferentValueIsPreserved(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-preexist-taint-diff-" + generateShortTestID()
+
+	// The node already carries the key and effect the rule taints, but with an operator's own value.
+	preExistingTaints := []corev1.Taint{
+		{Key: "nvidia.com/gpu-xid-error", Value: "owned-by-operator", Effect: corev1.TaintEffectNoSchedule},
+	}
+	createE2ETestNode(ctx, t, nodeName, nil, nil, preExistingTaints, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Unhealthy event quarantines the node but must not overwrite the operator's own taint value")
+	unhealthyEventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(unhealthyEventID, nodeName,
+		"GpuXidError", false, true, []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress)}
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+	}, eventuallyTimeout, eventuallyPollInterval, "FQM should quarantine the node")
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	gpuTaintCount := 0
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == "nvidia.com/gpu-xid-error" {
+			gpuTaintCount++
+			assert.Equal(t, "owned-by-operator", taint.Value, "FQ must not overwrite the operator's taint value")
+		}
+	}
+	assert.Equal(t, 1, gpuTaintCount, "the operator taint must not be duplicated")
+	assert.Empty(t, node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey],
+		"the conflicting taint is dropped, so it is not recorded as applied")
+
+	t.Log("Healthy event releases the quarantine and must preserve the operator's taint")
+	healthyEventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(healthyEventID, nodeName,
+		"GpuXidError", true, false, []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(healthyEventID)
+		return status != nil && *status == model.UnQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+	}, eventuallyTimeout, eventuallyPollInterval, "FQ annotations should be removed after recovery")
+
+	node, err = e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	gpuTaintCount = 0
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == "nvidia.com/gpu-xid-error" {
+			gpuTaintCount++
+			assert.Equal(t, "owned-by-operator", taint.Value, "the operator's taint must survive recovery unchanged")
+		}
+	}
+	assert.Equal(t, 1, gpuTaintCount, "the operator's taint must still be present after recovery")
+}
+
 func TestE2E_ManualUntaintAnnotationCleanup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()

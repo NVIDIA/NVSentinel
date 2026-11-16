@@ -111,6 +111,12 @@ data:
         {{- if $gpuResetUploadURL }}
         uploadURL: {{ $gpuResetUploadURL | quote }}
         {{- end }}
+        {{- /* Render the patch as a string. Janitor's config loader lowercases map keys, which would
+             break the case-sensitive Job field names. */}}
+        {{- with .Values.config.controllers.gpuReset.resetJob.jobTemplatePatch }}
+        jobTemplatePatch: |
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         imageConfig:
           image: "{{ .Values.config.controllers.gpuReset.resetJob.image.repository }}:{{ .Values.config.controllers.gpuReset.resetJob.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           {{- with (.Values.config.controllers.gpuReset.resetJob.image.imagePullSecrets | default  (.Values.global).imagePullSecrets) }}

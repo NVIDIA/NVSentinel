@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -295,6 +296,25 @@ func TestBuildRebootJob_UsesSyslogWhenEnabled(t *testing.T) {
 	assert.Equal(t, "host-root", job.Spec.Template.Spec.Volumes[0].Name)
 }
 
+func TestBuildRebootJob_NoPriorityClassByDefault(t *testing.T) {
+	job := newTestClient().buildRebootJob("worker-1", "", "boot-id-abc")
+
+	assert.Empty(t, job.Spec.Template.Spec.PriorityClassName)
+}
+
+func TestBuildRebootJob_UsesConfiguredPriorityClass(t *testing.T) {
+	client := NewClientWithK8s(fake.NewSimpleClientset(), Config{
+		RebootImage:                "busybox:1.37",
+		RebootJobNamespace:         "test-ns",
+		RebootJobTTL:               3600,
+		RebootJobPriorityClassName: "system-node-critical",
+	})
+
+	job := client.buildRebootJob("worker-1", "", "boot-id-abc")
+
+	assert.Equal(t, "system-node-critical", job.Spec.Template.Spec.PriorityClassName)
+}
+
 func TestSendRebootSignal_EmptyBootID(t *testing.T) {
 	client := newTestClient()
 	ctx := context.Background()
@@ -431,6 +451,108 @@ func TestIsNodeReady_TerminalPodError_RemovesJob(t *testing.T) {
 	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, jobs.Items, "the Job whose pod cannot start must not outlive the failed attempt")
+}
+
+// rejectedRebootJob returns a reboot Job whose pod the kubelet rejected at admission, as
+// under DiskPressure: the pod failed before its container was created, and the kubelet
+// sets no PodScheduled condition on a rejected pod. With BackoffLimit 0 the Job fails too,
+// here longer ago than rejectedPodGracePeriod.
+func rejectedRebootJob(nodeName string) (*batchv1.Job, *corev1.Pod) {
+	labels := map[string]string{jobLabelKey: "true", jobNodeLabelKey: nodeName}
+	job := &batchv1.Job{
+		Name: "reboot-" + nodeName + "-new34", Namespace: "test-ns", UID: "job-uid", Labels: labels,
+		Status: batchv1.JobStatus{
+			Failed: 1,
+			Conditions: []batchv1.JobCondition{
+				{
+					Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonBackoffLimitExceeded,
+					LastTransitionTime: metav1.NewTime(time.Now().Add(-2 * rejectedPodGracePeriod)),
+				},
+			},
+		},
+	}
+	pod := &corev1.Pod{
+		Name: job.Name + "-abcde", Namespace: "test-ns", Labels: labels,
+		OwnerReferences: []metav1.OwnerReference{{Kind: "Job", Name: job.Name, UID: job.UID}},
+		Status: corev1.PodStatus{
+			Phase:   corev1.PodFailed,
+			Reason:  "Evicted",
+			Message: "Pod was rejected: The node had condition: [DiskPressure]. ",
+		},
+	}
+
+	return job, pod
+}
+
+func TestIsNodeReady_PodRejectedByKubelet_ReturnsErrorAndRemovesJob(t *testing.T) {
+	job, pod := rejectedRebootJob("worker-1")
+	client := newTestClient(job, pod)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ready, err := client.IsNodeReady(ctx, node, "boot-id-abc")
+	require.Error(t, err, "a rejected pod cannot reboot the node, so the attempt must not wait for the timeout")
+	assert.False(t, ready)
+	assert.Contains(t, err.Error(), "Evicted")
+	assert.Contains(t, err.Error(), "DiskPressure")
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, jobs.Items, "the Job of the failed attempt must be removed")
+}
+
+func TestIsNodeReady_PodJustRejected_WaitsForBootID(t *testing.T) {
+	// After a reboot the kubelet may reject the pod again and publish that before the node
+	// status with the new boot ID, so a fresh rejection with the old boot ID is not yet a failure.
+	job, pod := rejectedRebootJob("worker-1")
+	job.Status.Conditions[0].LastTransitionTime = metav1.Now()
+	client := newTestClient(job, pod)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ready, err := client.IsNodeReady(ctx, node, "boot-id-abc")
+	require.NoError(t, err)
+	assert.False(t, ready)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Len(t, jobs.Items, 1, "the Job must survive until the rejection is old enough to rule out a reboot")
+}
+
+func TestIsNodeReady_PodRejectedAfterReboot_ReturnsTrue(t *testing.T) {
+	// The kubelet admits the pod again after the node boots and may reject it then.
+	// The reboot has already happened, so the attempt succeeded.
+	job, pod := rejectedRebootJob("worker-1")
+	client := newTestClient(job, pod)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-new", true)
+
+	ready, err := client.IsNodeReady(ctx, node, "boot-id-old")
+	require.NoError(t, err)
+	assert.True(t, ready)
+}
+
+func TestIsNodeReady_PodFailedAfterContainerRan_WaitsForBootID(t *testing.T) {
+	// The reboot command ran and its container was killed while the node shut down. The
+	// pod and Job fail before the node reports its new boot ID; that is not a failed attempt.
+	job, pod := rejectedRebootJob("worker-1")
+	pod.Status = corev1.PodStatus{
+		Phase:      corev1.PodFailed,
+		Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}},
+		ContainerStatuses: []corev1.ContainerStatus{{State: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{ExitCode: 143, Reason: "Error"}}}},
+	}
+	client := newTestClient(job, pod)
+	ctx := context.Background()
+	node := newNode("worker-1", "boot-id-abc", true)
+
+	ready, err := client.IsNodeReady(ctx, node, "boot-id-abc")
+	require.NoError(t, err)
+	assert.False(t, ready)
+
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Len(t, jobs.Items, 1, "the Job of an attempt that may still reboot the node must survive")
 }
 
 func TestIsNodeReady_IgnoresPodOfDeletedJob(t *testing.T) {
@@ -658,6 +780,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		assert.Equal(t, "", config.RebootJobNamespace)
 		assert.Equal(t, int32(defaultRebootJobTTLSeconds), config.RebootJobTTL)
 		assert.False(t, config.WriteSyslog)
+		assert.Empty(t, config.RebootJobPriorityClassName)
 	})
 
 	t.Run("custom values", func(t *testing.T) {
@@ -667,6 +790,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		t.Setenv("GENERIC_REBOOT_JOB_TTL", "7200")
 		t.Setenv("GENERIC_REBOOT_IMAGE_PULL_SECRETS", "secret-a, secret-b")
 		t.Setenv("GENERIC_REBOOT_WRITE_SYSLOG", "true")
+		t.Setenv("GENERIC_REBOOT_JOB_PRIORITY_CLASS_NAME", " system-node-critical ")
 
 		config := loadConfigFromEnv()
 		assert.Equal(t, "custom-image:latest", config.RebootImage)
@@ -675,6 +799,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		assert.Equal(t, int32(7200), config.RebootJobTTL)
 		assert.Equal(t, []string{"secret-a", "secret-b"}, config.RebootJobPullSecrets)
 		assert.True(t, config.WriteSyslog)
+		assert.Equal(t, "system-node-critical", config.RebootJobPriorityClassName)
 	})
 
 	t.Run("invalid sysrq flag uses default", func(t *testing.T) {

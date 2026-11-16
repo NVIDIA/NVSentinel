@@ -874,6 +874,20 @@ var _ = Describe("GPUReset Controller", func() {
 			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
+
+			// The next spec creates a reset with the same name, so wait until this one is gone.
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, typeNamespacedName, reset)
+				if apierrors.IsNotFound(err) {
+					return
+				}
+				g.Expect(err).NotTo(HaveOccurred())
+
+				if controllerutil.ContainsFinalizer(reset, gpuResetFinalizer) {
+					controllerutil.RemoveFinalizer(reset, gpuResetFinalizer)
+					g.Expect(k8sClient.Update(ctx, reset)).To(Succeed())
+				}
+			}, "20s", "250ms").Should(Succeed())
 			var jobList batchv1.JobList
 			Expect(k8sClient.List(ctx, &jobList)).To(Succeed())
 			for _, job := range jobList.Items {
@@ -936,6 +950,59 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Verifying the Job's Pod template container still has pre-existing env vars")
 			Expect(targetContainer.Env).To(ContainElement(corev1.EnvVar{Name: "PRE_EXISTING_ENV", Value: "foo"}))
+		})
+
+		It("should set NVIDIA_GPU_RESETS in init containers and use the node of the reset", func() {
+			By("Configuring a template with an init container and a different nodeName, as a jobTemplatePatch could")
+			customTemplate := reconciler.Config.ResolvedJobTemplate.DeepCopy()
+			customTemplate.Spec.Template.Spec.NodeName = "another-node"
+			customTemplate.Spec.Template.Spec.InitContainers = []corev1.Container{
+				{
+					Name:  "stop-provider-daemonsets",
+					Image: "provider/reset-hooks:1.0",
+					Env:   []corev1.EnvVar{{Name: "NVIDIA_GPU_RESETS", Value: "stale"}},
+				},
+			}
+			reconciler.Config.ResolvedJobTemplate = customTemplate
+
+			By("Creating a new GPUReset resource")
+			reset := &v1alpha1.GPUReset{
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+					Selector: &v1alpha1.GPUSelector{
+						UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
+
+			By("Waiting for the reset job to be created")
+			var createdJob batchv1.Job
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.JobRef).NotTo(BeNil())
+
+				jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
+				g.Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
+			}, "10s", "250ms").Should(Succeed())
+
+			expectedEnvVar := corev1.EnvVar{
+				Name:  "NVIDIA_GPU_RESETS",
+				Value: "GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6",
+			}
+
+			By("Verifying the init container and the container have NVIDIA_GPU_RESETS with the GPU ID")
+			podSpec := createdJob.Spec.Template.Spec
+			Expect(podSpec.InitContainers).To(HaveLen(1))
+			Expect(podSpec.InitContainers[0].Env).To(Equal([]corev1.EnvVar{expectedEnvVar}))
+			Expect(podSpec.Containers).To(HaveLen(1))
+			Expect(podSpec.Containers[0].Env).To(ContainElement(expectedEnvVar))
+
+			By("Verifying the Job runs on the node of the reset")
+			Expect(podSpec.NodeName).To(Equal(nodeName))
 		})
 	})
 
@@ -2879,6 +2946,40 @@ func TestTeardownCandidates_GPUClientsOnlyWhenLabelEnabled(t *testing.T) {
 			assert.Equal(t, tc.wantClients, slices.ContainsFunc(got, func(app gpuservices.AppSpec) bool {
 				return app.IsGPUClients()
 			}))
+		})
+	}
+}
+
+// TestSetContainersEnvVar_SetsTheValueInEveryContainer checks that each container gets the value, that every existing
+// entry with that name is overwritten, and that a new entry goes first, so a later $(NVIDIA_GPU_RESETS) reference
+// works.
+func TestSetContainersEnvVar_SetsTheValueInEveryContainer(t *testing.T) {
+	envVar := corev1.EnvVar{Name: gpuResetsEnvVar, Value: "GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}
+	other := corev1.EnvVar{Name: "OTHER", Value: "kept"}
+	stale := corev1.EnvVar{Name: gpuResetsEnvVar, Value: "stale"}
+
+	tests := []struct {
+		name string
+		env  []corev1.EnvVar
+		want []corev1.EnvVar
+	}{
+		{name: "no entry", env: []corev1.EnvVar{other}, want: []corev1.EnvVar{envVar, other}},
+		{name: "one entry", env: []corev1.EnvVar{stale, other}, want: []corev1.EnvVar{envVar, other}},
+		{name: "duplicate entries", env: []corev1.EnvVar{stale, other, stale}, want: []corev1.EnvVar{envVar, other, envVar}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			containers := []corev1.Container{
+				{Name: "first", Env: slices.Clone(tt.env)},
+				{Name: "second", Env: slices.Clone(tt.env)},
+			}
+
+			setContainersEnvVar(context.Background(), containers, envVar, "job", "namespace")
+
+			for _, container := range containers {
+				assert.Equal(t, tt.want, container.Env, "container %s", container.Name)
+			}
 		})
 	}
 }

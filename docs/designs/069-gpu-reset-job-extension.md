@@ -1,6 +1,6 @@
 # ADR-069: Janitor — Extend the GPU Reset Job with a Strategic Merge Patch
 
-Status: Proposed (tracking issue [#1782](https://github.com/NVIDIA/NVSentinel/issues/1782))
+Status: Accepted (tracking issue [#1782](https://github.com/NVIDIA/NVSentinel/issues/1782))
 
 ## Context
 
@@ -56,7 +56,7 @@ The key is empty by default. An empty patch leaves the Job unchanged.
 
 1. Janitor builds the built-in template and applies the existing `resetJob` keys.
 2. Janitor applies the patch with `strategicpatch.StrategicMergePatch`, with `batchv1.JobTemplateSpec` as the schema. Where the patch and a `resetJob` key set the same field, the patch value is used.
-3. Janitor decodes the result strictly into `batchv1.JobTemplateSpec` and stores it as `ResolvedJobTemplate`. A misspelled field name stops janitor at startup. Janitor decodes the merged result, not the patch, because a patch can contain directives such as `$patch`.
+3. Janitor decodes the result strictly into `batchv1.JobTemplateSpec` and stores it as `ResolvedJobTemplate`. A misspelled field name stops janitor at startup. Janitor also checks the patch itself the same way, with directives such as `$patch` removed. This catches a misspelled field set to `null`, which the merge removes before the result is checked.
 4. For each reset, `newGpuResetJob` sets the fields listed in [Context](#context), over any value from the patch. It also adds `NVIDIA_GPU_RESETS` to each init container, so that a step before the reset can find the GPUs that janitor resets.
 
 ### Merge rules
@@ -98,7 +98,7 @@ The GPUReset CRD, its conditions and reasons, the reconcile steps and the protob
 
 ### Mitigations
 
-- Janitor logs the resolved template at startup at debug level.
+- Janitor logs the resolved template at startup, in the `Loaded configuration` message at info level.
 - `docs/configuration/janitor.md` gives the merge key of each list in the reset Job: `containers`, `initContainers`, `volumes` and `env` merge on `name`, `volumeMounts` on `mountPath`, and `tolerations` is replaced. It also states that janitor does not restore host changes that the Job makes.
 
 ## Alternatives Considered

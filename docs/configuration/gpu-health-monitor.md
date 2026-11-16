@@ -294,7 +294,7 @@ gpu-health-monitor:
 
 The value is a quoted string, not a boolean.
 
-Leave it `"False"` if any GPU pool uses NVLink bridges. An unbridged card and a card whose bridge was already dead when metadata was collected look identical, so enabling suppression on a bridged pool could hide a real bridge failure that was present at boot. GPUs with no NVLink silicon at all, such as L40 and A40, are suppressed regardless of this value.
+Leave it `"False"` if any GPU pool uses NVLink bridges. An unbridged card and a card whose bridge was already dead when metadata was collected look identical, so enabling suppression on a bridged pool could hide a real bridge failure that was present at boot. GPUs with no NVLink silicon at all, such as L40 and A40, always suppress `DCGM_FR_NVLINK_DOWN` and `DCGM_FR_FABRIC_PROBE_STATE` regardless of this value.
 
 ## Hardware Power Brake Detection
 

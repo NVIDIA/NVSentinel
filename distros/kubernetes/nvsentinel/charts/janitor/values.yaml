@@ -196,6 +196,16 @@ config:
         # When empty and global.inclusterFileServer.enabled is true, this defaults to the
         # release's incluster-file-server /upload endpoint.
         uploadURL: ""
+        # A strategic merge patch for the GPU reset Job, applied on top of the
+        # built-in Job and the keys above. Use it to add host mounts, init
+        # containers or a service account, for example. Containers, init
+        # containers, volumes and env vars match built-in items by name, and
+        # volume mounts match by mountPath. A patch that sets tolerations replaces
+        # the whole list, so include operator: Exists to keep the built-in one.
+        # Janitor always sets the Job name, namespace and owner labels, nodeName
+        # and NVIDIA_GPU_RESETS itself. A misspelled field stops janitor at
+        # startup. Empty leaves the Job unchanged. See docs/configuration/janitor.md.
+        jobTemplatePatch: {}
         # imagePullSecrets can be specified under image.imagePullSecrets, otherwise we will
         # fall back to global.imagePullSecrets.
         image:

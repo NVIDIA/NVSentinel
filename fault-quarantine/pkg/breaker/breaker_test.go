@@ -1053,8 +1053,15 @@ func TestIsTripped_StandingPercentageNotReached_DoesNotTrip(t *testing.T) {
 func breakerStateSeries(t *testing.T) map[string]float64 {
 	t.Helper()
 
+	return gaugeSeries(t, metrics.FaultQuarantineBreakerState)
+}
+
+// gaugeSeries returns every series of a single-label gauge vector by its label value.
+func gaugeSeries(t *testing.T, vec *prometheus.GaugeVec) map[string]float64 {
+	t.Helper()
+
 	ch := make(chan prometheus.Metric, 8)
-	metrics.FaultQuarantineBreakerState.Collect(ch)
+	vec.Collect(ch)
 	close(ch)
 
 	series := map[string]float64{}
@@ -1099,4 +1106,107 @@ func TestBreakerStateGauge_FollowsTripAndForceState(t *testing.T) {
 
 	require.NoError(t, b.ForceState(ctx, StateClosed))
 	assert.Equal(t, map[string]float64{string(StateClosed): 1}, breakerStateSeries(t))
+}
+
+func newNoGPUNodeBreaker(t *testing.T, ctx context.Context) *slidingWindowBreaker {
+	t.Helper()
+
+	k8sClient := setupTestClient(t)
+
+	require.Eventually(t, func() bool {
+		actualNodes, err := k8sClient.GetTotalNodes(ctx)
+		return err == nil && actualNodes == 0
+	}, 5*time.Second, 50*time.Millisecond, "NodeInformer should see no nodes")
+
+	configMapName := "test-breaker-" + generateTestID()[:8]
+
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().ConfigMaps("default").Delete(context.Background(), configMapName, metav1.DeleteOptions{})
+	})
+
+	b, err := NewSlidingWindowBreaker(ctx, Config{
+		Window:             time.Minute,
+		TripPercentage:     50,
+		K8sClient:          k8sClient,
+		ConfigMapName:      configMapName,
+		ConfigMapNamespace: "default",
+	})
+	require.NoError(t, err)
+
+	return b.(*slidingWindowBreaker)
+}
+
+func TestIsTripped_NoGPUNodes_StaysClosed(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+
+	metrics.SetFaultQuarantineBreakerThresholdNodes(5, string(boundMaxNodes))
+
+	for range 2 {
+		tripped, err := b.IsTripped(ctx)
+		require.NoError(t, err, "a cluster without GPU nodes must not fail the breaker check")
+		require.False(t, tripped)
+	}
+
+	require.Equal(t, StateClosed, b.CurrentState())
+	assert.Equal(t, map[string]float64{string(boundNoGPUNodes): 1},
+		gaugeSeries(t, metrics.FaultQuarantineBreakerThresholdNodes),
+		"the threshold gauge must not keep a value from a nonzero node count")
+}
+
+func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+
+	b.AddCordonEvent("node-outside-gpu-label")
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.True(t, tripped, "a cordon while no GPU nodes are counted must trip the breaker")
+	require.Equal(t, StateTripped, b.CurrentState())
+	assert.Equal(t, map[string]float64{string(boundNoGPUNodes): 1},
+		gaugeSeries(t, metrics.FaultQuarantineBreakerThresholdNodes))
+}
+
+func TestIsTripped_GPUNodeJoinsAfterZero_UsesNodeCount(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, tripped)
+
+	nodeName := "test-node-joins-" + generateTestID()[:6]
+	createTestNode(ctx, t, nodeName)
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	})
+
+	require.Eventually(t, func() bool {
+		n, err := b.getTotalNodes(ctx)
+		return err == nil && n == 1
+	}, 5*time.Second, 50*time.Millisecond, "the joined node should be counted")
+
+	tripped, err = b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, tripped, "no cordons on a one-node fleet should not trip")
+}
+
+type failingTotalNodesClient struct {
+	K8sClientOperations
+}
+
+func (c *failingTotalNodesClient) GetTotalNodes(ctx context.Context) (int, error) {
+	return 0, fmt.Errorf("node informer cache not synced yet")
+}
+
+func TestIsTripped_NodeCountError_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+	b.cfg.K8sClient = &failingTotalNodesClient{K8sClientOperations: b.cfg.K8sClient}
+
+	tripped, err := b.IsTripped(ctx)
+	require.Error(t, err)
+	require.False(t, tripped)
+	require.Equal(t, StateClosed, b.CurrentState())
 }

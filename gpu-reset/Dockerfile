@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvcr.io/nvidia/cuda:13.4.3-runtime-ubuntu24.04@sha256:f58bd7a0701fae3a2160f22e1d451b77b349bd9ef83dad76f5529aa413c149a8
+FROM nvcr.io/nvidia/cuda:13.5.0-runtime-ubuntu24.04@sha256:ba4d4e8475ced890fb26f9661daf8dae7cce9827613682eb8b8379c5ecd94eba
 
 ARG DEBIAN_FRONTEND=noninteractive
+# The registry build cache reuses the apt layer below until the base image or this
+# value changes. Set it to the current date to install the latest Ubuntu security
+# fixes for curl and its libraries.
+ARG APT_REFRESH_DATE=2026-11-05
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \

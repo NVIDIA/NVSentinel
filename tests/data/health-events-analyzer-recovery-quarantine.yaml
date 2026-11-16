@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The default quarantine policy does not match analyzer events. This test-only
-# policy exercises cordon/uncordon for the annotation recovery rule.
+# Test-only quarantine policy that exercises cordon/uncordon specifically for the
+# AnnotationRecoveryTest checkName in the annotation recovery rule.
 apiVersion: v1
 kind: ConfigMap
 metadata:

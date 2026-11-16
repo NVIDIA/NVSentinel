@@ -188,6 +188,13 @@ func initHandlers(
 		sm.checkToHandlerMap[check.Name] = handler
 	}
 
+	// A fallen off the bus line is skipped after a recent XID on the same GPU because the
+	// XID check reports that fault. Without the XID check nothing does, so keep the event.
+	if h, ok := sm.checkToHandlerMap[GPUFallenOffCheck].(*gpufallen.GPUFallenHandler); ok {
+		_, xidCheckEnabled := sm.checkToHandlerMap[XIDErrorCheck]
+		h.XIDCheckEnabled = xidCheckEnabled
+	}
+
 	return nil
 }
 
@@ -320,7 +327,7 @@ func (sm *SyslogMonitor) Run(ctx context.Context) error {
 		}
 	}
 
-	slog.Info("Syslog monitor run cycle completed successfully.")
+	slog.Debug("Syslog monitor run cycle completed successfully.")
 
 	return nil
 }
@@ -582,7 +589,7 @@ func (sm *SyslogMonitor) saveCurrentState() error {
 
 // executeCheck performs a single log check based on the provided definition
 func (sm *SyslogMonitor) executeCheck(check CheckDefinition) error {
-	slog.Info("Executing check", "check", check.Name)
+	slog.Debug("Executing check", "check", check.Name)
 
 	journal, err := sm.openJournal(check)
 	if err != nil {
@@ -647,7 +654,7 @@ func (sm *SyslogMonitor) openJournal(check CheckDefinition) (Journal, error) {
 		return nil, fmt.Errorf("check '%s': journal path is empty. Path-specific journal expected for checks", check.Name)
 	}
 
-	slog.Info("Verifying journal path",
+	slog.Debug("Verifying journal path",
 		"check", check.Name,
 		"path", check.JournalPath)
 
@@ -657,7 +664,7 @@ func (sm *SyslogMonitor) openJournal(check CheckDefinition) (Journal, error) {
 		}
 	}
 
-	slog.Info("Opening journal at path",
+	slog.Debug("Opening journal at path",
 		"check", check.Name,
 		"path", check.JournalPath)
 
@@ -675,7 +682,7 @@ func (sm *SyslogMonitor) configureBootFilter(journal Journal, checkName string) 
 	if bootID != "" {
 		matchExpr := FieldBootID + "=" + bootID
 
-		slog.Info("Applying boot filter",
+		slog.Debug("Applying boot filter",
 			"check", checkName,
 			"filter", matchExpr)
 
@@ -706,7 +713,7 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 			// SYSLOG_FACILITY=kern, and naturally excludes journal/audit noise.
 			matchExpr := FieldTransport + "=" + TransportKernel
 
-			slog.Info("Adding kernel log filter",
+			slog.Debug("Adding kernel log filter",
 				"check", check.Name,
 				"tag", trimmedTag,
 				"match", matchExpr)
@@ -725,7 +732,7 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 				}
 
 				resetMatchExpr := FieldSyslogID + "=" + GPUResetSyslogID
-				slog.Info("Adding GPU reset acknowledgement filter",
+				slog.Debug("Adding GPU reset acknowledgement filter",
 					"check", check.Name,
 					"match", resetMatchExpr)
 
@@ -735,7 +742,7 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 				}
 			}
 		case "-b", "--boot":
-			slog.Info("Processing explicit boot tag",
+			slog.Debug("Processing explicit boot tag",
 				"check", check.Name,
 				"tag", trimmedTag)
 			// configureBootFilter is already called if check.Boot is true.
@@ -765,7 +772,7 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 			}
 
 			matchExpr := FieldSystemdUnit + "=" + unitName
-			slog.Info("Adding unit filter",
+			slog.Debug("Adding unit filter",
 				"check", check.Name,
 				"tag", trimmedTag,
 				"match", matchExpr)
@@ -800,7 +807,7 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 			}
 
 			matchExpr := FieldSystemdUnit + "=" + unitName
-			slog.Info("Adding unit filter",
+			slog.Debug("Adding unit filter",
 				"check", check.Name,
 				"tag", trimmedTag,
 				"match", matchExpr)
@@ -824,7 +831,7 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 		slog.Warn("Failed to get boot ID", "check", check.Name, "error", err)
 	}
 
-	slog.Info("Boot ID for check", "check", check.Name, "bootID", bootID)
+	slog.Debug("Boot ID for check", "check", check.Name, "bootID", bootID)
 
 	if !hasLastCursor {
 		if sm.postRebootInit {
@@ -853,7 +860,7 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 func (sm *SyslogMonitor) resumeFromLastCursor(
 	journal Journal, check CheckDefinition, lastKnownCursor string,
 ) (bool, error) {
-	slog.Info("Resuming from last known cursor",
+	slog.Debug("Resuming from last known cursor",
 		"check", check.Name,
 		"cursor", lastKnownCursor)
 
@@ -892,7 +899,7 @@ func (sm *SyslogMonitor) resumeFromLastCursor(
 	}
 
 	if errors.Is(nextErr, io.EOF) || advanced == 0 {
-		slog.Info("No new entries since last cursor",
+		slog.Debug("No new entries since last cursor",
 			"check", check.Name,
 			"cursor", lastKnownCursor)
 
@@ -935,7 +942,7 @@ func (sm *SyslogMonitor) skipBookmarkedEntryIfPresent(
 	}
 
 	if errors.Is(nextErr, io.EOF) || advanced == 0 {
-		slog.Info("No new entries since last cursor",
+		slog.Debug("No new entries since last cursor",
 			"check", check.Name,
 			"cursor", lastKnownCursor)
 
@@ -988,7 +995,7 @@ func (sm *SyslogMonitor) processAllEntries(journal Journal, check CheckDefinitio
 	}
 
 	finalCursor := sm.checkLastCursors[check.Name]
-	slog.Info("Finished processing journal entries",
+	slog.Debug("Finished processing journal entries",
 		"check", check.Name,
 		"nextCursor", finalCursor)
 
@@ -1069,7 +1076,7 @@ func (sm *SyslogMonitor) processOneEntryAndAdvance(
 ) (bool, error) {
 	if message == "" {
 		sm.checkLastCursors[check.Name] = currentEntryCursor
-		slog.Info("Check, read empty message", "name", check.Name,
+		slog.Debug("Check, read empty message", "name", check.Name,
 			"message", message,
 			"cursor", currentEntryCursor)
 	} else {
@@ -1109,7 +1116,7 @@ func (sm *SyslogMonitor) processOneEntryAndAdvance(
 
 	advancedNext, advErr := journal.Next()
 	if errors.Is(advErr, io.EOF) || advancedNext == 0 {
-		slog.Info("Check no more", "name", check.Name, "cursor", currentEntryCursor)
+		slog.Debug("Check no more", "name", check.Name, "cursor", currentEntryCursor)
 
 		return true, nil
 	}
@@ -1130,7 +1137,7 @@ func (sm *SyslogMonitor) processOneEntryAndAdvance(
 // initializeJournalFromTail seeks to the journal tail, sets the resume cursor, and returns.
 // Used when there is no last known cursor (first run or no saved state). Returns nil on success.
 func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckDefinition) error {
-	slog.Info("No last known cursor, seeking to journal tail", "check", check.Name)
+	slog.Debug("No last known cursor, seeking to journal tail", "check", check.Name)
 
 	if err := journal.SeekTail(); err != nil {
 		return fmt.Errorf("check '%s': failed to seek to journal tail for initialization: %w", check.Name, err)
@@ -1142,7 +1149,7 @@ func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckD
 	}
 
 	if count == 0 {
-		slog.Info("Journal is empty, nothing to do", "check", check.Name)
+		slog.Debug("Journal is empty, nothing to do", "check", check.Name)
 
 		return nil
 	}

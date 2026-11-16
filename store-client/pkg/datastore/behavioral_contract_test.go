@@ -130,6 +130,28 @@ func TestHealthEventStoreBehavior(t *testing.T) {
 		store.AssertExpectations(t)
 	})
 
+	t.Run("UpdateHealthEventStatus carries the drain and remediation decisions", func(t *testing.T) {
+		store := &MockHealthEventStore{}
+		ctx := context.Background()
+		eventID := "event-123"
+		status := datastore.HealthEventStatus{
+			DrainDecision: &datastore.DrainDecision{
+				RuleSet: "slurm",
+				Method:  "Custom",
+			},
+			RemediationDecision: &datastore.RemediationDecision{
+				RuleSet: "vm-replace",
+				Action:  "REPLACE_VM",
+			},
+		}
+
+		store.On("UpdateHealthEventStatus", ctx, eventID, status).Return(nil)
+
+		err := store.UpdateHealthEventStatus(ctx, eventID, status)
+		assert.NoError(t, err)
+		store.AssertExpectations(t)
+	})
+
 	t.Run("FindHealthEventsByFilter applies filters correctly", func(t *testing.T) {
 		store := &MockHealthEventStore{}
 		ctx := context.Background()

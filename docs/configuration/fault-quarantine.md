@@ -90,7 +90,7 @@ fault-quarantine:
 
 The default matches the label the NVIDIA GPU Operator applies. Override it when your cluster labels GPU nodes differently.
 
-A selector that matches no node gives the circuit breaker a node count of zero. It then logs `Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes` and returns an error instead of a decision, so check this value first when the breaker behaves unexpectedly on a cluster with non-standard labels.
+A selector that matches no node gives the circuit breaker a node count of zero. With no cordons in the window, the breaker stays `CLOSED` and fault quarantine keeps running. A cordon in the window while no GPU nodes are counted trips it, so check this value first when the breaker behaves unexpectedly on a cluster with non-standard labels.
 
 ### Label Prefix
 
@@ -114,6 +114,8 @@ Labels use the configured `{labelPrefix}` (default `k8saas.nvidia.com/`):
 ## Circuit Breaker
 
 Prevents too many nodes from being quarantined simultaneously, protecting against cluster-wide cascading failures.
+
+With PostgreSQL, a breaker that is already tripped blocks watcher startup and keeps the pod NotReady until reset. A rollout or Helm upgrade can wait for this reset. A breaker that trips after watcher startup does not itself change datastore readiness.
 
 The breaker is not created in dry-run mode. Dry run cordons nothing, so it neither counts toward nor is halted by the breaker, and no trip carries over when dry run is switched off.
 
@@ -351,6 +353,26 @@ ruleSets:
           expression: |
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && 
               node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+    cordon:
+      shouldCordon: true
+```
+
+#### Example 3: Health Events Analyzer Fatal Errors on Managed Nodes
+
+```yaml
+ruleSets:
+  - version: "1"
+    name: "Health events analyzer fatal error ruleset"
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.agent == 'health-events-analyzer' && event.isFatal == true"
+        - kind: "Node"
+          expression: |
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && 
+              node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && 
+              node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
     cordon:
       shouldCordon: true
 ```

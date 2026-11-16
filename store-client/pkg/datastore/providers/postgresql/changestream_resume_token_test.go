@@ -732,7 +732,7 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 						changedAt,
 					)
 				mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-					WithArgs(tableName, int64(452)).
+					WithArgs(tableName, lookupIDs(452), changedAt.Add(time.Second), int64(453)).
 					WillReturnRows(rows)
 			},
 		},
@@ -770,6 +770,8 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 				Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
 			})
 			require.NoError(t, err)
+			// handleNotification only records the id; the fetch loop fetches the row.
+			require.NoError(t, watcher.fetchNotifiedRows(ctx))
 
 			select {
 			case event := <-watcher.events:
@@ -780,7 +782,9 @@ func TestHandleNotification_OutOfOrderBelowBookmark_DeliversUnseenAndSkipsSeen(t
 			}
 
 			assert.Equal(t, int64(453), watcher.lastEventID, "bookmark must not move backwards")
-			assert.Equal(t, tt.expectRecentlySeen452, watcher.hasRecentlySeenEventID(452))
+
+			_, recentlySeen452 := watcher.recentEventIDs[452]
+			assert.Equal(t, tt.expectRecentlySeen452, recentlySeen452)
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
@@ -818,21 +822,20 @@ func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *t
 			changedAt,
 		)
 	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-		WithArgs(tableName, int64(452)).
+		WithArgs(tableName, lookupIDs(452), changedAt.Add(time.Second), int64(451)).
 		WillReturnRows(notifiedRows)
 
 	// The normal timestamp cursor would miss the notified row because its changed_at
 	// is behind the current bookmark timestamp, so it is fetched by id. It is a late
 	// commit, and delivering it must not move the cursor back to its older changed_at
-	// (the guarantee from #1469), so the poll that follows starts from the same cursor.
-	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
-		WithArgs(tableName, changedAt.Add(time.Second), int64(451)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}))
+	// (the guarantee from #1469).
 
 	err = watcher.handleNotification(ctx, &pq.Notification{
 		Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
 	})
 	require.NoError(t, err)
+	// handleNotification only records the id; the fetch loop fetches the row.
+	require.NoError(t, watcher.fetchNotifiedRows(ctx))
 
 	select {
 	case event := <-watcher.events:
@@ -845,7 +848,7 @@ func TestHandleNotification_NewerNotifyFetchesExactRowBeforeTimestampCursor(t *t
 	// already read, which the next poll then read again.
 	assert.Equal(t, changedAt.Add(time.Second), watcher.lastTimestamp, "a late row must not move the cursor back")
 	assert.Equal(t, int64(451), watcher.lastEventID)
-	assert.True(t, watcher.hasRecentlySeenEventID(452))
+	assert.Contains(t, watcher.recentEventIDs, int64(452))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -1011,10 +1014,11 @@ func TestAdvancePosition_EqualChangedAt_OrdersByID(t *testing.T) {
 	assert.Equal(t, int64(7), watcher.lastEventID)
 
 	mock.ExpectQuery(changelogQuery).
-		WithArgs(healthEventsTable, int64(4)).
+		WithArgs(healthEventsTable, lookupIDs(4), same, int64(7)).
 		WillReturnRows(healthEventRow(changelogRows(), 4, same))
 
-	require.NoError(t, watcher.fetchChangeByID(ctx, 4))
+	watcher.addNotifiedID(4)
+	require.NoError(t, watcher.fetchNotifiedRows(ctx))
 	assert.Equal(t, same, watcher.lastTimestamp)
 	assert.Equal(t, int64(7), watcher.lastEventID)
 
@@ -1220,6 +1224,9 @@ func TestHandleNotification_ReadRowAboveCursorID_IsSkipped(t *testing.T) {
 	require.NoError(t, watcher.handleNotification(context.Background(), &pq.Notification{
 		Extra: `{"id":151,"table":"health_events","operation":"INSERT"}`,
 	}))
+	// handleNotification only records the id; the fetch loop fetches the row. sqlmock fails a
+	// lookup it isn't told to expect.
+	require.NoError(t, watcher.fetchNotifiedRows(context.Background()))
 
 	assert.Equal(t, []string{"151", "1", "2", "3"}, drainTokens(watcher))
 	assert.Equal(t, base.Add(3*time.Second), watcher.lastTimestamp)
@@ -1448,85 +1455,25 @@ func buildTestHealthEvent(id string) map[string]any {
 	}
 }
 
-// TestPositionAdvancesBeforeChannelSend verifies that lastEventID is updated
-// BEFORE attempting to send to the channel. This ensures that if the send blocks
-// (e.g., channel full), the position is still advanced when send eventually succeeds.
-func TestPositionAdvancesBeforeChannelSend(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	ctx := context.Background()
-	clientName := "test-client"
-	tableName := "test_table"
-
-	// Mock loadResumePosition
-	mock.ExpectQuery("SELECT resume_token FROM resume_tokens").
-		WithArgs(clientName).
-		WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).
-			AddRow(`{"eventID": 0, "timestamp": "2025-01-01T00:00:00Z"}`))
-
+// A failed channel delivery must leave the row available for the next poll.
+func TestPositionDoesNotAdvanceBeforeChannelDelivery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
 	watcher := &PostgreSQLChangeStreamWatcher{
-		db:          db,
-		clientName:  clientName,
-		tableName:   tableName,
-		events:      make(chan datastore.EventWithToken, 1), // Buffer of 1
-		stopCh:      make(chan struct{}),
-		lastEventID: 0,
+		events:        make(chan datastore.EventWithToken, 1),
+		stopCh:        make(chan struct{}),
+		lastTimestamp: time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC),
+		lastEventID:   1,
 	}
+	watcher.events <- datastore.EventWithToken{ResumeToken: []byte("buffered")}
+	cancel()
 
-	err = watcher.loadResumePosition(ctx)
-	require.NoError(t, err)
-
-	// Create 2 events
-	events := []datastore.EventWithToken{
-		{
-			Event: map[string]any{
-				"_id":           map[string]any{"_data": "1"},
-				"operationType": "insert",
-				"fullDocument":  map[string]any{"id": "1"},
-			},
-			ResumeToken: []byte("1"),
-		},
-		{
-			Event: map[string]any{
-				"_id":           map[string]any{"_data": "2"},
-				"operationType": "insert",
-				"fullDocument":  map[string]any{"id": "2"},
-			},
-			ResumeToken: []byte("2"),
-		},
-	}
-
-	// Send both events in a goroutine
-	done := make(chan error, 1)
-	go func() {
-		done <- watcher.sendEventsToChannel(ctx, events)
-	}()
-
-	// Give sendEventsToChannel time to process first event and block on second
-	time.Sleep(50 * time.Millisecond)
-
-	// Check lastEventID BEFORE draining the channel
-	// It should be 2 (both events processed) even though channel still has events
-	watcher.mu.RLock()
-	currentLastEventID := watcher.lastEventID
-	watcher.mu.RUnlock()
-
-	// lastEventID should be 2 (last event processed)
-	// This proves position advances BEFORE channel send completes
-	assert.Equal(t, int64(2), currentLastEventID,
-		"lastEventID should be 2 even before events are consumed from channel")
-
-	// Now drain the channel
-	<-watcher.events
-	<-watcher.events
-
-	// Wait for goroutine to complete
-	err = <-done
-	require.NoError(t, err)
-
-	assert.NoError(t, mock.ExpectationsWereMet())
+	err := watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{{
+		Event:       map[string]any{"clusterTime": watcher.lastTimestamp.Add(time.Second)},
+		ResumeToken: []byte("2"),
+	}})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, int64(1), watcher.lastEventID)
+	require.Equal(t, time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC), watcher.lastTimestamp)
 }
 
 // TestRepeatedXIDRuleCIScenario recreates the EXACT scenario from CI run 19611652848
