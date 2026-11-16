@@ -93,7 +93,7 @@ The script takes the severity from the CVSS score, as the Security tab does. The
 [`scripts/openvex/`](scripts/openvex/) has the tools for this work:
 
 - `scan.sh` scans images without and with `.openvex.json`, and lists the critical and high findings that `.openvex.json` does not cover.
-- `trace.sh` runs a Python program in its image and lists the packages that its processes load.
+- `trace.sh` runs a Python program in its image, records the Python modules and shared libraries that each Python process of the program loads, and lists the packages that own those files. It covers only the code that the run reaches.
 - `statements.py add` adds statements from a list of findings and reasons, `statements.py prune` removes the packages that the images no longer have, and both format `.openvex.json` and set its version.
 
 Two agent skills follow these steps: [`triage-image-vulnerabilities`](skills/openvex/triage-image-vulnerabilities/SKILL.md) for new findings, and [`prune-openvex-statements`](skills/openvex/prune-openvex-statements/SKILL.md) after base image or dependency updates.
