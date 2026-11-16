@@ -115,6 +115,8 @@ Labels use the configured `{labelPrefix}` (default `k8saas.nvidia.com/`):
 
 Prevents too many nodes from being quarantined simultaneously, protecting against cluster-wide cascading failures.
 
+With PostgreSQL, a breaker that is already tripped blocks watcher startup and keeps the pod NotReady until reset. A rollout or Helm upgrade can wait for this reset. A breaker that trips after watcher startup does not itself change datastore readiness.
+
 The breaker is not created in dry-run mode. Dry run cordons nothing, so it neither counts toward nor is halted by the breaker, and no trip carries over when dry run is switched off.
 
 ### Configuration
