@@ -165,6 +165,54 @@ Notes:
 - The resource is found by listing the namespace, not by name, so renaming it changes nothing. If the namespace holds more than one, the check refuses to guess which belongs to the release.
 - This runs only when the Job runs, so it cannot see a render. It does not replace `psmdbVersion`, which is what catches the values disagreeing with each other before anything is applied.
 
+### Linux kernel 6.19 and newer
+
+On nodes running Linux kernel 6.19 or newer, the Percona backend can fail to start. `mongodb-rs0-0` exits within a second of starting and stays in `CrashLoopBackOff`, and fault-quarantine, node-drainer, fault-remediation and platform-connectors restart in a loop because they cannot reach the datastore. `kubectl logs --previous` for the `mongod` container is empty.
+
+Kernels 6.19 through 7.0.13 break the way TCMalloc, MongoDB's memory allocator, uses rseq for its per-CPU caches, so MongoDB 8.0 refuses to start on those kernels ([SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912)). The mongod release the chart deploys refuses on every kernel 6.19 and newer, including kernels that already carry the fix. Ubuntu kernels also hide their upstream release from `uname -r`, which shows a zero patch level (`7.0.0-43-generic` for a kernel built from 7.0.14), so later mongod releases can still refuse on them. The container log stays empty because the Percona image's entrypoint script runs `mongod --version` to read the version, consumes the refusal message, and exits.
+
+To check a node's kernel:
+
+```bash
+uname -r
+# Ubuntu only: the last field is the upstream kernel release
+cat /proc/version_signature
+```
+
+To see the refusal directly, run the mongod image on a machine with the same kernel:
+
+```bash
+docker run --rm --entrypoint mongod percona/percona-server-mongodb:8.0.26-11 --version
+```
+
+On an affected kernel this prints `MongoDB cannot start: Linux kernel versions 6.19 and newer has a known incompatibility with this version of MongoDB` and exits 1.
+
+The Percona image sets `GLIBC_TUNABLES=glibc.pthread.rseq=0`, which leaves rseq for TCMalloc to register. Setting it to `1` lets glibc keep rseq, so TCMalloc falls back to per-thread caches, does not use rseq, and mongod starts:
+
+```yaml
+mongodb-store:
+  psmdb-db:
+    replsets:
+      rs0:
+        env:
+          - name: GLIBC_TUNABLES
+            value: "glibc.pthread.rseq=1"
+```
+
+Helm replaces lists rather than merging them. If your values already set `env` for `rs0`, add this entry to that list instead of defining a second one.
+
+The cost is some allocator performance under heavy concurrency, which matters little at the load NVSentinel puts on its datastore. Changing `env` changes the pod spec, so the operator restarts mongod on the next upgrade.
+
+To confirm the setting reached the pod:
+
+```bash
+kubectl get pod mongodb-rs0-0 -n nvsentinel \
+  -o jsonpath='{.spec.containers[?(@.name=="mongod")].env}'
+kubectl get pods -n nvsentinel
+```
+
+Remove the entry once the chart deploys a mongod release that starts on your nodes' kernel. Progress is tracked in [#2410](https://github.com/NVIDIA/NVSentinel/issues/2410).
+
 ### Volume size
 
 The Percona defaults request 8Gi data volumes. Some cloud providers enforce a larger minimum block volume size (OCI block volumes are at least 50Gi, for example). When the provisioned volume ends up larger than the requested size, the operator stops reconciling with `requested storage is less than actual storage` and the replica set never initializes. Set the volume size explicitly to at least your provider's minimum:
