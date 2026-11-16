@@ -62,7 +62,7 @@ RUN poetry export --format requirements.txt --output constraints.txt --without-h
 # The PyTorch version sets the CUDA version, which the GPU driver of the cluster must support.
 # See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
 # =============================================================================
-FROM nvcr.io/nvidia/pytorch:26.09-py3@sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6 AS runtime
+FROM nvcr.io/nvidia/pytorch:26.10-py3@sha256:6d347d649d5dd108b4652f1b9cea6a3c859692ac408617a9108616da40e3da1f AS runtime
 
 ARG VERSION
 

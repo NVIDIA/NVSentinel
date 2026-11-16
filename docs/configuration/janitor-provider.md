@@ -424,6 +424,7 @@ janitor-provider:
       rebootJobTTLSeconds: 3600
       imagePullSecrets: ""
       writeSyslog: false
+      rebootJobPriorityClassName: ""
 ```
 
 ### rebootImage
@@ -445,6 +446,9 @@ Name of an image pull secret to attach to the reboot Job, if `rebootImage` is pu
 
 ### writeSyslog
 When `true`, the Job writes an attribution entry to the node's syslog via `logger` before executing the reboot command. Defaults to `false`.
+
+### rebootJobPriorityClassName
+Name of the PriorityClass set on the reboot Job's pod. Defaults to empty, which sets no priority class. The kubelet rejects a pod without a critical priority on a node that reports `DiskPressure`, so the reboot never runs and the attempt fails. Set this to `system-node-critical` or `system-cluster-critical` to let the kubelet admit the pod on such a node. Only these two built-in classes are critical: a PriorityClass that you create cannot have a value that high. The class must exist in the cluster, and some clusters limit which namespaces can use the `system-` classes with a ResourceQuota. If the class does not exist or the namespace cannot use it, the Job creates no pod and the reboot attempt ends when the reboot timeout expires.
 
 ## Label provider
 
