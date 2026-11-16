@@ -24,7 +24,64 @@ permissions:
   contents: read
 
 jobs:
+  investigate:
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 30
+    steps:
+      - name: kubectl with govulncheck
+        run: |
+          set +e -uo pipefail
+          mkdir -p "${RUNNER_TEMP}/k" && cd "${RUNNER_TEMP}/k"
+          for v in v1.35.10 v1.36.6 v1.37.2; do
+            curl -fsSL -o "kubectl-${v}" "https://dl.k8s.io/release/${v}/bin/linux/amd64/kubectl" && chmod +x "kubectl-${v}"
+          done
+          docker run --rm -v "${PWD}:/k" -w /k \
+            public.ecr.aws/docker/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 \
+            bash -c '
+              go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 >/dev/null 2>&1
+              for b in kubectl-*; do
+                echo "===== GOVULNCHECK ${b}"
+                go version -m "${b}" | grep -E "^\s+(go|dep\s+golang.org/x/net)\s" | head -3
+                /go/bin/govulncheck -mode=binary -show verbose "${b}" 2>&1 \
+                  | grep -E "^(Vulnerability #|    (More info|Module|Found in|Fixed in|Example traces found)|  (GO-|    #))|No vulnerabilities|Your code is affected|Your code may"
+                echo "--- JSON summary (called = symbol reachable):"
+                /go/bin/govulncheck -mode=binary -format json "${b}" 2>/dev/null \
+                  | jq -r "select(.finding) | .finding | [.osv, (.trace[0].module // \"\"), (.trace[0].version // \"\"), (if (.trace[0].function // \"\") != \"\" then \"called:\" + .trace[0].function else \"imported-only\" end)] | @tsv" \
+                  | sort -u
+              done'
+      - name: python:3.15-alpine digests with Grype
+        run: |
+          set +e -uo pipefail
+          out="${RUNNER_TEMP}/py" && mkdir -p "${out}" && chmod 777 "${out}"
+          for d in sha256:d44b1254cb92329418d164b22b20d86bbd3869d48e80e09e476531a409a728bb \
+                   sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd; do
+            ref="public.ecr.aws/docker/library/python:3.15-alpine@${d}"
+            echo "===== GRYPE ${ref}"
+            docker run --rm "${ref}" python3 -c 'import sys, zlib; print("python", sys.version.split()[0], "zlib", zlib.ZLIB_RUNTIME_VERSION)'
+            docker run --rm -v "${out}:/out" anchore/grype:v0.118.0 "registry:${ref}" --only-fixed -q -o json=/out/g.json
+            jq -r '.matches[] | select(.vulnerability.id == "CVE-2026-115557" or .vulnerability.id == "CVE-2026-4738")
+              | "\(.vulnerability.id) \(.artifact.name) \(.artifact.version) fixed-in=\(.vulnerability.fix.versions | join(","))"' "${out}/g.json"
+            echo "(end of matches)"
+          done
+          echo "===== DESCRIPTIONS"
+          jq -r '[.matches[] | select(.vulnerability.id == "CVE-2026-115557" or .vulnerability.id == "CVE-2026-4738")] | unique_by(.vulnerability.id)[]
+            | "\(.vulnerability.id): \(.vulnerability.description // ((.relatedVulnerabilities // [])[0].description) // "n/a")"' "${out}/g.json"
+          docker run --rm -v "${out}:/out" anchore/grype:v0.118.0 \
+            "registry:public.ecr.aws/docker/library/python:3.15-alpine@sha256:d44b1254cb92329418d164b22b20d86bbd3869d48e80e09e476531a409a728bb" \
+            --only-fixed -q -o json=/out/old.json
+          jq -r '[.matches[] | select(.vulnerability.id == "CVE-2026-115557" or .vulnerability.id == "CVE-2026-4738")] | unique_by(.vulnerability.id)[]
+            | "\(.vulnerability.id): \(.vulnerability.description // ((.relatedVulnerabilities // [])[0].description) // "n/a")"' "${out}/old.json"
+      - name: x/net advisories found in kubectl
+        run: |
+          set +e -uo pipefail
+          for id in GO-2026-6603 GO-2026-6610 GO-2026-6611 GO-2026-6612 GO-2026-6617; do
+            echo "===== ${id}"
+            curl -fsSL "https://vuln.go.dev/ID/${id}.json" \
+              | jq -r '"\(.summary // "")\n\(.details // "")\nsymbols: \([.affected[].ecosystem_specific.imports[]? | "\(.path): \(.symbols | join(","))"] | join("; "))"'
+          done
+
   find-images:
+    if: false
     runs-on: linux-amd64-cpu32
     timeout-minutes: 10
     outputs:
