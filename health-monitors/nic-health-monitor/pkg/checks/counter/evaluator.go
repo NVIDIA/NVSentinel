@@ -86,7 +86,7 @@ type Evaluator struct {
 	processingStrategy pb.ProcessingStrategy
 
 	// snapshots is the persisted (value, timestamp) per counter. For
-	// delta thresholds it is updated every poll; for velocity thresholds
+	// delta thresholds it is updated when the value changes; for velocity thresholds
 	// it is held for the duration of a window so rates are computed over
 	// real elapsed time.
 	snapshots map[string]statefile.CounterSnapshot
@@ -424,9 +424,9 @@ func (e *Evaluator) baselineOne(
 	return e.baselineEvent(counterCfg, entities, checkName)
 }
 
-// evaluateDelta evaluates a delta-typed counter. Snapshot is advanced
-// every poll regardless of whether a breach was detected so the next
-// poll's delta is measured against the latest reading.
+// evaluateDelta advances the snapshot when the counter value changes.
+// Delta thresholds do not use timestamps, so unchanged readings must
+// not trigger statefile writes.
 func (e *Evaluator) evaluateDelta(
 	key string,
 	currentValue uint64,
@@ -438,7 +438,9 @@ func (e *Evaluator) evaluateDelta(
 ) *pb.HealthEvent {
 	delta := currentValue - prev.Value
 
-	e.snapshots[key] = statefile.CounterSnapshot{Value: currentValue, Timestamp: now}
+	if delta != 0 {
+		e.snapshots[key] = statefile.CounterSnapshot{Value: currentValue, Timestamp: now}
+	}
 
 	if float64(delta) <= counterCfg.Threshold {
 		return nil

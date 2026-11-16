@@ -199,7 +199,7 @@ type MissingCharDeviceFlag struct {
 }
 
 // CounterSnapshot stores the value and wall-clock timestamp of a counter
-// reading. For delta thresholds the snapshot is updated every poll;
+// reading. For delta thresholds it is updated when the value changes;
 // for velocity thresholds it is held for the configured velocityUnit
 // window so the rate can be computed over real elapsed time.
 type CounterSnapshot struct {
