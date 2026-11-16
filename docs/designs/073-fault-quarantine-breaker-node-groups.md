@@ -120,7 +120,7 @@ A node group is the one place in fault-quarantine that defines a node type. ADR-
 - A node belongs to one node group. It is the first enabled group that matches, in order of `priority`, the highest first. For equal priorities, the first group in the configuration wins. This is the "one winner" rule of ADR-064.
 - A node that matches no enabled group uses the cluster breaker. `enabled: false` on a group moves its nodes to the next group that matches, or to the cluster breaker.
 - fault-quarantine evaluates the rules with `commons/pkg/celrule` ([#2299](https://github.com/NVIDIA/NVSentinel/pull/2299)), with the same `node` variable as the `Node` rules of its rule sets. The node informer places each node when the node is added or changes.
-- The node cache keeps the label and annotation keys that the group rules read.
+- The node cache keeps the label and annotation keys that the group rules read, and the `topologyKey` label of each group.
 - When fault-quarantine starts a quarantine, the log names the breaker that counts the node. A gauge reports the node count of each breaker.
 - Match on labels that a node cannot change for itself. A node that can change its own labels can move itself to a group with other limits.
 
@@ -184,8 +184,8 @@ nodeGroups:
             "nvidia.com/gpu.present" in node.metadata.labels &&
             node.metadata.labels["nvidia.com/gpu.present"] == "true"
     circuitBreaker:
-      maxNodes: 40                      # safety net. A small margin above the size of the largest domain
-      maxCordonedNodes: 60              # safety net. Above the size of the domains that can stay cordoned
+      maxNodes: 40                      # safety net. (maxDomains - 1) domains, and a small margin
+      maxCordonedNodes: 120             # safety net. (maxCordonedDomains - 1) domains, and a small margin
       duration: "5m"
       failureDomains:
         topologyKey: example.com/rack   # one failure domain for each value of this label
@@ -196,7 +196,7 @@ nodeGroups:
 - `topologyKey` works like `topologyKey` in Kubernetes topology spread constraints. Each value of the label is one domain.
 - `maxDomains` limits the number of domains that have a quarantine in the window. A domain counts once, however many of its nodes are quarantined.
 - `maxCordonedDomains` limits the number of domains that have a node that NVSentinel holds cordoned.
-- A domain has no limit of its own, so a full domain can be quarantined. The node bounds of the group apply to all its domains together, as a safety net. Set `maxNodes` a small margin above the size of the largest domain, and not higher. The domain bound stops a second domain, so a higher node bound gives no benefit, and it weakens the protection for nodes without a domain label.
+- A domain has no limit of its own, so a full domain can be quarantined. The node bounds of the group apply to all its domains together, as a safety net. A domain bound of N lets N - 1 full domains be quarantined. Thus set `maxNodes` to `maxDomains` - 1 times the size of the largest domain, plus a small margin, and not higher. Set `maxCordonedNodes` from `maxCordonedDomains` in the same way. A higher node bound gives no benefit, because the domain bound stops the next domain, and it weakens the protection for nodes without a domain label. The example is for domains of 36 nodes.
 - A domain bound trips when the count reaches it, as `maxNodes` does. A domain bound of 1 is not valid, because the first quarantine would trip it.
 - A domain bound is not a node bound. If the domain labels are wrong or missing, the node bounds stop a bad signal.
 
@@ -204,11 +204,11 @@ With `maxDomains: 2`, one failed domain does not trip, and it needs no reset. A 
 
 The domain of a node:
 
-- fault-quarantine fixes the domain of a node when it starts the quarantine. It stores the domain in a new quarantine annotation. A later change or loss of the label does not move a quarantined node to another domain, and a restart does not change it. [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) asked for this rule.
+- fault-quarantine fixes the domain of a node when it starts the quarantine. It reads the label at that time, and it stores the domain in a new quarantine annotation. A later change or loss of the label does not move a quarantined node to another domain, and a restart does not change it. [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) asked for this rule.
 - A node that has no label and no stored domain counts in one shared domain for its group, the unknown domain. fault-quarantine logs a warning and reports these nodes in a metric. One domain for each such node would count a rack without labels as many domains, and a failed rack would trip.
-- The unknown domain has a cost. Nodes without a label can be in different racks, but they all count as one domain, so the domain bound cannot find the second rack. Only the node bounds protect against a failure or a bad signal on such nodes. With `maxNodes` a small margin above the largest domain, the breaker trips when the quarantines pass that margin into the second rack. With labels, it trips at the first quarantine in the second rack. The metric for nodes without a domain label shows this exposure before a fault occurs.
+- The unknown domain has a cost. Nodes without a label can be in different racks, but they all count as one domain, so the domain bound cannot find the second rack. Only the node bounds protect against a failure or a bad signal on such nodes. With the node bounds sized as above, the breaker trips when the quarantines pass the small margin into the next rack. With labels, it trips at the first quarantine in that rack. The metric for nodes without a domain label shows this exposure before a fault occurs.
 - Match the group on a stable label, not on the domain label. A node then stays in its group when it loses its domain label.
-- A static rack label is the most stable key. `nvidia.com/gpu.clique` and the [Topograph](../INTEGRATIONS.md#topology-awareness-topograph) domain label are also valid keys, and a cluster with no rack label can use them. A discovery component computes these labels, so they can change or disappear during a fault. The rules above cover that case.
+- A static rack label is the most stable key. `nvidia.com/gpu.clique` and the [Topograph](../INTEGRATIONS.md#topology-awareness-topograph) domain label are also valid keys, and a cluster with no rack label can use them. A discovery component computes these labels, so they can change or disappear during a fault. The stored domain covers a node that is already quarantined. It does not cover a node that loses or changes its label before its quarantine. That node counts in the unknown domain, or in the new domain. One failed domain can then count as two domains, and the breaker can trip. This is the safe direction: the breaker trips early, and `trippedBy`, the domain annotations, and the metric for nodes without a domain label show the cause. A static label prevents this case. The [open questions](#open-questions) list ways to keep the domain of such a node.
 
 A cluster that is one domain gets no benefit from domain bounds. A failure of the full domain and a bad signal on every node give the same counts there. The node bounds are capped at the number of nodes of the group, so the breaker trips when every node is quarantined. The operator chooses between that trip and `circuitBreaker.enabled: false`.
 
@@ -234,7 +234,7 @@ Each step is a separate PR. A cluster with no node groups does not change at eit
 
 Tests:
 
-- Unit tests: the winner, equal priorities, a disabled group, and a rule error before and after the winner. The window and the standing count of each group. A group with no nodes, and the cluster breaker with no node that matches `gpuNodeLabel`. The series of each group. The domain of a node at quarantine, stored, and unknown. Nodes without a domain label, some in one rack and some in a second rack: they count as one domain, and the node bound trips.
+- Unit tests: the winner, equal priorities, a disabled group, and a rule error before and after the winner. The window and the standing count of each group. A group with no nodes, and the cluster breaker with no node that matches `gpuNodeLabel`. The series of each group. The domain of a node at quarantine, stored, and unknown. Nodes without a domain label, some in one rack and some in a second rack: they count as one domain, and the node bound trips. A node that loses its label before the quarantine counts in the unknown domain. The node bounds for a domain bound of 2 and of 3.
 - E2E tests: a burst on one node type trips by the limits of its group. A full domain is quarantined with no trip, and a second domain trips. A restart while tripped restores `trippedBy` and the series. With no node groups, nothing changes except the `group` label.
 
 ## Rationale
@@ -263,6 +263,7 @@ Tests:
 - The bounds of a group with domains depend on the size of a domain, so each cluster needs its own values.
 - On a cluster that is one domain, the breaker cannot tell a failed domain from a bad signal on every node.
 - For nodes without a domain label, the domain bound is weaker, because it counts them as one domain. The node bounds limit that case.
+- With a domain label that a discovery component computes, a label that disappears or changes during a fault can make one failed domain count as two, and the breaker then trips.
 - The membership rule (one winner) is different from the fault-quarantine rule sets (every match applies).
 
 ### Mitigations
@@ -330,6 +331,7 @@ The limits go on each quarantine rule set, and the breaker needs no rules of its
 ### Open questions
 
 - **Domain bounds on the cluster breaker.** To use domains, a cluster with one node type needs a node group that matches every node. `failureDomains` on the top-level `circuitBreaker` would remove that need.
+- **The domain of a node that loses its label before its quarantine.** This ADR counts the node in the unknown domain, so one failed domain can trip the breaker. Option 1: fault-quarantine writes the domain to an annotation on each node of the group when it first reads the label. The value is visible and a restart does not change it, but fault-quarantine then writes to nodes that are not quarantined. Option 2: the domain bound does not count the unknown domain, and only the node bounds apply to its nodes. This needs no state, but the domain bound is weaker for a node without a label.
 - **Dry run.** A report-only evaluation in dry run could show the counts of each group. Operators could then size the limits before a live run.
 - **Automatic reset.** A trip latches by design, and the operator chooses between replay and discard at the reset (ADR-022). [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) asks for a reset with no operator action after the nodes recover. This ADR does not propose one.
 - **Rolling update.** `strategy: Recreate` on the fault-quarantine Deployment would stop two pods from processing events at the same time during a rollout.
