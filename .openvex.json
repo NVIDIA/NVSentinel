@@ -3,7 +3,1299 @@
   "@id": "https://github.com/NVIDIA/NVSentinel/.openvex.json",
   "author": "NVIDIA NVSentinel maintainers",
   "role": "Document Creator",
-  "timestamp": "2026-11-11T00:00:00Z",
-  "version": 1,
-  "statements": []
+  "timestamp": "2026-11-16T00:00:00Z",
+  "version": 2,
+  "statements": [
+    {
+      "vulnerability": {"name": "CVE-2026-103111"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libpcre2-8 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-106553"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "openssh-client is in the base image. No NVSentinel process runs ssh."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-106555"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "openssh-client is in the base image. No NVSentinel process runs ssh."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-106583"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/openssh-client@1%3A9.6p1-3ubuntu13.19?arch=amd64&distro=ubuntu-24.04&upstream=openssh"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "openssh-client is in the base image. No NVSentinel process runs ssh."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-109518"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt-utils@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}, {"@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt-utils@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}, {"@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}]},
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt-transport-https@2.8.3?arch=all&distro=ubuntu-24.04&upstream=apt"}, {"@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}]},
+        {"@id": "pkg:oci/gpu-reset", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}]},
+        {"@id": "pkg:oci/metadata-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt@2.4.14?arch=amd64&distro=ubuntu-22.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0@2.4.14?arch=amd64&distro=ubuntu-22.04&upstream=apt"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "apt is in the base image. No NVSentinel process runs apt or installs packages at run time."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-111497"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libbrotli1@1.1.0-2build2?arch=amd64&distro=ubuntu-24.04&upstream=brotli"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libbrotli1@1.1.0-2build2?arch=amd64&distro=ubuntu-24.04&upstream=brotli"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libbrotli1 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112390"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112391"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112392"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112393"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112394"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112395"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112396"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112397"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112398"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112399"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112400"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112401"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112402"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112403"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112404"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112405"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112406"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112891"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112892"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112893"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112894"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112895"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112896"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112897"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112900"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112901"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-112902"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-115557"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/file-server-cleanup", "subcomponents": [{"@id": "pkg:generic/python@3.15.1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The fix is in the ssl module of Python, and file-server-cleanup uses no TLS."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-4738"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/file-server-cleanup", "subcomponents": [{"@id": "pkg:apk/alpine/zlib@1.3.2-r1?arch=x86_64&distro=alpine-3.24.3"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The vulnerable code is in infback9, from the contrib directory of zlib, which the zlib of Alpine does not include."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-63388"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libevent-core-2.1-7t64@2.1.12-stable-9ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=libevent"}, {"@id": "pkg:deb/ubuntu/libevent-pthreads-2.1-7t64@2.1.12-stable-9ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=libevent"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libevent-core-2.1-7t64@2.1.12-stable-9ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=libevent"}, {"@id": "pkg:deb/ubuntu/libevent-pthreads-2.1-7t64@2.1.12-stable-9ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=libevent"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libevent is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-69184"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libcares2@1.27.0-1.0ubuntu1?arch=amd64&distro=ubuntu-24.04&upstream=c-ares"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libcares2@1.27.0-1.0ubuntu1?arch=amd64&distro=ubuntu-24.04&upstream=c-ares"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libcares2 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-74860"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-76844"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/syslog-health-monitor", "subcomponents": [{"@id": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The advisory describes webpack-dev-middleware, a JavaScript package that is not in the image. zlib does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-82560"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libperl5.38t64@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl-modules-5.38@5.38.2-3.2ubuntu0.6?arch=all&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libperl5.38t64@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl-modules-5.38@5.38.2-3.2ubuntu0.6?arch=all&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04"}]},
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.4?arch=amd64&distro=ubuntu-24.04&upstream=perl"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.4?arch=amd64&distro=ubuntu-24.04&upstream=perl"}]},
+        {"@id": "pkg:oci/gpu-reset", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}]},
+        {"@id": "pkg:oci/metadata-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.34.0-3ubuntu1.9?arch=amd64&distro=ubuntu-22.04&upstream=perl"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.40.1-7ubuntu0.3?arch=amd64&distro=ubuntu-26.04&upstream=perl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in the Pod::Text module of perl and needs a crafted POD document. No NVSentinel process formats POD documentation."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-84243"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc-dev-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6-dev@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc-dev-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6-dev@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
+        {"@id": "pkg:oci/gpu-reset", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
+        {"@id": "pkg:oci/metadata-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.35-0ubuntu3.15?arch=amd64&distro=ubuntu-22.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.35-0ubuntu3.15?arch=amd64&distro=ubuntu-22.04&upstream=glibc"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.43-2ubuntu2.4?arch=amd64&distro=ubuntu-26.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc-gconv-modules-extra@2.43-2ubuntu2.4?arch=amd64&distro=ubuntu-26.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.43-2ubuntu2.4?arch=amd64&distro=ubuntu-26.04&upstream=glibc"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "The vulnerable code is in gettext and needs an attacker who can set the LANGUAGE variable and put a crafted message catalog in the container. The environment of an NVSentinel container comes from its pod spec, which only a user who can already run code in the container can change."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-85091"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/zlib1g-dev@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}, {"@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/zlib1g-dev@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}, {"@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}]},
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}]},
+        {"@id": "pkg:oci/syslog-health-monitor", "subcomponents": [{"@id": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in the gz* file functions of zlib, which no NVSentinel process calls. zlib1g-dev holds only headers and a static library."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-86138"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-86140"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-86142"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-86143"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-86144"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libxml2@2.9.14%2Bdfsg-1.3ubuntu3.8?arch=amd64&distro=ubuntu-24.04"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-86145"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libpcre2-8 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-86409"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-86414"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-87862"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-87863"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-87864"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-88806"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libx11-6@2%3A1.8.7-1build1?arch=amd64&distro=ubuntu-24.04&upstream=libx11"}, {"@id": "pkg:deb/ubuntu/libx11-data@2%3A1.8.7-1build1?arch=all&distro=ubuntu-24.04&upstream=libx11"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libx11-6@2%3A1.8.7-1build1?arch=amd64&distro=ubuntu-24.04&upstream=libx11"}, {"@id": "pkg:deb/ubuntu/libx11-data@2%3A1.8.7-1build1?arch=all&distro=ubuntu-24.04&upstream=libx11"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libX11 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-89157"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libpcre2-8 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-89161"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libpcre2-8-0@10.42-4ubuntu2.1?arch=amd64&distro=ubuntu-24.04&upstream=pcre2"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "libpcre2-8 is a library of the base image that no NVSentinel process loads."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-92388"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-92389"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-92391"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-94266"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/curl@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libcurl3t64-gnutls@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}, {"@id": "pkg:deb/ubuntu/libcurl4t64@8.5.0-2ubuntu10.15?arch=amd64&distro=ubuntu-24.04&upstream=curl"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-96637"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-96639"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-96640"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-96642"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-96643"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-96644"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-96778"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-22hg-r758-rrw9"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-27h8-gf7j-v5hc"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-27vj-qcqg-25rc"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/fsspec@2026.2.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/fsspec@2026.2.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "fsspec is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-332p-7hrc-92wf"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-3j72-p6qg-6xp7"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-58r4-6rv3-gfh8"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-5x8w-8jj5-q52h"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-5xm2-6676-qcp9"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-65qm-jvmh-6pqg"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-6655-6qjp-jx7x"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/soupsieve@2.10"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/soupsieve@2.10"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "soupsieve is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-6q48-6c7w-9gw2"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/certifi@2026.7.22"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/certifi@2026.7.22"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "certifi is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-78g4-xqwv-q3g8"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-7mwm-ghpf-9vrm"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-8g5g-8vmr-9782"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-9v9v-9qvf-h2hj"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-c6hw-5grf-ff96"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-cg8m-r9f2-5wm2"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/black@26.10.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/black@26.10.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "black is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-cp9v-662q-vvx9"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-f2g6-542v-9j58"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-g4qv-2jxx-769h"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-g7cr-3p24-7wf7"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-g842-9rc4-69pw"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-gg2r-wvfm-q9rx"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-j4m9-6w36-pw47"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-jg86-v3jv-hrpm"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-mmhr-3c5m-f64f"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/soupsieve@2.10"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/soupsieve@2.10"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "soupsieve is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-mrfp-p49p-3hf2"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-p4wg-p73j-c528"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-pchr-8j38-3x4p"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-pjvx-prjx-h659"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/nbconvert@7.17.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/nbconvert@7.17.1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "nbconvert is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-q45j-58j2-45rg"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-v4x8-3wr5-3wq8"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/filelock@4.0.12"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/filelock@4.0.12"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "filelock is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-v9pv-5gc8-w2m6"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-w889-685w-c8fh"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-wf93-45jw-7689"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pip@26.0.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pip@26.0.1"}]},
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:pypi/pip@24.0"}]},
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:pypi/pip@24.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "pip is in the base image, inside Nsight Systems and in /opt/venv, where python3 -m venv installs it. No NVSentinel process runs or imports it."
+    },
+    {
+      "vulnerability": {"name": "GHSA-wqgw-9xfh-qf2g"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-xcvg-w56q-r89m"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GHSA-xvh5-g6gv-559v"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:pypi/pillow@12.3.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6603"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs. In log-collector, the vulnerable code is the HTTP/2 server code in kubectl, which log-collector runs only as a client."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6605"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6607"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6608"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6610"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs. In log-collector, the problem affects kubectl only as a reverse proxy, and log-collector never runs kubectl proxy or port-forward."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6611"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "The vulnerable code in kubectl needs a malicious HTTP/2 peer. In log-collector, the only peer is the Kubernetes API server, which kubectl authenticates with TLS."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6611"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6612"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs. In log-collector, the vulnerable code is the HTTP/2 server code in kubectl, which log-collector runs only as a client."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6613"},
+      "timestamp": "2026-11-13T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/stdlib@1.27.1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6617"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs. In log-collector, the vulnerable code is the HTTP/2 server code in kubectl, which log-collector runs only as a client."
+    }
+  ]
 }
