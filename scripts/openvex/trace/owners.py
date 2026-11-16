@@ -25,8 +25,15 @@ from importlib import metadata
 
 loaded = set()
 for f in glob.glob("/openvex-trace/out/*.json"):
-    d = json.load(open(f))
-    for p in d["modules"] + d["libs"]:
+    # Skip a record that is not valid, for example one that a process could not finish writing.
+    try:
+        with open(f) as fh:
+            d = json.load(fh)
+        paths = list(d["modules"]) + list(d["libs"])
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"skip {f}: {e}", file=sys.stderr)
+        continue
+    for p in paths:
         loaded.add(os.path.realpath(p))
 # Accept bare paths and ldd lines such as "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x...)".
 extra = set()
