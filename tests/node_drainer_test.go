@@ -208,6 +208,12 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 }
 
 func TestNodeDrainerPartialDrain(t *testing.T) {
+	const (
+		partialDrainMessage = "NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]"
+		// Must match the GPU that data/busybox-pod-with-devices.yaml requests.
+		partialDrainGPU = "GPU-455d8f70-2051-db6c-0430-ffc457bff834"
+	)
+
 	feature := features.New("TestNodeDrainerPartialDrain").
 		WithLabel("suite", "node-drainer")
 
@@ -244,12 +250,12 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("119").
-			WithMessage("NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]").
+			WithMessage(partialDrainMessage).
 			WithRecommendedAction(2).
 			WithEntitiesImpacted([]helpers.EntityImpacted{
 				{
 					EntityType:  "GPU_UUID",
-					EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
+					EntityValue: partialDrainGPU,
 				},
 			})
 		helpers.SendHealthEvent(ctx, t, event)
@@ -297,12 +303,12 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("119").
-			WithMessage("NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]").
+			WithMessage(partialDrainMessage).
 			WithRecommendedAction(2).
 			WithEntitiesImpacted([]helpers.EntityImpacted{
 				{
 					EntityType:  "GPU_UUID",
-					EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
+					EntityValue: partialDrainGPU,
 				},
 			})
 		helpers.SendHealthEvent(ctx, t, event)
@@ -317,19 +323,17 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 			require.Fail(t, "timed out waiting desired label changes")
 		}
 
-		const partialMessage = "NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]"
-
 		var entityType, entityValue, method string
 
 		require.Eventually(t, func() bool {
 			var ok bool
 			entityType, entityValue, method, ok = helpers.HealthEventDrainScope(ctx, t, client.RESTConfig(), client,
-				testCtx.NodeName, partialMessage)
+				testCtx.NodeName, partialDrainMessage)
 
 			return ok
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "covered event should record its drain scope")
 		require.Equal(t, "GPU_UUID", entityType)
-		require.Equal(t, "GPU-455d8f70-2051-db6c-0430-ffc457bff834", entityValue)
+		require.Equal(t, partialDrainGPU, entityValue)
 		require.Empty(t, method, "a covered event records the scope and no method")
 
 		t.Log("Phase 2: Pods not leveraging impacted GPU should not be drained")
@@ -346,7 +350,7 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("119").
-			WithMessage("NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]").
+			WithMessage(partialDrainMessage).
 			WithRecommendedAction(2)
 
 		helpers.SendHealthEvent(ctx, t, event)

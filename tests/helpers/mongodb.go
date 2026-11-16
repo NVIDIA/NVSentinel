@@ -374,88 +374,18 @@ func CancelledHealthEventFaultRemediated(
 
 // HealthEventDrainMethod reads drainDecision.method for the newest succeeded health event that
 // matches. Test nodes are reused, so an older event can carry the same message.
-// The event document is stored only in the datastore, so the check reads MongoDB or PostgreSQL.
-// ok is false until that document is visible.
+// ok is false until that document is visible with a method.
 func HealthEventDrainMethod(
 	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client, nodeName, message string,
 ) (string, bool) {
 	t.Helper()
 
-	if podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client); found {
-		return mongoDrainMethod(ctx, t, restConfig, client, podName, nodeName, message)
-	}
-
-	if podName, found := postgresPrimaryPodName(ctx, t, client); found {
-		return postgresDrainMethod(ctx, t, restConfig, podName, nodeName, message)
-	}
-
-	t.Logf("No MongoDB or PostgreSQL pod found for drain decision lookup")
-
-	return "", false
-}
-
-// mongoDrainMethod reads drainDecision.method of the newest matching event from MongoDB.
-func mongoDrainMethod(
-	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client,
-	mongoPod, nodeName, message string,
-) (string, bool) {
-	t.Helper()
-
-	js := fmt.Sprintf(`
-		db = db.getSiblingDB("%s");
-		const doc = db.HealthEvents.find({
-			"healthevent.nodename": %q,
-			"healthevent.message": %q,
-			"healtheventstatus.userpodsevictionstatus.status": "Succeeded"
-		}).sort({ createdAt: -1 }).limit(1).toArray()[0];
-		if (doc && doc.healtheventstatus && doc.healtheventstatus.draindecision &&
-			doc.healtheventstatus.draindecision.method) {
-			print(doc.healtheventstatus.draindecision.method);
-		} else {
-			print("NOT_READY");
-		}
-	`, MongoDBDatabase, nodeName, message)
-
-	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
-	method := strings.TrimSpace(stdout)
-
-	if method == "" || strings.Contains(method, "NOT_READY") {
+	decision, ok := healthEventDrainDecision(ctx, t, restConfig, client, nodeName, message, "Succeeded")
+	if !ok || decision.method == "" {
 		return "", false
 	}
 
-	return method, true
-}
-
-// postgresDrainMethod reads drainDecision.method of the newest matching event from PostgreSQL.
-func postgresDrainMethod(
-	ctx context.Context, t *testing.T, restConfig *rest.Config, podName, nodeName, message string,
-) (string, bool) {
-	t.Helper()
-
-	query := fmt.Sprintf(`
-		SELECT COALESCE(document #>> '{healtheventstatus,draindecision,method}', '')
-		FROM health_events
-		WHERE node_name = '%s'
-		  AND document #>> '{healthevent,message}' = '%s'
-		  AND document #>> '{healtheventstatus,userpodsevictionstatus,status}' = 'Succeeded'
-		ORDER BY created_at DESC
-		LIMIT 1;
-	`, sqlLiteral(nodeName), sqlLiteral(message))
-
-	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
-		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
-	if err != nil {
-		t.Logf("PostgreSQL drain decision lookup failed: %v stderr=%s", err, stderr)
-
-		return "", false
-	}
-
-	method := strings.TrimSpace(stdout)
-	if method == "" {
-		return "", false
-	}
-
-	return method, true
+	return decision.method, true
 }
 
 // HealthEventDrainScope reads the drain scope of the newest AlreadyDrained event that matches.
@@ -466,24 +396,43 @@ func HealthEventDrainScope(
 ) (entityType, entityValue, method string, ok bool) {
 	t.Helper()
 
+	decision, ok := healthEventDrainDecision(ctx, t, restConfig, client, nodeName, message, "AlreadyDrained")
+
+	return decision.entityType, decision.entityValue, decision.method, ok
+}
+
+// storedDrainDecision is the drain decision saved in a health event document.
+type storedDrainDecision struct {
+	entityType, entityValue, method string
+}
+
+// healthEventDrainDecision reads the drain decision of the newest event that matches the node, the
+// message, and the pod eviction status. The event document is stored only in the datastore, so the
+// check reads MongoDB or PostgreSQL. ok is false until a matching document with a decision is visible.
+func healthEventDrainDecision(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client,
+	nodeName, message, evictionStatus string,
+) (storedDrainDecision, bool) {
+	t.Helper()
+
 	if podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client); found {
-		return mongoDrainScope(ctx, t, restConfig, client, podName, nodeName, message)
+		return mongoDrainDecision(ctx, t, restConfig, client, podName, nodeName, message, evictionStatus)
 	}
 
 	if podName, found := postgresPrimaryPodName(ctx, t, client); found {
-		return postgresDrainScope(ctx, t, restConfig, podName, nodeName, message)
+		return postgresDrainDecision(ctx, t, restConfig, podName, nodeName, message, evictionStatus)
 	}
 
-	t.Logf("No MongoDB or PostgreSQL pod found for drain scope lookup")
+	t.Logf("No MongoDB or PostgreSQL pod found for drain decision lookup")
 
-	return "", "", "", false
+	return storedDrainDecision{}, false
 }
 
-// mongoDrainScope reads the scope of the newest AlreadyDrained event from MongoDB.
-func mongoDrainScope(
+// mongoDrainDecision reads the drain decision of the newest matching event from MongoDB.
+func mongoDrainDecision(
 	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client,
-	mongoPod, nodeName, message string,
-) (string, string, string, bool) {
+	mongoPod, nodeName, message, evictionStatus string,
+) (storedDrainDecision, bool) {
 	t.Helper()
 
 	js := fmt.Sprintf(`
@@ -491,7 +440,7 @@ func mongoDrainScope(
 		const doc = db.HealthEvents.find({
 			"healthevent.nodename": %q,
 			"healthevent.message": %q,
-			"healtheventstatus.userpodsevictionstatus.status": "AlreadyDrained"
+			"healtheventstatus.userpodsevictionstatus.status": %q
 		}).sort({ createdAt: -1 }).limit(1).toArray()[0];
 		if (!doc || !doc.healtheventstatus || !doc.healtheventstatus.draindecision) {
 			print("NOT_READY");
@@ -500,17 +449,17 @@ func mongoDrainScope(
 			const scope = decision.scope || {};
 			print((scope.entitytype || "") + "\t" + (scope.entityvalue || "") + "\t" + (decision.method || ""));
 		}
-	`, MongoDBDatabase, nodeName, message)
+	`, MongoDBDatabase, nodeName, message, evictionStatus)
 
 	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
 
-	return parseDrainScope(stdout)
+	return parseDrainDecision(stdout)
 }
 
-// postgresDrainScope reads the scope of the newest AlreadyDrained event from PostgreSQL.
-func postgresDrainScope(
-	ctx context.Context, t *testing.T, restConfig *rest.Config, podName, nodeName, message string,
-) (string, string, string, bool) {
+// postgresDrainDecision reads the drain decision of the newest matching event from PostgreSQL.
+func postgresDrainDecision(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, podName, nodeName, message, evictionStatus string,
+) (storedDrainDecision, bool) {
 	t.Helper()
 
 	query := fmt.Sprintf(`
@@ -523,37 +472,37 @@ func postgresDrainScope(
 		FROM health_events
 		WHERE node_name = '%s'
 		  AND document #>> '{healthevent,message}' = '%s'
-		  AND document #>> '{healtheventstatus,userpodsevictionstatus,status}' = 'AlreadyDrained'
+		  AND document #>> '{healtheventstatus,userpodsevictionstatus,status}' = '%s'
 		ORDER BY created_at DESC
 		LIMIT 1;
-	`, sqlLiteral(nodeName), sqlLiteral(message))
+	`, sqlLiteral(nodeName), sqlLiteral(message), sqlLiteral(evictionStatus))
 
 	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
 		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
 	if err != nil {
-		t.Logf("PostgreSQL drain scope lookup failed: %v stderr=%s", err, stderr)
+		t.Logf("PostgreSQL drain decision lookup failed: %v stderr=%s", err, stderr)
 
-		return "", "", "", false
+		return storedDrainDecision{}, false
 	}
 
-	return parseDrainScope(stdout)
+	return parseDrainDecision(stdout)
 }
 
-// parseDrainScope splits the entity type, entity value, and method returned by a scope lookup.
-func parseDrainScope(stdout string) (string, string, string, bool) {
-	// Keep tabs. A full-node record is three empty fields separated by tabs, and TrimSpace
-	// would delete that line.
+// parseDrainDecision splits the entity type, entity value, and method returned by a decision lookup.
+func parseDrainDecision(stdout string) (storedDrainDecision, bool) {
+	// Keep tabs. A full-node decision with no method is three empty fields separated by tabs,
+	// and TrimSpace would delete that line.
 	text := strings.Trim(stdout, "\r\n ")
 	if text == "" || strings.Contains(text, "NOT_READY") {
-		return "", "", "", false
+		return storedDrainDecision{}, false
 	}
 
 	parts := strings.Split(text, "\t")
 	if len(parts) != 3 {
-		return "", "", "", false
+		return storedDrainDecision{}, false
 	}
 
-	return parts[0], parts[1], parts[2], true
+	return storedDrainDecision{entityType: parts[0], entityValue: parts[1], method: parts[2]}, true
 }
 
 // postgresPrimaryPodName returns the running PostgreSQL primary pod in the NVSentinel namespace.

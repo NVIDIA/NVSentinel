@@ -1896,18 +1896,9 @@ func TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess(t *testing.T) {
 // TestReconciler_CoveredAlreadyDrainedRecordsScope stores the scope of a partial event in the
 // same update that marks it AlreadyDrained. The earlier event completed a full drain.
 func TestReconciler_CoveredAlreadyDrainedRecordsScope(t *testing.T) {
-	setup := setupDirectTest(t, []config.UserNamespace{
-		{Name: "test-*", Mode: config.ModeImmediateEvict},
-	}, false)
-
 	nodeName := "scope-record-node"
-	prepareCoveredNode(t, setup, nodeName)
-
-	updates := recordStatusUpdates(setup.mockCollection, 1)
-
-	event := partialQuarantinedEvent(nodeName, model.AlreadyQuarantined)
-	require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
-		setup.healthEventStore, nodeName))
+	updates, err := processCoveredPartialEvent(t, nodeName, 1, nil)
+	require.NoError(t, err)
 
 	require.Len(t, updates.writes, 1)
 	assertScopeOnlyDecision(t, updates.writes[0], "GPU-0")
@@ -1922,22 +1913,13 @@ func TestReconciler_CoveredAlreadyDrainedRecordsScope(t *testing.T) {
 // TestReconciler_CoveredAlreadyDrainedKeepsExistingRecord does not replace a decision that is
 // already stored on the event.
 func TestReconciler_CoveredAlreadyDrainedKeepsExistingRecord(t *testing.T) {
-	setup := setupDirectTest(t, []config.UserNamespace{
-		{Name: "test-*", Mode: config.ModeImmediateEvict},
-	}, false)
-
-	nodeName := "scope-kept-node"
-	prepareCoveredNode(t, setup, nodeName)
-
-	updates := recordStatusUpdates(setup.mockCollection, 1)
-	event := partialQuarantinedEvent(nodeName, model.AlreadyQuarantined)
-	event["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = &protos.DrainDecision{
-		Method: model.DrainMethodBuiltIn,
-		Scope:  &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-0"},
-	}
-
-	require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
-		setup.healthEventStore, nodeName))
+	updates, err := processCoveredPartialEvent(t, "scope-kept-node", 1, func(event map[string]any) {
+		event["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = &protos.DrainDecision{
+			Method: model.DrainMethodBuiltIn,
+			Scope:  &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-0"},
+		}
+	})
+	require.NoError(t, err)
 
 	require.Len(t, updates.writes, 1)
 	_, wroteDecision := updates.writes[0]["healtheventstatus.draindecision"]
@@ -1948,17 +1930,7 @@ func TestReconciler_CoveredAlreadyDrainedKeepsExistingRecord(t *testing.T) {
 // TestReconciler_CoveredAlreadyDrainedRequeuesWhenRecordExists loses the compare-and-set because
 // another writer stored a decision first. The status stays unchanged and the pass is retried.
 func TestReconciler_CoveredAlreadyDrainedRequeuesWhenRecordExists(t *testing.T) {
-	setup := setupDirectTest(t, []config.UserNamespace{
-		{Name: "test-*", Mode: config.ModeImmediateEvict},
-	}, false)
-
-	nodeName := "scope-race-node"
-	prepareCoveredNode(t, setup, nodeName)
-	updates := recordStatusUpdates(setup.mockCollection, 0)
-
-	event := partialQuarantinedEvent(nodeName, model.AlreadyQuarantined)
-	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
-		setup.healthEventStore, nodeName)
+	updates, err := processCoveredPartialEvent(t, "scope-race-node", 0, nil)
 	require.ErrorContains(t, err, "already recorded")
 
 	require.Len(t, updates.filters, 1)
@@ -3316,6 +3288,31 @@ func (s *decisionAlreadyRecordedStore) UpdateDocument(
 	}
 
 	return s.mockDataStore.UpdateDocument(ctx, filter, update)
+}
+
+// processCoveredPartialEvent processes an AlreadyQuarantined GPU-0 event on a node whose earlier
+// event completed a full drain, and returns the status updates it wrote. matched is the document
+// count that the fake database reports for each update. mutate, when set, changes the event first.
+func processCoveredPartialEvent(t *testing.T, nodeName string, matched int64,
+	mutate func(event map[string]any)) (*statusUpdateCapture, error) {
+	t.Helper()
+
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	prepareCoveredNode(t, setup, nodeName)
+	updates := recordStatusUpdates(setup.mockCollection, matched)
+
+	event := partialQuarantinedEvent(nodeName, model.AlreadyQuarantined)
+	if mutate != nil {
+		mutate(event)
+	}
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+
+	return updates, err
 }
 
 type statusUpdateCapture struct {
