@@ -26,40 +26,17 @@ permissions:
 jobs:
   investigate:
     runs-on: linux-amd64-cpu32
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
-      - name: syslog-health-monitor and zlib
+      - name: libsystemd in syslog-health-monitor
         run: |
           set +e -uo pipefail
-          ref=ghcr.io/nvidia/nvsentinel/syslog-health-monitor:main-6e388be
-          out="${RUNNER_TEMP}/s" && mkdir -p "${out}" && chmod 777 "${out}"
-          docker run --rm --entrypoint sh -v "${out}:/out" "${ref}" -c '
-            ldd /app/syslog-health-monitor; mkdir -p /out/l
-            cp /app/syslog-health-monitor /out/l/
-            for f in $(ldd /app/syslog-health-monitor | awk "/=> \//{print \$3}"); do cp -L "$f" /out/l/; done'
-          docker run --rm -v "${out}:/s" \
-            public.ecr.aws/docker/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 \
-            bash -c 'cd /s/l; for f in *; do
-                n=$(readelf -d "$f" | grep -c "libz.so"); g=$(readelf -W --dyn-syms "$f" | awk "\$7==\"UND\"{print \$8}" | sed "s/@.*//" | grep -E "^(gz|deflate|inflate|compress|uncompress|crc32|adler32)" | sort -u | tr "\n" " ")
-                echo "${f}: links-libz=${n} zlib-imports=[${g}]"; done'
-          docker run --rm -v "${out}:/out" anchore/grype:v0.118.0 "registry:${ref}" --only-fixed -q -o json=/out/g.json
-          sudo chmod -R a+r "${out}" 2>/dev/null
-          docker run --rm -v "${out}:/out" --entrypoint sh public.ecr.aws/docker/library/python:3.15-alpine@sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd -c \
-            'apk add -q jq >/dev/null 2>&1; jq -r "[.matches[] | select(.artifact.name==\"zlib1g\")] | unique_by(.vulnerability.id)[] | \"\(.vulnerability.id): \(.vulnerability.description // ((.relatedVulnerabilities // [])[0].description))\"" /out/g.json'
-      - name: Alpine libz in file-server-cleanup
-        run: |
-          set +e -uo pipefail
-          docker run --rm --entrypoint python3 ghcr.io/nvidia/nvsentinel/file-server-cleanup:main-6e388be -c '
-          import ctypes, ctypes.util, zlib
-          p = ctypes.util.find_library("z") or "libz.so.1"
-          lib = ctypes.CDLL(p)
-          for s in ("inflateBack9", "inflateBack9Init_", "inflateBack9End", "inflateBack", "gzopen", "inflate"):
-              print(p, s, "present" if hasattr(lib, s) else "absent")
-          print("python zlib module uses", zlib.ZLIB_RUNTIME_VERSION)'
-          docker run --rm --entrypoint sh ghcr.io/nvidia/nvsentinel/file-server-cleanup:main-6e388be -c 'apk info -L zlib 2>/dev/null; ls -l /usr/lib/libz* /lib/libz* 2>/dev/null'
+          docker run --rm --entrypoint sh ghcr.io/nvidia/nvsentinel/syslog-health-monitor:main-6e388be -c '
+            for f in /usr/lib/x86_64-linux-gnu/libsystemd.so.0 /lib/x86_64-linux-gnu/libsystemd.so.0; do [ -e "$f" ] && { echo "== ldd $f"; ldd "$f"; }; done
+            echo "== libz in the image:"; ls -l /usr/lib/x86_64-linux-gnu/libz.so* /lib/x86_64-linux-gnu/libz.so* 2>/dev/null
+            echo "== files that mention libz.so:"; grep -l "libz.so" /usr/lib/x86_64-linux-gnu/*.so* 2>/dev/null'
 
   find-images:
-    if: false
     runs-on: linux-amd64-cpu32
     timeout-minutes: 10
     outputs:

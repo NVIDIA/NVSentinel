@@ -28,7 +28,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. openssh-client comes with the base image. No check runs ssh."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. openssh-client comes with the base image. No component runs ssh."
     },
     {
       "vulnerability": {"name": "CVE-2026-106555"},
@@ -39,7 +39,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. openssh-client comes with the base image. No check runs ssh."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. openssh-client comes with the base image. No component runs ssh."
     },
     {
       "vulnerability": {"name": "CVE-2026-106583"},
@@ -50,7 +50,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. openssh-client comes with the base image. No check runs ssh."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. openssh-client comes with the base image. No component runs ssh."
     },
     {
       "vulnerability": {"name": "CVE-2026-109518"},
@@ -58,11 +58,13 @@
       "products": [
         {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt-utils@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}, {"@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}]},
         {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt-utils@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}, {"@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}]},
-        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt-transport-https@2.8.3?arch=all&distro=ubuntu-24.04&upstream=apt"}, {"@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}]}
+        {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt-transport-https@2.8.3?arch=all&distro=ubuntu-24.04&upstream=apt"}, {"@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}]},
+        {"@id": "pkg:oci/gpu-reset", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt@2.8.3?arch=amd64&distro=ubuntu-24.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0t64@2.8.3?arch=amd64&distro=ubuntu-24.04&upstream=apt"}]},
+        {"@id": "pkg:oci/metadata-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/apt@2.4.14?arch=amd64&distro=ubuntu-22.04"}, {"@id": "pkg:deb/ubuntu/libapt-pkg6.0@2.4.14?arch=amd64&distro=ubuntu-22.04&upstream=apt"}]}
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. apt comes with the base image. No check runs apt."
+      "impact_statement": "apt comes with the base image. No component runs apt or installs packages at run time."
     },
     {
       "vulnerability": {"name": "CVE-2026-111497"},
@@ -373,6 +375,26 @@
       "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
     },
     {
+      "vulnerability": {"name": "CVE-2026-115557"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/file-server-cleanup", "subcomponents": [{"@id": "pkg:generic/python@3.15.1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The fix adds a denylist of compromised certificates to the ssl module of Python. file-server-cleanup does not use TLS: it serves its metrics over plain HTTP, runs find to delete old files, and opens no other connections."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-4738"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/file-server-cleanup", "subcomponents": [{"@id": "pkg:apk/alpine/zlib@1.3.2-r1?arch=x86_64&distro=alpine-3.24.3"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The vulnerable code is in infback9, in the contrib directory of zlib, which GDAL builds. The zlib library of Alpine does not include infback9: it exports no inflateBack9 function."
+    },
+    {
       "vulnerability": {"name": "CVE-2026-63388"},
       "timestamp": "2026-11-16T00:00:00Z",
       "products": [
@@ -406,17 +428,30 @@
       "impact_statement": "gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries that the DCGM library and its modules link. libxml2 comes with the base image. None of these processes loads it."
     },
     {
+      "vulnerability": {"name": "CVE-2026-76844"},
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/syslog-health-monitor", "subcomponents": [{"@id": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The advisory describes a path traversal in webpack-dev-middleware, a JavaScript package. zlib does not contain that code, and the image contains no webpack-dev-middleware."
+    },
+    {
       "vulnerability": {"name": "CVE-2026-82560"},
       "timestamp": "2026-11-16T00:00:00Z",
       "products": [
         {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libperl5.38t64@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl-modules-5.38@5.38.2-3.2ubuntu0.6?arch=all&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04"}]},
         {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libperl5.38t64@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl-modules-5.38@5.38.2-3.2ubuntu0.6?arch=all&distro=ubuntu-24.04&upstream=perl"}, {"@id": "pkg:deb/ubuntu/perl@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04"}]},
         {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.4?arch=amd64&distro=ubuntu-24.04&upstream=perl"}]},
-        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.4?arch=amd64&distro=ubuntu-24.04&upstream=perl"}]}
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.4?arch=amd64&distro=ubuntu-24.04&upstream=perl"}]},
+        {"@id": "pkg:oci/gpu-reset", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.38.2-3.2ubuntu0.6?arch=amd64&distro=ubuntu-24.04&upstream=perl"}]},
+        {"@id": "pkg:oci/metadata-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.34.0-3ubuntu1.9?arch=amd64&distro=ubuntu-22.04&upstream=perl"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/perl-base@5.40.1-7ubuntu0.3?arch=amd64&distro=ubuntu-26.04&upstream=perl"}]}
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. perl comes with the base image. No check runs perl, and none of these processes loads libperl."
+      "impact_statement": "The vulnerable code is in the Pod::Text module of perl, which formats POD documentation, for example for pod2text and perldoc. It needs a crafted POD document. No component formats POD documentation."
     },
     {
       "vulnerability": {"name": "CVE-2026-84243"},
@@ -425,11 +460,14 @@
         {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc-dev-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6-dev@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
         {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc-dev-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6-dev@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
         {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
-        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]}
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
+        {"@id": "pkg:oci/gpu-reset", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"}]},
+        {"@id": "pkg:oci/metadata-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.35-0ubuntu3.15?arch=amd64&distro=ubuntu-22.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.35-0ubuntu3.15?arch=amd64&distro=ubuntu-22.04&upstream=glibc"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:deb/ubuntu/libc-bin@2.43-2ubuntu2.4?arch=amd64&distro=ubuntu-26.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc-gconv-modules-extra@2.43-2ubuntu2.4?arch=amd64&distro=ubuntu-26.04&upstream=glibc"}, {"@id": "pkg:deb/ubuntu/libc6@2.43-2ubuntu2.4?arch=amd64&distro=ubuntu-26.04&upstream=glibc"}]}
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "impact_statement": "The vulnerable code is in gettext, which reads message catalogs from the directories in the LANGUAGE environment variable. To use it, an attacker needs to set LANGUAGE and a locale other than C or POSIX in the environment of a check, and to put a crafted catalog in its container. The environment of a check comes from its pod spec. Only a user who can create or change pods sets it, and that user can already run any code in the container."
+      "impact_statement": "The vulnerable code is in gettext, which reads message catalogs from the directories in the LANGUAGE environment variable. To use it, an attacker needs to set LANGUAGE and a locale other than C or POSIX in the environment of a container, and to put a crafted catalog in it. The environment of each container comes from its pod spec. Only a user who can create or change pods sets it, and that user can already run any code in the container."
     },
     {
       "vulnerability": {"name": "CVE-2026-85091"},
@@ -438,11 +476,12 @@
         {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:deb/ubuntu/zlib1g-dev@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}, {"@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}]},
         {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:deb/ubuntu/zlib1g-dev@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}, {"@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}]},
         {"@id": "pkg:oci/gpu-health-monitor", "subcomponents": [{"@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}]},
-        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}]}
+        {"@id": "pkg:oci/preflight-dcgm-diag", "subcomponents": [{"@id": "pkg:deb/ubuntu/zlib1g@1%3A1.3.dfsg-3.1ubuntu2.2?arch=amd64&distro=ubuntu-24.04&upstream=zlib"}]},
+        {"@id": "pkg:oci/syslog-health-monitor", "subcomponents": [{"@id": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1"}]}
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. zlib comes with the base image. The vulnerable gz_vacate() is reached only through the gzip file functions gzwrite(), gzprintf() and gzvprintf(). Python loads libz but calls only its deflate, inflate and checksum functions, and none of the loaded libraries imports a gz* function. The nccl-loopback binaries do not load libz. The DCGM library and its modules do not link libz. zlib1g-dev holds headers and a static library that nothing links at run time."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. syslog-health-monitor runs one Go binary, which links only libc and loads libsystemd to read the journal. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. zlib comes with the base image. The vulnerable code is in the gzip file functions, such as gzwrite(), gzprintf() and gzvprintf(). Where Python loads libz, it calls only the deflate, inflate and checksum functions, and none of the loaded libraries imports a gz* function. The nccl-loopback binaries do not load libz. The DCGM library and its modules do not link libz. The syslog-health-monitor binary and libsystemd do not link libz. zlib1g-dev holds headers and a static library that nothing links at run time."
     },
     {
       "vulnerability": {"name": "CVE-2026-86138"},
@@ -521,7 +560,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No check runs curl, and none of these processes loads libcurl."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-86414"},
@@ -532,7 +571,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No check runs curl, and none of these processes loads libcurl."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-87862"},
@@ -543,7 +582,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No check runs curl, and none of these processes loads libcurl."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-87863"},
@@ -554,7 +593,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No check runs curl, and none of these processes loads libcurl."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-87864"},
@@ -565,7 +604,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No check runs curl, and none of these processes loads libcurl."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-88806"},
@@ -613,7 +652,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No check runs curl, and none of these processes loads libcurl."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-92389"},
@@ -624,7 +663,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No check runs curl, and none of these processes loads libcurl."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-92391"},
@@ -635,7 +674,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No check runs curl, and none of these processes loads libcurl."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-94266"},
@@ -646,7 +685,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No check runs curl, and none of these processes loads libcurl."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-96637"},
@@ -1110,7 +1149,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. pip is inside Nsight Systems in the PyTorch base image and in /opt/venv, where python3 -m venv installs it. No check runs pip, and none of these processes imports it."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. pip is inside Nsight Systems in the PyTorch base image and in /opt/venv, where python3 -m venv installs it. No component runs pip, and none of these processes imports it."
     },
     {
       "vulnerability": {"name": "GHSA-wqgw-9xfh-qf2g"},
@@ -1147,14 +1186,15 @@
     },
     {
       "vulnerability": {"name": "GO-2026-6603"},
-      "timestamp": "2026-11-13T00:00:00Z",
+      "timestamp": "2026-11-16T00:00:00Z",
       "products": [
         {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
-        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]}
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No check runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb. In log-collector, the vulnerable code is the HTTP/2 server of golang.org/x/net in kubectl. log-collector runs kubectl only as a client, for kubectl get, exec and cp, so the server code never runs."
     },
     {
       "vulnerability": {"name": "GO-2026-6605"},
@@ -1165,7 +1205,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No check runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
     },
     {
       "vulnerability": {"name": "GO-2026-6607"},
@@ -1176,7 +1216,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No check runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
     },
     {
       "vulnerability": {"name": "GO-2026-6608"},
@@ -1187,40 +1227,52 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No check runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
     },
     {
       "vulnerability": {"name": "GO-2026-6610"},
-      "timestamp": "2026-11-13T00:00:00Z",
+      "timestamp": "2026-11-16T00:00:00Z",
       "products": [
         {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
-        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]}
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No check runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb. In log-collector, the vulnerable code is in kubectl. The problem affects an HTTP/2 client that forwards responses to an HTTP/1 client as a reverse proxy. log-collector runs kubectl get, exec and cp, never kubectl proxy or port-forward."
     },
     {
       "vulnerability": {"name": "GO-2026-6611"},
-      "timestamp": "2026-11-13T00:00:00Z",
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "In log-collector, the vulnerable code is the HTTP/2 client of golang.org/x/net in kubectl. It needs a malicious HTTP/2 peer. The only peer of kubectl in log-collector is the Kubernetes API server of the cluster, which kubectl authenticates with TLS."
+    },
+    {
+      "vulnerability": {"name": "GO-2026-6611"},
+      "timestamp": "2026-11-16T00:00:00Z",
       "products": [
         {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
         {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]}
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No check runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
     },
     {
       "vulnerability": {"name": "GO-2026-6612"},
-      "timestamp": "2026-11-13T00:00:00Z",
+      "timestamp": "2026-11-16T00:00:00Z",
       "products": [
         {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
-        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]}
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No check runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb. In log-collector, the vulnerable code is the HTTP/2 server of golang.org/x/net in kubectl. log-collector runs kubectl only as a client, for kubectl get, exec and cp, so the server code never runs."
     },
     {
       "vulnerability": {"name": "GO-2026-6613"},
@@ -1231,18 +1283,19 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No check runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
     },
     {
       "vulnerability": {"name": "GO-2026-6617"},
-      "timestamp": "2026-11-13T00:00:00Z",
+      "timestamp": "2026-11-16T00:00:00Z",
       "products": [
         {"@id": "pkg:oci/preflight-nccl-loopback", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
-        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]}
+        {"@id": "pkg:oci/preflight-nccl-allreduce", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.59.0"}, {"@id": "pkg:golang/stdlib@1.27.1"}]},
+        {"@id": "pkg:oci/log-collector", "subcomponents": [{"@id": "pkg:golang/golang.org/x/net@v0.56.0"}]}
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No check runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb. In log-collector, the vulnerable code is the HTTP/2 server of golang.org/x/net in kubectl. log-collector runs kubectl only as a client, for kubectl get, exec and cp, so the server code never runs."
     }
   ]
 }
