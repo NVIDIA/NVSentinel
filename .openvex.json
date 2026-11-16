@@ -3,8 +3,8 @@
   "@id": "https://github.com/NVIDIA/NVSentinel/.openvex.json",
   "author": "NVIDIA NVSentinel maintainers",
   "role": "Document Creator",
-  "timestamp": "2026-11-13T00:00:00Z",
-  "version": 3,
+  "timestamp": "2026-11-16T00:00:00Z",
+  "version": 2,
   "statements": [
     {
       "vulnerability": {
@@ -688,6 +688,34 @@
     },
     {
       "vulnerability": {
+        "name": "CVE-2026-84243"
+      },
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libc-dev-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libc6-dev@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "The vulnerable code is in gettext, which reads message catalogs from the directories in the LANGUAGE environment variable. To use it, an attacker needs to set LANGUAGE and a locale other than C or POSIX in the environment of the check, and to put a crafted catalog in the container. The environment of the check comes from its pod spec. Only a user who can create or change pods sets it, and that user can already run any code in the container."
+    },
+    {
+      "vulnerability": {
         "name": "CVE-2026-85091"
       },
       "timestamp": "2026-11-13T00:00:00Z",
@@ -1296,6 +1324,25 @@
     },
     {
       "vulnerability": {
+        "name": "GHSA-6655-6qjp-jx7x"
+      },
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/soupsieve@2.10"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). soupsieve is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
         "name": "GHSA-6q48-6c7w-9gw2"
       },
       "timestamp": "2026-11-13T00:00:00Z",
@@ -1578,6 +1625,25 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
       "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). Pillow is a Python package that comes with the PyTorch base image. The check never runs Python."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-mmhr-3c5m-f64f"
+      },
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-loopback",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/soupsieve@2.10"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs only nvidia-smi and the nccl-tests binary at NCCL_TEST_BINARY_PATH, without a shell (see preflight-checks/nccl-loopback/pkg/benchmark/benchmark.go and pkg/config/config.go). soupsieve is a Python package that comes with the PyTorch base image. The check never runs Python."
     },
     {
       "vulnerability": {
@@ -2675,6 +2741,34 @@
     },
     {
       "vulnerability": {
+        "name": "CVE-2026-84243"
+      },
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/ubuntu/libc-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libc-dev-bin@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libc6@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"
+            },
+            {
+              "@id": "pkg:deb/ubuntu/libc6-dev@2.39-0ubuntu8.9?arch=amd64&distro=ubuntu-24.04&upstream=glibc"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "The vulnerable code is in gettext, which reads message catalogs from the directories in the LANGUAGE environment variable. To use it, an attacker needs to set LANGUAGE and a locale other than C or POSIX in the environment of the check, and to put a crafted catalog in the container. The environment of the check comes from its pod spec. Only a user who can create or change pods sets it, and that user can already run any code in the container."
+    },
+    {
+      "vulnerability": {
         "name": "CVE-2026-85091"
       },
       "timestamp": "2026-11-13T00:00:00Z",
@@ -3283,6 +3377,25 @@
     },
     {
       "vulnerability": {
+        "name": "GHSA-6655-6qjp-jx7x"
+      },
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/soupsieve@2.10"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. soupsieve comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
         "name": "GHSA-6q48-6c7w-9gw2"
       },
       "timestamp": "2026-11-13T00:00:00Z",
@@ -3565,6 +3678,25 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
       "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. Pillow comes with the PyTorch base image. None of these processes imports it."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-mmhr-3c5m-f64f"
+      },
+      "timestamp": "2026-11-16T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/preflight-nccl-allreduce",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/soupsieve@2.10"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The check runs scripts/entrypoint.py, which runs nvidia-smi and then execs torchrun. torchrun starts the nccl_allreduce workers (see preflight-checks/nccl-allreduce/scripts/entrypoint.py and nccl_allreduce/__main__.py). A trace of these processes in the image records the Python modules and shared libraries that they load. soupsieve comes with the PyTorch base image. None of these processes imports it."
     },
     {
       "vulnerability": {

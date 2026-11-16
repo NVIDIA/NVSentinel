@@ -41,6 +41,63 @@ jobs:
           echo "images=${images}" >> "${GITHUB_OUTPUT}"
           jq -r '.[] | .ref' <<< "${images}"
 
+  trace-dcgm:
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ref: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-99e0295-dcgm-4.x
+            kind: monitor
+          - ref: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:main-99e0295
+            kind: diag
+    name: trace (${{ matrix.kind }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          REF: ${{ matrix.ref }}
+          KIND: ${{ matrix.kind }}
+        run: |
+          set -uo pipefail
+          H="${GITHUB_WORKSPACE}/.github/tmp-trace"
+          MAP="${GITHUB_WORKSPACE}/distros/kubernetes/nvsentinel/charts/gpu-health-monitor/files/dcgmerrorsmapping.csv"
+          PP=/trace/hook:/usr/share/datacenter-gpu-manager-4/bindings/python3
+          docker pull -q "${REF}"
+          echo "::group::libraries that libdcgm and the DCGM modules link"
+          docker run --rm --entrypoint bash "${REF}" -c '
+            for f in $(find / -xdev \( -name "libdcgm*.so*" -o -name "libdcgmmodule*.so*" \) -type f 2>/dev/null); do
+              echo "# $f" >&2; ldd "$f"; done | awk "/=> \\//{print \$3}" | sort -u' > "${RUNNER_TEMP}/dcgm-libs.txt"
+          cat "${RUNNER_TEMP}/dcgm-libs.txt"
+          echo "::endgroup::"
+          echo "FLAGGED LIBRARIES LINKED BY DCGM:"
+          grep -E 'libevent|libxml2|libX11|libpcre2|libz\.|libperl|libapt|libc\.so' "${RUNNER_TEMP}/dcgm-libs.txt" || echo "(none)"
+          run() {  # name, then docker run arguments
+            local name=$1; shift
+            local out="${RUNNER_TEMP}/out-${name}"
+            mkdir -p "${out}" && chmod 777 "${out}"
+            echo "::group::run ${name}"
+            docker run --rm -v "${H}:/trace/hook:ro" -v "${out}:/trace/out" -v "${MAP}:/trace/map.csv:ro" \
+              -v "${H}/config.ini:/trace/config.ini:ro" -e PYTHONPATH="${PP}" "$@" 2>&1 | tail -40
+            echo "::endgroup::"
+            echo "RESULT ${name}:"
+            docker run --rm -i --entrypoint python3 -v "${H}:/trace/hook:ro" -v "${out}:/trace/out:ro" "${REF}" \
+              -I /trace/hook/owners.py < "${RUNNER_TEMP}/dcgm-libs.txt"
+          }
+          monitor_args=(--config-file /trace/config.ini --dcgm-error-mapping-config-file /trace/map.csv
+            --dcgm-addr 127.0.0.1:5555 --port 2112 --state-file /tmp/statefile
+            --dcgm-k8s-service-enabled false --metadata-path /tmp/gpu_metadata.json)
+          if [ "${KIND}" = monitor ]; then
+            run remote --entrypoint timeout "${REF}" -s INT 45 gpu_health_monitor "${monitor_args[@]}" --dcgm-mode remote
+            run local-managed --entrypoint timeout "${REF}" -s INT 45 gpu_health_monitor "${monitor_args[@]}" --dcgm-mode local-managed
+          else
+            run diag -e DCGM_HOSTENGINE_ADDR=127.0.0.1:5555 -e NODE_NAME=node-0 \
+              -e PLATFORM_CONNECTOR_SOCKET=unix:///trace/out/none.sock \
+              --entrypoint timeout "${REF}" -s INT 90 python3 -m dcgm_diag
+          fi
+
   scan:
     needs: find-images
     runs-on: linux-amd64-cpu32
