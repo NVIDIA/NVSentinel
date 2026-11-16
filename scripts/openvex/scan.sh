@@ -68,14 +68,16 @@ grype() {
     "anchore/grype:${grype_version}" "$@"
 }
 
-# Prints "<critical> critical, <high> high" for a SARIF file, counting only the rules listed in the
-# file given as $2 when it is not empty.
+# Prints "<critical> critical, <high> high" for the SARIF file $1. With a second argument, it counts
+# only the rules listed in that file, and an empty list counts nothing.
 count() {
-  jq -r --rawfile keep "$2" '
+  local keep=/dev/null filter=false
+  if [ "$#" -ge 2 ]; then keep=$2; filter=true; fi
+  jq -r --rawfile keep "${keep}" --argjson filter "${filter}" '
     ($keep | split("\n") | map(select(length > 0))) as $k
     | .runs[0] as $r
     | (reduce ($r.tool.driver.rules // [])[] as $x ({}; .[$x.id] = ($x.properties["security-severity"] | tonumber))) as $s
-    | [($r.results // [])[] | .ruleId as $id | select(($k | length) == 0 or ($k | index($id))) | $s[$id]]
+    | [($r.results // [])[] | .ruleId as $id | select(($filter | not) or ($k | index($id))) | $s[$id]]
     | "\(map(select(. >= 9)) | length) critical, \(map(select(. >= 7 and . < 9)) | length) high"' "$1"
 }
 
@@ -91,13 +93,12 @@ for image in "$@"; do
   # so keep the ones that have a fix, as --only-fixed does.
   jq -r '(.matches // [])[] | select(.vulnerability.fix.state == "fixed") | "\(.vulnerability.id)-\(.artifact.name)"' \
     "${out}/${name}.json" | sort -u > "${out}/${name}.fixed"
-  : > "${out}/${name}.all"
   jq -r '(.runs[0].tool.driver.rules // [])[] | select((.properties["security-severity"] | tonumber) >= 7) | .id' \
     "${out}/${name}.vex.sarif" | sort -u > "${out}/${name}.left"
 
   echo "## ${image}"
   echo "without ${vex}: $(count "${out}/${name}.sarif" "${out}/${name}.fixed")"
-  echo "with ${vex}: $(count "${out}/${name}.vex.sarif" "${out}/${name}.all")"
+  echo "with ${vex}: $(count "${out}/${name}.vex.sarif")"
   jq -r --rawfile r "${out}/${name}.left" '($r | split("\n") | map(select(length > 0))) as $ids
     | (.matches // [])[] | (.vulnerability.id + "-" + .artifact.name) as $k | select($ids | index($k))
     | [.vulnerability.id, .artifact.type, .artifact.name, .artifact.version, .artifact.purl,
