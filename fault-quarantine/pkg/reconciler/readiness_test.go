@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -81,7 +82,7 @@ func TestReconciler_ReadinessChecker(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestReadiness_DatastoreCanBeReadyWhileTrippedStartupHaltsRollout(t *testing.T) {
+func TestReadiness_DatastoreStaysReadyWhileTrippedBreakerHaltsProcessing(t *testing.T) {
 	checker := server.NewDatastoreReadinessChecker(prometheus.NewRegistry())
 	checker.SetWatcher(fakeLagWatcher{})
 	cb := trippedStartupBreaker{entered: make(chan struct{}), release: make(chan struct{})}
@@ -91,28 +92,50 @@ func TestReadiness_DatastoreCanBeReadyWhileTrippedStartupHaltsRollout(t *testing
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	startupDone := make(chan error, 1)
-	go func() { startupDone <- r.checkCircuitBreakerAtStartup(ctx) }()
+	type haltResult struct {
+		halted bool
+		err    error
+	}
+	processingDone := make(chan haltResult, 1)
+	go func() {
+		halted, err := r.checkCircuitBreakerAndHalt(ctx)
+		processingDone <- haltResult{halted: halted, err: err}
+	}()
 
 	select {
 	case <-cb.entered:
 	case <-time.After(time.Second):
-		t.Fatal("startup did not inspect the TRIPPED circuit breaker")
+		t.Fatal("event processing did not inspect the TRIPPED circuit breaker")
 	}
-	// Readiness reports datastore capability, not whether Fault Quarantine is dequeuing events.
+	// The datastore is healthy even while the breaker prevents event processing.
 	require.NoError(t, checker.Ready(ctx))
+	requireDatastoreConnected(t, checker, 1)
 	close(cb.release)
 	select {
-	case err := <-startupDone:
-		t.Fatalf("TRIPPED startup should halt until cancellation, got %v", err)
+	case result := <-processingDone:
+		t.Fatalf("TRIPPED breaker should halt processing until cancellation, got %+v", result)
 	case <-time.After(20 * time.Millisecond):
 	}
 
 	cancel()
 	select {
-	case err := <-startupDone:
-		require.ErrorContains(t, err, "circuit breaker is TRIPPED at startup")
+	case result := <-processingDone:
+		require.True(t, result.halted)
+		require.NoError(t, result.err)
+		require.NoError(t, checker.Ready(context.Background()))
+		requireDatastoreConnected(t, checker, 1)
 	case <-time.After(time.Second):
-		t.Fatal("TRIPPED startup did not stop after cancellation")
+		t.Fatal("TRIPPED breaker did not stop event processing after cancellation")
 	}
+}
+
+func requireDatastoreConnected(t *testing.T, checker *server.DatastoreReadinessChecker, want float64) {
+	t.Helper()
+
+	metrics := make(chan prometheus.Metric, 1)
+	checker.Collect(metrics)
+	metric := <-metrics
+	var collected dto.Metric
+	require.NoError(t, metric.Write(&collected))
+	require.Equal(t, want, collected.GetGauge().GetValue())
 }
