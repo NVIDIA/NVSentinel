@@ -218,6 +218,38 @@ func TestXIDTracking(t *testing.T) {
 		assert.Nil(t, events, "Should suppress GPU fallen off when recent XID exists")
 	})
 
+	t.Run("XID without PCI function then GPU fallen off - should suppress event", func(t *testing.T) {
+		handler, err := NewGPUFallenHandler(
+			"test-node",
+			"test-agent",
+			"GPU",
+			"test-check",
+			pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		)
+		require.NoError(t, err)
+		defer handler.Close()
+
+		// The driver prints the XID line as domain:bus:device, without the PCI function.
+		xidMsg := "NVRM: Xid (PCI:0000:b3:00): 79, pid='<unknown>', name=<unknown>, GPU has fallen off the bus."
+		events, err := handler.ProcessLine(xidMsg)
+		require.NoError(t, err)
+		assert.Nil(t, events, "XID handler should process XID, not gpufallen handler")
+
+		// The fallen off line for the same GPU carries the PCI function.
+		fallenMsg := "[ 1843.308145] NVRM: The NVIDIA GPU 0000:b3:00.0\n" +
+			"               NVRM: (PCI ID: 10de:26b5) installed in this system has\n" +
+			"               NVRM: fallen off the bus and is not responding to commands."
+		events, err = handler.ProcessLine(fallenMsg)
+		require.NoError(t, err)
+		assert.Nil(t, events, "Should suppress GPU fallen off when recent XID exists for the same GPU")
+
+		// A GPU on another bus is not covered by that XID.
+		otherFallenMsg := "NVRM: The NVIDIA GPU 0000:b4:00.0 fallen off the bus and is not responding to commands."
+		events, err = handler.ProcessLine(otherFallenMsg)
+		require.NoError(t, err)
+		require.NotNil(t, events, "Should generate event for a GPU without a recent XID")
+	})
+
 	t.Run("GPU fallen off without prior XID - should generate event", func(t *testing.T) {
 		// Create fresh handler
 		handler2, err := NewGPUFallenHandler(
@@ -363,9 +395,9 @@ func TestXIDTracking(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, events)
 
-		// Verify entry exists in map
+		// Verify entry exists in map (keyed by the PCI address without the function)
 		handler7.mu.RLock()
-		_, exists := handler7.recentXIDs["0000:b3:00.0"]
+		_, exists := handler7.recentXIDs["0000:b3:00"]
 		handler7.mu.RUnlock()
 		assert.True(t, exists, "XID should be recorded in map")
 
@@ -378,7 +410,7 @@ func TestXIDTracking(t *testing.T) {
 
 		// Verify entry was removed from map
 		handler7.mu.RLock()
-		_, exists = handler7.recentXIDs["0000:b3:00.0"]
+		_, exists = handler7.recentXIDs["0000:b3:00"]
 		handler7.mu.RUnlock()
 		assert.False(t, exists, "Expired XID should be cleaned up from map")
 	})
