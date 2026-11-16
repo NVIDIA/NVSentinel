@@ -260,7 +260,9 @@ nic-health-monitor:
 
 #### Changing Counter Types
 
-Changing an existing counter from `delta` to `velocity` while retaining its state reuses the previous snapshot; changing `thresholdType` does not invalidate it. An unchanged delta counter may have an old timestamp, so the first velocity calculation can average a recent burst over a much longer interval and understate its rate, potentially missing a threshold breach. After that calculation advances the snapshot, subsequent windows use normal velocity timing. This caveat applies to counter-type changes, not restarts with an unchanged `thresholdType`.
+Changing an existing counter from `delta` to `velocity` does not reset its saved snapshot. If the delta value has stayed unchanged, its timestamp may be old even while the monitor keeps polling. The first velocity calculation then averages increments over that longer interval, which can understate a recent burst and miss a threshold breach. Once that calculation advances the snapshot, subsequent windows use normal velocity timing.
+
+A velocity counter can also average a burst over a longer interval after a restart with a long gap between polls, even when `thresholdType` is unchanged. That existing behavior uses the elapsed time since the saved snapshot; the delta-to-velocity case can arise without a polling gap.
 
 #### Default Counter Configuration
 
