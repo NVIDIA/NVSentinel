@@ -174,6 +174,8 @@ func TestNewResource_EnvAndOptions_SetsExpectedAttributes(t *testing.T) {
 }
 
 func TestWithServiceVersion_EmptyVersion_AddsNoAttribute(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+
 	cfg := initConfig{}
 	WithServiceVersion("")(&cfg)
 
