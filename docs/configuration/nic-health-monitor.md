@@ -258,6 +258,10 @@ nic-health-monitor:
 | `threshold` | number | Numeric threshold; breach when exceeded |
 | `velocityUnit` | string | For velocity thresholds: `second`, `minute`, or `hour` |
 
+#### Changing Counter Types
+
+Changing an existing counter from `delta` to `velocity` while retaining its state reuses the previous snapshot; changing `thresholdType` does not invalidate it. An unchanged delta counter may have an old timestamp, so the first velocity calculation can average a recent burst over a much longer interval and understate its rate, potentially missing a threshold breach. After that calculation advances the snapshot, subsequent windows use normal velocity timing. This caveat applies to counter-type changes, not restarts with an unchanged `thresholdType`.
+
 #### Default Counter Configuration
 
 ```yaml

@@ -134,7 +134,5 @@ Tracks InfiniBand symbol error rates against the IBTA 10E-12 BER specification. 
 ### Persistent State Across Restarts
 Counter snapshots, breach flags, and port state are persisted to a hostPath-backed file. Delta-counter snapshots change only when the counter value changes. Velocity-counter snapshots also advance after each completed window, preserving rate calculations across pod restarts. Recovery events are emitted automatically when a counter is cleared by an admin or on host reboot, preventing nodes from getting stuck in an unhealthy state after remediation.
 
-**Changing counter types:** Changing an existing counter from `delta` to `velocity` while retaining its state reuses the previous snapshot; changing `thresholdType` does not invalidate it. An unchanged delta counter may have an old timestamp, so the first velocity calculation can average a recent burst over a much longer interval and understate its rate, potentially missing a threshold breach. After that calculation advances the snapshot, subsequent windows use normal velocity timing. This caveat applies to counter-type changes, not restarts with an unchanged `thresholdType`.
-
 ### Uncabled Port Detection
 Uses a card homogeneity check — comparing the active port count of each NIC card against its role-group peers — to detect cards with fewer ports than expected (indicating a failed or uncabled port) without requiring static configuration of expected port counts.
