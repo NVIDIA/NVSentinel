@@ -86,15 +86,15 @@ To get the ID and the PURL of each critical or high finding that `.openvex.json`
 scripts/openvex/scan.sh ghcr.io/nvidia/nvsentinel/gpu-reset:<tag>
 ```
 
-The script takes the severity from the CVSS score, as the Security tab does. The severity label of Grype can be lower.
+The script takes the severity from the CVSS score, as the Security tab does. The severity label of Grype comes from the source of the advisory, for example the priority that Ubuntu gives it, and can differ.
 
 ### Tools
 
 [`scripts/openvex/`](scripts/openvex/) has the tools for this work:
 
-- `scan.sh` scans images without and with the document, and lists the critical and high findings that the document does not cover.
+- `scan.sh` scans images without and with `.openvex.json`, and lists the critical and high findings that `.openvex.json` does not cover.
 - `trace.sh` runs a Python program in its image and lists the packages that its processes load.
-- `statements.py add` adds statements from a list of findings and reasons, `statements.py prune` removes the packages that the images no longer have, and both format the document and set its version.
+- `statements.py add` adds statements from a list of findings and reasons, `statements.py prune` removes the packages that the images no longer have, and both format `.openvex.json` and set its version.
 
 Two agent skills follow these steps: [`triage-image-vulnerabilities`](skills/openvex/triage-image-vulnerabilities/SKILL.md) for new findings, and [`prune-openvex-statements`](skills/openvex/prune-openvex-statements/SKILL.md) after base image or dependency updates.
 
