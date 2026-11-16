@@ -123,9 +123,14 @@ type Reconciler struct {
 	uncordonedTimestampLabelKey string
 	readinessChecker            *server.DatastoreReadinessChecker
 
-	// cancelQueue holds the nodes whose ended quarantine session still has to be cancelled
-	// in the datastore (cancel_retry.go).
+	// cancelQueue holds the nodes whose quarantine was ended by hand and still has to be
+	// cancelled in the datastore and cleaned (cancel_retry.go).
 	cancelQueue workqueue.TypedRateLimitingInterface[string]
+	// sessionEndLocks has one lock per node, because the worker of cancelQueue and the event
+	// path can both handle the same node.
+	sessionEndLocks sync.Map
+	// pendingCancels tracks the queued nodes that aren't finished yet.
+	pendingCancels pendingCancellations
 }
 
 var (
@@ -242,7 +247,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		time.Second*30, // 30 second metric update interval
 		r,              // Reconciler implements LastProcessedObjectIDStore interface
 	)
-	eventWatcher.SetHealthEventStore(ds.HealthEventStore())
+	eventWatcher.SetHealthEventStore(ds.HealthEventStore(), ds.Provider())
 	r.eventWatcher = eventWatcher
 
 	r.SetupNodeInformerCallbacks()
@@ -262,14 +267,15 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	slog.InfoContext(ctx, "Node informer started and synced")
 
-	r.queuePendingCancellations(ctx)
-
-	go r.runCancelQueue(ctx)
-
 	ruleSetEvals, rulesetsConfig, err := r.prepareEventProcessing(ctx, ds)
 	if err != nil {
 		return err
 	}
+
+	// The informer's stale-state check has already queued the nodes that were uncordoned while
+	// FQ was down, or whose cancel wasn't written before the restart. The worker starts here
+	// because the node cleanup needs the label keys set above.
+	go r.runCancelQueue(ctx)
 
 	r.eventWatcher.SetProcessEventCallback(
 		func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
@@ -417,8 +423,8 @@ func (r *Reconciler) SetupNodeInformerCallbacks() {
 		slog.Info("Set currentQuarantinedNodes to 0 for deleted quarantined node", "node", nodeName)
 	})
 
-	r.k8sClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
-	r.k8sClient.NodeInformer.SetOnManualUntaintCallback(r.handleManualUntaint)
+	r.k8sClient.NodeInformer.SetOnManualUncordonCallback(r.queueManualUncordon)
+	r.k8sClient.NodeInformer.SetOnManualUntaintCallback(r.queueManualUntaint)
 }
 
 // initializeRuleSetEvaluators initializes all rule set evaluators from config
@@ -678,6 +684,15 @@ func (r *Reconciler) handleEvent(
 ) (*model.Status, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.handle_event")
 	defer span.End()
+
+	// Finish a cancel that's still owed on this node first. Otherwise the event would join the
+	// old quarantine and be cancelled with it.
+	if err := r.endSessionBeforeEvent(ctx, event.HealthEvent); err != nil {
+		slog.ErrorContext(ctx, "Failed to finish the pending cancellation of the node",
+			"node", event.HealthEvent.NodeName, "error", err)
+
+		return nil, err
+	}
 
 	annotations, quarantineAnnotationExists, err := r.hasExistingQuarantine(ctx, event.HealthEvent.NodeName)
 	if err != nil {
@@ -2427,20 +2442,22 @@ func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName 
 		return nil, fmt.Errorf("failed to get node: %w", err)
 	}
 
-	// Extract only quarantine annotations
+	slog.DebugContext(ctx, "Retrieved quarantine annotations for node", "node", nodeName)
+
+	return quarantineAnnotationsOf(node), nil
+}
+
+// quarantineAnnotationsOf returns only the quarantine annotations of a node.
+func quarantineAnnotationsOf(node *corev1.Node) map[string]string {
 	quarantineAnnotations := make(map[string]string)
 
-	if node.Annotations != nil {
-		for _, key := range common.QuarantineAnnotationKeys {
-			if value, exists := node.Annotations[key]; exists {
-				quarantineAnnotations[key] = value
-			}
+	for _, key := range common.QuarantineAnnotationKeys {
+		if value, exists := node.Annotations[key]; exists {
+			quarantineAnnotations[key] = value
 		}
 	}
 
-	slog.DebugContext(ctx, "Retrieved quarantine annotations for node", "node", nodeName)
-
-	return quarantineAnnotations, nil
+	return quarantineAnnotations
 }
 
 // getNode bypasses the informer during recovery so reconciliation uses current node state.
@@ -2491,31 +2508,19 @@ func (r *Reconciler) cleanupManualAnnotation(ctx context.Context, nodeName strin
 	return nil
 }
 
-// handleManualUncordon handles the case when a node is manually uncordoned while having FQ annotations
-func (r *Reconciler) handleManualUncordon(nodeName string) error {
-	ctx, span := tracing.StartSpan(context.Background(), "fault_quarantine.manual_uncordon")
+// handleManualUncordon cleans a node that was manually uncordoned while having FQ annotations.
+// annotations are the node's quarantine annotations as read from the API server. The caller
+// cancels the events in the datastore before this (cancel_retry.go). It returns the annotation
+// keys it removed.
+func (r *Reconciler) handleManualUncordon(
+	ctx context.Context,
+	nodeName string,
+	annotations map[string]string,
+) ([]string, error) {
+	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.manual_uncordon")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("fault_quarantine.node_name", nodeName))
-
-	annotations, err := r.getNodeQuarantineAnnotations(ctx, nodeName)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to get node annotations", "node", nodeName, "error", err)
-		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("fault_quarantine.error.type", "get_node_annotations_error"),
-			attribute.String("fault_quarantine.error.message", err.Error()),
-		)
-
-		return fmt.Errorf("failed to get annotations for manually uncordoned node %s: %w", nodeName, err)
-	}
-
-	slog.DebugContext(ctx, "Retrieved node annotations for manual uncordon",
-		"node", nodeName, "annotationCount", len(annotations))
-
-	if _, dryRun := annotations[common.QuarantineHealthEventDryRunAnnotationKey]; dryRun {
-		return r.handleDryRunQuarantineOnNodeChange(ctx, nodeName, annotations)
-	}
 
 	// Remove the applied taints annotation (but keep the taints themselves on the node).
 	annotationsToRemove := appendIfPresent(annotations, nil, manualUnquarantineAnnotationKeys...)
@@ -2544,7 +2549,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
-		return fmt.Errorf("failed to read applied labels for manually uncordoned node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("failed to read applied labels for manually uncordoned node %s: %w", nodeName, err)
 	}
 
 	annotationsToRemove = append(annotationsToRemove, labelAnnotationsToRemove...)
@@ -2553,9 +2558,6 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 
 	newAnnotations := map[string]string{
 		common.QuarantinedNodeUncordonedManuallyAnnotationKey: common.QuarantinedNodeUncordonedManuallyAnnotationValue,
-	}
-	if r.eventWatcher != nil {
-		maps.Copy(newAnnotations, pendingCancellationAnnotation(annotations))
 	}
 
 	if err := r.k8sClient.HandleManualUncordonCleanup(
@@ -2575,7 +2577,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return fmt.Errorf("failed to clean up manually uncordoned node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("failed to clean up manually uncordoned node %s: %w", nodeName, err)
 	}
 
 	slog.DebugContext(ctx, "Successfully completed K8s cleanup for manual uncordon", "node", nodeName)
@@ -2584,63 +2586,44 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	metrics.CurrentQuarantinedNodes.WithLabelValues(nodeName).Set(0)
 	metrics.TotalNodesManuallyUncordoned.WithLabelValues(nodeName).Inc()
 
-	// The cleanup set the pending annotation. The worker cancels the session in the datastore.
-	if r.eventWatcher != nil {
-		r.queueEndedSessionCancellation(ctx, nodeName, "Manual uncordoning detected")
-	} else {
-		slog.WarnContext(ctx, "eventWatcher is NIL - cannot cancel quarantining events in database", "node", nodeName)
-	}
-
 	slog.InfoContext(ctx, "Successfully completed manual uncordon handling", "node", nodeName)
 
-	return nil
+	return annotationsToRemove, nil
 }
 
 // handleDryRunQuarantineOnNodeChange handles a cordon or taint change on a node whose
 // quarantine was recorded in dry run. Nothing was cordoned or tainted, so it is not a
 // manual uncordon or untaint. In dry run the record is kept. Otherwise dry run has been
-// switched off: the record is discarded and its events cancelled, so node-drainer does
-// not act on a quarantine that was never applied.
+// switched off. The caller cancels its events first (cancel_retry.go) and the record is
+// discarded here, so node-drainer does not act on a quarantine that was never applied. It
+// returns the annotation keys it removed.
 func (r *Reconciler) handleDryRunQuarantineOnNodeChange(
 	ctx context.Context,
 	nodeName string,
 	annotations map[string]string,
-) error {
+) ([]string, error) {
 	if r.config.DryRun {
 		slog.DebugContext(ctx, "Ignoring node change for a dry-run quarantine", "node", nodeName)
-		return nil
+		return nil, nil
 	}
 
 	annotationsToRemove := appendIfPresent(annotations, nil, manualUnquarantineAnnotationKeys...)
 
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
-		return fmt.Errorf("failed to read applied labels for dry-run quarantine on node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("failed to read applied labels for dry-run quarantine on node %s: %w", nodeName, err)
 	}
 
 	annotationsToRemove = append(annotationsToRemove, labelAnnotationsToRemove...)
 
-	var pendingAnnotations map[string]string
-	if r.eventWatcher != nil {
-		pendingAnnotations = pendingCancellationAnnotation(annotations)
-	}
-
-	if err := r.k8sClient.HandleManualUntaintCleanup(
-		ctx, nodeName, annotationsToRemove, pendingAnnotations, nil); err != nil {
+	if err := r.k8sClient.HandleManualUntaintCleanup(ctx, nodeName, annotationsToRemove, nil, nil); err != nil {
 		metrics.ProcessingErrors.WithLabelValues("dry_run_quarantine_cleanup_error").Inc()
-		return fmt.Errorf("failed to discard dry-run quarantine on node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("failed to discard dry-run quarantine on node %s: %w", nodeName, err)
 	}
 
 	slog.InfoContext(ctx, "Discarded quarantine recorded in dry run", "node", nodeName)
 
-	if r.eventWatcher == nil {
-		slog.WarnContext(ctx, "eventWatcher is NIL - cannot cancel dry-run quarantining events", "node", nodeName)
-		return nil
-	}
-
-	r.queueEndedSessionCancellation(ctx, nodeName, "Dry-run quarantine discarded")
-
-	return nil
+	return annotationsToRemove, nil
 }
 
 func appendIfPresent(annotations map[string]string, toRemove []string, keys ...string) []string {
@@ -2653,31 +2636,17 @@ func appendIfPresent(annotations map[string]string, toRemove []string, keys ...s
 	return toRemove
 }
 
-// handleManualUntaint handles the case when a node is manually untainted while having FQ annotations
-func (r *Reconciler) handleManualUntaint(nodeName string) error {
-	ctx, span := tracing.StartSpan(context.Background(), "fault_quarantine.manual_untaint")
+// handleManualUntaint cleans a node that was manually untainted while having FQ annotations, as
+// handleManualUncordon does for an uncordon.
+func (r *Reconciler) handleManualUntaint(
+	ctx context.Context,
+	nodeName string,
+	annotations map[string]string,
+) ([]string, error) {
+	ctx, span := tracing.StartSpan(ctx, "fault_quarantine.manual_untaint")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("fault_quarantine.node_name", nodeName))
-
-	annotations, err := r.getNodeQuarantineAnnotations(ctx, nodeName)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to get node annotations", "node", nodeName, "error", err)
-		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("fault_quarantine.error.type", "get_node_annotations_error"),
-			attribute.String("fault_quarantine.error.message", err.Error()),
-		)
-
-		return fmt.Errorf("failed to get annotations for manually untainted node %s: %w", nodeName, err)
-	}
-
-	slog.DebugContext(ctx, "Retrieved node annotations for manual untaint",
-		"node", nodeName, "annotationCount", len(annotations))
-
-	if _, dryRun := annotations[common.QuarantineHealthEventDryRunAnnotationKey]; dryRun {
-		return r.handleDryRunQuarantineOnNodeChange(ctx, nodeName, annotations)
-	}
 
 	labelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
 
@@ -2686,7 +2655,7 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 	// As on manual uncordon, the rule labels stay on the node by design.
 	labelAnnotationsToRemove, _, err := appliedLabelCleanupParams(annotations)
 	if err != nil {
-		return fmt.Errorf("failed to read applied labels for manually untainted node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("failed to read applied labels for manually untainted node %s: %w", nodeName, err)
 	}
 
 	annotationsToRemove = append(annotationsToRemove, labelAnnotationsToRemove...)
@@ -2695,9 +2664,6 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 
 	newAnnotations := map[string]string{
 		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey: common.QuarantinedNodeIsUntaintedManuallyAnnotationValue,
-	}
-	if r.eventWatcher != nil {
-		maps.Copy(newAnnotations, pendingCancellationAnnotation(annotations))
 	}
 
 	if err := r.k8sClient.HandleManualUntaintCleanup(
@@ -2715,7 +2681,7 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 			attribute.String("fault_quarantine.error.message", err.Error()),
 		)
 
-		return fmt.Errorf("failed to clean up manually untainted node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("failed to clean up manually untainted node %s: %w", nodeName, err)
 	}
 
 	slog.DebugContext(ctx, "Successfully completed K8s cleanup for manual untaint", "node", nodeName)
@@ -2725,14 +2691,9 @@ func (r *Reconciler) handleManualUntaint(nodeName string) error {
 	metrics.TotalNodesManuallyUntainted.WithLabelValues(nodeName).Inc()
 	slog.InfoContext(ctx, "Set currentQuarantinedNodes to 0 after manual untaint", "node", nodeName)
 
-	// The cleanup set the pending annotation. The worker cancels the session in the datastore.
-	if r.eventWatcher != nil {
-		r.queueEndedSessionCancellation(ctx, nodeName, "Manual untainting detected")
-	}
-
 	slog.InfoContext(ctx, "Successfully completed manual untaint handling", "node", nodeName)
 
-	return nil
+	return annotationsToRemove, nil
 }
 
 func appliedLabelsRemovalParams(annotations map[string]string) ([]config.Label, []string, error) {

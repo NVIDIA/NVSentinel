@@ -19,48 +19,47 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strings"
+	"maps"
+	"sync"
 	"time"
 
-	v1 "k8s.io/api/core/v1"
+	"go.opentelemetry.io/otel/attribute"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/util/retry"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/workqueue"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 )
 
-// Fault-quarantine ends a quarantine session on a manual uncordon, a manual untaint or a
-// dry-run discard. The handler cleans the node and, in the same node update, adds the session
-// to the quarantineCancellationPending annotation. A worker then marks the session Cancelled in
-// the datastore and removes it from the annotation. A failed write is retried with a backoff,
-// and the annotation lets a restarted fault-quarantine find the node again. Without this, one
-// failed write left the session Quarantined after the node lost the annotations that show it,
-// and node-drainer and fault-remediation went on with the drain and the reboot of the node.
+// A manual uncordon, a manual untaint or switching dry run off ends a node's quarantine. FQ then
+// writes Cancelled to the datastore first and cleans the node only after that. While the write
+// keeps failing the annotations stay on the node, so the queue here can retry it and the
+// stale-state check finds the node again after a restart.
 //
-// The annotation names each ended session by the event IDs of its quarantine annotation, so the
-// worker cancels that session and not a newer quarantine of the node. Sessions are separated by
-// semicolons and the IDs of a session by commas. The IDs usually hold the first event of the
-// session, which is cancelled last, so the same IDs work again after a write that failed part of
-// the way. The worker leaves an ended session alone once a newer quarantine of the node started,
-// and it works the newest pending session first, so an older one is not left alone only because
-// a newer one waits to be cancelled.
+// A new fault on such a node finishes the cancel first (endSessionBeforeEvent). If the write is
+// still failing by then, the node is cleaned anyway so the fault can quarantine it, and the
+// earlier events keep their status.
 const (
-	// cancelAttemptTimeout bounds one cancellation with the retries of its store calls. It
-	// covers a MongoDB primary election.
+	// cancelAttemptTimeout is the budget for one attempt by the worker, store retries included.
+	// It's long enough to cover a MongoDB primary election.
 	cancelAttemptTimeout = 30 * time.Second
 	cancelRetryBaseDelay = time.Second
 	cancelRetryMaxDelay  = time.Minute
 
-	cancelReason = "Quarantine ended by an operator or a dry-run switch"
+	// eventCancelTimeout is how long an incoming event waits for the cancel. It's short because
+	// the events of every other node wait behind it.
+	eventCancelTimeout = 10 * time.Second
 
-	pendingSessionSeparator = ";"
-	sessionIDSeparator      = ","
+	// cleanedNodePollInterval is how often the event path checks the informer cache for the
+	// cleaned node.
+	cleanedNodePollInterval = 10 * time.Millisecond
 )
 
 func newCancelQueue() workqueue.TypedRateLimitingInterface[string] {
@@ -68,33 +67,343 @@ func newCancelQueue() workqueue.TypedRateLimitingInterface[string] {
 		workqueue.NewTypedItemExponentialFailureRateLimiter[string](cancelRetryBaseDelay, cancelRetryMaxDelay))
 }
 
-// pendingCancellationAnnotation is added in the cleanup of an ended session. It keeps the
-// sessions that are already pending and adds the session that ends now, both from the
-// annotations the handler read. A node without a quarantine annotation has no session to add.
-func pendingCancellationAnnotation(annotations map[string]string) map[string]string {
-	sessions := pendingSessions(annotations[common.QuarantineCancellationPendingAnnotationKey])
+// pendingSessionEnd is the state kept for a node while it waits in the queue.
+type pendingSessionEnd struct {
+	// seen is what the informer reported. If the operator cordons the node again before the
+	// cancel is written, the node looks quarantined and this is the only record that it ended.
+	seen informer.ManualChange
+	// cancelled is the quarantine annotation whose events are already Cancelled, so a retry
+	// after a failed node cleanup doesn't cancel them again.
+	cancelled string
+}
 
-	if !isEmptyHealthEventAnnotation(annotations[common.QuarantineHealthEventAnnotationKey]) {
-		session := sessionFromIDs(quarantineEventIDs(annotations[common.QuarantineHealthEventAnnotationKey]))
-		if !slices.Contains(sessions, session) {
-			sessions = append(sessions, session)
-		}
+// pendingCancellations tracks the nodes whose cancel isn't finished yet. Its size is the
+// fault_quarantine_nodes_pending_cancellation gauge.
+type pendingCancellations struct {
+	mu    sync.Mutex
+	nodes map[string]pendingSessionEnd
+}
+
+func (p *pendingCancellations) add(nodeName string, seen informer.ManualChange) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.nodes == nil {
+		p.nodes = map[string]pendingSessionEnd{}
 	}
 
-	if len(sessions) == 0 {
-		return nil
-	}
+	pending := p.nodes[nodeName]
+	pending.seen.Uncordoned = pending.seen.Uncordoned || seen.Uncordoned
+	pending.seen.Untainted = pending.seen.Untainted || seen.Untainted
+	p.nodes[nodeName] = pending
 
-	return map[string]string{
-		common.QuarantineCancellationPendingAnnotationKey: strings.Join(sessions, pendingSessionSeparator),
+	metrics.NodesPendingCancellation.Set(float64(len(p.nodes)))
+}
+
+func (p *pendingCancellations) get(nodeName string) (pendingSessionEnd, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	pending, ok := p.nodes[nodeName]
+
+	return pending, ok
+}
+
+// update changes a node's entry if the node is still pending.
+func (p *pendingCancellations) update(nodeName string, change func(pending *pendingSessionEnd)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if pending, ok := p.nodes[nodeName]; ok {
+		change(&pending)
+		p.nodes[nodeName] = pending
 	}
 }
 
-// quarantineEventIDs returns the event IDs of a quarantine annotation. The cleanup reads them from
-// the same copy of the node as the rest of its update. When one update both uncordons and
-// untaints a node, the second cleanup then adds the same session as the first, even when the
-// node in the cache is already clean.
+func (p *pendingCancellations) remove(nodeName string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	delete(p.nodes, nodeName)
+	metrics.NodesPendingCancellation.Set(float64(len(p.nodes)))
+}
+
+// queueManualUncordon is the informer callback for a manual uncordon, and for a stale cordon or
+// dry-run record found at startup.
+func (r *Reconciler) queueManualUncordon(nodeName string) error {
+	r.queueSessionEnd(nodeName, informer.ManualChange{Uncordoned: true})
+
+	return nil
+}
+
+// queueManualUntaint is the informer callback for a manual untaint, and for stale taints found
+// at startup.
+func (r *Reconciler) queueManualUntaint(nodeName string) error {
+	r.queueSessionEnd(nodeName, informer.ManualChange{Untainted: true})
+
+	return nil
+}
+
+// queueSessionEnd queues the node for the worker, which cancels its events in the datastore and
+// then cleans the node.
+func (r *Reconciler) queueSessionEnd(nodeName string, seen informer.ManualChange) {
+	slog.Info("Queued the node for quarantine cancellation", "node", nodeName)
+
+	r.pendingCancels.add(nodeName, seen)
+	r.cancelQueue.Add(nodeName)
+}
+
+// runCancelQueue runs the queue worker until ctx is done.
+func (r *Reconciler) runCancelQueue(ctx context.Context) {
+	go func() {
+		<-ctx.Done()
+		r.cancelQueue.ShutDown()
+	}()
+
+	for r.processNextSessionEnd(ctx) {
+	}
+}
+
+func (r *Reconciler) processNextSessionEnd(ctx context.Context) bool {
+	nodeName, shutdown := r.cancelQueue.Get()
+	if shutdown {
+		return false
+	}
+
+	defer r.cancelQueue.Done(nodeName)
+
+	attemptCtx, cancel := context.WithTimeout(ctx, cancelAttemptTimeout)
+	defer cancel()
+
+	if _, err := r.endSession(attemptCtx, nodeName, sessionEndOptions{
+		lockTimeout:   cancelAttemptTimeout,
+		cancelTimeout: cancelAttemptTimeout,
+	}); err != nil {
+		slog.ErrorContext(ctx, "Failed to cancel the node's quarantine, will retry", "node", nodeName,
+			"attempt", r.cancelQueue.NumRequeues(nodeName)+1, "error", err)
+		r.cancelQueue.AddRateLimited(nodeName)
+
+		return true
+	}
+
+	r.cancelQueue.Forget(nodeName)
+
+	return true
+}
+
+type sessionEndOptions struct {
+	// lockTimeout is how long to wait when the same node is already being handled.
+	lockTimeout time.Duration
+	// cancelTimeout is the budget for the datastore write.
+	cancelTimeout time.Duration
+	// cleanAnyway cleans the node even when the write fails. The events then keep their status.
+	cleanAnyway bool
+}
+
+// lockSessionEnd lets only one caller handle a node at a time. The worker and the event path can
+// both get to the same node, and the second one has to see what the first one did.
+func (r *Reconciler) lockSessionEnd(ctx context.Context, nodeName string, timeout time.Duration) (func(), error) {
+	lockValue, _ := r.sessionEndLocks.LoadOrStore(nodeName, make(chan struct{}, 1))
+	lock, _ := lockValue.(chan struct{})
+
+	lockCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-lockCtx.Done():
+		return nil, fmt.Errorf("waiting for another cancellation of node %s: %w", nodeName, lockCtx.Err())
+	}
+}
+
+// sessionEndResult is what endSession found and did.
+type sessionEndResult struct {
+	// found is false when the node is gone.
+	found bool
+	// annotations are the node's quarantine annotations as endSession read them.
+	annotations map[string]string
+	// removed are the annotation keys endSession removed, nil when it had nothing to do.
+	removed []string
+}
+
+// endSession cancels the node's quarantining events in the datastore and then cleans the node.
+// It reads the node from the API server, so a node that was already cleaned is left alone. If
+// the write fails the node keeps its annotations and the next call tries again.
+func (r *Reconciler) endSession(
+	ctx context.Context,
+	nodeName string,
+	opts sessionEndOptions,
+) (sessionEndResult, error) {
+	unlock, err := r.lockSessionEnd(ctx, nodeName, opts.lockTimeout)
+	if err != nil {
+		return sessionEndResult{}, err
+	}
+	defer unlock()
+
+	node, err := r.k8sClient.NodeInformer.GetNodeDirect(ctx, nodeName)
+	if apierrors.IsNotFound(err) {
+		r.pendingCancels.remove(nodeName)
+		return sessionEndResult{}, nil
+	}
+
+	if err != nil {
+		return sessionEndResult{}, fmt.Errorf("failed to read node %s: %w", nodeName, err)
+	}
+
+	result := sessionEndResult{found: true, annotations: quarantineAnnotationsOf(node)}
+
+	change := r.endedSession(node)
+	if change == (informer.ManualChange{}) {
+		r.pendingCancels.remove(nodeName)
+		return result, nil
+	}
+
+	if err := r.cancelEndedSession(ctx, nodeName, result.annotations, change, opts.cancelTimeout); err != nil {
+		if !opts.cleanAnyway {
+			return result, err
+		}
+
+		slog.WarnContext(ctx, "Cancellation is still failing, cleaning the node anyway; "+
+			"its earlier health events stay active", "node", nodeName, "error", err)
+	}
+
+	result.removed, err = r.cleanEndedSession(ctx, nodeName, result.annotations, change)
+	if err != nil {
+		return result, err
+	}
+
+	r.pendingCancels.remove(nodeName)
+
+	return result, nil
+}
+
+// endedSession returns what ended the node's quarantine, or the zero value if nothing did. It
+// also counts what the informer saw earlier, so a node that the operator cordoned or tainted
+// again is still handled.
+func (r *Reconciler) endedSession(node *corev1.Node) informer.ManualChange {
+	change := r.k8sClient.NodeInformer.DetectManualChange(node)
+
+	if change.DryRun {
+		// In dry-run mode the record stays. Otherwise dry run was switched off and the record
+		// goes, whatever the node's cordon and taints look like.
+		if r.config.DryRun {
+			return informer.ManualChange{}
+		}
+
+		return informer.ManualChange{DryRun: true}
+	}
+
+	if pending, ok := r.pendingCancels.get(node.Name); ok {
+		_, cordonRecorded := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+		_, taintsRecorded := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
+
+		change.Uncordoned = change.Uncordoned || (pending.seen.Uncordoned && cordonRecorded)
+		change.Untainted = change.Untainted || (pending.seen.Untainted && taintsRecorded)
+	}
+
+	return change
+}
+
+// cancelEndedSession writes Cancelled for the node's quarantining events, including the ones
+// named in its quarantine annotation.
+func (r *Reconciler) cancelEndedSession(
+	ctx context.Context,
+	nodeName string,
+	annotations map[string]string,
+	change informer.ManualChange,
+	timeout time.Duration,
+) error {
+	if r.eventWatcher == nil {
+		slog.WarnContext(ctx, "eventWatcher is NIL - cannot cancel quarantining events in database", "node", nodeName)
+		return nil
+	}
+
+	quarantineAnnotation := annotations[common.QuarantineHealthEventAnnotationKey]
+
+	// Already cancelled on an earlier attempt where only the node cleanup failed.
+	if pending, ok := r.pendingCancels.get(nodeName); ok && quarantineAnnotation != "" &&
+		pending.cancelled == quarantineAnnotation {
+		return nil
+	}
+
+	reason := "Manual untainting detected"
+
+	switch {
+	case change.DryRun:
+		reason = "Dry-run quarantine discarded"
+	case change.Uncordoned:
+		reason = "Manual uncordoning detected"
+	}
+
+	cancelCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	err := r.eventWatcher.CancelLatestQuarantiningEvents(
+		cancelCtx, nodeName, quarantineEventIDs(quarantineAnnotation), reason)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to cancel latest quarantining events",
+			"node", nodeName, "reason", reason, "error", err)
+		metrics.ProcessingErrors.WithLabelValues("mongodb_cancel_quarantine_error").Inc()
+
+		span := tracing.SpanFromContext(ctx)
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_quarantine.error.type", "mongodb_cancel_quarantine_error"),
+			attribute.String("fault_quarantine.error.message", err.Error()),
+		)
+
+		return fmt.Errorf("failed to cancel the quarantining events of node %s: %w", nodeName, err)
+	}
+
+	slog.DebugContext(ctx, "Successfully cancelled latest quarantining events", "node", nodeName)
+
+	r.pendingCancels.update(nodeName, func(pending *pendingSessionEnd) { pending.cancelled = quarantineAnnotation })
+
+	return nil
+}
+
+// cleanEndedSession cleans the node and returns the annotation keys it removed. A node that was
+// both uncordoned and untainted gets both cleanups.
+func (r *Reconciler) cleanEndedSession(
+	ctx context.Context,
+	nodeName string,
+	annotations map[string]string,
+	change informer.ManualChange,
+) ([]string, error) {
+	if change.DryRun {
+		return r.handleDryRunQuarantineOnNodeChange(ctx, nodeName, annotations)
+	}
+
+	removed := []string{}
+
+	if change.Uncordoned {
+		uncordonRemoved, err := r.handleManualUncordon(ctx, nodeName, annotations)
+		if err != nil {
+			return nil, err
+		}
+
+		removed = uncordonRemoved
+	}
+
+	if change.Untainted {
+		untaintRemoved, err := r.handleManualUntaint(ctx, nodeName, annotations)
+		if err != nil {
+			return nil, err
+		}
+
+		removed = untaintRemoved
+	}
+
+	return removed, nil
+}
+
+// quarantineEventIDs returns the event IDs of a quarantine annotation.
 func quarantineEventIDs(value string) []string {
+	if isEmptyHealthEventAnnotation(value) {
+		return nil
+	}
+
 	var healthEventsMap healthEventsAnnotation.HealthEventsAnnotationMap
 
 	if err := json.Unmarshal([]byte(value), &healthEventsMap); err != nil {
@@ -118,211 +427,101 @@ func quarantineEventIDs(value string) []string {
 	return ids
 }
 
-// sessionFromIDs names a session by its record IDs, sorted, or as the latest session when none
-// is a MongoDB or PostgreSQL record ID, as with an older fault-quarantine.
-func sessionFromIDs(ids []string) string {
-	ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return !common.IsRecordID(id) })
-	if len(ids) == 0 {
-		return common.QuarantineCancellationLatestSession
-	}
-
-	slices.Sort(ids)
-
-	return strings.Join(slices.Compact(ids), sessionIDSeparator)
-}
-
-// pendingSessions splits the value of the pending annotation into its sessions.
-func pendingSessions(value string) []string {
-	var sessions []string
-
-	for session := range strings.SplitSeq(value, pendingSessionSeparator) {
-		if session = strings.TrimSpace(session); session != "" {
-			sessions = append(sessions, session)
-		}
-	}
-
-	return sessions
-}
-
-// queueEndedSessionCancellation hands the cancellation of a cleaned node to the worker.
-func (r *Reconciler) queueEndedSessionCancellation(ctx context.Context, nodeName, reason string) {
-	slog.InfoContext(ctx, "Queued the cancellation of the ended quarantine session", "node", nodeName, "reason", reason)
-	r.cancelQueue.Add(nodeName)
-}
-
-// queuePendingCancellations queues every node that carries the pending annotation, so a
-// cancellation that had not been written before a restart runs again.
-func (r *Reconciler) queuePendingCancellations(ctx context.Context) {
-	nodes, err := r.k8sClient.NodeInformer.ListNodes()
-	if err != nil {
-		slog.WarnContext(ctx, "Failed to list nodes for pending cancellations", "error", err)
-		return
-	}
-
-	queued := 0
-
-	for _, node := range nodes {
-		if _, pending := node.Annotations[common.QuarantineCancellationPendingAnnotationKey]; pending {
-			r.cancelQueue.Add(node.Name)
-
-			queued++
-		}
-	}
-
-	slog.InfoContext(ctx, "Queued pending cancellations of ended quarantine sessions", "nodes", queued)
-}
-
-// runCancelQueue works the cancellation queue until ctx ends.
-func (r *Reconciler) runCancelQueue(ctx context.Context) {
-	go func() {
-		<-ctx.Done()
-		r.cancelQueue.ShutDown()
-	}()
-
-	for r.processNextCancellation(ctx) {
-	}
-}
-
-func (r *Reconciler) processNextCancellation(ctx context.Context) bool {
-	nodeName, shutdown := r.cancelQueue.Get()
-	if shutdown {
+// sessionEnded reports whether the node lost the cordon or a taint that its annotations record.
+// A dry-run record never counts in dry-run mode. Outside it, a record whose cordon and taints
+// are on the node is a real quarantine with a leftover marker, and that one isn't ended.
+func (r *Reconciler) sessionEnded(node *corev1.Node) bool {
+	change := r.k8sClient.NodeInformer.DetectManualChange(node)
+	if change.DryRun && r.config.DryRun {
 		return false
 	}
 
-	defer r.cancelQueue.Done(nodeName)
+	return change.Uncordoned || change.Untainted
+}
 
-	attemptCtx, cancel := context.WithTimeout(ctx, cancelAttemptTimeout)
+// endSessionBeforeEvent finishes a cancel that's still owed on the event's node before the event
+// is handled. Otherwise a new fault would join the old quarantine and be cancelled with it.
+//
+// The cancel only gets eventCancelTimeout here. If it still fails, a fault cleans the node
+// anyway and quarantines it, and a healthy event is handled against the quarantine as it is.
+func (r *Reconciler) endSessionBeforeEvent(ctx context.Context, event *protos.HealthEvent) error {
+	nodeName := event.GetNodeName()
+
+	node, err := r.getNode(ctx, nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	if _, pending := r.pendingCancels.get(nodeName); !pending && !r.sessionEnded(node) {
+		return nil
+	}
+
+	slog.InfoContext(ctx, "Finishing the pending cancellation before handling the new event", "node", nodeName)
+
+	result, err := r.endSession(ctx, nodeName, sessionEndOptions{
+		lockTimeout:   cancelAttemptTimeout + eventCancelTimeout,
+		cancelTimeout: eventCancelTimeout,
+		cleanAnyway:   !event.GetIsHealthy(),
+	})
+	if err != nil {
+		if !event.GetIsHealthy() {
+			return err
+		}
+
+		slog.WarnContext(ctx, "Pending cancellation is still failing; "+
+			"handling the healthy event anyway", "node", nodeName, "error", err)
+
+		// The healthy event can change the quarantine, so what the informer saw earlier no longer
+		// applies. The worker goes by the node's current state from here.
+		r.pendingCancels.update(nodeName, func(pending *pendingSessionEnd) { *pending = pendingSessionEnd{} })
+
+		return nil
+	}
+
+	// The event reads the node again after this, and it has to see the cleaned one.
+	if coldstart.IsRecoveryContext(ctx) {
+		coldstart.ForgetRecoveryNode(ctx, nodeName)
+		return nil
+	}
+
+	if !result.found {
+		return nil
+	}
+
+	return r.waitForNodeInCache(ctx, nodeName, result)
+}
+
+// waitForNodeInCache waits for the informer cache to catch up with endSession. After a cleanup
+// that means the removed annotations are gone. If endSession had nothing to do, for example
+// because the worker got there first, it means the cache shows the annotations endSession read.
+func (r *Reconciler) waitForNodeInCache(ctx context.Context, nodeName string, result sessionEndResult) error {
+	waitCtx, cancel := context.WithTimeout(ctx, cancelAttemptTimeout)
 	defer cancel()
 
-	if err := r.cancelEndedSessions(attemptCtx, nodeName); err != nil {
-		slog.ErrorContext(ctx, "Failed to cancel an ended quarantine session, retrying", "node", nodeName,
-			"attempt", r.cancelQueue.NumRequeues(nodeName)+1, "error", err)
-		r.cancelQueue.AddRateLimited(nodeName)
-
-		return true
-	}
-
-	r.cancelQueue.Forget(nodeName)
-
-	return true
-}
-
-// cancelEndedSessions cancels the sessions in the pending annotation of a node, oldest first,
-// and removes each one from the annotation once it is cancelled. It reads the node from the API
-// server, because the cache can still miss the annotation that the cleanup just set.
-func (r *Reconciler) cancelEndedSessions(ctx context.Context, nodeName string) error {
-	node, err := r.k8sClient.NodeInformer.GetNodeDirect(ctx, nodeName)
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-
-	if err != nil {
-		metrics.ProcessingErrors.WithLabelValues("cancellation_pending_node_error").Inc()
-		return fmt.Errorf("failed to read node %s: %w", nodeName, err)
-	}
-
-	value, pending := node.Annotations[common.QuarantineCancellationPendingAnnotationKey]
-	if !pending {
-		return nil
-	}
-
-	if r.eventWatcher == nil {
-		slog.WarnContext(ctx, "eventWatcher is NIL - cannot cancel quarantining events in database", "node", nodeName)
-		return nil
-	}
-
-	sessions := pendingSessions(value)
-	if len(sessions) == 0 {
-		return r.removePendingSession(ctx, nodeName, "")
-	}
-
-	// Newest first, and the first failure stops the pass, so an older session is not left alone
-	// because a newer pending one is still Quarantined.
-	for _, sessionID := range slices.Backward(sessions) {
-		if err := r.cancelEndedSession(ctx, node, sessionID); err != nil {
-			return err
+	err := wait.PollUntilContextCancel(waitCtx, cleanedNodePollInterval, true, func(context.Context) (bool, error) {
+		node, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+		if apierrors.IsNotFound(err) {
+			return true, nil
 		}
-	}
 
-	return nil
-}
-
-// quarantinedNow reports whether a node carries a quarantine annotation with events.
-func quarantinedNow(node *v1.Node) bool {
-	return !isEmptyHealthEventAnnotation(node.Annotations[common.QuarantineHealthEventAnnotationKey])
-}
-
-// cancelEndedSession cancels one ended session and removes it from the pending annotation.
-func (r *Reconciler) cancelEndedSession(ctx context.Context, node *v1.Node, sessionID string) error {
-	nodeName := node.Name
-	eventIDs := strings.Split(sessionFromIDs(strings.Split(sessionID, sessionIDSeparator)), sessionIDSeparator)
-
-	if eventIDs[0] == common.QuarantineCancellationLatestSession && quarantinedNow(node) {
-		slog.WarnContext(ctx, "Node is quarantined again and its ended session has no event ID; "+
-			"the earlier health events stay active", "node", nodeName)
-
-		return r.removePendingSession(ctx, nodeName, sessionID)
-	}
-
-	startID, quarantined, err := r.eventWatcher.FindQuarantineSession(ctx, nodeName, eventIDs)
-	if err != nil {
-		metrics.ProcessingErrors.WithLabelValues("mongodb_cancel_quarantine_error").Inc()
-		return fmt.Errorf("failed to find the ended quarantine session %s of node %s: %w", sessionID, nodeName, err)
-	}
-
-	if !quarantined {
-		slog.InfoContext(ctx, "Ended quarantine session has nothing left to cancel",
-			"node", nodeName, "session", sessionID)
-
-		return r.removePendingSession(ctx, nodeName, sessionID)
-	}
-
-	if err := r.eventWatcher.CancelQuarantineSession(ctx, nodeName, startID, cancelReason); err != nil {
-		metrics.ProcessingErrors.WithLabelValues("mongodb_cancel_quarantine_error").Inc()
-		return fmt.Errorf("failed to cancel the ended quarantine session %s of node %s: %w", startID, nodeName, err)
-	}
-
-	slog.InfoContext(ctx, "Finished the cancellation of the ended quarantine session",
-		"node", nodeName, "session", sessionID, "firstEvent", startID)
-
-	return r.removePendingSession(ctx, nodeName, sessionID)
-}
-
-// removePendingSession removes a session from the pending annotation, and the annotation once
-// no session is left in it. It reads the node from the API server and updates it with that
-// resourceVersion, so a session that a cleanup added in between is not lost.
-func (r *Reconciler) removePendingSession(ctx context.Context, nodeName, sessionID string) error {
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		node, err := r.k8sClient.NodeInformer.GetNodeDirect(ctx, nodeName)
 		if err != nil {
-			return err
+			return false, err
 		}
 
-		value, pending := node.Annotations[common.QuarantineCancellationPendingAnnotationKey]
-		if !pending {
-			return nil
+		if result.removed == nil {
+			return maps.Equal(quarantineAnnotationsOf(node), result.annotations), nil
 		}
 
-		sessions := slices.DeleteFunc(pendingSessions(value), func(session string) bool { return session == sessionID })
-		if len(sessions) > 0 {
-			node.Annotations[common.QuarantineCancellationPendingAnnotationKey] = strings.Join(sessions, pendingSessionSeparator)
-		} else {
-			delete(node.Annotations, common.QuarantineCancellationPendingAnnotationKey)
+		for _, key := range result.removed {
+			if _, present := node.Annotations[key]; present {
+				return false, nil
+			}
 		}
 
-		_, err = r.k8sClient.Clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-
-		return err
+		return true, nil
 	})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-
 	if err != nil {
-		metrics.ProcessingErrors.WithLabelValues("cancellation_pending_node_error").Inc()
-
-		return fmt.Errorf("failed to update %s on node %s: %w",
-			common.QuarantineCancellationPendingAnnotationKey, nodeName, err)
+		return fmt.Errorf("node %s is not up to date in the informer cache: %w", nodeName, err)
 	}
 
 	return nil

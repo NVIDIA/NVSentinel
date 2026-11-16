@@ -14,11 +14,7 @@
 
 package common
 
-import (
-	"regexp"
-
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-)
+import "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 
 // As part of the quarantineValidationHealthEvent annotation, we keep track of HealthEvents which contributed the
 // tests and the tests themselves. We will use the HealthEvent ID to check if the node was fully drained as part
@@ -53,11 +49,6 @@ const (
 	// Marks quarantine annotations written in dry run, where nothing was applied.
 	QuarantineHealthEventDryRunAnnotationKey   = "quarantineHealthEventDryRun"
 	QuarantineHealthEventDryRunAnnotationValue = "True"
-	// Lists the ended quarantine sessions of a node that are not cancelled in the datastore
-	// yet. Sessions are separated by semicolons and the record IDs of one session by commas.
-	QuarantineCancellationPendingAnnotationKey = "quarantineCancellationPending"
-	// Stands for the latest session of the node when the quarantine annotation names no record ID.
-	QuarantineCancellationLatestSession = "latest"
 
 	ServiceName = "NVSentinel"
 )
@@ -80,14 +71,4 @@ var QuarantineAnnotationKeys = []string{
 	QuarantinedNodeIsUntaintedManuallyAnnotationKey,
 	QuarantineValidationHealthEventAnnotationKey,
 	QuarantineHealthEventDryRunAnnotationKey,
-	QuarantineCancellationPendingAnnotationKey,
-}
-
-// recordIDPattern matches a MongoDB ObjectID and a PostgreSQL UUID.
-var recordIDPattern = regexp.MustCompile(
-	`^([0-9a-fA-F]{24}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
-
-// IsRecordID reports whether id is a MongoDB ObjectID or a PostgreSQL UUID.
-func IsRecordID(id string) bool {
-	return recordIDPattern.MatchString(id)
 }

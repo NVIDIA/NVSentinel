@@ -404,9 +404,9 @@ In dry run, fault-quarantine records what it would have done without cordoning, 
 - Logs read `Would cordon node (dry run)` and `Would uncordon node (dry run)`.
 - The datastore status is still `Quarantined`, so dry-run and real decisions are told apart by when dry run was enabled.
 
-When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it removes their annotations and cancels their quarantining events, so node-drainer does not act on them. A cordon someone else applied is left in place. The next fault on the node is quarantined for real.
+When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it cancels their quarantining events and then removes their annotations, so node-drainer does not act on them. A cordon someone else applied is left in place. The next fault on the node is quarantined for real.
 
-Cancelling the events works as on the manual uncordon path. If the write fails, fault-quarantine keeps trying in the background and again after a restart. Until the write succeeds, the node carries the `quarantineCancellationPending` annotation, and node-drainer can still pick up the node's events. After switching dry run off, check that no node still carries that annotation. See [Cancelling Break-Fix Workflows](../cancelling-breakfix.md).
+Cancelling the events works the same way as on the manual uncordon path. If the write fails, fault-quarantine increments `fault_quarantine_processing_errors_total{error_type="mongodb_cancel_quarantine_error"}`, keeps the annotations on the node and retries in the background, and again after a restart. Until the write succeeds, node-drainer can still pick up the node's events. A real fault on the node in the meantime discards the record first and then quarantines the node. After switching dry run off, check that `fault_quarantine_nodes_pending_cancellation` goes back to zero. See [Cancelling Break-Fix Workflows](../cancelling-breakfix.md).
 
 Before switching dry run off on a cluster that ran dry run on an earlier version:
 

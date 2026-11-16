@@ -247,7 +247,7 @@ func TestE2E_DryRunSwitchedOffDiscardsQuarantineRecord(t *testing.T) {
 		cancelled []string
 	)
 	eventWatcher := &MockEventWatcher{
-		CancelQuarantineSessionFn: func(_ context.Context, node string, _ string, _ string) error {
+		CancelLatestQuarantiningEventsFn: func(_ context.Context, node string, _ []string, _ string) error {
 			mu.Lock()
 			defer mu.Unlock()
 			cancelled = append(cancelled, node)
@@ -269,6 +269,12 @@ func TestE2E_DryRunSwitchedOffDiscardsQuarantineRecord(t *testing.T) {
 
 		return len(cancelled) == 1 && cancelled[0] == nodeName
 	}, statusCheckTimeout, statusCheckPollInterval, "the dry-run quarantine's events should be cancelled")
+
+	// The record is discarded after the events are cancelled.
+	require.Eventually(t, func() bool {
+		n, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return err == nil && n.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+	}, statusCheckTimeout, statusCheckPollInterval, "the dry-run record should be discarded on the switch")
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
@@ -340,7 +346,7 @@ func TestE2E_DryRunOnCordonedNodeIsNotCountedAndIsDiscardedOnSwitch(t *testing.T
 		TomlConfig: dryRunRules(true, false),
 		DryRun:     false,
 		EventWatcher: &MockEventWatcher{
-			CancelQuarantineSessionFn: func(_ context.Context, node string, _ string, _ string) error {
+			CancelLatestQuarantiningEventsFn: func(_ context.Context, node string, _ []string, _ string) error {
 				mu.Lock()
 				defer mu.Unlock()
 				cancelled = append(cancelled, node)
@@ -359,14 +365,6 @@ func TestE2E_DryRunOnCordonedNodeIsNotCountedAndIsDiscardedOnSwitch(t *testing.T
 	n, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.True(t, n.Spec.Unschedulable, "the existing cordon is not fault-quarantine's to remove")
-
-	// The worker cancels the session after the cleanup.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-
-		return len(cancelled) > 0
-	}, statusCheckTimeout, statusCheckPollInterval, "the discarded session should be cancelled")
 
 	mu.Lock()
 	defer mu.Unlock()

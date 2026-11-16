@@ -50,6 +50,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_nodes_unquarantined_total` | Counter | `node` | Total number of nodes unquarantined |
 | `fault_quarantine_nodes_manually_uncordoned_total` | Counter | `node` | Total number of manually uncordons for nodes |
 | `fault_quarantine_nodes_manually_untainted_total` | Counter | `node` | Total number of manual taint removals for nodes |
+| `fault_quarantine_nodes_pending_cancellation` | Gauge | - | Nodes waiting for their health events to be marked `Cancelled` after a manual uncordon, a manual untaint or a dry-run switch. If it stays above zero, the cancellation keeps failing |
 | `fault_quarantine_current_quarantined_nodes` | Gauge | `node` | Current number of quarantined nodes |
 | `fault_quarantine_dry_run_actions_total` | Counter | `action` | Total number of quarantine and unquarantine actions skipped by dry run |
 

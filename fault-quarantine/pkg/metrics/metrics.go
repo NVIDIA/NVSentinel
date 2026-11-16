@@ -94,6 +94,13 @@ var (
 		},
 		[]string{labelNode},
 	)
+	NodesPendingCancellation = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "fault_quarantine_nodes_pending_cancellation",
+			Help: "Nodes waiting for their health events to be marked Cancelled after a manual uncordon, " +
+				"a manual untaint or a dry-run switch.",
+		},
+	)
 	CurrentQuarantinedNodes = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "fault_quarantine_current_quarantined_nodes",
