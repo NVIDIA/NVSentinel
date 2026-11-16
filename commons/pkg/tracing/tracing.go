@@ -21,6 +21,7 @@ package tracing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -139,16 +140,26 @@ func InitTracing(serviceName string) error {
 // ShutdownTracing flushes pending spans and shuts down all tracer providers.
 // Call this during service shutdown to
 // ensure all buffered spans are exported before the process exits.
+//
+// It shuts down every provider even when one of them fails, and returns the
+// errors of all of them. A failed flush of the child-only provider drops the
+// database spans, so the caller must see that error to log it.
 func ShutdownTracing(ctx context.Context) error {
+	var errs []error
+
 	if childOnlyTracerProvider != nil {
-		_ = childOnlyTracerProvider.Shutdown(ctx)
+		if err := childOnlyTracerProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to shut down child-only tracer provider: %w", err))
+		}
 	}
 
 	if tracerProvider != nil {
-		return tracerProvider.Shutdown(ctx)
+		if err := tracerProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to shut down tracer provider: %w", err))
+		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // GetChildOnlyTracerProvider returns a TracerProvider that only records spans
