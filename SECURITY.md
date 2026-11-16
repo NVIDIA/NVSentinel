@@ -76,7 +76,7 @@ Each statement has these fields:
 - `subcomponents`, in each product: the packages that the reason covers, by the PURL that Grype reports. After an update to another version, the PURL no longer matches, so remove that subcomponent. Remove a product that has no subcomponents left, and a statement that has no products left. A statement without `subcomponents` applies to the vulnerability in every package of the image, so leave them out only when the reason covers every package.
 - `status`: `not_affected`.
 - `justification`: one of the [OpenVEX justifications](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md#status-justifications), for example `vulnerable_code_not_in_execute_path`.
-- `impact_statement`: why the vulnerability does not affect the image, so that a reviewer can check it.
+- `impact_statement`: why the vulnerability does not affect the image, in one or two sentences, for example "libexample1 is a library of the base image that no NVSentinel process loads." Put the evidence, such as a trace or the output of `ldd`, in the pull request that adds the statement, so that a reviewer can check it.
 
 Also increase the `version` of the document by one, and set its `timestamp` to the time of the change.
 

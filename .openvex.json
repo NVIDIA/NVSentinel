@@ -17,7 +17,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. libpcre2-8 comes with the base image. None of these processes loads it."
+      "impact_statement": "libpcre2-8 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-106553"},
@@ -28,7 +28,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. openssh-client comes with the base image. No component runs ssh."
+      "impact_statement": "openssh-client is in the base image. No NVSentinel process runs ssh."
     },
     {
       "vulnerability": {"name": "CVE-2026-106555"},
@@ -39,7 +39,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. openssh-client comes with the base image. No component runs ssh."
+      "impact_statement": "openssh-client is in the base image. No NVSentinel process runs ssh."
     },
     {
       "vulnerability": {"name": "CVE-2026-106583"},
@@ -50,7 +50,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. openssh-client comes with the base image. No component runs ssh."
+      "impact_statement": "openssh-client is in the base image. No NVSentinel process runs ssh."
     },
     {
       "vulnerability": {"name": "CVE-2026-109518"},
@@ -64,7 +64,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "apt comes with the base image. No component runs apt or installs packages at run time."
+      "impact_statement": "apt is in the base image. No NVSentinel process runs apt or installs packages at run time."
     },
     {
       "vulnerability": {"name": "CVE-2026-111497"},
@@ -75,7 +75,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. libbrotli1 comes with the base image as a dependency of libcurl. None of these processes loads it."
+      "impact_statement": "libbrotli1 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-112390"},
@@ -86,7 +86,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112391"},
@@ -97,7 +97,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112392"},
@@ -108,7 +108,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112393"},
@@ -119,7 +119,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112394"},
@@ -130,7 +130,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112395"},
@@ -141,7 +141,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112396"},
@@ -152,7 +152,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112397"},
@@ -163,7 +163,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112398"},
@@ -174,7 +174,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112399"},
@@ -185,7 +185,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112400"},
@@ -196,7 +196,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112401"},
@@ -207,7 +207,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112402"},
@@ -218,7 +218,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112403"},
@@ -229,7 +229,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112404"},
@@ -240,7 +240,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112405"},
@@ -251,7 +251,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112406"},
@@ -262,7 +262,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112891"},
@@ -273,7 +273,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112892"},
@@ -284,7 +284,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112893"},
@@ -295,7 +295,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112894"},
@@ -306,7 +306,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112895"},
@@ -317,7 +317,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112896"},
@@ -328,7 +328,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112897"},
@@ -339,7 +339,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112900"},
@@ -350,7 +350,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112901"},
@@ -361,7 +361,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-112902"},
@@ -372,7 +372,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-115557"},
@@ -382,7 +382,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "The fix adds a denylist of compromised certificates to the ssl module of Python. file-server-cleanup does not use TLS: it serves its metrics over plain HTTP, runs find to delete old files, and opens no other connections."
+      "impact_statement": "The fix is in the ssl module of Python, and file-server-cleanup uses no TLS."
     },
     {
       "vulnerability": {"name": "CVE-2026-4738"},
@@ -392,7 +392,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_present",
-      "impact_statement": "The vulnerable code is in infback9, in the contrib directory of zlib, which GDAL builds. The zlib library of Alpine does not include infback9: it exports no inflateBack9 function."
+      "impact_statement": "The vulnerable code is in infback9, from the contrib directory of zlib, which the zlib of Alpine does not include."
     },
     {
       "vulnerability": {"name": "CVE-2026-63388"},
@@ -403,7 +403,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries that the DCGM library and its modules link. libevent comes with the base image. None of these processes loads it."
+      "impact_statement": "libevent is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-69184"},
@@ -414,7 +414,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. libcares2 comes with the base image. None of these processes loads it."
+      "impact_statement": "libcares2 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-74860"},
@@ -425,7 +425,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries that the DCGM library and its modules link. libxml2 comes with the base image. None of these processes loads it."
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-76844"},
@@ -435,7 +435,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_present",
-      "impact_statement": "The advisory describes a path traversal in webpack-dev-middleware, a JavaScript package. zlib does not contain that code, and the image contains no webpack-dev-middleware."
+      "impact_statement": "The advisory describes webpack-dev-middleware, a JavaScript package that is not in the image. zlib does not contain the vulnerable code."
     },
     {
       "vulnerability": {"name": "CVE-2026-82560"},
@@ -451,7 +451,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "The vulnerable code is in the Pod::Text module of perl, which formats POD documentation, for example for pod2text and perldoc. It needs a crafted POD document. No component formats POD documentation."
+      "impact_statement": "The vulnerable code is in the Pod::Text module of perl and needs a crafted POD document. No NVSentinel process formats POD documentation."
     },
     {
       "vulnerability": {"name": "CVE-2026-84243"},
@@ -467,7 +467,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "impact_statement": "The vulnerable code is in gettext, which reads message catalogs from the directories in the LANGUAGE environment variable. To use it, an attacker needs to set LANGUAGE and a locale other than C or POSIX in the environment of a container, and to put a crafted catalog in it. The environment of each container comes from its pod spec. Only a user who can create or change pods sets it, and that user can already run any code in the container."
+      "impact_statement": "The vulnerable code is in gettext and needs an attacker who can set the LANGUAGE variable and put a crafted message catalog in the container. The environment of an NVSentinel container comes from its pod spec, which only a user who can already run code in the container can change."
     },
     {
       "vulnerability": {"name": "CVE-2026-85091"},
@@ -481,7 +481,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. syslog-health-monitor runs one Go binary, which links only libc and loads libsystemd to read the journal. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. zlib comes with the base image. The vulnerable code is in the gzip file functions, such as gzwrite(), gzprintf() and gzvprintf(). Where Python loads libz, it calls only the deflate, inflate and checksum functions, and none of the loaded libraries imports a gz* function. The nccl-loopback binaries do not load libz. The DCGM library and its modules do not link libz. The syslog-health-monitor binary and libsystemd do not link libz. zlib1g-dev holds headers and a static library that nothing links at run time."
+      "impact_statement": "The vulnerable code is in the gz* file functions of zlib, which no NVSentinel process calls. zlib1g-dev holds only headers and a static library."
     },
     {
       "vulnerability": {"name": "CVE-2026-86138"},
@@ -492,7 +492,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries that the DCGM library and its modules link. libxml2 comes with the base image. None of these processes loads it."
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-86140"},
@@ -503,7 +503,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries that the DCGM library and its modules link. libxml2 comes with the base image. None of these processes loads it."
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-86142"},
@@ -514,7 +514,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries that the DCGM library and its modules link. libxml2 comes with the base image. None of these processes loads it."
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-86143"},
@@ -525,7 +525,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries that the DCGM library and its modules link. libxml2 comes with the base image. None of these processes loads it."
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-86144"},
@@ -536,7 +536,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries that the DCGM library and its modules link. libxml2 comes with the base image. None of these processes loads it."
+      "impact_statement": "libxml2 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-86145"},
@@ -549,7 +549,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. libpcre2-8 comes with the base image. None of these processes loads it."
+      "impact_statement": "libpcre2-8 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-86409"},
@@ -560,7 +560,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-86414"},
@@ -571,7 +571,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-87862"},
@@ -582,7 +582,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-87863"},
@@ -593,7 +593,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-87864"},
@@ -604,7 +604,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-88806"},
@@ -615,7 +615,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries that the DCGM library and its modules link. libX11 comes with the base image. None of these processes loads it."
+      "impact_statement": "libX11 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-89157"},
@@ -628,7 +628,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. libpcre2-8 comes with the base image. None of these processes loads it."
+      "impact_statement": "libpcre2-8 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-89161"},
@@ -641,7 +641,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. libpcre2-8 comes with the base image. None of these processes loads it."
+      "impact_statement": "libpcre2-8 is a library of the base image that no NVSentinel process loads."
     },
     {
       "vulnerability": {"name": "CVE-2026-92388"},
@@ -652,7 +652,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-92389"},
@@ -663,7 +663,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-92391"},
@@ -674,7 +674,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-94266"},
@@ -685,7 +685,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. curl and libcurl come with the base image. No component runs curl, and none of these processes loads libcurl."
+      "impact_statement": "curl and libcurl are in the base image. No NVSentinel process runs curl or loads libcurl."
     },
     {
       "vulnerability": {"name": "CVE-2026-96637"},
@@ -696,7 +696,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-96639"},
@@ -707,7 +707,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-96640"},
@@ -718,7 +718,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-96642"},
@@ -729,7 +729,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-96643"},
@@ -740,7 +740,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-96644"},
@@ -751,7 +751,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "CVE-2026-96778"},
@@ -762,7 +762,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-22hg-r758-rrw9"},
@@ -773,7 +773,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-27h8-gf7j-v5hc"},
@@ -784,7 +784,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-27vj-qcqg-25rc"},
@@ -795,7 +795,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. fsspec is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "fsspec is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-332p-7hrc-92wf"},
@@ -806,7 +806,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-3j72-p6qg-6xp7"},
@@ -817,7 +817,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-58r4-6rv3-gfh8"},
@@ -828,7 +828,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-5x8w-8jj5-q52h"},
@@ -839,7 +839,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-5xm2-6676-qcp9"},
@@ -850,7 +850,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-65qm-jvmh-6pqg"},
@@ -861,7 +861,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-6655-6qjp-jx7x"},
@@ -872,7 +872,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. soupsieve is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "soupsieve is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-6q48-6c7w-9gw2"},
@@ -883,7 +883,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. certifi is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "certifi is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-78g4-xqwv-q3g8"},
@@ -894,7 +894,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-7mwm-ghpf-9vrm"},
@@ -905,7 +905,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-8g5g-8vmr-9782"},
@@ -916,7 +916,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-9v9v-9qvf-h2hj"},
@@ -927,7 +927,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-c6hw-5grf-ff96"},
@@ -938,7 +938,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-cg8m-r9f2-5wm2"},
@@ -949,7 +949,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. black is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "black is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-cp9v-662q-vvx9"},
@@ -960,7 +960,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-f2g6-542v-9j58"},
@@ -971,7 +971,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-g4qv-2jxx-769h"},
@@ -982,7 +982,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-g7cr-3p24-7wf7"},
@@ -993,7 +993,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-g842-9rc4-69pw"},
@@ -1004,7 +1004,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-gg2r-wvfm-q9rx"},
@@ -1015,7 +1015,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-j4m9-6w36-pw47"},
@@ -1026,7 +1026,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-jg86-v3jv-hrpm"},
@@ -1037,7 +1037,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-mmhr-3c5m-f64f"},
@@ -1048,7 +1048,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. soupsieve is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "soupsieve is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-mrfp-p49p-3hf2"},
@@ -1059,7 +1059,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-p4wg-p73j-c528"},
@@ -1070,7 +1070,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-pchr-8j38-3x4p"},
@@ -1081,7 +1081,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-pjvx-prjx-h659"},
@@ -1092,7 +1092,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. nbconvert is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "nbconvert is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-q45j-58j2-45rg"},
@@ -1103,7 +1103,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-v4x8-3wr5-3wq8"},
@@ -1114,7 +1114,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. filelock is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "filelock is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-v9pv-5gc8-w2m6"},
@@ -1125,7 +1125,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-w889-685w-c8fh"},
@@ -1136,7 +1136,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-wf93-45jw-7689"},
@@ -1149,7 +1149,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. gpu-health-monitor runs one Python process, which uses the DCGM library in remote or local-managed mode. dcgm-diag runs one Python process, which connects to a DCGM hostengine. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. ldd lists the libraries that the DCGM library and its modules link. pip is inside Nsight Systems in the PyTorch base image and in /opt/venv, where python3 -m venv installs it. No component runs pip, and none of these processes imports it."
+      "impact_statement": "pip is in the base image, inside Nsight Systems and in /opt/venv, where python3 -m venv installs it. No NVSentinel process runs or imports it."
     },
     {
       "vulnerability": {"name": "GHSA-wqgw-9xfh-qf2g"},
@@ -1160,7 +1160,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-xcvg-w56q-r89m"},
@@ -1171,7 +1171,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GHSA-xvh5-g6gv-559v"},
@@ -1182,7 +1182,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. Pillow is a Python package of the PyTorch base image. None of these processes imports it."
+      "impact_statement": "Pillow is a Python package of the PyTorch base image that no NVSentinel process imports."
     },
     {
       "vulnerability": {"name": "GO-2026-6603"},
@@ -1194,7 +1194,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb. In log-collector, the vulnerable code is the HTTP/2 server of golang.org/x/net in kubectl. log-collector runs kubectl only as a client, for kubectl get, exec and cp, so the server code never runs."
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs. In log-collector, the vulnerable code is the HTTP/2 server code in kubectl, which log-collector runs only as a client."
     },
     {
       "vulnerability": {"name": "GO-2026-6605"},
@@ -1205,7 +1205,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
     },
     {
       "vulnerability": {"name": "GO-2026-6607"},
@@ -1216,7 +1216,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
     },
     {
       "vulnerability": {"name": "GO-2026-6608"},
@@ -1227,7 +1227,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
     },
     {
       "vulnerability": {"name": "GO-2026-6610"},
@@ -1239,7 +1239,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb. In log-collector, the vulnerable code is in kubectl. The problem affects an HTTP/2 client that forwards responses to an HTTP/1 client as a reverse proxy. log-collector runs kubectl get, exec and cp, never kubectl proxy or port-forward."
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs. In log-collector, the problem affects kubectl only as a reverse proxy, and log-collector never runs kubectl proxy or port-forward."
     },
     {
       "vulnerability": {"name": "GO-2026-6611"},
@@ -1249,7 +1249,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "impact_statement": "In log-collector, the vulnerable code is the HTTP/2 client of golang.org/x/net in kubectl. It needs a malicious HTTP/2 peer. The only peer of kubectl in log-collector is the Kubernetes API server of the cluster, which kubectl authenticates with TLS."
+      "impact_statement": "The vulnerable code in kubectl needs a malicious HTTP/2 peer. In log-collector, the only peer is the Kubernetes API server, which kubectl authenticates with TLS."
     },
     {
       "vulnerability": {"name": "GO-2026-6611"},
@@ -1260,7 +1260,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
     },
     {
       "vulnerability": {"name": "GO-2026-6612"},
@@ -1272,7 +1272,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb. In log-collector, the vulnerable code is the HTTP/2 server of golang.org/x/net in kubectl. log-collector runs kubectl only as a client, for kubectl get, exec and cp, so the server code never runs."
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs. In log-collector, the vulnerable code is the HTTP/2 server code in kubectl, which log-collector runs only as a client."
     },
     {
       "vulnerability": {"name": "GO-2026-6613"},
@@ -1283,7 +1283,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb."
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs."
     },
     {
       "vulnerability": {"name": "GO-2026-6617"},
@@ -1295,7 +1295,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "nccl-loopback runs only nvidia-smi and the nccl-tests binary, without a shell, and never runs Python. nccl-allreduce runs entrypoint.py, nvidia-smi, torchrun and the nccl_allreduce workers. A trace of the Python processes in each image records the Python modules and shared libraries that they load. ldd lists the libraries of the nccl-tests binary, NCCL and the CUDA runtime. The vulnerable code is in wandb-core, the Go binary of the wandb Python package of the PyTorch base image. No component runs wandb-core, and none of these processes imports wandb. In log-collector, the vulnerable code is the HTTP/2 server of golang.org/x/net in kubectl. log-collector runs kubectl only as a client, for kubectl get, exec and cp, so the server code never runs."
+      "impact_statement": "The vulnerable code is in wandb-core, a Go binary of the PyTorch base image that no NVSentinel process runs. In log-collector, the vulnerable code is the HTTP/2 server code in kubectl, which log-collector runs only as a client."
     }
   ]
 }
