@@ -184,7 +184,7 @@ nodeGroups:
             "nvidia.com/gpu.present" in node.metadata.labels &&
             node.metadata.labels["nvidia.com/gpu.present"] == "true"
     circuitBreaker:
-      maxNodes: 40                      # safety net. Above the size of one domain
+      maxNodes: 40                      # safety net. A small margin above the size of the largest domain
       maxCordonedNodes: 60              # safety net. Above the size of the domains that can stay cordoned
       duration: "5m"
       failureDomains:
@@ -196,7 +196,7 @@ nodeGroups:
 - `topologyKey` works like `topologyKey` in Kubernetes topology spread constraints. Each value of the label is one domain.
 - `maxDomains` limits the number of domains that have a quarantine in the window. A domain counts once, however many of its nodes are quarantined.
 - `maxCordonedDomains` limits the number of domains that have a node that NVSentinel holds cordoned.
-- A domain has no limit of its own, so a full domain can be quarantined. The node bounds of the group apply to all its domains together, as a safety net. Set them above the size of one domain.
+- A domain has no limit of its own, so a full domain can be quarantined. The node bounds of the group apply to all its domains together, as a safety net. Set `maxNodes` a small margin above the size of the largest domain, and not higher. The domain bound stops a second domain, so a higher node bound gives no benefit, and it weakens the protection for nodes without a domain label.
 - A domain bound trips when the count reaches it, as `maxNodes` does. A domain bound of 1 is not valid, because the first quarantine would trip it.
 - A domain bound is not a node bound. If the domain labels are wrong or missing, the node bounds stop a bad signal.
 
@@ -206,8 +206,9 @@ The domain of a node:
 
 - fault-quarantine fixes the domain of a node when it starts the quarantine. It stores the domain in a new quarantine annotation. A later change or loss of the label does not move a quarantined node to another domain, and a restart does not change it. [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) asked for this rule.
 - A node that has no label and no stored domain counts in one shared domain for its group, the unknown domain. fault-quarantine logs a warning and reports these nodes in a metric. One domain for each such node would count a rack without labels as many domains, and a failed rack would trip.
+- The unknown domain has a cost. Nodes without a label can be in different racks, but they all count as one domain, so the domain bound cannot find the second rack. Only the node bounds protect against a failure or a bad signal on such nodes. With `maxNodes` a small margin above the largest domain, the breaker trips when the quarantines pass that margin into the second rack. With labels, it trips at the first quarantine in the second rack. The metric for nodes without a domain label shows this exposure before a fault occurs.
 - Match the group on a stable label, not on the domain label. A node then stays in its group when it loses its domain label.
-- A static rack label is the most stable key. `nvidia.com/gpu.clique` and the [Topograph](../INTEGRATIONS.md#topology-awareness-topograph) domain label are also valid keys, and a cluster with no rack label can use them. A discovery component computes these labels, so they can change or disappear during a fault. The two rules above cover that case.
+- A static rack label is the most stable key. `nvidia.com/gpu.clique` and the [Topograph](../INTEGRATIONS.md#topology-awareness-topograph) domain label are also valid keys, and a cluster with no rack label can use them. A discovery component computes these labels, so they can change or disappear during a fault. The rules above cover that case.
 
 A cluster that is one domain gets no benefit from domain bounds. A failure of the full domain and a bad signal on every node give the same counts there. The node bounds are capped at the number of nodes of the group, so the breaker trips when every node is quarantined. The operator chooses between that trip and `circuitBreaker.enabled: false`.
 
@@ -233,7 +234,7 @@ Each step is a separate PR. A cluster with no node groups does not change at eit
 
 Tests:
 
-- Unit tests: the winner, equal priorities, a disabled group, and a rule error before and after the winner. The window and the standing count of each group. A group with no nodes, and the cluster breaker with no node that matches `gpuNodeLabel`. The series of each group. The domain of a node at quarantine, stored, and unknown.
+- Unit tests: the winner, equal priorities, a disabled group, and a rule error before and after the winner. The window and the standing count of each group. A group with no nodes, and the cluster breaker with no node that matches `gpuNodeLabel`. The series of each group. The domain of a node at quarantine, stored, and unknown. Nodes without a domain label, some in one rack and some in a second rack: they count as one domain, and the node bound trips.
 - E2E tests: a burst on one node type trips by the limits of its group. A full domain is quarantined with no trip, and a second domain trips. A restart while tripped restores `trippedBy` and the series. With no node groups, nothing changes except the `group` label.
 
 ## Rationale
@@ -242,7 +243,7 @@ Tests:
 - **One definition of a node type.** The node group is the one place in fault-quarantine that says what a node type is.
 - **Small scope.** The stream, the reset, and the rule sets do not change. The work uses only shared code that is on main.
 - **Opt-in.** A cluster with no node groups does not change.
-- **Fail closed.** A rule error and a node without a domain label never move a node to weaker limits.
+- **Fail closed.** A rule error never moves a node to weaker limits. A node without a domain label keeps the node bounds of its group. Only the domain bound is weaker for such nodes, because it counts them as one domain, and the node bounds limit that case.
 - **One deployment.** One component owns the quarantine annotations of each node and reads the event stream.
 
 ## Consequences
@@ -261,6 +262,7 @@ Tests:
 - A group rule that fails at run time stops the stream for all nodes until the rule or the node is corrected.
 - The bounds of a group with domains depend on the size of a domain, so each cluster needs its own values.
 - On a cluster that is one domain, the breaker cannot tell a failed domain from a bad signal on every node.
+- For nodes without a domain label, the domain bound is weaker, because it counts them as one domain. The node bounds limit that case.
 - The membership rule (one winner) is different from the fault-quarantine rule sets (every match applies).
 
 ### Mitigations
