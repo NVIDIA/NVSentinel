@@ -19,7 +19,8 @@ package databases have to be the ones of that image. It reads:
 
 - the records that sitecustomize.py wrote in /openvex-trace/out, one JSON file for each process, with
   the Python module files and shared libraries that the process loaded, for example
-  {"argv": ["python3", "-m", "dcgm_diag"], "modules": [".../dcgm_diag/__main__.py"], "libs": ["/usr/lib/x86_64-linux-gnu/libz.so.1.3"]}
+  {"argv": ["python3", "-m", "dcgm_diag"], "modules": [".../dcgm_diag/__main__.py"], "libs": ["/usr/lib/x86_64-linux-gnu/libz.so.1.3"],
+   "sys_path": ["/opt/venv/lib/python3.12/site-packages", ...]}
 - optional library paths on stdin, one on each line, as bare paths or as ldd output
 
 It prints JSON, for example:
@@ -50,8 +51,12 @@ RECORDS = "/openvex-trace/out/*.json"
 MERGED_USR_DIRS = (("/lib/", "/usr/lib/"), ("/lib64/", "/usr/lib64/"), ("/bin/", "/usr/bin/"), ("/sbin/", "/usr/sbin/"))
 
 
-def paths_loaded_by_traced_processes(pattern=RECORDS):
-    """Returns the resolved paths of all files in the process records.
+def read_records(pattern=RECORDS):
+    """Returns the files that the traced processes loaded, and the directories they import from.
+
+    The directories are the sys.path of each process. The mapper runs with python3 -I, which leaves some
+    of them out of its own sys.path, for example a user site-packages directory, so it needs them to find
+    the distributions that the processes loaded.
 
     A record that is not valid is skipped and reported, for example one that a process could not finish
     writing, or {"modules": [null], "libs": []}.
@@ -59,7 +64,7 @@ def paths_loaded_by_traced_processes(pattern=RECORDS):
     Example: a record with "libs": ["/lib/x86_64-linux-gnu/libz.so.1"] adds
     "/usr/lib/x86_64-linux-gnu/libz.so.1.3" on an image where /lib links to /usr/lib.
     """
-    loaded = set()
+    loaded, search_path = set(), []
     for record in sorted(glob.glob(pattern)):
         try:
             with open(record, encoding="utf-8") as f:
@@ -70,9 +75,10 @@ def paths_loaded_by_traced_processes(pattern=RECORDS):
             if not all(isinstance(p, str) for p in paths):
                 raise ValueError("a path is not a string")
             loaded.update(os.path.realpath(p) for p in paths)
+            search_path += [p for p in data.get("sys_path", []) if isinstance(p, str) and p not in search_path]
         except (OSError, ValueError, KeyError, TypeError) as e:
             print(f"skip {record}: {e}", file=sys.stderr)
-    return loaded
+    return loaded, search_path
 
 
 def library_paths_from_lines(lines):
@@ -93,18 +99,16 @@ def library_paths_from_lines(lines):
     return paths
 
 
-def python_distributions_owning(paths, extra_search_path=""):
+def python_distributions_owning(paths, search_path):
     """Returns "name==version" for each installed Python distribution that owns one of the paths.
 
-    It reads the file list (RECORD) of every distribution on sys.path and on extra_search_path, a
-    PYTHONPATH-style list. trace.sh passes the PYTHONPATH of the image there, because it runs this
-    file with python3 -I, which ignores PYTHONPATH.
+    It reads the file list (RECORD) of every distribution in the directories of search_path, the
+    directories that the traced processes import from, and in the sys.path of the mapper.
 
     Example: {"/usr/local/lib/python3.12/dist-packages/PIL/Image.py"} gives {"pillow==12.3.0"}.
     """
-    search = [p for p in extra_search_path.split(":") if p] + sys.path
     owners = set()
-    for dist in metadata.distributions(path=search):
+    for dist in metadata.distributions(path=list(search_path) + sys.path):
         for file in dist.files or []:
             try:
                 if os.path.realpath(str(dist.locate_file(file))) in paths:
@@ -118,14 +122,18 @@ def python_distributions_owning(paths, extra_search_path=""):
 def with_merged_usr_aliases(paths):
     """Returns the paths, plus the /lib, /lib64, /bin and /sbin spelling of each path under /usr.
 
-    Example: {"/usr/lib/x86_64-linux-gnu/libc.so.6"} gives
-    {"/usr/lib/x86_64-linux-gnu/libc.so.6", "/lib/x86_64-linux-gnu/libc.so.6"}.
+    A spelling is added only when it is the same file, as on an image with merged /usr. Example:
+    {"/usr/lib/x86_64-linux-gnu/libc.so.6"} gives
+    {"/usr/lib/x86_64-linux-gnu/libc.so.6", "/lib/x86_64-linux-gnu/libc.so.6"} when /lib links to
+    /usr/lib, and only the first path when /lib/x86_64-linux-gnu/libc.so.6 is another file.
     """
     aliases = set(paths)
     for path in paths:
         for short, full in MERGED_USR_DIRS:
             if path.startswith(full):
-                aliases.add(short + path[len(full):])
+                alias = short + path[len(full):]
+                if os.path.realpath(alias) == os.path.realpath(path):
+                    aliases.add(alias)
     return aliases
 
 
@@ -172,13 +180,13 @@ def os_packages_owning(paths):
 
 
 def main():
-    loaded = paths_loaded_by_traced_processes()
+    loaded, search_path = read_records()
     loaded.add(os.path.realpath(sys.executable))  # the interpreter, for example from python3.12-minimal
     stdin_paths = library_paths_from_lines(sys.stdin)
-    image_pythonpath = os.environ.get("OPENVEX_TRACE_PYTHONPATH", "")
+    search_path += [p for p in os.environ.get("OPENVEX_TRACE_PYTHONPATH", "").split(":") if p]
     print(json.dumps({
         "files_loaded": len(loaded),
-        "python_dists_loaded": sorted(python_distributions_owning(loaded, image_pythonpath)),
+        "python_dists_loaded": sorted(python_distributions_owning(loaded, search_path)),
         "os_packages_loaded": sorted(os_packages_owning(loaded)),
         "os_packages_of_stdin_paths": sorted(os_packages_owning(stdin_paths)),
     }, indent=1))

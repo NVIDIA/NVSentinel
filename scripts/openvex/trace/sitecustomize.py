@@ -31,7 +31,8 @@ def _dump(reason):
                 if p.startswith("/") and ".so" in p:
                     libs.add(os.path.realpath(p))
         with open(f"/openvex-trace/out/{os.getpid()}-{reason}.json", "w") as f:
-            json.dump({"argv": getattr(sys, "orig_argv", sys.argv), "modules": mods, "libs": sorted(libs)}, f)
+            json.dump({"argv": getattr(sys, "orig_argv", sys.argv), "modules": mods, "libs": sorted(libs),
+                       "sys_path": [p for p in sys.path if isinstance(p, str)]}, f)
     except Exception as e:
         sys.stderr.write(f"trace dump failed: {e}\n")
 
