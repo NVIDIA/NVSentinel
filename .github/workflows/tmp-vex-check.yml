@@ -61,7 +61,7 @@ jobs:
           REF: ${{ matrix.ref }}
           KIND: ${{ matrix.kind }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           H="${GITHUB_WORKSPACE}/.github/tmp-trace"
           MAP="${GITHUB_WORKSPACE}/distros/kubernetes/nvsentinel/charts/gpu-health-monitor/files/dcgmerrorsmapping.csv"
           PP=/trace/hook:/usr/share/datacenter-gpu-manager-4/bindings/python3
