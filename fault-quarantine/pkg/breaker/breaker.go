@@ -206,8 +206,8 @@ const (
 	boundMaxCordonedNodes Bound = "maxCordonedNodes"
 	// boundMaxCordonedPercentage is the percentage form of boundMaxCordonedNodes.
 	boundMaxCordonedPercentage Bound = "maxCordonedPercentage"
-	// boundNoGPUNodes is reported when no GPU nodes are counted, where any recent cordon trips
-	// the breaker.
+	// boundNoGPUNodes is reported when no GPU nodes are counted, where a node cordoned in the
+	// window that is still in the cluster trips the breaker.
 	boundNoGPUNodes Bound = "noGPUNodes"
 )
 
