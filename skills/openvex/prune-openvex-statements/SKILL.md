@@ -23,10 +23,11 @@ Use it after base image or dependency updates, for example a merged Dependabot p
 
 ## Steps
 
-1. Scan the images. Keep the output directory:
+1. Scan the images into a new directory, so that no report of an earlier tag remains in it:
 
    ```bash
-   scripts/openvex/scan.sh -o /tmp/openvex-scan IMAGE...
+   out=$(mktemp -d)
+   scripts/openvex/scan.sh -o "${out}" IMAGE...
    ```
 
    For each image, `NAME.json` in the directory has every finding without the document, including the findings that have no fix.
@@ -34,7 +35,7 @@ Use it after base image or dependency updates, for example a merged Dependabot p
 2. Remove the packages that the scans no longer report:
 
    ```bash
-   python3 scripts/openvex/statements.py prune /tmp/openvex-scan/*.json
+   python3 scripts/openvex/statements.py prune "${out}"/*.json
    make openvex-lint
    ```
 

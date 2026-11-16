@@ -45,7 +45,23 @@ def _periodic():
         _dump("periodic")
 
 
-threading.Thread(target=_periodic, daemon=True).start()
+def _start():
+    threading.Thread(target=_periodic, daemon=True).start()
+
+
+_start()
+# A forked child, such as a multiprocessing worker, has no copy of the thread, and ends with os._exit,
+# which skips atexit. Restart the thread in the child, and record before os._exit.
+os.register_at_fork(after_in_child=_start)
+_orig_exit = os._exit
+
+
+def _exit(code, _orig=_orig_exit):
+    _dump("exit")
+    _orig(code)
+
+
+os._exit = _exit
 
 for _n in ("execv", "execve"):
     _orig = getattr(os, _n)

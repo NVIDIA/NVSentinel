@@ -56,7 +56,7 @@ def product_id(image):
     """pkg:oci/<name> for an image name, reference or product ID."""
     if image.startswith("pkg:oci/"):
         return image
-    ref = re.sub(r"^[a-z-]+:(?=[^/]*/)", "", image)  # registry:, docker: and similar schemes
+    ref = re.sub(r"^(registry|docker|podman|oci-archive|docker-archive|oci-dir):", "", image)  # Grype schemes
     name = ref.rsplit("/", 1)[-1].split("@", 1)[0].split(":", 1)[0]
     return "pkg:oci/" + name
 
@@ -97,15 +97,19 @@ def normalize(doc):
 
 
 def set_version(doc, path, base_ref, changed):
+    """Sets the version to one more than on the base branch, once, and the timestamp when statements changed."""
     try:
         base = json.loads(subprocess.run(["git", "show", f"{base_ref}:{path}"], capture_output=True, check=True,
                                          text=True).stdout)
     except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
         print(f"warning: cannot read {path} from {base_ref}; the version is unchanged", file=sys.stderr)
+        if changed:
+            doc["timestamp"] = now()
         return
-    if base.get("statements") != doc["statements"] and doc.get("version", 0) <= base.get("version", 0):
+    differs = base.get("statements") != doc["statements"]
+    if differs and doc.get("version", 0) <= base.get("version", 0):
         doc["version"] = base.get("version", 0) + 1
-    if changed:
+    if changed or (differs and doc.get("timestamp") == base.get("timestamp")):
         doc["timestamp"] = now()
 
 
@@ -133,6 +137,9 @@ def add(doc, rows_path):
             if product is None:
                 product = {"@id": pid, "subcomponents": []}
                 statement["products"].append(product)
+            if "subcomponents" not in product:
+                print(f"{rows_path}:{n}: {vuln} already covers every package of {pid}; row skipped")
+                continue
             if any(c["@id"] == purl for c in product["subcomponents"]) and impact in statement["impact_statement"]:
                 continue
             if not any(c["@id"] == purl for c in product["subcomponents"]):

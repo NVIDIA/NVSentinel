@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Run by scripts/openvex/trace.sh: maps the files that the traced processes loaded, and extra library paths given
-# on stdin, to their Python distributions and Debian packages.
+# Run by scripts/openvex/trace.sh: maps the files that the traced processes loaded, and the library paths given
+# on stdin (one path, or ldd output, on each line), to their Python distributions and dpkg or apk packages.
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,10 +28,17 @@ for f in glob.glob("/openvex-trace/out/*.json"):
     d = json.load(open(f))
     for p in d["modules"] + d["libs"]:
         loaded.add(os.path.realpath(p))
-extra = {os.path.realpath(line.strip()) for line in sys.stdin if line.strip()}
+# Accept bare paths and ldd lines such as "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x...)".
+extra = set()
+for line in sys.stdin:
+    m = re.search(r"(?:=>\s*|^\s*)(/\S+)", line)
+    if m:
+        extra.add(os.path.realpath(m.group(1)))
 
+# The mapper runs with -I, so add the PYTHONPATH of the image to find the distributions installed there.
+search = [p for p in os.environ.get("OPENVEX_TRACE_PYTHONPATH", "").split(":") if p] + sys.path
 py = {}
-for dist in metadata.distributions():
+for dist in metadata.distributions(path=search):
     name = f"{dist.metadata['Name'].lower()}=={dist.version}"
     for f in dist.files or []:
         try:
@@ -46,6 +54,14 @@ def os_owners(paths):
     out = {}
     paths = sorted(p for p in paths if p.startswith(("/usr", "/lib", "/opt", "/bin", "/sbin")))
     if shutil.which("dpkg"):
+        # dpkg records some files under /lib, /bin or /sbin, which are links to /usr on merged-/usr images,
+        # and the records hold the resolved /usr path. Query both spellings.
+        aliases = set(paths)
+        for p in paths:
+            for short, full in (("/lib/", "/usr/lib/"), ("/lib64/", "/usr/lib64/"), ("/bin/", "/usr/bin/"), ("/sbin/", "/usr/sbin/")):
+                if p.startswith(full):
+                    aliases.add(short + p[len(full):])
+        paths = sorted(aliases)
         for i in range(0, len(paths), 200):
             res = subprocess.run(["dpkg", "-S", *paths[i:i + 200]], capture_output=True, text=True).stdout
             for line in res.splitlines():

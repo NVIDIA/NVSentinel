@@ -28,7 +28,7 @@ A statement records that the vulnerability does not affect the image. Write one 
 1. Find the findings that the document does not cover:
 
    ```bash
-   scripts/openvex/scan.sh -o /tmp/openvex-scan IMAGE...
+   scripts/openvex/scan.sh IMAGE...
    ```
 
    For each image, the script prints the critical and high counts without and with `.openvex.json`, and one line for each finding left: vulnerability ID, package type, name, version, PURL and location. It counts like the weekly scan: the Grype version of `.versions.yaml`, only findings with a fix, and the severity from the CVSS score. Grype's own severity label can differ, so do not use it.
@@ -45,8 +45,8 @@ A statement records that the vulnerability does not affect the image. Write one 
    |---|---|
    | Python package, or a library that a Python program can load | `scripts/openvex/trace.sh IMAGE [DOCKER-RUN-OPTION...] -- [COMMAND...]` runs the program and lists the Python distributions and OS packages its processes load. Run each mode of the program, as far as it gets without a GPU or a cluster. |
    | Library of a native binary | `ldd BINARY` in the image. Add the paths to a file and pass it to `trace.sh -l` to map them to packages. |
-   | A loaded library, where only some functions are vulnerable | `readelf -W --dyn-syms LIB` in an image that has binutils, for the functions that each loaded binary imports from it. |
-   | Go module in a binary that NVSentinel does not build, for example kubectl | `govulncheck -mode=binary BINARY`, with the govulncheck version of `.versions.yaml`. It shows whether the binary reaches the vulnerable functions. |
+   | A loaded library, where only some functions are vulnerable | From the advisory or the source of the library, find the exported functions that lead to the vulnerable code. Then run `readelf -W --dyn-syms` on each binary and library that the process loads, in an image that has binutils, and list the functions each one imports from the vulnerable library. If none imports a function that leads to the vulnerable code, the code does not run. |
+   | Go module in a binary that NVSentinel does not build, for example kubectl | `govulncheck -mode=binary BINARY`, with the govulncheck version of `.versions.yaml`. It lists the vulnerable functions that the binary contains. The Go linker leaves out functions that nothing references, so a function that is not listed cannot run. A listed function can run: decide from the advisory and from how the image uses the binary. |
    | Program, for example perl, apt or curl | The programs that step 3 found, and the scripts they run. |
 
 5. Decide for each finding:
@@ -61,7 +61,7 @@ A statement records that the vulnerability does not affect the image. Write one 
 
    For the third and fourth rows, write down why, because they rely on judgement. For example, the environment of a container comes from its pod spec, which only a user who can already run code in the container can change.
 
-   If the evidence does not cover a code path, for example the code that runs only on a GPU, say so in the pull request.
+   Evidence that covers only some code paths does not show that a package is never loaded. A trace without a GPU, for example, does not see the code that runs only on a GPU. Write a statement only when other evidence covers the paths that the trace did not reach, for example `ldd` of the libraries that those paths load. Otherwise keep the finding open. Name the paths and the evidence for them in the pull request.
 
 6. Write one row for each finding to a TSV file, with five tab-separated fields: vulnerability ID, image, PURL, justification and impact statement. Copy the ID and the PURL from the output of step 1. Keep the impact statement to the reason, in one or two sentences, for example `libxml2 is a library of the base image that no NVSentinel process loads.` Use the same sentence for findings that have the same reason.
 

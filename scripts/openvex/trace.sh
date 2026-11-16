@@ -16,7 +16,8 @@
 # Runs a Python program in its image and lists the packages that its processes load.
 #
 # Usage: scripts/openvex/trace.sh [-o DIR] [-l LIBS] IMAGE [DOCKER-RUN-OPTION...] [-- ARG...]
-#   -o DIR   where to keep the records of the processes (default: a new temporary directory)
+#   -o DIR   where to keep the records of the processes, in a new subdirectory for each run
+#            (default: a new temporary directory)
 #   -l LIBS  a file with more library paths to map to packages, for example the output of ldd
 #   IMAGE    the image to run, which needs python3
 #   Options for docker run follow the image. The arguments after -- go after the image, as the
@@ -60,7 +61,11 @@ if [ "$#" -gt 0 ]; then shift; fi
 hook="$(cd "$(dirname "$0")" && pwd)/trace"
 out=${out:-$(mktemp -d)}
 mkdir -p "${out}"
-chmod 777 "${out}"
+# A new directory for each run, so that the report covers only this run. The program can run as a
+# user other than yours, for example the USER of the image, so the directory is writable by all.
+# The sticky bit keeps each user's records safe from the others.
+records=$(cd "$(mktemp -d "${out}/run.XXXXXX")" && pwd)
+chmod 1777 "${records}"
 
 docker image inspect "${image}" >/dev/null 2>&1 || docker pull -q "${image}" >/dev/null
 
@@ -70,11 +75,13 @@ image_pythonpath=$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{
 pythonpath="/openvex-trace/hook${image_pythonpath:+:${image_pythonpath}}"
 
 set +e
-docker run --rm -v "${hook}:/openvex-trace/hook:ro" -v "${out}:/openvex-trace/out" \
+docker run --rm -v "${hook}:/openvex-trace/hook:ro" -v "${records}:/openvex-trace/out" \
   -e PYTHONPATH="${pythonpath}" ${docker_opts[@]+"${docker_opts[@]}"} "${image}" "$@" 2>&1 | tail -40
 echo "(the program exited with ${PIPESTATUS[0]})"
 set -e
 
-docker run --rm -i --entrypoint python3 -v "${hook}:/openvex-trace/hook:ro" -v "${out}:/openvex-trace/out:ro" \
-  "${image}" -I /openvex-trace/hook/owners.py < "${libs}"
-echo "Process records: ${out}" >&2
+# -I keeps the hook out of the mapper. The mapper gets the PYTHONPATH of the image separately, to find
+# the distributions installed there.
+docker run --rm -i --entrypoint python3 -v "${hook}:/openvex-trace/hook:ro" -v "${records}:/openvex-trace/out:ro" \
+  -e OPENVEX_TRACE_PYTHONPATH="${image_pythonpath}" "${image}" -I /openvex-trace/hook/owners.py < "${libs}"
+echo "Process records: ${records}" >&2
