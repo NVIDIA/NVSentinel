@@ -18,7 +18,7 @@ Use it after base image or dependency updates, for example a merged Dependabot p
 
 ## Inputs
 
-- The images to check. Scan every image that a statement names, from the same publish, for example the latest publish from `main`. `scripts/published-images.sh main-<short commit>` lists them.
+- The images to check. Scan every image that a statement names, from the same publish, for example the latest publish from `main`. `scripts/published-images.sh main-<short commit>` lists them. Scan every tag of an image, for example the DCGM 3.x and 4.x tags of gpu-health-monitor. A statement covers all tags, and `prune` removes the packages that no scanned tag has.
 - Docker, `jq` and `yq`.
 
 ## Steps

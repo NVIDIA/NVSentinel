@@ -64,7 +64,7 @@ def read_records(pattern=RECORDS):
     Example: a record with "libs": ["/lib/x86_64-linux-gnu/libz.so.1"] adds
     "/usr/lib/x86_64-linux-gnu/libz.so.1.3" on an image where /lib links to /usr/lib.
     """
-    loaded, search_path = set(), []
+    loaded, search_path, read = set(), [], 0
     for record in sorted(glob.glob(pattern)):
         try:
             with open(record, encoding="utf-8") as f:
@@ -76,8 +76,13 @@ def read_records(pattern=RECORDS):
                 raise ValueError("a path is not a string")
             loaded.update(os.path.realpath(p) for p in paths)
             search_path += [p for p in data.get("sys_path", []) if isinstance(p, str) and p not in search_path]
+            read += 1
         except (OSError, ValueError, KeyError, TypeError) as e:
             print(f"skip {record}: {e}", file=sys.stderr)
+    if read == 0:
+        print("warning: no process record was read, so the result does not show what the program loads. "
+              "The hook runs only in Python processes that read PYTHONPATH and import site, so not in a "
+              "native program or in python3 -I or -S.", file=sys.stderr)
     return loaded, search_path
 
 

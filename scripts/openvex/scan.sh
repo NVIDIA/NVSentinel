@@ -59,9 +59,13 @@ mkdir -p "${out}"
 out=$(cd "${out}" && pwd)
 cp "${vex}" "${out}/openvex.json"
 
+# Only an image in the local daemon needs the Docker socket. The socket gives full control of the
+# daemon, so a registry scan does not mount it.
 grype() {
+  local socket=()
+  [[ "$1" == docker:* ]] && socket=(-v /var/run/docker.sock:/var/run/docker.sock)
   docker run --rm \
-    -v /var/run/docker.sock:/var/run/docker.sock \
+    ${socket[@]+"${socket[@]}"} \
     -v grype-db:/db -e GRYPE_DB_CACHE_DIR=/db \
     -e GRYPE_DB_AUTO_UPDATE="${GRYPE_DB_AUTO_UPDATE:-true}" \
     -v "${out}:/out" \
@@ -86,8 +90,9 @@ for image in "$@"; do
   [[ "${ref}" =~ ^(registry|docker|podman|oci-archive|docker-archive|oci-dir): ]] || ref="registry:${ref}"
   name=$(printf '%s' "${image}" | tr '/:@' '___')
 
-  grype "${ref}" -q -o "json=/out/${name}.json" -o "sarif=/out/${name}.sarif"
-  grype "${ref}" -q --only-fixed --vex /out/openvex.json -o "json=/out/${name}.vex.json" -o "sarif=/out/${name}.vex.sarif"
+  # linux/amd64 like the weekly scan, so that the PURLs match on an arm64 machine too.
+  grype "${ref}" --platform linux/amd64 -q -o "json=/out/${name}.json" -o "sarif=/out/${name}.sarif"
+  grype "${ref}" --platform linux/amd64 -q --only-fixed --vex /out/openvex.json -o "json=/out/${name}.vex.json" -o "sarif=/out/${name}.vex.sarif"
 
   # SARIF rule IDs are <vulnerability>-<package>. The scan without the document has every finding,
   # so keep the ones that have a fix, as --only-fixed does.

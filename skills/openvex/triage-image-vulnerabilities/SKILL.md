@@ -5,7 +5,7 @@ description: >-
 maturity: experimental
 lifecycle: evergreen
 api-version: nvsentinel.skills/v1
-allowed-tools: Bash(scripts/openvex/*), Bash(python3 scripts/openvex/statements.py *), Bash(docker run *), Bash(docker image inspect *), Bash(jq *), Bash(make openvex-lint), Read, Grep, Edit
+allowed-tools: Bash(scripts/openvex/*), Bash(python3 scripts/openvex/statements.py *), Bash(docker run *), Bash(docker image inspect *), Bash(jq *), Bash(make openvex-lint), Read, Grep
 ---
 
 # Triage Image Vulnerabilities
@@ -44,12 +44,12 @@ A statement records that the vulnerability does not affect the image. Write one 
    | Package | Evidence |
    |---|---|
    | Python package, or a library that a Python program can load | `scripts/openvex/trace.sh IMAGE [DOCKER-RUN-OPTION...] -- [COMMAND...]` runs the program and lists the Python distributions and OS packages its processes load. Run each mode of the program, as far as it gets without a GPU or a cluster. |
-   | Library of a native binary | `ldd BINARY` in the image. Add the paths to a file and pass it to `trace.sh -l` to map them to packages. |
+   | Library of a native binary | `ldd BINARY` in the image. Add the paths to a file and pass it to `trace.sh -l` to map them to packages. `ldd` lists only the libraries that the binary links. It does not list the libraries that a program opens at run time with `dlopen`, for example `libibverbs`, which NCCL opens. Find those in the source or the documentation of the program. |
    | A loaded library, where only some functions are vulnerable | From the advisory or the source of the library, find how the vulnerable code is reached. Then run `readelf -W --dyn-syms` on each binary and library that the processes load, in an image that has binutils, to list the functions each one imports from the vulnerable library. Imports show only direct calls, so they support the decision but do not prove it. Conclude that the vulnerable code does not run only when the advisory or the source shows that it is reached only through functions that nothing in the image imports, looks up by name, or calls internally, for example from an initializer of a loaded library. |
    | Go module in a binary that NVSentinel does not build, for example kubectl | `govulncheck -mode=binary -show traces BINARY`, with the govulncheck version of `.versions.yaml`, lists potential matches: vulnerable functions that it finds in the binary, or, when it cannot read the symbols, those of the module. A listed function may run. A missing result does not show that the code cannot run, for example when the database does not have the advisory yet, or govulncheck cannot assess the module. Decide from the advisory and from how the image uses the binary. |
    | Program, for example perl, apt or curl | The programs that step 3 found, and the scripts they run. |
 
-5. Decide for each finding:
+5. Decide for each finding. A finding in a dependency that the repository sets, in a `go.mod` or `poetry.lock` file, needs an update, not a statement, as [Handle a Reported Vulnerability](../../../SECURITY.md#handle-a-reported-vulnerability) says.
 
    | Evidence | Status | Justification |
    |---|---|---|
