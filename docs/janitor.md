@@ -55,6 +55,25 @@ GPUReset supports both GPU Operator modes: device plugin and DRA. Refer to [GPU 
 
 GPU clients outside the GPU Operator, in any namespace, can also hold the GPUs open. The controller also stops them before the reset. Refer to [GPU clients](configuration/janitor.md#gpu-clients).
 
+## Before You Enable It: Apply the CRDs
+
+The Janitor's CRD manifests ship inside the `janitor` subchart (`nvsentinel/charts/janitor/crds/` in the OCI chart): three for the maintenance custom resources (`rebootnodes`, `terminatenodes`, `gpuresets` in the `janitor.dgxc.nvidia.com` group) and `externalremediationrequests` (`nvsentinel.dgxc.nvidia.com` group). Helm does not apply a subchart's CRDs during `helm upgrade`, so on an existing installation the CRDs are absent until you apply them yourself. Check before you enable the module:
+
+```bash
+kubectl get crd rebootnodes.janitor.dgxc.nvidia.com terminatenodes.janitor.dgxc.nvidia.com gpuresets.janitor.dgxc.nvidia.com externalremediationrequests.nvsentinel.dgxc.nvidia.com
+```
+
+If the command returns `NotFound`, apply the CRDs from the chart:
+
+```bash
+NVSENTINEL_VERSION="<your installed version>"
+
+helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar
+kubectl apply -f nvsentinel/charts/janitor/crds/
+```
+
+Without the CRDs, enabling the module leaves the Janitor controller crash-looping on `no matches for kind "GPUReset"`, and Fault Remediation cannot create its maintenance CRs (`no matches for kind "RebootNode"`) — remediation requests retry forever instead of reaching an executor. The identical pre-flight for lifecycle-manager is in [Requesting node maintenance](tutorials/requesting-node-maintenance.md).
+
 ## Configuration
 
 Configure the Janitor and Janitor Provider through Helm values:
