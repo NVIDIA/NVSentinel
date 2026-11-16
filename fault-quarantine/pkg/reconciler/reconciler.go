@@ -286,11 +286,6 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 func (r *Reconciler) prepareEventProcessing(ctx context.Context,
 	ds datastore.DataStore) ([]evaluator.RuleSetEvaluatorIface, rulesetsConfig, error) {
-	// Check circuit breaker state AFTER informer is synced (IsTripped needs node counts from informer)
-	if err := r.checkCircuitBreakerAtStartup(ctx); err != nil {
-		return nil, rulesetsConfig{}, fmt.Errorf("failed to check circuit breaker at startup: %w", err)
-	}
-
 	ruleSetEvals, err := r.initializeRuleSetEvaluators()
 	if err != nil {
 		return nil, rulesetsConfig{}, fmt.Errorf("failed to initialize rule set evaluators: %w", err)
@@ -502,33 +497,6 @@ func (r *Reconciler) initializeQuarantineMetrics(ctx context.Context) {
 
 	slog.InfoContext(ctx, "Initial state", "totalNodes", totalNodes, "quarantinedNodes", len(quarantinedNodesMap),
 		"quarantinedNodesMap", quarantinedNodesMap)
-}
-
-// checkCircuitBreakerAtStartup checks if circuit breaker is tripped at startup
-// Blocks indefinitely if circuit breaker is tripped (wait for manual intervention)
-func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
-	if !r.breakerActive() {
-		return nil
-	}
-
-	tripped, err := r.cb.IsTripped(ctx)
-	if err != nil {
-		slog.ErrorContext(ctx, "Error checking if circuit breaker is tripped", "error", err)
-		<-ctx.Done()
-
-		return fmt.Errorf("circuit breaker check failed: %w", err)
-	}
-
-	if tripped {
-		slog.ErrorContext(ctx, "Fault Quarantine circuit breaker is TRIPPED. Halting event dequeuing indefinitely.")
-		<-ctx.Done()
-
-		return fmt.Errorf("circuit breaker is TRIPPED at startup")
-	}
-
-	slog.InfoContext(ctx, "Listening for events on the channel...")
-
-	return nil
 }
 
 func (r *Reconciler) handleCircuitBreakerCursorMode(
