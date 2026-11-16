@@ -1704,6 +1704,10 @@ janitor:
       
       # Write a reboot attribution message to the node's syslog before rebooting
       writeSyslog: false
+      
+      # PriorityClass for the reboot Job's pod (optional), e.g. system-node-critical so the
+      # kubelet admits the pod on a node under DiskPressure. Empty sets no priority class.
+      rebootJobPriorityClassName: ""
     
     # AWS-specific configuration (only needed when provider=aws)
     aws:
