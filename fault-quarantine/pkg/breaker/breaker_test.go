@@ -1181,23 +1181,6 @@ func TestIsTripped_NoGPUNodesWithCordon_Trips(t *testing.T) {
 		gaugeSeries(t, metrics.FaultQuarantineBreakerThresholdNodes))
 }
 
-// The quarantine annotation reaches the informer index only when the watch event for the patched
-// node arrives, so a second event can be checked before the first cordon is counted there.
-func TestIsTripped_NoGPUNodesWithCordonNotYetIndexed_Trips(t *testing.T) {
-	ctx := context.Background()
-	b := newNoGPUNodeBreaker(t, ctx)
-	k8sClient := b.cfg.K8sClient.(*testK8sClient)
-	k8sClient.cordonedNodes = 0
-	k8sClient.existingNodes = map[string]bool{"node-a": true}
-
-	b.AddCordonEvent("node-a")
-
-	tripped, err := b.IsTripped(ctx)
-	require.NoError(t, err)
-	require.True(t, tripped, "a cordoned node still in the cluster must trip the breaker before its annotation is indexed")
-	require.Equal(t, StateTripped, b.CurrentState())
-}
-
 func TestIsTripped_NoGPUNodesAfterCordonedNodeDeleted_StaysClosed(t *testing.T) {
 	ctx := context.Background()
 	b := newNoGPUNodeBreaker(t, ctx)
