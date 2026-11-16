@@ -61,7 +61,7 @@ A statement records that the vulnerability does not affect the image. Write one 
 
    For the third and fourth rows, write down why, because they rely on judgement. For example, the environment of a container comes from its pod spec, which only a user who can already run code in the container can change.
 
-   A statement applies to every tag of the image. When several tags have the package at the same version, for example the DCGM 3.x and DCGM 4.x tags of gpu-health-monitor, collect the evidence for each of them, or keep the finding open for the tags you did not check.
+   A statement applies to every tag of the image. When several tags have the package at the same version, for example the DCGM 3.x and DCGM 4.x tags of gpu-health-monitor, collect the evidence for each of them. A statement has no tag, so it also hides the finding on the tags that you did not check: if the evidence does not cover every tag that has the package at that version, add no statement for that image and PURL.
 
    Evidence that covers only some code paths does not show that a package is never loaded. A trace without a GPU, for example, does not see the code that runs only on a GPU. Write a statement only when other evidence covers the paths that the trace did not reach, for example `ldd` of the libraries that those paths load. Otherwise keep the finding open. Name the paths and the evidence for them in the pull request.
 

@@ -21,18 +21,32 @@ import threading
 import time
 
 
+# A random part in each record name, so that another user of a shared output directory cannot create
+# the file first and block the record. A forked child gets its own token.
+_token = os.urandom(8).hex()
+
+
+def _new_token():
+    global _token
+    _token = os.urandom(8).hex()
+
+
 def _dump(reason):
     try:
-        mods = sorted({getattr(m, "__file__", None) or "" for m in list(sys.modules.values())} - {""})
+        # Absolute paths, because the mapper runs in another container, from another directory.
+        # An empty sys.path entry means the current directory.
+        mods = sorted({os.path.abspath(f) for m in list(sys.modules.values())
+                       if isinstance(f := getattr(m, "__file__", None), str) and f})
         libs = set()
         with open("/proc/self/maps") as f:
             for line in f:
                 p = line.split()[-1]
                 if p.startswith("/") and ".so" in p:
                     libs.add(os.path.realpath(p))
-        with open(f"/openvex-trace/out/{os.getpid()}-{reason}.json", "w") as f:
+        search = [os.path.abspath(p or os.getcwd()) for p in sys.path if isinstance(p, str)]
+        with open(f"/openvex-trace/out/{os.getpid()}-{_token}-{reason}.json", "w") as f:
             json.dump({"argv": getattr(sys, "orig_argv", sys.argv), "modules": mods, "libs": sorted(libs),
-                       "sys_path": [p for p in sys.path if isinstance(p, str)]}, f)
+                       "sys_path": search}, f)
     except Exception as e:
         sys.stderr.write(f"trace dump failed: {e}\n")
 
@@ -53,7 +67,7 @@ def _start():
 _start()
 # A forked child, such as a multiprocessing worker, has no copy of the thread, and ends with os._exit,
 # which skips atexit. Restart the thread in the child, and record before os._exit.
-os.register_at_fork(after_in_child=_start)
+os.register_at_fork(after_in_child=lambda: (_new_token(), _start()))
 _orig_exit = os._exit
 
 
