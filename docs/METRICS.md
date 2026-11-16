@@ -379,6 +379,7 @@ These metrics track the internal ring buffer workqueue performance:
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `metadata_collector_collection_completed_timestamp_seconds` | Gauge | - | Unix time GPU metadata collection completed, or 0 while it is still running. Collection can block on a wedged GPU driver, so 0 long after process start means it has stalled |
+| `metadata_collector_nvidia_smi_failures_total` | Counter | `command` | nvidia-smi steps (`nvlink`, `topo`) whose output could not be used, for example a timeout on a wedged driver. Collection still completes, and the previous metadata file is kept when it lists the same GPUs |
 
 ### Pod Mapper Metrics
 

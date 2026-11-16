@@ -43,39 +43,18 @@ func TestRun_ReturnsOutput(t *testing.T) {
 	assert.Equal(t, "topo -m\n", string(output))
 }
 
-// A process that exits when killed is a plain timeout, not an abandonment, so it must not
-// trigger the carry-over of previous metadata.
-func TestRun_KilledProcessIsNotAbandoned(t *testing.T) {
-	fakeNvidiaSmi(t, "exec sleep 30")
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	start := time.Now()
-	_, err := Run(ctx)
-
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, ErrAbandoned)
-	assert.Less(t, time.Since(start), 5*time.Second)
-}
-
 // The background sleep keeps the output pipe open after the kill, so CombinedOutput does not
 // return. That is the same wait Run sees on a process stuck in uninterruptible sleep, which a
 // test cannot create.
-func TestRun_AbandonsProcessThatOutlivesTimeout(t *testing.T) {
-	defaultGrace := exitGrace
-	exitGrace = 100 * time.Millisecond
-
-	t.Cleanup(func() { exitGrace = defaultGrace })
-
+func TestRun_ReturnsWhenProcessOutlivesTimeout(t *testing.T) {
 	fakeNvidiaSmi(t, "sleep 30 &\nsleep 30")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	start := time.Now()
-	_, err := Run(ctx)
+	_, err := Run(ctx, "nvlink", "-R")
 
-	require.ErrorIs(t, err, ErrAbandoned)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Less(t, time.Since(start), 5*time.Second)
 }

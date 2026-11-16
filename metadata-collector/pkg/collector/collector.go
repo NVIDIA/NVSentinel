@@ -16,7 +16,6 @@ package collector
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,7 +27,6 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nic"
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvidiasmi"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 )
 
@@ -76,32 +74,33 @@ type nvmlClient interface {
 
 // Collector gathers GPU metadata from a node using NVML and nvidia-smi.
 type Collector struct {
-	nvml      nvmlClient
-	nicTopo   NICTopoCollector
-	abandoned []string
+	nvml    nvmlClient
+	nicTopo NICTopoCollector
+	failed  []string
 }
 
 func NewCollector(nvmlWrapper nvmlClient, topo NICTopoCollector) *Collector {
 	return &Collector{nvml: nvmlWrapper, nicTopo: topo}
 }
 
-// The collection steps that run nvidia-smi, as reported by AbandonedSteps.
+// The collection steps that run nvidia-smi, as reported by FailedSteps.
 const (
 	StepNVLink = "nvlink"
 	StepTopo   = "topo"
 )
 
-// AbandonedSteps returns the steps of the last Collect whose nvidia-smi did not exit after its
-// timeout. Collect continues without them and leaves their fields empty; see CarryOver.
-func (c *Collector) AbandonedSteps() []string {
-	return c.abandoned
+// FailedSteps returns the steps of the last Collect whose nvidia-smi output could not be used.
+// Collect continues without them and leaves their fields empty, so the caller can keep a
+// previous metadata file instead of writing this one.
+func (c *Collector) FailedSteps() []string {
+	return c.failed
 }
 
 // Collect gathers GPU metadata via NVML (device info, NVLink topology,
 // NVSwitch PCIs, and for driver ≥ R560 the chassis serial) and enriches
 // it with the nvidia-smi topo -m matrix.
 func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
-	c.abandoned = nil
+	c.failed = nil
 
 	count, err := c.nvml.GetDeviceCount()
 	if err != nil {
@@ -154,9 +153,7 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 		slog.Warn("Failed to collect NIC topology matrix, nic_topology will be empty",
 			"error", err)
 
-		if errors.Is(err, nvidiasmi.ErrAbandoned) {
-			c.abandoned = append(c.abandoned, StepTopo)
-		}
+		c.failed = append(c.failed, StepTopo)
 
 		return
 	}
@@ -173,6 +170,8 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 			"topo_gpu_count", len(matrix.GPUs),
 			"topo_gpus", matrix.GPUs,
 		)
+
+		c.failed = append(c.failed, StepTopo)
 
 		return
 	}
@@ -235,9 +234,7 @@ func (c *Collector) prepareTopologyData(
 	if err != nil {
 		slog.Warn("Failed to parse nvidia-smi topology, remote link IDs will be -1", "error", err)
 
-		if errors.Is(err, nvidiasmi.ErrAbandoned) {
-			c.abandoned = append(c.abandoned, StepNVLink)
-		}
+		c.failed = append(c.failed, StepNVLink)
 
 		parsedTopology = make(map[int]nvml.GPUNVLinkTopology)
 	}

@@ -17,19 +17,10 @@ package nvidiasmi
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
-	"time"
+	"strings"
 )
-
-// ErrAbandoned means nvidia-smi was still running after its context ended and the kill, and
-// Run stopped waiting for it.
-var ErrAbandoned = errors.New("nvidia-smi did not exit after its timeout")
-
-// exitGrace is how long Run keeps waiting once ctx has ended and the process has been killed.
-// A var so tests can shorten it.
-var exitGrace = 10 * time.Second
 
 type result struct {
 	output []byte
@@ -39,8 +30,8 @@ type result struct {
 // Run runs nvidia-smi with args and returns its combined output. ctx should carry the timeout.
 //
 // exec.Cmd cannot bound this on its own: Wait returns only once the process exits, and a
-// process in uninterruptible sleep on a wedged driver does not act on the kill. So once ctx has
-// ended, Run waits exitGrace and then returns ErrAbandoned, leaving the process and the
+// process in uninterruptible sleep on a wedged driver does not act on the kill. So Run returns
+// as soon as ctx ends, whether or not the process has exited, leaving a stuck process and the
 // goroutine waiting on it behind.
 func Run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "nvidia-smi", args...)
@@ -57,12 +48,6 @@ func Run(ctx context.Context, args ...string) ([]byte, error) {
 	case r := <-done:
 		return r.output, r.err
 	case <-ctx.Done():
-	}
-
-	select {
-	case r := <-done:
-		return r.output, r.err
-	case <-time.After(exitGrace):
-		return nil, fmt.Errorf("%w (waited %s after %w)", ErrAbandoned, exitGrace, ctx.Err())
+		return nil, fmt.Errorf("nvidia-smi %s: %w", strings.Join(args, " "), ctx.Err())
 	}
 }

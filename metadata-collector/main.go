@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -110,7 +111,7 @@ func main() {
 		})
 	}
 
-	metadata, err := runCollector(ctx, newNvidiaSmiAbandonedCounter(prometheus.DefaultRegisterer))
+	metadata, err := runCollector(ctx, newNvidiaSmiFailuresCounter(prometheus.DefaultRegisterer))
 	if err != nil {
 		slog.Error("Metadata collector failed", "error", err)
 		cancel()
@@ -213,7 +214,7 @@ func pollPodDevices(ctx context.Context, podDeviceMapper mapper.PodDeviceMapper,
 	}
 }
 
-func runCollector(ctx context.Context, abandoned *prometheus.CounterVec) (*model.GPUMetadata, error) {
+func runCollector(ctx context.Context, nvidiaSmiFailures *prometheus.CounterVec) (*model.GPUMetadata, error) {
 	slog.Info("Initializing NVML")
 
 	nvmlWrapper := &nvml.NVMLWrapper{}
@@ -242,12 +243,24 @@ func runCollector(ctx context.Context, abandoned *prometheus.CounterVec) (*model
 		"nvswitch_count", len(metadata.NVSwitches),
 	)
 
-	if steps := metadataCollector.AbandonedSteps(); len(steps) > 0 {
-		for _, step := range steps {
-			abandoned.WithLabelValues(step).Inc()
+	failedSteps := metadataCollector.FailedSteps()
+	for _, step := range failedSteps {
+		nvidiaSmiFailures.WithLabelValues(step).Inc()
+	}
+
+	// The previous file is a complete snapshot, so on a degraded run it is worth more than this
+	// one: consumers such as nic-health-monitor cannot start without nic_topology. The fresh
+	// metadata is still returned, so the pod mapper starts.
+	if len(failedSteps) > 0 {
+		if previousListsSameGPUs(*outputPath, metadata.GPUs) {
+			slog.Warn("nvidia-smi steps failed; keeping the previous metadata file, which lists the same GPUs",
+				"steps", failedSteps, "output_path", *outputPath)
+
+			return metadata, nil
 		}
 
-		carryOverPrevious(*outputPath, metadata, steps)
+		slog.Warn("nvidia-smi steps failed and there is no previous metadata for the same GPUs; "+
+			"writing their fields empty", "steps", failedSteps, "output_path", *outputPath)
 	}
 
 	slog.Info("Writing metadata to file", "output_path", *outputPath)
@@ -266,32 +279,18 @@ func runCollector(ctx context.Context, abandoned *prometheus.CounterVec) (*model
 	return metadata, nil
 }
 
-// carryOverPrevious fills the fields of abandoned nvidia-smi steps from the metadata file of an
-// earlier run, before this run overwrites it. Without a usable previous file they stay empty.
-func carryOverPrevious(path string, metadata *model.GPUMetadata, steps []string) {
+// previousListsSameGPUs reports whether the metadata file at path, written by an earlier run,
+// lists the same GPUs by UUID in the same order. Unreadable or unparsable files count as no.
+func previousListsSameGPUs(path string, gpus []model.GPUInfo) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		slog.Warn("nvidia-smi was abandoned and no previous metadata could be read, so its fields will be empty",
-			"steps", steps, "error", err)
-
-		return
+		return false
 	}
 
 	var previous model.GPUMetadata
 	if err := json.Unmarshal(data, &previous); err != nil {
-		slog.Warn("nvidia-smi was abandoned and the previous metadata could not be parsed, so its fields will be empty",
-			"steps", steps, "error", err)
-
-		return
+		return false
 	}
 
-	if !collector.CarryOver(&previous, metadata, steps) {
-		slog.Warn("nvidia-smi was abandoned and the previous metadata lists different GPUs, so its fields will be empty",
-			"steps", steps)
-
-		return
-	}
-
-	slog.Warn("nvidia-smi was abandoned, so its fields were carried over from the previous metadata",
-		"steps", steps, "previous_timestamp", previous.Timestamp)
+	return slices.EqualFunc(previous.GPUs, gpus, func(a, b model.GPUInfo) bool { return a.UUID == b.UUID })
 }

@@ -29,7 +29,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/writer"
 )
 
@@ -342,26 +341,17 @@ func TestCollectionCompletedGauge_StartsAtZero(t *testing.T) {
 	assert.InDelta(t, float64(time.Now().Unix()), testutil.ToFloat64(gauge), 5)
 }
 
-func TestCarryOverPrevious(t *testing.T) {
+func TestPreviousListsSameGPUs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gpu_metadata.json")
-	degraded := func() *model.GPUMetadata {
-		return &model.GPUMetadata{GPUs: []model.GPUInfo{{UUID: "GPU-a", NUMANode: -1}}}
-	}
+	gpus := []model.GPUInfo{{UUID: "GPU-a"}, {UUID: "GPU-b"}}
 
-	metadata := degraded()
-	carryOverPrevious(path, metadata, []string{collector.StepTopo})
-	assert.Equal(t, degraded(), metadata, "no previous file leaves the fields empty")
-
-	previous := &model.GPUMetadata{
-		GPUs:        []model.GPUInfo{{UUID: "GPU-a", NUMANode: 1}},
-		NICTopology: map[string][]string{"mlx5_0": {"PIX"}},
-	}
+	assert.False(t, previousListsSameGPUs(path, gpus), "no previous file")
 
 	metadataWriter, err := writer.NewWriter(path)
 	require.NoError(t, err)
-	require.NoError(t, metadataWriter.Write(previous))
+	require.NoError(t, metadataWriter.Write(&model.GPUMetadata{GPUs: gpus}))
 
-	carryOverPrevious(path, metadata, []string{collector.StepTopo})
-	assert.Equal(t, previous.NICTopology, metadata.NICTopology)
-	assert.Equal(t, 1, metadata.GPUs[0].NUMANode)
+	assert.True(t, previousListsSameGPUs(path, gpus))
+	assert.False(t, previousListsSameGPUs(path, []model.GPUInfo{{UUID: "GPU-a"}, {UUID: "GPU-c"}}))
+	assert.False(t, previousListsSameGPUs(path, gpus[:1]))
 }

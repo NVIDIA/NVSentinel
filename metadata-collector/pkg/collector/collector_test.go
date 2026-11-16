@@ -25,7 +25,6 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nic"
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvidiasmi"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 )
 
@@ -184,6 +183,7 @@ func TestCollectPopulatesNICTopology(t *testing.T) {
 	assert.Equal(t, matrix.Relationships, metadata.NICTopology)
 	assert.Equal(t, 0, metadata.GPUs[0].NUMANode)
 	assert.Equal(t, 1, metadata.GPUs[1].NUMANode)
+	assert.Empty(t, collector.FailedSteps())
 }
 
 // TestCollectTopoFailureLeavesTopologyEmpty verifies the collector does
@@ -197,20 +197,19 @@ func TestCollectTopoFailureLeavesTopologyEmpty(t *testing.T) {
 	metadata, err := collector.Collect(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, metadata.NICTopology)
-	assert.Empty(t, collector.AbandonedSteps(), "a failure that exited is not an abandonment")
+	assert.Equal(t, []string{StepTopo}, collector.FailedSteps())
 }
 
-// TestCollectRecordsAbandonedSteps verifies that nvidia-smi steps abandoned on a wedged driver
-// are reported, so the caller can count them and carry over the previous values.
-func TestCollectRecordsAbandonedSteps(t *testing.T) {
-	abandoned := fmt.Errorf("run nvidia-smi: %w", nvidiasmi.ErrAbandoned)
-	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03", nvlinkErr: abandoned}
+// TestCollectRecordsFailedSteps verifies that failed nvidia-smi steps are reported, so the
+// caller can count them and keep the previous metadata file.
+func TestCollectRecordsFailedSteps(t *testing.T) {
+	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03", nvlinkErr: fmt.Errorf("nvlink -R timed out")}
 
-	collector := NewCollector(fake, &fakeNICTopoCollector{err: abandoned})
+	collector := NewCollector(fake, &fakeNICTopoCollector{err: fmt.Errorf("topo -m exited 1")})
 
 	_, err := collector.Collect(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, []string{StepNVLink, StepTopo}, collector.AbandonedSteps())
+	assert.Equal(t, []string{StepNVLink, StepTopo}, collector.FailedSteps())
 }
 
 // TestCollectNoNICsLeavesTopologyEmptyButPopulatesNUMA verifies that a
@@ -264,6 +263,7 @@ func TestCollectGPUCountMismatchDropsTopology(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, metadata.NICTopology, "topology must be dropped on GPU count mismatch")
 	assert.Equal(t, -1, metadata.GPUs[0].NUMANode, "NUMA must stay -1 when topology is dropped")
+	assert.Equal(t, []string{StepTopo}, collector.FailedSteps())
 }
 
 func TestCheckGPUCountMismatch(t *testing.T) {
