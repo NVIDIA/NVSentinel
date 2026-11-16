@@ -134,3 +134,5 @@ kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}'
 # Monitor nodes
 kubectl get nodes -w
 ```
+
+> **Note:** After the step-7 restart, `fault_quarantine_event_backlog_count` reports `-1` until the restarted process completes its first event, then counts the remaining backlog as normal.

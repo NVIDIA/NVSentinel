@@ -780,6 +780,13 @@ func (w *EventWatcher) updateUnprocessedEventsMetric(ctx context.Context) {
 		case <-ticker.C:
 			objID, ok := w.lastProcessedObjectID.LoadLastProcessedObjectID()
 			if !ok {
+				// No processed event yet, so there is no checkpoint to count
+				// from: the backlog is unknown, not zero. Report -1, matching
+				// the unsupported-watcher branch below — a 0 would read as an
+				// empty backlog, including while a tripped circuit breaker
+				// parks the process before its first event.
+				slog.DebugContext(ctx, "No processed event yet, reporting backlog as unknown")
+				metrics.EventBacklogSize.Set(-1)
 				continue
 			}
 
