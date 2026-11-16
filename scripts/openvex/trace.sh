@@ -17,7 +17,7 @@
 #
 # Usage: scripts/openvex/trace.sh [-o DIR] [-l LIBS] IMAGE [DOCKER-RUN-OPTION...] [-- ARG...]
 #   -o DIR   where to keep the records of the processes, in a new subdirectory for each run
-#            (default: a new temporary directory)
+#            (default: a new temporary directory). Use a directory that other users cannot write.
 #   -l LIBS  a file with more library paths to map to packages, for example the output of ldd
 #   IMAGE    the image to run, which needs python3
 #   Options for docker run follow the image. The arguments after -- go after the image, as the
