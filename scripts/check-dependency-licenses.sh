@@ -49,8 +49,9 @@ for module in "${MODULES[@]}"; do
 
   # -mod=readonly reads the module cache even when a vendor directory exists: protos-lint leaves
   # a partial, ignored vendor directory in data-models, and vendor mode cannot load from it.
+  # On a cold module cache the report downloads modules, so it runs through retry.sh.
   if ! (cd "$module" && GOFLAGS="${GOFLAGS:+$GOFLAGS }-mod=readonly" \
-    "$GO_LICENSES" report ./... --ignore "$OWN_MODULE_PREFIX") \
+    "$ROOT/scripts/retry.sh" "$GO_LICENSES" report ./... --ignore "$OWN_MODULE_PREFIX") \
     >"$WORK/${module}.csv" 2>"$WORK/${module}.log"; then
     echo -e "${RED}go-licenses failed for ${module}:${NC}"
     cat "$WORK/${module}.log"
