@@ -15,8 +15,11 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // Drain Status constants for event processing metrics
@@ -27,6 +30,13 @@ const (
 	DrainStatusDrained   = "drained"
 	DrainStatusCancelled = "cancelled"
 	DrainStatusSkipped   = "skipped"
+
+	// ProcessingErrors error_type values for a recorded drain method that cannot be carried out.
+	// The method stays as recorded. node-drainer waits and tries again.
+	ErrorTypeRecordedCustomDrainUnavailable = "recorded_custom_drain_unavailable"
+	ErrorTypeRecordedBuiltInNoPodPolicies   = "recorded_builtin_no_pod_policies"
+	ErrorTypeRecordedDrainMethodUnknown     = "recorded_drain_method_unknown"
+	ErrorTypeRecordDrainDecision            = "record_drain_decision_error"
 )
 
 var (
@@ -87,6 +97,32 @@ var (
 		prometheus.GaugeOpts{
 			Name: "node_drainer_waiting_for_timeout",
 			Help: "Total number of node drainer operations in deleteAfterTimeout mode.",
+		},
+		[]string{labelNode},
+	)
+
+	// NodeDrainAwaitingCompletionEventTimestamp carries the creation time of the health event
+	// behind an in-progress allowCompletion drain, for nodes still waiting on pods.
+	// allowCompletion is the only mode with no deadline, so this is what makes "waiting too long"
+	// expressible: time() - this > <the longest run those namespaces should take>.
+	//
+	// A timestamp rather than a 0/1 flag on purpose. The value is re-asserted from the event on
+	// every poll, so if the series is removed while another event for the same node is still
+	// waiting, the next poll restores the same instant instead of restarting the clock -- a 0/1
+	// flag with a `for:` clause would have its timer reset by that gap. The series is removed,
+	// not zeroed, when the node stops draining: time() minus zero would read as a very long wait.
+	//
+	// The value is the event's creation time, not the moment the drain began: it is the same
+	// instant the DeleteAfterTimeout deadline measures from, and it can predate the drain itself
+	// (a fault quarantined, halted, then re-quarantined hours later reads as hours of waiting on
+	// the first poll).
+	NodeDrainAwaitingCompletionEventTimestamp = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "node_drainer_awaiting_completion_event_timestamp_seconds",
+			Help: "Unix time of the health event behind an allowCompletion drain that is still " +
+				"waiting for pods to finish -- the event's creation time, which can predate the " +
+				"drain itself. Absent when nothing is waiting on that node. allowCompletion has no " +
+				"timeout, so alert on time() minus this value.",
 		},
 		[]string{labelNode},
 	)
@@ -172,4 +208,28 @@ func RecordPartialDrain(node, entityType, entityValue string) {
 	}
 
 	PartialDrains.WithLabelValues(node, entityType, entityValue).Inc()
+}
+
+// RecordNodeDrainAwaitingCompletionEventTimestamp publishes the creation time of a health event
+// that is still waiting on pods. Several events can be queued for one node while it drains, and
+// each one's poll re-asserts its own event's time, so a newer event's polls would otherwise
+// overwrite an older wait and hide it from time()-based alerts. Keep the earliest time on the
+// series; it is dropped together with the series when the node stops draining. No-op for an
+// event that carries no creation time: time.Time's zero value is year 1, and publishing it
+// would read as roughly two millennia of waiting and fire every threshold immediately.
+func RecordNodeDrainAwaitingCompletionEventTimestamp(nodeName string, createdAt time.Time) {
+	if createdAt.IsZero() {
+		return
+	}
+
+	gauge := NodeDrainAwaitingCompletionEventTimestamp.WithLabelValues(nodeName)
+
+	var metric dto.Metric
+	if err := gauge.Write(&metric); err == nil {
+		if current := metric.GetGauge().GetValue(); current != 0 && current < float64(createdAt.Unix()) {
+			return
+		}
+	}
+
+	gauge.Set(float64(createdAt.Unix()))
 }

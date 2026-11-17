@@ -157,19 +157,10 @@ func TestQuarantinedAndDrainedPipelineMatchesMainBranch(t *testing.T) {
 					bson.D{
 						bson.E{Key: "operationType", Value: "update"},
 						bson.E{Key: "$or", Value: bson.A{
+							// No fullDocument conditions: the looked-up document changes or expires,
+							// and MongoDB cannot resume after an event that no longer matches.
 							bson.D{
 								bson.E{Key: "$expr", Value: evictionStatusWritten(string(model.StatusSucceeded), string(model.AlreadyDrained))},
-								bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: bson.D{
-									bson.E{Key: "$in", Value: bson.A{string(model.StatusSucceeded), string(model.AlreadyDrained)}},
-								}},
-								bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: bson.D{
-									bson.E{Key: "$in", Value: bson.A{string(model.Quarantined), string(model.AlreadyQuarantined)}},
-								}},
-							},
-							bson.D{
-								bson.E{Key: "$expr", Value: evictionStatusWritten(string(model.StatusSucceeded))},
-								bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: string(model.UnQuarantined)},
-								bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: string(model.StatusSucceeded)},
 							},
 							bson.D{
 								bson.E{Key: "updateDescription.updatedFields", Value: bson.D{
@@ -456,7 +447,7 @@ func TestBuildQuarantinedAndDrainedNodesPipeline(t *testing.T) {
 					nestedOr = true
 					nestedArr, ok := e.Value.(bson.A)
 					require.True(t, ok, "Nested $or should be bson.A")
-					require.Len(t, nestedArr, 3, "Update branch $or should have 3 conditions (quarantine, unquarantine, cancelled)")
+					require.Len(t, nestedArr, 2, "Update branch $or should have 2 conditions (drained, cancelled)")
 				}
 			}
 			require.True(t, opType, "Update branch should have operationType")

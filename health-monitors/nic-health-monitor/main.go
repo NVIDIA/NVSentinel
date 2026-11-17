@@ -164,6 +164,10 @@ func run() error {
 
 	nicMonitor.EnablePollStallDetection(*pollStallDeadline, stallStrategy)
 
+	// Arms the shutdown publish-drain clock: one deadline at the signal
+	// that every late publish draws on (see defaultPublishDrain).
+	nicMonitor.ArmPublishDrain(ctx)
+
 	return runServerAndLoops(ctx, rc, nicMonitor)
 }
 

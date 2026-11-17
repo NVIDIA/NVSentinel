@@ -120,7 +120,6 @@ func newTestConfig() config.CustomDrainConfig {
 		Kind:                  "DrainRequest",
 		StatusConditionType:   "Complete",
 		StatusConditionStatus: "True",
-		Timeout:               config.Duration{Duration: 30 * time.Minute},
 	}
 }
 
