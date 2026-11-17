@@ -398,6 +398,10 @@ func (r *Reconciler) SetupNodeInformerCallbacks() {
 	r.k8sClient.NodeInformer.SetOnQuarantinedNodeDeletedCallback(func(nodeName string) {
 		metrics.CurrentQuarantinedNodes.WithLabelValues(nodeName).Set(0)
 		slog.Info("Set currentQuarantinedNodes to 0 for deleted quarantined node", "node", nodeName)
+
+		if r.breakerActive() {
+			r.cb.ForgetNode(nodeName)
+		}
 	})
 
 	r.k8sClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)

@@ -1230,6 +1230,47 @@ func TestIsTripped_GPUNodeJoinsAfterZero_UsesNodeCount(t *testing.T) {
 	require.False(t, tripped, "no cordons on a one-node fleet should not trip")
 }
 
+func TestForgetNode_DeletedNodeLeavesWindow(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+
+	b.AddCordonEvent("node-a")
+	b.AddCordonEvent("node-b")
+	b.ForgetNode("node-a")
+	b.ForgetNode("node-not-in-window")
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	assert.Equal(t, 1, b.sumBuckets())
+	assert.NotContains(t, b.nodeToIndex, "node-a")
+	assert.Contains(t, b.nodeToIndex, "node-b")
+}
+
+func TestIsTripped_GPUNodesBackAfterCordonedNodeDeleted_StaysClosed(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+
+	b.AddCordonEvent("last-gpu-node-replaced")
+	b.ForgetNode("last-gpu-node-replaced")
+
+	nodeName := "test-node-replacement-" + generateTestID()[:6]
+	createTestNode(ctx, t, nodeName)
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	})
+
+	require.Eventually(t, func() bool {
+		n, err := b.getTotalNodes(ctx)
+		return err == nil && n == 1
+	}, 5*time.Second, 50*time.Millisecond, "the replacement node should be counted")
+
+	tripped, err := b.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, tripped, "a deleted node's cordon must not count against the nodes that replace it")
+	require.Equal(t, StateClosed, b.CurrentState())
+}
+
 type failingTotalNodesClient struct {
 	K8sClientOperations
 }

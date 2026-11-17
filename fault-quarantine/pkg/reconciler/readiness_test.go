@@ -44,6 +44,7 @@ type trippedStartupBreaker struct {
 }
 
 func (trippedStartupBreaker) AddCordonEvent(string) {}
+func (trippedStartupBreaker) ForgetNode(string)     {}
 func (b trippedStartupBreaker) IsTripped(ctx context.Context) (bool, error) {
 	if b.entered != nil {
 		close(b.entered)
