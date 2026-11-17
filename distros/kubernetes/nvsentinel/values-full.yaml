@@ -487,6 +487,14 @@ platformConnector:
       #   override:
       #     isFatal: false
       #     recommendedAction: "CONTACT_SUPPORT"
+      #
+      # Example rule - send a fault to a custom action. Set both fields; the name must have an
+      # entry in fault-remediation's maintenance.actions:
+      # - name: "nvlink-to-hardware-repair"
+      #   when: 'event.checkName == "GpuNvlinkWatch"'
+      #   override:
+      #     recommendedAction: "CUSTOM"
+      #     customRecommendedAction: "hardware-repair"
 
   # The deployment platform connector (central Deployment, experimental). See
   # docs/configuration/platform-connectors.md#deployment-platform-connector.

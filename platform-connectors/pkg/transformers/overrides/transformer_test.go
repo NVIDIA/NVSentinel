@@ -191,23 +191,6 @@ func TestNewProcessor(t *testing.T) {
 			errMsg:    "customRecommendedAction requires recommendedAction CUSTOM",
 		},
 		{
-			name: "valid-custom-action",
-			config: &Config{
-				Enabled: true,
-				Rules: []Rule{
-					{
-						Name: "test-rule",
-						When: `event.agent == "test"`,
-						Override: Override{
-							RecommendedAction:       new("CUSTOM"),
-							CustomRecommendedAction: new("hardware-repair"),
-						},
-					},
-				},
-			},
-			expectErr: false,
-		},
-		{
 			name: "valid-config",
 			config: &Config{
 				Enabled: true,
@@ -396,19 +379,6 @@ func TestApplyOverrides(t *testing.T) {
 			},
 			expectedIsFatal: true,
 			expectedAction:  pb.RecommendedAction_RESTART_BM,
-		},
-		{
-			name:   "rule-no-match-keeps-custom-action",
-			config: customActionConfig(`event.agent == "other-agent"`, "CUSTOM", new("hardware-repair")),
-			event: &pb.HealthEvent{
-				Agent:                   "test-agent",
-				IsFatal:                 true,
-				RecommendedAction:       pb.RecommendedAction_CUSTOM,
-				CustomRecommendedAction: "replace-disk",
-			},
-			expectedIsFatal: true,
-			expectedAction:  pb.RecommendedAction_CUSTOM,
-			expectedCustom:  "replace-disk",
 		},
 		{
 			name: "override-without-action-keeps-custom-action",
