@@ -212,7 +212,7 @@ func (w *PostgreSQLChangeStreamWatcher) markCatchUpPending() {
 
 // NewPostgreSQLChangeStreamWatcher allocates a watcher without database I/O.
 // Use an error-returning construction path to prepare its durable position.
-// Start logs an error and launches no readers when initialization was bypassed.
+// Start initializes directly allocated watchers before launching readers.
 func NewPostgreSQLChangeStreamWatcher(
 	db *sql.DB, clientName string, tableName string, connString string, mode ChangeStreamMode,
 ) *PostgreSQLChangeStreamWatcher {
@@ -2086,7 +2086,8 @@ func (w *PostgreSQLChangeStreamWatcher) restoreResumePosition(ctx context.Contex
 			return fmt.Errorf("%w: invalid resume timestamp for %s", errMalformedResumeToken, w.clientName)
 		}
 
-		w.lastTimestamp = *token.Timestamp
+		// PostgreSQL JSON uses an explicit offset, which Go can parse with a local location.
+		w.lastTimestamp = token.Timestamp.UTC()
 	} else {
 		if w.lastEventID == 0 {
 			return fmt.Errorf("%w: missing resume timestamp for %s", errMalformedResumeToken, w.clientName)

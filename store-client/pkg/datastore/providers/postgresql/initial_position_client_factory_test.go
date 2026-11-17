@@ -40,13 +40,13 @@ func TestClientFactory_PostgreSQLInitialPosition_PersistsOrReturnsError(t *testi
 			require.NoError(t, err)
 			defer db.Close()
 			mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("event-exporter").WillReturnError(sql.ErrNoRows)
-			insert := mock.ExpectExec("INSERT INTO resume_tokens .*clock_timestamp.*ON CONFLICT .* DO NOTHING").WithArgs("event-exporter")
+			insert := mock.ExpectExec("WITH .*clock_timestamp.*INSERT INTO resume_tokens .*ON CONFLICT .* DO NOTHING").WithArgs("event-exporter")
 			if fail {
 				insert.WillReturnError(sql.ErrConnDone)
 			} else {
 				insert.WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("event-exporter").
-					WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow(`{"timestamp":"2001-02-03T04:05:06.123456Z","eventID":0}`))
+					WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow(`{"timestamp":"2001-02-03T04:05:06.123456+00:00","eventID":0}`))
 			}
 
 			// Exercise the platform-connectors/event-exporter route, including reset's exporter skip.

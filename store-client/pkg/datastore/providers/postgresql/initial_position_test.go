@@ -37,7 +37,10 @@ import (
 // Deliberately far from the application clock, with PostgreSQL microsecond precision.
 var initialDBTime = time.Date(2001, 2, 3, 4, 5, 6, 123456000, time.UTC)
 
-const initialInsertPattern = `INSERT INTO resume_tokens \(client_name, resume_token, last_updated\) VALUES \(\$1, jsonb_build_object\('timestamp', clock_timestamp\(\), 'eventID', 0\), statement_timestamp\(\)\) ON CONFLICT \(client_name\) DO NOTHING`
+// PostgreSQL 16 jsonb_build_object output in UTC, including its explicit offset.
+const initialStoredToken = `{"eventID": 0, "timestamp": "2001-02-03T04:05:06.123456+00:00"}`
+
+var initialInsertPattern = regexp.QuoteMeta(insertInitialPositionQuery)
 
 type positionConstructor func(context.Context, *sql.DB, string) (*PostgreSQLChangeStreamWatcher, error)
 
@@ -87,7 +90,7 @@ func expectInitialPosition(t *testing.T, mock sqlmock.Sqlmock, name string) {
 	t.Helper()
 	mock.ExpectQuery(regexp.QuoteMeta(loadResumeTokenQuery)).WithArgs(name).WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec(initialInsertPattern).WithArgs(name).WillReturnResult(sqlmock.NewResult(0, 1))
-	expectPositionToken(mock, name, positionToken(t, initialDBTime, 0))
+	expectPositionToken(mock, name, []byte(initialStoredToken))
 }
 
 func TestWatcherConstruction_InitialPosition_PersistsBeforeReturning(t *testing.T) {
@@ -429,4 +432,12 @@ func TestWatcherConstruction_MalformedToken_ReplaysWithoutWriting(t *testing.T) 
 			})
 		}
 	}
+}
+
+func TestRestoreResumePosition_PostgreSQLJSONTimestamp_ExactInstant(t *testing.T) {
+	w := NewPostgreSQLChangeStreamWatcher(nil, "event-exporter", "health_events", "", ModePolling)
+	require.NoError(t, w.restoreResumePosition(t.Context(), []byte(initialStoredToken)))
+	require.Equal(t, initialDBTime, w.lastTimestamp)
+	require.Equal(t, initialDBTime.UnixMicro(), w.lastTimestamp.UnixMicro())
+	require.Zero(t, w.lastEventID)
 }

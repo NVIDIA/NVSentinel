@@ -31,6 +31,33 @@ type resetResumeTokenFunc func(
 
 const loadResumeTokenQuery = `SELECT resume_token FROM resume_tokens WHERE client_name = $1`
 
+// Sample the clock before activity, then inspect prepared transactions after activity.
+// The lateral dependency keeps the activity observation after the clock sample.
+// Hidden/disabled activity and prepared transactions have no usable start bound.
+// Use a finite replay boundary that round-trips through JSON and Go's time parser.
+const insertInitialPositionQuery = `WITH start_time AS MATERIALIZED (
+	SELECT clock_timestamp() AS observed_at
+), activity AS MATERIALIZED (
+	SELECT start_time.observed_at, stats.*
+	FROM start_time CROSS JOIN LATERAL (
+		SELECT MIN(xact_start) AS oldest_start,
+			COALESCE(bool_or(state IS NULL OR state = 'disabled'), FALSE) AS unknown_start
+		FROM pg_stat_activity
+		WHERE datname = current_database() AND pid <> pg_backend_pid()
+			AND (xact_start <= start_time.observed_at OR xact_start IS NULL)
+	) AS stats
+)
+INSERT INTO resume_tokens (client_name, resume_token, last_updated)
+SELECT $1, jsonb_build_object('timestamp',
+	CASE WHEN activity.unknown_start OR EXISTS (
+		SELECT 1 FROM pg_prepared_xacts
+		WHERE database = current_database() AND activity.observed_at IS NOT NULL
+	) THEN TIMESTAMPTZ '0001-01-01 00:00:00.000001+00'
+	ELSE LEAST(activity.observed_at, activity.oldest_start) END,
+	'eventID', 0), statement_timestamp()
+FROM activity
+ON CONFLICT (client_name) DO NOTHING`
+
 // initializeResumePosition prepares every error-returning construction path before reading.
 // This correctness invariant applies regardless of whether changelog retention is enabled.
 func (w *PostgreSQLChangeStreamWatcher) initializeResumePosition(ctx context.Context) error {
@@ -82,13 +109,10 @@ func (w *PostgreSQLChangeStreamWatcher) loadOrCreateInitialToken(ctx context.Con
 		return nil, fmt.Errorf("load resume token: %w", err)
 	}
 
-	// The database clock is evaluated in the insert, on this connection. DO NOTHING
-	// preserves a concurrent constructor's winning pair and its last_updated value.
-	const insert = `INSERT INTO resume_tokens (client_name, resume_token, last_updated)
-		VALUES ($1, jsonb_build_object('timestamp', clock_timestamp(), 'eventID', 0), statement_timestamp())
-		ON CONFLICT (client_name) DO NOTHING`
-
-	if _, err := conn.ExecContext(ctx, insert, w.clientName); err != nil {
+	// NOW() on writers is their transaction start, which can precede this insert.
+	// Keep that earlier boundary so a writer still open at construction can commit later.
+	// DO NOTHING preserves a concurrent constructor's pair and last_updated value.
+	if _, err := conn.ExecContext(ctx, insertInitialPositionQuery, w.clientName); err != nil {
 		return nil, fmt.Errorf("persist database-clock start position: %w", err)
 	}
 
