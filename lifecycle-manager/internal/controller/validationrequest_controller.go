@@ -224,7 +224,7 @@ func (r *ValidationRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	case v1alpha1.PhaseRunning:
 		return r.reconcileRunning(ctx, &validationRequest)
 	case v1alpha1.PhaseSucceeded, v1alpha1.PhaseFailed:
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.cleanupFinishedTestGroupObjects(ctx, &validationRequest)
 	}
 
 	return ctrl.Result{}, nil
@@ -459,6 +459,10 @@ func (r *ValidationRequestReconciler) reconcileRunning(ctx context.Context,
 			validationRequest.Name, err)
 	}
 
+	if err := r.cleanupFinishedTestGroupObjects(ctx, validationRequest); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// This is our only level-based re-queue which allows us to catch TestTimeout failures for TestGroups.
 	if next := r.getNextTestGroupTimeout(validationRequest); next > 0 {
 		return ctrl.Result{RequeueAfter: next}, nil
@@ -547,7 +551,7 @@ func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Cont
 	duration := now.Sub(validationRequest.Status.StartTime.Time)
 	metrics.ValidationRequestsDurationSeconds.WithLabelValues(metricStatus).Observe(duration.Seconds())
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.cleanupFinishedTestGroupObjects(ctx, validationRequest)
 }
 
 /*
@@ -733,8 +737,35 @@ func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Conte
 		"testGroup", currentTestGroup.Name, "phase", attemptPhase, "failureReason", attemptFailureReason,
 		"failedNodes", failedNodes)
 
-	if err := r.deleteTestGroupObject(ctx, currentTestGroup, testGroupAttempt.ObjectName); err != nil {
-		return fmt.Errorf("deleting provider resource %q: %w", testGroupAttempt.ObjectName, err)
+	return nil
+}
+
+// cleanupFinishedTestGroupObjects runs only after attempt status has been persisted. Keeping the
+// provider object until then lets a reconcile retry recover its result after a status conflict.
+func (r *ValidationRequestReconciler) cleanupFinishedTestGroupObjects(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest) error {
+	for i := range validationRequest.Status.TestGroups {
+		group := &validationRequest.Status.TestGroups[i]
+		if len(group.Attempts) == 0 {
+			continue
+		}
+
+		attempt := group.Attempts[len(group.Attempts)-1]
+		if attempt.ObjectName == "" ||
+			(attempt.Phase != v1alpha1.PhaseSucceeded && attempt.Phase != v1alpha1.PhaseFailed) {
+			continue
+		}
+
+		deleted, err := r.checkTestGroupObjectDeleted(ctx, group, attempt.ObjectName)
+		if err != nil {
+			return err
+		}
+
+		if !deleted {
+			if err := r.deleteTestGroupObject(ctx, group, attempt.ObjectName); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
