@@ -135,4 +135,4 @@ kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}'
 kubectl get nodes -w
 ```
 
-> **Note:** After the step-7 restart, `fault_quarantine_event_backlog_count` reports `-1` until the restarted process records its first event checkpoint, then counts the remaining backlog as normal.
+> **Note:** `-1` is this gauge's unknown value. After the step-7 restart there may be nothing left to count (a `CREATE` cursor skipped the backlog), and on PostgreSQL the watcher does not support counting at all, so the gauge stays `-1` there.

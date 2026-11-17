@@ -786,6 +786,7 @@ func (w *EventWatcher) updateUnprocessedEventsMetric(ctx context.Context) {
 				// empty backlog on every tick before the first event.
 				slog.DebugContext(ctx, "No processed event yet, reporting backlog as unknown")
 				metrics.EventBacklogSize.Set(-1)
+
 				continue
 			}
 
