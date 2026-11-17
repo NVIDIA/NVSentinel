@@ -120,9 +120,17 @@ func allPermanentErrors(errs []error) bool {
 // refused events stay unresolved and retry on the next startup.
 var ErrBreakerRefused = errors.New("circuit breaker is tripped")
 
-func logBreakerStoppedRecovery(ctx context.Context) {
+func logBreakerStoppedRecovery(ctx context.Context, progress *recoveryProgress) {
+	// Event failures recorded before the refusal stay visible in the stop
+	// line, so a refusal does not swallow failures that a reader of the log
+	// would otherwise never see.
+	attrs := []any{"prior_event_failures", progress.failures}
+	if progress.firstErr != nil {
+		attrs = append(attrs, "prior_first_error", progress.firstErr)
+	}
+
 	slog.ErrorContext(ctx, "Circuit breaker TRIPPED during cold-start recovery; stopping the scan. "+
-		"Unrecovered events stay unresolved and retry on the next startup")
+		"Unrecovered events stay unresolved and retry on the next startup", attrs...)
 }
 
 // WithRecoveryContext marks event processing as cold-start replay. Consumers
@@ -270,7 +278,7 @@ func Handle(ctx context.Context, deps Dependencies) error {
 		},
 	)
 	if errors.Is(err, ErrBreakerRefused) {
-		logBreakerStoppedRecovery(ctx)
+		logBreakerStoppedRecovery(ctx, progress)
 
 		return nil
 	}
@@ -291,7 +299,7 @@ func Handle(ctx context.Context, deps Dependencies) error {
 			},
 		)
 		if errors.Is(err, ErrBreakerRefused) {
-			logBreakerStoppedRecovery(ctx)
+			logBreakerStoppedRecovery(ctx, progress)
 
 			return nil
 		}
