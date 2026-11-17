@@ -52,12 +52,12 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Load the Go and govulncheck versions
+    - name: Load the tool versions
       id: versions
-      if: inputs.govulncheck == 'true'
       shell: bash
       run: |
         set -euo pipefail
+        echo "grype=$(yq '.container_tools.grype' .versions.yaml)" >> "${GITHUB_OUTPUT}"
         echo "go=$(yq '.languages.go' .versions.yaml)" >> "${GITHUB_OUTPUT}"
         echo "govulncheck=$(yq '.go_tools.govulncheck' .versions.yaml)" >> "${GITHUB_OUTPUT}"
 
@@ -89,6 +89,7 @@ runs:
       with:
         path: ${{ inputs.image == '' && inputs.path || '' }}
         image: ${{ inputs.image }}
+        grype-version: ${{ steps.versions.outputs.grype }}
         severity-cutoff: ${{ inputs.severity-cutoff }}
         output-format: sarif
         only-fixed: true
