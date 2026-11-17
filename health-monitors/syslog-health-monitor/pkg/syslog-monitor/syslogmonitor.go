@@ -1198,7 +1198,11 @@ func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check C
 			return fmt.Errorf("check '%s': failed to seek to journal head: %w", check.Name, err)
 		}
 	} else {
-		seekTarget := time.Now().Add(-lookback)
+		if sm.bootScanSeekTarget.IsZero() {
+			sm.bootScanSeekTarget = time.Now().Add(-lookback)
+		}
+
+		seekTarget := sm.bootScanSeekTarget
 
 		slog.Info("Post-reboot: lookback window active, entries before seekTarget will be skipped",
 			"check", check.Name,

@@ -978,6 +978,61 @@ func TestNoSavedBootID_ProcessesEntriesFromBootStart(t *testing.T) {
 	assert.Contains(t, recorder.messages[0], "Xid (PCI:0000:38:00): 79")
 }
 
+// TestBootStartScan_RetryKeepsTheSeekTarget verifies that a boot-start scan
+// stopped at its first entry seeks to the same time on the next poll. No
+// cursor is stored for that entry, so a target taken from the clock again
+// would move past it once the platform connector had been away for longer
+// than the lookback window.
+func TestBootStartScan_RetryKeepsTheSeekTarget(t *testing.T) {
+	check := CheckDefinition{Name: "mockCheck", JournalPath: TEST_JOURNAL_PATH}
+
+	mockJournal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "sxid123 first", Cursor: "cursor-1", BootID: "boot-2",
+				Fields: map[string]string{FieldBootID: "boot-2"}},
+		},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+
+	mockPCClient := &mockPlatformConnectorClient{}
+	sm, err := NewSyslogMonitorWithFactory(TEST_NODE, []CheckDefinition{check}, mockPCClient,
+		TEST_AGENT, TEST_COMPONENT, "60s", t.TempDir()+"/state.json", mockFactory,
+		"http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "", nil, "tcp://test", 30*time.Minute)
+	require.NoError(t, err)
+
+	sm.currentBootID = "boot-2"
+	sm.handleBootIDChange("", "boot-2")
+
+	sm.checkToHandlerMap[check.Name] = &mockHandler{
+		nodeName: "test", defaultAgentName: "syslog-health-monitor", defaultComponentClass: "GPU", checkName: "mockCheck",
+	}
+
+	// A unix target whose socket does not exist makes every Publish fail.
+	sm.pub = healthpub.New(mockPCClient, "unix:///nonexistent/nvsentinel/pc.sock", sm.defaultAgentName)
+
+	require.ErrorIs(t, sm.executeCheck(check), errSendFailed)
+
+	firstTarget := mockJournal.LastSeekRealtimeUsec
+	require.NotZero(t, firstTarget)
+
+	time.Sleep(2 * time.Millisecond)
+
+	mockJournal.Closed = false
+	require.ErrorIs(t, sm.executeCheck(check), errSendFailed)
+	assert.Equal(t, firstTarget, mockJournal.LastSeekRealtimeUsec, "the retry seeks to the same time")
+
+	// The connector is back: the entry is published.
+	mockJournal.Closed = false
+	sm.pub = healthpub.New(mockPCClient, "tcp://test", sm.defaultAgentName)
+	require.NoError(t, sm.executeCheck(check))
+	assert.Len(t, mockPCClient.RecordedHealthEvents, 1)
+}
+
 // TestBootIDChange_SecondPollResumesFromCursor verifies that after the
 // initial post-reboot scan, subsequent poll cycles resume from the saved
 // cursor rather than re-scanning from boot start.
