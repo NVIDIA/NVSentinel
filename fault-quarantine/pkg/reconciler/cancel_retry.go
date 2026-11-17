@@ -468,12 +468,10 @@ func (r *Reconciler) endSessionBeforeEvent(ctx context.Context, event *protos.He
 			return err
 		}
 
+		// The node stays queued with what the informer saw. If the healthy event doesn't end the
+		// quarantine, the worker still has to cancel it.
 		slog.WarnContext(ctx, "Pending cancellation is still failing; "+
 			"handling the healthy event anyway", "node", nodeName, "error", err)
-
-		// The healthy event can change the quarantine, so what the informer saw earlier no longer
-		// applies. The worker goes by the node's current state from here.
-		r.pendingCancels.update(nodeName, func(pending *pendingSessionEnd) { *pending = pendingSessionEnd{} })
 
 		return nil
 	}

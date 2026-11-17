@@ -582,6 +582,71 @@ func TestE2E_NewFault_AfterAReCordon_EndsTheEarlierSessionFirst(t *testing.T) {
 	assert.Equal(t, []string{second}, sessionEventIDs(node), "the new session holds only the new fault")
 }
 
+// A healthy event on a node that was uncordoned and cordoned again while the cancel was failing.
+// It clears one of two faults, so the quarantine stays and still has to be cancelled.
+func TestE2E_HealthyEvent_AfterAReCordon_KeepsThePendingCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 90*time.Second)
+	defer cancel()
+
+	eventID := generateTestID()
+	nodeName := createQuarantinedTestNode(ctx, t, eventID, false)
+
+	recorder := newCancelRecorder(nil)
+
+	r, watcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig:   sessionEndRules(),
+		EventWatcher: recorder,
+	})
+
+	waitForQuarantinedNodeInCache(t, r, nodeName)
+
+	second := generateTestID()
+	watcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(second, nodeName, "GpuXidError", false, true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "1"}}, model.StatusInProgress)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(second)
+		return status != nil && *status == model.AlreadyQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "the second fault should join the session")
+
+	recorder.setFailing(true)
+	updateTestNode(ctx, t, nodeName, uncordonTestNode)
+
+	require.Eventually(t, func() bool {
+		failed, _ := recorder.snapshot(nodeName)
+		return failed > 0
+	}, eventuallyTimeout, statusCheckPollInterval, "the worker should try the cancellation")
+
+	updateTestNode(ctx, t, nodeName, func(node *corev1.Node) { node.Spec.Unschedulable = true })
+	waitForQuarantinedNodeInCache(t, r, nodeName)
+
+	healthy := generateTestID()
+	watcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(healthy, nodeName, "GpuXidError", true, false,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "1"}}, model.StatusInProgress)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(healthy)
+		return status != nil && *status == model.AlreadyQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "the healthy event should clear one fault and keep the session")
+
+	recorder.setFailing(false)
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, quarantined := node.Annotations[common.QuarantineHealthEventAnnotationKey]
+
+		return !quarantined && node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] != ""
+	}, 30*time.Second, eventuallyPollInterval, "the session should still end after the healthy event")
+
+	_, cancelled := recorder.snapshot(nodeName)
+	assert.Equal(t, [][]string{{eventID}}, cancelled, "the fault that's left is cancelled")
+	assert.True(t, getTestNode(ctx, t, nodeName).Spec.Unschedulable, "the cordon of the operator stays")
+}
+
 // The event must not go on until the informer cache shows the cleaned node, because it reads
 // the node from that cache. The informer is stopped here, so the cache never catches up.
 func TestEndSessionBeforeEvent_WaitsForTheNodeInformer(t *testing.T) {
