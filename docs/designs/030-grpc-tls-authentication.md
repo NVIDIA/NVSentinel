@@ -1,4 +1,4 @@
-# ADR-029: Security — gRPC TLS and Authentication for Janitor-Provider Connection
+# ADR-030: Security — gRPC TLS and Authentication for Janitor-Provider Connection
 
 ## Context
 
