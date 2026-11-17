@@ -1,0 +1,77 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Licenses of the third-party Go dependencies of the core modules.
+#
+# `make dependency-licenses-lint` runs go-licenses on each module below and fails when a
+# dependency reports a license that is not in `allowed` and is not covered by an entry in
+# `exceptions`. A dependency with no detected license reports "Unknown" and fails too.
+#
+# Plugin modules (health monitors, janitor, janitor-provider, preflight checks), container base
+# images and Helm subcharts are not checked here.
+
+modules:
+  - commons
+  - data-models
+  - event-exporter
+  - fault-quarantine
+  - fault-remediation
+  - health-events-analyzer
+  - labeler
+  - lifecycle-manager
+  - metadata-collector
+  - node-drainer
+  - platform-connectors
+  - preflight
+  - store-client
+
+# SPDX identifiers, as go-licenses reports them.
+allowed:
+  - Apache-2.0
+  - 0BSD
+  - BSD-2-Clause
+  - BSD-2-Clause-FreeBSD
+  - BSD-3-Clause
+  - ISC
+  - MIT
+  - MIT-0
+  - OpenSSL
+  - OpenSSL-standalone
+  - PostgreSQL
+  - PSF-2.0
+  - Python-2.0
+  - Python-2.0.1
+  - SSLeay-standalone
+  - UPL-1.0
+  - X11
+  - Zlib
+
+# Dependencies accepted outside `allowed`. `module` matches the module and every package in it;
+# a package that reports an allowed license passes without the exception. `reported` is the
+# license go-licenses reports today for the other packages: if one reports anything else, the
+# check fails, so a license change is reviewed again. An entry that no module uses fails the
+# check, so the list stays current.
+exceptions:
+  - module: github.com/hashicorp/errwrap
+    reported: MPL-2.0
+    reason: Used unmodified, as a dependency of go-multierror.
+  - module: github.com/hashicorp/go-multierror
+    reported: MPL-2.0
+    reason: Used unmodified by fault-quarantine, node-drainer and health-events-analyzer.
+  - module: github.com/hashicorp/golang-lru/v2
+    reported: MPL-2.0
+    reason: Used unmodified by commons and platform-connectors, and through commons by health-events-analyzer and lifecycle-manager.
+  - module: github.com/yandex/protoc-gen-crd
+    reported: Unknown
+    reason: Apache-2.0. Its LICENSE file holds only the short Apache-2.0 notice, which go-licenses does not classify.
