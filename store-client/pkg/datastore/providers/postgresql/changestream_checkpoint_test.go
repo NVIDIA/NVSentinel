@@ -288,7 +288,7 @@ func TestSendEventsToChannel_Saturation_TracksMinimumEvictedPositionWithoutBlock
 		defer db.Close()
 
 		ctx := context.Background()
-		base := time.Now()
+		base := time.Now().UTC()
 		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
 		events := []datastore.EventWithToken{
 			checkpointEvent(9000, base.Add(time.Hour)),
@@ -336,7 +336,7 @@ func TestSendEventsToChannel_LongPreprocessingFailureRun_LaterSuccessClearsFloor
 		defer db.Close()
 
 		ctx := context.Background()
-		base := time.Now()
+		base := time.Now().UTC()
 		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
 		const failures = 2*pendingDeliveryLimit + 7
 
@@ -381,7 +381,7 @@ func verifyAbandonedWatermarkFlush(t *testing.T, saturated, late, stop bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	base := time.Now()
+	base := time.Now().UTC()
 	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
 	var dropped int64
 
@@ -550,7 +550,7 @@ func TestPrepareDelivery_LateRow_PersistsBeforePublishAndReplaysAfterRestart(t *
 		defer db.Close()
 
 		ctx := context.Background()
-		base := time.Now()
+		base := time.Now().UTC()
 		late := base.Add(-time.Second)
 		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
 		watcher.lastTimestamp, watcher.lastEventID = base, 10
@@ -588,7 +588,7 @@ func TestFetchLoop_RewindSaveFails_RetriesUndeliveredRow(t *testing.T) {
 		defer db.Close()
 
 		ctx := context.Background()
-		base := time.Now()
+		base := time.Now().UTC()
 		late := base.Add(-time.Second)
 		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
 		watcher.lastTimestamp, watcher.lastEventID, watcher.highestReadEventID = base, 10, 10
@@ -661,7 +661,7 @@ func TestPrepareDelivery_ConcurrentAck_SerializesCheckpointWrites(t *testing.T) 
 			defer db.Close()
 
 			ctx := context.Background()
-			base := time.Now()
+			base := time.Now().UTC()
 			late := base.Add(-time.Second)
 			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
 			watcher.lastTimestamp, watcher.lastEventID, watcher.highestReadEventID = base, 10, 10
@@ -740,7 +740,7 @@ func TestPrepareDelivery_AfterAmbiguousSaveFailure_PersistsRewindFirst(t *testin
 		defer db.Close()
 
 		ctx := context.Background()
-		base := time.Now()
+		base := time.Now().UTC()
 		early := base.Add(-2 * time.Second)
 		late := base.Add(-time.Second)
 		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
