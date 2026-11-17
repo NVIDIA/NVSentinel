@@ -22,9 +22,9 @@ Status: Proposed (tracking issue [#2203](https://github.com/NVIDIA/NVSentinel/is
 ## Table of Contents
 
 1. [Context](#context)
-   - [User journeys](#user-journeys)
    - [Options](#options)
 2. [Decision](#decision)
+   - [User journeys](#user-journeys)
 3. [Implementation](#implementation)
    - [Configuration](#configuration)
    - [Membership](#membership)
@@ -45,19 +45,18 @@ Status: Proposed (tracking issue [#2203](https://github.com/NVIDIA/NVSentinel/is
 
 fault-quarantine has one circuit breaker for the cluster. [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) describes two problems with this.
 
-**One breaker for all node types.** The breaker measures its percentages against the nodes that match `gpuNodeLabel` ([#1228](https://github.com/NVIDIA/NVSentinel/issues/1228), [#1482](https://github.com/NVIDIA/NVSentinel/pull/1482)). But it counts the quarantines of every node that fault-quarantine quarantines. Some clusters have more than one node type, for example GPU nodes and nodes with LPU accelerators (LPU nodes). There, a burst of quarantines on one type trips the breaker for all types. The types also share one set of limits, although they can fail in different ways. [ADR-070](070-vendor-neutral-core.md) lists the `gpuNodeLabel` count as GPU logic in a core component. The vendor-neutral work in [#2247](https://github.com/NVIDIA/NVSentinel/issues/2247) continues from there, and [#2421](https://github.com/NVIDIA/NVSentinel/issues/2421) moves the `gpuNodeLabel` default out of the core chart. This ADR supports that work: a node group gives the breaker a way to count nodes that does not depend on a vendor label, and the cluster breaker keeps `gpuNodeLabel` with no change until #2421 moves it.
+**One breaker for all node types.** The breaker measures its percentages against the nodes that match `gpuNodeLabel` ([#1228](https://github.com/NVIDIA/NVSentinel/issues/1228), [#1482](https://github.com/NVIDIA/NVSentinel/pull/1482)). But it counts the quarantines of every node that fault-quarantine quarantines. Some clusters have more than one node type, for example GPU nodes and nodes with LPU accelerators (LPU nodes). There, this has two effects:
+
+- **The counts are mixed.** The quarantines of all node types count together against one set of limits. Thus a burst of quarantines on one node type can trip the breaker with limits that were sized for a different type. The types also share one set of limits, although they can fail in different ways.
+- **A trip stops all nodes.** A trip stops the event stream, so no node of any type is quarantined or released until the reset.
+
+This ADR is about the first effect. The second effect does not change: see [Decision](#decision) and [Future work](#future-work).
+
+[ADR-070](070-vendor-neutral-core.md) lists the `gpuNodeLabel` count as GPU logic in a core component. The vendor-neutral work in [#2247](https://github.com/NVIDIA/NVSentinel/issues/2247) continues from there, and [#2421](https://github.com/NVIDIA/NVSentinel/issues/2421) moves the `gpuNodeLabel` default out of the core chart. This ADR supports that work: a node group gives the breaker a way to count nodes that does not depend on a vendor label, and the cluster breaker keeps `gpuNodeLabel` with no change until #2421 moves it.
 
 **Failure domains.** Some nodes fail together. On a rack-scale system, one switch or power fault can make every node of the rack fail at the same time. The comments on [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) describe such failures. A breaker that is sized to stop a bad signal across the cluster trips on one failed rack. Limits that let a full rack be quarantined weaken the protection against all other failures.
 
 [ADR-064](064-node-and-device-selection.md) defines how node-drainer and fault-remediation select groups of nodes with `Node` rules. It lists breaker limits for each group as a Non-goal. This ADR adds them, as a [separate ADR](https://github.com/NVIDIA/NVSentinel/pull/2026#issuecomment-6480632987).
-
-### User journeys
-
-1. **Two node types.** An operator has GPU nodes and LPU nodes in one cluster. The operator adds one node group for the LPU nodes, with its own limits. A burst of quarantines on the LPU nodes then counts only against the LPU limits, and the GPU nodes keep the cluster limits. If the LPU nodes reach their limits, the trip still stops the event stream for all nodes, as today.
-2. **No change.** An operator with one node type adds no node groups. The configuration, the breaker state, and the behaviour stay as they are today.
-3. **A trip.** A breaker trips. The operator reads which breaker tripped, and which bound, from the `circuit-breaker` ConfigMap and from the metrics. The operator resets the breaker with the procedure of today.
-4. **A new node type.** An operator adds nodes of a new type. Until the operator adds a node group for them, the cluster breaker covers them, as it does today.
-5. **A failed rack.** An operator of a rack-scale system gives a node group a failure domain label. With a domain bound of 2, one rack can then be quarantined completely with no trip and no manual reset. A second rack with a quarantine in the same window trips the breaker.
 
 ### Options
 
@@ -74,9 +73,17 @@ fault-quarantine gets an optional list of node groups. A node group has the comm
 
 The scope is small:
 
-- Node groups change when a breaker trips. They do not change what a trip stops. A trip of any breaker still stops the event stream for all nodes, and the reset does not change.
+- Node groups change when a breaker trips. They do not change what a trip stops. A trip of any breaker still stops the event stream for all nodes, and the reset does not change. There is one ordered event stream with one resume position, so a trip that holds only the events of its own group is a larger change. It is in [Future work](#future-work).
 - Fault-quarantine rule sets do not change.
 - The design fails closed. If fault-quarantine cannot find the node group of a node, it stops, as it does today when a breaker check fails. It does not use other limits for the node.
+
+### User journeys
+
+1. **Two node types.** An operator has GPU nodes and LPU nodes in one cluster. The operator adds one node group for the LPU nodes, with its own limits. A burst of quarantines on the LPU nodes then counts only against the LPU limits, and the GPU nodes keep the cluster limits. A trip then needs the LPU nodes to reach their own limits. Such a trip still stops the event stream for all nodes, as today.
+2. **No change.** An operator with one node type adds no node groups. The configuration, the breaker state, and the behaviour stay as they are today.
+3. **A trip.** A breaker trips. The operator reads which breaker tripped, and which bound, from the `circuit-breaker` ConfigMap and from the metrics. The operator resets the breaker with the procedure of today.
+4. **A new node type.** An operator adds nodes of a new type. Until the operator adds a node group for them, the cluster breaker covers them, as it does today.
+5. **A failed rack.** An operator of a rack-scale system gives a node group a failure domain label. With a domain bound of 2, one rack can then be quarantined completely with no trip and no manual reset. A second rack with a quarantine in the same window trips the breaker.
 
 ## Implementation
 
