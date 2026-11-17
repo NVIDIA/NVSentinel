@@ -19,15 +19,15 @@ tests:
   - it: renders a rule that sends a fault to a custom action
     set:
       platformConnector.transformers.OverrideTransformer.rules:
-        - name: nvlink-to-rma
+        - name: nvlink-to-hardware-repair
           when: 'event.checkName == "GpuNvlinkWatch"'
           override:
             recommendedAction: CUSTOM
-            customRecommendedAction: hardware-rma
+            customRecommendedAction: hardware-repair
     asserts:
       - matchRegex:
           path: data["overrides.toml"]
-          pattern: 'override = \{recommendedAction = "CUSTOM", customRecommendedAction = "hardware-rma"\}'
+          pattern: 'override = \{recommendedAction = "CUSTOM", customRecommendedAction = "hardware-repair"\}'
   - it: renders a rule without a custom action unchanged
     set:
       platformConnector.transformers.OverrideTransformer.rules:

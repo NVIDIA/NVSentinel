@@ -217,11 +217,11 @@ transformers:
 transformers:
   OverrideTransformer:
     rules:
-      - name: "nvlink-to-rma"
+      - name: "nvlink-to-hardware-repair"
         when: 'event.checkName == "GpuNvlinkWatch"'
         override:
           recommendedAction: "CUSTOM"
-          customRecommendedAction: "hardware-rma"
+          customRecommendedAction: "hardware-repair"
 ```
 
 fault-remediation must have an entry for the action name in `maintenance.actions`. See [Custom remediation plugin](../tutorials/plugin-custom-remediation.md).

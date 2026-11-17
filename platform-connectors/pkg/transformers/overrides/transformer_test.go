@@ -167,7 +167,7 @@ func TestNewProcessor(t *testing.T) {
 						When: `event.agent == "test"`,
 						Override: Override{
 							RecommendedAction:       new("RESTART_BM"),
-							CustomRecommendedAction: new("hardware-rma"),
+							CustomRecommendedAction: new("hardware-repair"),
 						},
 					},
 				},
@@ -183,7 +183,7 @@ func TestNewProcessor(t *testing.T) {
 					{
 						Name:     "test-rule",
 						When:     `event.agent == "test"`,
-						Override: Override{CustomRecommendedAction: new("hardware-rma")},
+						Override: Override{CustomRecommendedAction: new("hardware-repair")},
 					},
 				},
 			},
@@ -200,7 +200,7 @@ func TestNewProcessor(t *testing.T) {
 						When: `event.agent == "test"`,
 						Override: Override{
 							RecommendedAction:       new("CUSTOM"),
-							CustomRecommendedAction: new("hardware-rma"),
+							CustomRecommendedAction: new("hardware-repair"),
 						},
 					},
 				},
@@ -362,7 +362,7 @@ func TestApplyOverrides(t *testing.T) {
 		},
 		{
 			name:   "built-in-action-to-custom-action",
-			config: customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-rma")),
+			config: customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-repair")),
 			event: &pb.HealthEvent{
 				Agent:             "test-agent",
 				IsFatal:           true,
@@ -370,11 +370,11 @@ func TestApplyOverrides(t *testing.T) {
 			},
 			expectedIsFatal: true,
 			expectedAction:  pb.RecommendedAction_CUSTOM,
-			expectedCustom:  "hardware-rma",
+			expectedCustom:  "hardware-repair",
 		},
 		{
 			name:   "custom-action-to-other-custom-action",
-			config: customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-rma")),
+			config: customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-repair")),
 			event: &pb.HealthEvent{
 				Agent:                   "test-agent",
 				IsFatal:                 true,
@@ -383,7 +383,7 @@ func TestApplyOverrides(t *testing.T) {
 			},
 			expectedIsFatal: true,
 			expectedAction:  pb.RecommendedAction_CUSTOM,
-			expectedCustom:  "hardware-rma",
+			expectedCustom:  "hardware-repair",
 		},
 		{
 			name:   "custom-action-to-built-in-action-clears-name",
@@ -392,14 +392,14 @@ func TestApplyOverrides(t *testing.T) {
 				Agent:                   "test-agent",
 				IsFatal:                 true,
 				RecommendedAction:       pb.RecommendedAction_CUSTOM,
-				CustomRecommendedAction: "hardware-rma",
+				CustomRecommendedAction: "hardware-repair",
 			},
 			expectedIsFatal: true,
 			expectedAction:  pb.RecommendedAction_RESTART_BM,
 		},
 		{
 			name:   "rule-no-match-keeps-custom-action",
-			config: customActionConfig(`event.agent == "other-agent"`, "CUSTOM", new("hardware-rma")),
+			config: customActionConfig(`event.agent == "other-agent"`, "CUSTOM", new("hardware-repair")),
 			event: &pb.HealthEvent{
 				Agent:                   "test-agent",
 				IsFatal:                 true,
@@ -453,7 +453,7 @@ func TestApplyOverrides(t *testing.T) {
 func TestApplyOverrides_CustomAction_CountsEachChangedField(t *testing.T) {
 	const ruleName = "custom-action-metrics"
 
-	cfg := customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-rma"))
+	cfg := customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-repair"))
 	cfg.Rules[0].Name = ruleName
 
 	proc, err := NewProcessor(cfg)
@@ -479,7 +479,7 @@ func TestApplyOverrides_CustomAction_CountsEachChangedField(t *testing.T) {
 	require.NoError(t, proc.Transform(context.Background(), &pb.HealthEvent{
 		Agent:                   "test-agent",
 		RecommendedAction:       pb.RecommendedAction_CUSTOM,
-		CustomRecommendedAction: "hardware-rma",
+		CustomRecommendedAction: "hardware-repair",
 	}))
 
 	assert.InDelta(t, 1, testutil.ToFloat64(overridesApplied.WithLabelValues(ruleName, "recommendedAction"))-actionBefore, 0)
@@ -511,9 +511,9 @@ func TestLoadConfig_CustomAction_ReadsChartOutput(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(`enabled = true
 
 [[rules]]
-name = "nvlink-to-rma"
+name = "nvlink-to-hardware-repair"
 when = "event.checkName == \"GpuNvlinkWatch\""
-override = {recommendedAction = "CUSTOM", customRecommendedAction = "hardware-rma"}
+override = {recommendedAction = "CUSTOM", customRecommendedAction = "hardware-repair"}
 `), 0o600))
 
 	cfg, err := LoadConfig(path)
@@ -521,5 +521,5 @@ override = {recommendedAction = "CUSTOM", customRecommendedAction = "hardware-rm
 	require.NoError(t, cfg.Validate())
 	require.Len(t, cfg.Rules, 1)
 	require.NotNil(t, cfg.Rules[0].Override.CustomRecommendedAction)
-	assert.Equal(t, "hardware-rma", *cfg.Rules[0].Override.CustomRecommendedAction)
+	assert.Equal(t, "hardware-repair", *cfg.Rules[0].Override.CustomRecommendedAction)
 }
