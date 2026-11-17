@@ -169,7 +169,7 @@ Notes:
 
 On nodes running Linux kernel 6.19 or newer, the Percona backend can fail to start. `mongodb-rs0-0` exits within a second of starting and stays in `CrashLoopBackOff`, and fault-quarantine, node-drainer, fault-remediation and platform-connectors restart in a loop because they cannot reach the datastore. `kubectl logs --previous` for the `mongod` container is empty.
 
-Kernels 6.19 through 7.0.13 break the way TCMalloc, MongoDB's memory allocator, uses rseq for its per-CPU caches, so MongoDB 8.0 refuses to start on those kernels ([SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912)). The mongod release the chart deploys refuses on every kernel 6.19 and newer, including kernels that already carry the fix. Ubuntu kernels also hide their upstream release from `uname -r`, which shows a zero patch level (`7.0.0-43-generic` for a kernel built from 7.0.14), so later mongod releases can still refuse on them. The container log stays empty because the Percona image's entrypoint script runs `mongod --version` to read the version, consumes the refusal message, and exits.
+Kernels 6.19 through 7.0.13 break the way TCMalloc, MongoDB's memory allocator, uses rseq for its per-CPU caches, so MongoDB 8.0 refuses to start on those kernels ([SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912)). The mongod release the chart deploys refuses on every kernel 6.19 and newer, including kernels that already carry the fix. Ubuntu kernels also hide their upstream release from `uname -r`, which shows a zero patch level (`7.0.0-43-generic` for a kernel built from 7.0.14), so later mongod releases can still refuse on them. The container log stays empty because the entrypoint script, `/opt/percona/ps-entry.sh`, which the init container copies from the operator image, runs `mongod --version` to read the version, consumes the refusal message, and exits.
 
 To check a node's kernel:
 
@@ -199,9 +199,17 @@ mongodb-store:
             value: "glibc.pthread.rseq=1"
 ```
 
+With this setting, mongod logs startup warning 8718500, which says the performance impact is critical and asks for `GLIBC_TUNABLES=glibc.pthread.rseq=0`. Leave the setting in place: on these kernels, following that advice brings the startup failure back.
+
 Helm replaces lists rather than merging them. If your values already set `env` for `rs0`, add this entry to that list instead of defining a second one.
 
-The cost is some allocator performance under heavy concurrency, which matters little at the load NVSentinel puts on its datastore. Changing `env` changes the pod spec, so the operator restarts mongod on the next upgrade.
+The cost is some allocator performance under heavy concurrency, which matters little at the load NVSentinel puts on its datastore.
+
+Changing `env` changes the pod spec, and on a healthy replica set the operator restarts mongod on the next upgrade. The operator restarts pods only once every replica is ready, though, so a mongod pod that is already crash-looping never picks up the new setting. After the upgrade, delete each crash-looping mongod pod, for example:
+
+```bash
+kubectl delete pod -n nvsentinel mongodb-rs0-0
+```
 
 To confirm the setting reached the pod:
 
@@ -211,13 +219,13 @@ kubectl get pod mongodb-rs0-0 -n nvsentinel \
 kubectl get pods -n nvsentinel
 ```
 
-If MongoDB was down for longer than the init Job's deadline, the `create-mongodb-database` Job has already failed, and Helm does not re-create it. The database users are then missing even after mongod starts. Check the Job, and if it failed, follow [Init Job deadline](#init-job-deadline):
+On a fresh install, the `create-mongodb-database` Job runs while mongod is down. If mongod stays down past the Job's deadline, the Job fails and Helm does not re-create it, so the database users are missing even after mongod starts. An install whose Job already completed keeps its users. Check the Job, and if it failed, follow [Init Job deadline](#init-job-deadline):
 
 ```bash
 kubectl get job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 ```
 
-Remove the entry once the chart deploys a mongod release that starts on your nodes' kernel. Progress is tracked in [#2410](https://github.com/NVIDIA/NVSentinel/issues/2410).
+Before removing the entry, rerun the `docker run` command above with the new image tag on a machine with each kernel you run. If it prints the version instead of the refusal, the entry can go. On kernels 6.19 through 7.0.13, no MongoDB 8.0 release starts without this setting. Progress is tracked in [#2410](https://github.com/NVIDIA/NVSentinel/issues/2410).
 
 ### Volume size
 
