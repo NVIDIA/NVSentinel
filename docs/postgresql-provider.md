@@ -52,7 +52,7 @@ For a missing `resume_tokens` row, the constructor saves `{timestamp, eventID}` 
 
 The insert inspects `client backend` sessions in the current database, excluding its own session. Identifiable background processes, including autovacuum and parallel workers, do not affect the start boundary. PostgreSQL hides `backend_type` for sessions whose statistics the consumer cannot read. Unknown backend types therefore remain possible writers and trigger the full-replay fallback. This also applies to hidden background processes; the consumer cannot safely distinguish them from hidden clients.
 
-Hidden client activity or disabled client activity tracking prevents a reliable transaction-start bound. Either condition selects `0001-01-01T00:00:00.000001+00:00`. Any prepared transaction in this database also selects this boundary. PostgreSQL exposes its PREPARE time, which cannot bound its earlier transaction start.
+Hidden client activity or disabled client activity tracking prevents a reliable transaction-start bound. Either condition selects the Unix epoch, `1970-01-01T00:00:00+00:00`, which precedes every changelog row and parses in every session time zone. Any prepared transaction in this database also selects this boundary. PostgreSQL exposes its PREPARE time, which cannot bound its earlier transaction start.
 
 For a new consumer, this fallback replays the whole available changelog. Only changelog retention would bound that replay; NVSentinel does not implement changelog retention yet. The watcher logs one warning after loading the saved boundary. The warning names the consumer, lists the possible causes and links to this section. Existing tokens remain unchanged.
 

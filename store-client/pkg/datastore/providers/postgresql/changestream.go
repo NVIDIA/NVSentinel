@@ -119,7 +119,7 @@ type PostgreSQLChangeStreamWatcher struct {
 	highestReadEventID int64
 
 	resumeRetryInterval time.Duration // Initial legacy lookup retry delay; overridden in tests
-	positionInitialized bool          // Set before construction returns; Start must not load or write checkpoints
+	positionInitialized bool          // Set by construction or by Start's own initialization; no reload afterwards
 
 	// Hybrid mode fields
 	mode               ChangeStreamMode

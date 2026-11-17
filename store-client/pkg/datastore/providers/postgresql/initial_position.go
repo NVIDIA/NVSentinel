@@ -29,7 +29,9 @@ type resetResumeTokenFunc func(
 	context.Context, client.DatabaseClient, client.TokenConfig,
 ) (client.ResumeControlDecision, error)
 
-var fullReplayStartTime = time.Date(1, 1, 1, 0, 0, 0, 1000, time.UTC)
+// fullReplayStartTime precedes every changelog row. The Unix epoch renders as a parseable
+// timestamp in every session time zone; a year-1 instant becomes a BC date west of UTC.
+var fullReplayStartTime = time.Unix(0, 0).UTC()
 
 const loadResumeTokenQuery = `SELECT resume_token FROM resume_tokens WHERE client_name = $1`
 
@@ -57,7 +59,7 @@ SELECT $1, jsonb_build_object('timestamp',
 	CASE WHEN activity.unknown_start OR EXISTS (
 		SELECT 1 FROM pg_prepared_xacts
 		WHERE database = current_database() AND activity.observed_at IS NOT NULL
-	) THEN TIMESTAMPTZ '0001-01-01 00:00:00.000001+00'
+	) THEN TIMESTAMPTZ '1970-01-01 00:00:00+00'
 	ELSE LEAST(activity.observed_at, activity.oldest_start) END,
 	'eventID', 0), statement_timestamp()
 FROM activity

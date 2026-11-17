@@ -464,7 +464,7 @@ func TestWatcherConstruction_FullReplayBoundary_WarnsOnce(t *testing.T) {
 				}
 
 				expectPositionToken(mock, "event-exporter",
-					[]byte(`{"eventID": 0, "timestamp": "0001-01-01T00:00:00.000001+00:00"}`))
+					[]byte(`{"eventID": 0, "timestamp": "1970-01-01T00:00:00+00:00"}`))
 				w, err := construct(t.Context(), db, "event-exporter")
 				require.NoError(t, err)
 				require.Equal(t, fullReplayStartTime, w.lastTimestamp)
@@ -500,4 +500,29 @@ func TestWatcherConstruction_OrdinaryBoundary_DoesNotWarn(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 	assert.NotContains(t, logs.String(), "PostgreSQL watcher starts with full changelog replay")
+}
+
+func TestWatcherConstruction_FullReplayBoundary_ParsesInAnySessionTimeZone(t *testing.T) {
+	// jsonb_build_object renders timestamptz in the session time zone. West of UTC the epoch
+	// renders on 1969-12-31 and must still parse as the full-replay boundary, not as malformed.
+	renderings := map[string][]byte{
+		"UTC":                 []byte(`{"eventID": 0, "timestamp": "1970-01-01T00:00:00+00:00"}`),
+		"America/Los_Angeles": []byte(`{"eventID": 0, "timestamp": "1969-12-31T16:00:00-08:00"}`),
+		"Asia/Kolkata":        []byte(`{"eventID": 0, "timestamp": "1970-01-01T05:30:00+05:30"}`),
+	}
+
+	for zone, token := range renderings {
+		t.Run(zone, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			expectPositionToken(mock, "event-exporter", token)
+			w, err := positionConstructors()["database-client"](t.Context(), db, "event-exporter")
+			require.NoError(t, err)
+			assert.True(t, w.lastTimestamp.Equal(fullReplayStartTime))
+			assert.Zero(t, w.lastEventID)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }
