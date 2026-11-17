@@ -29,10 +29,14 @@ type resetResumeTokenFunc func(
 	context.Context, client.DatabaseClient, client.TokenConfig,
 ) (client.ResumeControlDecision, error)
 
+var fullReplayStartTime = time.Date(1, 1, 1, 0, 0, 0, 1000, time.UTC)
+
 const loadResumeTokenQuery = `SELECT resume_token FROM resume_tokens WHERE client_name = $1`
 
 // Sample the clock before activity, then inspect prepared transactions after activity.
 // The lateral dependency keeps the activity observation after the clock sample.
+// Visible non-client backends cannot write the changelog. PostgreSQL also hides backend_type
+// without statistics privileges, so an unknown type must still be treated as a possible writer.
 // Hidden/disabled activity and prepared transactions have no usable start bound.
 // Use a finite replay boundary that round-trips through JSON and Go's time parser.
 const insertInitialPositionQuery = `WITH start_time AS MATERIALIZED (
@@ -43,7 +47,8 @@ const insertInitialPositionQuery = `WITH start_time AS MATERIALIZED (
 		SELECT MIN(xact_start) AS oldest_start,
 			COALESCE(bool_or(state IS NULL OR state = 'disabled'), FALSE) AS unknown_start
 		FROM pg_stat_activity
-		WHERE datname = current_database() AND pid <> pg_backend_pid()
+		WHERE (backend_type = 'client backend' OR backend_type IS NULL)
+			AND datname = current_database() AND pid <> pg_backend_pid()
 			AND (xact_start <= start_time.observed_at OR xact_start IS NULL)
 	) AS stats
 )
@@ -80,6 +85,17 @@ func (w *PostgreSQLChangeStreamWatcher) initializeResumePosition(ctx context.Con
 		w.lastTimestamp = time.Time{}
 		w.lastEventID = 0
 		w.highestReadEventID = 0
+	}
+
+	// Inspect the stored winner, including when another constructor inserted it.
+	// The unchanged token schema cannot distinguish the causes after read-back.
+	if w.lastTimestamp.Equal(fullReplayStartTime) {
+		slog.Warn("PostgreSQL watcher starts with full changelog replay",
+			"client", w.clientName,
+			"reason", "hidden/disabled client activity or prepared transaction",
+			"remedy", "Use the same role for all writers or grant pg_read_all_stats; "+
+				"enable activity tracking and resolve prepared transactions",
+			"docs", "docs/postgresql-provider.md#durable-watcher-start-position")
 	}
 
 	w.positionInitialized = true

@@ -19,7 +19,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -440,4 +442,62 @@ func TestRestoreResumePosition_PostgreSQLJSONTimestamp_ExactInstant(t *testing.T
 	require.Equal(t, initialDBTime, w.lastTimestamp)
 	require.Equal(t, initialDBTime.UnixMicro(), w.lastTimestamp.UnixMicro())
 	require.Zero(t, w.lastEventID)
+}
+
+func TestWatcherConstruction_FullReplayBoundary_WarnsOnce(t *testing.T) {
+	for path, construct := range positionConstructors() {
+		for _, existing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/existing=%t", path, existing), func(t *testing.T) {
+				logs := &syncBuffer{}
+				previous := slog.Default()
+				slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+				t.Cleanup(func() { slog.SetDefault(previous) })
+
+				db, mock, err := sqlmock.New()
+				require.NoError(t, err)
+				defer db.Close()
+
+				if !existing {
+					mock.ExpectQuery(regexp.QuoteMeta(loadResumeTokenQuery)).WithArgs("event-exporter").
+						WillReturnError(sql.ErrNoRows)
+					mock.ExpectExec(initialInsertPattern).WithArgs("event-exporter").WillReturnResult(sqlmock.NewResult(0, 1))
+				}
+
+				expectPositionToken(mock, "event-exporter",
+					[]byte(`{"eventID": 0, "timestamp": "0001-01-01T00:00:00.000001+00:00"}`))
+				w, err := construct(t.Context(), db, "event-exporter")
+				require.NoError(t, err)
+				require.Equal(t, fullReplayStartTime, w.lastTimestamp)
+
+				// A prepared Start must not emit the warning again or reload the token.
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				w.Start(ctx)
+				require.NoError(t, mock.ExpectationsWereMet())
+				assert.Equal(t, 1, strings.Count(logs.String(), "PostgreSQL watcher starts with full changelog replay"))
+				assert.Contains(t, logs.String(), "level=WARN")
+				assert.Contains(t, logs.String(), "client=event-exporter")
+				assert.Contains(t, logs.String(), "hidden/disabled client activity or prepared transaction")
+				assert.Contains(t, logs.String(), "same role for all writers or grant pg_read_all_stats")
+				assert.Contains(t, logs.String(), "docs/postgresql-provider.md#durable-watcher-start-position")
+			})
+		}
+	}
+}
+
+func TestWatcherConstruction_OrdinaryBoundary_DoesNotWarn(t *testing.T) {
+	logs := &syncBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	expectInitialPosition(t, mock, "event-exporter")
+	_, err = positionConstructors()["database-client"](t.Context(), db, "event-exporter")
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.NotContains(t, logs.String(), "PostgreSQL watcher starts with full changelog replay")
 }
