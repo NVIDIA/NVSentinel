@@ -57,13 +57,13 @@ GPU clients outside the GPU Operator, in any namespace, can also hold the GPUs o
 
 ## Before You Enable It: Apply the CRDs
 
-The Janitor's CRD manifests ship inside the `janitor` subchart (`nvsentinel/charts/janitor/crds/` in the OCI chart): three for the maintenance custom resources (`rebootnodes`, `terminatenodes`, `gpuresets` in the `janitor.dgxc.nvidia.com` group) and `externalremediationrequests` (`nvsentinel.dgxc.nvidia.com` group). Helm does not apply a subchart's CRDs during `helm upgrade`, so on an existing installation the CRDs are absent until you apply them yourself. Check before you enable the module:
+The Janitor's CRD manifests ship inside the `janitor` subchart (`nvsentinel/charts/janitor/crds/` in the OCI chart): three for the maintenance custom resources (`rebootnodes`, `terminatenodes`, `gpuresets` in the `janitor.dgxc.nvidia.com` group) and `externalremediationrequests` (`nvsentinel.dgxc.nvidia.com` group). Helm does not apply a subchart's CRDs during `helm upgrade`, so on an existing installation the CRDs are absent — or left at an older schema — until you apply them yourself. Check before you enable the module:
 
 ```bash
 kubectl get crd rebootnodes.janitor.dgxc.nvidia.com terminatenodes.janitor.dgxc.nvidia.com gpuresets.janitor.dgxc.nvidia.com externalremediationrequests.nvsentinel.dgxc.nvidia.com
 ```
 
-If the command returns `NotFound`, apply the CRDs from the chart:
+Apply the CRDs from the chart whatever the check returns — `NotFound` means the kinds are absent, but an existing CRD can still be an older schema, because Helm installs a subchart's CRDs once, at install, and never upgrades them:
 
 ```bash
 NVSENTINEL_VERSION="<the version you are deploying>"
