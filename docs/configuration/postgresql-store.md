@@ -47,7 +47,22 @@ helm upgrade --install nvsentinel {chart-path} \
 | Datastore provider | `global.datastore.*` |
 | In-cluster PostgreSQL | `postgresql.*` |
 
-Server TLS, `pg_hba`, and init scripts are under `postgresql.primary.*` (see the example values file).
+Server TLS and `pg_hba` are under `postgresql.primary.*` (see the example values file). The modules create the schema when they start, so the example sets no init script.
+
+Older versions of the example file created `resume_tokens` from an init script, with a `last_event_id` column where the modules expect `resume_token`. On such an install the modules log `Failed to save resume position` and receive the whole changelog again after each restart. To check, run `\d resume_tokens` in the NVSentinel database: the old layout lists `last_event_id`. To repair it, replace the table in one transaction:
+
+```sql
+BEGIN;
+DROP TABLE resume_tokens;
+CREATE TABLE resume_tokens (
+    client_name VARCHAR(255) PRIMARY KEY,
+    resume_token JSONB NOT NULL,
+    last_updated TIMESTAMPTZ DEFAULT NOW()
+);
+COMMIT;
+```
+
+The old table holds no saved positions. Running modules keep their place in the changelog and save it to the new table after the next event they process, so no restart is needed.
 
 ### The `postgresql` subchart is upstream
 
@@ -62,7 +77,6 @@ The keys NVSentinel's own example sets are these:
 | `postgresql.auth.postgresPassword` | Password for the `postgres` user. Supply it through `auth.existingSecret` rather than in values — see [Secrets](#secrets) below |
 | `postgresql.primary.tls.*` | Server certificate, key and CA, and the Secret holding them |
 | `postgresql.primary.pgHbaConfiguration` | Client authentication rules. This is what enforces certificate authentication |
-| `postgresql.primary.initdb.scripts` | Schema creation, run once on first start |
 
 Anything else the upstream chart offers — replication, backups, resource presets, `ldap`, `audit`, network policy — is available and unmodified, but NVSentinel does not test it and the NVSentinel version does not pin your usage of it.
 
