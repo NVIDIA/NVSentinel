@@ -48,6 +48,7 @@ runs:
         echo "gocover_cobertura_version=$(yq '.go_tools.gocover_cobertura' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "goimports_version=$(yq '.go_tools.goimports' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "deadcode_version=$(yq '.go_tools.deadcode' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "go_licenses_version=$(yq '.go_tools.go_licenses' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "crane_version=$(yq '.go_tools.crane' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "helm_version=$(yq '.testing_tools.helm' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "helm_unittest_version=$(yq '.testing_tools.helm_unittest' .versions.yaml)" >> $GITHUB_OUTPUT
@@ -237,6 +238,7 @@ runs:
         ./scripts/retry.sh go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ steps.versions.outputs.setup_envtest_version }}
         ./scripts/retry.sh go install golang.org/x/tools/cmd/goimports@${{ steps.versions.outputs.goimports_version }}
         ./scripts/retry.sh go install golang.org/x/tools/cmd/deadcode@${{ steps.versions.outputs.deadcode_version }}
+        ./scripts/retry.sh go install github.com/google/go-licenses/v2@${{ steps.versions.outputs.go_licenses_version }}
         ./scripts/retry.sh go install github.com/google/go-containerregistry/cmd/crane@${{ steps.versions.outputs.crane_version }}
         ./scripts/retry.sh go install github.com/google/ko@${{ steps.versions.outputs.ko_version }}
 
