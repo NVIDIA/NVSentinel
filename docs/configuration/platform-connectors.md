@@ -174,7 +174,7 @@ Array of override rules evaluated in order (first match wins):
 - **when**: CEL expression that evaluates to boolean
 - **override**: Properties to modify (isFatal, isHealthy, recommendedAction, customRecommendedAction)
 
-To send a fault to a custom remediation action ([ADR-036](../designs/036-custom-remediation-actions.md)), set `recommendedAction: "CUSTOM"` and set `customRecommendedAction` to the action name. Each of the two needs the other: platform-connectors does not start if a rule sets only one of them, or sets an empty name. An override to a built-in action clears the `customRecommendedAction` of the event.
+To send a fault to a custom remediation action, set `recommendedAction: "CUSTOM"` and set `customRecommendedAction` to the action name. Each of the two needs the other: platform-connectors does not start if a rule sets only one of them, or sets an empty name. An override to a built-in action clears the `customRecommendedAction` of the event.
 
 ### CEL Expression Context
 
