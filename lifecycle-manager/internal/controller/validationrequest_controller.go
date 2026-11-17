@@ -386,8 +386,9 @@ What causes a running ValidationRequest to fail?
 - If any individual TestGroup is marked as Failed.
 - Any TestGroup failure that can be retried will cause the TestGroup to transition from Running -> Pending.
 - If the failure is not retryable or if all retries have been exhausted, we will transition from Running -> Failed.
-- All failures will result in the current test provider resource being deleted prior to the ValidationRequest status,
-including the new TestGroup phase, being persisted.
+- Completed attempts have their test provider resources deleted only after the ValidationRequest status, including
+the new TestGroup phase, has been persisted. Cleanup failures are retried on the next reconcile, including when the
+ValidationRequest has already reached a terminal phase.
 - Retryable failures: TestFailed, TestTimeout, NodeReadinessViolation, NodeDeleted
 - BatchMinimumNotMet is never a Running TestGroup's failure reason. It can only occur while a ValidationRequest is
 pending, during buildInitialTestGroups. Once running, a deleted node that drops a TestGroup below its batch minimum
