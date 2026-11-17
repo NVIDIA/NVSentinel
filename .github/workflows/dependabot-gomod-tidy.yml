@@ -104,6 +104,8 @@ jobs:
             git status --porcelain --untracked-files=all
             exit 1
           fi
+          # A new go.mod or go.sum is untracked. Intent-to-add puts it in the change check and in git diff.
+          git ls-files -z --others --exclude-standard | xargs -0 -r git add -N --
           if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
             echo "No Go module fixup changes needed."
             echo "changed=false" >> "$GITHUB_OUTPUT"
