@@ -655,7 +655,7 @@ func (r *Reconciler) handleEvent(
 
 	// Finish a cancel that's still owed on this node first. Otherwise the event would join the
 	// old quarantine and be cancelled with it.
-	if err := r.endSessionBeforeEvent(ctx, event.HealthEvent); err != nil {
+	if err := r.endSessionBeforeEvent(ctx, event.HealthEvent, ruleSetEvals); err != nil {
 		slog.ErrorContext(ctx, "Failed to finish the pending cancellation of the node",
 			"node", event.HealthEvent.NodeName, "error", err)
 

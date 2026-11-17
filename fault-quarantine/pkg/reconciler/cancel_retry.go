@@ -33,6 +33,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/evaluator"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
@@ -44,8 +45,8 @@ import (
 // stale-state check finds the node again after a restart.
 //
 // A new fault on such a node finishes the cancel first (endSessionBeforeEvent). If the write is
-// still failing by then, the node is cleaned anyway so the fault can quarantine it, and the
-// earlier events keep their status.
+// still failing by then and the fault quarantines the node, the node is cleaned anyway so the
+// fault can quarantine it, and the earlier events keep their status.
 const (
 	// cancelAttemptTimeout is the budget for one attempt by the worker, store retries included.
 	// It's long enough to cover a MongoDB primary election.
@@ -442,9 +443,14 @@ func (r *Reconciler) sessionEnded(node *corev1.Node) bool {
 // endSessionBeforeEvent finishes a cancel that's still owed on the event's node before the event
 // is handled. Otherwise a new fault would join the old quarantine and be cancelled with it.
 //
-// The cancel only gets eventCancelTimeout here. If it still fails, a fault cleans the node
-// anyway and quarantines it, and a healthy event is handled against the quarantine as it is.
-func (r *Reconciler) endSessionBeforeEvent(ctx context.Context, event *protos.HealthEvent) error {
+// The cancel only gets eventCancelTimeout here. If it still fails, an event that quarantines the
+// node cleans it anyway and starts its own quarantine. Any other event is handled against the
+// quarantine as it is, and the node stays queued for the worker.
+func (r *Reconciler) endSessionBeforeEvent(
+	ctx context.Context,
+	event *protos.HealthEvent,
+	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
+) error {
 	nodeName := event.GetNodeName()
 
 	node, err := r.getNode(ctx, nodeName)
@@ -456,22 +462,27 @@ func (r *Reconciler) endSessionBeforeEvent(ctx context.Context, event *protos.He
 		return nil
 	}
 
+	quarantines, err := r.eventQuarantinesNode(ctx, event, ruleSetEvals)
+	if err != nil {
+		return err
+	}
+
 	slog.InfoContext(ctx, "Finishing the pending cancellation before handling the new event", "node", nodeName)
 
 	result, err := r.endSession(ctx, nodeName, sessionEndOptions{
 		lockTimeout:   cancelAttemptTimeout + eventCancelTimeout,
 		cancelTimeout: eventCancelTimeout,
-		cleanAnyway:   !event.GetIsHealthy(),
+		cleanAnyway:   quarantines,
 	})
 	if err != nil {
-		if !event.GetIsHealthy() {
+		if quarantines {
 			return err
 		}
 
-		// The node stays queued with what the informer saw. If the healthy event doesn't end the
+		// The node stays queued with what the informer saw. If the event doesn't end the
 		// quarantine, the worker still has to cancel it.
 		slog.WarnContext(ctx, "Pending cancellation is still failing; "+
-			"handling the healthy event anyway", "node", nodeName, "error", err)
+			"handling the event against the quarantine as it is", "node", nodeName, "error", err)
 
 		return nil
 	}
@@ -487,6 +498,30 @@ func (r *Reconciler) endSessionBeforeEvent(ctx context.Context, event *protos.He
 	}
 
 	return r.waitForNodeInCache(ctx, nodeName, result)
+}
+
+// eventQuarantinesNode reports whether the event would quarantine a clean node. That's a fault
+// with the force override or one that matches a rule. Only such an event may clean a node whose
+// cancel is still failing. Any other event would drop the cancel and quarantine nothing.
+func (r *Reconciler) eventQuarantinesNode(
+	ctx context.Context,
+	event *protos.HealthEvent,
+	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
+) (bool, error) {
+	if event.GetIsHealthy() {
+		return false, nil
+	}
+
+	if r.isForceQuarantine(event) {
+		return true, nil
+	}
+
+	matched, err := r.eventMatchesAnyRule(ctx, event, ruleSetEvals)
+	if err != nil && !matched {
+		return false, fmt.Errorf("failed to evaluate the rules for the event on node %s: %w", event.GetNodeName(), err)
+	}
+
+	return matched, nil
 }
 
 // waitForNodeInCache waits for the informer cache to catch up with endSession. After a cleanup

@@ -441,6 +441,97 @@ func TestE2E_NewFault_QuarantinesTheNodeWhileTheCancellationFails(t *testing.T) 
 	assert.Equal(t, []string{second}, sessionEventIDs(node))
 }
 
+// An event that matches no rule while the cancel keeps failing. It quarantines nothing, so it
+// must not clean the node. The cancel stays owed and the worker writes it later.
+func TestE2E_EventThatMatchesNoRule_KeepsThePendingCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 90*time.Second)
+	defer cancel()
+
+	eventID := generateTestID()
+	nodeName := createQuarantinedTestNode(ctx, t, eventID, false)
+
+	// The fault on this second node only shows that the event before it was handled.
+	otherNode := "test-node-" + generateShortTestID()
+	createE2ETestNode(ctx, t, otherNode, nil, nil, nil, false)
+	t.Cleanup(func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(context.Background(), otherNode, metav1.DeleteOptions{})
+	})
+
+	recorder := newCancelRecorder(nil)
+	recorder.setFailing(true)
+
+	r, watcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig:   sessionEndRules(),
+		EventWatcher: recorder,
+	})
+
+	waitForQuarantinedNodeInCache(t, r, nodeName)
+	updateTestNode(ctx, t, nodeName, uncordonTestNode)
+
+	require.Eventually(t, func() bool {
+		failed, _ := recorder.snapshot(nodeName)
+		return failed > 0
+	}, eventuallyTimeout, statusCheckPollInterval, "the worker should try the cancellation")
+
+	unmatched := generateTestID()
+	watcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(unmatched, nodeName, "GpuMemWatch", false, false,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "1"}}, model.StatusInProgress)}
+
+	next := generateTestID()
+	watcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(next, otherNode, "GpuXidError", false, true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(next)
+		return status != nil && *status == model.Quarantined
+	}, eventuallyTimeout, statusCheckPollInterval, "the fault on the other node should be handled after the event")
+
+	assert.Nil(t, getStatus(unmatched), "an event that matches no rule gets no status")
+	assert.Equal(t, 1, pendingSessionEnds(r), "the cancel is still owed")
+	assert.Equal(t, []string{eventID}, sessionEventIDs(getTestNode(ctx, t, nodeName)),
+		"the node keeps its quarantine annotations")
+
+	recorder.setFailing(false)
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, quarantined := node.Annotations[common.QuarantineHealthEventAnnotationKey]
+
+		return !quarantined && node.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] != ""
+	}, 30*time.Second, eventuallyPollInterval, "the worker should still end the session")
+
+	_, cancelled := recorder.snapshot(nodeName)
+	assert.Equal(t, [][]string{{eventID}}, cancelled)
+}
+
+// Only a fault that quarantines the node may clean a node whose cancel is still failing.
+func TestEventQuarantinesNode(t *testing.T) {
+	force := &protos.BehaviourOverrides{Force: true}
+
+	tests := []struct {
+		name  string
+		event *protos.HealthEvent
+		want  bool
+	}{
+		{name: "a fault with the force override", event: &protos.HealthEvent{QuarantineOverrides: force}, want: true},
+		{name: "a healthy event with the force override", event: &protos.HealthEvent{IsHealthy: true, QuarantineOverrides: force}},
+		{name: "a fault that matches no rule", event: &protos.HealthEvent{IsFatal: true}},
+		{name: "a healthy event", event: &protos.HealthEvent{IsHealthy: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := (&Reconciler{}).eventQuarantinesNode(context.Background(), tt.event, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // A healthy event on a node whose cancel keeps failing. The event is handled against the
 // quarantine as it is and ends it, and the worker then finds nothing to do.
 func TestE2E_HealthyEvent_WhileTheCancellationFails(t *testing.T) {
@@ -691,7 +782,7 @@ func TestEndSessionBeforeEvent_WaitsForTheNodeInformer(t *testing.T) {
 	eventCtx, stopEvent := context.WithTimeout(ctx, time.Second)
 	defer stopEvent()
 
-	err = r.endSessionBeforeEvent(eventCtx, &protos.HealthEvent{NodeName: nodeName, IsFatal: true})
+	err = r.endSessionBeforeEvent(eventCtx, &protos.HealthEvent{NodeName: nodeName, IsFatal: true}, nil)
 	require.ErrorIs(t, err, context.DeadlineExceeded, "the event must wait for the node informer")
 
 	_, cancelled := recorder.snapshot(nodeName)
