@@ -67,9 +67,10 @@ Apply the CRDs from the chart whatever the check returns — `NotFound` means th
 
 ```bash
 NVSENTINEL_VERSION="<the version you are deploying>"
+PULL_DIR="$(mktemp -d)"
 
-helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar
-kubectl apply -f nvsentinel/charts/janitor/crds/
+helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar --untardir "$PULL_DIR"
+kubectl apply -f "$PULL_DIR/nvsentinel/charts/janitor/crds/"
 ```
 
 Pull the chart at the version you are deploying, not the installed one — the controller you are about to run writes `status.managedServices`, and the API server prunes fields an older CRD schema does not know, losing the stopped-services record the restore path reads.
