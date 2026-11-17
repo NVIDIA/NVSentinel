@@ -55,7 +55,7 @@ func main() {
 	}
 
 	// Initialize OpenTelemetry tracing
-	if err := tracing.InitTracing(tracing.ServiceNodeDrainer); err != nil {
+	if err := tracing.InitTracing(tracing.ServiceNodeDrainer, tracing.WithServiceVersion(version)); err != nil {
 		slog.Warn("Failed to initialize tracing", "error", err)
 	}
 
