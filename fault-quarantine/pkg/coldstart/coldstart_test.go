@@ -192,11 +192,12 @@ func TestHandle_MultipleBatches_ProcessesInOrder(t *testing.T) {
 		},
 	}
 
-	err := Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
 	})
 	require.NoError(t, err)
+	require.True(t, completed)
 	require.Len(t, processedIDs, eventCount)
 	assert.Equal(t, "event-0000", processedIDs[0])
 	assert.Equal(t, fmt.Sprintf("event-%04d", eventCount-1), processedIDs[eventCount-1])
@@ -232,9 +233,11 @@ func TestHandle_ProcessesFaultsBeforeHealthyEventsAcrossBatches(t *testing.T) {
 		return ProcessResultProcessed, nil
 	}}
 
-	require.NoError(t, Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, []string{"fault-old", "fault-new", "healthy-old", "healthy-new"}, processed)
 }
 
@@ -265,10 +268,11 @@ func TestHandle_FaultFailureDefersHealthyEventsUntilRestart(t *testing.T) {
 		return ProcessResultProcessed, nil
 	}}
 
-	err := Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
 	})
 	require.ErrorIs(t, err, processErr)
+	require.False(t, completed)
 	assert.Equal(t, []string{"fault"}, processed,
 		"a recovery must remain unresolved while the preceding fault phase is incomplete")
 }
@@ -304,11 +308,13 @@ func TestHandle_EventProcessingFailure_ContinuesBatch(t *testing.T) {
 		},
 	}
 
-	err := Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
 	})
 	require.ErrorIs(t, err, processErr)
+	require.False(t, completed,
+		"a failed run reports not-completed")
 	assert.Equal(t, []string{"first", "second", "third"}, processedIDs)
 }
 
@@ -343,10 +349,13 @@ func TestHandle_InvalidStoredEvent_ContinuesBatch(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed,
+		"a completed recovery reports completion")
 	assert.Equal(t, 1, processed)
 	assert.Equal(t, [][]string{{"invalid-one", "invalid-two"}}, processor.completionBatches)
 }
@@ -373,10 +382,13 @@ func TestHandle_MalformedStoredEvent_ParsesOnceAndCompletes(t *testing.T) {
 		return ProcessResultProcessed, nil
 	}}
 
-	require.NoError(t, Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed,
+		"a completed recovery reports completion")
 	assert.Equal(t, []string{"valid"}, processed)
 	assert.Equal(t, [][]string{{"malformed"}}, processor.completionBatches)
 }
@@ -400,11 +412,13 @@ func TestHandle_CompletionPersistenceFailure_StopsRecovery(t *testing.T) {
 		completeErr: completionErr,
 	}
 
-	err := Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
 	})
 	require.ErrorIs(t, err, completionErr)
+	require.False(t, completed,
+		"a failed run reports not-completed")
 }
 
 func TestHandle_InvalidDependencies_ReturnsError(t *testing.T) {
@@ -414,7 +428,7 @@ func TestHandle_InvalidDependencies_ReturnsError(t *testing.T) {
 		},
 	}
 
-	err := Handle(context.Background(), Dependencies{EventProcessor: processor})
+	_, err := Handle(context.Background(), Dependencies{EventProcessor: processor})
 	assert.EqualError(t, err, "health event store is required")
 
 	store := &healthEventStoreStub{
@@ -428,7 +442,7 @@ func TestHandle_InvalidDependencies_ReturnsError(t *testing.T) {
 		},
 	}
 
-	err = Handle(context.Background(), Dependencies{HealthEventStore: store})
+	_, err = Handle(context.Background(), Dependencies{HealthEventStore: store})
 	assert.EqualError(t, err, "event processor is required")
 }
 
@@ -451,10 +465,13 @@ func TestHandle_MissingCutoff_UsesRecoveryStart(t *testing.T) {
 	}}
 
 	before := time.Now().UTC()
-	require.NoError(t, Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed,
+		"a completed recovery reports completion")
 	after := time.Now().UTC()
 
 	sql, args := captured.ToSQL()
@@ -484,11 +501,14 @@ func TestHandle_MissingCutoffWithUpperBoundary_UsesBoundedLookback(t *testing.T)
 		return ProcessResultProcessed, nil
 	}}
 
-	require.NoError(t, Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore:   store,
 		EventProcessor:     processor,
 		ColdStartUntilTime: until,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed,
+		"a completed recovery reports completion")
 
 	_, args := captured.ToSQL()
 	require.NotEmpty(t, args)
@@ -561,11 +581,13 @@ func TestHandle_BreakerRefusal_StopsScanAndReturnsNil(t *testing.T) {
 		return ProcessResultProcessed, nil
 	}}
 
-	err := Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
 	})
 	require.NoError(t, err,
 		"a breaker refusal is a stop signal, not a recovery failure")
+	require.False(t, completed,
+		"an incomplete scan must not report completion")
 	assert.Equal(t, []string{"fault-a", "fault-b"}, processed,
 		"the scan must stop at the refused event and skip the healthy phase")
 	assert.NotContains(t, processed, "healthy-c",
@@ -599,10 +621,12 @@ func TestHandle_BreakerRefusal_FlushesCompletionsBeforeStopping(t *testing.T) {
 		return ProcessResultProcessed, nil
 	}}
 
-	err := Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
 	})
 	require.NoError(t, err)
+	require.False(t, completed,
+		"an incomplete scan must not report completion")
 	assert.Equal(t, [][]string{{"fault-skipped"}}, processor.completionBatches,
 		"terminal results ahead of the refusal must be persisted")
 }
@@ -638,10 +662,12 @@ func TestHandle_BreakerRefusal_InHealthyPhase_ReturnsNil(t *testing.T) {
 		return ProcessResultProcessed, nil
 	}}
 
-	err := Handle(context.Background(), Dependencies{
+	completed, err := Handle(context.Background(), Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
 	})
 	require.NoError(t, err,
 		"a breaker refusal in the healthy phase is a stop signal, not a failure")
+	require.False(t, completed,
+		"an incomplete scan must not report completion")
 	assert.Equal(t, []string{"fault-a", "healthy-b"}, processed)
 }

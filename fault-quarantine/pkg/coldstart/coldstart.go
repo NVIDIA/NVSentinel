@@ -238,13 +238,18 @@ type storedRecoveryEvent struct {
 // recoveries so an older recovery cannot transiently uncordon a node before a
 // newer fault in the same scan is restored. Events that overlap newer state
 // are projected or skipped; terminal decisions are persisted for later scans.
-func Handle(ctx context.Context, deps Dependencies) error {
+//
+// The boolean reports whether the scan ran to completion. False with a nil
+// error means the circuit breaker refused an event and the scan stopped
+// early: the unprocessed events stay unresolved, and a caller that persists
+// a scan watermark must not advance it past them.
+func Handle(ctx context.Context, deps Dependencies) (bool, error) {
 	if deps.HealthEventStore == nil {
-		return fmt.Errorf("health event store is required")
+		return false, fmt.Errorf("health event store is required")
 	}
 
 	if deps.EventProcessor == nil {
-		return fmt.Errorf("event processor is required")
+		return false, fmt.Errorf("event processor is required")
 	}
 
 	startedAt := time.Now().UTC()
@@ -280,11 +285,11 @@ func Handle(ctx context.Context, deps Dependencies) error {
 	if errors.Is(err, ErrBreakerRefused) {
 		logBreakerStoppedRecovery(ctx, progress)
 
-		return nil
+		return false, nil
 	}
 
 	if err != nil {
-		return fmt.Errorf("fault-quarantine cold start failed: %w", err)
+		return false, fmt.Errorf("fault-quarantine cold start failed: %w", err)
 	}
 
 	// If any fault failed transiently, do not run recoveries against incomplete
@@ -301,22 +306,22 @@ func Handle(ctx context.Context, deps Dependencies) error {
 		if errors.Is(err, ErrBreakerRefused) {
 			logBreakerStoppedRecovery(ctx, progress)
 
-			return nil
+			return false, nil
 		}
 
 		if err != nil {
-			return fmt.Errorf("fault-quarantine healthy recovery phase failed: %w", err)
+			return false, fmt.Errorf("fault-quarantine healthy recovery phase failed: %w", err)
 		}
 	}
 
 	if progress.firstErr != nil {
-		return fmt.Errorf("fault-quarantine cold start completed with %d event failures: %w",
+		return false, fmt.Errorf("fault-quarantine cold start completed with %d event failures: %w",
 			progress.failures, progress.firstErr)
 	}
 
 	slog.InfoContext(ctx, "Fault-quarantine event recovery completed")
 
-	return nil
+	return true, nil
 }
 
 func (p *recoveryProgress) recoverBatch(

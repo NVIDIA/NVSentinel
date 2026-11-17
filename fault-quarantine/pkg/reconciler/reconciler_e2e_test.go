@@ -988,10 +988,12 @@ func TestE2E_ColdStartRecoversMissedFatalEvent(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
@@ -1006,10 +1008,12 @@ func TestE2E_ColdStartRecoversMissedFatalEvent(t *testing.T) {
 	assert.Equal(t, string(model.Quarantined), dbClient.status("missed-nvlink-event"))
 
 	// A restart after the status write must not replay the same event again.
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err = coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, 1, dbClient.callCount())
 
 	parsedRecovery, err := eventutil.ParseHealthEventFromEvent(
@@ -1052,10 +1056,12 @@ func TestE2E_ColdStartSkipsFailureSupersededByRecovery(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
@@ -1097,17 +1103,21 @@ func TestE2E_ColdStartCompletesEventForDeletedNode(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Empty(t, dbClient.status("deleted-node-event"))
 	assert.Equal(t, coldstart.RecoveryCompletionValue, dbClient.completion("deleted-node-event"))
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err = coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, 1, dbClient.callCount())
 }
 

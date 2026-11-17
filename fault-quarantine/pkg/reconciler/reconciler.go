@@ -334,12 +334,13 @@ func (r *Reconciler) configureColdStart(
 	r.eventWatcher.SetColdStartCallback(func(ctx context.Context) error {
 		coldStartUntil := time.Now().UTC()
 
-		if err := coldstart.Handle(ctx, coldstart.Dependencies{
+		completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 			HealthEventStore:   healthEventStore,
 			EventProcessor:     r.eventWatcher,
 			ColdStartAfterTime: effectiveColdStartAfter,
 			ColdStartUntilTime: coldStartUntil,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 
@@ -347,7 +348,20 @@ func (r *Reconciler) configureColdStart(
 			return nil
 		}
 
-		if err := r.setColdStartCutoff(ctx, r.config.TokenConfig.ClientName, coldStartUntil); err != nil {
+		cutoff := coldStartUntil
+		if !completed {
+			// The breaker refused an event, so the scan stopped before its
+			// upper bound: persist the window's lower bound instead, or the
+			// next startup starts above events this scan never finished.
+			// Skipping the save would not fix it - the next startup would
+			// seed a new lower bound at its own startup time. Events that
+			// did complete re-scan cheaply: they carry terminal decisions
+			// the scan skips.
+			cutoff = effectiveColdStartAfter
+			slog.InfoContext(ctx, "Cold-start seed scan stopped early; persisting the window's lower bound as the cutoff")
+		}
+
+		if err := r.setColdStartCutoff(ctx, r.config.TokenConfig.ClientName, cutoff); err != nil {
 			return fmt.Errorf("failed to persist initial fault-quarantine cold-start cutoff: %w", err)
 		}
 
