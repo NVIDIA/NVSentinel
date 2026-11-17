@@ -205,9 +205,11 @@ Helm replaces lists rather than merging them. If your values already set `env` f
 
 The cost is some allocator performance under heavy concurrency, which matters little at the load NVSentinel puts on its datastore.
 
-Changing `env` changes the pod spec, and on a healthy replica set the operator restarts mongod on the next upgrade. The operator restarts pods only once every replica is ready, though, so a mongod pod that is already crash-looping never picks up the new setting. After the upgrade, delete each crash-looping mongod pod, for example:
+Changing `env` changes the pod spec, and on a healthy replica set the operator restarts mongod on the next upgrade. The operator restarts pods only once every replica is ready, though, so a mongod pod that is already crash-looping never picks up the new setting. After the upgrade, wait until the operator has written the setting into the StatefulSet template, then delete each crash-looping mongod pod. A pod deleted before that comes back with the old setting:
 
 ```bash
+kubectl get statefulset mongodb-rs0 -n nvsentinel \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="mongod")].env}'
 kubectl delete pod -n nvsentinel mongodb-rs0-0
 ```
 
@@ -225,7 +227,7 @@ On a fresh install, the `create-mongodb-database` Job runs while mongod is down.
 kubectl get job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 ```
 
-Before removing the entry, rerun the `docker run` command above with the new image tag on a machine with each kernel you run. If it prints the version instead of the refusal, the entry can go. On kernels 6.19 through 7.0.13, no MongoDB 8.0 release starts without this setting. Progress is tracked in [#2410](https://github.com/NVIDIA/NVSentinel/issues/2410).
+Before removing the entry, rerun the `docker run` command above with the new image tag on a machine with each kernel you run. If it prints the version instead of the refusal, the entry can go. The check only works for releases that include the refusal: older MongoDB 8.0 releases print the version on an affected kernel and crash after startup. On kernels 6.19 through 7.0.13, no MongoDB 8.0 release runs without this setting. Progress is tracked in [#2410](https://github.com/NVIDIA/NVSentinel/issues/2410).
 
 ### Volume size
 
