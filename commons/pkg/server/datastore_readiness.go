@@ -34,16 +34,20 @@ type LagStateProvider interface {
 	LagState() (lastEmptyBatch, lastEventRead time.Time)
 }
 
-// DatastoreReadinessChecker reports whether a change stream watcher has been constructed and
-// handed to it. That precedes the watcher's event loop starting: node-drainer hands it over at
-// main.go:150 and starts it at :270, and fault-remediation hands it over before the reconciler
-// calls Watcher.Start.
+// ReadinessStateProvider reports whether a watcher can currently process database events.
+type ReadinessStateProvider interface {
+	IsReady() bool
+}
+
+// DatastoreReadinessChecker reports watcher readiness when it is available.
+// Watchers without readiness state remain ready once registered.
 // It implements ReadinessChecker for server.WithReadinessCheck, controller-runtime healthz.Checker
 // for mgr.AddReadyzCheck, and prometheus.Collector for exporting the datastore_connected gauge.
 type DatastoreReadinessChecker struct {
-	mu       sync.RWMutex
-	provider LagStateProvider
-	desc     *prometheus.Desc
+	mu                sync.RWMutex
+	provider          LagStateProvider
+	readinessProvider ReadinessStateProvider
+	desc              *prometheus.Desc
 }
 
 // NewDatastoreReadinessChecker creates a DatastoreReadinessChecker and registers the
@@ -55,10 +59,7 @@ func NewDatastoreReadinessChecker(reg prometheus.Registerer) *DatastoreReadiness
 
 	desc := prometheus.NewDesc(
 		DatastoreConnectedMetricName,
-		"1 once a change stream watcher has been handed to the readiness checker, which happens "+
-			"after datastore initialisation and before the watcher's event loop starts; 0 before "+
-			"that. It does not return to 0 if the datastore is lost later: that stops the "+
-			"component, so the pod restarts instead.",
+		"Reports 1 when the datastore watcher can process events, 0 otherwise.",
 		nil,
 		nil,
 	)
@@ -81,13 +82,14 @@ func NewDatastoreReadinessChecker(reg prometheus.Registerer) *DatastoreReadiness
 	return checker
 }
 
-// SetLagProvider records the watcher, whose presence is what makes this checker ready.
-// Only whether it is set is consulted -- Ready does not call LagState.
+// SetLagProvider records the watcher and its optional readiness state.
+// Ready does not call LagState.
 func (c *DatastoreReadinessChecker) SetLagProvider(provider LagStateProvider) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.provider = provider
+	c.readinessProvider, _ = provider.(ReadinessStateProvider)
 }
 
 // SetWatcher sets the watcher, extracting its LagStateProvider.
@@ -101,15 +103,19 @@ func (c *DatastoreReadinessChecker) SetWatcher(watcher any) {
 	}
 }
 
-// Ready implements ReadinessChecker. It reports ready once the datastore watcher
-// has established connection.
+// Ready implements ReadinessChecker. It reports ready once the datastore watcher can process events.
 func (c *DatastoreReadinessChecker) Ready(_ context.Context) error {
 	c.mu.RLock()
 	provider := c.provider
+	readinessProvider := c.readinessProvider
 	c.mu.RUnlock()
 
 	if provider == nil {
 		return errors.New("datastore watcher initializing")
+	}
+
+	if readinessProvider != nil && !readinessProvider.IsReady() {
+		return errors.New("datastore watcher not ready")
 	}
 
 	return nil
