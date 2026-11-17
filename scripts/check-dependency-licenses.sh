@@ -47,11 +47,17 @@ yq '.exceptions[] | [.module, .reported] | @tsv' "$CONFIG" >"$WORK/exceptions.ts
 for module in "${MODULES[@]}"; do
   echo "Checking dependency licenses of ${module}..."
 
+  # GOWORK=off checks the module as its own go.mod resolves it. The go.work that ko-build leaves
+  # behind does not list every core module, and workspace mode can select other versions.
+  # GOROOT is the root of the toolchain that go selects for this module. When the installed go is
+  # older than go.mod, go switches toolchains, and go-licenses only recognizes the standard
+  # library under GOROOT.
   # -mod=readonly reads the module cache even when a vendor directory exists: protos-lint leaves
   # a partial, ignored vendor directory in data-models, and vendor mode cannot load from it.
   # On a cold module cache the report downloads modules, so it runs through retry.sh.
-  if ! (cd "$module" && GOFLAGS="${GOFLAGS:+$GOFLAGS }-mod=readonly" \
-    "$ROOT/scripts/retry.sh" "$GO_LICENSES" report ./... --ignore "$OWN_MODULE_PREFIX") \
+  if ! (cd "$module" && export GOWORK=off && GOROOT=$(go env GOROOT) && export GOROOT &&
+    GOFLAGS="${GOFLAGS:+$GOFLAGS }-mod=readonly" \
+      "$ROOT/scripts/retry.sh" "$GO_LICENSES" report ./... --ignore "$OWN_MODULE_PREFIX") \
     >"$WORK/${module}.csv" 2>"$WORK/${module}.log"; then
     echo -e "${RED}go-licenses failed for ${module}:${NC}"
     cat "$WORK/${module}.log"
