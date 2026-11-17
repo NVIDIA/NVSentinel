@@ -234,9 +234,10 @@ func TestMarkProcessed_LateNotify_RewindsPreviouslySavedCheckpoint(t *testing.T)
 	require.NoError(t, watcher.MarkProcessed(ctx, []byte("10")))
 
 	late := base.Add(-time.Second)
-	mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, int64(2)).
+	watcher.addNotifiedID(2)
+	mock.ExpectQuery(changelogLookupQuery).WithArgs(healthEventsTable, lookupIDs(2), base, int64(10)).
 		WillReturnRows(healthEventRow(changelogRows(), 2, late))
-	require.NoError(t, watcher.fetchChangeByID(ctx, 2))
+	require.NoError(t, watcher.fetchNotifiedRows(ctx))
 	expectCheckpoint(t, mock, 10, late, 1)
 	require.NoError(t, watcher.MarkProcessed(ctx, []byte("10")))
 	assert.Equal(t, base, watcher.lastTimestamp)

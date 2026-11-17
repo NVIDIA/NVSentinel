@@ -153,6 +153,17 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
 
+		var method string
+
+		require.Eventually(t, func() bool {
+			var ok bool
+			method, ok = helpers.HealthEventDrainMethod(ctx, t, client.RESTConfig(), client, testCtx.NodeName,
+				"GPU Fallen off the bus")
+
+			return ok
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "drain decision should be recorded")
+		require.Equal(t, "BuiltIn", method, "drain decision method should be BuiltIn")
+
 		helpers.DeletePodsByNames(ctx, t, client, "kube-system", kubeSystemPods)
 
 		return ctx

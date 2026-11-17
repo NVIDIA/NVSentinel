@@ -15,11 +15,17 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -579,18 +585,26 @@ func TestProcessBatch_ReportsOnlyTheErrorAndCountsTheOutcome(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
-// TestProcessBatch_OnlyAForeignDuplicateIsNotRetried: a duplicate on another
-// unique index is the same on every resend, so the caller gets a status it
-// does not retry, naming the event. Any other document error (the server
+// TestProcessBatch_OnlyABatchThatCannotBeStoredIsNotRetried: a duplicate on
+// another unique index, or a document the datastore rejects for what it
+// contains, gets the same answer on every resend, so the caller gets a status
+// it does not retry, naming the event. Any other document error (the server
 // stepping down mid-batch is reported per document too) and any transport
 // failure stay plain errors the caller retries.
-func TestProcessBatch_OnlyAForeignDuplicateIsNotRetried(t *testing.T) {
+func TestProcessBatch_OnlyABatchThatCannotBeStoredIsNotRetried(t *testing.T) {
 	mockClient := &mockDatabaseClient{}
 	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
 		Return(nil, error(&datastore.BulkWriteFailure{
 			InsertedCount: 1,
 			Failed: datastore.BulkDocumentError{
 				DocumentIndex: 1, Duplicate: true, IndexName: "some_other_unique_index", Message: "E11000 duplicate key",
+			},
+		})).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Return(nil, error(&datastore.BulkWriteFailure{
+			InsertedCount: 2,
+			Failed: datastore.BulkDocumentError{
+				DocumentIndex: 2, Permanent: true, Message: "value too long for type character varying(100)",
 			},
 		})).Once()
 	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
@@ -608,11 +622,482 @@ func TestProcessBatch_OnlyAForeignDuplicateIsNotRetried(t *testing.T) {
 	require.Contains(t, status.Convert(err).Message(), "some_other_unique_index")
 
 	err = connector.ProcessBatch(context.Background(), simpleHealthEvents())
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "event 2")
+	require.Contains(t, status.Convert(err).Message(), "value too long for type character varying(100)")
+
+	err = connector.ProcessBatch(context.Background(), simpleHealthEvents())
 	require.Error(t, err)
-	require.Equal(t, codes.Unknown, status.Code(err), "a document error that is not a duplicate is retried")
+	require.Equal(t, codes.Unknown, status.Code(err), "a document error that is not a duplicate or permanent is retried")
 
 	err = connector.ProcessBatch(context.Background(), simpleHealthEvents())
 	require.Error(t, err)
 	require.Equal(t, codes.Unknown, status.Code(err), "a transport failure is a plain error, retried by the caller")
 	mockClient.AssertExpectations(t)
+}
+
+// insertedMessages records, in call order, the message of the first event of
+// each batch the mock datastore is asked to insert.
+type insertedMessages struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (m *insertedMessages) record(args mock.Arguments) {
+	docs := args.Get(1).([]any)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.messages = append(m.messages, docs[0].(model.HealthEventWithStatus).HealthEvent.GetMessage())
+}
+
+func (m *insertedMessages) get() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]string(nil), m.messages...)
+}
+
+// batchWithMessage builds a one-event batch told apart by its message.
+func batchWithMessage(message string, healthy bool) *ringbuffer.QueuedHealthEvents {
+	return ringbuffer.NewQueuedHealthEvents(&protos.HealthEvents{Events: []*protos.HealthEvent{{
+		NodeName:           "gpu-node-1",
+		CheckName:          "GpuXidError",
+		Message:            message,
+		IsHealthy:          healthy,
+		IsFatal:            !healthy,
+		GeneratedTimestamp: timestamppb.Now(),
+	}}})
+}
+
+// runLoop starts the processing loop; the channel is closed when it returns.
+func runLoop(ctx context.Context, connector *DatabaseStoreConnector) <-chan struct{} {
+	exited := make(chan struct{})
+
+	go func() {
+		defer close(exited)
+
+		connector.FetchAndProcessHealthMetric(ctx)
+	}()
+
+	return exited
+}
+
+func requireClosed(t *testing.T, ch <-chan struct{}, msg string) {
+	t.Helper()
+
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal(msg)
+	}
+}
+
+// queueRetries reads the retries series of the ring buffer named queue.
+func queueRetries(t *testing.T, queue string) float64 {
+	t.Helper()
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+
+	for _, family := range families {
+		if family.GetName() == "platform_connector_workqueue_retries_total_"+queue {
+			return family.GetMetric()[0].GetCounter().GetValue()
+		}
+	}
+
+	return 0
+}
+
+// syncBuffer is a log sink a test can read while a loop may still write to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// captureLogs sends the default logger to a buffer until the test ends.
+func captureLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+
+	logs := &syncBuffer{}
+	previous := slog.Default()
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	return logs
+}
+
+// TestFetchAndProcessHealthMetric_FailedInsert_RetriesBeforeTheNextBatch: a
+// batch whose insert fails is retried before the loop takes the next one, so
+// a fault and the recovery queued behind it are stored in the order the
+// monitor sent them. Requeued behind the recovery, the fault would be stored
+// last, and the consumers of the store would see the node fail again after it
+// recovered.
+func TestFetchAndProcessHealthMetric_FailedInsert_RetriesBeforeTheNextBatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testRetryBeforeNextBatch", ctx,
+		ringbuffer.WithRetryConfig(20*time.Millisecond, 20*time.Millisecond))
+	inserts := &insertedMessages{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, errors.New("not primary")).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{"id"}}, nil)
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+	retriesBefore := queueRetries(t, "testRetryBeforeNextBatch")
+
+	ringBuffer.Enqueue(batchWithMessage("fault", false))
+	ringBuffer.Enqueue(batchWithMessage("recovery", true))
+
+	exited := runLoop(ctx, connector)
+
+	require.Eventually(t, func() bool { return len(inserts.get()) == 3 }, 5*time.Second, 5*time.Millisecond)
+
+	ringBuffer.ShutDownHealthMetricQueue()
+	requireClosed(t, exited, "the loop did not return after the queue was shut down")
+
+	require.Equal(t, []string{"fault", "fault", "recovery"}, inserts.get(),
+		"the failed fault is retried before the recovery queued behind it is stored")
+	require.Equal(t, 1.0, queueRetries(t, "testRetryBeforeNextBatch")-retriesBefore,
+		"the retry counts in the queue's retries series, as the requeue did")
+}
+
+// TestFetchAndProcessHealthMetric_QueueShutDownDuringRetry_StoresTheBatch: a
+// batch waiting for its retry when the queue is shut down is still retried and
+// stored, and the loop returns only once the batch queued behind it is stored
+// too. Both were acknowledged to the monitor when they were queued.
+func TestFetchAndProcessHealthMetric_QueueShutDownDuringRetry_StoresTheBatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testShutDownDuringRetry", ctx,
+		ringbuffer.WithRetryConfig(50*time.Millisecond, 50*time.Millisecond))
+	inserts := &insertedMessages{}
+	firstFailed := make(chan struct{})
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			inserts.record(args)
+			close(firstFailed)
+		}).Return(nil, errors.New("not primary")).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{"id"}}, nil)
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	ringBuffer.Enqueue(batchWithMessage("first", false))
+	ringBuffer.Enqueue(batchWithMessage("second", false))
+
+	exited := runLoop(ctx, connector)
+
+	requireClosed(t, firstFailed, "the first insert was never attempted")
+	ringBuffer.ShutDownHealthMetricQueue()
+	requireClosed(t, exited, "the loop did not return after the queue was shut down")
+
+	require.Equal(t, []string{"first", "first", "second"}, inserts.get(),
+		"the batch waiting for its retry at shutdown is stored, and so is the one behind it")
+}
+
+// TestFetchAndProcessHealthMetric_ContextCanceledDuringRetry_DropsTheBatchAtError:
+// canceling the loop's context ends the wait for the next retry at once, as
+// shutdown does when the datastore stays down, and the batch that was not
+// stored is logged at Error rather than dropped silently.
+func TestFetchAndProcessHealthMetric_ContextCanceledDuringRetry_DropsTheBatchAtError(t *testing.T) {
+	logs := captureLogs(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The buffer outlives the loop's context, as the process context
+	// outlives the loop at shutdown.
+	ringBuffer := ringbuffer.NewRingBuffer("testCancelDuringRetry", context.Background(),
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	t.Cleanup(ringBuffer.ShutDownHealthMetricQueue)
+
+	inserts := &insertedMessages{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, errors.New("no reachable servers"))
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	ringBuffer.Enqueue(batchWithMessage("fault", false))
+
+	exited := runLoop(ctx, connector)
+
+	require.Eventually(t, func() bool { return len(inserts.get()) == 1 }, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	requireClosed(t, exited, "the loop kept waiting out the retry delay after its context was canceled")
+
+	require.Len(t, inserts.get(), 1, "no retry after the context was canceled")
+	require.Contains(t, logs.String(), `level=ERROR msg="Stopped before the batch was stored`)
+}
+
+// TestFetchAndProcessHealthMetric_WriteThatCannotSucceed_IsNotRetried: a batch
+// that duplicates a document under another unique index, or one the datastore
+// rejects for what it contains, such as a check name longer than its
+// PostgreSQL column, gets the same answer on every attempt, so it is dropped
+// at once, at Error, instead of holding the batches behind it through the
+// whole backoff. A replay whose events are already stored under the
+// idempotency index is a success and is not retried either.
+func TestFetchAndProcessHealthMetric_WriteThatCannotSucceed_IsNotRetried(t *testing.T) {
+	logs := captureLogs(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testWriteThatCannotSucceed", ctx,
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	inserts := &insertedMessages{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, error(&datastore.BulkWriteFailure{
+		Failed: datastore.BulkDocumentError{
+			DocumentIndex: 0, Duplicate: true, IndexName: "some_other_unique_index", Message: "E11000 duplicate key",
+		},
+	})).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, error(&datastore.BulkWriteFailure{
+		Failed: datastore.BulkDocumentError{
+			DocumentIndex: 0, Permanent: true, Message: "value too long for type character varying(100)",
+		},
+	})).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{}, DuplicateCount: 1}, nil).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{"id"}}, nil)
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	for _, message := range []string{"foreign duplicate", "rejected", "replay", "next"} {
+		ringBuffer.Enqueue(batchWithMessage(message, false))
+	}
+
+	exited := runLoop(ctx, connector)
+
+	require.Eventually(t, func() bool { return len(inserts.get()) == 4 }, 5*time.Second, 5*time.Millisecond,
+		"a batch was held for a retry")
+
+	ringBuffer.ShutDownHealthMetricQueue()
+	requireClosed(t, exited, "the loop did not return after the queue was shut down")
+
+	require.Equal(t, []string{"foreign duplicate", "rejected", "replay", "next"}, inserts.get())
+	require.Equal(t, 2, strings.Count(logs.String(),
+		`level=ERROR msg="Batch cannot be stored as sent, dropping health events permanently"`))
+	require.Contains(t, logs.String(), `value too long for type character varying(100)`)
+}
+
+// insertedDocuments records, in call order, the message and idempotency key of
+// every document the mock datastore is asked to insert.
+type insertedDocuments struct {
+	mu    sync.Mutex
+	calls [][]string
+}
+
+func (d *insertedDocuments) record(args mock.Arguments) {
+	docs := args.Get(1).([]any)
+	call := make([]string, 0, len(docs))
+
+	for _, doc := range docs {
+		event := doc.(model.HealthEventWithStatus).HealthEvent
+		call = append(call, event.GetMessage()+" "+event.GetMetadata()[datastore.HealthEventIdempotencyKeyMetadataField])
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.calls = append(d.calls, call)
+}
+
+func (d *insertedDocuments) get() [][]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return append([][]string(nil), d.calls...)
+}
+
+func batchWithMessages(messages ...string) *protos.HealthEvents {
+	events := make([]*protos.HealthEvent, 0, len(messages))
+	for _, message := range messages {
+		events = append(events, &protos.HealthEvent{
+			NodeName: "gpu-node-1", CheckName: "GpuXidError", Message: message, IsFatal: true,
+			GeneratedTimestamp: timestamppb.Now(),
+		})
+	}
+
+	return &protos.HealthEvents{Events: events}
+}
+
+// TestInsertWithRetry_RejectedEvent_TheEventsAfterItAreStored: the insert is
+// ordered and stops at an event the datastore rejects for what it contains, so
+// the events after it were never attempted. Only the rejected event is dropped,
+// at Error; the events after it are stored with the keys of their positions in
+// the batch, without a retry and without dropping the batch.
+func TestInsertWithRetry_RejectedEvent_TheEventsAfterItAreStored(t *testing.T) {
+	logs := captureLogs(t)
+
+	ringBuffer := ringbuffer.NewRingBuffer("testRejectedEventMidBatch", context.Background(),
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	t.Cleanup(ringBuffer.ShutDownHealthMetricQueue)
+
+	inserts := &insertedDocuments{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, error(&datastore.BulkWriteFailure{
+		InsertedCount: 1,
+		Failed: datastore.BulkDocumentError{
+			DocumentIndex: 1, Permanent: true, Message: "value too long for type character varying(100)",
+		},
+	})).Once()
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(&client.InsertManyResult{InsertedIDs: []any{"id-c"}}, nil).Once()
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	outcome, retries, err := connector.insertWithRetry(context.Background(), batchWithMessages("a", "b", "c"), "inst#7")
+	require.NoError(t, err)
+	require.Equal(t, outcomeStored, outcome)
+	require.Zero(t, retries, "a rejected event is not a reason to retry")
+
+	require.Equal(t, [][]string{
+		{"a inst#7#0", "b inst#7#1", "c inst#7#2"},
+		{"c inst#7#2"},
+	}, inserts.get(), "only the events after the rejected one are written again, under the keys of their positions")
+	require.Contains(t, logs.String(),
+		`level=ERROR msg="Event cannot be stored as sent, dropping it permanently and storing the rest of its batch"`)
+	require.Contains(t, logs.String(), "eventIndex=1 eventCount=3")
+	require.NotContains(t, logs.String(), "Batch cannot be stored as sent")
+	mockClient.AssertExpectations(t)
+}
+
+// TestInsertWithRetry_LastEventRejected_TheBatchIsStoredWithoutIt: when the
+// rejected event is the last one, the events before it are already stored, so
+// the batch counts as stored and only that event is dropped.
+func TestInsertWithRetry_LastEventRejected_TheBatchIsStoredWithoutIt(t *testing.T) {
+	logs := captureLogs(t)
+
+	ringBuffer := ringbuffer.NewRingBuffer("testRejectedLastEvent", context.Background(),
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	t.Cleanup(ringBuffer.ShutDownHealthMetricQueue)
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Return(nil, error(&datastore.BulkWriteFailure{
+			InsertedCount: 2,
+			Failed: datastore.BulkDocumentError{
+				DocumentIndex: 2, Permanent: true, Message: "invalid byte sequence for encoding \"UTF8\": 0x00",
+			},
+		})).Once()
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	outcome, retries, err := connector.insertWithRetry(context.Background(), batchWithMessages("a", "b", "c"), "inst#8")
+	require.NoError(t, err)
+	require.Equal(t, outcomeStored, outcome)
+	require.Zero(t, retries)
+	require.Contains(t, logs.String(), "eventIndex=2 eventCount=3")
+	require.NotContains(t, logs.String(), "Batch cannot be stored as sent")
+	mockClient.AssertExpectations(t)
+}
+
+// TestFetchAndProcessHealthMetric_StoppedWithBatchesQueued_LogsThemAtError: a
+// loop stopped before it emptied its queue, as Shutdown stops one still
+// running at its drain timeout, logs at Error how many acknowledged batches it
+// leaves behind, besides the one it was retrying.
+func TestFetchAndProcessHealthMetric_StoppedWithBatchesQueued_LogsThemAtError(t *testing.T) {
+	logs := captureLogs(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testStoppedWithBatchesQueued", context.Background(),
+		ringbuffer.WithRetryConfig(time.Minute, time.Minute))
+	t.Cleanup(ringBuffer.ShutDownHealthMetricQueue)
+
+	inserts := &insertedMessages{}
+
+	mockClient := &mockDatabaseClient{}
+	mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+		Run(inserts.record).Return(nil, errors.New("no reachable servers"))
+
+	connector := &DatabaseStoreConnector{databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: 3}
+
+	for _, message := range []string{"first", "second", "third"} {
+		ringBuffer.Enqueue(batchWithMessage(message, false))
+	}
+
+	exited := runLoop(ctx, connector)
+
+	require.Eventually(t, func() bool { return len(inserts.get()) == 1 }, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	requireClosed(t, exited, "the loop did not return after its context was canceled")
+
+	require.Equal(t, []string{"first"}, inserts.get())
+	require.Contains(t, logs.String(), `level=ERROR msg="Stopped before the batch was stored`)
+	require.Contains(t, logs.String(),
+		`level=ERROR msg="Context canceled with batches still queued, dropping them permanently" batchCount=2`)
+}
+
+// TestInsertWithRetry_DefaultBackoff_KeepsRetryCountAndTiming: with the
+// default backoff a failing batch is tried once and then StoreConnectorMaxRetries
+// more times, 0.5, 1, 2 and then 3 s apart, the schedule the ring buffer's rate
+// limiter gave a requeued batch. The fake clock checks the timing without
+// waiting for it.
+func TestInsertWithRetry_DefaultBackoff_KeepsRetryCountAndTiming(t *testing.T) {
+	ringBuffer := ringbuffer.NewRingBuffer("testDefaultBackoff", context.Background())
+
+	for _, test := range []struct {
+		name        string
+		maxRetries  int
+		wantCalls   int
+		wantElapsed time.Duration
+	}{
+		{name: "no retries", maxRetries: 0, wantCalls: 1, wantElapsed: 0},
+		{name: "chart default", maxRetries: 3, wantCalls: 4, wantElapsed: 3500 * time.Millisecond},
+		{name: "past the longest delay", maxRetries: 5, wantCalls: 6, wantElapsed: 9500 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				mockClient := &mockDatabaseClient{}
+				mockClient.On("InsertManyIdempotent", mock.Anything, mock.Anything).
+					Return(nil, errors.New("no reachable servers"))
+
+				connector := &DatabaseStoreConnector{
+					databaseClient: mockClient, ringBuffer: ringBuffer, maxRetries: test.maxRetries,
+				}
+
+				start := time.Now()
+				_, retries, err := connector.insertWithRetry(context.Background(), simpleHealthEvents(), "inst#1")
+
+				require.Error(t, err)
+				require.Equal(t, test.maxRetries, retries)
+				mockClient.AssertNumberOfCalls(t, "InsertManyIdempotent", test.wantCalls)
+				require.Equal(t, test.wantElapsed, time.Since(start))
+			})
+		})
+	}
 }

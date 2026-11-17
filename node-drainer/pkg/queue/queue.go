@@ -77,6 +77,14 @@ func (m *eventQueueManager) MarkNodeDraining(nodeName string) {
 
 func (m *eventQueueManager) ClearNodeDraining(nodeName string) {
 	m.priorityState.clearNodeDraining(nodeName)
+
+	// Removed rather than zeroed: the gauge holds a Unix time, and time() minus zero reads as a
+	// wait of decades. Cleared by the node-level transition because the gauge is keyed by node --
+	// several events can be queued for one node (classifyForEnqueue puts the later ones in the low
+	// lane rather than dropping them), and every way a node stops draining reaches here. If a
+	// single-event cancellation removes it while another event for that node is still waiting,
+	// that event's next poll restores its own event's time, so the gap does not restart its clock.
+	metrics.NodeDrainAwaitingCompletionEventTimestamp.DeleteLabelValues(nodeName)
 }
 
 // EnqueueEventGeneric enqueues an event using the new database-agnostic interface.

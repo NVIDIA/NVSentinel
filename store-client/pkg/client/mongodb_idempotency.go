@@ -37,6 +37,12 @@ const healthEventIdempotencyKeyDocumentPath = "healthevent.metadata." +
 // index violation (E11000).
 const mongoDuplicateKeyErrorCode = 11000
 
+// mongoDocumentValidationFailureCode is the MongoDB server error code for a
+// document the collection's validator rejects. The validator looks at the
+// document alone, so every attempt to store the same document gets the same
+// answer.
+const mongoDocumentValidationFailureCode = 121
+
 // mongoDuplicateIndexNameRegex extracts the violated index name from a
 // duplicate-key error message, e.g.
 // "E11000 duplicate key error collection: db.coll index: <name> dup key: {...}".
@@ -130,6 +136,7 @@ func classifyMongoBulkWriteError(err error) (datastore.BulkDocumentError, bool) 
 	failed := datastore.BulkDocumentError{
 		DocumentIndex: writeErr.Index,
 		Message:       writeErr.Message,
+		Permanent:     writeErr.Code == mongoDocumentValidationFailureCode,
 	}
 
 	if writeErr.Code == mongoDuplicateKeyErrorCode {

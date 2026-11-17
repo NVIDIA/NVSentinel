@@ -371,3 +371,151 @@ func CancelledHealthEventFaultRemediated(
 
 	return strings.Contains(stdout, "FAULT_REMEDIATED_TRUE")
 }
+
+// HealthEventDrainMethod reads drainDecision.method for the newest succeeded health event that
+// matches. Test nodes are reused, so an older event can carry the same message.
+// The event document is stored only in the datastore, so the check reads MongoDB or PostgreSQL.
+// ok is false until that document is visible.
+func HealthEventDrainMethod(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client, nodeName, message string,
+) (string, bool) {
+	t.Helper()
+
+	if podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client); found {
+		return mongoDrainMethod(ctx, t, restConfig, client, podName, nodeName, message)
+	}
+
+	if podName, found := postgresPrimaryPodName(ctx, t, client); found {
+		return postgresDrainMethod(ctx, t, restConfig, podName, nodeName, message)
+	}
+
+	t.Logf("No MongoDB or PostgreSQL pod found for drain decision lookup")
+
+	return "", false
+}
+
+// mongoDrainMethod reads drainDecision.method of the newest matching event from MongoDB.
+func mongoDrainMethod(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client,
+	mongoPod, nodeName, message string,
+) (string, bool) {
+	t.Helper()
+
+	js := fmt.Sprintf(`
+		db = db.getSiblingDB("%s");
+		const doc = db.HealthEvents.find({
+			"healthevent.nodename": %q,
+			"healthevent.message": %q,
+			"healtheventstatus.userpodsevictionstatus.status": "Succeeded"
+		}).sort({ createdAt: -1 }).limit(1).toArray()[0];
+		if (doc && doc.healtheventstatus && doc.healtheventstatus.draindecision &&
+			doc.healtheventstatus.draindecision.method) {
+			print(doc.healtheventstatus.draindecision.method);
+		} else {
+			print("NOT_READY");
+		}
+	`, MongoDBDatabase, nodeName, message)
+
+	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
+	method := strings.TrimSpace(stdout)
+
+	if method == "" || strings.Contains(method, "NOT_READY") {
+		return "", false
+	}
+
+	return method, true
+}
+
+// postgresDrainMethod reads drainDecision.method of the newest matching event from PostgreSQL.
+func postgresDrainMethod(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, podName, nodeName, message string,
+) (string, bool) {
+	t.Helper()
+
+	query := fmt.Sprintf(`
+		SELECT COALESCE(document #>> '{healtheventstatus,draindecision,method}', '')
+		FROM health_events
+		WHERE node_name = '%s'
+		  AND document #>> '{healthevent,message}' = '%s'
+		  AND document #>> '{healtheventstatus,userpodsevictionstatus,status}' = 'Succeeded'
+		ORDER BY created_at DESC
+		LIMIT 1;
+	`, sqlLiteral(nodeName), sqlLiteral(message))
+
+	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
+		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
+	if err != nil {
+		t.Logf("PostgreSQL drain decision lookup failed: %v stderr=%s", err, stderr)
+
+		return "", false
+	}
+
+	method := strings.TrimSpace(stdout)
+	if method == "" {
+		return "", false
+	}
+
+	return method, true
+}
+
+// postgresPrimaryPodName returns the running PostgreSQL primary pod in the NVSentinel namespace.
+// found is false when the cluster uses MongoDB instead.
+func postgresPrimaryPodName(ctx context.Context, t *testing.T, client klient.Client) (string, bool) {
+	t.Helper()
+
+	pods := &v1.PodList{}
+	err := client.Resources().List(ctx, pods, func(opts *metav1.ListOptions) {
+		opts.LabelSelector = "app.kubernetes.io/name=postgresql,app.kubernetes.io/component=primary"
+	})
+	require.NoError(t, err, "failed to list PostgreSQL pods")
+
+	for _, pod := range pods.Items {
+		if pod.Namespace == NVSentinelNamespace && pod.Status.Phase == v1.PodRunning {
+			return pod.Name, true
+		}
+	}
+
+	return "", false
+}
+
+// sqlLiteral escapes single quotes so the value can sit inside a quoted SQL string.
+func sqlLiteral(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}
+
+// LatestHealthEventRemediationAction returns the action of the remediation decision recorded
+// on the latest HealthEvent for the node with the message, or "" when none is recorded yet.
+func LatestHealthEventRemediationAction(
+	ctx context.Context,
+	t *testing.T,
+	restConfig *rest.Config,
+	client klient.Client,
+	mongoPod, nodeName, message string,
+) string {
+	t.Helper()
+
+	js := fmt.Sprintf(`
+		db = db.getSiblingDB("%s");
+		const docs = db.HealthEvents.find({
+			"healthevent.nodename": %q,
+			"healthevent.message": %q
+		}).sort({ createdAt: -1 }).limit(1).toArray();
+		const decision = docs.length > 0 && docs[0].healtheventstatus &&
+			docs[0].healtheventstatus.remediationdecision;
+		if (decision && decision.action) {
+			print("REMEDIATION_ACTION=" + decision.action);
+		} else {
+			print("NOT_READY");
+		}
+	`, MongoDBDatabase, nodeName, message)
+
+	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
+
+	for _, line := range strings.Split(stdout, "\n") {
+		if action, found := strings.CutPrefix(strings.TrimSpace(line), "REMEDIATION_ACTION="); found {
+			return action
+		}
+	}
+
+	return ""
+}

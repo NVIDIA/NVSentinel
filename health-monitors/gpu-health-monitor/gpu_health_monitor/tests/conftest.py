@@ -16,6 +16,8 @@
 
 import sys
 import os
+from ctypes import c_void_p
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 import pytest
 
@@ -222,6 +224,23 @@ class MockDCGMAgent:
 
     @staticmethod
     def dcgmServerRun(port, bind_address, connection_type):
+        return None
+
+    # The hostengine has no groups other than the ones a test creates.
+    @staticmethod
+    def dcgmGroupGetAllIds(dcgm_handle: object) -> list[int]:
+        return []
+
+    @staticmethod
+    def dcgmFieldGroupGetAll(dcgm_handle: object) -> SimpleNamespace:
+        return SimpleNamespace(numFieldGroups=0, fieldGroups=[])
+
+    @staticmethod
+    def dcgmGroupDestroy(dcgm_handle: object, group_id: c_void_p) -> None:
+        return None
+
+    @staticmethod
+    def dcgmFieldGroupDestroy(dcgm_handle: object, field_group_id: c_void_p) -> None:
         return None
 
 
