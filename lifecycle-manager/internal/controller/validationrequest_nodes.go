@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -34,6 +35,29 @@ import (
 )
 
 const uncordonReasonValidationSucceeded = "ValidationSucceeded"
+
+// conditionTypeReleaseBlocked is set on a ValidationRequest whose test groups all succeeded but whose nodes were not
+// released, because at least one node no longer satisfied the readiness criteria when the request completed.
+const conditionTypeReleaseBlocked = "ReleaseBlocked"
+
+// readinessViolation names a node and the first readiness criterion it failed at release.
+type readinessViolation struct {
+	node      string
+	criterion string
+}
+
+// readinessViolations lists the nodes of a completing request that no longer satisfy the readiness criteria.
+type readinessViolations []readinessViolation
+
+func (v readinessViolations) message() string {
+	parts := make([]string, 0, len(v))
+
+	for _, violation := range v {
+		parts = append(parts, fmt.Sprintf("node %q failed readiness criterion %q", violation.node, violation.criterion))
+	}
+
+	return strings.Join(parts, "; ")
+}
 
 // validationStateLabelKey is a node label that mirrors the validation-session and
 // active-validation-request annotations
@@ -169,18 +193,134 @@ func (r *ValidationRequestReconciler) updateValidationSession(ctx context.Contex
 	})
 }
 
+// releaseNodesFromSuccessfulRequest removes the request from the session of every node and releases the scheduling
+// gate of each node whose session becomes empty. Every node of the request is evaluated against the readiness criteria
+// before any node is released, and each node is evaluated again on the Node that the patch attempt re-read. A fault
+// recorded between that read and the write makes the patch conflict, and the retry re-reads and re-evaluates the node.
+// The nodes that fail a criterion are returned; no node is released from the first of them on.
 func (r *ValidationRequestReconciler) releaseNodesFromSuccessfulRequest(ctx context.Context,
-	validationRequest *v1alpha1.ValidationRequest, supersedeTests []string) error {
+	validationRequest *v1alpha1.ValidationRequest, supersedeTests []string) (readinessViolations, error) {
+	violations, err := r.checkNodesReadyForRelease(ctx, validationRequest)
+	if err != nil || len(violations) > 0 {
+		return violations, err
+	}
+
 	for _, ns := range validationRequest.Spec.Nodes {
+		var violation *readinessViolation
+
 		err := r.patchNodeWithRetry(ctx, ns.Name, func(node *corev1.Node) (bool, error) {
+			criterion, err := evaluateCriteria(ctx, r.Client, node, r.Config.Validation.Spec.ReadinessCriteria,
+				r.ReadinessPrograms, r.ResourceSliceWatch.Enabled)
+			if err != nil {
+				return false, fmt.Errorf("check readiness of node %q: %w", node.Name, err)
+			}
+
+			if len(criterion) != 0 {
+				violation = &readinessViolation{node: node.Name, criterion: criterion}
+
+				return false, nil
+			}
+
 			return releaseNodeFromSession(node, validationRequest.Name, supersedeTests, r.Config.Validation.Spec.SchedulingGate)
 		})
 		if err != nil {
-			return fmt.Errorf("release node %q from successful request: %w", ns.Name, err)
+			return nil, fmt.Errorf("release node %q from successful request: %w", ns.Name, err)
+		}
+
+		if violation != nil {
+			return readinessViolations{*violation}, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// checkNodesReadyForRelease evaluates the readiness criteria against the live Node of every node of the request and
+// returns the nodes that fail a criterion. A deleted node is skipped.
+func (r *ValidationRequestReconciler) checkNodesReadyForRelease(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest) (readinessViolations, error) {
+	var violations readinessViolations
+
+	for _, ns := range validationRequest.Spec.Nodes {
+		var node corev1.Node
+		if err := r.APIReader.Get(ctx, client.ObjectKey{Name: ns.Name}, &node); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+
+			return nil, fmt.Errorf("get node %q before validation release: %w", ns.Name, err)
+		}
+
+		criterion, err := evaluateCriteria(ctx, r.Client, &node, r.Config.Validation.Spec.ReadinessCriteria,
+			r.ReadinessPrograms, r.ResourceSliceWatch.Enabled)
+		if err != nil {
+			return nil, fmt.Errorf("check readiness of node %q: %w", ns.Name, err)
+		}
+
+		if len(criterion) != 0 {
+			violations = append(violations, readinessViolation{node: ns.Name, criterion: criterion})
+		}
+	}
+
+	return violations, nil
+}
+
+// releaseNodesFromDeletedRequest removes the deleted request from the session of every node. A node whose session
+// becomes empty is released only when it satisfies the readiness criteria; otherwise its scheduling gate is retained.
+func (r *ValidationRequestReconciler) releaseNodesFromDeletedRequest(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest) error {
+	for _, ns := range validationRequest.Spec.Nodes {
+		retainedCriterion := ""
+
+		err := r.patchNodeWithRetry(ctx, ns.Name, func(node *corev1.Node) (bool, error) {
+			schedulingGate, criterion, err := r.schedulingGateForDeletion(ctx, node, validationRequest.Name)
+			if err != nil {
+				return false, err
+			}
+
+			retainedCriterion = criterion
+
+			return releaseNodeFromSession(node, validationRequest.Name, nil, schedulingGate)
+		})
+		if err != nil {
+			return fmt.Errorf("remove deleted request %q from node %q: %w", validationRequest.Name, ns.Name, err)
+		}
+
+		if len(retainedCriterion) != 0 {
+			slog.WarnContext(ctx, "Deleted a validation request from a node that fails readiness; "+
+				"scheduling gate retained", "validationRequest", validationRequest.Name, "node", ns.Name,
+				"criterion", retainedCriterion)
 		}
 	}
 
 	return nil
+}
+
+// schedulingGateForDeletion returns the scheduling gate to release when the deleted request leaves the session of the
+// node: the configured gate when the node satisfies the readiness criteria, otherwise nil, so the gate is retained,
+// together with the name of the failing criterion. Whether the session becomes empty is left to releaseNodeFromSession.
+// A criterion that cannot be evaluated against the Node, for example one that indexes a label the Node no longer
+// carries, is treated as failed so the deletion completes with the gate retained instead of waiting for the Node to
+// change.
+func (r *ValidationRequestReconciler) schedulingGateForDeletion(ctx context.Context, node *corev1.Node,
+	validationRequestName string) (*v1alpha1.SchedulingGateConfig, string, error) {
+	criterion, err := evaluateCriteria(ctx, r.Client, node, r.Config.Validation.Spec.ReadinessCriteria,
+		r.ReadinessPrograms, r.ResourceSliceWatch.Enabled)
+	if err != nil {
+		if len(criterion) == 0 {
+			return nil, "", fmt.Errorf("check readiness of node %q: %w", node.Name, err)
+		}
+
+		slog.WarnContext(ctx, "Readiness criterion could not be evaluated while deleting a validation request; "+
+			"treating it as failed", "validationRequest", validationRequestName, "node", node.Name,
+			"criterion", criterion, "error", err)
+	}
+
+	if len(criterion) != 0 {
+		return nil, criterion, nil
+	}
+
+	return r.Config.Validation.Spec.SchedulingGate, "", nil
 }
 
 func releaseNodeFromSession(node *corev1.Node, validationRequestName string, supersedeTests []string,
