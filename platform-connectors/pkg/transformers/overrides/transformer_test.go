@@ -16,8 +16,11 @@ package overrides
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -122,6 +125,89 @@ func TestNewProcessor(t *testing.T) {
 			errMsg:    "must return boolean",
 		},
 		{
+			name: "custom-action-without-name",
+			config: &Config{
+				Enabled: true,
+				Rules: []Rule{
+					{
+						Name:     "test-rule",
+						When:     `event.agent == "test"`,
+						Override: Override{RecommendedAction: new("CUSTOM")},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "recommendedAction CUSTOM requires a non-empty customRecommendedAction",
+		},
+		{
+			name: "custom-action-with-empty-name",
+			config: &Config{
+				Enabled: true,
+				Rules: []Rule{
+					{
+						Name: "test-rule",
+						When: `event.agent == "test"`,
+						Override: Override{
+							RecommendedAction:       new("CUSTOM"),
+							CustomRecommendedAction: new(""),
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "recommendedAction CUSTOM requires a non-empty customRecommendedAction",
+		},
+		{
+			name: "custom-name-with-built-in-action",
+			config: &Config{
+				Enabled: true,
+				Rules: []Rule{
+					{
+						Name: "test-rule",
+						When: `event.agent == "test"`,
+						Override: Override{
+							RecommendedAction:       new("RESTART_BM"),
+							CustomRecommendedAction: new("hardware-rma"),
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "customRecommendedAction requires recommendedAction CUSTOM",
+		},
+		{
+			name: "custom-name-without-action",
+			config: &Config{
+				Enabled: true,
+				Rules: []Rule{
+					{
+						Name:     "test-rule",
+						When:     `event.agent == "test"`,
+						Override: Override{CustomRecommendedAction: new("hardware-rma")},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "customRecommendedAction requires recommendedAction CUSTOM",
+		},
+		{
+			name: "valid-custom-action",
+			config: &Config{
+				Enabled: true,
+				Rules: []Rule{
+					{
+						Name: "test-rule",
+						When: `event.agent == "test"`,
+						Override: Override{
+							RecommendedAction:       new("CUSTOM"),
+							CustomRecommendedAction: new("hardware-rma"),
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
 			name: "valid-config",
 			config: &Config{
 				Enabled: true,
@@ -161,6 +247,7 @@ func TestApplyOverrides(t *testing.T) {
 		expectedIsFatal   bool
 		expectedIsHealthy bool
 		expectedAction    pb.RecommendedAction
+		expectedCustom    string
 	}{
 		{
 			name: "disabled-processor-no-change",
@@ -273,6 +360,78 @@ func TestApplyOverrides(t *testing.T) {
 			expectedIsHealthy: false,
 			expectedAction:    pb.RecommendedAction_CONTACT_SUPPORT,
 		},
+		{
+			name:   "built-in-action-to-custom-action",
+			config: customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-rma")),
+			event: &pb.HealthEvent{
+				Agent:             "test-agent",
+				IsFatal:           true,
+				RecommendedAction: pb.RecommendedAction_CONTACT_SUPPORT,
+			},
+			expectedIsFatal: true,
+			expectedAction:  pb.RecommendedAction_CUSTOM,
+			expectedCustom:  "hardware-rma",
+		},
+		{
+			name:   "custom-action-to-other-custom-action",
+			config: customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-rma")),
+			event: &pb.HealthEvent{
+				Agent:                   "test-agent",
+				IsFatal:                 true,
+				RecommendedAction:       pb.RecommendedAction_CUSTOM,
+				CustomRecommendedAction: "replace-disk",
+			},
+			expectedIsFatal: true,
+			expectedAction:  pb.RecommendedAction_CUSTOM,
+			expectedCustom:  "hardware-rma",
+		},
+		{
+			name:   "custom-action-to-built-in-action-clears-name",
+			config: customActionConfig(`event.agent == "test-agent"`, "RESTART_BM", nil),
+			event: &pb.HealthEvent{
+				Agent:                   "test-agent",
+				IsFatal:                 true,
+				RecommendedAction:       pb.RecommendedAction_CUSTOM,
+				CustomRecommendedAction: "hardware-rma",
+			},
+			expectedIsFatal: true,
+			expectedAction:  pb.RecommendedAction_RESTART_BM,
+		},
+		{
+			name:   "rule-no-match-keeps-custom-action",
+			config: customActionConfig(`event.agent == "other-agent"`, "CUSTOM", new("hardware-rma")),
+			event: &pb.HealthEvent{
+				Agent:                   "test-agent",
+				IsFatal:                 true,
+				RecommendedAction:       pb.RecommendedAction_CUSTOM,
+				CustomRecommendedAction: "replace-disk",
+			},
+			expectedIsFatal: true,
+			expectedAction:  pb.RecommendedAction_CUSTOM,
+			expectedCustom:  "replace-disk",
+		},
+		{
+			name: "override-without-action-keeps-custom-action",
+			config: &Config{
+				Enabled: true,
+				Rules: []Rule{
+					{
+						Name:     "test-rule",
+						When:     `event.agent == "test-agent"`,
+						Override: Override{IsFatal: new(false)},
+					},
+				},
+			},
+			event: &pb.HealthEvent{
+				Agent:                   "test-agent",
+				IsFatal:                 true,
+				RecommendedAction:       pb.RecommendedAction_CUSTOM,
+				CustomRecommendedAction: "replace-disk",
+			},
+			expectedIsFatal: false,
+			expectedAction:  pb.RecommendedAction_CUSTOM,
+			expectedCustom:  "replace-disk",
+		},
 	}
 
 	for _, tt := range tests {
@@ -286,6 +445,81 @@ func TestApplyOverrides(t *testing.T) {
 			assert.Equal(t, tt.expectedIsFatal, tt.event.IsFatal, "isFatal mismatch")
 			assert.Equal(t, tt.expectedIsHealthy, tt.event.IsHealthy, "isHealthy mismatch")
 			assert.Equal(t, tt.expectedAction, tt.event.RecommendedAction, "recommendedAction mismatch")
+			assert.Equal(t, tt.expectedCustom, tt.event.CustomRecommendedAction, "customRecommendedAction mismatch")
 		})
 	}
+}
+
+func TestApplyOverrides_CustomAction_CountsEachChangedField(t *testing.T) {
+	const ruleName = "custom-action-metrics"
+
+	cfg := customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-rma"))
+	cfg.Rules[0].Name = ruleName
+
+	proc, err := NewProcessor(cfg)
+	require.NoError(t, err)
+
+	actionBefore := testutil.ToFloat64(overridesApplied.WithLabelValues(ruleName, "recommendedAction"))
+	customBefore := testutil.ToFloat64(overridesApplied.WithLabelValues(ruleName, "customRecommendedAction"))
+
+	// Built-in to custom: both fields change.
+	require.NoError(t, proc.Transform(context.Background(), &pb.HealthEvent{
+		Agent:             "test-agent",
+		RecommendedAction: pb.RecommendedAction_CONTACT_SUPPORT,
+	}))
+
+	// Another custom action to this one: only the name changes.
+	require.NoError(t, proc.Transform(context.Background(), &pb.HealthEvent{
+		Agent:                   "test-agent",
+		RecommendedAction:       pb.RecommendedAction_CUSTOM,
+		CustomRecommendedAction: "replace-disk",
+	}))
+
+	// Already this custom action: nothing changes.
+	require.NoError(t, proc.Transform(context.Background(), &pb.HealthEvent{
+		Agent:                   "test-agent",
+		RecommendedAction:       pb.RecommendedAction_CUSTOM,
+		CustomRecommendedAction: "hardware-rma",
+	}))
+
+	assert.InDelta(t, 1, testutil.ToFloat64(overridesApplied.WithLabelValues(ruleName, "recommendedAction"))-actionBefore, 0)
+	assert.InDelta(t, 2,
+		testutil.ToFloat64(overridesApplied.WithLabelValues(ruleName, "customRecommendedAction"))-customBefore, 0)
+}
+
+// customActionConfig returns a config with one rule that sets recommendedAction and, when
+// customAction is not nil, customRecommendedAction.
+func customActionConfig(when, action string, customAction *string) *Config {
+	return &Config{
+		Enabled: true,
+		Rules: []Rule{
+			{
+				Name: "test-rule",
+				When: when,
+				Override: Override{
+					RecommendedAction:       &action,
+					CustomRecommendedAction: customAction,
+				},
+			},
+		},
+	}
+}
+
+func TestLoadConfig_CustomAction_ReadsChartOutput(t *testing.T) {
+	// The rule as the chart renders it in overrides.toml.
+	path := filepath.Join(t.TempDir(), "overrides.toml")
+	require.NoError(t, os.WriteFile(path, []byte(`enabled = true
+
+[[rules]]
+name = "nvlink-to-rma"
+when = "event.checkName == \"GpuNvlinkWatch\""
+override = {recommendedAction = "CUSTOM", customRecommendedAction = "hardware-rma"}
+`), 0o600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Validate())
+	require.Len(t, cfg.Rules, 1)
+	require.NotNil(t, cfg.Rules[0].Override.CustomRecommendedAction)
+	assert.Equal(t, "hardware-rma", *cfg.Rules[0].Override.CustomRecommendedAction)
 }
