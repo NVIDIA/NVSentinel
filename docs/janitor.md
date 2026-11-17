@@ -66,11 +66,13 @@ kubectl get crd rebootnodes.janitor.dgxc.nvidia.com terminatenodes.janitor.dgxc.
 If the command returns `NotFound`, apply the CRDs from the chart:
 
 ```bash
-NVSENTINEL_VERSION="<your installed version>"
+NVSENTINEL_VERSION="<the version you are deploying>"
 
 helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar
 kubectl apply -f nvsentinel/charts/janitor/crds/
 ```
+
+Pull the chart at the version you are deploying, not the installed one — the controller you are about to run writes `status.managedServices`, and the API server prunes fields an older CRD schema does not know, losing the stopped-services record the restore path reads.
 
 Without the CRDs, enabling the module leaves the Janitor controller crash-looping on `no matches for kind "GPUReset"`, and Fault Remediation cannot create its maintenance CRs (`no matches for kind "RebootNode"`) — remediation requests retry forever instead of reaching an executor. The identical pre-flight for lifecycle-manager is in [Requesting node maintenance](tutorials/requesting-node-maintenance.md).
 
