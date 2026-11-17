@@ -34,25 +34,6 @@ func TestValidate(t *testing.T) {
 		contains string
 	}{
 		{
-			name: "AllAndAction_Accepted",
-			doc: `
-[[ruleSets]]
-name = "vm-gpu"
-priority = 10
-
-[[ruleSets.match.all]]
-kind = "Node"
-expression = '"example.com/platform" in node.metadata.labels && node.metadata.labels["example.com/platform"] == "vm"'
-
-[[ruleSets.match.all]]
-kind = "HealthEvent"
-expression = 'event.componentClass == "GPU"'
-
-[ruleSets.remediation]
-action = "REPLACE_VM"
-`,
-		},
-		{
 			name: "AnyAndStop_Accepted",
 			doc: `
 [[ruleSets]]
@@ -103,59 +84,19 @@ stop = true
 			name:     "EmptyName_ReturnsErrInvalidName",
 			want:     ruleset.ErrInvalidName,
 			contains: "ruleSets[0].name",
-			doc: `
-[[ruleSets]]
-name = ""
-
-[[ruleSets.match.all]]
-kind = "Node"
-expression = "true"
-
-[ruleSets.remediation]
-stop = true
-`,
+			doc:      ruleSetNamed(""),
 		},
 		{
 			name:     "UnderscoreName_ReturnsErrInvalidName",
 			want:     ruleset.ErrInvalidName,
 			contains: "vm_nodes",
-			doc: `
-[[ruleSets]]
-name = "vm_nodes"
-
-[[ruleSets.match.all]]
-kind = "Node"
-expression = "true"
-
-[ruleSets.remediation]
-stop = true
-`,
+			doc:      ruleSetNamed("vm_nodes"),
 		},
 		{
 			name:     "DuplicateName_ReturnsErrDuplicateName",
 			want:     ruleset.ErrDuplicateName,
 			contains: `ruleSets[1] "same"`,
-			doc: `
-[[ruleSets]]
-name = "same"
-
-[[ruleSets.match.all]]
-kind = "Node"
-expression = "true"
-
-[ruleSets.remediation]
-stop = true
-
-[[ruleSets]]
-name = "same"
-
-[[ruleSets.match.any]]
-kind = "HealthEvent"
-expression = 'event.componentClass == "GPU"'
-
-[ruleSets.remediation]
-action = "REBOOT"
-`,
+			doc:      ruleSetNamed("same") + ruleSetNamed("same"),
 		},
 		{
 			name:     "BothAllAndAny_ReturnsErrMatch",
@@ -348,27 +289,7 @@ expression = "true"
 			name:     "SecondRuleSetInvalid_NamesThatRuleSet",
 			want:     ruleset.ErrInvalidName,
 			contains: "ruleSets[1]",
-			doc: `
-[[ruleSets]]
-name = "ok"
-
-[[ruleSets.match.all]]
-kind = "Node"
-expression = "true"
-
-[ruleSets.remediation]
-stop = true
-
-[[ruleSets]]
-name = "Bad"
-
-[[ruleSets.match.all]]
-kind = "Node"
-expression = "true"
-
-[ruleSets.remediation]
-stop = true
-`,
+			doc:      ruleSetNamed("ok") + ruleSetNamed("Bad"),
 		},
 	}
 
@@ -401,7 +322,7 @@ priority = 10
 
 [[ruleSets.match.all]]
 kind = "Node"
-expression = "true"
+expression = '"example.com/platform" in node.metadata.labels && node.metadata.labels["example.com/platform"] == "vm"'
 
 [[ruleSets.match.all]]
 kind = "HealthEvent"

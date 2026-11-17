@@ -78,6 +78,31 @@ acton = "REBOOT"
 	require.Empty(t, sets[0].Remediation.Action)
 }
 
+func TestCheckUndecoded_DifferentCaseRoot_NamesTheKey(t *testing.T) {
+	t.Parallel()
+
+	sets, md := decode(t, `
+[[RuleSets]]
+name = "vm-nodes"
+priorty = 10
+
+[[RuleSets.match.all]]
+kind = "Node"
+expression = "true"
+
+[RuleSets.remediation]
+stop = true
+acton = "REBOOT"
+`)
+
+	require.Len(t, sets, 1)
+
+	err := ruleset.CheckUndecoded(md, "remediation")
+	require.ErrorIs(t, err, ruleset.ErrUnknownKey)
+	require.ErrorContains(t, err, "RuleSets.priorty")
+	require.ErrorContains(t, err, "RuleSets.remediation.acton")
+}
+
 func TestCheckUndecoded_RepeatedUnknownKey_ReportedOnce(t *testing.T) {
 	t.Parallel()
 

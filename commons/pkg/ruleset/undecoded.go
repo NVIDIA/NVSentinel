@@ -17,6 +17,7 @@ package ruleset
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -62,8 +63,10 @@ func CheckUndecoded(md toml.MetaData, outcomeKey string) error {
 	return errors.Join(errs...)
 }
 
+// The decoder also matches a field name that differs only in case, so
+// RuleSets decodes into the ruleSets field. The root check matches that.
 func underRuleSets(key toml.Key) bool {
-	return len(key) >= 2 && key[0] == ruleSetsKey
+	return len(key) >= 2 && strings.EqualFold(key[0], ruleSetsKey)
 }
 
 func hasUndecodedParent(key toml.Key, unknown []toml.Key) bool {
