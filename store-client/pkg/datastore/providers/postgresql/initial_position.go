@@ -35,34 +35,33 @@ var fullReplayStartTime = time.Unix(0, 0).UTC()
 
 const loadResumeTokenQuery = `SELECT resume_token FROM resume_tokens WHERE client_name = $1`
 
-// Sample the clock before activity, then inspect prepared transactions after activity.
-// The lateral dependency keeps the activity observation after the clock sample.
+// Inspect activity first, then sample the clock; the CTE dependency fixes that order.
+// A writer open during the scan bounds the start with its xact_start. A writer that starts
+// after the scan has changed_at at or after the clock sample, so the poll includes it. A
+// writer that committed before the scan committed before construction began.
 // Visible non-client backends cannot write the changelog. PostgreSQL also hides backend_type
 // without statistics privileges, so an unknown type must still be treated as a possible writer.
-// Hidden/disabled activity and prepared transactions have no usable start bound.
-// Use a finite replay boundary that round-trips through JSON and Go's time parser.
-const insertInitialPositionQuery = `WITH start_time AS MATERIALIZED (
-	SELECT clock_timestamp() AS observed_at
-), activity AS MATERIALIZED (
-	SELECT start_time.observed_at, stats.*
-	FROM start_time CROSS JOIN LATERAL (
-		SELECT MIN(xact_start) AS oldest_start,
-			COALESCE(bool_or(state IS NULL OR state = 'disabled'), FALSE) AS unknown_start
-		FROM pg_stat_activity
-		WHERE (backend_type = 'client backend' OR backend_type IS NULL)
-			AND datname = current_database() AND pid <> pg_backend_pid()
-			AND (xact_start <= start_time.observed_at OR xact_start IS NULL)
-	) AS stats
+// Hidden or disabled activity gives no start bound. Prepared transactions detach from their
+// session and can commit between any two observations, so any database that allows them
+// (max_prepared_transactions > 0) gets the full-replay boundary too.
+// The boundary must round-trip through JSON and Go's time parser in every session time zone.
+const insertInitialPositionQuery = `WITH activity AS MATERIALIZED (
+	SELECT MIN(xact_start) AS oldest_start,
+		COALESCE(bool_or(state IS NULL OR state = 'disabled'), FALSE) AS unknown_start
+	FROM pg_stat_activity
+	WHERE (backend_type = 'client backend' OR backend_type IS NULL)
+		AND datname = current_database() AND pid <> pg_backend_pid()
+), bound AS MATERIALIZED (
+	SELECT activity.oldest_start, activity.unknown_start, clock_timestamp() AS observed_at
+	FROM activity
 )
 INSERT INTO resume_tokens (client_name, resume_token, last_updated)
 SELECT $1, jsonb_build_object('timestamp',
-	CASE WHEN activity.unknown_start OR EXISTS (
-		SELECT 1 FROM pg_prepared_xacts
-		WHERE database = current_database() AND activity.observed_at IS NOT NULL
-	) THEN TIMESTAMPTZ '1970-01-01 00:00:00+00'
-	ELSE LEAST(activity.observed_at, activity.oldest_start) END,
+	CASE WHEN bound.unknown_start OR current_setting('max_prepared_transactions')::int > 0
+	THEN TIMESTAMPTZ '1970-01-01 00:00:00+00'
+	ELSE LEAST(bound.observed_at, bound.oldest_start) END,
 	'eventID', 0), statement_timestamp()
-FROM activity
+FROM bound
 ON CONFLICT (client_name) DO NOTHING`
 
 // initializeResumePosition prepares every error-returning construction path before reading.
@@ -94,9 +93,9 @@ func (w *PostgreSQLChangeStreamWatcher) initializeResumePosition(ctx context.Con
 	if w.lastTimestamp.Equal(fullReplayStartTime) {
 		slog.Warn("PostgreSQL watcher starts with full changelog replay",
 			"client", w.clientName,
-			"reason", "hidden/disabled client activity or prepared transaction",
+			"reason", "hidden/disabled client activity, or prepared transactions enabled",
 			"remedy", "Use the same role for all writers or grant pg_read_all_stats; "+
-				"enable activity tracking and resolve prepared transactions",
+				"enable activity tracking, or set max_prepared_transactions to 0",
 			"docs", "docs/postgresql-provider.md#durable-watcher-start-position")
 	}
 

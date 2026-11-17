@@ -477,7 +477,7 @@ func TestWatcherConstruction_FullReplayBoundary_WarnsOnce(t *testing.T) {
 				assert.Equal(t, 1, strings.Count(logs.String(), "PostgreSQL watcher starts with full changelog replay"))
 				assert.Contains(t, logs.String(), "level=WARN")
 				assert.Contains(t, logs.String(), "client=event-exporter")
-				assert.Contains(t, logs.String(), "hidden/disabled client activity or prepared transaction")
+				assert.Contains(t, logs.String(), "hidden/disabled client activity, or prepared transactions enabled")
 				assert.Contains(t, logs.String(), "same role for all writers or grant pg_read_all_stats")
 				assert.Contains(t, logs.String(), "docs/postgresql-provider.md#durable-watcher-start-position")
 			})
