@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -730,4 +731,45 @@ func TestPrepareDelivery_LegacyResume_ProtectsResolvedPersistedPosition(t *testi
 	require.NoError(t, watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{checkpointEvent(2, late)}))
 	assert.Equal(t, []string{"2"}, drainTokens(watcher))
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPrepareDelivery_AfterAmbiguousSaveFailure_PersistsRewindFirst(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer db.Close()
+
+		ctx := context.Background()
+		base := time.Now()
+		early := base.Add(-2 * time.Second)
+		late := base.Add(-time.Second)
+		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+		watcher.lastTimestamp, watcher.lastEventID = base, 10
+		watcher.persistedTimestamp, watcher.persistedEventID = early, 1
+		watcher.events = make(chan datastore.EventWithToken)
+
+		// The save of the cursor reports an error, but the commit may have landed, so the
+		// stored pair can be (base, 10) even though memory still says (early, 1).
+		mock.ExpectExec("INSERT INTO resume_tokens").WithArgs("test-client", checkpointJSON(t, base, 10)).
+			WillReturnError(errors.New("connection reset after commit"))
+		watcher.mu.Lock()
+		require.Error(t, watcher.saveResumePosition(ctx, base, 10))
+		watcher.mu.Unlock()
+		require.True(t, watcher.persistedUncertain)
+
+		// A late row after (early, 1) but before (base, 10) must still rewind before it is sent.
+		mock.ExpectExec("INSERT INTO resume_tokens").WithArgs("test-client", checkpointJSON(t, late, 4)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		done := make(chan error, 1)
+		go func() { done <- watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{checkpointEvent(5, late)}) }()
+		synctest.Wait()
+		assert.Equal(t, late, watcher.persistedTimestamp)
+		assert.Equal(t, int64(4), watcher.persistedEventID)
+		assert.False(t, watcher.persistedUncertain)
+
+		require.NoError(t, watcher.Close(ctx))
+		require.NoError(t, <-done)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
 }

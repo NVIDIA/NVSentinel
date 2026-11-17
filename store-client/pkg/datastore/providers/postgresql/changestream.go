@@ -132,6 +132,9 @@ type PostgreSQLChangeStreamWatcher struct {
 	// Last successfully persisted pair; mu serializes rewind and acknowledgment saves.
 	persistedTimestamp time.Time
 	persistedEventID   int64
+	// persistedUncertain is set after a failed save. The write may still have committed,
+	// so the stored pair is unknown and the next late delivery must save its rewind first.
+	persistedUncertain bool
 
 	recentEventIDs map[int64]time.Time
 	recentEventSeq []int64
@@ -2038,7 +2041,8 @@ func (w *PostgreSQLChangeStreamWatcher) prepareDelivery(
 // rewindCheckpointLocked persists a late delivery's strict predecessor when necessary.
 // The caller holds mu through the write, as MarkProcessed does, so saves cannot overtake.
 func (w *PostgreSQLChangeStreamWatcher) rewindCheckpointLocked(ctx context.Context, delivery pendingDelivery) error {
-	if !positionAfter(w.persistedTimestamp, w.persistedEventID, delivery.timestamp, delivery.id-1) {
+	if !w.persistedUncertain &&
+		!positionAfter(w.persistedTimestamp, w.persistedEventID, delivery.timestamp, delivery.id-1) {
 		return nil
 	}
 
@@ -2403,10 +2407,14 @@ func (w *PostgreSQLChangeStreamWatcher) saveResumePosition(
 
 	_, err = w.db.ExecContext(ctx, query, w.clientName, tokenJSON)
 	if err != nil {
+		// The error can be ambiguous: the write may have committed anyway.
+		w.persistedUncertain = true
+
 		return fmt.Errorf("failed to save resume position: %w", err)
 	}
 
 	w.persistedTimestamp, w.persistedEventID = timestamp, eventID
+	w.persistedUncertain = false
 
 	return nil
 }
