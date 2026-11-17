@@ -534,3 +534,114 @@ func TestGetRecoveryNode_RepeatedRead_UsesOneSanitizedSnapshot(t *testing.T) {
 	assert.NotEmpty(t, source.Status)
 	assert.Equal(t, 1, calls)
 }
+
+func TestHandle_BreakerRefusal_StopsScanAndReturnsNil(t *testing.T) {
+	events := []datastore.HealthEventWithStatus{
+		replayRecord("fault-a"), replayRecord("fault-b"), healthyReplayRecord("healthy-c"),
+	}
+	store := &healthEventStoreStub{findBatched: func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		visit func([]datastore.HealthEventWithStatus) error,
+	) error {
+		return visit(events)
+	}}
+	var processed []string
+	processor := &eventProcessorStub{process: func(
+		_ context.Context,
+		_ model.HealthEventWithStatus,
+		documentID string,
+	) (ProcessResult, error) {
+		processed = append(processed, documentID)
+		if documentID == "fault-b" {
+			return ProcessResultFailed, ErrBreakerRefused
+		}
+
+		return ProcessResultProcessed, nil
+	}}
+
+	err := Handle(context.Background(), Dependencies{
+		HealthEventStore: store, EventProcessor: processor,
+	})
+	require.NoError(t, err,
+		"a breaker refusal is a stop signal, not a recovery failure")
+	assert.Equal(t, []string{"fault-a", "fault-b"}, processed,
+		"the scan must stop at the refused event and skip the healthy phase")
+	assert.NotContains(t, processed, "healthy-c",
+		"the healthy phase must not run after a mid-scan refusal")
+}
+
+func TestHandle_BreakerRefusal_FlushesCompletionsBeforeStopping(t *testing.T) {
+	events := []datastore.HealthEventWithStatus{
+		replayRecord("fault-skipped"), replayRecord("fault-refused"),
+	}
+	store := &healthEventStoreStub{findBatched: func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		visit func([]datastore.HealthEventWithStatus) error,
+	) error {
+		return visit(events)
+	}}
+	processor := &eventProcessorStub{process: func(
+		_ context.Context,
+		_ model.HealthEventWithStatus,
+		documentID string,
+	) (ProcessResult, error) {
+		switch documentID {
+		case "fault-skipped":
+			return ProcessResultSkipped, nil
+		case "fault-refused":
+			return ProcessResultFailed, ErrBreakerRefused
+		}
+
+		return ProcessResultProcessed, nil
+	}}
+
+	err := Handle(context.Background(), Dependencies{
+		HealthEventStore: store, EventProcessor: processor,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, [][]string{{"fault-skipped"}}, processor.completionBatches,
+		"terminal results ahead of the refusal must be persisted")
+}
+
+func TestHandle_BreakerRefusal_InHealthyPhase_ReturnsNil(t *testing.T) {
+	faults := []datastore.HealthEventWithStatus{replayRecord("fault-a")}
+	healthy := []datastore.HealthEventWithStatus{healthyReplayRecord("healthy-b")}
+	var calls int
+	store := &healthEventStoreStub{findBatched: func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		visit func([]datastore.HealthEventWithStatus) error,
+	) error {
+		calls++
+		if calls == 1 {
+			return visit(faults)
+		}
+
+		return visit(healthy)
+	}}
+	var processed []string
+	processor := &eventProcessorStub{process: func(
+		_ context.Context,
+		_ model.HealthEventWithStatus,
+		documentID string,
+	) (ProcessResult, error) {
+		processed = append(processed, documentID)
+		if documentID == "healthy-b" {
+			return ProcessResultFailed, ErrBreakerRefused
+		}
+
+		return ProcessResultProcessed, nil
+	}}
+
+	err := Handle(context.Background(), Dependencies{
+		HealthEventStore: store, EventProcessor: processor,
+	})
+	require.NoError(t, err,
+		"a breaker refusal in the healthy phase is a stop signal, not a failure")
+	assert.Equal(t, []string{"fault-a", "healthy-b"}, processed)
+}

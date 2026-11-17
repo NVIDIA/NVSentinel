@@ -115,6 +115,16 @@ func allPermanentErrors(errs []error) bool {
 	return true
 }
 
+// ErrBreakerRefused marks an event the circuit breaker refused to process.
+// Recovery treats it as a stop signal rather than a processing failure: the
+// refused events stay unresolved and retry on the next startup.
+var ErrBreakerRefused = errors.New("circuit breaker is tripped")
+
+func logBreakerStoppedRecovery(ctx context.Context) {
+	slog.ErrorContext(ctx, "Circuit breaker TRIPPED during cold-start recovery; stopping the scan. "+
+		"Unrecovered events stay unresolved and retry on the next startup")
+}
+
 // WithRecoveryContext marks event processing as cold-start replay. Consumers
 // can use it to bypass eventually-consistent caches between ordered events.
 func WithRecoveryContext(ctx context.Context) context.Context {
@@ -259,6 +269,12 @@ func Handle(ctx context.Context, deps Dependencies) error {
 			return progress.recoverBatch(ctx, resolver, deps.EventProcessor, events, false)
 		},
 	)
+	if errors.Is(err, ErrBreakerRefused) {
+		logBreakerStoppedRecovery(ctx)
+
+		return nil
+	}
+
 	if err != nil {
 		return fmt.Errorf("fault-quarantine cold start failed: %w", err)
 	}
@@ -274,6 +290,12 @@ func Handle(ctx context.Context, deps Dependencies) error {
 				return progress.recoverBatch(ctx, resolver, deps.EventProcessor, events, true)
 			},
 		)
+		if errors.Is(err, ErrBreakerRefused) {
+			logBreakerStoppedRecovery(ctx)
+
+			return nil
+		}
+
 		if err != nil {
 			return fmt.Errorf("fault-quarantine healthy recovery phase failed: %w", err)
 		}
@@ -326,11 +348,30 @@ func (p *recoveryProgress) recoverEvents(
 			completions = append(completions, *completion)
 		}
 
+		if errors.Is(err, ErrBreakerRefused) {
+			// The breaker stopped the scan mid-batch. Persist what completed
+			// ahead of the refusal so it is not recovered again; the refused
+			// event and the rest stay unresolved for the next startup.
+			if flushErr := p.completeBatch(ctx, processor, completions); flushErr != nil {
+				return flushErr
+			}
+
+			return err
+		}
+
 		if err := p.recordFailure(ctx, err); err != nil {
 			return err
 		}
 	}
 
+	return p.completeBatch(ctx, processor, completions)
+}
+
+func (p *recoveryProgress) completeBatch(
+	ctx context.Context,
+	processor EventProcessor,
+	completions []StoredEventCompletion,
+) error {
 	if len(completions) == 0 {
 		return nil
 	}
@@ -406,6 +447,12 @@ func recoverStoredEvent(
 	result, err := processor.ProcessStoredEvent(
 		withRecoveryEffects(ctx, effects), event.parsed, documentID.String)
 	if err != nil {
+		if errors.Is(err, ErrBreakerRefused) {
+			// The breaker refused the event. Propagate the refusal unwrapped so
+			// the scan stops without the refusal counting as a failure.
+			return nil, err
+		}
+
 		return nil, recordRecoveryFailure(fmt.Errorf("failed to recover stored event: %w", err))
 	}
 

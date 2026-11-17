@@ -614,7 +614,7 @@ func (r *Reconciler) checkCircuitBreakerAndHalt(ctx context.Context) (bool, erro
 		)
 
 		if coldstart.IsRecoveryContext(ctx) {
-			return true, fmt.Errorf("circuit breaker is tripped")
+			return true, coldstart.ErrBreakerRefused
 		}
 
 		<-ctx.Done()
