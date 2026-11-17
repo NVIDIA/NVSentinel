@@ -49,15 +49,16 @@ install_cert_manager() {
     helm repo update jetstack >/dev/null 2>&1 || true
 
     # Quiet: installing the CRDs makes client-go log hundreds of "unrecognized
-    # format" lines for OpenAPI int32/int64 fields. On failure the pods are
-    # printed instead, which says more than the log would have.
-    if ! helm upgrade --install cert-manager jetstack/cert-manager \
+    # format" lines for OpenAPI int32/int64 fields. On failure run_quiet prints
+    # the end of helm's output, which carries the error, and the pods follow
+    # for the case where the install got far enough to create them.
+    if ! run_quiet helm upgrade --install cert-manager jetstack/cert-manager \
         --namespace cert-manager \
         --create-namespace \
         --values "$CONFIG_DIR/cert-manager-values.yaml" \
-        --wait --timeout 5m >/dev/null 2>&1; then
+        --wait --timeout 5m; then
         kubectl get pods -n cert-manager
-        fail "cert-manager did not install. Its pods are above."
+        fail "cert-manager did not install. Helm's last lines and its pods are above."
     fi
 
     success "cert-manager is ready"
@@ -79,13 +80,13 @@ install_nvsentinel() {
     # The chart pins its own matching image tag, so nothing overrides it here:
     # setting one and not the other is how a chart ends up rendering flags the
     # image does not have.
-    if ! helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+    if ! run_quiet helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
         --version "$CHART_VERSION" \
         --namespace "$NAMESPACE" \
         --values "$CONFIG_DIR/nvsentinel-values.yaml" \
-        --wait --timeout 15m >/dev/null 2>&1; then
+        --wait --timeout 15m; then
         kubectl get pods -n "$NAMESPACE"
-        fail "The NVSentinel install did not complete. The pods above show how far it got."
+        fail "The NVSentinel install did not complete. Helm's last lines are above, and the pods show how far it got."
     fi
 
     success "NVSentinel installed"

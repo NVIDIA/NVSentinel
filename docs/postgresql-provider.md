@@ -200,11 +200,10 @@ kubectl logs -n nvsentinel deployment/fault-quarantine | grep -i postgres
 
 ### Automatic Initialization
 
-The PostgreSQL subchart automatically runs initialization scripts that:
+When a module starts, it runs schema setup statements that:
 - Create tables if they don't exist
 - Create indexes for query performance
 - Set up triggers for change tracking
-- Create helper functions
 
 ### Manual Schema Updates
 

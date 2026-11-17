@@ -58,7 +58,7 @@ Each component that acts on a fault already reads the node, and two of them can 
 |---|---|---|
 | platform-connectors | `managed=false` changes events to `STORE_ONLY`. Override rules ([ADR-021](021-health-event-property-overrides.md)) can change `recommendedAction` | None |
 | fault-quarantine | CEL `Node` and `HealthEvent` rules in each rule set ([ADR-003](003-rule-based-node-quarantine.md)) | None |
-| node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) and `podDrainPolicies` ([pod label drain policies ADR](055-pod-drain-policies.md)) | Cannot stop a group of nodes before the drain. `podDrainPolicies` can leave pods out of the drain, but the drain still completes and remediation starts. `userNamespaces` and `podDrainPolicies` apply to the full cluster. Checks the selector again on each pass, so a label change during a drain can change the drain method. Records the method only in a log |
+| node-drainer | `customDrain.nodeSelector` ([#1871](https://github.com/NVIDIA/NVSentinel/pull/1871)) and `podDrainPolicies` ([pod label drain policies ADR](057-pod-drain-policies.md)) | Cannot stop a group of nodes before the drain. `podDrainPolicies` can leave pods out of the drain, but the drain still completes and remediation starts. `userNamespaces` and `podDrainPolicies` apply to the full cluster. Checks the selector again on each pass, so a label change during a drain can change the drain method. Records the method only in a log |
 | fault-remediation | None | Cannot stop remediation or select a different action for a group of nodes |
 
 Thus, case 4 and the monitoring-only form of case 6 work at this time. The gap is mostly in fault-remediation, which has no selection.
@@ -811,5 +811,5 @@ Accept a `Node` rule only if it reads the name and labels with a literal key, so
 - [ADR-021](021-health-event-property-overrides.md): health event property overrides
 - [ADR-036](036-custom-remediation-actions.md): custom remediation actions
 - [ADR-040](040-external-remediation-request.md): external remediation request
-- [Node Drainer — Pod label policies](055-pod-drain-policies.md): pod label drain policies
+- [Node Drainer — Pod label policies](057-pod-drain-policies.md): pod label drain policies
 - [ADR-063](063-pod-drain-policies-owner-kinds.md): owner kinds in pod drain policies
