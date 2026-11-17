@@ -211,6 +211,12 @@ kubectl get pod mongodb-rs0-0 -n nvsentinel \
 kubectl get pods -n nvsentinel
 ```
 
+If MongoDB was down for longer than the init Job's deadline, the `create-mongodb-database` Job has already failed, and Helm does not re-create it. The database users are then missing even after mongod starts. Check the Job, and if it failed, follow [Init Job deadline](#init-job-deadline):
+
+```bash
+kubectl get job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
+```
+
 Remove the entry once the chart deploys a mongod release that starts on your nodes' kernel. Progress is tracked in [#2410](https://github.com/NVIDIA/NVSentinel/issues/2410).
 
 ### Volume size
