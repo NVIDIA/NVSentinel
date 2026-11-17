@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -237,6 +238,8 @@ func TestMarkProcessed_LateNotify_RewindsPreviouslySavedCheckpoint(t *testing.T)
 	watcher.addNotifiedID(2)
 	mock.ExpectQuery(changelogLookupQuery).WithArgs(healthEventsTable, lookupIDs(2), base, int64(10)).
 		WillReturnRows(healthEventRow(changelogRows(), 2, late))
+	mock.ExpectExec("INSERT INTO resume_tokens").WithArgs("test-client", checkpointJSON(t, late, 1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	require.NoError(t, watcher.fetchNotifiedRows(ctx))
 	expectCheckpoint(t, mock, 10, late, 1)
 	require.NoError(t, watcher.MarkProcessed(ctx, []byte("10")))
@@ -536,5 +539,195 @@ func TestMarkProcessed_UnknownAheadWithoutPending_PreservesReadCursorAndHighWate
 		WillReturnRows(healthEventRow(changelogRows(), 11, base))
 	require.NoError(t, watcher.fetchNewChanges(ctx))
 	assert.Equal(t, []string{"11"}, drainTokens(watcher))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPrepareDelivery_LateRow_PersistsBeforePublishAndReplaysAfterRestart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer db.Close()
+
+		ctx := context.Background()
+		base := time.Now()
+		late := base.Add(-time.Second)
+		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+		watcher.lastTimestamp, watcher.lastEventID = base, 10
+		watcher.persistedTimestamp, watcher.persistedEventID = base, 10
+		watcher.events = make(chan datastore.EventWithToken)
+		mock.ExpectExec("INSERT INTO resume_tokens").WithArgs("test-client", checkpointJSON(t, late, 1)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		done := make(chan error, 1)
+		go func() { done <- watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{checkpointEvent(2, late)}) }()
+		synctest.Wait()
+		assert.Equal(t, late, watcher.persistedTimestamp)
+		assert.Equal(t, int64(1), watcher.persistedEventID)
+		require.Len(t, watcher.pending, 1)
+
+		// No acknowledgment or subsequent save: the pre-send rewind alone permits replay.
+		require.NoError(t, watcher.Close(ctx))
+		require.NoError(t, <-done)
+		restarted := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModePolling)
+		mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
+			WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow(string(checkpointJSON(t, late, 1))))
+		require.NoError(t, restarted.loadResumePosition(ctx))
+		mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, late, int64(1)).
+			WillReturnRows(healthEventRow(changelogRows(), 2, late))
+		require.NoError(t, restarted.fetchNewChanges(ctx))
+		assert.Equal(t, []string{"2"}, drainTokens(restarted))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestFetchLoop_RewindSaveFails_RetriesUndeliveredRow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer db.Close()
+
+		ctx := context.Background()
+		base := time.Now()
+		late := base.Add(-time.Second)
+		watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+		watcher.lastTimestamp, watcher.lastEventID, watcher.highestReadEventID = base, 10, 10
+		watcher.persistedTimestamp, watcher.persistedEventID = base, 10
+		watcher.addNotifiedID(2)
+		<-watcher.wake
+
+		mock.ExpectQuery(changelogLookupQuery).WithArgs(healthEventsTable, lookupIDs(2), base, int64(10)).
+			WillReturnRows(healthEventRow(changelogRows(), 2, late))
+		mock.ExpectExec("INSERT INTO resume_tokens").WithArgs("test-client", checkpointJSON(t, late, 1)).
+			WillReturnError(sql.ErrConnDone)
+		require.ErrorIs(t, watcher.fetchNotifiedRows(ctx), sql.ErrConnDone)
+		assert.Empty(t, watcher.events)
+		assert.Empty(t, watcher.pending)
+		assert.Equal(t, []int64{2}, watcher.notifiedIDs)
+		assert.Equal(t, base, watcher.persistedTimestamp)
+		assert.Equal(t, int64(10), watcher.persistedEventID)
+
+		// A failed pass in the real fetch loop retries even with no new notification.
+		for attempt := range 2 {
+			mock.ExpectQuery(changelogQuery).WithArgs(healthEventsTable, base, int64(10)).WillReturnRows(changelogRows())
+			mock.ExpectQuery(changelogLookupQuery).WithArgs(healthEventsTable, lookupIDs(2), base, int64(10)).
+				WillReturnRows(healthEventRow(changelogRows(), 2, late))
+			save := mock.ExpectExec("INSERT INTO resume_tokens").WithArgs("test-client", checkpointJSON(t, late, 1))
+			if attempt == 0 {
+				save.WillReturnError(sql.ErrConnDone)
+			} else {
+				save.WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+		}
+
+		stop := watcher.startFetchLoop(ctx)
+		synctest.Wait()
+		select {
+		case event := <-watcher.Events():
+			assert.Equal(t, "2", string(event.ResumeToken))
+		case <-time.After(2 * fetchRetryDelay):
+			t.Fatal("failed rewind must retry without another notification")
+		}
+		stop()
+		assert.NoError(t, mock.ExpectationsWereMet())
+		assert.Empty(t, watcher.events)
+		assert.Empty(t, watcher.notifiedIDs)
+	})
+}
+
+type holdCheckpointSave struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (h *holdCheckpointSave) Match(expected, actual string) error {
+	if strings.Contains(actual, "INSERT INTO resume_tokens") {
+		h.once.Do(func() {
+			close(h.started)
+			<-h.release
+		})
+	}
+
+	return sqlmock.QueryMatcherRegexp.Match(expected, actual)
+}
+
+func TestPrepareDelivery_ConcurrentAck_SerializesCheckpointWrites(t *testing.T) {
+	for _, rewindFirst := range []bool{false, true} {
+		t.Run("rewindFirst="+strconv.FormatBool(rewindFirst), func(t *testing.T) {
+			hold := &holdCheckpointSave{started: make(chan struct{}), release: make(chan struct{})}
+			db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(hold))
+			require.NoError(t, err)
+			defer db.Close()
+
+			ctx := context.Background()
+			base := time.Now()
+			late := base.Add(-time.Second)
+			watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+			watcher.lastTimestamp, watcher.lastEventID, watcher.highestReadEventID = base, 10, 10
+			watcher.persistedTimestamp, watcher.persistedEventID = base, 10
+			firstTS, firstID := base, int64(10)
+			if rewindFirst {
+				firstTS, firstID = late, 1
+			} else {
+				mock.ExpectExec("UPDATE datastore_changelog").WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+			mock.ExpectExec("INSERT INTO resume_tokens").WithArgs("test-client", checkpointJSON(t, firstTS, firstID)).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			if rewindFirst {
+				mock.ExpectExec("UPDATE datastore_changelog").WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+			mock.ExpectExec("INSERT INTO resume_tokens").WithArgs("test-client", checkpointJSON(t, late, 1)).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+
+			ackDone, sendDone := make(chan error, 1), make(chan error, 1)
+			ack := func() { ackDone <- watcher.MarkProcessed(ctx, []byte("10")) }
+			send := func() {
+				sendDone <- watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{checkpointEvent(2, late)})
+			}
+			if rewindFirst {
+				go send()
+			} else {
+				go ack()
+			}
+			<-hold.started
+			if rewindFirst {
+				go ack()
+			} else {
+				go send()
+			}
+			require.Never(t, func() bool { return len(ackDone) > 0 || len(sendDone) > 0 },
+				20*time.Millisecond, time.Millisecond)
+			assert.Empty(t, watcher.events, "no delivery before the rewind is durable")
+			close(hold.release)
+			require.NoError(t, <-sendDone)
+			require.NoError(t, <-ackDone)
+			assert.Equal(t, late, watcher.persistedTimestamp)
+			assert.Equal(t, int64(1), watcher.persistedEventID)
+			assert.Equal(t, []string{"2"}, drainTokens(watcher))
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestPrepareDelivery_LegacyResume_ProtectsResolvedPersistedPosition(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	watcher := NewPostgreSQLChangeStreamWatcher(db, "test-client", healthEventsTable, "", ModeHybrid)
+	mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("test-client").
+		WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow(`{"eventID":10}`))
+	mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").WithArgs(int64(10)).
+		WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(base))
+	require.NoError(t, watcher.loadResumePosition(ctx))
+	assert.Equal(t, base, watcher.persistedTimestamp)
+	assert.Equal(t, int64(10), watcher.persistedEventID)
+	late := base.Add(-time.Second)
+	mock.ExpectExec("INSERT INTO resume_tokens").WithArgs("test-client", checkpointJSON(t, late, 1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	require.NoError(t, watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{checkpointEvent(2, late)}))
+	assert.Equal(t, []string{"2"}, drainTokens(watcher))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

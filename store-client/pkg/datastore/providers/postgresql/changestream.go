@@ -129,6 +129,10 @@ type PostgreSQLChangeStreamWatcher struct {
 	// A nonzero sequence marks an active saturation episode, cleared by a tracked ack.
 	pendingFloor pendingDelivery
 
+	// Last successfully persisted pair; mu serializes rewind and acknowledgment saves.
+	persistedTimestamp time.Time
+	persistedEventID   int64
+
 	recentEventIDs map[int64]time.Time
 	recentEventSeq []int64
 
@@ -1145,6 +1149,8 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRows(ctx context.Context) e
 	}
 
 	if err := w.sendEventsToChannel(ctx, events); err != nil {
+		w.keepNotifiedIDs(ids, dropped)
+
 		return fmt.Errorf("failed to deliver notified changelog rows: %w", err)
 	}
 
@@ -1165,6 +1171,10 @@ func (w *PostgreSQLChangeStreamWatcher) keepNotifiedIDs(ids []int64, dropped int
 	kept := make([]int64, 0, len(ids)+len(w.notifiedIDs))
 
 	for _, id := range ids {
+		if _, read := w.recentEventIDs[id]; read {
+			continue
+		}
+
 		if _, waiting := w.unreadIDs[id]; waiting {
 			continue
 		}
@@ -2005,6 +2015,15 @@ func (w *PostgreSQLChangeStreamWatcher) prepareDelivery(
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// A late row may precede an already durable checkpoint. Save the new bound before
+	// registering or handing it out. Failure leaves its id unread for the next lookup;
+	// the fetch loop retries failed passes without stalling the LISTEN connection.
+	if matches {
+		if err := w.rewindCheckpointLocked(ctx, delivery); err != nil {
+			return pendingDelivery{}, err
+		}
+	}
+
 	w.advancePositionLocked(delivery.timestamp, id)
 
 	if matches {
@@ -2014,6 +2033,28 @@ func (w *PostgreSQLChangeStreamWatcher) prepareDelivery(
 	}
 
 	return delivery, nil
+}
+
+// rewindCheckpointLocked persists a late delivery's strict predecessor when necessary.
+// The caller holds mu through the write, as MarkProcessed does, so saves cannot overtake.
+func (w *PostgreSQLChangeStreamWatcher) rewindCheckpointLocked(ctx context.Context, delivery pendingDelivery) error {
+	if !positionAfter(w.persistedTimestamp, w.persistedEventID, delivery.timestamp, delivery.id-1) {
+		return nil
+	}
+
+	ts, id := w.checkpointPositionLocked()
+	if positionAfter(ts, id, delivery.timestamp, delivery.id-1) {
+		ts, id = delivery.timestamp, delivery.id-1
+	}
+
+	if err := w.saveResumePosition(ctx, ts, id); err != nil {
+		slog.Error("Failed to persist checkpoint rewind; delivery will be retried",
+			"client", w.clientName, "eventID", delivery.id, "error", err)
+
+		return fmt.Errorf("persist checkpoint before late delivery %d: %w", delivery.id, err)
+	}
+
+	return nil
 }
 
 // registerDeliveryLocked evicts only bookkeeping, preserving the oldest unacknowledged
@@ -2220,6 +2261,8 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumePosition(ctx context.Context) 
 		}
 	}
 
+	// For a legacy ID token, restart resolves the same pair through the conversion above.
+	w.persistedTimestamp, w.persistedEventID = w.lastTimestamp, w.lastEventID
 	w.highestReadEventID = w.lastEventID
 
 	slog.Info("Loaded resume position",
@@ -2362,6 +2405,8 @@ func (w *PostgreSQLChangeStreamWatcher) saveResumePosition(
 	if err != nil {
 		return fmt.Errorf("failed to save resume position: %w", err)
 	}
+
+	w.persistedTimestamp, w.persistedEventID = timestamp, eventID
 
 	return nil
 }
