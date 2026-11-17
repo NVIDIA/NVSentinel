@@ -39,7 +39,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_processing_errors_total` | Counter | `error_type` | Total number of errors encountered during event processing |
 | `fault_quarantine_cold_start_events_total` | Counter | `result` | Health events examined during startup recovery, labeled `processed`, `skipped`, `superseded`, `invalid`, or `failed` |
 | `fault_quarantine_cold_start_duration_seconds` | Histogram | - | Startup recovery duration. Buckets: ExponentialBuckets(start=0.1s, factor=2, count=18), max ~3.6 hours |
-| `fault_quarantine_event_backlog_count` | Gauge | - | Number of health events which fault quarantine is yet to process. Reports `-1` until the process has completed an event (fresh start, restart, or a process parked by a tripped circuit breaker), so `0` always means an empty backlog |
+| `fault_quarantine_event_backlog_count` | Gauge | - | Number of health events which fault quarantine is yet to process. Reports `-1` from registration until the process records its first event checkpoint, the baseline the count is taken from; no count exists to report before then |
 | `fault_quarantine_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
 
 ### Node Quarantine Metrics
