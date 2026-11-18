@@ -69,7 +69,7 @@ Helm creates the ordinary Job on install or an input-changing upgrade. A complet
 
 Retain completed Jobs by default. TTL deletion can cause Argo CD or Flux to recreate a desired Job repeatedly. Helm alone does not continuously recreate it. Document explicit rerun generation and pruning for each tool; avoid routine Force/Replace annotations. Keep failed Jobs visible until an operator requests a rerun. GitOps Job health may affect sync status, even though ingestion remains independent.
 
-Ordinary resources provide no post-rollout ordering guarantee. Before enabling cleanup, operators must finish retiring or disabling every publisher of a target type. This includes old replicas during rolling upgrades. Run a separate configuration change after that barrier. Never infer this barrier from a delay. Disable and remove any older cleanup Job before changing its policy or rolling back.
+Ordinary resources provide no post-rollout ordering guarantee. Before enabling cleanup, operators must finish retiring or disabling every publisher of a target type. This includes old replicas during rolling upgrades. The barrier also covers platform-connector replicas that already accepted batches for that type. A running connector keeps queued batches and retries their writes, so a pending batch could recreate a removed condition. Complete the barrier only after observing those publisher and connector pods terminate or restart without the type. Run a separate configuration change after that barrier. Never infer this barrier from a delay. Disable and remove any older cleanup Job before changing its policy or rolling back.
 
 ### Rollout and upgrade
 
