@@ -36,9 +36,12 @@ var fullReplayStartTime = time.Unix(0, 0).UTC()
 const loadResumeTokenQuery = `SELECT resume_token FROM resume_tokens WHERE client_name = $1`
 
 // Inspect activity first, then sample the clock; the CTE dependency fixes that order.
-// A writer open during the scan bounds the start with its xact_start. A writer that starts
-// after the scan has changed_at at or after the clock sample, so the poll includes it. A
-// writer that committed before the scan committed before construction began.
+// A writer open during the scan bounds the start with its xact_start, however long it runs.
+// pg_stat_activity is not consistent with the clock, so no order of observations is exact:
+// this order misses only a writer whose whole transaction starts and commits between the
+// scan and the clock sample in this statement. Sampling the clock first would instead miss
+// any open writer that commits between the sample and the scan, a larger window. Closing it
+// exactly needs commit-order data such as track_commit_timestamp.
 // Visible non-client backends cannot write the changelog. PostgreSQL also hides backend_type
 // without statistics privileges, so an unknown type must still be treated as a possible writer.
 // Hidden or disabled activity gives no start bound. Prepared transactions detach from their
