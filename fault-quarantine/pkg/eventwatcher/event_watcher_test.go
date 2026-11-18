@@ -22,12 +22,14 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
@@ -948,4 +950,41 @@ func TestStart_ColdStartCancellation_DoesNotEnterWatchLoop(t *testing.T) {
 		require.NoError(t, watcher.Start(ctx))
 		assert.True(t, changeStream.closed)
 	}
+}
+
+func TestUpdateUnprocessedEventsMetric_ReportsUnknownWithoutCheckpoint(t *testing.T) {
+	watcher := NewEventWatcher(&changeStreamWatcherStub{}, nil, time.Millisecond, &objectIDStoreStub{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watcher.updateUnprocessedEventsMetric(ctx)
+
+	require.Eventually(t, func() bool {
+		var metric dto.Metric
+		if err := metrics.EventBacklogSize.Write(&metric); err != nil {
+			return false
+		}
+
+		return metric.GetGauge().GetValue() == -1
+	}, 5*time.Second, 5*time.Millisecond)
+}
+
+func TestUpdateUnprocessedEventsMetric_ReportsCountAfterCheckpoint(t *testing.T) {
+	ids := &objectIDStoreStub{}
+	ids.StoreLastProcessedObjectID("checkpoint")
+
+	watcher := NewEventWatcher(&changeStreamWatcherStub{}, nil, time.Millisecond, ids)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watcher.updateUnprocessedEventsMetric(ctx)
+
+	require.Eventually(t, func() bool {
+		var metric dto.Metric
+		if err := metrics.EventBacklogSize.Write(&metric); err != nil {
+			return false
+		}
+
+		return metric.GetGauge().GetValue() == 7
+	}, 5*time.Second, 5*time.Millisecond)
 }

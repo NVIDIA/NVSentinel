@@ -251,6 +251,13 @@ const (
 	DryRunActionUnquarantine = "unquarantine"
 )
 
+func init() {
+	// The count is unknown until an update cycle reports it, and the first
+	// cycle only runs on the updater's first tick. Until then the gauge must
+	// not sit at its registration value, 0, which reads as an empty backlog.
+	EventBacklogSize.Set(-1)
+}
+
 // Present at zero from startup, so absence means the exporter is down rather than
 // that dry run has not acted yet.
 func init() {
