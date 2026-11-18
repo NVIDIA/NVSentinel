@@ -154,6 +154,68 @@ func TestHealthEventRule_NonBooleanResult(t *testing.T) {
 	require.True(t, IsEvaluationError(err))
 }
 
+func TestCheckBooleanExpression(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		variable   string
+		expression string
+		wantErr    string
+	}{
+		{
+			name:       "BooleanComparison",
+			variable:   EventVar,
+			expression: `event.componentClass == "GPU"`,
+		},
+		{
+			// A bare field read is dyn. The type checker cannot prove it is a
+			// boolean, so startup accepts it and evaluation rejects a non-boolean.
+			name:       "DynFieldRead",
+			variable:   EventVar,
+			expression: `event.componentClass`,
+		},
+		{
+			name:       "BooleanLiteral",
+			variable:   NodeVar,
+			expression: `true`,
+		},
+		{
+			name:       "StringLiteral",
+			variable:   EventVar,
+			expression: `"abc"`,
+			wantErr:    "boolean",
+		},
+		{
+			name:       "IntExpression",
+			variable:   EventVar,
+			expression: `1 + 1`,
+			wantErr:    "int",
+		},
+		{
+			name:       "ParseError",
+			variable:   EventVar,
+			expression: `event.`,
+			wantErr:    "failed to parse",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := CheckBooleanExpression(tt.variable, tt.expression)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
 func TestNewRule_InvalidExpression(t *testing.T) {
 	_, err := NewHealthEventRule("event.agent ==")
 	require.ErrorContains(t, err, "failed to parse expression")
