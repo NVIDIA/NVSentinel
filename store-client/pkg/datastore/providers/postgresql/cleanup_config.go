@@ -21,6 +21,10 @@ import (
 	"time"
 )
 
+// Keep the default one-hour NOTIFY catch-up window even across mixed owner intervals.
+// Statement and idle-in-transaction timeouts do not bound total writer lifetime.
+const minimumCleanupInterval = time.Hour
+
 type cleanupConfig struct {
 	retention  time.Duration
 	interval   time.Duration
@@ -41,20 +45,38 @@ func loadCleanupConfig(options map[string]string) cleanupConfig {
 		return cleanupConfig{}
 	}
 
-	interval, err := time.ParseDuration(cleanupConfigValue(options,
-		"changelogCleanupInterval", "DATASTORE_CHANGELOG_CLEANUP_INTERVAL", "1h"))
-	if err != nil || interval <= 0 {
-		slog.Warn("Invalid changelog cleanup interval; cleanup disabled")
+	rawInterval := cleanupConfigValue(options,
+		"changelogCleanupInterval", "DATASTORE_CHANGELOG_CLEANUP_INTERVAL", "1h")
+	interval, err := time.ParseDuration(rawInterval)
+
+	if err != nil || interval < minimumCleanupInterval {
+		slog.Warn("Invalid changelog cleanup interval; cleanup disabled",
+			"value", rawInterval, "minimum", minimumCleanupInterval)
+
 		return cleanupConfig{}
 	}
 
-	size := cleanupPositiveInt(cleanupConfigValue(options,
-		"changelogCleanupBatchSize", "DATASTORE_CHANGELOG_CLEANUP_BATCH_SIZE", "10000"))
+	rawSize := cleanupConfigValue(options,
+		"changelogCleanupBatchSize", "DATASTORE_CHANGELOG_CLEANUP_BATCH_SIZE", "10000")
+	size := cleanupPositiveInt(rawSize)
 
-	batches := cleanupPositiveInt(cleanupConfigValue(options,
-		"changelogCleanupMaxBatches", "DATASTORE_CHANGELOG_CLEANUP_MAX_BATCHES", "100"))
+	rawBatches := cleanupConfigValue(options,
+		"changelogCleanupMaxBatches", "DATASTORE_CHANGELOG_CLEANUP_MAX_BATCHES", "100")
+	batches := cleanupPositiveInt(rawBatches)
+
 	if size == 0 || batches == 0 {
-		slog.Warn("Invalid changelog cleanup batch limits; cleanup disabled")
+		slog.Warn("Invalid changelog cleanup batch limits; cleanup disabled",
+			"batch_size", rawSize, "max_batches", rawBatches)
+
+		return cleanupConfig{}
+	}
+
+	// PR 3 removes this temporary gate after the idle fence, rollout docs and acceptance tests ship.
+	// Require the environment acknowledgment explicitly; options cannot bypass the release gate.
+	if os.Getenv("DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL") != "true" {
+		slog.Warn("Changelog retention configured but inert until remaining ADR-068 prerequisites ship; " +
+			"experimental testing requires DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL=true")
+
 		return cleanupConfig{}
 	}
 

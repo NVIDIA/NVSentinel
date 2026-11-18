@@ -29,6 +29,7 @@ func TestClientFactory_CleanupOwnsPool_NoSetupDDL(t *testing.T) {
 	t.Setenv("DATASTORE_DATABASE", "test")
 	t.Setenv("DATASTORE_USERNAME", "test")
 	t.Setenv("MONGODB_COLLECTION_NAME", "HealthEvents")
+	t.Setenv("DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL", "true")
 	t.Setenv("DATASTORE_CHANGELOG_RETENTION", "24h")
 	factory, err := NewClientFactoryFromEnv()
 	require.NoError(t, err)

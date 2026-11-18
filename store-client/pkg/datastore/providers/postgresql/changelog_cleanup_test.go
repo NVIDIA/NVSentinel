@@ -15,10 +15,12 @@
 package postgresql
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"testing"
 	"testing/synctest"
@@ -356,6 +358,7 @@ func TestChangelogCleaner_Owners_StartAndStopBeforePoolClose(t *testing.T) {
 				if enabled {
 					retention = "24h"
 				}
+				t.Setenv("DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL", "true")
 				t.Setenv("DATASTORE_CHANGELOG_RETENTION", retention)
 				reached := make(chan struct{})
 				matcher := sqlmock.QueryMatcherFunc(func(expected, actual string) error {
@@ -484,6 +487,7 @@ func TestProvisionCleanupState_OptionalSchema_FailureDoesNotStopIngestion(t *tes
 }
 
 func TestNewPostgreSQLStore_Cleanup_StartsOnlyAfterSetup(t *testing.T) {
+	t.Setenv("DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL", "true")
 	t.Setenv("DATASTORE_CHANGELOG_RETENTION", "24h")
 	reached := make(chan struct{})
 	matcher := sqlmock.QueryMatcherFunc(func(expected, actual string) error {
@@ -547,6 +551,7 @@ func TestNewPostgreSQLStore_Cleanup_StartsOnlyAfterSetup(t *testing.T) {
 
 func TestChangelogCleaner_OwnerShutdown_CancelsActiveBatchAndWaitsForRollback(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		t.Setenv("DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL", "true")
 		t.Setenv("DATASTORE_CHANGELOG_RETENTION", "24h")
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
@@ -569,4 +574,111 @@ func TestChangelogCleaner_OwnerShutdown_CancelsActiveBatchAndWaitsForRollback(t 
 		require.Zero(t, db.Stats().OpenConnections)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
+}
+
+func TestChangelogCleaner_ConstructorCancelled_OwnerKeepsRunning(t *testing.T) {
+	for _, kind := range []string{"store", "factory"} {
+		t.Run(kind, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				t.Setenv("DATASTORE_CHANGELOG_RETENTION", "24h")
+				t.Setenv("DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL", "true")
+				db, mock, err := sqlmock.New()
+				require.NoError(t, err)
+				defer db.Close()
+				mock.ExpectQuery("SELECT pg_try_advisory_lock").WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(false))
+				mock.ExpectQuery("SELECT pg_try_advisory_lock").WillDelayFor(time.Hour).
+					WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(false))
+				mock.ExpectClose()
+				constructorCtx, cancel := context.WithCancel(t.Context())
+				var cleaner *changelogCleaner
+				var closeOwner func(context.Context) error
+				if kind == "factory" {
+					owner := NewOwnedPostgreSQLDatabaseClient(constructorCtx, db, healthEventsTable).(*PostgreSQLDatabaseClient)
+					cleaner = owner.cleaner
+					closeOwner = owner.Close
+				} else {
+					owner := &PostgreSQLDataStore{db: db, cleaner: startChangelogCleaner(constructorCtx, db, nil)}
+					cleaner = owner.cleaner
+					closeOwner = owner.Close
+				}
+				synctest.Wait()
+				cancel()
+				synctest.Wait()
+				select {
+				case <-cleaner.done:
+					t.Fatal("constructor cancellation stopped owner cleaner")
+				default:
+				}
+				// Check a later interval with an already-cancelled constructor, without a fixed sleep.
+				timer := time.NewTimer(time.Hour)
+				defer timer.Stop()
+				<-timer.C
+				synctest.Wait()
+				require.NoError(t, closeOwner(t.Context()))
+				synctest.Wait()
+				select {
+				case <-cleaner.done:
+				default:
+					t.Fatal("owner Close did not wait")
+				}
+				require.NoError(t, mock.ExpectationsWereMet())
+			})
+		})
+	}
+}
+
+func TestChangelogCleaner_TokenClockAndReplayBound_ReportsClient(t *testing.T) {
+	cases := []struct {
+		name      string
+		timestamp time.Time
+		updated   time.Time
+		failure   bool
+		message   string
+	}{
+		{"future", cleanupTestNow.Add(time.Second + time.Nanosecond), cleanupTestNow, true, "future consumer position"},
+		{"allowed skew", cleanupTestNow.Add(time.Second), cleanupTestNow, false, ""},
+		{"epoch", time.Unix(0, 0), cleanupTestNow, false, "full-replay consumer position"},
+		{"quiet", cleanupTestNow.Add(-72 * time.Hour), cleanupTestNow.Add(-72 * time.Hour), false, "quiet consumers"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			c, mock := newCleanupTest(t)
+			expectCleanupLock(mock, true)
+			expectCleanupGuard(mock)
+			raw := fmt.Sprintf(`{"timestamp":%q,"eventID":0}`, tt.timestamp.Format(time.RFC3339Nano))
+			mock.ExpectQuery("SELECT client_name, resume_token, last_updated FROM resume_tokens").
+				WillReturnRows(cleanupTokenRows().AddRow("protected-client", raw, tt.updated))
+			if !tt.failure {
+				mock.ExpectQuery(regexp.QuoteMeta(cleanupNextTableQuery)).WillReturnRows(sqlmock.NewRows([]string{"table_name"}))
+			}
+			expectCleanupUnlock(mock)
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			defer slog.SetDefault(previous)
+			n, err := c.run(t.Context())
+			require.Zero(t, n)
+			if tt.failure {
+				require.ErrorContains(t, err, "protected-client")
+			} else {
+				require.NoError(t, err)
+			}
+			if tt.message != "" {
+				require.Contains(t, logs.String(), tt.message)
+				require.Contains(t, logs.String(), "protected-client")
+			}
+		})
+	}
+}
+
+func TestValidateCleanupHorizon_LastSafeAge_Accepts(t *testing.T) {
+	c, mock := newCleanupTest(t)
+	mock.ExpectBegin()
+	tx, err := c.db.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT pg_current_xact_id()::text")).
+		WillReturnRows(sqlmock.NewRows([]string{"xid"}).AddRow("2147483747"))
+	require.NoError(t, validateCleanupHorizon(t.Context(), tx, "100"))
+	mock.ExpectRollback()
+	require.NoError(t, tx.Rollback())
 }

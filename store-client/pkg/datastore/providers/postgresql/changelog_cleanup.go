@@ -94,7 +94,7 @@ func startChangelogCleaner(ctx context.Context, db *sql.DB, options map[string]s
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 
 	c := &changelogCleaner{db: db, config: config, cancel: cancel, done: make(chan struct{})}
 	go c.loop(ctx)
@@ -184,7 +184,7 @@ func (c *changelogCleaner) run(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 
-	bound, err := cleanupConsumerBound(ctx, conn, now.Add(-c.config.retention))
+	bound, err := cleanupConsumerBound(ctx, conn, now, now.Add(-c.config.retention))
 	if err != nil || bound == nil {
 		return 0, err
 	}
@@ -237,7 +237,10 @@ type cleanupToken struct {
 	updated sql.NullTime
 }
 
-func cleanupConsumerBound(ctx context.Context, conn *sql.Conn, cutoff time.Time) (*cleanupPosition, error) {
+// The bound is sampled before batch snapshots. A concurrent late-NOTIFY rewind is safe
+// because its newly committed row remains protected by the previous-snapshot xmin guard.
+// Token resets require the operator rollout gate; a nonempty set cannot certify completeness.
+func cleanupConsumerBound(ctx context.Context, conn *sql.Conn, now, cutoff time.Time) (*cleanupPosition, error) {
 	tokens, err := readCleanupTokens(ctx, conn)
 	if err != nil {
 		return nil, err
@@ -248,11 +251,12 @@ func cleanupConsumerBound(ctx context.Context, conn *sql.Conn, cutoff time.Time)
 	for _, token := range tokens {
 		position, err := parseCleanupPosition(ctx, conn, token)
 		if err != nil {
+			slog.Warn("Changelog cleanup blocked by unreadable consumer position", "client", token.client, "error", err)
 			return nil, err
 		}
 
-		if !token.updated.Valid || token.updated.Time.Before(cutoff) {
-			slog.Warn("Stale changelog cleanup token remains protected", "client", token.client)
+		if err := validateCleanupPosition(token, position, now, cutoff); err != nil {
+			return nil, err
 		}
 
 		if oldest == nil || position.before(*oldest) {
@@ -265,6 +269,31 @@ func cleanupConsumerBound(ctx context.Context, conn *sql.Conn, cutoff time.Time)
 	}
 
 	return oldest, nil
+}
+
+func validateCleanupPosition(token cleanupToken, position cleanupPosition, now, cutoff time.Time) error {
+	// Both values use the database clock. Allow only one second for concurrent token saves
+	// and small clock adjustments; larger skew cannot certify an acknowledged position.
+	if position.timestamp.After(now.Add(time.Second)) {
+		slog.Warn("Changelog cleanup blocked by future consumer position", "client", token.client,
+			"timestamp", position.timestamp, "database_time", now)
+
+		return fmt.Errorf("future cleanup timestamp for client %s", token.client)
+	}
+
+	if !token.updated.Valid || token.updated.Time.Before(cutoff) {
+		slog.Warn("Stale changelog cleanup token remains protected; "+
+			"quiet consumers need acknowledgments or PR 3 idle checkpoints",
+			"client", token.client, "timestamp", position.timestamp)
+	}
+
+	if !position.timestamp.After(time.Unix(0, 0)) {
+		slog.Warn("Changelog cleanup blocked by full-replay consumer position; "+
+			"requires acknowledgment or PR 3 idle checkpoints",
+			"client", token.client)
+	}
+
+	return nil
 }
 
 func validCleanupGuard(previous string, observed, now time.Time) bool {
@@ -420,7 +449,8 @@ func (p cleanupPosition) before(other cleanupPosition) bool {
 
 func discardCleanupSession(conn *sql.Conn) {
 	// Conn.Close returns a live session to the pool. ErrBadConn discards it and its session locks.
-	if err := conn.Raw(func(any) error { return driver.ErrBadConn }); err != nil && !errors.Is(err, driver.ErrBadConn) {
+	err := conn.Raw(func(any) error { return driver.ErrBadConn })
+	if err != nil && !errors.Is(err, driver.ErrBadConn) && !errors.Is(err, sql.ErrConnDone) {
 		slog.Warn("Discarding cleanup session failed", "error", err)
 	}
 }
