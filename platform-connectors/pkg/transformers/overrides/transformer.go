@@ -34,16 +34,18 @@ type Processor struct {
 }
 
 type originalState struct {
-	isFatal           bool
-	isHealthy         bool
-	recommendedAction pb.RecommendedAction
+	isFatal                 bool
+	isHealthy               bool
+	recommendedAction       pb.RecommendedAction
+	customRecommendedAction string
 }
 
 func captureOriginalState(event *pb.HealthEvent) originalState {
 	return originalState{
-		isFatal:           event.IsFatal,
-		isHealthy:         event.IsHealthy,
-		recommendedAction: event.RecommendedAction,
+		isFatal:                 event.IsFatal,
+		isHealthy:               event.IsHealthy,
+		recommendedAction:       event.RecommendedAction,
+		customRecommendedAction: event.CustomRecommendedAction,
 	}
 }
 
@@ -128,26 +130,7 @@ func (p *Processor) applyOverride(
 	}
 
 	if rule.override.RecommendedAction != nil {
-		newAction, err := rule.override.ParseRecommendedAction()
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to parse recommended action",
-				"rule", rule.name,
-				"node", event.NodeName,
-				"agent", event.Agent,
-				"error", err)
-
-			evaluationErrors.Inc()
-
-			newAction = original.recommendedAction
-		}
-
-		if newAction != original.recommendedAction {
-			event.RecommendedAction = newAction
-
-			overridesApplied.WithLabelValues(rule.name, "recommendedAction").Inc()
-
-			changed = append(changed, "recommendedAction")
-		}
+		changed = append(changed, applyActionOverride(ctx, event, rule, original)...)
 	}
 
 	if len(changed) > 0 {
@@ -162,6 +145,53 @@ func (p *Processor) applyOverride(
 			"original_is_healthy", original.isHealthy,
 			"new_is_healthy", event.IsHealthy,
 			"original_action", original.recommendedAction.String(),
-			"new_action", event.RecommendedAction.String())
+			"new_action", event.RecommendedAction.String(),
+			"original_custom_action", original.customRecommendedAction,
+			"new_custom_action", event.CustomRecommendedAction)
 	}
+}
+
+// applyActionOverride sets recommendedAction and customRecommendedAction from the rule and
+// returns the fields it changed. An action other than CUSTOM clears customRecommendedAction:
+// consumers such as event-exporter read the name whenever it is set.
+func applyActionOverride(
+	ctx context.Context, event *pb.HealthEvent, rule compiledRule, original originalState,
+) []string {
+	newAction, err := rule.override.ParseRecommendedAction()
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to parse recommended action",
+			"rule", rule.name,
+			"node", event.NodeName,
+			"agent", event.Agent,
+			"error", err)
+
+		evaluationErrors.Inc()
+
+		return nil
+	}
+
+	newCustomAction := ""
+	if newAction == pb.RecommendedAction_CUSTOM {
+		newCustomAction = *rule.override.CustomRecommendedAction
+	}
+
+	changed := []string{}
+
+	if newAction != original.recommendedAction {
+		event.RecommendedAction = newAction
+
+		overridesApplied.WithLabelValues(rule.name, "recommendedAction").Inc()
+
+		changed = append(changed, "recommendedAction")
+	}
+
+	if newCustomAction != original.customRecommendedAction {
+		event.CustomRecommendedAction = newCustomAction
+
+		overridesApplied.WithLabelValues(rule.name, "customRecommendedAction").Inc()
+
+		changed = append(changed, "customRecommendedAction")
+	}
+
+	return changed
 }
