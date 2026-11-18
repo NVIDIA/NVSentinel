@@ -18,6 +18,7 @@ from gpu_health_monitor.tests.nvlink_fixtures import (
     A100_PCIE_UNBRIDGED,
     H100_SXM_TRAINED,
     L40_NO_NVLINK,
+    RTX_3090_UNBRIDGED,
     make_metadata_reader,
 )
 from unittest.mock import MagicMock, patch
@@ -2419,6 +2420,26 @@ class TestSuppressNvlinkDownOnPcieGpus:
         health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 5)])
 
         self._assert_not_suppressed(health_status)
+
+    def test_no_suppress_unbridged_geforce_rtx_3090_by_default(self, tmp_path: Path) -> None:
+        """Unbridged RTX 3090 WITHOUT operator opt-in: NOT suppressed."""
+        reader = make_metadata_reader(tmp_path, [RTX_3090_UNBRIDGED])
+        watcher = self._make_watcher(metadata_reader=reader)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 8)])
+
+        self._assert_not_suppressed(health_status)
+
+    def test_suppress_unbridged_geforce_rtx_3090_with_opt_in(self, tmp_path: Path) -> None:
+        """Unbridged RTX 3090 WITH operator opt-in: suppressed."""
+        reader = make_metadata_reader(tmp_path, [RTX_3090_UNBRIDGED])
+        watcher = self._make_watcher(metadata_reader=reader, suppress_unbridged_pcie=True)
+
+        health_status = self._run_health_check(watcher, [self._nvlink_down_incident(0, 8)])
+
+        details = health_status["DCGM_HEALTH_WATCH_NVLINK"]
+        assert details.status == dcgm.types.HealthStatus.PASS
+        assert len(details.entity_failures) == 0
 
     def test_no_suppress_sxm_gpu_zero_active_links(self, tmp_path: Path) -> None:
         """SXM GPU whose metadata shows zero active links (fabric manager may

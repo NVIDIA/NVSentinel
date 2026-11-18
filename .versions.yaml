@@ -59,6 +59,8 @@ go_tools:
   crane: 'v0.22.1'
   # renovate: datasource=go depName=golang.org/x/vuln depType=go_tools
   govulncheck: 'v1.9.0'
+  # renovate: datasource=github-releases depName=google/go-licenses depType=go_tools
+  go_licenses: 'v2.0.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools depType=go_tools
   controller_gen: 'v0.23.0'
 

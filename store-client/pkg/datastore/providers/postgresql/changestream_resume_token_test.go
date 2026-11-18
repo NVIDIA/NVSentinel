@@ -417,9 +417,8 @@ func TestConcurrentClientsWithDifferentFilters(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestMarkProcessedUpdatesResumeToken verifies that MarkProcessed correctly
-// updates both the in-memory lastEventID and persists it to the database.
-func TestMarkProcessedUpdatesResumeToken(t *testing.T) {
+// An acknowledgment for an unread row validates the row but cannot advance the cursor.
+func TestMarkProcessed_UnreadAcknowledgment_PreservesCursor(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -448,14 +447,15 @@ func TestMarkProcessedUpdatesResumeToken(t *testing.T) {
 
 	// Mock the saveResumePosition INSERT/UPDATE
 	mock.ExpectExec("INSERT INTO resume_tokens").
+		WithArgs(clientName, checkpointJSON(t, time.Time{}, 0)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err = watcher.MarkProcessed(ctx, []byte("42"))
 	require.NoError(t, err)
 
-	// Verify in-memory lastEventID was updated
-	assert.Equal(t, int64(42), watcher.lastEventID,
-		"lastEventID should be updated to 42")
+	assert.Zero(t, watcher.lastEventID)
+	assert.True(t, watcher.lastTimestamp.IsZero())
+	assert.Zero(t, watcher.highestReadEventID)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -1060,7 +1060,7 @@ func TestPositionAfter_OrdersByChangedAtThenID(t *testing.T) {
 // deliver them again. The ack must not look the row up either. The watcher has read it, so the
 // cursor is already past it, and by the time the ack comes the row may have been purged, which
 // would fail the ack for good. sqlmock rejects any statement it isn't told to expect, so a
-// lookup here fails the test. The saved resume position is the cursor.
+// lookup here fails the test. The saved position stays strictly before pending row 1.
 func TestMarkProcessed_ReadHighIDEarlyRow_AcksWithoutLookupAndKeepsCursor(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -1078,7 +1078,7 @@ func TestMarkProcessed_ReadHighIDEarlyRow_AcksWithoutLookupAndKeepsCursor(t *tes
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	tokenJSON, err := json.Marshal(map[string]any{
-		"timestamp": base.Add(3 * time.Second).Format(time.RFC3339Nano), "eventID": int64(3),
+		"timestamp": base.Add(time.Second).Format(time.RFC3339Nano), "eventID": int64(0),
 	})
 	require.NoError(t, err)
 	mock.ExpectExec("INSERT INTO resume_tokens").
@@ -1100,8 +1100,7 @@ func TestMarkProcessed_ReadHighIDEarlyRow_AcksWithoutLookupAndKeepsCursor(t *tes
 
 // After a restart the watcher resumes from the saved token. An ack for a row at or below the
 // token's id must not look the row up: it was read before the restart and may be purged. An ack
-// above it is for a row this watcher hasn't read, so its changed_at decides whether the cursor
-// moves.
+// above it is validated, but cannot advance the cursor or read high-water mark.
 func TestMarkProcessed_AfterResume_AcksAtOrBelowTokenIDWithoutLookup(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -1138,7 +1137,7 @@ func TestMarkProcessed_AfterResume_AcksAtOrBelowTokenIDWithoutLookup(t *testing.
 	assert.Equal(t, base, watcher.lastTimestamp)
 	assert.Equal(t, int64(42), watcher.lastEventID)
 
-	// Row 43 wasn't: its changed_at is looked up, and the cursor moves to it.
+	// Row 43 was not read: validate it without advancing either read position.
 	mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").
 		WithArgs(int64(43)).
 		WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(base.Add(time.Second)))
@@ -1146,19 +1145,19 @@ func TestMarkProcessed_AfterResume_AcksAtOrBelowTokenIDWithoutLookup(t *testing.
 		WithArgs(int64(43), healthEventsTable).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO resume_tokens").
-		WithArgs("test-client", savedToken(base.Add(time.Second), 43)).
+		WithArgs("test-client", savedToken(base, 42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	require.NoError(t, watcher.MarkProcessed(ctx, []byte("43")))
-	assert.Equal(t, base.Add(time.Second), watcher.lastTimestamp)
-	assert.Equal(t, int64(43), watcher.lastEventID)
+	assert.Equal(t, base, watcher.lastTimestamp)
+	assert.Equal(t, int64(42), watcher.lastEventID)
+	assert.Equal(t, int64(42), watcher.highestReadEventID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 // An ack for a row this watcher hasn't read, such as one from before a restart, needs the row's
-// changed_at to decide whether the cursor moves. If that lookup fails, the ack must fail and
-// change nothing. After pollHighIDEarlyRowFirst the cursor's id is 3, below an id already read,
-// so a guessed timestamp would have moved the cursor to (guess, 200), past rows never delivered.
+// changed_at validated. If that lookup fails, the ack must fail without writing a checkpoint.
+// After pollHighIDEarlyRowFirst the cursor's id is 3, below an id already read.
 func TestMarkProcessed_UnreadRowLookupFails_ReturnsErrorAndKeepsCursor(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1455,85 +1454,25 @@ func buildTestHealthEvent(id string) map[string]any {
 	}
 }
 
-// TestPositionAdvancesBeforeChannelSend verifies that lastEventID is updated
-// BEFORE attempting to send to the channel. This ensures that if the send blocks
-// (e.g., channel full), the position is still advanced when send eventually succeeds.
-func TestPositionAdvancesBeforeChannelSend(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	ctx := context.Background()
-	clientName := "test-client"
-	tableName := "test_table"
-
-	// Mock loadResumePosition
-	mock.ExpectQuery("SELECT resume_token FROM resume_tokens").
-		WithArgs(clientName).
-		WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).
-			AddRow(`{"eventID": 0, "timestamp": "2025-01-01T00:00:00Z"}`))
-
+// A failed channel delivery must leave the row available for the next poll.
+func TestPositionDoesNotAdvanceBeforeChannelDelivery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
 	watcher := &PostgreSQLChangeStreamWatcher{
-		db:          db,
-		clientName:  clientName,
-		tableName:   tableName,
-		events:      make(chan datastore.EventWithToken, 1), // Buffer of 1
-		stopCh:      make(chan struct{}),
-		lastEventID: 0,
+		events:        make(chan datastore.EventWithToken, 1),
+		stopCh:        make(chan struct{}),
+		lastTimestamp: time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC),
+		lastEventID:   1,
 	}
+	watcher.events <- datastore.EventWithToken{ResumeToken: []byte("buffered")}
+	cancel()
 
-	err = watcher.loadResumePosition(ctx)
-	require.NoError(t, err)
-
-	// Create 2 events
-	events := []datastore.EventWithToken{
-		{
-			Event: map[string]any{
-				"_id":           map[string]any{"_data": "1"},
-				"operationType": "insert",
-				"fullDocument":  map[string]any{"id": "1"},
-			},
-			ResumeToken: []byte("1"),
-		},
-		{
-			Event: map[string]any{
-				"_id":           map[string]any{"_data": "2"},
-				"operationType": "insert",
-				"fullDocument":  map[string]any{"id": "2"},
-			},
-			ResumeToken: []byte("2"),
-		},
-	}
-
-	// Send both events in a goroutine
-	done := make(chan error, 1)
-	go func() {
-		done <- watcher.sendEventsToChannel(ctx, events)
-	}()
-
-	// Give sendEventsToChannel time to process first event and block on second
-	time.Sleep(50 * time.Millisecond)
-
-	// Check lastEventID BEFORE draining the channel
-	// It should be 2 (both events processed) even though channel still has events
-	watcher.mu.RLock()
-	currentLastEventID := watcher.lastEventID
-	watcher.mu.RUnlock()
-
-	// lastEventID should be 2 (last event processed)
-	// This proves position advances BEFORE channel send completes
-	assert.Equal(t, int64(2), currentLastEventID,
-		"lastEventID should be 2 even before events are consumed from channel")
-
-	// Now drain the channel
-	<-watcher.events
-	<-watcher.events
-
-	// Wait for goroutine to complete
-	err = <-done
-	require.NoError(t, err)
-
-	assert.NoError(t, mock.ExpectationsWereMet())
+	err := watcher.sendEventsToChannel(ctx, []datastore.EventWithToken{{
+		Event:       map[string]any{"clusterTime": watcher.lastTimestamp.Add(time.Second)},
+		ResumeToken: []byte("2"),
+	}})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, int64(1), watcher.lastEventID)
+	require.Equal(t, time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC), watcher.lastTimestamp)
 }
 
 // TestRepeatedXIDRuleCIScenario recreates the EXACT scenario from CI run 19611652848
