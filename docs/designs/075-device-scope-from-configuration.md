@@ -116,7 +116,7 @@ The chart renders `global.entityTypes` into the configuration file of each compo
 | Pod device mapper | `resourceNames`, `dra` | Records only the configured resources and drivers |
 | node-drainer | All fields | Partial drain for `scopedActions`. The pod filter, the missing-annotation check and the `drainGPUPods` filter read the configured names instead of `GPU_UUID` |
 | fault-quarantine | `scopedActions` | Post-remediation validation uses the same partial-drain decision as node-drainer |
-| fault-remediation | `scopedActions` | `impactedEntityScope` must name a configured entity type. The [scope check](#scope-check) |
+| fault-remediation | `scopedActions` | `impactedEntityScope` must name a configured entity type. The [scope check](#scope-check), which also reads `global.partialDrainEnabled` for events without a recorded scope |
 
 If a component's configuration has no `entityTypes` key, it uses the NVIDIA `GPU_UUID` entry above, so a configuration file from an earlier chart keeps working. This built-in default is removed when NVIDIA-specific code moves out of the core into an NVIDIA plugin ([ADR-070](070-vendor-neutral-core.md#phase-4-move-vendor-code)). The plugin chart then sets the entry. An empty map, `entityTypes: {}`, turns partial drains off for every event.
 
@@ -136,7 +136,7 @@ The drain and the repair must cover the same thing. A partial drain followed by 
 
 **At install.** When partial drains are on, every action in `scopedActions` needs a `maintenance.actions` entry with the same `impactedEntityScope`. Otherwise the chart fails the install or upgrade. There is no warning period, because the configuration it rejects reboots nodes after a partial drain today.
 
-**At run time.** A fault-remediation rule set ([ADR-064](064-node-and-device-selection.md)) can still pick an action on the full node after a partial drain. The chart cannot see this. fault-remediation knows that the drain was partial from the scope that node-drainer records on the event (`DrainDecision.scope`). In that case, fault-remediation does not create the CR. It treats the event as an [error in ADR-064](064-node-and-device-selection.md#the-drain-decision): it records no decision, logs both scopes, increments `fault_remediation_processing_errors_total` with a new `error_type`, and retries the event with backoff. Each retry evaluates the rule sets again, so a fix to the configuration lets the event continue. node-drainer behaves the same way today when a partial drain cannot proceed. Events from before the upgrade have no recorded scope and are not checked.
+**At run time.** A fault-remediation rule set ([ADR-064](064-node-and-device-selection.md)) can still pick an action on the full node after a partial drain. The chart cannot see this. fault-remediation knows that the drain was partial from the scope that node-drainer records on the event (`DrainDecision.scope`). In that case, fault-remediation does not create the CR. It treats the event as an [error in ADR-064](064-node-and-device-selection.md#the-drain-decision): it records no decision, logs both scopes, increments `fault_remediation_processing_errors_total` with a new `error_type`, and retries the event with backoff. Each retry evaluates the rule sets again, so a fix to the configuration lets the event continue. node-drainer behaves the same way today when a partial drain cannot proceed. An event drained by a version before v1.31.0 has no recorded scope. For such an event, fault-remediation works out the scope from the event and `partialDrainEnabled`, as node-drainer does for it.
 
 The other direction is allowed: a full drain followed by a repair of one device evicts more pods than needed, but stops none without a drain.
 
@@ -174,14 +174,14 @@ The entity value in the event must equal the attribute value exactly. One attrib
 
 For a device that is identified by its PCI address, the entity type uses the Kubernetes standard attribute [`resource.kubernetes.io/pciBusID`](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/dynamic-resource-allocation/deviceattribute/attribute.go#L34-L39). Its value has the full `domain:bus:device.function` form, so the monitor must report the address in the same form. The `PCI` entities in NVIDIA events today do not: XID lines have no function, and NVML has an eight-digit domain.
 
-If the mapper cannot find the attribute for a device, it does not annotate the pod. node-drainer then sees a pod with a claim and no annotation, and the partial drain waits instead of missing the pod.
+If the mapper cannot find the attribute for any configured device of a pod, it writes no annotation for that pod, and removes an existing one. A partial annotation would make node-drainer miss the pod. Without an annotation, node-drainer sees a pod with a claim and no annotation, and the partial drain waits instead.
 
 The metadata-collector ClusterRole gets `list` and `watch` on `resourceslices.resource.k8s.io`. The chart adds these only when the map has a DRA entry.
 
 ### Backwards compatibility
 
 - **Helm values:** no key is renamed or removed. `global.entityTypes` is new, and its default keeps today's behaviour.
-- **Flags:** the metadata-collector binary still accepts `--pod-mapper-enabled`, so an older pod spec keeps starting.
+- **Flags:** the metadata-collector binary still accepts `--pod-mapper-enabled`, so an older pod spec keeps starting. The chart and the images are released together. A newer image under an older chart is not supported: the pod then has no mapper, and partial drains wait.
 - **Pod annotation and event store:** no change. Old and new components read each other's data.
 - **Behaviour:** two changes, both on purpose: the chart check, and the retry of an action on the full node after a partial drain (see [Scope check](#scope-check)).
 
