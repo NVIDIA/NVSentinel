@@ -16,10 +16,9 @@ package evaluator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-
-	multierror "github.com/hashicorp/go-multierror"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -33,7 +32,7 @@ func InitializeRuleSetEvaluators(
 ) ([]RuleSetEvaluatorIface, error) {
 	var (
 		ruleSetEvals []RuleSetEvaluatorIface
-		errs         *multierror.Error
+		errs         []error
 	)
 
 	for _, ruleSet := range ruleSets {
@@ -45,7 +44,7 @@ func InitializeRuleSetEvaluators(
 		if len(ruleSet.Match.Any) > 0 {
 			evaluators, err := createEvaluators(ruleSet.Match.Any, nodeInformer)
 			if err != nil {
-				errs = multierror.Append(errs, err)
+				errs = append(errs, err)
 			} else {
 				eval := NewAnyRuleSetEvaluator(evaluators, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
@@ -57,7 +56,7 @@ func InitializeRuleSetEvaluators(
 		if len(ruleSet.Match.All) > 0 {
 			evaluators, err := createEvaluators(ruleSet.Match.All, nodeInformer)
 			if err != nil {
-				errs = multierror.Append(errs, err)
+				errs = append(errs, err)
 			} else {
 				eval := NewAllRuleSetEvaluator(evaluators, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
@@ -67,13 +66,13 @@ func InitializeRuleSetEvaluators(
 		}
 	}
 
-	return ruleSetEvals, errs.ErrorOrNil()
+	return ruleSetEvals, errors.Join(errs...)
 }
 
 func createEvaluators(rules []config.Rule, nodeInformer *informer.NodeInformer) ([]RuleEvaluator, error) {
 	evaluators := []RuleEvaluator{}
 
-	var errs *multierror.Error
+	var errs []error
 
 	for _, rule := range rules {
 		var eval RuleEvaluator
@@ -97,14 +96,14 @@ func createEvaluators(rules []config.Rule, nodeInformer *informer.NodeInformer) 
 		}
 
 		if err != nil {
-			errs = multierror.Append(errs, err)
+			errs = append(errs, err)
 			continue
 		}
 
 		evaluators = append(evaluators, eval)
 	}
 
-	return evaluators, errs.ErrorOrNil()
+	return evaluators, errors.Join(errs...)
 }
 
 type healthEventRule struct {

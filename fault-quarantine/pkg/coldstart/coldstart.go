@@ -24,7 +24,6 @@ import (
 	"sync"
 	"time"
 
-	multierror "github.com/hashicorp/go-multierror"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
@@ -84,10 +83,6 @@ func IsPermanentError(err error) bool {
 	// a permanent wrapper from a joined permanent-plus-transient child.
 	if _, ok := err.(*permanentError); ok { //nolint:errorlint // Directness is required for all-errors classification.
 		return true
-	}
-
-	if aggregate, ok := err.(*multierror.Error); ok { //nolint:errorlint // Multierror's chain hides the current child.
-		return allPermanentErrors(aggregate.Errors)
 	}
 
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
