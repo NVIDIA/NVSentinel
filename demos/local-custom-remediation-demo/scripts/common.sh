@@ -259,6 +259,19 @@ Check your network, or pin one explicitly:
   NVSENTINEL_CHART_VERSION=v1.23.0 ./scripts/00-setup.sh"
 }
 
+# Runs a command with its output hidden. If it fails, prints the last lines of
+# what it wrote, so the real error is not lost.
+#   run_quiet <command...>
+run_quiet() {
+    local output
+    if output="$("$@" 2>&1)"; then
+        return 0
+    fi
+
+    printf '%s\n' "$output" | tail -n 20 >&2
+    return 1
+}
+
 # Polls until the command succeeds or the timeout expires. Prints a dot per
 # attempt so a long wait does not look like a hang.
 #   wait_until <timeout-seconds> <description> <command...>
