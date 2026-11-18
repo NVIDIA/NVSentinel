@@ -179,6 +179,20 @@ func GetRecoveryNode(
 	return node, err
 }
 
+// ForgetRecoveryNode drops the node's snapshot so the next GetRecoveryNode loads it again. Call
+// it after changing the node outside the replayed event.
+func ForgetRecoveryNode(ctx context.Context, nodeName string) {
+	state, ok := ctx.Value(recoveryContextKey{}).(*recoveryState)
+	if !ok {
+		return
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	delete(state.nodes, nodeName)
+}
+
 type ProcessResult string
 
 const (
