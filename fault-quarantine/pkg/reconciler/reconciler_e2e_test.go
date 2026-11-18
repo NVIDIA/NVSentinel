@@ -37,6 +37,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -4331,101 +4332,29 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 	}, statusCheckTimeout, statusCheckPollInterval, "6th node should not be cordoned due to circuit breaker")
 }
 
-func TestE2E_CircuitBreakerForgetsDeletedNode(t *testing.T) {
-	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
-	defer cancel()
+// createDeletableE2ETestNode creates a GPU node and deletes it when the test ends, unless the
+// test already deleted it.
+func createDeletableE2ETestNode(ctx context.Context, t *testing.T, name string) {
+	t.Helper()
 
-	suffix := generateShortTestID()[:6]
-	deletedNode := "e2e-cb-deleted-" + suffix
-	replacementNode := "e2e-cb-replacement-" + suffix
+	createE2ETestNode(ctx, t, name, nil, nil, nil, false)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	createE2ETestNode(ctx, t, deletedNode, nil, nil, nil, false)
-	defer func() {
-		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, deletedNode, metav1.DeleteOptions{})
-		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, replacementNode, metav1.DeleteOptions{})
-	}()
-
-	tomlConfig := config.TomlConfig{
-		LabelPrefix: "k8s.nvidia.com/",
-		RuleSets: []config.QuarantineRuleSet{
-			{
-				Enabled:  true,
-				Name:     "gpu-errors",
-				Version:  "1",
-				Priority: 10,
-				Match: config.Match{
-					Any: []config.Rule{
-						{Kind: "HealthEvent", Expression: "true"},
-					},
-				},
-				Cordon: config.Cordon{ShouldCordon: true},
-			},
-		},
-	}
-
-	r, mockWatcher, _, cb := setupE2EReconciler(t, ctx, tomlConfig, &breaker.CircuitBreakerConfig{
-		Namespace:  "default",
-		Percentage: 50,
-		Duration:   5 * time.Minute,
+		err := e2eTestClient.CoreV1().Nodes().Delete(cleanupCtx, name, metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			t.Errorf("failed to delete node %s: %v", name, err)
+		}
 	})
-	require.NotNil(t, cb)
-
-	require.Eventually(t, func() bool {
-		totalNodes, _, err := r.k8sClient.NodeInformer.GetNodeCounts()
-		return err == nil && totalNodes == 1
-	}, statusCheckTimeout, statusCheckPollInterval, "NodeInformer should see the node")
-
-	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-		generateTestID(),
-		deletedNode,
-		"TestCheck",
-		false,
-		false,
-		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
-		model.StatusInProgress,
-	)}
-
-	require.Eventually(t, func() bool {
-		_, quarantined, err := r.k8sClient.NodeInformer.GetNodeCounts()
-		return err == nil && quarantined[deletedNode]
-	}, statusCheckTimeout, statusCheckPollInterval, "the node should be quarantined")
-
-	require.NoError(t, e2eTestClient.CoreV1().Nodes().Delete(ctx, deletedNode, metav1.DeleteOptions{}))
-
-	require.Eventually(t, func() bool {
-		return getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, deletedNode) == 0
-	}, statusCheckTimeout, statusCheckPollInterval, "the deleted-node callback should run")
-
-	createE2ETestNode(ctx, t, replacementNode, nil, nil, nil, false)
-
-	require.Eventually(t, func() bool {
-		totalNodes, _, err := r.k8sClient.NodeInformer.GetNodeCounts()
-		return err == nil && totalNodes == 1
-	}, statusCheckTimeout, statusCheckPollInterval, "NodeInformer should see the replacement node")
-
-	isTripped, err := cb.IsTripped(ctx)
-	require.NoError(t, err)
-	assert.False(t, isTripped, "the deleted node's cordon must not count against its replacement")
 }
 
-func TestE2E_CircuitBreakerKeepsDeletedNodeCordonWhileGPUNodesRemain(t *testing.T) {
-	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
-	defer cancel()
-
-	suffix := generateShortTestID()[:6]
-	deletedNode := "e2e-cb-keep-deleted-" + suffix
-	cordonedNode := "e2e-cb-keep-cordoned-" + suffix
-	healthyNode := "e2e-cb-keep-healthy-" + suffix
-
-	for _, name := range []string{deletedNode, cordonedNode, healthyNode} {
-		createE2ETestNode(ctx, t, name, nil, nil, nil, false)
-	}
-
-	defer func() {
-		for _, name := range []string{deletedNode, cordonedNode, healthyNode} {
-			_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{})
-		}
-	}()
+// setupCordonAllE2EReconciler starts a reconciler that cordons a node on any health event, with
+// a circuit breaker at the given percentage.
+func setupCordonAllE2EReconciler(
+	t *testing.T, ctx context.Context, percentage int,
+) (*Reconciler, *testutils.MockChangeStreamWatcher, breaker.CircuitBreaker) {
+	t.Helper()
 
 	tomlConfig := config.TomlConfig{
 		LabelPrefix: "k8s.nvidia.com/",
@@ -4445,20 +4374,35 @@ func TestE2E_CircuitBreakerKeepsDeletedNodeCordonWhileGPUNodesRemain(t *testing.
 		},
 	}
 
-	// 100% of 3 GPU nodes: two cordons keep the breaker CLOSED until a GPU node is deleted.
 	r, mockWatcher, _, cb := setupE2EReconciler(t, ctx, tomlConfig, &breaker.CircuitBreakerConfig{
 		Namespace:  "default",
-		Percentage: 100,
+		Percentage: percentage,
 		Duration:   5 * time.Minute,
 	})
 	require.NotNil(t, cb)
 
+	return r, mockWatcher, cb
+}
+
+// waitForGPUNodeCount waits until the GPU node counter reaches want. The counter's handler also
+// runs the last-GPU-node-deleted callback, and handles events in order, so a count that includes
+// a node added after a delete means the callback for that delete has returned.
+func waitForGPUNodeCount(t *testing.T, r *Reconciler, want int) {
+	t.Helper()
+
 	require.Eventually(t, func() bool {
 		totalNodes, _, err := r.k8sClient.NodeInformer.GetNodeCounts()
-		return err == nil && totalNodes == 3
-	}, statusCheckTimeout, statusCheckPollInterval, "NodeInformer should see the three nodes")
+		return err == nil && totalNodes == want
+	}, statusCheckTimeout, statusCheckPollInterval, "NodeInformer should count %d GPU nodes", want)
+}
 
-	for _, name := range []string{deletedNode, cordonedNode} {
+// quarantineE2ENodes sends a health event for each node and waits until all are quarantined.
+func quarantineE2ENodes(
+	t *testing.T, r *Reconciler, mockWatcher *testutils.MockChangeStreamWatcher, names ...string,
+) {
+	t.Helper()
+
+	for _, name := range names {
 		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
 			generateTestID(),
 			name,
@@ -4472,23 +4416,134 @@ func TestE2E_CircuitBreakerKeepsDeletedNodeCordonWhileGPUNodesRemain(t *testing.
 
 	require.Eventually(t, func() bool {
 		_, quarantined, err := r.k8sClient.NodeInformer.GetNodeCounts()
-		return err == nil && quarantined[deletedNode] && quarantined[cordonedNode]
-	}, statusCheckTimeout, statusCheckPollInterval, "both nodes should be quarantined")
+		if err != nil {
+			return false
+		}
+
+		for _, name := range names {
+			if !quarantined[name] {
+				return false
+			}
+		}
+
+		return true
+	}, statusCheckTimeout, statusCheckPollInterval, "the nodes should be quarantined")
+}
+
+func deleteE2ENode(ctx context.Context, t *testing.T, name string) {
+	t.Helper()
+
+	require.NoError(t, e2eTestClient.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{}))
+}
+
+func TestE2E_CircuitBreakerForgetsDeletedNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	suffix := generateShortTestID()[:6]
+	deletedNode := "e2e-cb-deleted-" + suffix
+	replacementNode := "e2e-cb-replacement-" + suffix
+
+	createDeletableE2ETestNode(ctx, t, deletedNode)
+
+	r, mockWatcher, cb := setupCordonAllE2EReconciler(t, ctx, 50)
+	waitForGPUNodeCount(t, r, 1)
+	quarantineE2ENodes(t, r, mockWatcher, deletedNode)
+
+	deleteE2ENode(ctx, t, deletedNode)
+	waitForGPUNodeCount(t, r, 0)
+
+	createDeletableE2ETestNode(ctx, t, replacementNode)
+	waitForGPUNodeCount(t, r, 1)
+
+	isTripped, err := cb.IsTripped(ctx)
+	require.NoError(t, err)
+	assert.False(t, isTripped, "the deleted node's cordon must not count against its replacement")
+}
+
+func TestE2E_CircuitBreakerForgetsEveryDeletedNodeWhenNoGPUNodesRemain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	suffix := generateShortTestID()[:6]
+	firstNode := "e2e-cb-first-" + suffix
+	lastNode := "e2e-cb-last-" + suffix
+	replacementNode := "e2e-cb-replacement-" + suffix
+
+	createDeletableE2ETestNode(ctx, t, firstNode)
+	createDeletableE2ETestNode(ctx, t, lastNode)
+
+	r, mockWatcher, cb := setupCordonAllE2EReconciler(t, ctx, 100)
+	waitForGPUNodeCount(t, r, 2)
+	quarantineE2ENodes(t, r, mockWatcher, firstNode, lastNode)
+
+	// The first delete leaves a GPU node, so its cordon stays until the last delete.
+	deleteE2ENode(ctx, t, firstNode)
+	waitForGPUNodeCount(t, r, 1)
+	deleteE2ENode(ctx, t, lastNode)
+	waitForGPUNodeCount(t, r, 0)
+
+	createDeletableE2ETestNode(ctx, t, replacementNode)
+	waitForGPUNodeCount(t, r, 1)
+
+	isTripped, err := cb.IsTripped(ctx)
+	require.NoError(t, err)
+	assert.False(t, isTripped, "no deleted node's cordon may count against the replacement")
+}
+
+func TestE2E_CircuitBreakerForgetsDeletedNodesWhenLastGPUNodeWasNotQuarantined(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	suffix := generateShortTestID()[:6]
+	quarantinedNode := "e2e-cb-quarantined-" + suffix
+	healthyNode := "e2e-cb-healthy-" + suffix
+	replacementNode := "e2e-cb-replacement-" + suffix
+
+	createDeletableE2ETestNode(ctx, t, quarantinedNode)
+	createDeletableE2ETestNode(ctx, t, healthyNode)
+
+	r, mockWatcher, cb := setupCordonAllE2EReconciler(t, ctx, 100)
+	waitForGPUNodeCount(t, r, 2)
+	quarantineE2ENodes(t, r, mockWatcher, quarantinedNode)
+
+	deleteE2ENode(ctx, t, quarantinedNode)
+	waitForGPUNodeCount(t, r, 1)
+	deleteE2ENode(ctx, t, healthyNode)
+	waitForGPUNodeCount(t, r, 0)
+
+	createDeletableE2ETestNode(ctx, t, replacementNode)
+	waitForGPUNodeCount(t, r, 1)
+
+	isTripped, err := cb.IsTripped(ctx)
+	require.NoError(t, err)
+	assert.False(t, isTripped, "the quarantined node's cordon must not count against the replacement")
+}
+
+func TestE2E_CircuitBreakerKeepsDeletedNodeCordonWhileGPUNodesRemain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	suffix := generateShortTestID()[:6]
+	deletedNode := "e2e-cb-keep-deleted-" + suffix
+	cordonedNode := "e2e-cb-keep-cordoned-" + suffix
+	healthyNode := "e2e-cb-keep-healthy-" + suffix
+
+	for _, name := range []string{deletedNode, cordonedNode, healthyNode} {
+		createDeletableE2ETestNode(ctx, t, name)
+	}
+
+	// 100% of 3 GPU nodes: two cordons keep the breaker CLOSED until a GPU node is deleted.
+	r, mockWatcher, cb := setupCordonAllE2EReconciler(t, ctx, 100)
+	waitForGPUNodeCount(t, r, 3)
+	quarantineE2ENodes(t, r, mockWatcher, deletedNode, cordonedNode)
 
 	isTripped, err := cb.IsTripped(ctx)
 	require.NoError(t, err)
 	require.False(t, isTripped, "two cordons out of three GPU nodes should not trip the breaker")
 
-	require.NoError(t, e2eTestClient.CoreV1().Nodes().Delete(ctx, deletedNode, metav1.DeleteOptions{}))
-
-	require.Eventually(t, func() bool {
-		return getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, deletedNode) == 0
-	}, statusCheckTimeout, statusCheckPollInterval, "the deleted-node callback should run")
-
-	require.Eventually(t, func() bool {
-		totalNodes, _, err := r.k8sClient.NodeInformer.GetNodeCounts()
-		return err == nil && totalNodes == 2
-	}, statusCheckTimeout, statusCheckPollInterval, "NodeInformer should count the two remaining nodes")
+	deleteE2ENode(ctx, t, deletedNode)
+	waitForGPUNodeCount(t, r, 2)
 
 	isTripped, err = cb.IsTripped(ctx)
 	require.NoError(t, err)
