@@ -110,9 +110,9 @@ type compiledSource struct {
 }
 
 // ReconcileCache holds what one or more reconciliations need to work out device
-// counts: how to find the other nodes, and the ResourceSlices of the nodes being
-// reconciled. A cache is used sequentially and discarded after its target nodes
-// are reconciled; it is not safe for concurrent use.
+// counts: how to find the other nodes and how to look up a node's
+// ResourceSlices. It keeps no results between reconciliations, so the startup
+// sweep never counts a node from data read earlier in the sweep.
 //
 // Partition expected counts are not kept here. The manager remembers them
 // across reconciliations in learnedCounts, which always has the latest value,
@@ -132,12 +132,6 @@ type ReconcileCache struct {
 	// loadResourceSlicesForNode performs the indexed informer lookup of a node's
 	// ResourceSlices.
 	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice
-
-	// resourceSlices memoizes loadResourceSlicesForNode results by node name, so
-	// a fleet sweep looks up each node's ResourceSlices once for all classes. A
-	// nil result is cached as well, preventing repeated lookups for a missing
-	// source.
-	resourceSlices map[string][]*resourcev1.ResourceSlice
 }
 
 // peerCurrentCountKey identifies one node of one class in learnedCounts.
@@ -291,7 +285,6 @@ func (m *Manager) NewReconcileCache(
 		manager:                   m,
 		peerNodes:                 peerNodes,
 		loadResourceSlicesForNode: loadResourceSlicesForNode,
-		resourceSlices:            make(map[string][]*resourcev1.ResourceSlice),
 	}
 }
 
@@ -319,7 +312,7 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 	}
 
 	needsUpdate := false
-	resourceSlices := p.cachedResourceSlicesForNode(node)
+	resourceSlices := p.resourceSlicesForNode(node)
 
 	for classIndex, class := range p.manager.classes {
 		observation := p.manager.observe(ctx, class, node, resourceSlices)
@@ -793,26 +786,18 @@ func normalizeNumericMapValues(values map[string]any) {
 	}
 }
 
-// cachedResourceSlicesForNode loads a node's indexed ResourceSlices at most
-// once. Reusing the result across target and peer evaluations prevents multiple
-// classes from repeating the same O(K) informer lookup.
-func (p *ReconcileCache) cachedResourceSlicesForNode(node *corev1.Node) []*resourcev1.ResourceSlice {
-	if node == nil {
+// resourceSlicesForNode looks up a node's ResourceSlices in the informer.
+//
+// The result is not kept between calls. A fleet sweep can run for minutes, and
+// a slice that changes during it must not be counted from an earlier lookup.
+// The lookup is an indexed read, and a node is looked up once per
+// reconciliation and once per full read of its partition.
+func (p *ReconcileCache) resourceSlicesForNode(node *corev1.Node) []*resourcev1.ResourceSlice {
+	if node == nil || p.loadResourceSlicesForNode == nil {
 		return nil
 	}
 
-	if resourceSlices, ok := p.resourceSlices[node.Name]; ok {
-		return resourceSlices
-	}
-
-	var resourceSlices []*resourcev1.ResourceSlice
-	if p.loadResourceSlicesForNode != nil {
-		resourceSlices = p.loadResourceSlicesForNode(node)
-	}
-
-	p.resourceSlices[node.Name] = resourceSlices
-
-	return resourceSlices
+	return p.loadResourceSlicesForNode(node)
 }
 
 func (p *ReconcileCache) expectedDeviceCount(
@@ -892,12 +877,10 @@ func (p *ReconcileCache) readPeerCounts(
 			continue
 		}
 
-		// Evaluate the peer as the listed node is now, rather than reusing a
-		// result from earlier in a fleet sweep, which could overwrite a newer
-		// count that the peer's own reconciliation has remembered since. The
-		// peer's ResourceSlices are still looked up once per cache and shared by
-		// all classes.
-		peerObservation := p.manager.observe(ctx, class, peer, p.cachedResourceSlicesForNode(peer))
+		// Evaluate the peer as it is now, rather than reusing a result from
+		// earlier in a fleet sweep, which could overwrite a newer count that the
+		// peer's own reconciliation has remembered since.
+		peerObservation := p.manager.observe(ctx, class, peer, p.resourceSlicesForNode(peer))
 		if !peerObservation.hasPartition || peerObservation.partitionKey != observation.partitionKey {
 			continue
 		}
@@ -926,7 +909,7 @@ func (p *ReconcileCache) RememberPeerCounts(ctx context.Context, node *corev1.No
 		return
 	}
 
-	resourceSlices := p.cachedResourceSlicesForNode(node)
+	resourceSlices := p.resourceSlicesForNode(node)
 
 	for classIndex, class := range p.manager.classes {
 		observation := p.manager.observe(ctx, class, node, resourceSlices)

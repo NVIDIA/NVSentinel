@@ -260,7 +260,8 @@ func TestReconcileCache_LaterEvent_ReadsOnlyItsOwnNode(t *testing.T) {
 	loader := &countingSliceLoader{}
 
 	manager.NewReconcileCache(nodes, loader.load).CalculateAndSetDeviceCountLabels(ctx, nodes[4])
-	require.Equal(t, len(nodes), loader.reset(), "the first event learns the partition from every peer")
+	require.Equal(t, len(nodes)+1, loader.reset(),
+		"the first event looks up its own node, then every node in the partition")
 	require.Equal(t, "8", nodes[4].Labels[testGPUCountExpectedLabel])
 
 	// A later event gets a fresh cache, as a node event does in the labeler.
@@ -309,7 +310,8 @@ func TestReconcileCache_ForgottenNodeWithHighestCount_RereadsPartition(t *testin
 	manager.ForgetNode(bigger.Name)
 
 	manager.NewReconcileCache(nodes, loader.load).CalculateAndSetDeviceCountLabels(ctx, nodes[1])
-	require.Equal(t, len(nodes), loader.reset(), "losing the last node with the highest count makes labeler read the partition again")
+	require.Equal(t, len(nodes)+1, loader.reset(),
+		"losing the last node with the highest count makes labeler read the partition again")
 	require.Equal(t, "4", nodes[1].Labels[testGPUCountExpectedLabel])
 }
 
