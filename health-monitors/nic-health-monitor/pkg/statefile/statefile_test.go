@@ -364,6 +364,13 @@ func TestSave_IsAtomic_NoTmpLeftBehind(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "tmp file should be renamed away after a successful Save")
 }
 
+func TestFlushPendingCounterState_Clean_DoesNotWrite(t *testing.T) {
+	m, statePath, _ := tempEnv(t, "boot-1")
+	require.NoError(t, m.Load())
+	require.NoError(t, m.FlushPendingCounterState())
+	assert.NoFileExists(t, statePath)
+}
+
 func TestSaveCounterState_TimestampOnly_FlushesLatestAtDeadline(t *testing.T) {
 	m, statePath, _ := tempEnv(t, "boot-1")
 	require.NoError(t, m.Load())

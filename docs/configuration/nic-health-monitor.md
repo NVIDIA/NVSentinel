@@ -262,7 +262,7 @@ nic-health-monitor:
 
 The monitor updates each live delta snapshot on evaluation and each live velocity snapshot when its window ends. Timestamp-only updates can wait until a poll runs at least one minute after the last successful save. A save triggered by another change also saves the latest timestamps.
 
-After a pod restart, the first velocity calculation uses the saved timestamp. A deferred save or a gap in polling can make this interval longer than the configured window. This can understate a recent burst and miss a threshold breach. The same behavior applies when a restart changes a counter from `delta` to `velocity`.
+On graceful shutdown, the monitor tries to save pending counter updates after polling stops. A pod that restarts on the same host boot uses the last saved snapshot. This also applies when a counter changes from `delta` to `velocity`. An abrupt exit or failed save can leave an older timestamp on disk. An older timestamp or a gap in polling can lengthen the first velocity sample. This can understate a recent burst and miss a threshold breach.
 
 #### Default Counter Configuration
 

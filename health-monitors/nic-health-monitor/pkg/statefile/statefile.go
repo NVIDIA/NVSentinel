@@ -926,8 +926,8 @@ func (m *Manager) ClearPendingBaseline(check string) {
 }
 
 // CounterSnapshots returns a copy of the latest committed counter snapshots.
-// Each evaluator seeds its in-memory snapshot map from this on startup
-// so that delta and velocity windows survive pod restarts.
+// On startup, evaluators seed their snapshot maps from the last state loaded
+// from disk.
 func (m *Manager) CounterSnapshots() map[string]CounterSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -943,8 +943,7 @@ func (m *Manager) CounterSnapshots() map[string]CounterSnapshot {
 // (the IB and Ethernet evaluators) must scope their input to the keys
 // they actually own — otherwise one evaluator's loaded-but-not-written
 // view of a sibling key could clobber the sibling's update. Returns
-// true if any persisted snapshot value or timestamp actually changed;
-// callers only Save when true.
+// true if any snapshot value or timestamp changed in the manager's map.
 func (m *Manager) UpdateCounterSnapshots(snapshots map[string]CounterSnapshot) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1022,9 +1021,9 @@ func (m *Manager) updateBreachFlagsLocked(flags map[string]CounterBreachFlag) bo
 	return changed
 }
 
-// SaveCounterState merges owned counter state from a committed poll. A
-// timestamp-only update waits until the first poll at least one minute
-// after a successful save. Any save includes the latest pending timestamps.
+// SaveCounterState merges owned counter state from a committed poll. It
+// defers timestamp-only writes for one minute after the last successful
+// save. Any save includes the latest pending timestamps.
 // completedBaseline is empty unless the poll completed a boot baseline.
 func (m *Manager) SaveCounterState(
 	snapshots map[string]CounterSnapshot, flags map[string]CounterBreachFlag, completedBaseline string,
@@ -1051,6 +1050,19 @@ func (m *Manager) SaveCounterState(
 		}
 	case counterSaveImmediate:
 	case counterSaveNone:
+		return nil
+	}
+
+	return m.saveLocked()
+}
+
+// FlushPendingCounterState saves pending counter updates without waiting
+// for the usual save interval. Call it after the polling loops stop.
+func (m *Manager) FlushPendingCounterState() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.counterSave == counterSaveNone {
 		return nil
 	}
 

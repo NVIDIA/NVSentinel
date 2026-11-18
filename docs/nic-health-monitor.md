@@ -132,9 +132,9 @@ Automatically classifies NICs as Compute, Storage, or Management using a combina
 Tracks InfiniBand symbol error rates against the IBTA 10E-12 BER specification. Detects when FEC is approaching exhaustion and reports a fatal event before the link drops to zero — draining the node before the "cliff effect" causes 100% packet loss.
 
 ### Persistent State Across Restarts
-The NIC Health Monitor saves counter snapshots, breach flags, and port state to a hostPath-backed file. Timestamp-only counter updates can wait until a poll runs at least one minute after the last successful save. A save triggered by another change also includes the latest counter snapshots. After a pod restart, counter evaluation resumes from the saved snapshots.
+The NIC Health Monitor saves counter snapshots, breach flags, and port state to a hostPath-backed file. Timestamp-only counter updates can wait until a poll runs at least one minute after the last successful save. Any earlier save includes the latest counter snapshots. On graceful shutdown, the monitor tries to save any pending counter updates. A pod that restarts on the same host boot resumes from the last saved counter snapshots.
 
-The monitor emits recovery events when an administrator clears a breached counter or the host reboots. This clears unhealthy conditions after remediation.
+The monitor emits a recovery event when an administrator clears a breached counter. After a host reboot, the monitor clears the previous boot's counter conditions and reports fresh baselines after it completes device discovery.
 
 ### Uncabled Port Detection
 Uses a card homogeneity check — comparing the active port count of each NIC card against its role-group peers — to detect cards with fewer ports than expected (indicating a failed or uncabled port) without requiring static configuration of expected port counts.
