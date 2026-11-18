@@ -121,7 +121,7 @@ The chart renders `global.entityTypes` into the configuration file of each compo
 | fault-quarantine | `scopedActions` | Post-remediation validation uses the same partial-drain decision as node-drainer |
 | fault-remediation | `scopedActions` | `impactedEntityScope` must name a configured entity type. The [scope check](#scope-check), which also reads `global.partialDrainEnabled` for events without a recorded scope |
 
-If a component's configuration has no `entityTypes` key, the code uses a built-in `GPU_UUID` entry with today's values. An empty map, `entityTypes: {}`, turns partial drains off for every event. The built-in entry is removed when NVIDIA-specific code moves out of the core into an NVIDIA plugin ([ADR-070](070-vendor-neutral-core.md#phase-4-move-vendor-code)), and the plugin chart then sets it.
+If a component's configuration has no `entityTypes` key, the code uses a built-in `GPU_UUID` entry with today's values. `global.partialDrainEnabled` stays the switch that turns partial drains off. The built-in entry is removed when NVIDIA-specific code moves out of the core into an NVIDIA plugin ([ADR-070](070-vendor-neutral-core.md#phase-4-move-vendor-code)), and the plugin chart then sets it.
 
 ### Partial drain decision
 
@@ -133,8 +133,8 @@ node-drainer takes these steps in order and stops at the first one that decides.
 
 In step 3, node-drainer checks the device annotation of each pod. The annotation lists devices under resource names and DRA driver names.
 
+- node-drainer reads the resource names and DeviceClasses of the entity type that a pod requests from its spec, as it does today. If the annotation has no entry for one of them, node-drainer fails the drain and retries. For DRA, it matches a DeviceClass to the annotation through the `driver` of the same `dra` entry. This covers a pod with no annotation, as today, and an annotation that the mapper wrote before the operator added that name. The drain continues after the mapper writes the new annotation.
 - If the annotation lists the entity value under a name of the entity type, node-drainer evicts the pod, as today.
-- If a pod requests a resource or DeviceClass of the entity type, but has no annotation or an annotation with no name of the entity type, node-drainer fails the drain and retries. The second case happens when the mapper wrote the annotation before the operator added the entity type. The drain continues after the mapper writes the new annotation.
 
 ### Scope check
 
