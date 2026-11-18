@@ -58,6 +58,8 @@ var errReleaseNodeRead = errors.New("injected Node read failure")
 type releaseRaceClient struct {
 	client.Client
 	afterDelete      func(context.Context, client.Object) error
+	beforeNodeRead   func(context.Context) error
+	providerRead     bool
 	beforePatch      func(context.Context, client.Object) error
 	failNodeReads    bool
 	quarantinedReads int
@@ -68,6 +70,16 @@ func (c *releaseRaceClient) Get(ctx context.Context, key client.ObjectKey, obj c
 	opts ...client.GetOption) error {
 	if _, ok := obj.(*corev1.Node); ok && c.failNodeReads {
 		return errReleaseNodeRead
+	}
+	if obj.GetObjectKind().GroupVersionKind() == testJobGVK {
+		c.providerRead = true
+	}
+	if _, ok := obj.(*corev1.Node); ok && c.providerRead && c.beforeNodeRead != nil {
+		fn := c.beforeNodeRead
+		c.beforeNodeRead = nil
+		if err := fn(ctx); err != nil {
+			return err
+		}
 	}
 	err := c.Client.Get(ctx, key, obj, opts...)
 	if node, ok := obj.(*corev1.Node); err == nil && ok {
@@ -183,7 +195,11 @@ func newReleaseFixture(name string, opts releaseFixtureOptions, nodeNames ...str
 			return nil
 		},
 	})
-	DeferCleanup(func() { raceClient.afterDelete = nil; raceClient.beforePatch = nil })
+	DeferCleanup(func() {
+		raceClient.afterDelete = nil
+		raceClient.beforeNodeRead = nil
+		raceClient.beforePatch = nil
+	})
 	return &releaseFixture{reconciler: r, request: req, client: raceClient, config: testConfig, nodeNames: nodeNames}
 }
 
@@ -195,17 +211,25 @@ func (f *releaseFixture) reconcile() v1alpha1.ValidationRequest {
 	return reconcileForIterations(ctx, f.reconciler, f.request, 1)
 }
 
-// afterTestDeleted runs fn once, after the provider resource of a completed test group is deleted. That is after the
-// last readiness check of the running group and before the release.
-func (f *releaseFixture) afterTestDeleted(fn func(ctx context.Context) error) *bool {
+// afterTestRead runs fn once, between the last readiness check of the running group and the release. The provider
+// resource of a completed group is only deleted after the release and the status write, so the point is found by
+// counting the Node reads that follow the read of the provider resource: skip is the number of them that precede
+// the injection (1 skips the running group's readiness check; 0 when that check is served from a stale cache).
+func (f *releaseFixture) afterTestRead(skip int, fn func(ctx context.Context) error) *bool {
 	fired := false
-	f.client.afterDelete = func(ctx context.Context, obj client.Object) error {
-		if fired || obj.GetObjectKind().GroupVersionKind() != testJobGVK {
+	f.client.providerRead = false
+	f.client.beforeNodeRead = nil
+	var arm func(ctx context.Context) error
+	arm = func(ctx context.Context) error {
+		if skip > 0 {
+			skip--
+			f.client.beforeNodeRead = arm
 			return nil
 		}
 		fired = true
 		return fn(ctx)
 	}
+	f.client.beforeNodeRead = arm
 	return &fired
 }
 
@@ -318,7 +342,7 @@ var _ = Describe("Validation release readiness check", func() {
 			case "during-test":
 				Expect(setQuarantine(ctx, nodeName, annotation)).To(Succeed())
 			case "after-readiness", "empty-annotation":
-				fired = fixture.afterTestDeleted(func(ctx context.Context) error {
+				fired = fixture.afterTestRead(1, func(ctx context.Context) error {
 					return setQuarantine(ctx, nodeName, annotation)
 				})
 			case "patch-conflict":
@@ -364,7 +388,7 @@ var _ = Describe("Validation release readiness check", func() {
 		fixture := newReleaseFixture("release-label", releaseFixtureOptions{}, nodeName)
 		vr := fixture.running()
 		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
-		fired := fixture.afterTestDeleted(func(ctx context.Context) error {
+		fired := fixture.afterTestRead(1, func(ctx context.Context) error {
 			return removeNodeLabel(ctx, nodeName, "ready")
 		})
 
@@ -385,7 +409,7 @@ var _ = Describe("Validation release readiness check", func() {
 		lagging := &releaseLaggingNodeClient{Client: fixture.client, snapshot: snapshot.DeepCopy()}
 		fixture.reconciler.Client = lagging
 		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
-		fired := fixture.afterTestDeleted(func(ctx context.Context) error {
+		fired := fixture.afterTestRead(0, func(ctx context.Context) error {
 			return setQuarantine(ctx, nodeName, releaseQuarantineEvent)
 		})
 
@@ -487,7 +511,7 @@ var _ = Describe("Validation release readiness check", func() {
 		Expect(vr.Status.TestGroups).To(HaveLen(1))
 		Expect(vr.Status.TestGroups[0].Nodes).To(ConsistOf(nodeA, nodeB))
 		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
-		fired := fixture.afterTestDeleted(func(ctx context.Context) error {
+		fired := fixture.afterTestRead(1, func(ctx context.Context) error {
 			return setQuarantine(ctx, nodeB, releaseQuarantineEvent)
 		})
 
@@ -524,7 +548,7 @@ var _ = Describe("Validation release readiness check", func() {
 		fixture := newReleaseFixture("release-old", releaseFixtureOptions{}, nodeName)
 		vr := fixture.running()
 		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
-		fired := fixture.afterTestDeleted(func(ctx context.Context) error {
+		fired := fixture.afterTestRead(1, func(ctx context.Context) error {
 			return setQuarantine(ctx, nodeName, releaseQuarantineEvent)
 		})
 		vr = fixture.reconcile()

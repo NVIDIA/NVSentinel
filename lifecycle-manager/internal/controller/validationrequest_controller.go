@@ -757,6 +757,12 @@ func (r *ValidationRequestReconciler) cleanupFinishedTestGroupObjects(ctx contex
 			continue
 		}
 
+		// A provider removed from the configuration has no GVK to look the object up with. The ValidationRequest owns
+		// the object, so owner garbage collection removes it.
+		if _, ok := r.Config.Validation.Spec.Providers[group.Provider]; !ok {
+			continue
+		}
+
 		deleted, err := r.checkTestGroupObjectDeleted(ctx, group, attempt.ObjectName)
 		if err != nil {
 			return err

@@ -100,4 +100,21 @@ var _ = Describe("ValidationRequest provider cleanup", func() {
 		Entry("running request with deletion failure", false, false),
 		Entry("terminal request with deletion failure", true, false),
 	)
+
+	It("does not fail a terminal request whose provider is no longer configured", func() {
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		vrName, nodeName := "vr-cleanup-removed-"+suffix, "node-cleanup-removed-"+suffix
+		r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+			config: defaultTestConfig(), nodeNames: []string{nodeName},
+			spec: v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+		})
+		vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, maxReconcileIterations)
+		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
+		vr = reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseSucceeded, maxReconcileIterations)
+
+		delete(r.Config.Validation.Spec.Providers, vr.Status.TestGroups[0].Provider)
+
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
