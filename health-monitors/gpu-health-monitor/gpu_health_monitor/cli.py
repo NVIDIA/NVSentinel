@@ -130,11 +130,11 @@ def _init_event_processor(
     default=False,
     required=False,
     help=(
-        "Operator assertion that bridge-capable PCIe GPUs (A100/H100 PCIe) in this fleet "
-        "run without NVLink bridges by design. When true, DCGM_FR_NVLINK_DOWN is suppressed "
-        "on PCIe-named GPUs whose metadata shows zero active NVLink links. Leave false if "
-        "any pool uses NVLink bridges: an unbridged card and a card whose bridge was dead at "
-        "metadata-collection time are indistinguishable, so enabling this could mask a "
+        "Operator assertion that bridge-capable PCIe GPUs (A100/H100 PCIe, RTX 3090, RTX 2080 Ti) "
+        "in this fleet run without NVLink bridges by design. When true, DCGM_FR_NVLINK_DOWN "
+        "is suppressed on such GPUs whose metadata shows zero active NVLink links. Leave false "
+        "if any pool uses NVLink bridges: an unbridged card and a card whose bridge was dead "
+        "at metadata-collection time are indistinguishable, so enabling this could mask a "
         "bridge failure present at boot. GPUs with no NVLink silicon (L40, A40) always "
         "suppress DCGM_FR_NVLINK_DOWN and DCGM_FR_FABRIC_PROBE_STATE regardless of this flag."
     ),

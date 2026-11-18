@@ -19,7 +19,12 @@ import logging as log
 import os
 import threading
 from collections.abc import Iterator
-from typing import Optional
+from typing import Final, Optional
+
+_UNBRIDGED_GEFORCE_DEVICE_NAME_PREFIXES: Final[tuple[str, ...]] = (
+    "NVIDIA GeForce RTX 3090",
+    "NVIDIA GeForce RTX 2080 Ti",
+)
 
 
 class NVLinkDownExpectation(enum.Enum):
@@ -290,8 +295,8 @@ class MetadataReader:
         has NVLink hardware whose links are down. That is normal for:
           - GPUs with no NVLink silicon at all (L40, A40): nothing to be up.
           - NVLink-bridge-capable PCIe cards with no bridge installed
-            (A100/H100 PCIe): NVML reports the bridge links (SUCCESS) but
-            they are permanently inactive.
+            (A100/H100 PCIe, GeForce RTX 3090 and RTX 2080 Ti): NVML reports
+            the bridge links (SUCCESS) but they are permanently inactive.
 
         Decision rule, using metadata collected at startup:
           - nvlink_active_link_count > 0 → NVLINK_IN_USE: links going down
@@ -303,15 +308,17 @@ class MetadataReader:
             card, but indistinguishable from a card whose bridge was dead
             at collection time — callers must require explicit operator
             opt-in before suppressing on this value.
+          - nvlink_active_link_count == 0, nvlink_link_count > 0, and a
+            known bridge-capable GeForce RTX device name → UNBRIDGED_PCIE
+            for the same reason.
           - nvlink_active_link_count == 0 otherwise → UNKNOWN: on SXM/HGX
             systems links train via fabric manager after boot, so a zero
             reading may just mean metadata was collected too early.
 
         Fails closed on the active count: a missing or malformed
-        nvlink_active_link_count always yields UNKNOWN. The hardware count
-        is corroborating evidence only: when it is missing or malformed, a
-        PCIe device name with a zero active count still classifies as
-        UNBRIDGED_PCIE.
+        nvlink_active_link_count always yields UNKNOWN. A PCIe device name
+        is sufficient for A100/H100-class cards, while supported GeForce RTX
+        models also require a positive hardware link count.
 
         Args:
             gpu_id: The DCGM GPU ID (0, 1, 2, ...).
@@ -340,8 +347,13 @@ class MetadataReader:
                     return NVLinkDownExpectation.NO_NVLINK_HARDWARE
 
                 device_name = gpu.get("device_name")
-                if isinstance(device_name, str) and "PCIe" in device_name:
-                    return NVLinkDownExpectation.UNBRIDGED_PCIE
+                if isinstance(device_name, str):
+                    if device_name.startswith(_UNBRIDGED_GEFORCE_DEVICE_NAME_PREFIXES):
+                        if hardware is None:
+                            return NVLinkDownExpectation.UNKNOWN
+                        return NVLinkDownExpectation.UNBRIDGED_PCIE
+                    elif "PCIe" in device_name:
+                        return NVLinkDownExpectation.UNBRIDGED_PCIE
 
                 return NVLinkDownExpectation.UNKNOWN
 
