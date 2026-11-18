@@ -40,6 +40,11 @@ const (
 	// PostgreSQL NOTIFY channel for instant change notifications
 	notifyChannel = "nvsentinel_changes"
 
+	// pendingDeliveryLimit exceeds the default partitioned processor's 1000 in-flight
+	// events plus the watcher and adapter buffers (100 each). Older positions are
+	// summarized by pendingFloor, so bookkeeping stays bounded without blocking delivery.
+	pendingDeliveryLimit = 4096
+
 	recentEventIDLimit  = 10000
 	recentEventIDTTL    = 5 * time.Minute
 	resumeRetryMaxDelay = 30 * time.Second
@@ -62,6 +67,13 @@ type notificationPayload struct {
 	ID        int64  `json:"id"`        // Changelog ID
 	Table     string `json:"table"`     // Table name
 	Operation string `json:"operation"` // INSERT/UPDATE/DELETE
+}
+
+// pendingDelivery identifies one enqueue attempt in delivery order, independently of id order.
+type pendingDelivery struct {
+	id        int64
+	timestamp time.Time
+	seq       uint64
 }
 
 const (
@@ -104,16 +116,32 @@ type PostgreSQLChangeStreamWatcher struct {
 	workerCancel   context.CancelFunc
 	lastEventID    int64        // For tie-breaking when timestamps are equal
 	lastTimestamp  time.Time    // Primary resume position (timestamp-based, like MongoDB)
-	mu             sync.RWMutex // Protects position, highestReadEventID, notification, and readiness state
+	mu             sync.RWMutex // Protects read, persisted, pending delivery, notification, and readiness state
 	listenerMu     sync.RWMutex // Protects listener
 	pollInterval   time.Duration
 	pipelineFilter *PipelineFilter // Application-side filter (fallback for edge cases)
 	pipeline       any             // Raw pipeline for SQL filter building
+	// sendMu serializes delivery order and prevents Close from closing events during a send.
+	sendMu      sync.Mutex
+	pending     []pendingDelivery
+	deliverySeq uint64
+	// pendingFloor holds the minimum evicted position and maximum evicted sequence.
+	// A nonzero sequence marks an active saturation episode, cleared by a tracked ack.
+	pendingFloor pendingDelivery
+
+	// Last successfully persisted pair; mu serializes rewind and acknowledgment saves.
+	persistedTimestamp time.Time
+	persistedEventID   int64
+	// persistedUncertain is set after a failed save. The write may still have committed,
+	// so the stored pair is unknown and the next late delivery must save its rewind first.
+	persistedUncertain bool
+
 	recentEventIDs map[int64]time.Time
 	recentEventSeq []int64
 
-	// highestReadEventID is the highest changelog id this watcher has read, resumed from, or
-	// acknowledged past. It is never below lastEventID. The cursor moves in (changed_at, id)
+	// highestReadEventID is the highest changelog id this watcher has read or resumed from.
+	// Acknowledgments cannot raise it: verifying an unread id does not constitute a read.
+	// It is never below lastEventID. The cursor moves in (changed_at, id)
 	// order, so its id can drop below ids already read, and an ack for such a row must not
 	// need the row's changed_at: the row can have been purged by then.
 	highestReadEventID int64
@@ -327,15 +355,11 @@ func (w *PostgreSQLChangeStreamWatcher) startWorker(
 func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
 	var eventID int64
 
-	var timestamp time.Time
-
 	if len(token) == 0 {
-		// When token is empty, use the current position (similar to MongoDB's behavior)
-		// This handles the common case where event processors pass empty tokens
-		// and expect the watcher to track its own position.
+		// Preserve the legacy processed UPDATE at the read cursor. Empty tokens do not
+		// acknowledge pending deliveries; checkpointPositionLocked still bounds the save.
 		w.mu.RLock()
 		eventID = w.lastEventID
-		timestamp = w.lastTimestamp
 		w.mu.RUnlock()
 
 		if eventID == 0 {
@@ -347,8 +371,7 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 
 		slog.Debug("Using current stream position for empty token",
 			"client", w.clientName,
-			"eventID", eventID,
-			"timestamp", timestamp)
+			"eventID", eventID)
 	} else {
 		// Token is the event ID as string
 		eventIDStr := string(token)
@@ -360,8 +383,7 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 			return fmt.Errorf("invalid token format: %w", err)
 		}
 
-		timestamp, err = w.timestampForAck(ctx, eventID)
-		if err != nil {
+		if _, err := w.timestampForAck(ctx, eventID); err != nil {
 			return fmt.Errorf("resolve acknowledgement timestamp: %w", err)
 		}
 	}
@@ -384,31 +406,23 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 		return fmt.Errorf("failed to mark event as processed: %w", err)
 	}
 
-	// Serialize resume position selection and persistence so concurrent
-	// MarkProcessed calls cannot persist an older bookmark after a newer one.
+	// Serialize acknowledgment, boundary selection and persistence with delivery registration.
 	w.mu.Lock()
 
-	// Move the cursor only forward in (changed_at, id) order. The id alone isn't enough, since a
-	// row can have a higher id than the cursor and an earlier changed_at. advancePosition has
-	// already put the cursor at or past every row this watcher delivered, so an ack only moves it
-	// for a row the watcher never delivered, such as one from before a restart.
-	if positionAfter(timestamp, processedEventID, w.lastTimestamp, w.lastEventID) {
-		w.lastEventID = processedEventID
-		w.lastTimestamp = timestamp
+	// Only reads advance the cursor or highestReadEventID. Even a verified unknown
+	// token must not skip unread rows on the next poll or durable checkpoint.
+	// Empty tokens retain the legacy processed UPDATE, but certify no deliveries.
+	if len(token) > 0 {
+		w.acknowledgeDeliveryLocked(processedEventID)
 	}
 
-	if processedEventID > w.highestReadEventID {
-		w.highestReadEventID = processedEventID
-	}
-
-	resumeEventID := w.lastEventID
-	resumeTimestamp := w.lastTimestamp
+	resumeTimestamp, resumeEventID := w.checkpointPositionLocked()
 	saveErr := w.saveResumePosition(ctx, resumeTimestamp, resumeEventID)
 
 	w.mu.Unlock()
 
 	if saveErr != nil {
-		slog.Error("Failed to save resume position", "error", saveErr)
+		return fmt.Errorf("persist acknowledged position: %w", saveErr)
 	}
 
 	slog.Debug("Marked events processed",
@@ -427,8 +441,8 @@ func (w *PostgreSQLChangeStreamWatcher) timestampForAck(ctx context.Context, eve
 	highestReadEventID := w.highestReadEventID
 	w.mu.RUnlock()
 
-	// An ack for a row this watcher has read doesn't need the row's changed_at. The cursor is
-	// already at or past the row, so the ack can't move it, and the row may have been purged.
+	// Acks for ids at or below the read high-water mark keep working if rows were purged.
+	// Unread ids above it still require validation, but never move the read cursor.
 	// The cursor's own id is not enough here: it moves in (changed_at, id) order and can sit
 	// below ids already read, and those acks must keep working too.
 	if eventID <= highestReadEventID {
@@ -461,6 +475,9 @@ func (w *PostgreSQLChangeStreamWatcher) Close(ctx context.Context) error {
 
 		w.workerWG.Wait()
 		w.setPollReady(false)
+		w.sendMu.Lock()
+		defer w.sendMu.Unlock()
+
 		close(w.events)
 	})
 
@@ -1135,6 +1152,8 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRows(ctx context.Context) e
 	}
 
 	if err := w.sendEventsToChannel(ctx, events); err != nil {
+		w.keepNotifiedIDs(ids, dropped)
+
 		return fmt.Errorf("failed to deliver notified changelog rows: %w", err)
 	}
 
@@ -1155,6 +1174,10 @@ func (w *PostgreSQLChangeStreamWatcher) keepNotifiedIDs(ids []int64, dropped int
 	kept := make([]int64, 0, len(ids)+len(w.notifiedIDs))
 
 	for _, id := range ids {
+		if _, read := w.recentEventIDs[id]; read {
+			continue
+		}
+
 		if _, waiting := w.unreadIDs[id]; waiting {
 			continue
 		}
@@ -1576,8 +1599,8 @@ func (w *PostgreSQLChangeStreamWatcher) processChangelogRows(rows *sql.Rows) ([]
 
 		events = append(events, eventWithToken)
 
-		// Do not advance the cursor while scanning. sendEventsToChannel advances it
-		// after delivery, or after the pipeline filter consumes the row.
+		// sendEventsToChannel advances the read cursor and registers matching deliveries
+		// atomically. Building a batch alone must not move a durable checkpoint.
 	}
 
 	if err := rows.Err(); err != nil {
@@ -1912,36 +1935,35 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 	ctx context.Context,
 	events []datastore.EventWithToken,
 ) error {
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+
 	sentCount := 0
 	filteredCount := 0
 
 	for _, event := range events {
-		if w.pipelineFilter != nil && !w.pipelineFilter.MatchesEvent(event) {
-			// Filtered rows are consumed without delivery, so they still advance
-			// the resume position.
-			eventID := w.advancePosition(event)
-			slog.Debug("Event filtered out by pipeline", "client", w.clientName, "eventID", eventID)
+		matches := w.pipelineFilter == nil || w.pipelineFilter.MatchesEvent(event)
 
+		delivery, err := w.prepareDelivery(ctx, event, matches)
+		if err != nil {
+			return err
+		}
+
+		if matches && delivery.seq == 0 {
+			return nil // Stopped before registering a delivery.
+		}
+
+		if !matches {
 			filteredCount++
 
 			continue
 		}
 
-		select {
-		case w.events <- event:
-			sentCount++
-			// Advance only after delivery. A cancelled or stopped send must be
-			// replayable from the previous resume position.
-			w.advancePosition(event)
-		case <-ctx.Done():
-			slog.Debug("Context cancelled while sending event", "client", w.clientName)
-
-			return ctx.Err()
-		case <-w.stopCh:
-			slog.Debug("Stop channel triggered while sending event", "client", w.clientName)
-
-			return nil
+		if err := w.publishDelivery(ctx, event); err != nil {
+			return err
 		}
+
+		sentCount++
 	}
 
 	if len(events) > 0 {
@@ -1959,26 +1981,114 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 	return nil
 }
 
-// advancePosition parses the event's resume token and updates the watcher's
-// position so the changestream advances even for filtered events.
-func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWithToken) int64 {
-	eventIDStr := string(event.ResumeToken)
+// publishDelivery keeps abandoned attempts pending: the read cursor already includes them,
+// and a shutdown watermark must not certify a row the consumer never received.
+func (w *PostgreSQLChangeStreamWatcher) publishDelivery(ctx context.Context, event datastore.EventWithToken) error {
+	select {
+	case w.events <- event:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("publish delivery: %w", ctx.Err())
+	case <-w.stopCh:
+		return nil
+	}
+}
 
-	eventID, err := strconv.ParseInt(eventIDStr, 10, 64)
+// prepareDelivery registers a matching delivery before publishing its read position.
+// A checkpoint can therefore never see an advanced cursor without its pending delivery.
+// The caller holds sendMu; registration and cursor advancement acquire mu only once.
+func (w *PostgreSQLChangeStreamWatcher) prepareDelivery(
+	ctx context.Context, event datastore.EventWithToken, matches bool,
+) (pendingDelivery, error) {
+	id, err := strconv.ParseInt(string(event.ResumeToken), 10, 64)
 	if err != nil {
-		w.mu.RLock()
-		current := w.lastEventID
-		w.mu.RUnlock()
-
-		slog.Error("Failed to parse event ID from resume token",
-			"client", w.clientName, "error", err, "currentEventID", current)
-
-		return current
+		return pendingDelivery{}, fmt.Errorf("parse delivery token: %w", err)
 	}
 
-	eventTimestamp := w.extractEventTimestamp(event.Event, eventID)
+	delivery := pendingDelivery{id: id, timestamp: w.extractEventTimestamp(event.Event, id)}
+
+	select {
+	case <-ctx.Done():
+		return pendingDelivery{}, fmt.Errorf("prepare delivery: %w", ctx.Err())
+	case <-w.stopCh:
+		return pendingDelivery{}, nil
+	default:
+	}
 
 	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// A late row may precede an already durable checkpoint. Save the new bound before
+	// registering or handing it out. Failure leaves its id unread for the next lookup;
+	// the fetch loop retries failed passes without stalling the LISTEN connection.
+	if matches {
+		if err := w.rewindCheckpointLocked(ctx, delivery); err != nil {
+			return pendingDelivery{}, err
+		}
+	}
+
+	w.advancePositionLocked(delivery.timestamp, id)
+
+	if matches {
+		w.deliverySeq++
+		delivery.seq = w.deliverySeq
+		w.registerDeliveryLocked(delivery)
+	}
+
+	return delivery, nil
+}
+
+// rewindCheckpointLocked persists a late delivery's strict predecessor when necessary.
+// The caller holds mu through the write, as MarkProcessed does, so saves cannot overtake.
+func (w *PostgreSQLChangeStreamWatcher) rewindCheckpointLocked(ctx context.Context, delivery pendingDelivery) error {
+	if !w.persistedUncertain &&
+		!positionAfter(w.persistedTimestamp, w.persistedEventID, delivery.timestamp, delivery.id-1) {
+		return nil
+	}
+
+	ts, id := w.checkpointPositionLocked()
+	if positionAfter(ts, id, delivery.timestamp, delivery.id-1) {
+		ts, id = delivery.timestamp, delivery.id-1
+	}
+
+	if err := w.saveResumePosition(ctx, ts, id); err != nil {
+		slog.Error("Failed to persist checkpoint rewind; delivery will be retried",
+			"client", w.clientName, "eventID", delivery.id, "error", err)
+
+		return fmt.Errorf("persist checkpoint before late delivery %d: %w", delivery.id, err)
+	}
+
+	return nil
+}
+
+// registerDeliveryLocked evicts only bookkeeping, preserving the oldest unacknowledged
+// position in a floor. Saturation never waits for a consumer that may be dropping events.
+func (w *PostgreSQLChangeStreamWatcher) registerDeliveryLocked(delivery pendingDelivery) {
+	if len(w.pending) < pendingDeliveryLimit {
+		w.pending = append(w.pending, delivery)
+
+		return
+	}
+
+	evicted := w.pending[0]
+	if w.pendingFloor.seq == 0 {
+		slog.Warn("Pending delivery limit reached; retaining evicted positions in checkpoint floor",
+			"client", w.clientName, "limit", pendingDeliveryLimit)
+		w.pendingFloor = evicted
+	}
+
+	if positionAfter(w.pendingFloor.timestamp, w.pendingFloor.id, evicted.timestamp, evicted.id) {
+		w.pendingFloor.timestamp, w.pendingFloor.id = evicted.timestamp, evicted.id
+	}
+
+	w.pendingFloor.seq = max(w.pendingFloor.seq, evicted.seq)
+	copy(w.pending, w.pending[1:])
+	w.pending[len(w.pending)-1] = delivery
+}
+
+// advancePositionLocked preserves the read cursor's (changed_at, id) order, including
+// filtered rows and late NOTIFY rows. The caller holds mu.
+func (w *PostgreSQLChangeStreamWatcher) advancePositionLocked(eventTimestamp time.Time, eventID int64) {
 	w.recordRecentEventIDLocked(eventID, time.Now())
 
 	if eventID > w.highestReadEventID {
@@ -1995,12 +2105,43 @@ func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWit
 		w.lastEventID = eventID
 		w.lastTimestamp = eventTimestamp
 	}
+}
 
-	w.mu.Unlock()
+// acknowledgeDeliveryLocked removes only the earliest tracked matching delivery and its
+// prefix. Its sequence also covers all evicted entries. Unknown tokens remove nothing.
+func (w *PostgreSQLChangeStreamWatcher) acknowledgeDeliveryLocked(id int64) {
+	for i, delivery := range w.pending {
+		if delivery.id == id {
+			n := copy(w.pending, w.pending[i+1:])
+			clear(w.pending[n:])
+			w.pending = w.pending[:n]
 
-	slog.Debug("Advanced changelog position", "client", w.clientName, "eventID", eventID)
+			if delivery.seq > w.pendingFloor.seq {
+				w.pendingFloor = pendingDelivery{}
+			}
 
-	return eventID
+			return
+		}
+	}
+}
+
+// checkpointPositionLocked bounds the cursor by every outstanding delivery, including
+// late NOTIFY rows below the cursor. Rewinding a saved checkpoint permits safe replay.
+func (w *PostgreSQLChangeStreamWatcher) checkpointPositionLocked() (time.Time, int64) {
+	ts, id := w.lastTimestamp, w.lastEventID
+	if w.pendingFloor.seq > 0 && positionAfter(ts, id, w.pendingFloor.timestamp, w.pendingFloor.id-1) {
+		ts, id = w.pendingFloor.timestamp, w.pendingFloor.id-1
+	}
+
+	for _, delivery := range w.pending {
+		// Changelog ids are positive BIGSERIAL values, so id-1 is a strict predecessor
+		// at the same timestamp and the next poll will include this delivery again.
+		if positionAfter(ts, id, delivery.timestamp, delivery.id-1) {
+			ts, id = delivery.timestamp, delivery.id-1
+		}
+	}
+
+	return ts, id
 }
 
 // positionAfter reports whether (ts, id) comes after (otherTS, otherID) in the order the poll
@@ -2124,6 +2265,8 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumePosition(ctx context.Context) 
 		}
 	}
 
+	// For a legacy ID token, restart resolves the same pair through the conversion above.
+	w.persistedTimestamp, w.persistedEventID = w.lastTimestamp, w.lastEventID
 	w.highestReadEventID = w.lastEventID
 
 	slog.Info("Loaded resume position",
@@ -2264,8 +2407,14 @@ func (w *PostgreSQLChangeStreamWatcher) saveResumePosition(
 
 	_, err = w.db.ExecContext(ctx, query, w.clientName, tokenJSON)
 	if err != nil {
+		// The error can be ambiguous: the write may have committed anyway.
+		w.persistedUncertain = true
+
 		return fmt.Errorf("failed to save resume position: %w", err)
 	}
+
+	w.persistedTimestamp, w.persistedEventID = timestamp, eventID
+	w.persistedUncertain = false
 
 	return nil
 }

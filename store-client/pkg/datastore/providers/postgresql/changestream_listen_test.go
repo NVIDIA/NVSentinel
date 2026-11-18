@@ -434,8 +434,8 @@ func TestFetchNewChanges_OverlappingReads_DeliverEachRowOnce(t *testing.T) {
 		watcher.mu.RLock()
 		defer watcher.mu.RUnlock()
 
-		return watcher.lastEventID == 1
-	}, 5*time.Second, time.Millisecond, "the read position advances after row 1 is delivered")
+		return watcher.lastEventID == 2 && len(watcher.pending) == 2 && watcher.pending[1].id == 2
+	}, 5*time.Second, time.Millisecond, "row 2 and its cursor register atomically before its blocked send")
 
 	go func() { done <- watcher.fetchNewChanges(ctx) }()
 
@@ -443,7 +443,7 @@ func TestFetchNewChanges_OverlappingReads_DeliverEachRowOnce(t *testing.T) {
 		watcher.mu.RLock()
 		defer watcher.mu.RUnlock()
 
-		return watcher.lastEventID != 1
+		return watcher.lastEventID != 2 || len(watcher.pending) != 2
 	}, 300*time.Millisecond, time.Millisecond, "a read must wait while another one is delivering")
 
 	tokens := []string{string(first.ResumeToken)}
@@ -535,7 +535,7 @@ func TestListenLoop_LateRowNotifiedDuringLongCatchUp_IsDelivered(t *testing.T) {
 	notifyAll(rowRange(1001, 1600))
 	assert.Equal(t, tokensFor(rowRange(21, 120)), takeTokens(t, watcher, 100, 5*time.Second))
 
-	// The second poll blocks on row 121 until it is delivered; cursor advancement must follow it.
+	// Row 121 is delivered; row 122 then registers its pending entry and blocks on its send.
 	assert.Equal(t, []string{"121"}, takeTokens(t, watcher, 1, 5*time.Second))
 
 	// Another 600 rows past the position are notified and then the late row, 1201 ids since the
@@ -544,7 +544,7 @@ func TestListenLoop_LateRowNotifiedDuringLongCatchUp_IsDelivered(t *testing.T) {
 		watcher.mu.RLock()
 		defer watcher.mu.RUnlock()
 
-		return watcher.lastEventID == 121
+		return watcher.lastEventID == 122 && len(watcher.pending) == 102 && watcher.pending[101].id == 122
 	}, 5*time.Second, time.Millisecond)
 	notifyAll(append(rowRange(1601, 2200), lateID))
 	assert.Equal(t, tokensFor(rowRange(122, 220)), takeTokens(t, watcher, 99, 5*time.Second))
