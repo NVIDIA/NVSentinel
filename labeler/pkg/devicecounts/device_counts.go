@@ -866,26 +866,23 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 		return expected
 	}
 
-	if expected, ok := p.manager.maxima.expected(key); ok {
-		p.partitionExpected[key] = expected
-		return expected
-	}
-
-	expected := p.learnPartition(ctx, classIndex, class, node, observation)
+	expected := p.manager.maxima.learnWith(key, func() map[string]int {
+		return p.walkPartition(ctx, classIndex, class, node, observation)
+	})
 	p.partitionExpected[key] = expected
 
 	return expected
 }
 
-// learnPartition walks every peer in the node's partition, stores what each
-// contributes in the manager, and returns the partition's expected count.
-func (p *ReconcileCache) learnPartition(
+// walkPartition reads every peer in the node's partition and returns what each
+// one contributes to its expected count, keyed by node name.
+func (p *ReconcileCache) walkPartition(
 	ctx context.Context,
 	classIndex int,
 	class compiledClass,
 	node *corev1.Node,
 	observation countObservation,
-) int {
+) map[string]int {
 	groupingLabels := class.GroupingLabels
 	if observation.source != nil {
 		groupingLabels = observation.source.GroupingLabels
@@ -896,7 +893,6 @@ func (p *ReconcileCache) learnPartition(
 		p.listPeerNodes = nil
 	}
 
-	expected := 0
 	peers := make(map[string]int)
 
 	for _, peer := range p.peerNodes {
@@ -919,12 +915,33 @@ func (p *ReconcileCache) learnPartition(
 		}
 
 		peers[peer.Name] = peerExpected
-		expected = max(expected, peerExpected)
 	}
 
-	p.manager.maxima.learn(partitionExpectedKey{classIndex: classIndex, partitionKey: observation.partitionKey}, peers)
+	return peers
+}
 
-	return expected
+// RecordContributions records what node contributes to the expected count of
+// each class without changing its labels. It is for a node that labeler does
+// not label, such as one opted out of NVSentinel management, which still counts
+// as a peer of the nodes in its partition.
+func (p *ReconcileCache) RecordContributions(ctx context.Context, node *corev1.Node) {
+	if !p.manager.Enabled() {
+		return
+	}
+
+	resourceSlices := p.cachedResourceSlicesForNode(node)
+
+	for classIndex, class := range p.manager.classes {
+		observation := p.manager.observe(ctx, class, node, resourceSlices)
+		value := maxCountLabel(0, node.Labels[class.Labels.Expected])
+
+		if observation.missingSource || observation.err != nil {
+			p.manager.recordContribution(classIndex, node.Name, observation, value)
+			continue
+		}
+
+		p.manager.recordContribution(classIndex, node.Name, observation, max(value, observation.count))
+	}
 }
 
 // skipUncountedNode reports whether a node has no count for a class. Do not turn

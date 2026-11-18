@@ -587,8 +587,12 @@ func (l *Labeler) reconcileAllNodes() {
 
 	// Share one cache across the fleet sweep. Peer CEL results and partition
 	// maxima are therefore computed once and reused by every target node, while
-	// indexed ResourceSlices are loaded at most once per node.
-	deviceCountCache := l.deviceCounts.NewReconcileCache(nodes, l.loadResourceSlicesForNode)
+	// indexed ResourceSlices are loaded at most once per node. A partition walk
+	// lists the nodes again, so it reads the informer as it is when the walk runs.
+	deviceCountCache := l.deviceCounts.NewLazyReconcileCache(
+		l.deviceCountCachedNodes,
+		l.loadResourceSlicesForNode,
+	)
 	for _, node := range nodes {
 		if err := l.reconcileNodeLabels(node.Name, deviceCountCache); err != nil {
 			slog.Error("Failed to reconcile node labels", "node", node.Name, "error", err)
@@ -954,6 +958,11 @@ func (l *Labeler) calculateAndSetNodeLabels(
 		// that actually removed labels, so the metric reflects how often the gate
 		// fired (ADR-040).
 		metrics.NodeLabelsSkippedManaged.Inc()
+
+		// The node keeps its device-count labels but still counts as a peer of its
+		// partition, so its contribution stays current.
+		deviceCountCache.RecordContributions(l.ctx, node)
+
 		return l.stripDetectionLabels(node), nil
 	}
 

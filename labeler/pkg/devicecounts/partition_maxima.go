@@ -61,27 +61,29 @@ func newPartitionMaxima() *partitionMaxima {
 	}
 }
 
-// expected returns a partition's learned expected count, or false when the
-// partition must be learned by a peer walk first.
-func (m *partitionMaxima) expected(key partitionExpectedKey) (int, bool) {
+// learnWith returns a partition's expected count, learning it first with walk
+// when needed. walk returns the contribution of every peer it finds in the
+// partition, keyed by node name.
+//
+// The lock is held while walk runs, so no contribution recorded or forgotten
+// by another reconciliation can be lost between reading the peers and storing
+// what walk found. walk must not call back into m. A walk is needed once per
+// partition and again only after the last node holding its maximum is gone,
+// so other reconciliations rarely wait on it.
+func (m *partitionMaxima) learnWith(key partitionExpectedKey, walk func() map[string]int) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	partition, ok := m.partitions[key]
-	if !ok || !partition.learned {
-		return 0, false
+	if partition, ok := m.partitions[key]; ok && partition.learned {
+		return partition.max
 	}
 
-	return partition.max, true
+	m.learnLocked(key, walk())
+
+	return m.partitions[key].max
 }
 
-// learn replaces a partition's contributions with the result of a peer walk.
-// peers holds the contribution of every peer the walk found in the partition,
-// keyed by node name.
-func (m *partitionMaxima) learn(key partitionExpectedKey, peers map[string]int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+func (m *partitionMaxima) learnLocked(key partitionExpectedKey, peers map[string]int) {
 	partition := m.partitionLocked(key)
 
 	// Contributions recorded since the partition was last learned may be stale,
@@ -95,7 +97,15 @@ func (m *partitionMaxima) learn(key partitionExpectedKey, peers map[string]int) 
 	partition.max, partition.holders = 0, 0
 
 	for nodeName, value := range peers {
-		m.addLocked(peerCurrentCountKey{classIndex: key.classIndex, nodeName: nodeName}, partition, value)
+		node := peerCurrentCountKey{classIndex: key.classIndex, nodeName: nodeName}
+
+		// A peer that last contributed to another partition has moved here. Its
+		// old partition must lose it as a holder, or it keeps a stale maximum.
+		if previous, ok := m.contributions[node]; ok {
+			m.removeLocked(node, previous)
+		}
+
+		m.addLocked(node, partition, value)
 	}
 
 	partition.learned = true
