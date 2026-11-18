@@ -173,10 +173,7 @@ The kubelet reports the device IDs that the device plugin assigned. The mapper r
 
 ResourceSlice attributes are a Kubernetes API, so the mapper needs no vendor library for DRA devices. The kubelet reports each allocated DRA device with its driver, pool and device name. The mapper finds the matching device in the node's ResourceSlices and records the value of `entityValueAttribute`. The NVIDIA DRA driver publishes a [`uuid` attribute](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/blob/v0.5.1/cmd/gpu-kubelet-plugin/deviceinfo.go#L168-L176) on each GPU, so the `GPU_UUID` entry gives the same values as today's NVML map, without NVML.
 
-The entity value in the event must equal the attribute value exactly. One attribute is enough, because each common DRA driver publishes a single attribute that identifies the device. Besides NVIDIA's `uuid`:
-
-- The [AMD driver](https://github.com/ROCm/k8s-gpu-dra-driver/blob/2d00269431e6604c3695e7b72f9340c68bf709e7/cmd/gpu-kubeletplugin/deviceinfo.go#L71-L96) publishes no UUID or serial number. Its unique attribute is the PCI address.
-- The [Intel driver](https://github.com/intel/intel-resource-drivers-for-kubernetes/blob/4454278044e41cbab48ff0dd7819155fa19ace5a/cmd/kubelet-gpu-plugin/node_state.go#L132) is moving its own PCI address attribute to the Kubernetes standard one.
+The entity value in the event must equal the attribute value exactly. One attribute is enough, because a DRA driver publishes a single attribute that identifies the device, such as a UUID or the PCI address.
 
 For a device that is identified by its PCI address, the entity type uses the Kubernetes standard attribute [`resource.kubernetes.io/pciBusID`](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/dynamic-resource-allocation/deviceattribute/attribute.go#L34-L39). Its value has the full `domain:bus:device.function` form, so the monitor must report the address in the same form. The `PCI` entities in NVIDIA events today do not: XID lines have no function, and NVML has an eight-digit domain.
 
