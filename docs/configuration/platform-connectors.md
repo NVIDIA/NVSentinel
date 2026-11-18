@@ -218,7 +218,7 @@ transformers:
   OverrideTransformer:
     rules:
       - name: "nvlink-to-hardware-repair"
-        when: 'event.checkName == "GpuNvlinkWatch"'
+        when: 'event.checkName == "GpuNvlinkWatch" && event.isFatal == true'
         override:
           recommendedAction: "CUSTOM"
           customRecommendedAction: "hardware-repair"
