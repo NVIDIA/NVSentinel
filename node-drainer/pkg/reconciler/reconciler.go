@@ -55,6 +55,10 @@ const (
 	drainDecisionKey = "healtheventstatus.draindecision"
 )
 
+// errDrainDecisionAlreadyRecorded means another writer stored the decision first.
+// The status update did not match, so the queue retries and follows the stored record.
+var errDrainDecisionAlreadyRecorded = errors.New("drain decision already recorded")
+
 type eventStatus struct {
 	status    model.Status
 	createdAt time.Time
@@ -517,16 +521,7 @@ func (r *Reconciler) recordNewDrainDecision(ctx context.Context, decision *proto
 		return fmt.Errorf("failed to extract document ID for drain decision: %w", err)
 	}
 
-	stored := &datastore.DrainDecision{
-		RuleSet:    decision.GetRuleSet(),
-		Method:     decision.GetMethod(),
-		Stopped:    decision.GetStopped(),
-		ReusedFrom: decision.GetReusedFrom(),
-	}
-
-	if scope := decision.GetScope(); scope != nil {
-		stored.Scope = &datastore.Entity{EntityType: scope.GetEntityType(), EntityValue: scope.GetEntityValue()}
-	}
+	stored := storedDrainDecision(decision)
 
 	filter := map[string]any{
 		fieldID:          documentID,
@@ -573,6 +568,22 @@ func (r *Reconciler) recordNewDrainDecision(ctx context.Context, decision *proto
 	return nil
 }
 
+// storedDrainDecision copies a proto decision into the store type, including a partial-drain scope.
+func storedDrainDecision(decision *protos.DrainDecision) *datastore.DrainDecision {
+	stored := &datastore.DrainDecision{
+		RuleSet:    decision.GetRuleSet(),
+		Method:     decision.GetMethod(),
+		Stopped:    decision.GetStopped(),
+		ReusedFrom: decision.GetReusedFrom(),
+	}
+
+	if scope := decision.GetScope(); scope != nil {
+		stored.Scope = &datastore.Entity{EntityType: scope.GetEntityType(), EntityValue: scope.GetEntityValue()}
+	}
+
+	return stored
+}
+
 func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, eventID string) error {
 	r.updateDrainSessionTracing(ctx, action, healthEvent)
@@ -606,7 +617,7 @@ func (r *Reconciler) executeTerminalAction(ctx context.Context, action *evaluato
 		return r.executeSkip(ctx, nodeName, healthEvent, event, database)
 
 	case evaluator.ActionMarkAlreadyDrained:
-		return r.handleMarkAlreadyDrained(ctx, eventID, nodeName, healthEvent, event, database, action.Status)
+		return r.handleMarkAlreadyDrained(ctx, eventID, nodeName, healthEvent, event, database, action)
 
 	case evaluator.ActionUpdateStatus:
 		r.clearEventStatus(eventID, nodeName)
@@ -692,10 +703,10 @@ func (r *Reconciler) setDrainScope(ds *queue.DrainSession, action *evaluator.Dra
 
 func (r *Reconciler) handleMarkAlreadyDrained(ctx context.Context, eventID, nodeName string,
 	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore,
-	status model.Status) error {
+	action *evaluator.DrainActionResult) error {
 	r.clearEventStatus(eventID, nodeName)
 
-	err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database, status)
+	err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database, action)
 	if err == nil {
 		r.deleteCustomDrainCRIfEnabled(ctx, nodeName, event)
 	}
@@ -722,9 +733,9 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 		podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 		podsEvictionStatus.Status = string(model.StatusSucceeded)
 
-		if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent,
+		if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent,
 			podsEvictionStatus, nodeName,
-			metrics.DrainStatusCancelled); err != nil {
+			metrics.DrainStatusCancelled, nil); err != nil {
 			slog.ErrorContext(ctx, "Failed to update MongoDB status for unquarantined node",
 				"node", nodeName,
 				"error", err)
@@ -904,7 +915,8 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 }
 
 func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
-	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, status model.Status) error {
+	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore,
+	action *evaluator.DrainActionResult) error {
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.execute_mark_already_drained")
 	defer span.End()
 
@@ -918,10 +930,16 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 	}
 
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = string(status)
+	podsEvictionStatus.Status = string(action.Status)
 
-	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent, podsEvictionStatus,
-		nodeName, metrics.DrainStatusSkipped)
+	// An event that already has a record keeps it. A new scope-only note is written with the status.
+	var record *protos.DrainDecision
+	if healthEvent.HealthEventStatus.GetDrainDecision() == nil {
+		record = action.DrainDecision
+	}
+
+	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent, podsEvictionStatus,
+		nodeName, metrics.DrainStatusSkipped, record)
 }
 
 func (r *Reconciler) executeCancelStatus(ctx context.Context,
@@ -941,8 +959,8 @@ func (r *Reconciler) executeCancelStatus(ctx context.Context,
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(status)
 
-	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent, podsEvictionStatus,
-		nodeName, metrics.DrainStatusCancelled); err != nil {
+	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent, podsEvictionStatus,
+		nodeName, metrics.DrainStatusCancelled, nil); err != nil {
 		tracing.RecordError(span, err)
 		span.SetAttributes(
 			attribute.String("node_drainer.error.type", "update_cancel_status_error"),
@@ -1005,8 +1023,8 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		r.queueManager.ClearNodeDraining(nodeName)
 	}
 
-	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent, podsEvictionStatus,
-		nodeName, metrics.DrainStatusDrained)
+	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent, podsEvictionStatus,
+		nodeName, metrics.DrainStatusDrained, nil)
 }
 
 func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
@@ -1061,8 +1079,8 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 }
 
 func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, database queue.DataStore,
-	event datastore.Event, healthEvent *protos.HealthEvent, userPodsEvictionStatus *protos.OperationStatus,
-	nodeName string, drainStatus string) error {
+	event datastore.Event, healthEvent model.HealthEventWithStatus, userPodsEvictionStatus *protos.OperationStatus,
+	nodeName string, drainStatus string, record *protos.DrainDecision) error {
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.update_user_pods_eviction_status")
 	defer span.End()
 	// Extract the document ID (preserving native type for MongoDB)
@@ -1095,9 +1113,12 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	}
 
 	filter := map[string]any{fieldID: documentID}
-	update := map[string]any{opSet: updateFields}
 
-	_, err = database.UpdateDocument(ctx, filter, update)
+	err = writeUserPodsEvictionStatus(ctx, database, filter, updateFields, record, nodeName)
+	if errors.Is(err, errDrainDecisionAlreadyRecorded) {
+		return err
+	}
+
 	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("update_status_error", nodeName).Inc()
 		tracing.RecordError(span, err)
@@ -1115,7 +1136,13 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		attribute.String("node_drainer.user_pods_eviction_status", string(userPodsEvictionStatus.Status)),
 	)
 
-	drainScope, partialEntity := evaluator.DrainScopeFor(healthEvent, r.Config.TomlConfig.PartialDrainEnabled)
+	metricDecision := record
+	if metricDecision == nil {
+		metricDecision = healthEvent.HealthEventStatus.GetDrainDecision()
+	}
+
+	drainScope, partialEntity := evaluator.ScopeForEvent(metricDecision, healthEvent.HealthEvent,
+		r.Config.TomlConfig.PartialDrainEnabled)
 
 	slog.InfoContext(ctx, "Health event status has been updated",
 		"documentID", documentID,
@@ -1128,6 +1155,51 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	}
 
 	return nil
+}
+
+// writeUserPodsEvictionStatus stores the eviction status and, when record is set, the drain
+// decision in one update. The decision matches only while none is stored.
+func writeUserPodsEvictionStatus(ctx context.Context, database queue.DataStore, filter, updateFields map[string]any,
+	record *protos.DrainDecision, nodeName string) error {
+	addNewDrainDecision(filter, updateFields, record)
+
+	result, err := database.UpdateDocument(ctx, filter, map[string]any{opSet: updateFields})
+	if err != nil {
+		return err
+	}
+
+	if !drainDecisionLostRace(record, result) {
+		return nil
+	}
+
+	slog.WarnContext(ctx, "Drain decision already recorded by another writer, requeueing to follow it",
+		"node", nodeName,
+		"scopeEntityType", record.GetScope().GetEntityType(),
+		"scopeEntityValue", record.GetScope().GetEntityValue())
+
+	return fmt.Errorf("drain decision for node %s already recorded, requeueing to follow it: %w",
+		nodeName, errDrainDecisionAlreadyRecorded)
+}
+
+// addNewDrainDecision adds a compare-and-set drain decision to the status update.
+// A nil record leaves the update as a status write only.
+func addNewDrainDecision(filter, updateFields map[string]any, record *protos.DrainDecision) {
+	if record == nil {
+		return
+	}
+
+	filter[drainDecisionKey] = nil
+	updateFields[drainDecisionKey] = storedDrainDecision(record)
+}
+
+// drainDecisionLostRace reports that the decision write matched no document.
+// That happens when another writer stored a decision first.
+func drainDecisionLostRace(record *protos.DrainDecision, result *client.UpdateResult) bool {
+	if record == nil {
+		return false
+	}
+
+	return result == nil || result.MatchedCount == 0
 }
 
 // observeEvictionDurationIfSucceeded observes eviction duration metric if status is succeeded and timestamp is present
@@ -1357,9 +1429,9 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(model.Cancelled)
 
-	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent.HealthEvent,
+	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, *healthEvent,
 		podsEvictionStatus, nodeName,
-		metrics.DrainStatusCancelled); err != nil {
+		metrics.DrainStatusCancelled, nil); err != nil {
 		slog.ErrorContext(ctx, "Failed to update MongoDB status for cancelled event",
 			"node", nodeName,
 			"error", err)
