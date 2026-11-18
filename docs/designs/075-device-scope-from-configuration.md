@@ -180,7 +180,7 @@ The entity value in the event must equal the attribute value exactly. One attrib
 
 For a device that is identified by its PCI address, the entity type uses the Kubernetes standard attribute [`resource.kubernetes.io/pciBusID`](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/dynamic-resource-allocation/deviceattribute/attribute.go#L34-L39). Its value has the full `domain:bus:device.function` form, so the monitor must report the address in the same form. The `PCI` entities in NVIDIA events today do not: XID lines have no function, and NVML has an eight-digit domain.
 
-If the mapper cannot find the attribute for any configured device of a pod, it writes no annotation for that pod, and removes an existing one. A partial annotation would make node-drainer miss the pod. Without an annotation, node-drainer sees a pod with a claim and no annotation, and the partial drain waits instead.
+If the mapper cannot find the attribute for any configured device of a pod, it writes no annotation for that pod, and removes an existing one. A partial annotation would make node-drainer miss the pod. Without an annotation, node-drainer sees a pod with a claim and no annotation, and the partial drain waits instead. The mapper checks every annotation on each poll, every 30 seconds. After the upgrade, its first poll also removes a partial annotation that today's mapper wrote. [#2454](https://github.com/NVIDIA/NVSentinel/issues/2454) tracks the same fix for today's mapper.
 
 The metadata-collector ClusterRole gets `list` and `watch` on `resourceslices.resource.k8s.io`. The chart adds these only when the map has a DRA entry.
 
