@@ -41,6 +41,9 @@ var (
 	// ErrUnknownKey means the TOML has a key under ruleSets that the config
 	// type did not decode.
 	ErrUnknownKey = errors.New("unknown rule set key")
+	// ErrMixedRootKey means the TOML spells the ruleSets root key in more
+	// than one case, for example ruleSets and RuleSets.
+	ErrMixedRootKey = errors.New("rule set root key spelled in more than one case")
 )
 
 // Validate checks the shared rule set fields and each outcome.
@@ -107,12 +110,30 @@ func validateName(prefix, name string) error {
 func validateMatch(prefix string, match Match) []error {
 	hasAll := match.All != nil
 	hasAny := match.Any != nil
+	shapeErr := fmt.Errorf("%s.match: %w: must set exactly one of all or any", prefix, ErrMatch)
 
-	if hasAll == hasAny {
-		return []error{fmt.Errorf("%s.match: %w: must set exactly one of all or any", prefix, ErrMatch)}
+	if !hasAll && !hasAny {
+		return []error{shapeErr}
 	}
 
-	rules, list := matchList(match, hasAny)
+	var errs []error
+
+	if hasAll && hasAny {
+		errs = append(errs, shapeErr)
+	}
+
+	if hasAll {
+		errs = append(errs, validateRules(prefix, "all", match.All)...)
+	}
+
+	if hasAny {
+		errs = append(errs, validateRules(prefix, "any", match.Any)...)
+	}
+
+	return errs
+}
+
+func validateRules(prefix, list string, rules []Rule) []error {
 	if len(rules) == 0 {
 		return []error{fmt.Errorf("%s.match.%s: %w: must contain at least one rule", prefix, list, ErrMatch)}
 	}
@@ -121,34 +142,30 @@ func validateMatch(prefix string, match Match) []error {
 
 	for i, rule := range rules {
 		rulePrefix := fmt.Sprintf("%s.match.%s[%d]", prefix, list, i)
-		if err := validateRule(rulePrefix, rule); err != nil {
-			errs = append(errs, err)
-		}
+		errs = append(errs, validateRule(rulePrefix, rule)...)
 	}
 
 	return errs
 }
 
-func matchList(match Match, useAny bool) (rules []Rule, list string) {
-	if useAny {
-		return match.Any, "any"
-	}
+func validateRule(prefix string, rule Rule) []error {
+	var errs []error
 
-	return match.All, "all"
-}
-
-func validateRule(prefix string, rule Rule) error {
 	variable, err := kindVariable(rule.Kind)
 	if err != nil {
-		return fmt.Errorf("%s.kind: %w: %q", prefix, err, rule.Kind)
+		errs = append(errs, fmt.Errorf("%s.kind: %w: %q", prefix, err, rule.Kind))
 	}
 
 	if rule.Expression == "" {
-		return fmt.Errorf("%s.expression: %w: must not be empty", prefix, ErrRuleExpression)
+		errs = append(errs, fmt.Errorf("%s.expression: %w: must not be empty", prefix, ErrRuleExpression))
+	}
+
+	if len(errs) > 0 {
+		return errs
 	}
 
 	if err := celrule.CheckBooleanExpression(variable, rule.Expression); err != nil {
-		return fmt.Errorf("%s.expression: %w: %w", prefix, ErrRuleExpression, err)
+		return []error{fmt.Errorf("%s.expression: %w: %w", prefix, ErrRuleExpression, err)}
 	}
 
 	return nil

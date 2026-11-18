@@ -103,6 +103,52 @@ acton = "REBOOT"
 	require.ErrorContains(t, err, "RuleSets.remediation.acton")
 }
 
+func TestCheckUndecoded_RootSpelling(t *testing.T) {
+	t.Parallel()
+
+	ruleSet := func(root, name string) string {
+		return `
+[[` + root + `]]
+name = "` + name + `"
+
+[[` + root + `.match.all]]
+kind = "Node"
+expression = "true"
+
+[` + root + `.remediation]
+stop = true
+`
+	}
+
+	tests := []struct {
+		name string
+		doc  string
+		want bool
+	}{
+		{name: "OneDifferentCaseSpelling_Accepted", doc: ruleSet("RuleSets", "a") + ruleSet("RuleSets", "b")},
+		{name: "TwoSpellings_Rejected", doc: ruleSet("ruleSets", "a") + ruleSet("RuleSets", "b"), want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, md := decode(t, tt.doc)
+			err := ruleset.CheckUndecoded(md, "remediation")
+
+			if !tt.want {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorIs(t, err, ruleset.ErrMixedRootKey)
+			require.ErrorContains(t, err, `"ruleSets"`)
+			require.ErrorContains(t, err, `"RuleSets"`)
+		})
+	}
+}
+
 func TestCheckUndecoded_RepeatedUnknownKey_ReportedOnce(t *testing.T) {
 	t.Parallel()
 

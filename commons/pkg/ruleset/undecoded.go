@@ -17,6 +17,7 @@ package ruleset
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -30,10 +31,20 @@ import (
 // say why. The error names that key. The same check catches a misspelled
 // field, such as priorty.
 //
+// It also fails when the root key is spelled in more than one case, such as
+// ruleSets and RuleSets. The decoder accepts either spelling, but with both it
+// merges the two lists into the same entries and reports no undecoded key.
+//
 // Keys outside ruleSets are ignored. A check of every key would reject
 // configuration this version does not know about, and old and new versions
 // run at the same time during an upgrade.
 func CheckUndecoded(md toml.MetaData, outcomeKey string) error {
+	var errs []error
+
+	if err := checkRootSpellings(md); err != nil {
+		errs = append(errs, err)
+	}
+
 	var unknown []toml.Key
 
 	for _, key := range md.Undecoded() {
@@ -41,8 +52,6 @@ func CheckUndecoded(md toml.MetaData, outcomeKey string) error {
 			unknown = append(unknown, key)
 		}
 	}
-
-	var errs []error
 
 	seen := map[string]struct{}{}
 
@@ -61,6 +70,24 @@ func CheckUndecoded(md toml.MetaData, outcomeKey string) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+func checkRootSpellings(md toml.MetaData) error {
+	var spellings []string
+
+	for _, key := range md.Keys() {
+		if len(key) != 1 || !strings.EqualFold(key[0], ruleSetsKey) || slices.Contains(spellings, key[0]) {
+			continue
+		}
+
+		spellings = append(spellings, key[0])
+	}
+
+	if len(spellings) < 2 {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %q", ErrMixedRootKey, spellings)
 }
 
 // The decoder also matches a field name that differs only in case, so

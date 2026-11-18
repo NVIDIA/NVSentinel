@@ -414,6 +414,76 @@ stop = true
 	require.ErrorContains(t, err, "match.all[1]")
 }
 
+func TestValidate_BothListsSet_AlsoChecksEachList(t *testing.T) {
+	t.Parallel()
+
+	sets, _ := decode(t, `
+[[ruleSets]]
+name = "both"
+
+[[ruleSets.match.all]]
+kind = "Pod"
+expression = "true"
+
+[[ruleSets.match.any]]
+kind = "Node"
+expression = "1 + 1"
+
+[ruleSets.remediation]
+stop = true
+`)
+
+	err := ruleset.Validate(sets, "remediation", nil)
+	require.ErrorIs(t, err, ruleset.ErrMatch)
+	require.ErrorIs(t, err, ruleset.ErrRuleKind)
+	require.ErrorIs(t, err, ruleset.ErrRuleExpression)
+	require.ErrorContains(t, err, "match.all[0].kind")
+	require.ErrorContains(t, err, "match.any[0].expression")
+}
+
+func TestValidate_RuleKindAndExpression(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		expression     string
+		wantExpression bool
+	}{
+		{name: "BadKindAndEmptyExpression_ReturnsEach", expression: "", wantExpression: true},
+		{name: "BadKindWithExpression_SkipsCEL", expression: "1 + 1", wantExpression: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			sets, _ := decode(t, `
+[[ruleSets]]
+name = "bad-rule"
+
+[[ruleSets.match.all]]
+kind = "Pod"
+expression = "`+tt.expression+`"
+
+[ruleSets.remediation]
+stop = true
+`)
+
+			err := ruleset.Validate(sets, "remediation", nil)
+			require.ErrorIs(t, err, ruleset.ErrRuleKind)
+
+			if tt.wantExpression {
+				require.ErrorIs(t, err, ruleset.ErrRuleExpression)
+				require.ErrorContains(t, err, "must not be empty")
+
+				return
+			}
+
+			require.NotErrorIs(t, err, ruleset.ErrRuleExpression)
+		})
+	}
+}
+
 func TestValidate_SeveralProblems_ReturnsEach(t *testing.T) {
 	t.Parallel()
 
