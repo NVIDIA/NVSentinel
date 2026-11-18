@@ -15,16 +15,18 @@ Status: Proposed (tracking issue [#2417](https://github.com/NVIDIA/NVSentinel/is
       - [Device-plugin devices](#device-plugin-devices)
       - [DRA devices](#dra-devices)
    - [Backwards compatibility](#backwards-compatibility)
-4. [Consequences](#consequences)
+4. [Rationale](#rationale)
+5. [Consequences](#consequences)
    - [Positive](#positive)
    - [Negative](#negative)
-5. [Alternatives Considered](#alternatives-considered)
+   - [Mitigations](#mitigations)
+6. [Alternatives Considered](#alternatives-considered)
    - [Derive the scoped actions from `impactedEntityScope` in fault-remediation](#derive-the-scoped-actions-from-impactedentityscope-in-fault-remediation)
    - [Keep the mapper in the metadata-collector binary with a flag to skip NVML](#keep-the-mapper-in-the-metadata-collector-binary-with-a-flag-to-skip-nvml)
    - [Use the DRA device name as the entity value](#use-the-dra-device-name-as-the-entity-value)
-6. [Notes](#notes)
+7. [Notes](#notes)
    - [Non-goals](#non-goals)
-7. [References](#references)
+8. [References](#references)
 
 ## Context
 
@@ -128,7 +130,7 @@ node-drainer takes these steps in order and stops at the first one that decides.
 2. Find the entity type whose `scopedActions` lists the effective action of the event. If there is none, drain the full node, as today for any action other than `COMPONENT_RESET`.
 3. Take the first entity of the event with that type and a non-empty value. If there is none, fail the drain and retry. Otherwise, drain only the pods that use that entity.
 
-The pod filter still keeps a pod when its annotation lists the entity value under one of the names of the entity type. A pod that requests one of those resources or DeviceClasses but has no annotation still stops the drain with an error.
+The pod filter still keeps a pod when its annotation lists the entity value under one of the names of the entity type. A pod that requests one of those resources or DeviceClasses but has no annotation still stops the drain with an error. The same applies when the annotation lists none of the names of the entity type, for example because it was written before the operator added the entity type. The drain then waits until the mapper writes the new annotation.
 
 ### Scope check
 
@@ -185,6 +187,11 @@ The metadata-collector ClusterRole gets `list` and `watch` on `resourceslices.re
 - **Pod annotation and event store:** no change. Old and new components read each other's data.
 - **Behaviour:** two changes, both on purpose: the chart check, and the retry of an action on the full node after a partial drain (see [Scope check](#scope-check)).
 
+## Rationale
+
+- **The repair decides the scope.** Whether an action repairs one device depends on the CR that fault-remediation creates for it, so the scope cannot be a fixed property of the action. A list in the configuration, checked against `maintenance.actions`, keeps the drain and the repair in step.
+- **Device identity from Kubernetes.** DRA drivers publish device identity in ResourceSlices, a Kubernetes API. The mapper reads it there instead of from a vendor library, so the same code serves every vendor.
+
 ## Consequences
 
 ### Positive
@@ -200,6 +207,12 @@ The metadata-collector ClusterRole gets `list` and `watch` on `resourceslices.re
 - Until [#2419](https://github.com/NVIDIA/NVSentinel/issues/2419), the mapper runs only on NVIDIA GPU nodes. Other device types get partial drains only on those nodes.
 - An existing install with partial drains on and a `COMPONENT_RESET` entry without `impactedEntityScope`, such as the chart default `RebootNode`, fails to upgrade until the operator changes the entry to a scoped action such as `GPUReset`.
 - An event whose rule set picks an action on the full node after a partial drain retries until an operator changes the configuration. The node stays cordoned until then.
+
+### Mitigations
+
+- The chart error names the action and the entity type, so the operator knows which `maintenance.actions` entry to change before the upgrade.
+- The retry metric has its own `error_type`, so an alert can find events that wait for a configuration fix.
+- The mapper code no longer depends on NVML, so [#2419](https://github.com/NVIDIA/NVSentinel/issues/2419) can move it to its own DaemonSet without changing it.
 
 ## Alternatives Considered
 
