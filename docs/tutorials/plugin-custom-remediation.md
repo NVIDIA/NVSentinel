@@ -120,10 +120,9 @@ recommendedAction: CUSTOM
 customRecommendedAction: hardware-rma
 ```
 
-> **Platform-connector overrides cannot configure custom actions.** Overrides remap
-> `recommendedAction` between built-in enum values only (`RESTART_VM`, `REPLACE_VM`, …) and do not
-> set `customRecommendedAction`. If an override sets `recommendedAction: CUSTOM`, the custom string
-> stays empty and fault-remediation skips remediation as an unsupported action.
+> To send an event from a monitor that you cannot change to your custom action, use a
+> platform-connector override that sets `recommendedAction: CUSTOM` and `customRecommendedAction`.
+> See [Override Transformer Configuration](../configuration/platform-connectors.md#override-transformer-configuration).
 
 ### Step 2 — Register the action in fault-remediation Helm values
 
@@ -261,8 +260,8 @@ Architecture (direct CR plugin):
 Health event contract (emit from a health monitor):
 - Set BOTH recommendedAction=CUSTOM and customRecommendedAction="[my-action]" on the HealthEvent
   (protobuf field customRecommendedAction on datamodels.HealthEvent).
-- Platform-connector overrides cannot configure custom actions — they remap built-in
-  recommendedAction enums only and do not set customRecommendedAction.
+- To route an event from a monitor you cannot change, add a platform-connector override that
+  sets BOTH recommendedAction: "CUSTOM" and customRecommendedAction: "[my-action]".
 
 Controller (standalone Kubebuilder project, any repo):
 - Scaffold: kubebuilder init --domain example.com --repo github.com/{your-org}/[my-remediation]

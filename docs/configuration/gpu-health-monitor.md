@@ -285,7 +285,7 @@ To interpret a firing check, see the [GPU Thermal Margin runbook](../runbooks/gp
 
 ## NVLink Suppression on Unbridged PCIe Cards
 
-Suppresses the NVLink-down fault on PCIe cards that have NVLink silicon but no bridge fitted. DCGM otherwise reports those permanently inactive links as a fatal fault with `RESTART_VM`.
+Suppresses the NVLink-down fault on PCIe cards that have NVLink silicon but no bridge fitted, such as A100/H100 PCIe, GeForce RTX 3090, and GeForce RTX 2080 Ti. DCGM otherwise reports those permanently inactive links as a fatal fault with `RESTART_VM`.
 
 ```yaml
 gpu-health-monitor:
