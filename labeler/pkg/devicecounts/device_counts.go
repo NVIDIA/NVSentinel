@@ -126,9 +126,9 @@ type ReconcileCache struct {
 	// expected count for each class and hardware partition.
 	peerNodes []*corev1.Node
 
-	// listPeerNodes, when set, fills peerNodes the first time a partition has to
-	// be read in full. Most node events find the partition's expected count
-	// already learned, so they never list the nodes at all.
+	// listPeerNodes, when set, is used instead of peerNodes and is called each
+	// time a partition has to be read in full. Most node events find the
+	// partition's expected count already learned, so they never list the nodes.
 	listPeerNodes func() []*corev1.Node
 
 	// loadResourceSlicesForNode performs the indexed informer lookup when a node is
@@ -897,16 +897,17 @@ func (p *ReconcileCache) readPeerCounts(
 		groupingLabels = observation.source.GroupingLabels
 	}
 
-	// List the nodes now rather than when the cache was created, so the read
-	// sees the informer as it is at this moment.
+	// List the nodes for every full read rather than once per cache. The startup
+	// sweep reads one partition after another, and a list taken for an earlier
+	// partition could still hold a node that has been deleted since.
+	peerNodes := p.peerNodes
 	if p.listPeerNodes != nil {
-		p.peerNodes = p.listPeerNodes()
-		p.listPeerNodes = nil
+		peerNodes = p.listPeerNodes()
 	}
 
 	peerCounts := make(map[string]int)
 
-	for _, peer := range p.peerNodes {
+	for _, peer := range peerNodes {
 		// Peers with different grouping-label values cannot share the
 		// partition, so skip them before evaluating any CEL for them.
 		if !groupingLabelsMatch(groupingLabels, node, peer) {

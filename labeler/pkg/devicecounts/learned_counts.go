@@ -55,6 +55,15 @@ type learnedCounts struct {
 
 // partitionState is what labeler knows about one partition of one class.
 type partitionState struct {
+	// key is the partition's key in learnedCounts.partitions, so an empty
+	// partition can be removed from the map.
+	key partitionExpectedKey
+
+	// members is how many nodes labeler remembers in the partition. When the
+	// last one goes, the partition is removed, so the map does not keep every
+	// grouping-label value that a node has ever had.
+	members int
+
 	// expected is the highest count of any node in the partition.
 	expected int
 
@@ -119,7 +128,7 @@ func (c *learnedCounts) learnLocked(key partitionExpectedKey, peerCounts map[str
 		}
 	}
 
-	partition.expected, partition.nodesAtExpected = 0, 0
+	partition.members, partition.expected, partition.nodesAtExpected = 0, 0, 0
 
 	for nodeName, count := range peerCounts {
 		c.setNodeLocked(peerCurrentCountKey{classIndex: key.classIndex, nodeName: nodeName}, partition, count)
@@ -153,7 +162,7 @@ func (c *learnedCounts) removeNode(classIndex int, nodeName string) {
 func (c *learnedCounts) partitionLocked(key partitionExpectedKey) *partitionState {
 	partition, ok := c.partitions[key]
 	if !ok {
-		partition = &partitionState{}
+		partition = &partitionState{key: key}
 		c.partitions[key] = partition
 	}
 
@@ -171,6 +180,7 @@ func (c *learnedCounts) setNodeLocked(node peerCurrentCountKey, partition *parti
 	}
 
 	c.nodes[node] = nodeEntry{partition: partition, count: count}
+	partition.members++
 
 	switch {
 	case count > partition.expected:
@@ -184,12 +194,25 @@ func (c *learnedCounts) setNodeLocked(node peerCurrentCountKey, partition *parti
 	}
 }
 
-// uncountLocked takes a node's old entry out of its partition's tally. If the
-// node was the last one with the partition's expected count, labeler no longer
-// knows the partition's highest count, so the partition will be read again the
-// next time it is needed.
+// uncountLocked takes a node's old entry out of its partition's tally. If it
+// was the partition's last node, the partition is removed. If it was the last
+// node with the partition's expected count, labeler no longer knows the
+// partition's highest count, so the partition will be read again the next
+// time it is needed.
 func (c *learnedCounts) uncountLocked(entry nodeEntry) {
 	partition := entry.partition
+
+	partition.members--
+	if partition.members <= 0 {
+		// Delete only the entry that still points at this partition. A full read
+		// may already have replaced it.
+		if c.partitions[partition.key] == partition {
+			delete(c.partitions, partition.key)
+		}
+
+		return
+	}
+
 	if entry.count != partition.expected {
 		return
 	}

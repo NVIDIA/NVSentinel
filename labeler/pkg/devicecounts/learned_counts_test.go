@@ -404,3 +404,58 @@ func TestReconcileCache_NodeLoweringItsOwnHighestCount_GetsTheLowerCount(t *test
 	require.Equal(t, "4", nodes[0].Labels[testGPUCountExpectedLabel],
 		"the node must not get its own old count back from what labeler remembered")
 }
+
+func TestLearnedCounts_RemoveNode_LastNodeRemovesPartition(t *testing.T) {
+	counts := newLearnedCounts()
+	counts.learn(testPartition, map[string]int{"node-a": 8})
+
+	counts.removeNode(testPartition.classIndex, "node-a")
+
+	require.Empty(t, counts.partitions, "an empty partition must not stay in the map")
+}
+
+func TestLearnedCounts_SetNode_LastNodeMovingAwayRemovesPartition(t *testing.T) {
+	other := partitionExpectedKey{classIndex: 0, partitionKey: "node.kubernetes.io/instance-type=p4"}
+	counts := newLearnedCounts()
+	counts.learn(testPartition, map[string]int{"node-a": 8})
+
+	counts.setNode(other, "node-a", 8)
+
+	require.NotContains(t, counts.partitions, testPartition)
+	require.Contains(t, counts.partitions, other)
+}
+
+func TestReconcileCache_LazySweep_ListsNodesForEveryFullRead(t *testing.T) {
+	ctx := context.Background()
+	manager := newTestManager(t, peerLearningConfig())
+
+	p5Node := p5Fleet(8)[0]
+	p4Node := testNode("p4-a", map[string]string{
+		"node.kubernetes.io/instance-type": "p4",
+		"nvidia.com/gpu.count":             "4",
+	})
+	deletedP4Node := testNode("p4-deleted", map[string]string{
+		"node.kubernetes.io/instance-type": "p4",
+		"nvidia.com/gpu.count":             "16",
+	})
+
+	// The first list still has p4-deleted; it is deleted before the sweep reads
+	// the p4 partition, so every later list leaves it out.
+	lists := 0
+	listNodes := func() []*corev1.Node {
+		lists++
+		if lists == 1 {
+			return []*corev1.Node{p5Node, p4Node, deletedP4Node}
+		}
+
+		return []*corev1.Node{p5Node, p4Node}
+	}
+
+	sweep := manager.NewLazyReconcileCache(listNodes, (&countingSliceLoader{}).load)
+	sweep.CalculateAndSetDeviceCountLabels(ctx, p5Node)
+	sweep.CalculateAndSetDeviceCountLabels(ctx, p4Node)
+
+	require.Equal(t, 2, lists, "each partition read must list the nodes again")
+	require.Equal(t, "4", p4Node.Labels[testGPUCountExpectedLabel],
+		"a node deleted before its partition was read must not raise the expected count")
+}
