@@ -261,7 +261,7 @@ func (e *NodeDrainEvaluator) countRecordedDrainGuard(ctx context.Context, nodeNa
 // recordAndEvaluateNewDecision stores a new decision, then returns the drain action for it.
 // The built-in checks can force-delete pods past their deadline, so they run only after the store.
 // The custom drain checks only read; they run first so that an event whose node the CR of another
-// event has already drained is marked AlreadyDrained and gets no decision. The completed CR of
+// event has already drained is marked AlreadyDrained and records only its scope. The completed CR of
 // this event still gets the Custom decision. That CR has no record when its drain started before
 // node-drainer recorded decisions.
 func (e *NodeDrainEvaluator) recordAndEvaluateNewDecision(ctx context.Context, decision *protos.DrainDecision,
@@ -278,8 +278,14 @@ func (e *NodeDrainEvaluator) recordAndEvaluateNewDecision(ctx context.Context, d
 	}
 
 	action, err := e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
-	if err != nil || action == nil || action.drainedByOtherCR {
+	if err != nil || action == nil {
 		return action, err
+	}
+
+	if action.drainedByOtherCR {
+		action.DrainDecision = &protos.DrainDecision{Scope: partialDrainEntity}
+
+		return action, nil
 	}
 
 	if err := storeDrainDecision(ctx, recordDecision, decision, nodeName); err != nil {
@@ -391,13 +397,26 @@ func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statu
 	}
 
 	if isDrained {
-		return &DrainActionResult{
-			Action: ActionMarkAlreadyDrained,
-			Status: model.AlreadyDrained,
-		}
+		return coveredDrainResult(healthEvent, partialDrainEntity)
 	}
 
 	return nil
+}
+
+// coveredDrainResult marks the event AlreadyDrained and, when it has no record yet, carries the
+// scope to store. A nil scope is a drain of the full node. An event that already has a record
+// keeps that record.
+func coveredDrainResult(healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) *DrainActionResult {
+	result := &DrainActionResult{
+		Action: ActionMarkAlreadyDrained,
+		Status: model.AlreadyDrained,
+	}
+
+	if healthEvent.HealthEventStatus.GetDrainDecision() == nil {
+		result.DrainDecision = &protos.DrainDecision{Scope: partialDrainEntity}
+	}
+
+	return result
 }
 
 // evaluateUserNamespaceActions selects the next drain action using pod policies
@@ -829,6 +848,21 @@ func (e *NodeDrainEvaluator) isNodeAlreadyDrained(ctx context.Context, currentEv
 	}
 
 	return alreadyDrained, true, nil
+}
+
+// ScopeForEvent reports the drain scope for a metric label. A recorded decision wins, so a change
+// to partialDrainEnabled does not relabel a drain that already happened. A nil decision is derived.
+func ScopeForEvent(decision *protos.DrainDecision, healthEvent *protos.HealthEvent,
+	partialDrainEnabled bool) (DrainScope, *protos.Entity) {
+	if decision != nil {
+		if scope := decision.GetScope(); scope != nil {
+			return DrainScopePartial, scope
+		}
+
+		return DrainScopeFull, nil
+	}
+
+	return DrainScopeFor(healthEvent, partialDrainEnabled)
 }
 
 // DrainScopeFor reports whether the event drains the whole node or a single entity, and the
