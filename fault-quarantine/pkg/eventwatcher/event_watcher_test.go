@@ -605,12 +605,14 @@ func TestLiveSkippedEventIsExcludedFromLaterColdStart(t *testing.T) {
 			CreatedAt: now,
 		},
 	}
-	require.NoError(t, coldstart.Handle(context.Background(), coldstart.Dependencies{
+	completed, err := coldstart.Handle(context.Background(), coldstart.Dependencies{
 		HealthEventStore:   store,
 		EventProcessor:     watcher,
 		ColdStartAfterTime: now.Add(-time.Minute),
 		ColdStartUntilTime: now.Add(time.Minute),
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, 2, store.scanned, "cold start scans bounded fault and healthy phases")
 	require.NotNil(t, store.query)
 	assert.Contains(t, fmt.Sprint(store.query.ToMongo()), coldstart.RecoveryCompletionStatusPath)
