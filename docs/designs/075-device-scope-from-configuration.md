@@ -30,9 +30,11 @@ Status: Proposed (tracking issue [#2417](https://github.com/NVIDIA/NVSentinel/is
 
 ## Context
 
-When one device on a node fails, NVSentinel does not always need to take the whole node out of service. A partial drain evicts only the pods that use the failed device, and a scoped remediation repairs only that device, for example a reset of one GPU. The other pods on the node keep running.
+When one device on a node fails, NVSentinel does not always need to take the whole node out of service. A partial drain evicts only the pods that use the failed device, and a scoped remediation repairs only that device. The other pods on the node keep running.
 
-This needs four steps along the break-fix pipeline. Today each one is either GPU-only or missing:
+Today this works for one case: a GPU, named by its UUID, with the `COMPONENT_RESET` action. A node can have other devices that fail on their own, such as an accelerator from another vendor. An operator can also define other actions that repair one device, such as a custom action. For these, NVSentinel drains the full node.
+
+A partial drain and a scoped remediation need four steps along the break-fix pipeline. Today each one is either GPU-only or missing:
 
 ```mermaid
 flowchart TD
@@ -53,10 +55,10 @@ flowchart TD
     linkStyle 2,6,9,12 stroke:#d00,stroke-dasharray:3
 ```
 
-1. **Know which pods use which device.** Something on each node has to record, for each pod, the devices that Kubernetes gave it, in the same identity that health events use for the device. Today the pod-to-device mapper in metadata-collector does this, and only for NVIDIA GPUs. It starts only after the NVML collection succeeds, and it turns a DRA device into a GPU UUID through a map that NVML provides. Its DaemonSet runs only on NVIDIA GPU nodes. A node with another kind of device gets no mapper.
+1. **Know which pods use which device.** Something on each node has to record, for each pod, the devices that Kubernetes gave it, in the same identity that health events use for the device. Today the pod-to-device mapper in metadata-collector does this, and only for NVIDIA GPUs.
 2. **Decide when a drain is partial.** node-drainer has to know which remediation actions repair one device, and which entity in the event names that device. Today the only entity type is the GPU UUID, and the only action is `COMPONENT_RESET`. Every other action, including a custom action ([ADR-036](036-custom-remediation-actions.md)), drains the full node.
 3. **Repair only that device.** fault-remediation has to create a CR that acts on the device, not on the node. This already works for any action through `impactedEntityScope`, but the scope can only name the GPU UUID.
-4. **Agree on the scope.** The drain and the repair have to cover the same thing. Today nothing checks this: node-drainer decides from the event, and fault-remediation picks the CR from its own configuration. They can disagree in two directions. A scoped repair after a full drain evicts more pods than needed, which is safe but wasteful. This happens today for a custom action with `impactedEntityScope`. A full-node repair after a partial drain stops the pods that were not drained, which is unsafe. This happens with partial drains on and `COMPONENT_RESET` mapped to `RebootNode`, which is the chart default, and with a fault-remediation rule set that changes the action ([ADR-064](064-node-and-device-selection.md#partial-drains-and-actions-on-the-full-node)). The node-drainer documentation warns about the unsafe case, but nothing prevents it. Extending partial drains to more actions and device types makes this gap larger, so this ADR closes it.
+4. **Agree on the scope.** The drain and the repair have to cover the same thing, but nothing checks this. A scoped repair after a full drain evicts more pods than needed, as for a custom action with `impactedEntityScope` today. A full-node repair after a partial drain stops pods that were not drained. This happens when partial drains are on and `COMPONENT_RESET` maps to `RebootNode`, the chart default, or when a fault-remediation rule set changes the action ([ADR-064](064-node-and-device-selection.md#partial-drains-and-actions-on-the-full-node)). The node-drainer documentation warns about this, but nothing prevents it.
 
 ## Decision
 
@@ -73,7 +75,8 @@ flowchart TD
 global:
   entityTypes:
     GPU_UUID:
-      resourceNames: ["nvidia.com/gpu", "nvidia.com/pgpu"]
+      devicePlugin:
+        resourceNames: ["nvidia.com/gpu", "nvidia.com/pgpu"]
       dra:
         - driver: gpu.nvidia.com
           deviceClasses: ["gpu.nvidia.com"]
@@ -87,7 +90,6 @@ An operator adds a device type with another key. This example adds a custom acti
 global:
   entityTypes:
     ACCEL_SERIAL:
-      resourceNames: ["example.com/accel"]
       dra:
         - driver: accel.example.com
           deviceClasses: ["accel.example.com"]
@@ -102,12 +104,11 @@ fault-remediation:
         # ...
 ```
 
-The map is keyed by entity type, so Helm merges an operator's entries with the default, and an operator removes the default by setting `GPU_UUID: null`.
-
-- `resourceNames` are device-plugin resource names. Matching is exact.
+- `devicePlugin` and `dra` are the two ways a pod can get a device. An entity type has one or both, and the chart fails if it has neither. The `GPU_UUID` default has both, as the code does today, because a cluster can use either. A source that a cluster does not use matches no devices.
+- `devicePlugin.resourceNames` lists the exact resource names that pods request, such as `nvidia.com/gpu`.
 - `dra` lists DRA drivers. `driver` is the name that the kubelet reports for an allocated device. `deviceClasses` are the names that pods use in their claims. Today one string serves both, which only works because the NVIDIA driver and its DeviceClass share a name.
 - `entityValueAttribute` names the ResourceSlice attribute whose value is the entity value in health events (see [DRA devices](#dra-devices)).
-- `scopedActions` are action names, as `GetEffectiveActionName` returns them: a built-in action such as `COMPONENT_RESET`, or a custom action name. An action can be scoped to only one entity type. The chart fails if two entries list the same action.
+- `scopedActions` are action names, as `GetEffectiveActionName` returns them: a built-in action such as `COMPONENT_RESET`, or a custom action name. An action can be scoped to only one entity type, because fault-remediation's [`impactedEntityScope`](../configuration/fault-remediation.md#impactedentityscope) names one entity type for each action. The chart fails if two entries list the same action.
 
 ### Where each component reads the map
 
@@ -115,12 +116,12 @@ The chart renders `global.entityTypes` into the configuration file of each compo
 
 | Component | Uses | Change |
 |---|---|---|
-| Pod device mapper | `resourceNames`, `dra` | Records only the configured resources and drivers |
+| Pod device mapper | `devicePlugin`, `dra` | Records only the configured resources and drivers |
 | node-drainer | All fields | Partial drain for `scopedActions`. The pod filter, the missing-annotation check and the `drainGPUPods` filter read the configured names instead of `GPU_UUID` |
 | fault-quarantine | `scopedActions` | Post-remediation validation uses the same partial-drain decision as node-drainer |
 | fault-remediation | `scopedActions` | `impactedEntityScope` must name a configured entity type. The [scope check](#scope-check), which also reads `global.partialDrainEnabled` for events without a recorded scope |
 
-If a component's configuration has no `entityTypes` key, it uses the NVIDIA `GPU_UUID` entry above, so a configuration file from an earlier chart keeps working. This built-in default is removed when NVIDIA-specific code moves out of the core into an NVIDIA plugin ([ADR-070](070-vendor-neutral-core.md#phase-4-move-vendor-code)). The plugin chart then sets the entry. An empty map, `entityTypes: {}`, turns partial drains off for every event.
+If a component's configuration has no `entityTypes` key, the code uses a built-in `GPU_UUID` entry with today's values. An empty map, `entityTypes: {}`, turns partial drains off for every event. The built-in entry is removed when NVIDIA-specific code moves out of the core into an NVIDIA plugin ([ADR-070](070-vendor-neutral-core.md#phase-4-move-vendor-code)), and the plugin chart then sets it.
 
 ### Partial drain decision
 
@@ -130,15 +131,18 @@ node-drainer takes these steps in order and stops at the first one that decides.
 2. Find the entity type whose `scopedActions` lists the effective action of the event. If there is none, drain the full node, as today for any action other than `COMPONENT_RESET`.
 3. Take the first entity of the event with that type and a non-empty value. If there is none, fail the drain and retry. Otherwise, drain only the pods that use that entity.
 
-The pod filter still keeps a pod when its annotation lists the entity value under one of the names of the entity type. A pod that requests one of those resources or DeviceClasses but has no annotation still stops the drain with an error. The same applies when the annotation lists none of the names of the entity type, for example because it was written before the operator added the entity type. The drain then waits until the mapper writes the new annotation.
+In step 3, node-drainer checks the device annotation of each pod. The annotation lists devices under resource names and DRA driver names.
+
+- If the annotation lists the entity value under a name of the entity type, node-drainer evicts the pod, as today.
+- If a pod requests a resource or DeviceClass of the entity type, but has no annotation or an annotation with no name of the entity type, node-drainer fails the drain and retries. The second case happens when the mapper wrote the annotation before the operator added the entity type. The drain continues after the mapper writes the new annotation.
 
 ### Scope check
 
-The drain and the repair must cover the same thing. A partial drain followed by an action on the full node, such as a reboot, stops the pods that were not drained. Two checks prevent this.
+The drain and the repair must cover the same thing. A partial drain followed by an action on the full node, such as a reboot, or on a different device, stops pods that were not drained. Two checks prevent this.
 
 **At install.** When partial drains are on, every action in `scopedActions` needs a `maintenance.actions` entry with the same `impactedEntityScope`. Otherwise the chart fails the install or upgrade. There is no warning period, because the configuration it rejects reboots nodes after a partial drain today.
 
-**At run time.** A fault-remediation rule set ([ADR-064](064-node-and-device-selection.md)) can still pick an action on the full node after a partial drain. The chart cannot see this. fault-remediation knows that the drain was partial from the scope that node-drainer records on the event (`DrainDecision.scope`). In that case, fault-remediation does not create the CR. It treats the event as an [error in ADR-064](064-node-and-device-selection.md#the-drain-decision): it records no decision, logs both scopes, increments `fault_remediation_processing_errors_total` with a new `error_type`, and retries the event with backoff. Each retry evaluates the rule sets again, so a fix to the configuration lets the event continue. node-drainer behaves the same way today when a partial drain cannot proceed. An event drained by a version before v1.31.0 has no recorded scope. For such an event, fault-remediation works out the scope from the event and `partialDrainEnabled`, as node-drainer does for it.
+**At run time.** A fault-remediation rule set ([ADR-064](064-node-and-device-selection.md)) can still pick an action that the partial drain does not cover: an action on the full node, or an action scoped to a different entity type. The chart cannot see this. fault-remediation knows that the drain was partial from the scope that node-drainer records on the event (`DrainDecision.scope`). In that case, fault-remediation does not create the CR. It treats the event as an [error in ADR-064](064-node-and-device-selection.md#the-drain-decision): it records no decision, logs both scopes, increments `fault_remediation_processing_errors_total` with a new `error_type`, and retries the event with backoff. Each retry evaluates the rule sets again, so a fix to the configuration lets the event continue. node-drainer behaves the same way today when a partial drain cannot proceed. An event drained by a version before v1.31.0 has no recorded scope. For such an event, fault-remediation works out the scope from the event and the current `partialDrainEnabled`, as node-drainer does for it and as [ADR-064](064-node-and-device-selection.md#already-drained) accepts. If `partialDrainEnabled` changes while such an event is in progress, the worked-out scope can be wrong. Treating every such event as a partial drain instead would stop all of them on clusters where partial drains are off, which is the default.
 
 The other direction is allowed: a full drain followed by a repair of one device evicts more pods than needed, but stops none without a drain.
 
@@ -163,7 +167,7 @@ The DaemonSet keeps its node selector, RuntimeClass, host settings and DRA claim
 
 #### Device-plugin devices
 
-The kubelet reports the device IDs that the device plugin assigned. The mapper records them as entity values, as today. This works when the device plugin registers each device under the same ID that health monitors put in events. For example, the NVIDIA device plugin registers a GPU as `GPU-8f6d…`, and the monitors report the same GPU as `GPU_UUID = GPU-8f6d…`. The exception is GPU sharing (time-slicing or MPS), where it registers the same GPU with a replica suffix, such as `GPU-8f6d…::0`. GPU sharing is out of scope (see [Non-goals](#non-goals)). A device plugin that uses other IDs, such as an index, cannot use partial drains through `resourceNames`. Its devices can use DRA. The configuration documentation says this.
+The kubelet reports the device IDs that the device plugin assigned. The mapper records them as entity values, as today. This works when the device plugin registers each device under the same ID that health monitors put in events. For example, the NVIDIA device plugin registers a GPU as `GPU-8f6d…`, and the monitors report the same GPU as `GPU_UUID = GPU-8f6d…`. The exception is GPU sharing (time-slicing or MPS), where it registers the same GPU with a replica suffix, such as `GPU-8f6d…::0`. GPU sharing is out of scope (see [Non-goals](#non-goals)). A device plugin that uses other IDs, such as an index, cannot use partial drains through `devicePlugin`. Its devices can use DRA. The configuration documentation says this.
 
 #### DRA devices
 
