@@ -249,6 +249,7 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 		wantMethod     string
 		wantRuleSet    string
 		wantRecord     bool
+		wantScopeOnly  bool
 		wantErrorType  string
 	}{
 		{
@@ -291,11 +292,12 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			wantRecord: true,
 		},
 		{
-			name:           "node drained by another custom drain CR is already drained and records nothing",
+			name:           "node drained by another custom drain CR records only the scope",
 			customEnabled:  true,
 			otherCRDrained: true,
 			event:          quarantinedEvent("any-node"),
 			wantAction:     ActionMarkAlreadyDrained,
+			wantScopeOnly:  true,
 		},
 		{
 			name:           "completed CR of this event with no record records custom",
@@ -398,6 +400,12 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			event:      terminalEvent("plain-node"),
 			wantAction: ActionSkip,
 		},
+		{
+			name:       "already drained event with a scope-only record is skipped",
+			namespaces: []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
+			event:      alreadyDrainedWithScope("plain-node"),
+			wantAction: ActionSkip,
+		},
 	}
 
 	for _, tt := range tests {
@@ -431,9 +439,14 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 				require.Empty(t, recorder.decisions)
 			}
 
-			if tt.wantMethod == "" {
+			switch {
+			case tt.wantScopeOnly:
+				require.NotNil(t, result.DrainDecision)
+				require.Empty(t, result.DrainDecision.GetMethod())
+				require.Nil(t, result.DrainDecision.GetScope())
+			case tt.wantMethod == "":
 				require.Nil(t, result.DrainDecision)
-			} else {
+			default:
 				require.Equal(t, tt.wantMethod, result.DrainDecision.GetMethod())
 				require.Equal(t, tt.wantRuleSet, result.DrainDecision.GetRuleSet())
 			}
@@ -446,9 +459,10 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 	}
 }
 
-// TestEvaluateEventWithDatabase_AlreadyDrained_DoesNotRecordDecision
+// TestEvaluateEventWithDatabase_AlreadyDrained_RecordsScopeOnly
 // checks the annotation path that marks an event AlreadyDrained before a method is chosen.
-func TestEvaluateEventWithDatabase_AlreadyDrained_DoesNotRecordDecision(t *testing.T) {
+// The event records the scope it was covered for, and no method.
+func TestEvaluateEventWithDatabase_AlreadyDrained_RecordsScopeOnly(t *testing.T) {
 	const nodeName = "already-drained-node"
 
 	previous := &protos.HealthEvent{Id: "earlier-event", NodeName: nodeName, Agent: "test", CheckName: "gpu"}
@@ -480,16 +494,26 @@ func TestEvaluateEventWithDatabase_AlreadyDrained_DoesNotRecordDecision(t *testi
 		},
 	}}
 
+	evaluator.config.PartialDrainEnabled = true
+
 	event := quarantinedEvent(nodeName)
 	event.HealthEventStatus.NodeQuarantined = string(model.AlreadyQuarantined)
+	event.HealthEvent.RecommendedAction = protos.RecommendedAction_COMPONENT_RESET
+	event.HealthEvent.EntitiesImpacted = []*protos.Entity{{
+		EntityType:  "GPU_UUID",
+		EntityValue: "GPU-0",
+	}}
 
 	recorder := &decisionRecorder{}
 
 	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, store, recorder.record)
 	require.NoError(t, err)
 	require.Equal(t, ActionMarkAlreadyDrained, result.Action)
-	require.Nil(t, result.DrainDecision)
 	require.Empty(t, recorder.decisions)
+	require.NotNil(t, result.DrainDecision)
+	require.Empty(t, result.DrainDecision.GetMethod())
+	require.Equal(t, "GPU_UUID", result.DrainDecision.GetScope().GetEntityType())
+	require.Equal(t, "GPU-0", result.DrainDecision.GetScope().GetEntityValue())
 }
 
 // TestEvaluateEventWithDatabase_NewBuiltInDecision_StoresBeforePodChecks keeps the pod checks,
@@ -711,6 +735,17 @@ func newDecisionEvaluator(t *testing.T, customEnabled bool, nodeSelector string,
 func eventWithDrainDecision(nodeName, method, ruleSet string) model.HealthEventWithStatus {
 	event := quarantinedEvent(nodeName)
 	event.HealthEventStatus.DrainDecision = &protos.DrainDecision{Method: method, RuleSet: ruleSet}
+
+	return event
+}
+
+// alreadyDrainedWithScope is an event that finished as AlreadyDrained and kept only a scope.
+func alreadyDrainedWithScope(nodeName string) model.HealthEventWithStatus {
+	event := quarantinedEvent(nodeName)
+	event.HealthEventStatus.UserPodsEvictionStatus.Status = string(model.AlreadyDrained)
+	event.HealthEventStatus.DrainDecision = &protos.DrainDecision{
+		Scope: &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-0"},
+	}
 
 	return event
 }

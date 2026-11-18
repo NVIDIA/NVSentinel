@@ -275,6 +275,8 @@ Each field is written by a specific module at a specific pipeline stage:
 
 node-drainer writes `ruleSet`, `method` and `scope` before it acts. `ruleSet` is `custom-drain-node-selector` when `customDrain.nodeSelector` selects `Custom`. It is empty when the default method is used. `scope` is the entity of a partial drain. node-drainer writes no `scope` for a drain of the full node.
 
+An event marked `AlreadyDrained` because an earlier drain covered it records `scope` only, when the event has no decision yet. `method` is then empty because this event did not drain the node. An empty `scope` means the earlier drain covered the full node. An event that already has a decision, such as `BuiltIn` or `Custom`, keeps that decision. The already-drained check reads this record. It derives the scope only for an event that has no record.
+
 `remediationDecision` is the remediation decision that fault-remediation records for an event before it acts:
 
 - `ruleSet`: the rule set that won. Empty when no rule set matched.
