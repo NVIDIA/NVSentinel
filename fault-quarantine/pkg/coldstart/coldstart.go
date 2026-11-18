@@ -237,6 +237,19 @@ type Dependencies struct {
 	ColdStartUntilTime time.Time
 }
 
+// normalizeColdStartWindow fills in a missing lower bound so an upper bound
+// alone cannot produce an empty recovery window. Callers should supply their
+// startup watermark; this is a bounded fallback for direct use.
+func normalizeColdStartWindow(deps *Dependencies, startedAt time.Time) {
+	if deps.ColdStartAfterTime.IsZero() {
+		if deps.ColdStartUntilTime.IsZero() {
+			deps.ColdStartAfterTime = startedAt
+		} else {
+			deps.ColdStartAfterTime = deps.ColdStartUntilTime.Add(-defaultColdStartLookback)
+		}
+	}
+}
+
 type recoveryProgress struct {
 	firstErr error
 	failures int
@@ -273,15 +286,7 @@ func Handle(ctx context.Context, deps Dependencies) (bool, error) {
 
 	slog.InfoContext(ctx, "Recovering unresolved fault-quarantine events")
 
-	if deps.ColdStartAfterTime.IsZero() {
-		if deps.ColdStartUntilTime.IsZero() {
-			deps.ColdStartAfterTime = startedAt
-		} else {
-			// Callers should supply their startup watermark. Keep a bounded fallback
-			// for direct use so an upper bound cannot produce an empty recovery window.
-			deps.ColdStartAfterTime = deps.ColdStartUntilTime.Add(-defaultColdStartLookback)
-		}
-	}
+	normalizeColdStartWindow(&deps, startedAt)
 
 	resolver := newSupersessionResolver(deps.HealthEventStore, deps.ColdStartUntilTime)
 	progress := &recoveryProgress{}
@@ -433,18 +438,16 @@ func (p *recoveryProgress) recordFailure(ctx context.Context, err error) error {
 	return nil
 }
 
-func recoverStoredEvent(
+// validateStoredEvent reports what to do with an event that may be too
+// malformed to process. A non-nil completion means the event is terminal
+// (invalid) and needs no further processing. A non-nil error means the event
+// could not even be classified. Nil, nil means the event is processable.
+func validateStoredEvent(
 	ctx context.Context,
-	resolver *supersessionResolver,
-	processor EventProcessor,
 	event storedRecoveryEvent,
+	documentID StoredDocumentID,
+	idErr error,
 ) (*StoredEventCompletion, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	documentID, idErr := storedDocumentID(event.record.RawEvent)
-
 	if event.parseErr != nil {
 		slog.ErrorContext(ctx, "Skipping invalid stored health event",
 			"documentID", documentID.String, "error", event.parseErr)
@@ -459,6 +462,26 @@ func recoverStoredEvent(
 
 	if idErr != nil {
 		return nil, recordRecoveryFailure(fmt.Errorf("cannot identify stored event: %w", idErr))
+	}
+
+	return nil, nil
+}
+
+func recoverStoredEvent(
+	ctx context.Context,
+	resolver *supersessionResolver,
+	processor EventProcessor,
+	event storedRecoveryEvent,
+) (*StoredEventCompletion, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	documentID, idErr := storedDocumentID(event.record.RawEvent)
+
+	completion, err := validateStoredEvent(ctx, event, documentID, idErr)
+	if err != nil || completion != nil {
+		return completion, err
 	}
 
 	superseded, effects, err := resolver.resolve(
