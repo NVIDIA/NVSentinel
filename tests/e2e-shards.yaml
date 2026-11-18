@@ -328,6 +328,7 @@ arm64-mongodb-percona:
   - TestCSPHealthMonitorQuarantineThreshold
 
   # fault_management_test.go
+  - TestManualUncordonCancelsEveryEventOfTheSession
   - TestManualUncordonPropagation
   - TestNodeRecoveryDuringDrain
 
@@ -388,6 +389,7 @@ arm64-postgresql-deployment-pc:
 
   # fault_management_test.go
   - TestDryRunMode
+  - TestManualUncordonCancelsEveryEventOfTheSession
   - TestManualUncordonPropagation
   - TestNodeRecoveryDuringDrain
   - TestPartialRecoveryClearsStaleRemediationFailed
