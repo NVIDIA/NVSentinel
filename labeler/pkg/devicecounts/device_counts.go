@@ -90,9 +90,10 @@ type Manager struct {
 	classes          []compiledClass
 	managedLabelKeys map[string]struct{}
 
-	// maxima keeps each partition's learned expected count between
-	// reconciliations, so a node event does not walk every peer again.
-	maxima *partitionMaxima
+	// learned remembers each partition's expected count between
+	// reconciliations, so that a node event does not have to read every node
+	// in the partition again. See learnedCounts.
+	learned *learnedCounts
 }
 
 type compiledClass struct {
@@ -125,9 +126,9 @@ type ReconcileCache struct {
 	// expected count for each class and hardware partition.
 	peerNodes []*corev1.Node
 
-	// listPeerNodes, when set, supplies peerNodes the first time a partition
-	// must be learned. A node event usually finds its partition already learned,
-	// so it does not list the fleet at all.
+	// listPeerNodes, when set, fills peerNodes the first time a partition has to
+	// be read in full. Most node events find the partition's expected count
+	// already learned, so they never list the nodes at all.
 	listPeerNodes func() []*corev1.Node
 
 	// loadResourceSlicesForNode performs the indexed informer lookup when a node is
@@ -222,7 +223,7 @@ func NewManager(config Config) (*Manager, error) {
 
 	manager := &Manager{
 		managedLabelKeys: map[string]struct{}{},
-		maxima:           newPartitionMaxima(),
+		learned:          newLearnedCounts(),
 	}
 
 	for i, classConfig := range config.Classes {
@@ -270,15 +271,15 @@ func (m *Manager) ClassCount() int {
 	return len(m.classes)
 }
 
-// ForgetNode drops a deleted node's contribution to the expected counts it
-// helped learn.
+// ForgetNode forgets a deleted node, so that its count no longer raises the
+// expected count of the partition it was in.
 func (m *Manager) ForgetNode(nodeName string) {
 	if !m.Enabled() {
 		return
 	}
 
 	for classIndex := range m.classes {
-		m.maxima.forget(classIndex, nodeName)
+		m.learned.removeNode(classIndex, nodeName)
 	}
 }
 
@@ -309,8 +310,8 @@ func (m *Manager) NewReconcileCache(
 	}
 }
 
-// NewLazyReconcileCache creates a scoped cache that lists the peer nodes only if
-// a partition has to be learned by a peer walk.
+// NewLazyReconcileCache creates a scoped cache that calls listPeerNodes only if a
+// partition has to be read in full.
 func (m *Manager) NewLazyReconcileCache(
 	listPeerNodes func() []*corev1.Node,
 	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
@@ -345,7 +346,7 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 
 		current := observation.count
 		expected := p.expectedDeviceCount(ctx, classIndex, class, node, observation)
-		p.manager.recordContribution(classIndex, node.Name, observation, max(expected, current))
+		p.manager.rememberNodeCount(classIndex, node.Name, observation, max(expected, current))
 		currentValue := strconv.Itoa(current)
 		expectedValue := strconv.Itoa(expected)
 
@@ -850,10 +851,9 @@ func (p *ReconcileCache) expectedDeviceCount(
 	return expected
 }
 
-// expectedDeviceCountForPartition returns a class/partition maximum. A partition
-// is learned by walking its peers once; after that the manager keeps the maximum
-// up to date from each reconciled node, so later reconciliations do not walk
-// the peers again.
+// expectedDeviceCountForPartition returns the expected count of the node's
+// partition: the highest count of any node in it. The manager reads the whole
+// partition only when it does not know the answer yet. See learnedCounts.
 func (p *ReconcileCache) expectedDeviceCountForPartition(
 	ctx context.Context,
 	classIndex int,
@@ -866,17 +866,18 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 		return expected
 	}
 
-	expected := p.manager.maxima.learnWith(key, func() map[string]int {
-		return p.walkPartition(ctx, classIndex, class, node, observation)
+	expected := p.manager.learned.getOrLearn(key, func() map[string]int {
+		return p.readPeerCounts(ctx, classIndex, class, node, observation)
 	})
 	p.partitionExpected[key] = expected
 
 	return expected
 }
 
-// walkPartition reads every peer in the node's partition and returns what each
-// one contributes to its expected count, keyed by node name.
-func (p *ReconcileCache) walkPartition(
+// readPeerCounts reads every node in the partition of node and returns each
+// one's count by node name: the larger of its expected count label and its
+// current count.
+func (p *ReconcileCache) readPeerCounts(
 	ctx context.Context,
 	classIndex int,
 	class compiledClass,
@@ -888,12 +889,14 @@ func (p *ReconcileCache) walkPartition(
 		groupingLabels = observation.source.GroupingLabels
 	}
 
+	// List the nodes now rather than when the cache was created, so the read
+	// sees the informer as it is at this moment.
 	if p.listPeerNodes != nil {
 		p.peerNodes = p.listPeerNodes()
 		p.listPeerNodes = nil
 	}
 
-	peers := make(map[string]int)
+	peerCounts := make(map[string]int)
 
 	for _, peer := range p.peerNodes {
 		// Peers with different grouping-label values cannot share the
@@ -907,24 +910,26 @@ func (p *ReconcileCache) walkPartition(
 			continue
 		}
 
-		peerExpected := maxCountLabel(0, peer.Labels[class.Labels.Expected])
+		peerCount := maxCountLabel(0, peer.Labels[class.Labels.Expected])
 
 		peerCurrent, ok := usablePeerCount(class, node.Name, peer.Name, peerObservation)
-		if ok && peerCurrent > peerExpected {
-			peerExpected = peerCurrent
+		if ok && peerCurrent > peerCount {
+			peerCount = peerCurrent
 		}
 
-		peers[peer.Name] = peerExpected
+		peerCounts[peer.Name] = peerCount
 	}
 
-	return peers
+	return peerCounts
 }
 
-// RecordContributions records what node contributes to the expected count of
-// each class without changing its labels. It is for a node that labeler does
-// not label, such as one opted out of NVSentinel management, which still counts
-// as a peer of the nodes in its partition.
-func (p *ReconcileCache) RecordContributions(ctx context.Context, node *corev1.Node) {
+// RememberPeerCounts remembers a node's counts without changing its labels.
+//
+// Labeler does not write labels on a node opted out of NVSentinel management,
+// but the node still has the same hardware as the other nodes in its
+// partition, so its count still raises their expected count, as it always did
+// when labeler read every node.
+func (p *ReconcileCache) RememberPeerCounts(ctx context.Context, node *corev1.Node) {
 	if !p.manager.Enabled() {
 		return
 	}
@@ -936,18 +941,20 @@ func (p *ReconcileCache) RecordContributions(ctx context.Context, node *corev1.N
 		value := maxCountLabel(0, node.Labels[class.Labels.Expected])
 
 		if observation.missingSource || observation.err != nil {
-			p.manager.recordContribution(classIndex, node.Name, observation, value)
+			p.manager.rememberNodeCount(classIndex, node.Name, observation, value)
 			continue
 		}
 
-		p.manager.recordContribution(classIndex, node.Name, observation, max(value, observation.count))
+		p.manager.rememberNodeCount(classIndex, node.Name, observation, max(value, observation.count))
 	}
 }
 
-// skipUncountedNode reports whether a node has no count for a class. Do not turn
-// a missing source into current=0: the labels keep their last values until a
-// source is available again, and the node still contributes the expected count
-// it already carries, as it would to a peer walk.
+// skipUncountedNode reports whether labeler could not count a node's devices for
+// a class, because no source is available or the expression failed.
+//
+// Labeler does not turn that into current=0: the labels keep their last values
+// until the node can be counted again. The node's expected count label still
+// counts toward its partition, as it did when labeler read every node.
 func (m *Manager) skipUncountedNode(
 	classIndex int,
 	class compiledClass,
@@ -958,7 +965,7 @@ func (m *Manager) skipUncountedNode(
 		return false
 	}
 
-	m.recordContribution(classIndex, node.Name, observation, maxCountLabel(0, node.Labels[class.Labels.Expected]))
+	m.rememberNodeCount(classIndex, node.Name, observation, maxCountLabel(0, node.Labels[class.Labels.Expected]))
 
 	if observation.missingSource {
 		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
@@ -975,15 +982,17 @@ func (m *Manager) skipUncountedNode(
 	return true
 }
 
-// recordContribution records what node contributes to its partition's expected
-// count, or drops its contribution when it no longer has a partition.
-func (m *Manager) recordContribution(classIndex int, nodeName string, observation countObservation, value int) {
+// rememberNodeCount remembers a node's count in its partition. A node that no
+// longer has a partition, for example because a grouping label was removed, is
+// forgotten instead.
+func (m *Manager) rememberNodeCount(classIndex int, nodeName string, observation countObservation, count int) {
 	if !observation.hasPartition {
-		m.maxima.forget(classIndex, nodeName)
+		m.learned.removeNode(classIndex, nodeName)
 		return
 	}
 
-	m.maxima.record(partitionExpectedKey{classIndex: classIndex, partitionKey: observation.partitionKey}, nodeName, value)
+	key := partitionExpectedKey{classIndex: classIndex, partitionKey: observation.partitionKey}
+	m.learned.setNode(key, nodeName, count)
 }
 
 func groupingLabelsMatch(groupingLabels []string, node, peer *corev1.Node) bool {

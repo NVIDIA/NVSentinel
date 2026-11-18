@@ -25,158 +25,156 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 )
 
-// expected and learn give tests direct access to the partition state.
-// Production code reads and learns a partition only through learnWith.
+// known and learn let tests inspect and set a partition directly. Labeler
+// itself goes through getOrLearn.
 
-// expected returns a partition's learned expected count, or false when the
-// partition must be learned by a peer walk first.
-func (m *partitionMaxima) expected(key partitionExpectedKey) (int, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// known returns a partition's expected count, or false when labeler would have
+// to read the partition in full first.
+func (c *learnedCounts) known(key partitionExpectedKey) (int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	partition, ok := m.partitions[key]
-	if !ok || !partition.learned {
+	partition, ok := c.partitions[key]
+	if !ok || !partition.known {
 		return 0, false
 	}
 
-	return partition.max, true
+	return partition.expected, true
 }
 
-// learn replaces a partition's contributions with the result of a peer walk.
-// peers holds the contribution of every peer the walk found in the partition,
-// keyed by node name.
-func (m *partitionMaxima) learn(key partitionExpectedKey, peers map[string]int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// learn stores the result of reading a partition in full.
+func (c *learnedCounts) learn(key partitionExpectedKey, peerCounts map[string]int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	m.learnLocked(key, peers)
+	c.learnLocked(key, peerCounts)
 }
 
 var testPartition = partitionExpectedKey{classIndex: 0, partitionKey: "node.kubernetes.io/instance-type=p5"}
 
-func TestPartitionMaxima_Expected_UnknownUntilLearned(t *testing.T) {
-	maxima := newPartitionMaxima()
+func TestLearnedCounts_Known_FalseUntilPartitionRead(t *testing.T) {
+	counts := newLearnedCounts()
 
-	maxima.record(testPartition, "node-a", 8)
+	counts.setNode(testPartition, "node-a", 8)
 
-	_, ok := maxima.expected(testPartition)
-	require.False(t, ok, "a recorded node alone must not stand in for a peer walk")
+	_, ok := counts.known(testPartition)
+	require.False(t, ok, "one remembered node does not replace reading the partition in full")
 
-	maxima.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
+	counts.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
 
-	expected, ok := maxima.expected(testPartition)
+	expected, ok := counts.known(testPartition)
 	require.True(t, ok)
 	require.Equal(t, 8, expected)
 }
 
-func TestPartitionMaxima_Record_HigherValueRaisesExpected(t *testing.T) {
-	maxima := newPartitionMaxima()
-	maxima.learn(testPartition, map[string]int{"node-a": 8, "node-b": 8})
+func TestLearnedCounts_SetNode_HigherCountRaisesExpected(t *testing.T) {
+	counts := newLearnedCounts()
+	counts.learn(testPartition, map[string]int{"node-a": 8, "node-b": 8})
 
-	maxima.record(testPartition, "node-c", 16)
+	counts.setNode(testPartition, "node-c", 16)
 
-	expected, ok := maxima.expected(testPartition)
+	expected, ok := counts.known(testPartition)
 	require.True(t, ok)
 	require.Equal(t, 16, expected)
 }
 
-func TestPartitionMaxima_Record_HolderRaisingItsValueStaysLearned(t *testing.T) {
-	maxima := newPartitionMaxima()
-	maxima.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
+func TestLearnedCounts_SetNode_NodeWithHighestCountRaisingItStaysKnown(t *testing.T) {
+	counts := newLearnedCounts()
+	counts.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
 
-	maxima.record(testPartition, "node-a", 16)
+	counts.setNode(testPartition, "node-a", 16)
 
-	expected, ok := maxima.expected(testPartition)
+	expected, ok := counts.known(testPartition)
 	require.True(t, ok)
 	require.Equal(t, 16, expected)
 }
 
-func TestPartitionMaxima_Forget(t *testing.T) {
+func TestLearnedCounts_RemoveNode(t *testing.T) {
 	tests := []struct {
 		name         string
 		peers        map[string]int
 		forget       string
-		wantLearned  bool
+		wantKnown    bool
 		wantExpected int
 	}{
 		{
-			name:         "one of several holders keeps the partition learned",
+			name:         "one of several nodes with the highest count keeps the partition known",
 			peers:        map[string]int{"node-a": 8, "node-b": 8, "node-c": 4},
 			forget:       "node-a",
-			wantLearned:  true,
+			wantKnown:    true,
 			wantExpected: 8,
 		},
 		{
-			name:         "a node below the maximum keeps the partition learned",
+			name:         "a node below the highest count keeps the partition known",
 			peers:        map[string]int{"node-a": 8, "node-c": 4},
 			forget:       "node-c",
-			wantLearned:  true,
+			wantKnown:    true,
 			wantExpected: 8,
 		},
 		{
-			name:        "the last holder makes the partition relearn",
-			peers:       map[string]int{"node-a": 8, "node-c": 4},
-			forget:      "node-a",
-			wantLearned: false,
+			name:      "the last node with the highest count makes the partition unknown",
+			peers:     map[string]int{"node-a": 8, "node-c": 4},
+			forget:    "node-a",
+			wantKnown: false,
 		},
 		{
 			name:         "an unknown node changes nothing",
 			peers:        map[string]int{"node-a": 8},
 			forget:       "node-z",
-			wantLearned:  true,
+			wantKnown:    true,
 			wantExpected: 8,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			maxima := newPartitionMaxima()
-			maxima.learn(testPartition, tt.peers)
+			counts := newLearnedCounts()
+			counts.learn(testPartition, tt.peers)
 
-			maxima.forget(testPartition.classIndex, tt.forget)
+			counts.removeNode(testPartition.classIndex, tt.forget)
 
-			expected, ok := maxima.expected(testPartition)
-			require.Equal(t, tt.wantLearned, ok)
+			expected, ok := counts.known(testPartition)
+			require.Equal(t, tt.wantKnown, ok)
 
-			if tt.wantLearned {
+			if tt.wantKnown {
 				require.Equal(t, tt.wantExpected, expected)
 			}
 		})
 	}
 }
 
-func TestPartitionMaxima_Record_HolderMovingPartitionMakesOldPartitionRelearn(t *testing.T) {
+func TestLearnedCounts_SetNode_NodeWithHighestCountMovingMakesOldPartitionUnknown(t *testing.T) {
 	other := partitionExpectedKey{classIndex: 0, partitionKey: "node.kubernetes.io/instance-type=p4"}
-	maxima := newPartitionMaxima()
-	maxima.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
-	maxima.learn(other, map[string]int{"node-c": 2})
+	counts := newLearnedCounts()
+	counts.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
+	counts.learn(other, map[string]int{"node-c": 2})
 
-	maxima.record(other, "node-a", 8)
+	counts.setNode(other, "node-a", 8)
 
-	_, ok := maxima.expected(testPartition)
+	_, ok := counts.known(testPartition)
 	require.False(t, ok)
 
-	expected, ok := maxima.expected(other)
+	expected, ok := counts.known(other)
 	require.True(t, ok)
 	require.Equal(t, 8, expected)
 }
 
-func TestPartitionMaxima_Learn_ReplacesStaleContributions(t *testing.T) {
-	maxima := newPartitionMaxima()
-	maxima.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
-	maxima.forget(testPartition.classIndex, "node-a")
+func TestLearnedCounts_Learn_ReplacesNodesRememberedBefore(t *testing.T) {
+	counts := newLearnedCounts()
+	counts.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
+	counts.removeNode(testPartition.classIndex, "node-a")
 
-	// node-b was recorded before the relearn; the walk no longer finds it.
-	maxima.learn(testPartition, map[string]int{"node-c": 2})
+	// node-b was remembered before the second read, which no longer finds it.
+	counts.learn(testPartition, map[string]int{"node-c": 2})
 
-	expected, ok := maxima.expected(testPartition)
+	expected, ok := counts.known(testPartition)
 	require.True(t, ok)
 	require.Equal(t, 2, expected)
 }
 
-func TestPartitionMaxima_ConcurrentUse(t *testing.T) {
-	maxima := newPartitionMaxima()
-	maxima.learn(testPartition, map[string]int{"node-0": 8})
+func TestLearnedCounts_ConcurrentUse(t *testing.T) {
+	counts := newLearnedCounts()
+	counts.learn(testPartition, map[string]int{"node-0": 8})
 
 	var wg sync.WaitGroup
 
@@ -184,23 +182,23 @@ func TestPartitionMaxima_ConcurrentUse(t *testing.T) {
 		wg.Go(func() {
 			for i := range 200 {
 				nodeName := fmt.Sprintf("node-%d-%d", worker, i)
-				maxima.record(testPartition, nodeName, i%9)
-				maxima.expected(testPartition)
-				maxima.forget(testPartition.classIndex, nodeName)
+				counts.setNode(testPartition, nodeName, i%9)
+				counts.known(testPartition)
+				counts.removeNode(testPartition.classIndex, nodeName)
 			}
 		})
 	}
 
 	wg.Wait()
 
-	expected, ok := maxima.expected(testPartition)
+	expected, ok := counts.known(testPartition)
 	require.True(t, ok)
 	require.Equal(t, 8, expected)
 }
 
 // countingSliceLoader counts the nodes whose ResourceSlices a ReconcileCache
-// loads. A peer walk loads every peer, so the count shows whether an event
-// walked the partition.
+// loads. Reading a partition in full loads every node in it, so the count
+// shows whether an event read the whole partition.
 type countingSliceLoader struct {
 	mu    sync.Mutex
 	calls int
@@ -255,7 +253,7 @@ func p5Fleet(counts ...int) []*corev1.Node {
 	return nodes
 }
 
-func TestReconcileCache_LaterEvent_DoesNotWalkPeers(t *testing.T) {
+func TestReconcileCache_LaterEvent_ReadsOnlyItsOwnNode(t *testing.T) {
 	ctx := context.Background()
 	manager := newTestManager(t, peerLearningConfig())
 	nodes := p5Fleet(8, 8, 8, 8, 4)
@@ -271,7 +269,7 @@ func TestReconcileCache_LaterEvent_DoesNotWalkPeers(t *testing.T) {
 	require.Equal(t, "8", nodes[3].Labels[testGPUCountExpectedLabel])
 }
 
-func TestReconcileCache_NewNodeWithHigherCount_RaisesExpectedWithoutWalk(t *testing.T) {
+func TestReconcileCache_NewNodeWithHigherCount_RaisesExpectedWithoutFullRead(t *testing.T) {
 	ctx := context.Background()
 	manager := newTestManager(t, peerLearningConfig())
 	nodes := p5Fleet(8, 8, 4)
@@ -290,11 +288,11 @@ func TestReconcileCache_NewNodeWithHigherCount_RaisesExpectedWithoutWalk(t *test
 
 	manager.NewReconcileCache(nodes, loader.load).CalculateAndSetDeviceCountLabels(ctx, nodes[2])
 	require.Equal(t, "16", nodes[2].Labels[testGPUCountExpectedLabel],
-		"a peer's higher count reaches the partition without a walk")
+		"a node's higher count reaches the partition without reading every node")
 	require.Equal(t, 2, loader.reset())
 }
 
-func TestReconcileCache_ForgottenLastHolder_RelearnsFromRemainingPeers(t *testing.T) {
+func TestReconcileCache_ForgottenNodeWithHighestCount_RereadsPartition(t *testing.T) {
 	ctx := context.Background()
 	manager := newTestManager(t, peerLearningConfig())
 	nodes := p5Fleet(4, 4)
@@ -311,7 +309,7 @@ func TestReconcileCache_ForgottenLastHolder_RelearnsFromRemainingPeers(t *testin
 	manager.ForgetNode(bigger.Name)
 
 	manager.NewReconcileCache(nodes, loader.load).CalculateAndSetDeviceCountLabels(ctx, nodes[1])
-	require.Equal(t, len(nodes), loader.reset(), "losing the last holder relearns the partition by a walk")
+	require.Equal(t, len(nodes), loader.reset(), "losing the last node with the highest count makes labeler read the partition again")
 	require.Equal(t, "4", nodes[1].Labels[testGPUCountExpectedLabel])
 }
 
@@ -321,31 +319,31 @@ func TestManager_ForgetNode_DisabledManagerIsSafe(t *testing.T) {
 	require.NotPanics(t, func() { manager.ForgetNode("node-a") })
 }
 
-func TestPartitionMaxima_Learn_PeerFromAnotherPartitionLeavesIt(t *testing.T) {
+func TestLearnedCounts_Learn_PeerFromAnotherPartitionLeavesIt(t *testing.T) {
 	other := partitionExpectedKey{classIndex: 0, partitionKey: "node.kubernetes.io/instance-type=p4"}
-	maxima := newPartitionMaxima()
-	maxima.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
+	counts := newLearnedCounts()
+	counts.learn(testPartition, map[string]int{"node-a": 8, "node-b": 4})
 
-	// A walk of the other partition finds node-a there, so node-a has moved.
-	maxima.learn(other, map[string]int{"node-a": 8})
+	// Reading the other partition finds node-a there, so node-a has moved.
+	counts.learn(other, map[string]int{"node-a": 8})
 
-	_, ok := maxima.expected(testPartition)
-	require.False(t, ok, "the partition node-a left must relearn instead of keeping its maximum")
+	_, ok := counts.known(testPartition)
+	require.False(t, ok, "the partition node-a left must not keep node-a's count as its expected count")
 }
 
-func TestPartitionMaxima_LearnWith_KeepsContributionRecordedDuringWalk(t *testing.T) {
-	maxima := newPartitionMaxima()
+func TestLearnedCounts_GetOrLearn_KeepsCountRememberedDuringRead(t *testing.T) {
+	counts := newLearnedCounts()
 	recording := make(chan struct{})
 	recorded := make(chan struct{})
 
 	go func() {
 		close(recording)
-		maxima.record(testPartition, "node-b", 16)
+		counts.setNode(testPartition, "node-b", 16)
 		close(recorded)
 	}()
 
-	expected := maxima.learnWith(testPartition, func() map[string]int {
-		// The walk read node-b before node-b's reconciliation recorded 16.
+	expected := counts.getOrLearn(testPartition, func() map[string]int {
+		// The read saw node-b before node-b's own reconciliation remembered 16.
 		<-recording
 		return map[string]int{"node-a": 8, "node-b": 8}
 	})
@@ -353,23 +351,23 @@ func TestPartitionMaxima_LearnWith_KeepsContributionRecordedDuringWalk(t *testin
 
 	<-recorded
 
-	expected, ok := maxima.expected(testPartition)
+	expected, ok := counts.known(testPartition)
 	require.True(t, ok)
-	require.Equal(t, 16, expected, "a contribution recorded during a walk must not be overwritten by it")
+	require.Equal(t, 16, expected, "a count remembered during a full read must not be overwritten by the read")
 }
 
-func TestPartitionMaxima_LearnWith_SkipsWalkWhenAlreadyLearned(t *testing.T) {
-	maxima := newPartitionMaxima()
-	maxima.learn(testPartition, map[string]int{"node-a": 8})
+func TestLearnedCounts_GetOrLearn_KnownPartitionIsNotReadAgain(t *testing.T) {
+	counts := newLearnedCounts()
+	counts.learn(testPartition, map[string]int{"node-a": 8})
 
-	expected := maxima.learnWith(testPartition, func() map[string]int {
-		require.Fail(t, "a learned partition must not be walked again")
+	expected := counts.getOrLearn(testPartition, func() map[string]int {
+		require.Fail(t, "a known partition must not be read again")
 		return nil
 	})
 	require.Equal(t, 8, expected)
 }
 
-func TestReconcileCache_RecordContributions_UpdatesPartitionWithoutLabels(t *testing.T) {
+func TestReconcileCache_RememberPeerCounts_UpdatesPartitionWithoutLabels(t *testing.T) {
 	ctx := context.Background()
 	manager := newTestManager(t, peerLearningConfig())
 	nodes := p5Fleet(4, 8)
@@ -381,7 +379,7 @@ func TestReconcileCache_RecordContributions_UpdatesPartitionWithoutLabels(t *tes
 	// node-1 is opted out: labeler records its new count but writes no labels.
 	optedOut := nodes[1].DeepCopy()
 	optedOut.Labels["nvidia.com/gpu.count"] = "16"
-	manager.NewReconcileCache(nodes, loader.load).RecordContributions(ctx, optedOut)
+	manager.NewReconcileCache(nodes, loader.load).RememberPeerCounts(ctx, optedOut)
 	require.NotContains(t, optedOut.Labels, testGPUCountExpectedLabel)
 	require.NotContains(t, optedOut.Labels, testGPUCountCurrentLabel)
 

@@ -510,7 +510,7 @@ func (l *Labeler) registerNodeEventHandlers() error {
 			}
 		},
 		DeleteFunc: func(obj any) {
-			// A deleted node no longer counts toward its partition's expected count.
+			// A deleted node's count must stop raising its partition's expected count.
 			nodeName, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 			if err != nil {
 				slog.Warn("Skipping node delete event with unexpected object", "error", err)
@@ -587,8 +587,9 @@ func (l *Labeler) reconcileAllNodes() {
 
 	// Share one cache across the fleet sweep. Peer CEL results and partition
 	// maxima are therefore computed once and reused by every target node, while
-	// indexed ResourceSlices are loaded at most once per node. A partition walk
-	// lists the nodes again, so it reads the informer as it is when the walk runs.
+	// indexed ResourceSlices are loaded at most once per node. The nodes are
+	// listed again when a partition is read in full, so that read sees the
+	// informer as it is at that moment rather than at the start of the sweep.
 	deviceCountCache := l.deviceCounts.NewLazyReconcileCache(
 		l.deviceCountCachedNodes,
 		l.loadResourceSlicesForNode,
@@ -888,8 +889,8 @@ func (l *Labeler) reconcileNodeLabels(
 
 func (l *Labeler) newDeviceCountReconcileCache() *devicecounts.ReconcileCache {
 	// Event-driven reconciliations get a fresh cache so observations cannot
-	// outlive the informer state that triggered the event. The fleet is listed
-	// only if a partition has to be learned by a peer walk.
+	// outlive the informer state that triggered the event. The nodes are listed
+	// only if a partition has to be read in full, which most events do not need.
 	return l.deviceCounts.NewLazyReconcileCache(
 		l.deviceCountCachedNodes,
 		l.loadResourceSlicesForNode,
@@ -959,9 +960,10 @@ func (l *Labeler) calculateAndSetNodeLabels(
 		// fired (ADR-040).
 		metrics.NodeLabelsSkippedManaged.Inc()
 
-		// The node keeps its device-count labels but still counts as a peer of its
-		// partition, so its contribution stays current.
-		deviceCountCache.RecordContributions(l.ctx, node)
+		// Labeler leaves this node's labels alone, but the node still has the same
+		// hardware as the rest of its partition, so its counts still matter to
+		// the other nodes' expected counts.
+		deviceCountCache.RememberPeerCounts(l.ctx, node)
 
 		return l.stripDetectionLabels(node), nil
 	}
