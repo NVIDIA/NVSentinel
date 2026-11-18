@@ -69,7 +69,7 @@ const (
 type CircuitBreaker interface {
 	// AddCordonEvent records a node cordoning event in the sliding window
 	AddCordonEvent(nodeName string)
-	// ForgetNode removes a deleted node's cordon from the sliding window
+	// ForgetNode removes the cordon of a deleted node that was the last GPU node from the sliding window
 	ForgetNode(nodeName string)
 	// IsTripped checks if the breaker should prevent further cordoning
 	IsTripped(ctx context.Context) (bool, error)

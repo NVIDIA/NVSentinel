@@ -234,6 +234,30 @@ func (ni *NodeInformer) GetNodeCounts() (totalNodes int, quarantinedNodesMap map
 	return total, quarantinedMap, nil
 }
 
+// CountGPUNodesInCache counts GPU nodes by listing the cache. Use it in a node event callback
+// instead of GetNodeCounts: the counter behind GetNodeCounts is kept by a separate event
+// handler, which can run after the callback and still count a node the cache already removed.
+func (ni *NodeInformer) CountGPUNodesInCache() (int, error) {
+	if !ni.HasSynced() {
+		return 0, fmt.Errorf("node informer cache not synced yet")
+	}
+
+	nodes, err := ni.lister.List(labels.Everything())
+	if err != nil {
+		return 0, fmt.Errorf("failed to list nodes from cache: %w", err)
+	}
+
+	count := 0
+
+	for _, node := range nodes {
+		if ni.isGPUNode(node) {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
 // GetNode retrieves a node from the informer's cache.
 func (ni *NodeInformer) GetNode(name string) (*v1.Node, error) {
 	return ni.lister.Get(name)

@@ -400,12 +400,33 @@ func (r *Reconciler) SetupNodeInformerCallbacks() {
 		slog.Info("Set currentQuarantinedNodes to 0 for deleted quarantined node", "node", nodeName)
 
 		if r.breakerActive() {
-			r.cb.ForgetNode(nodeName)
+			r.forgetCordonIfNoGPUNodesLeft(nodeName)
 		}
 	})
 
 	r.k8sClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
 	r.k8sClient.NodeInformer.SetOnManualUntaintCallback(r.handleManualUntaint)
+}
+
+// forgetCordonIfNoGPUNodesLeft removes a deleted node's cordon from the circuit breaker window
+// only when no GPU nodes remain. While GPU nodes remain, the cordon keeps counting, so nodes
+// that are replaced after quarantine still count toward the breaker.
+func (r *Reconciler) forgetCordonIfNoGPUNodesLeft(nodeName string) {
+	remaining, err := r.k8sClient.NodeInformer.CountGPUNodesInCache()
+	if err != nil {
+		slog.Warn("Keeping the deleted node's cordon in the circuit breaker window: cannot count GPU nodes",
+			"node", nodeName, "error", err)
+
+		return
+	}
+
+	if remaining > 0 {
+		return
+	}
+
+	r.cb.ForgetNode(nodeName)
+	slog.Info("Removed the deleted node's cordon from the circuit breaker window: no GPU nodes remain",
+		"node", nodeName)
 }
 
 // initializeRuleSetEvaluators initializes all rule set evaluators from config

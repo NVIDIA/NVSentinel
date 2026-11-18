@@ -83,7 +83,7 @@ Only nodes labeled `nvidia.com/gpu.present=true` are included when calculating t
 
 ### Small clusters
 
-The breaker trips when the nodes cordoned in the window reach `ceil(gpuNodes × percentage / 100)`. That formula rounds up, so the threshold falls to a single node on the smallest clusters. A node that is deleted stops counting, so replacing a quarantined node does not use up the budget of the nodes that remain. The table below assumes the default `maxNodes: 0`, which leaves the percentage as the only bound:
+The breaker trips when the nodes cordoned in the window reach `ceil(gpuNodes × percentage / 100)`. That formula rounds up, so the threshold falls to a single node on the smallest clusters. A deleted node keeps counting until it leaves the window. The exception is the last GPU node: when its delete leaves no GPU nodes, its cordon is removed, so the GPU nodes that come back start with a full budget. The table below assumes the default `maxNodes: 0`, which leaves the percentage as the only bound:
 
 | GPU nodes | Trips at, `percentage: 50` | Trips at, `percentage: 100` |
 |---|---|---|

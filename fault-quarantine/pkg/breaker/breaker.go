@@ -176,9 +176,9 @@ func (b *slidingWindowBreaker) AddCordonEvent(nodeName string) {
 	b.buckets[currentBucketIndex]++
 }
 
-// ForgetNode removes a node's cordon from the sliding window. It is called when the node is
-// deleted, so a node that left the cluster does not count against the GPU nodes that remain.
-// A node that is not in the window is ignored. This method is thread-safe.
+// ForgetNode removes a node's cordon from the sliding window. It is called when a deleted node
+// was the last GPU node, so the GPU nodes that come back do not inherit its cordon. A node that
+// is not in the window is ignored. This method is thread-safe.
 func (b *slidingWindowBreaker) ForgetNode(nodeName string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
