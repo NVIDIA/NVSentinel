@@ -65,7 +65,7 @@ func TestEvaluateBool_FieldExpressions_MatchTheEventsValues(t *testing.T) {
 		{"isHealthy compared explicitly", `event.isHealthy == false`, true},
 		{"recommendedAction is the enum name", `event.recommendedAction == 'CONTACT_SUPPORT'`, true},
 		{"recommendedAction not NONE", `event.recommendedAction != 'NONE'`, true},
-		{"customRecommendedAction empty for a built-in action", `event.customRecommendedAction == ''`, true},
+		{"customRecommendedAction empty when not sent", `event.customRecommendedAction == ''`, true},
 		{"message is readable", `event.message.contains('fell off the bus')`, true},
 		{"metadata is a map", `event.metadata['chassis_serial'] == 'CHASSIS-1'`, true},
 		{"absent metadata key", `!('trace_id' in event.metadata)`, true},

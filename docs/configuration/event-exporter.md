@@ -312,7 +312,7 @@ The expression is evaluated against the vocabulary in `commons/pkg/celevent`, sh
 | `event.isFatal` | bool |
 | `event.isHealthy` | bool |
 | `event.recommendedAction` | string, the enum name such as `NONE` or `CONTACT_SUPPORT` |
-| `event.customRecommendedAction` | string, the custom action name when `recommendedAction` is `CUSTOM`, empty otherwise |
+| `event.customRecommendedAction` | string, the custom action name as sent. Check `event.recommendedAction == 'CUSTOM'` as well, because an event with a built-in action can also carry a name |
 | `event.nodeName` | string |
 | `event.metadata` | map of string to string |
 | `event.message` | string |
