@@ -49,8 +49,10 @@ the related quarantineHealthEvent annotation.
 - We will always pass no currentPartialEntity, so an event only counts as proof of a full drain if it was not itself
 partially drained — a partially drained event never proves the rest of the node was evicted.
 
-In both contexts, partialDrainEnabled must be the caller's partialDrainEnabled setting. When it is false, no event is
-treated as partially drained.
+In both contexts, the scope of an earlier event comes from its recorded drain decision when it has one. A record
+with no scope is a full drain. A record with a scope is a partial drain of that entity. partialDrainEnabled is used
+only for an event that has no record, such as an event written before node-drainer recorded decisions. When it is
+false, an event with no record is treated as fully drained.
 */
 func IsNodeDrained(ctx context.Context, healthEventStore datastore.HealthEventStore, nodeName string,
 	events []*protos.HealthEvent, excludeEventID string, currentPartialEntity *protos.Entity,
@@ -81,7 +83,7 @@ func didDrainCompleteForEvent(ctx context.Context, healthEventStore datastore.He
 		return false, fmt.Errorf("looking up health event %s for node %s: %w", eventID, nodeName, err)
 	}
 
-	entity, err := PartialDrainEntity(healthEvent, partialDrainEnabled)
+	entity, err := earlierDrainScope(status, healthEvent, partialDrainEnabled)
 	if err != nil {
 		return false, fmt.Errorf("evaluating partial drain entity for health event %s on node %s: %w",
 			eventID, nodeName, err)
@@ -93,6 +95,28 @@ func didDrainCompleteForEvent(ctx context.Context, healthEventStore datastore.He
 		(drainStatus == datastore.AlreadyDrained && !wasSkipped)
 
 	return doesDrainCoverPartialEntity(ctx, drainCompletedForEvent, entity, currentPartialEntity, eventID, nodeName), nil
+}
+
+// earlierDrainScope returns the entity an earlier drain covered, or nil for a drain of the full node.
+// A recorded decision keeps the scope that was drained, so a later change to partialDrainEnabled does not
+// rewrite it. An event with no record was written before decisions were stored, so its scope is derived again.
+func earlierDrainScope(status *datastore.HealthEventWithStatus, healthEvent *protos.HealthEvent,
+	partialDrainEnabled bool) (*protos.Entity, error) {
+	if decision := status.HealthEventStatus.DrainDecision; decision != nil {
+		return scopeEntity(decision.Scope), nil
+	}
+
+	return PartialDrainEntity(healthEvent, partialDrainEnabled)
+}
+
+// scopeEntity copies a stored scope into the proto entity the coverage check compares.
+// A nil scope is a drain of the full node.
+func scopeEntity(scope *datastore.Entity) *protos.Entity {
+	if scope == nil {
+		return nil
+	}
+
+	return &protos.Entity{EntityType: scope.EntityType, EntityValue: scope.EntityValue}
 }
 
 func getHealthEventFromId(ctx context.Context, healthEventStore datastore.HealthEventStore, nodeName,
