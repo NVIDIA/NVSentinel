@@ -109,16 +109,14 @@ type compiledSource struct {
 	groupingProgram cel.Program
 }
 
-// ReconcileCache caches peer observations while one or more target nodes are reconciled.
-// Create a new cache whenever the peer-node or ResourceSlice snapshot may have changed.
-// A cache is used sequentially and discarded after its target nodes are reconciled;
-// it is not safe for concurrent use.
+// ReconcileCache holds what one or more reconciliations need to work out device
+// counts: how to find the other nodes, and the ResourceSlices of the nodes being
+// reconciled. A cache is used sequentially and discarded after its target nodes
+// are reconciled; it is not safe for concurrent use.
 //
-// During a fleet reconciliation, the cache ensures each node's ResourceSlices
-// are loaded once, each class/peer CEL expression is evaluated once, and each
-// class/partition maximum is learned once. Combined with the node-name informer
-// index, ResourceSlice processing scales with the N nodes and their K slices
-// (O(N*K)) instead of repeating peer-wide store scans for every target node.
+// Partition expected counts are not kept here. The manager remembers them
+// across reconciliations in learnedCounts, which always has the latest value,
+// so every target in a fleet sweep shares one full read of each partition.
 type ReconcileCache struct {
 	manager *Manager
 
@@ -131,26 +129,18 @@ type ReconcileCache struct {
 	// partition's expected count already learned, so they never list the nodes.
 	listPeerNodes func() []*corev1.Node
 
-	// loadResourceSlicesForNode performs the indexed informer lookup when a node is
-	// first observed by this cache.
+	// loadResourceSlicesForNode performs the indexed informer lookup of a node's
+	// ResourceSlices.
 	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice
 
-	// resourceSlices memoizes loadResourceSlicesForNode results by node name. A
-	// nil result is cached as well, preventing repeated lookups for a missing source.
+	// resourceSlices memoizes loadResourceSlicesForNode results by node name, so
+	// a fleet sweep looks up each node's ResourceSlices once for all classes. A
+	// nil result is cached as well, preventing repeated lookups for a missing
+	// source.
 	resourceSlices map[string][]*resourcev1.ResourceSlice
-
-	// peerObservations maps a class-and-node key to the observation obtained by
-	// evaluating that class for that peer: its current count and partition, or
-	// why no count was available. expectedDeviceCountForPartition uses this map
-	// to avoid reevaluating the same class/peer pair while the cache lives.
-	peerObservations map[peerCurrentCountKey]countObservation
-
-	// partitionExpected memoizes the maximum count learned from all peers in a
-	// class/partition pair, allowing every target in that partition to reuse it.
-	partitionExpected map[partitionExpectedKey]int
 }
 
-// peerCurrentCountKey identifies one peer observation within a ReconcileCache.
+// peerCurrentCountKey identifies one node of one class in learnedCounts.
 //
 // classIndex is the position in Manager.classes (the compiled, enabled classes),
 // not the position in the original configuration. Including it prevents two
@@ -163,7 +153,7 @@ type peerCurrentCountKey struct {
 }
 
 // partitionExpectedKey identifies the learned expected count shared by one
-// class and one hardware partition within a ReconcileCache.
+// class and one hardware partition in learnedCounts.
 //
 // partitionKey is countObservation.partitionKey. For a class without sources it
 // is "default" when no grouping labels are configured, or a value such as
@@ -187,9 +177,6 @@ type partitionExpectedKey struct {
 // partition learns its expected count only from itself and is never a peer.
 // For a class without sources, the partition comes from node labels alone and
 // is known even when the count is not.
-//
-// Failed and missing-source observations are cached too, so every peer is
-// inspected at most once per class during a ReconcileCache's lifetime.
 type countObservation struct {
 	count         int
 	missingSource bool
@@ -305,8 +292,6 @@ func (m *Manager) NewReconcileCache(
 		peerNodes:                 peerNodes,
 		loadResourceSlicesForNode: loadResourceSlicesForNode,
 		resourceSlices:            make(map[string][]*resourcev1.ResourceSlice),
-		peerObservations:          make(map[peerCurrentCountKey]countObservation),
-		partitionExpected:         make(map[partitionExpectedKey]int),
 	}
 }
 
@@ -870,16 +855,10 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 	observation countObservation,
 ) int {
 	key := partitionExpectedKey{classIndex: classIndex, partitionKey: observation.partitionKey}
-	if expected, ok := p.partitionExpected[key]; ok {
-		return expected
-	}
 
-	expected := p.manager.learned.getOrLearn(key, func() map[string]int {
-		return p.readPeerCounts(ctx, classIndex, class, node, observation)
+	return p.manager.learned.getOrLearn(key, func() map[string]int {
+		return p.readPeerCounts(ctx, class, node, observation)
 	})
-	p.partitionExpected[key] = expected
-
-	return expected
 }
 
 // readPeerCounts reads every node in the partition of node and returns each
@@ -887,7 +866,6 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 // current count.
 func (p *ReconcileCache) readPeerCounts(
 	ctx context.Context,
-	classIndex int,
 	class compiledClass,
 	node *corev1.Node,
 	observation countObservation,
@@ -914,7 +892,12 @@ func (p *ReconcileCache) readPeerCounts(
 			continue
 		}
 
-		peerObservation := p.peerObservation(ctx, classIndex, class, peer)
+		// Evaluate the peer as the listed node is now, rather than reusing a
+		// result from earlier in a fleet sweep, which could overwrite a newer
+		// count that the peer's own reconciliation has remembered since. The
+		// peer's ResourceSlices are still looked up once per cache and shared by
+		// all classes.
+		peerObservation := p.manager.observe(ctx, class, peer, p.cachedResourceSlicesForNode(peer))
 		if !peerObservation.hasPartition || peerObservation.partitionKey != observation.partitionKey {
 			continue
 		}
@@ -1021,26 +1004,6 @@ func maxCountLabel(current int, raw string) int {
 	}
 
 	return current
-}
-
-// peerObservation evaluates each class/peer pair at most once per cache
-// lifetime, including failed and missing-source results.
-func (p *ReconcileCache) peerObservation(
-	ctx context.Context,
-	classIndex int,
-	class compiledClass,
-	peer *corev1.Node,
-) countObservation {
-	key := peerCurrentCountKey{classIndex: classIndex, nodeName: peer.Name}
-
-	if cached, ok := p.peerObservations[key]; ok {
-		return cached
-	}
-
-	observation := p.manager.observe(ctx, class, peer, p.cachedResourceSlicesForNode(peer))
-	p.peerObservations[key] = observation
-
-	return observation
 }
 
 // usablePeerCount returns a peer's current count when it may raise the
