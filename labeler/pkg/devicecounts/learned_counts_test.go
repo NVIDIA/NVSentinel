@@ -333,18 +333,17 @@ func TestLearnedCounts_Learn_PeerFromAnotherPartitionLeavesIt(t *testing.T) {
 
 func TestLearnedCounts_GetOrLearn_KeepsCountRememberedDuringRead(t *testing.T) {
 	counts := newLearnedCounts()
-	recording := make(chan struct{})
 	recorded := make(chan struct{})
 
-	go func() {
-		close(recording)
-		counts.setNode(testPartition, "node-b", 16)
-		close(recorded)
-	}()
-
 	expected := counts.getOrLearn(testPartition, func() map[string]int {
-		// The read saw node-b before node-b's own reconciliation remembered 16.
-		<-recording
+		// node-b's own reconciliation remembers 16 while the read, which saw 8,
+		// is still running. Started here, setNode has to wait for the lock that
+		// getOrLearn holds, so it always runs after the read is stored.
+		go func() {
+			counts.setNode(testPartition, "node-b", 16)
+			close(recorded)
+		}()
+
 		return map[string]int{"node-a": 8, "node-b": 8}
 	})
 	require.Equal(t, 8, expected)
@@ -385,4 +384,23 @@ func TestReconcileCache_RememberPeerCounts_UpdatesPartitionWithoutLabels(t *test
 
 	manager.NewReconcileCache(nodes, loader.load).CalculateAndSetDeviceCountLabels(ctx, nodes[0])
 	require.Equal(t, "16", nodes[0].Labels[testGPUCountExpectedLabel])
+}
+
+func TestReconcileCache_NodeLoweringItsOwnHighestCount_GetsTheLowerCount(t *testing.T) {
+	ctx := context.Background()
+	manager := newTestManager(t, peerLearningConfig())
+	nodes := p5Fleet(16)
+	loader := &countingSliceLoader{}
+
+	manager.NewReconcileCache(nodes, loader.load).CalculateAndSetDeviceCountLabels(ctx, nodes[0])
+	require.Equal(t, "16", nodes[0].Labels[testGPUCountExpectedLabel])
+
+	// The node is the only one in its partition, and both its count and its
+	// expected label drop to 4, for example after someone corrects the label.
+	nodes[0].Labels["nvidia.com/gpu.count"] = "4"
+	nodes[0].Labels[testGPUCountExpectedLabel] = "4"
+
+	manager.NewReconcileCache(nodes, loader.load).CalculateAndSetDeviceCountLabels(ctx, nodes[0])
+	require.Equal(t, "4", nodes[0].Labels[testGPUCountExpectedLabel],
+		"the node must not get its own old count back from what labeler remembered")
 }

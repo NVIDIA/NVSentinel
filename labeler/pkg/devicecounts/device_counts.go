@@ -345,6 +345,14 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 		}
 
 		current := observation.count
+
+		// Remember the node's own latest count before looking up its partition.
+		// If the node used to have the partition's highest count and now reports
+		// less, the partition becomes unknown and is read again, so the node does
+		// not get its own old count back.
+		p.manager.rememberNodeCount(classIndex, node.Name, observation,
+			maxCountLabel(current, node.Labels[class.Labels.Expected]))
+
 		expected := p.expectedDeviceCount(ctx, classIndex, class, node, observation)
 		p.manager.rememberNodeCount(classIndex, node.Name, observation, max(expected, current))
 		currentValue := strconv.Itoa(current)
