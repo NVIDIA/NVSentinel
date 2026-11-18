@@ -507,7 +507,8 @@ class DCGMWatcher:
         DCGM_FR_NVLINK_DOWN has two expected-down cases (see
         MetadataReader.classify_nvlink_down):
           - NO_NVLINK_HARDWARE (L40, A40): unambiguous, always suppressed.
-          - UNBRIDGED_PCIE (A100/H100 PCIe with zero active links): from
+          - UNBRIDGED_PCIE (A100/H100 PCIe and supported GeForce RTX models
+            with zero active links): from
             metadata alone this is indistinguishable from a card whose NVLink
             bridge was already dead at collection time, so it is suppressed
             ONLY when the operator has explicitly asserted the fleet runs
