@@ -607,6 +607,112 @@ func TestManualUncordonPropagation(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
+// TestManualUncordonCancelsEveryEventOfTheSession sends fatal events on two GPUs, so the first
+// is Quarantined and the second AlreadyQuarantined. After a manual uncordon both have to be
+// Cancelled in the datastore before fault-quarantine cleans the node.
+func TestManualUncordonCancelsEveryEventOfTheSession(t *testing.T) {
+	feature := features.New("TestManualUncordonCancelsEveryEventOfTheSession").
+		WithLabel("suite", "fault-management-manual-intervention")
+
+	var testCtx *helpers.NodeDrainerTestContext
+
+	// The node pool is reused, so each event has its own message.
+	suffix := time.Now().UTC().Format("150405.000")
+	firstMessage := "XID 79 on GPU 0 for a session cancellation " + suffix
+	secondMessage := "XID 79 on GPU 1 for a session cancellation " + suffix
+
+	quarantineStatus := func(ctx context.Context, t *testing.T, c *envconf.Config, message string) string {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		status, _ := helpers.HealthEventQuarantineStatus(ctx, t, client.RESTConfig(), client, testCtx.NodeName, message)
+
+		return status
+	}
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupNodeDrainerTest(ctx, t, c, "data/nd-all-modes.yaml", "delete-timeout-test")
+		return newCtx
+	})
+
+	feature.Assess("two events on different GPUs form one session", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		// The pods keep the drain in progress, so the quarantine is still active at the uncordon.
+		podNames := helpers.CreatePodsFromTemplate(ctx, t, client,
+			"data/busybox-pods.yaml", testCtx.NodeName, testCtx.TestNamespace)
+		helpers.WaitForPodsRunning(ctx, t, client, testCtx.TestNamespace, podNames)
+
+		t.Log("Sending a fatal health event on GPU 0 to quarantine the node")
+		helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage(firstMessage))
+
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+
+		t.Log("Sending a fatal health event on GPU 1 of the quarantined node")
+		helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithEntitiesImpacted([]helpers.EntityImpacted{{EntityType: "GPU", EntityValue: "1"}}).
+			WithMessage(secondMessage))
+
+		require.Eventually(t, func() bool {
+			return quarantineStatus(ctx, t, c, firstMessage) == "Quarantined" &&
+				quarantineStatus(ctx, t, c, secondMessage) == "AlreadyQuarantined"
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"the first event should be Quarantined and the second AlreadyQuarantined")
+
+		return ctx
+	})
+
+	feature.Assess("manual uncordon cancels both events", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Operator manually uncordons the node")
+		require.NoError(t, helpers.SetNodeCordon(ctx, client, testCtx.NodeName, false))
+
+		t.Log("Waiting for FQ to cancel the session and clean up the node")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+
+			_, hasQuarantine := node.Annotations["quarantineHealthEvent"]
+
+			return node.Annotations["quarantinedNodeUncordonedManually"] == "True" && !hasQuarantine
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "FQ should detect manual uncordon")
+
+		// The node is cleaned only after the write, so both events are Cancelled by now.
+		assert.Equal(t, "Cancelled", quarantineStatus(ctx, t, c, firstMessage), "the first event of the session")
+		assert.Equal(t, "Cancelled", quarantineStatus(ctx, t, c, secondMessage), "the later event of the session")
+
+		t.Log("Waiting for ND to process the Cancelled events and remove the draining label")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+
+			_, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
+
+			return !exists
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "ND should remove draining label")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		return helpers.TeardownNodeDrainer(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
 func TestManualUncordonWithFaultRemediation(t *testing.T) {
 	feature := features.New("TestManualUncordonWithFaultRemediation").
 		WithLabel("suite", "fault-management-manual-intervention-fr")

@@ -249,22 +249,16 @@ func (r *ResourceReconciler) reconcilePolicy(
 	p *config.Policy,
 	obj *unstructured.Unstructured,
 ) error {
-	matched, err := r.evaluator.EvaluatePredicate(ctx, p.Name, obj)
+	matched, nodeName, err := r.evaluator.Evaluate(ctx, p.Name, obj)
 	if err != nil {
-		metrics.PolicyEvaluationErrors.WithLabelValues(p.Name, "cel_error").Inc()
+		reason := "cel_error"
+		if errors.Is(err, policy.ErrNodeAssociation) {
+			reason = "node_association_error"
+		}
 
-		return fmt.Errorf("predicate evaluation failed: %w", err)
-	}
+		metrics.PolicyEvaluationErrors.WithLabelValues(p.Name, reason).Inc()
 
-	nodeName, err := r.evaluator.EvaluateNodeAssociation(ctx, p.Name, obj)
-	if err != nil {
-		metrics.PolicyEvaluationErrors.WithLabelValues(p.Name, "node_association_error").Inc()
-
-		return fmt.Errorf("node association evaluation failed: %w", err)
-	}
-
-	if nodeName == "" {
-		nodeName = obj.GetName()
+		return err
 	}
 
 	stateKey := r.getStateKey(p, obj)
