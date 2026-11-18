@@ -1331,6 +1331,16 @@ func (r *Reconciler) isEventCancelled(
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
+	// An event that fault-quarantine marked Cancelled in the datastore is cancelled. The
+	// cancellation in memory is lost at a restart, and the startup scan then queues the event
+	// with its stored Cancelled status. The worker also reads the event again before each
+	// pass, so a queued event whose memory mark was cleared still stops here.
+	if nodeQuarantinedStatus != nil && *nodeQuarantinedStatus == model.Cancelled {
+		r.trackCancelledEventLocked(eventID, nodeName, eventCreatedAt)
+
+		return true
+	}
+
 	// Don't apply node-level cancellation to UnQuarantined events themselves.
 	// UnQuarantined events must process normally to set userpodsevictionstatus=Succeeded
 	// so that FR can process them and clear remediation annotations.
@@ -1340,16 +1350,7 @@ func (r *Reconciler) isEventCancelled(
 	// Check node-level cancellation flag for non-UnQuarantined events
 	// (handles race condition where UnQuarantined arrives before Quarantined events are processed)
 	if !isUnQuarantinedEvent && nodeCancelled && eventAtOrBeforeCutoff(eventCreatedAt, cutoff) {
-		// Ensure the event is tracked so clearEventStatus can clean up the flag
-		eventsMap, exists := r.nodeEventsMap[nodeName]
-		if !exists {
-			eventsMap = make(eventStatusMap)
-			r.nodeEventsMap[nodeName] = eventsMap
-		}
-
-		if _, ok := eventsMap[eventID]; !ok {
-			eventsMap[eventID] = eventStatus{status: model.Cancelled, createdAt: eventCreatedAt}
-		}
+		r.trackCancelledEventLocked(eventID, nodeName, eventCreatedAt)
 
 		return true
 	}
@@ -1363,6 +1364,35 @@ func (r *Reconciler) isEventCancelled(
 	trackedEvent, eventExists := eventsMap[eventID]
 
 	return eventExists && trackedEvent.status == model.Cancelled
+}
+
+// trackCancelledEventLocked makes sure a cancelled event is tracked, so clearEventStatus can
+// clean up the flag. The caller holds nodeEventsMapMu.
+func (r *Reconciler) trackCancelledEventLocked(eventID string, nodeName string, eventCreatedAt time.Time) {
+	eventsMap, exists := r.nodeEventsMap[nodeName]
+	if !exists {
+		eventsMap = make(eventStatusMap)
+		r.nodeEventsMap[nodeName] = eventsMap
+	}
+
+	if _, ok := eventsMap[eventID]; !ok {
+		eventsMap[eventID] = eventStatus{status: model.Cancelled, createdAt: eventCreatedAt}
+	}
+}
+
+// newerDrainInProgress reports whether an event created after the given time is in progress on
+// the node.
+func (r *Reconciler) newerDrainInProgress(nodeName string, eventCreatedAt time.Time) bool {
+	r.nodeEventsMapMu.Lock()
+	defer r.nodeEventsMapMu.Unlock()
+
+	for _, trackedEvent := range r.nodeEventsMap[nodeName] {
+		if trackedEvent.status == model.StatusInProgress && trackedEvent.createdAt.After(eventCreatedAt) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func eventAtOrBeforeCutoff(eventCreatedAt time.Time, cutoff cancellationCutoff) bool {
@@ -1446,7 +1476,12 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 
 	r.deleteCustomDrainCRIfEnabled(ctx, nodeName, event)
 
-	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	// The draining label and state belong to the node, not to one event. A newer event that is
+	// still draining the node keeps them, so only its own completion or cancellation clears them.
+	if r.newerDrainInProgress(nodeName, healthEvent.CreatedAt) {
+		slog.InfoContext(ctx, "A newer drain of the node is in progress, keeping its draining label",
+			"node", nodeName, "eventID", eventID)
+	} else if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		nodeName, statemanager.DrainingLabelValue, true); err != nil {
 		slog.ErrorContext(ctx, "Failed to remove draining label for cancelled event",
 			"node", nodeName,

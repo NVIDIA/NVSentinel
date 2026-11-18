@@ -1,0 +1,356 @@
+// Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package policytest evaluates policies against test cases offline, with no cluster.
+// Each case gives a resource and the expected predicate result and node; lookup()
+// resolves against the objects the test file lists.
+package policytest
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	utiljson "k8s.io/apimachinery/pkg/util/json"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/yaml"
+
+	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
+)
+
+// Suite is the content of a test file.
+type Suite struct {
+	// Objects are the cluster state that lookup() sees, as Kubernetes manifests.
+	Objects []map[string]any `json:"objects"`
+	Cases   []Case           `json:"cases"`
+}
+
+// Case is one resource evaluated against one policy.
+type Case struct {
+	Name     string         `json:"name"`
+	Policy   string         `json:"policy"`
+	Resource map[string]any `json:"resource"`
+	Expect   Expect         `json:"expect"`
+}
+
+// Expect is the expected outcome of a case. Match is required; Node is only
+// checked when set.
+type Expect struct {
+	Match *bool   `json:"match"`
+	Node  *string `json:"node,omitempty"`
+}
+
+// Result is the outcome of one case. Failures is empty when the case passed.
+type Result struct {
+	Case     string
+	Policy   string
+	Match    bool
+	Node     string
+	Failures []string
+}
+
+// LoadSuite reads and validates a test file.
+func LoadSuite(path string) (*Suite, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read test file: %w", err)
+	}
+
+	docs, err := countDocuments(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse test file %s: %w", path, err)
+	}
+
+	if docs > 1 {
+		return nil, fmt.Errorf("test file %s has more than one YAML document", path)
+	}
+
+	var s Suite
+	if err := yaml.UnmarshalStrict(data, &s, useNumber); err != nil {
+		return nil, fmt.Errorf("parse test file %s: %w", path, err)
+	}
+
+	if len(s.Cases) == 0 {
+		return nil, fmt.Errorf("test file %s has no cases", path)
+	}
+
+	if err := decodeIntegers(&s); err != nil {
+		return nil, fmt.Errorf("parse test file %s: %w", path, err)
+	}
+
+	seen := make(map[string]bool, len(s.Cases))
+
+	for i, c := range s.Cases {
+		if err := validateCase(i, c, seen); err != nil {
+			return nil, err
+		}
+
+		seen[c.Name] = true
+	}
+
+	return &s, nil
+}
+
+// useNumber keeps numbers as json.Number so decodeIntegers sees them exactly as
+// written.
+func useNumber(d *json.Decoder) *json.Decoder {
+	d.UseNumber()
+	return d
+}
+
+// decodeIntegers re-decodes the objects and case resources so whole numbers are
+// int64, as they are in the unstructured objects the monitor's cache returns.
+func decodeIntegers(s *Suite) error {
+	for i := range s.Objects {
+		if err := asUnstructuredJSON(&s.Objects[i]); err != nil {
+			return fmt.Errorf("object %d: %w", i, err)
+		}
+	}
+
+	for i := range s.Cases {
+		if err := asUnstructuredJSON(&s.Cases[i].Resource); err != nil {
+			return fmt.Errorf("case %q: %w", s.Cases[i].Name, err)
+		}
+	}
+
+	return nil
+}
+
+func asUnstructuredJSON(m *map[string]any) error {
+	if *m == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(*m)
+	if err != nil {
+		return err
+	}
+
+	return utiljson.Unmarshal(data, m)
+}
+
+// countDocuments returns how many non-empty YAML documents data holds.
+func countDocuments(data []byte) (int, error) {
+	r := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
+	n := 0
+
+	for {
+		doc, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			return n, nil
+		}
+
+		if err != nil {
+			return 0, err
+		}
+
+		var v any
+		if err := yaml.Unmarshal(doc, &v); err != nil {
+			return 0, err
+		}
+
+		if v != nil {
+			n++
+		}
+	}
+}
+
+func validateCase(i int, c Case, seen map[string]bool) error {
+	switch {
+	case c.Name == "":
+		return fmt.Errorf("case %d has no name", i)
+	case seen[c.Name]:
+		return fmt.Errorf("duplicate case name %q", c.Name)
+	case c.Policy == "":
+		return fmt.Errorf("case %q has no policy", c.Name)
+	case c.Resource == nil:
+		return fmt.Errorf("case %q has no resource", c.Name)
+	case !hasIdentity(&unstructured.Unstructured{Object: c.Resource}):
+		return fmt.Errorf("case %q resource needs apiVersion, kind and metadata.name", c.Name)
+	case c.Expect.Match == nil:
+		return fmt.Errorf("case %q has no expect.match", c.Name)
+	}
+
+	return nil
+}
+
+func hasIdentity(u *unstructured.Unstructured) bool {
+	return u.GetAPIVersion() != "" && u.GetKind() != "" && u.GetName() != ""
+}
+
+// Run evaluates every case against the policies with policy.Evaluator.Evaluate,
+// the same call the monitor's reconciler makes.
+func Run(ctx context.Context, policies []config.Policy, s *Suite) ([]Result, error) {
+	objects, err := clusterObjects(s.Objects)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).WithObjects(objects...).Build()
+
+	env, err := celenv.NewEnvironment(reader)
+	if err != nil {
+		return nil, fmt.Errorf("create CEL environment: %w", err)
+	}
+
+	evaluator, err := policy.NewEvaluator(env, policies)
+	if err != nil {
+		return nil, err
+	}
+
+	byName := make(map[string]config.Policy, len(policies))
+	for _, p := range policies {
+		byName[p.Name] = p
+	}
+
+	results := make([]Result, 0, len(s.Cases))
+	for _, c := range s.Cases {
+		results = append(results, runCase(ctx, evaluator, byName, c))
+	}
+
+	return results, nil
+}
+
+// clusterObjects validates the test file's objects and returns them for the fake
+// client that lookup() reads.
+func clusterObjects(manifests []map[string]any) ([]client.Object, error) {
+	type objectKey struct {
+		apiVersion, kind, namespace, name string
+	}
+
+	objects := make([]client.Object, 0, len(manifests))
+	seen := make(map[objectKey]int, len(manifests))
+
+	for i, o := range manifests {
+		u := &unstructured.Unstructured{Object: o}
+		if !hasIdentity(u) {
+			return nil, fmt.Errorf("object %d needs apiVersion, kind and metadata.name", i)
+		}
+
+		key := objectKey{u.GetAPIVersion(), u.GetKind(), u.GetNamespace(), u.GetName()}
+		if first, ok := seen[key]; ok {
+			return nil, fmt.Errorf("object %d duplicates object %d (%s %s %s/%s)",
+				i, first, key.apiVersion, key.kind, key.namespace, key.name)
+		}
+
+		seen[key] = i
+
+		if u.GetDeletionTimestamp() != nil && len(u.GetFinalizers()) == 0 {
+			return nil, fmt.Errorf("object %d: metadata.deletionTimestamp is set without finalizers, "+
+				"which the API server never serves", i)
+		}
+
+		objects = append(objects, u)
+	}
+
+	return objects, nil
+}
+
+func runCase(
+	ctx context.Context,
+	evaluator *policy.Evaluator,
+	byName map[string]config.Policy,
+	c Case,
+) Result {
+	r := Result{Case: c.Name, Policy: c.Policy}
+	resource := &unstructured.Unstructured{Object: c.Resource}
+
+	if failure := checkScope(byName, c.Policy, resource); failure != "" {
+		r.Failures = append(r.Failures, failure)
+		return r
+	}
+
+	match, node, err := evaluator.Evaluate(ctx, c.Policy, resource)
+	r.Match = match
+	r.Node = node
+
+	if err != nil {
+		r.Failures = append(r.Failures, err.Error())
+		return r
+	}
+
+	if c.Expect.Match != nil && match != *c.Expect.Match {
+		r.Failures = append(r.Failures, fmt.Sprintf("match is %v, want %v", match, *c.Expect.Match))
+	}
+
+	if c.Expect.Node != nil && node != *c.Expect.Node {
+		r.Failures = append(r.Failures, fmt.Sprintf("node is %q, want %q", node, *c.Expect.Node))
+	}
+
+	return r
+}
+
+// checkScope reports why the monitor would never evaluate the resource with the
+// policy, or "" when it would.
+func checkScope(byName map[string]config.Policy, name string, resource *unstructured.Unstructured) string {
+	p, ok := byName[name]
+	if !ok {
+		return fmt.Sprintf("policy %q is not in the config", name)
+	}
+
+	if !p.Enabled {
+		return fmt.Sprintf("policy %q is disabled", name)
+	}
+
+	gvk := resource.GroupVersionKind()
+	if got := resourceGVK(gvk.Group, gvk.Version, gvk.Kind); got != p.Resource.GVK() {
+		return fmt.Sprintf("resource is %s but policy %q watches %s, so the monitor never evaluates it",
+			got, p.Name, p.Resource.GVK())
+	}
+
+	if !p.Resource.MatchesNamespace(resource.GetNamespace()) {
+		return fmt.Sprintf("resource is in namespace %q but policy %q watches namespace %q",
+			resource.GetNamespace(), p.Name, p.Resource.Namespace)
+	}
+
+	return ""
+}
+
+func resourceGVK(group, version, kind string) string {
+	return (&config.ResourceSpec{Group: group, Version: version, Kind: kind}).GVK()
+}
+
+// Report writes one line per case and returns how many failed.
+func Report(w io.Writer, results []Result) int {
+	failed := 0
+
+	for _, r := range results {
+		status := "PASS"
+		if len(r.Failures) > 0 {
+			status = "FAIL"
+			failed++
+		}
+
+		fmt.Fprintf(w, "%s  %s  [%s] match=%v node=%s\n", status, r.Case, r.Policy, r.Match, r.Node)
+
+		for _, f := range r.Failures {
+			fmt.Fprintf(w, "      %s\n", f)
+		}
+	}
+
+	fmt.Fprintf(w, "\n%d passed, %d failed\n", len(results)-failed, failed)
+
+	return failed
+}
