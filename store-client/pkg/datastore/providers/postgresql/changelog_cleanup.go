@@ -283,13 +283,13 @@ func validateCleanupPosition(token cleanupToken, position cleanupPosition, now, 
 
 	if !token.updated.Valid || token.updated.Time.Before(cutoff) {
 		slog.Warn("Stale changelog cleanup token remains protected; "+
-			"quiet consumers need acknowledgments or PR 3 idle checkpoints",
+			"quiet consumers need acknowledgments until idle checkpoints are implemented",
 			"client", token.client, "timestamp", position.timestamp)
 	}
 
 	if !position.timestamp.After(time.Unix(0, 0)) {
 		slog.Warn("Changelog cleanup blocked by full-replay consumer position; "+
-			"requires acknowledgment or PR 3 idle checkpoints",
+			"requires an acknowledgment until idle checkpoints are implemented",
 			"client", token.client)
 	}
 

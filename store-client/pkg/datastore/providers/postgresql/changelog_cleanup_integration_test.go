@@ -259,8 +259,11 @@ func TestChangelogCleaner_Integration_Safety(t *testing.T) {
 		go func() { n, err := cleaner.run(ctx); finished <- result{n, err} }()
 		// Wait for the actual delete to block on the updater. No timing sleep or injected SQL error.
 		require.Eventually(t, func() bool {
+			// Eventually runs this in another goroutine, where require must not call FailNow.
 			var waiting bool
-			require.NoError(t, db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%DELETE FROM datastore_changelog AS row_version%')`).Scan(&waiting))
+			if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%DELETE FROM datastore_changelog AS row_version%')`).Scan(&waiting); err != nil {
+				return false
+			}
 			return waiting
 		}, 10*time.Second, 10*time.Millisecond)
 		require.NoError(t, updater.Commit())

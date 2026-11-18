@@ -1,6 +1,6 @@
 # PostgreSQL changelog cleaner: experimental testing
 
-ADR-068 and its release protocol remain Proposed. PR 2 supplies the guarded cleaner and safety tests. PR 3 supplies the remaining release prerequisites.
+ADR-068 and its release protocol remain Proposed. The guarded cleaner and its safety tests exist. The remaining release prerequisites are tracked in #2170.
 
 ## Temporary enablement gate
 
@@ -8,7 +8,7 @@ Deletion requires both valid cleanup settings and `DATASTORE_CHANGELOG_RETENTION
 
 Without acknowledgment, configured retention logs one warning per pool owner and starts no cleaner. Invalid settings also warn and disable cleanup. Startup and ingestion continue.
 
-PR 3 removes this temporary gate after the idle-checkpoint fence, rollout documentation, and acceptance tests ship. Until then, use the acknowledgment only for experimental testing. A nonempty token table cannot prove that every active consumer has a saved position.
+The temporary gate stays until the idle-checkpoint fence, rollout documentation, and acceptance tests ship (#2170). Until then, use the acknowledgment only for experimental testing. A nonempty token table cannot prove that every active consumer has a saved position.
 
 | Setting | Default | Requirement |
 |---|---|---|
@@ -22,7 +22,7 @@ The one-hour minimum preserves the protocol's default NOTIFY catch-up window, in
 
 Saved timestamps more than one second beyond the sampled database clock block deletion. The allowance covers small clock adjustments and concurrent saves between clock sampling and token reading. Larger skew cannot establish an acknowledged position. A warning names the client. No application clock supplies the cleaner's bound.
 
-Tokens at the Unix epoch protect full replay. Quiet consumers can retain their initial position indefinitely until they acknowledge work or PR 3 adds idle checkpoints. Stale positions remain protected. Warnings name these clients and explain the required progress. Do not remove a live consumer's token to make cleanup progress.
+Tokens at the Unix epoch protect full replay. Quiet consumers can retain their initial position indefinitely until they acknowledge work or idle checkpoints ship (#2170). Stale positions remain protected. Warnings name these clients and explain the required progress. Do not remove a live consumer's token to make cleanup progress.
 
 The pool owner starts the cleaner. Constructor context cancellation does not stop it. Owner `Close(ctx)` cancels and waits before closing the pool. Borrowed clients start no cleaner.
 
@@ -31,8 +31,8 @@ The pool owner starts the cleaner. Constructor context cancellation does not sto
 Use a disposable PostgreSQL 16 database. Set `NVSENTINEL_TEST_POSTGRES_DSN` through the process environment. Keep passwords out of command histories, files, and logs.
 
 ```bash
-cd /Users/sumedhaerram/Code/oss/NVSentinel-cleaner/store-client
-GOCACHE=/private/tmp/nvsentinel-cleaner-gocache GOFLAGS=-p=1 go test -race -tags=integration -count=1 -run '^TestChangelogCleaner_Integration_Safety$' -v ./pkg/datastore/providers/postgresql
+cd store-client
+go test -race -tags=integration -count=1 -run '^TestChangelogCleaner_Integration_Safety$' -v ./pkg/datastore/providers/postgresql
 ```
 
 Without the DSN, the tagged test skips cleanly. Without the tag, ordinary tests and lint exclude it. The test creates a unique schema, calls the production `createTables`, and removes its schema afterward. The database role needs schema and extension creation privileges. Use a disposable database because production setup includes extension creation.
@@ -41,7 +41,7 @@ The cases exercise production triggers and BIGSERIAL, tuple ordering, strict con
 
 Tests age only the isolated guard's observation time to avoid a one-hour wait. They use the actual PostgreSQL snapshot horizon and production deletion SQL.
 
-## PR 3 follow-up
+## Remaining release prerequisites
 
 Implement the conservative idle fence and complete reader rollout, downgrade, and acceptance tests before removing the experimental gate. Add Helm settings, metrics, and operator guidance from the protocol.
 

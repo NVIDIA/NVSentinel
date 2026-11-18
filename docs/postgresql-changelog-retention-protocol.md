@@ -1,8 +1,8 @@
 # Proposed PostgreSQL changelog retention protocol
 
-Status: Proposed. This supports [ADR-068](designs/068-postgresql-changelog-retention.md); the PR 2 cleaner remains behind a temporary experimental gate. Maintainer acceptance and the ADR acceptance tests are prerequisites for release.
+Status: Proposed. This supports [ADR-068](designs/068-postgresql-changelog-retention.md); the cleaner remains behind a temporary experimental gate (#2170). Maintainer acceptance and the ADR acceptance tests are prerequisites for release.
 
-PR 2 testing requires valid retention and `DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL=true`. PR 3 removes this gate after the remaining prerequisites ship. See [experimental configuration and integration tests](postgresql-changelog-cleaner-testing.md).
+Until the remaining prerequisites ship (#2170), deletion requires valid retention and `DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL=true`. The gate is then removed. See [experimental configuration and integration tests](postgresql-changelog-cleaner-testing.md).
 
 ## One run and a previous-snapshot guard
 

@@ -71,7 +71,7 @@ func loadCleanupConfig(options map[string]string) cleanupConfig {
 		return cleanupConfig{}
 	}
 
-	// PR 3 removes this temporary gate after the idle fence, rollout docs and acceptance tests ship.
+	// This temporary gate stays until the idle fence, rollout docs and acceptance tests ship (#2170).
 	// Require the environment acknowledgment explicitly; options cannot bypass the release gate.
 	if os.Getenv("DATASTORE_CHANGELOG_RETENTION_EXPERIMENTAL") != "true" {
 		slog.Warn("Changelog retention configured but inert until remaining ADR-068 prerequisites ship; " +
