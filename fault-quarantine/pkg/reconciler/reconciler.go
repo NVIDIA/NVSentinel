@@ -376,6 +376,7 @@ func (r *Reconciler) configureColdStart(
 			// did complete re-scan cheaply: they carry terminal decisions
 			// the scan skips.
 			cutoff = effectiveColdStartAfter
+
 			slog.InfoContext(ctx, "Cold-start seed scan stopped early; persisting the window's lower bound as the cutoff")
 		}
 
