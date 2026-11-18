@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -85,4 +86,27 @@ func mockHealthEventStoreWithDrainedComponentResetEvent(t *testing.T, entityType
 			}, nil
 		},
 	}
+}
+
+// mockHealthEventStoreWithRecordedPartialDrain returns a drained COMPONENT_RESET event whose
+// drain decision records a partial drain of the entity, as node-drainer writes it.
+func mockHealthEventStoreWithRecordedPartialDrain(t *testing.T, entityType, entityValue string) *mockHealthEventStore {
+	t.Helper()
+
+	store := mockHealthEventStoreWithDrainedComponentResetEvent(t, entityType, entityValue)
+	findEvents := store.findHealthEventsByQueryFn
+	store.findHealthEventsByQueryFn = func(ctx context.Context,
+		builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+		events, err := findEvents(ctx, builder)
+		for i := range events {
+			events[i].HealthEventStatus.DrainDecision = &datastore.DrainDecision{
+				Method: model.DrainMethodBuiltIn,
+				Scope:  &datastore.Entity{EntityType: entityType, EntityValue: entityValue},
+			}
+		}
+
+		return events, err
+	}
+
+	return store
 }

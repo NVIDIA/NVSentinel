@@ -51,6 +51,9 @@ jobs:
           - component: license-headers
             make_command: 'make license-headers-lint'
             step_name: 'Run license headers check'
+          - component: dependency-licenses
+            make_command: 'make dependency-licenses-lint'
+            step_name: 'Check dependency licenses'
           - component: gomod
             make_command: 'make gomod-lint'
             step_name: 'Run gomod lint'
