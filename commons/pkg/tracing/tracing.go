@@ -21,6 +21,7 @@ package tracing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -67,14 +68,33 @@ const MetadataKeyTraceID = "trace_id"
 // which is present when the context doesn't carry trace info.
 var defaultTraceID = trace.TraceID{}.String()
 
+// Option configures InitTracing.
+type Option func(*initConfig)
+
+type initConfig struct {
+	serviceVersion string
+}
+
+// WithServiceVersion sets the service.version resource attribute on every span.
+// An empty version adds no attribute.
+func WithServiceVersion(version string) Option {
+	return func(c *initConfig) {
+		c.serviceVersion = version
+	}
+}
+
 // InitTracing initializes OpenTelemetry tracing with OTLP gRPC exporter.
-func InitTracing(serviceName string) error {
-	res, err := resource.New(
-		context.Background(),
-		resource.WithAttributes(
-			attribute.String("service.name", serviceName),
-		),
-	)
+//
+// The resource of every span reads the standard OTEL_RESOURCE_ATTRIBUTES and
+// OTEL_SERVICE_NAME variables and the SDK attributes. serviceName always sets
+// service.name, so a variable cannot rename the service.
+func InitTracing(serviceName string, options ...Option) error {
+	cfg := initConfig{}
+	for _, option := range options {
+		option(&cfg)
+	}
+
+	res, err := newResource(context.Background(), serviceName, cfg.serviceVersion)
 	if err != nil {
 		return fmt.Errorf("failed to create resource: %w", err)
 	}
@@ -136,19 +156,61 @@ func InitTracing(serviceName string) error {
 	return nil
 }
 
+// newResource builds the resource that describes the service on every span.
+// The detectors apply in order and a later value wins, so service.name and
+// service.version from the code override the same keys from the environment.
+//
+// A malformed OTEL_RESOURCE_ATTRIBUTES gives a partial resource. Tracing then
+// continues with the attributes that were valid, because a typo in an optional
+// attribute must not turn tracing off.
+func newResource(ctx context.Context, serviceName, serviceVersion string) (*resource.Resource, error) {
+	attrs := []attribute.KeyValue{attribute.String("service.name", serviceName)}
+	if serviceVersion != "" {
+		attrs = append(attrs, attribute.String("service.version", serviceVersion))
+	}
+
+	res, err := resource.New(
+		ctx,
+		resource.WithFromEnv(),
+		resource.WithTelemetrySDK(),
+		resource.WithAttributes(attrs...),
+	)
+	if err != nil {
+		if res != nil && errors.Is(err, resource.ErrPartialResource) {
+			slog.Warn("Some OpenTelemetry resource attributes are invalid, using the valid ones", "error", err)
+
+			return res, nil
+		}
+
+		return nil, fmt.Errorf("failed to detect resource attributes: %w", err)
+	}
+
+	return res, nil
+}
+
 // ShutdownTracing flushes pending spans and shuts down all tracer providers.
 // Call this during service shutdown to
 // ensure all buffered spans are exported before the process exits.
+//
+// It shuts down every provider even when one of them fails, and returns the
+// errors of all of them. A failed flush of the child-only provider drops the
+// database spans, so the caller must see that error to log it.
 func ShutdownTracing(ctx context.Context) error {
+	var errs []error
+
 	if childOnlyTracerProvider != nil {
-		_ = childOnlyTracerProvider.Shutdown(ctx)
+		if err := childOnlyTracerProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to shut down child-only tracer provider: %w", err))
+		}
 	}
 
 	if tracerProvider != nil {
-		return tracerProvider.Shutdown(ctx)
+		if err := tracerProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to shut down tracer provider: %w", err))
+		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // GetChildOnlyTracerProvider returns a TracerProvider that only records spans

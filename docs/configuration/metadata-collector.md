@@ -172,6 +172,7 @@ Know these limits:
 - If someone removes the label, the pod still runs. The GPU Operator adds the label again only at its next reconcile, not at once.
 - The GPU Operator sets the label back to `true` before the new driver loads. The pod also needs `nvsentinel.dgxc.nvidia.com/driver.installed: "true"`, which the labeler sets when the node has a ready driver pod. Thus the pod starts again after the new driver is ready.
 - In GPU Operator 26.7.0, a MIG change that times out can leave the label at `paused-for-mig-change`. The pod then stays off the node. Use GPU Operator 26.7.1 or later.
+- A GPU reset also sets the label to `false`, and waits for this pod to leave the node. After the reset, the janitor sets the label back to `true`. Refer to [GPU clients](janitor.md#gpu-clients).
 
 If the pod is missing on a GPU node, examine the label:
 

@@ -34,22 +34,15 @@ import (
 	"maps"
 	"slices"
 
-	"cel.dev/cel-go/cel"
-	"cel.dev/cel-go/ext"
 	v1 "k8s.io/api/core/v1"
 	toolscache "k8s.io/client-go/tools/cache"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/celfields"
+	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 )
-
-// nodeObjKey is the CEL variable the Node rules are evaluated against. Taking
-// it from common is what makes the paths derived here describe the same reads
-// the rules perform, because pkg/evaluator binds the node under the same name.
-const nodeObjKey = common.NodeCELVar
 
 // nodeRuleKind is the Rule.Kind whose expressions read the cached node.
 const nodeRuleKind = "Node"
@@ -101,38 +94,13 @@ func Derive(cfg config.TomlConfig, operational Operational) Keys {
 
 	keys.addOperational(cfg, operational)
 
-	env, err := newRuleEnv()
-	if err != nil {
-		// Nothing can be derived without an environment to compile against, so
-		// the maps stay whole. pkg/evaluator builds the same environment and
-		// fails startup on the same error.
-		slog.Error("Caching whole node labels and annotations: CEL environment unavailable", "error", err)
-
-		return Keys{}
-	}
-
 	for _, expression := range nodeRuleExpressions(cfg) {
-		keys.addExpression(env, expression)
+		keys.addExpression(expression)
 	}
 
 	keys.log()
 
 	return keys
-}
-
-// newRuleEnv builds the environment pkg/evaluator compiles Node rules in. The
-// declarations have to match, or a path derived here would not correspond to
-// the read the rule performs.
-func newRuleEnv() (*cel.Env, error) {
-	env, err := cel.NewEnv(
-		cel.Variable(nodeObjKey, cel.AnyType),
-		ext.Strings(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
-	}
-
-	return env, nil
 }
 
 // nodeRuleExpressions returns every expression evaluated against a node, from
@@ -193,20 +161,22 @@ func (k *Keys) addOperational(cfg config.TomlConfig, operational Operational) {
 }
 
 // addExpression records what one expression reads off the node. An expression
-// that cannot be compiled, or whose reads cannot be described by a set of
-// paths, leaves both maps whole.
-func (k *Keys) addExpression(env *cel.Env, expression string) {
-	ast, issues := env.Parse(expression)
-	if issues != nil && issues.Err() != nil {
+// that cannot be parsed, or whose reads cannot be described by a set of paths,
+// leaves both maps whole.
+//
+// celrule derives the paths in the environment it compiles Node rules in, so
+// they describe the reads the rules perform.
+func (k *Keys) addExpression(expression string) {
+	paths, isComplete, err := celrule.NodeFieldPaths(expression)
+	if err != nil {
 		slog.Error("Caching whole node labels and annotations: a Node rule does not parse",
-			"expression", expression, "error", issues.Err())
+			"expression", expression, "error", err)
 		k.retainAllLabels()
 		k.retainAllAnnotations()
 
 		return
 	}
 
-	paths, isComplete := celfields.FieldPaths(ast, nodeObjKey)
 	if !isComplete {
 		slog.Info("Caching whole node labels and annotations: a Node rule uses the node as a whole",
 			"expression", expression)

@@ -240,6 +240,10 @@ global:
   #     # for the setup job to authenticate. Secret must have keys: username, password.
   #     # Not needed if MONGODB_URI in credentialsFromSecret has sufficient privileges.
   #     adminSecret: ""
+  #     # Deadline for the setup job in seconds (default 600; 0 omits the deadline).
+  #     # A Job that exceeds it ends Failed; raising the value does not restart it,
+  #     # so delete the failed Job and run helm upgrade again.
+  #     activeDeadlineSeconds: 600
 
   # Certificate rotation (MongoDB only)
   # When enabled, client certificates can be rotated without restarting pods.
@@ -644,6 +648,13 @@ platformConnector:
       #   override:
       #     isFatal: false
       #     recommendedAction: "NONE"
+      # A rule can send a fault to a custom action. Set both fields; the name must have an
+      # entry in fault-remediation's maintenance.actions:
+      # - name: "nvlink-to-hardware-repair"
+      #   when: 'event.checkName == "GpuNvlinkWatch" && event.isFatal == true'
+      #   override:
+      #     recommendedAction: "CUSTOM"
+      #     customRecommendedAction: "hardware-repair"
 
 socketPath: "/var/run/nvsentinel.sock"
 

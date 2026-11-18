@@ -23,6 +23,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
@@ -30,6 +31,7 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
@@ -257,6 +259,38 @@ func (ni *NodeInformer) GetNodeDirect(ctx context.Context, name string) (*v1.Nod
 	return node, nil
 }
 
+// GetRuleNode returns the node a Node rule is evaluated against.
+//
+// Live processing reads the informer cache. Recovery bypasses it so rules see
+// current node state, reading one API server snapshot per node, and a node
+// deleted before replay is a permanent event error.
+func (ni *NodeInformer) GetRuleNode(ctx context.Context, name string) (*v1.Node, error) {
+	var (
+		node *v1.Node
+		err  error
+	)
+
+	isRecoveryRead := coldstart.IsRecoveryContext(ctx)
+	if isRecoveryRead {
+		node, err = coldstart.GetRecoveryNode(ctx, name, func() (*v1.Node, error) {
+			return ni.GetNodeDirect(ctx, name)
+		})
+	} else {
+		node, err = ni.lister.Get(name)
+	}
+
+	if err != nil {
+		wrappedErr := fmt.Errorf("failed to get node %s: %w", name, err)
+		if isRecoveryRead && apierrors.IsNotFound(err) {
+			return nil, coldstart.PermanentError(wrappedErr)
+		}
+
+		return nil, wrappedErr
+	}
+
+	return node, nil
+}
+
 // ListNodes lists all nodes from the informer's cache.
 func (ni *NodeInformer) ListNodes() ([]*v1.Node, error) {
 	return ni.lister.List(labels.Everything())
@@ -307,11 +341,38 @@ func (ni *NodeInformer) checkStaleStateOnAdd(node *v1.Node) {
 	ni.checkStaleUntaintState(node)
 }
 
+// ManualChange is how a node differs from the quarantine recorded in its annotations.
+type ManualChange struct {
+	// DryRun is set when the quarantine has the dry-run marker. Nothing was applied to the node.
+	DryRun bool
+	// Uncordoned is set when the node has the cordon annotation but isn't cordoned.
+	Uncordoned bool
+	// Untainted is set when a taint from the taints annotation is missing on the node.
+	Untainted bool
+}
+
+// DetectManualChange runs the stale-state checks of a node add on the given node.
+func (ni *NodeInformer) DetectManualChange(node *v1.Node) ManualChange {
+	_, dryRun := node.Annotations[common.QuarantineHealthEventDryRunAnnotationKey]
+
+	return ManualChange{
+		DryRun:     dryRun,
+		Uncordoned: hasStaleUncordonState(node),
+		Untainted:  ni.hasStaleUntaintState(node),
+	}
+}
+
+// hasStaleUncordonState reports whether the node has the FQ cordon annotation but is not cordoned.
+func hasStaleUncordonState(node *v1.Node) bool {
+	_, hasCordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+
+	return hasCordonAnnotation && !node.Spec.Unschedulable
+}
+
 // checkStaleUncordonState checks if node has stale uncordon state and handles it.
 // Returns true if stale uncordon was detected (and handled), false otherwise.
 func (ni *NodeInformer) checkStaleUncordonState(node *v1.Node) bool {
-	_, hasCordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
-	if !hasCordonAnnotation || node.Spec.Unschedulable {
+	if !hasStaleUncordonState(node) {
 		return false
 	}
 
@@ -327,11 +388,12 @@ func (ni *NodeInformer) checkStaleUncordonState(node *v1.Node) bool {
 	return true
 }
 
-// checkStaleUntaintState checks if node has stale untaint state and handles it.
-func (ni *NodeInformer) checkStaleUntaintState(node *v1.Node) {
+// hasStaleUntaintState reports whether the node has the FQ taint annotation but one of the
+// taints it lists is missing.
+func (ni *NodeInformer) hasStaleUntaintState(node *v1.Node) bool {
 	taintsAnnotation, hasTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
 	if !hasTaintsAnnotation || taintsAnnotation == "" {
-		return
+		return false
 	}
 
 	// Parse expected taints from annotation
@@ -340,11 +402,16 @@ func (ni *NodeInformer) checkStaleUntaintState(node *v1.Node) {
 		slog.Debug("Failed to unmarshal taints annotation during stale state check on add",
 			"node", node.Name, "error", err)
 
-		return
+		return false
 	}
 
 	// Check if any expected taints are missing from the node
-	if !ni.hasMissingTaints(node, expectedTaints) {
+	return ni.hasMissingTaints(node, expectedTaints)
+}
+
+// checkStaleUntaintState checks if node has stale untaint state and handles it.
+func (ni *NodeInformer) checkStaleUntaintState(node *v1.Node) {
+	if !ni.hasStaleUntaintState(node) {
 		return
 	}
 

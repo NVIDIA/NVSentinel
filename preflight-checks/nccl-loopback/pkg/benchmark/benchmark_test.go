@@ -15,6 +15,9 @@
 package benchmark
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -66,6 +69,16 @@ NCCL INFO Destroying communicator
 #        (B)    (elements)                               (us)  (GB/s)  (GB/s)             (us)  (GB/s)  (GB/s)
    268435456      67108864     float     sum      -1   2374.1  113.07  197.87       0   2370.4  113.25  198.18       0
 `
+	// sampleInterleavedNCCLLog is real all_reduce_perf stdout with NCCL_DEBUG=INFO logging to
+	// stdout: nccl-tests prints the row up to the root column, NCCL logs during the
+	// collective, and the timing columns follow on a later line.
+	sampleInterleavedNCCLLog = `#  Rank  0 Group  0 Pid      1 on       test device  0 [0001:00:01] NVIDIA H100 80GB HBM3
+#  Rank  1 Group  0 Pid      1 on       test device  1 [0001:00:04] NVIDIA H100 80GB HBM3
+   268435456      67108864     float     sum      -1test:1:1 [1] NCCL INFO Symmetric VA size=80GB
+test:1:1 [0] NCCL INFO Symmetric VA size=80GB
+test:1:78 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[1] via P2P/direct pointer
+   893.64  300.38  300.38       0   893.68  300.37  300.37       0
+`
 )
 
 func TestParseOutput(t *testing.T) {
@@ -94,6 +107,7 @@ func TestParseOutput(t *testing.T) {
 		{"too few fields", "#  Rank  0 Group  0 Pid 12 on test\n268435456 67108864 float\n", 256, 0, 0, 0, true, "could not find results"},
 		{"invalid algbw", "#  Rank  0 Group  0 Pid 12 on test\n268435456 67108864 float sum -1 2374.1 xxx 197.87 0\n", 256, 0, 0, 0, true, "failed to parse algbw"},
 		{"invalid busbw", "#  Rank  0 Group  0 Pid 12 on test\n268435456 67108864 float sum -1 2374.1 113.07 BAD 0\n", 256, 0, 0, 0, true, "failed to parse busbw"},
+		{"NCCL log interleaved into the row", sampleInterleavedNCCLLog, 256, 0, 0, 0, true, "failed to parse algbw"},
 	}
 
 	for _, tt := range tests {
@@ -191,5 +205,43 @@ func TestExtractBandwidth(t *testing.T) {
 				t.Errorf("busbw = %v, want %v", busbw, tt.wantBusbw)
 			}
 		})
+	}
+}
+
+// fakeAllReducePerf mimics all_reduce_perf with NCCL_DEBUG=INFO: it prints the result row up to
+// the root column, NCCL logs during the collective to NCCL_DEBUG_FILE (stdout when unset), and
+// then it prints the timing columns.
+const fakeAllReducePerf = `#!/bin/sh
+nccl_log() {
+	if [ "$NCCL_DEBUG_FILE" = /dev/stderr ]; then echo "$1" >&2; else echo "$1"; fi
+}
+echo "#  Rank  0 Group  0 Pid      1 on       test device  0 [0001:00:01] NVIDIA H100 80GB HBM3"
+echo "#  Rank  1 Group  0 Pid      1 on       test device  1 [0001:00:04] NVIDIA H100 80GB HBM3"
+printf '   268435456      67108864     float     sum      -1'
+nccl_log "test:1:1 [1] NCCL INFO Symmetric VA size=80GB"
+echo "   893.64  300.38  300.38       0   893.68  300.37  300.37       0"
+`
+
+func TestRunKeepsNCCLLogOutOfResults(t *testing.T) {
+	// An inherited NCCL_DEBUG_FILE must not send NCCL's log back into stdout.
+	t.Setenv("NCCL_DEBUG_FILE", "/dev/stdout")
+
+	binary := filepath.Join(t.TempDir(), "all_reduce_perf")
+	if err := os.WriteFile(binary, []byte(fakeAllReducePerf), 0o755); err != nil {
+		t.Fatalf("failed to write fake binary: %v", err)
+	}
+
+	result, err := NewRunner(binary).Run(context.Background(), 2, 256)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if result.NumGPUs != 2 {
+		t.Errorf("NumGPUs = %d, want 2", result.NumGPUs)
+	}
+	if result.BusBandwidthGbps != 300.38 {
+		t.Errorf("BusBW = %v, want 300.38", result.BusBandwidthGbps)
+	}
+	if strings.Contains(result.RawOutput, "NCCL INFO") {
+		t.Errorf("NCCL log reached stdout:\n%s", result.RawOutput)
 	}
 }

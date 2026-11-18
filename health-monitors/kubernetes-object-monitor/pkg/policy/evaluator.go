@@ -15,6 +15,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -24,6 +25,12 @@ import (
 
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
+)
+
+// ErrPredicate and ErrNodeAssociation mark which step of Evaluate failed.
+var (
+	ErrPredicate       = errors.New("predicate evaluation failed")
+	ErrNodeAssociation = errors.New("node association evaluation failed")
 )
 
 type Evaluator struct {
@@ -64,6 +71,31 @@ func NewEvaluator(env *celenv.Environment, policies []config.Policy) (*Evaluator
 	}
 
 	return e, nil
+}
+
+// Evaluate runs the policy against the resource the way the monitor does: the
+// predicate, then the node association, falling back to the resource name when
+// the association is empty. The error wraps ErrPredicate or ErrNodeAssociation.
+func (e *Evaluator) Evaluate(
+	ctx context.Context,
+	policyName string,
+	resource *unstructured.Unstructured,
+) (bool, string, error) {
+	matched, err := e.EvaluatePredicate(ctx, policyName, resource)
+	if err != nil {
+		return false, "", fmt.Errorf("%w: %w", ErrPredicate, err)
+	}
+
+	node, err := e.EvaluateNodeAssociation(ctx, policyName, resource)
+	if err != nil {
+		return matched, "", fmt.Errorf("%w: %w", ErrNodeAssociation, err)
+	}
+
+	if node == "" {
+		node = resource.GetName()
+	}
+
+	return matched, node, nil
 }
 
 func (e *Evaluator) EvaluatePredicate(

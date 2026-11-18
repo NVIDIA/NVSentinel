@@ -730,3 +730,68 @@ gpuResetController:
 	assert.Nil(t, config)
 	assert.Contains(t, err.Error(), "resetJob.driverBinPath")
 }
+
+// TestLoadConfig_GPUResetJobTemplatePatch loads a patch written as a YAML string, the way the chart renders it. It
+// checks that camelCase field names survive Viper, and that a namespace in the patch does not move the reset Jobs.
+func TestLoadConfig_GPUResetJobTemplatePatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+gpuResetController:
+  enabled: true
+  resetJob:
+    imageConfig:
+      image: "alpine:latest"
+    jobTemplatePatch: |
+      metadata:
+        namespace: provider-system
+      spec:
+        activeDeadlineSeconds: 900
+        template:
+          spec:
+            serviceAccountName: provider-reset
+            initContainers:
+              - name: stop-provider-daemonsets
+                image: provider/reset-hooks:1.0
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	config, err := LoadConfig(configPath, testNamespace)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	template := config.GPUReset.ResolvedJobTemplate
+	require.NotNil(t, template)
+	assert.Equal(t, testNamespace, template.Namespace)
+	assert.Equal(t, int64(900), *template.Spec.ActiveDeadlineSeconds)
+	assert.Equal(t, "provider-reset", template.Spec.Template.Spec.ServiceAccountName)
+	require.Len(t, template.Spec.Template.Spec.InitContainers, 1)
+	assert.Equal(t, "stop-provider-daemonsets", template.Spec.Template.Spec.InitContainers[0].Name)
+}
+
+func TestLoadConfig_GPUResetInvalidJobTemplatePatch_ReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+gpuResetController:
+  enabled: true
+  resetJob:
+    imageConfig:
+      image: "alpine:latest"
+    jobTemplatePatch: |
+      spec:
+        activeDeadlineSecond: 900
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	config, err := LoadConfig(configPath, testNamespace)
+	require.Error(t, err)
+	assert.Nil(t, config)
+	assert.Contains(t, err.Error(), "resetJob.jobTemplatePatch")
+}

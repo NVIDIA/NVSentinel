@@ -90,7 +90,7 @@ fault-quarantine:
 
 The default matches the label the NVIDIA GPU Operator applies. Override it when your cluster labels GPU nodes differently.
 
-A selector that matches no node gives the circuit breaker a node count of zero. It then logs `Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes` and returns an error instead of a decision, so check this value first when the breaker behaves unexpectedly on a cluster with non-standard labels.
+A selector that matches no node gives the circuit breaker a node count of zero. With no cordons in the window, the breaker stays `CLOSED` and fault quarantine keeps running. A cordon in the window while no GPU nodes are counted trips it, so check this value first when the breaker behaves unexpectedly on a cluster with non-standard labels.
 
 ### Label Prefix
 
@@ -114,6 +114,8 @@ Labels use the configured `{labelPrefix}` (default `k8saas.nvidia.com/`):
 ## Circuit Breaker
 
 Prevents too many nodes from being quarantined simultaneously, protecting against cluster-wide cascading failures.
+
+With PostgreSQL, a breaker that is already tripped blocks watcher startup and keeps the pod NotReady until reset. A rollout or Helm upgrade can wait for this reset. A breaker that trips after watcher startup does not itself change datastore readiness.
 
 The breaker is not created in dry-run mode. Dry run cordons nothing, so it neither counts toward nor is halted by the breaker, and no trip carries over when dry run is switched off.
 
@@ -355,6 +357,26 @@ ruleSets:
       shouldCordon: true
 ```
 
+#### Example 3: Health Events Analyzer Fatal Errors on Managed Nodes
+
+```yaml
+ruleSets:
+  - version: "1"
+    name: "Health events analyzer fatal error ruleset"
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.agent == 'health-events-analyzer' && event.isFatal == true"
+        - kind: "Node"
+          expression: |
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && 
+              node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && 
+              node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")
+    cordon:
+      shouldCordon: true
+```
+
 ### Adding and Modifying Rule Sets
 
 `fault-quarantine.ruleSets` is a **list**. When Helm merges multiple values files (`-f`), lists are replaced entirely — not merged by `name`. A file that sets only one ruleset replaces the whole list; built-in rulesets from [values.yaml](../../distros/kubernetes/nvsentinel/charts/fault-quarantine/values.yaml) are dropped unless you include them again. The chart has no keyed-merge for rulesets.
@@ -384,9 +406,9 @@ In dry run, fault-quarantine records what it would have done without cordoning, 
 - Logs read `Would cordon node (dry run)` and `Would uncordon node (dry run)`.
 - The datastore status is still `Quarantined`, so dry-run and real decisions are told apart by when dry run was enabled.
 
-When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it removes their annotations and cancels their quarantining events, so node-drainer does not act on them. A cordon someone else applied is left in place. The next fault on the node is quarantined for real.
+When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it cancels their quarantining events and then removes their annotations, so node-drainer does not act on them. A cordon someone else applied is left in place. The next fault on the node is quarantined for real.
 
-Cancelling the events is best-effort, as on the manual uncordon path. If it fails, fault-quarantine logs `Failed to cancel dry-run quarantining events` with the node name and increments `fault_quarantine_processing_errors_total{error_type="mongodb_cancel_quarantine_error"}`. The annotations are already gone, so a restart does not retry, and that node's events stay `Quarantined`, where node-drainer can still pick them up. After switching dry run off, check that counter. If it moved, set `healtheventstatus.nodequarantined` to `Cancelled` on the node's remaining `Quarantined` events before node-drainer acts on them.
+Cancelling the events works the same way as on the manual uncordon path. If the write fails, fault-quarantine increments `fault_quarantine_processing_errors_total{error_type="mongodb_cancel_quarantine_error"}`, keeps the annotations on the node and retries in the background, and again after a restart. Until the write succeeds, node-drainer can still pick up the node's events. A real fault on the node in the meantime discards the record first and then quarantines the node. After switching dry run off, check that `fault_quarantine_nodes_pending_cancellation` goes back to zero. See [Cancelling Break-Fix Workflows](../cancelling-breakfix.md).
 
 Before switching dry run off on a cluster that ran dry run on an earlier version:
 

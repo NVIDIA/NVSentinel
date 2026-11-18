@@ -57,6 +57,10 @@ go_tools:
   deadcode: 'v0.52.0'
   # renovate: datasource=github-releases depName=google/go-containerregistry depType=go_tools
   crane: 'v0.22.1'
+  # renovate: datasource=go depName=golang.org/x/vuln depType=go_tools
+  govulncheck: 'v1.9.0'
+  # renovate: datasource=github-releases depName=google/go-licenses depType=go_tools
+  go_licenses: 'v2.0.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools depType=go_tools
   controller_gen: 'v0.23.0'
 
@@ -69,7 +73,7 @@ protobuf:
   # renovate: datasource=go depName=google.golang.org/grpc/cmd/protoc-gen-go-grpc depType=protobuf
   protoc_gen_go_grpc: 'v1.6.2'
   # renovate: datasource=pypi depName=grpcio-tools depType=protobuf
-  grpcio_tools: '1.85.0'
+  grpcio_tools: '1.85.1'
   # CRD/Protoc-gen-crd
   # renovate: datasource=github-tags depName=yandex/protoc-gen-crd depType=protobuf
   protoc_gen_crd: 'v1.1.0'
@@ -93,6 +97,9 @@ container_tools:
   ko: 'v0.19.1'
   # renovate: datasource=github-releases depName=sigstore/cosign depType=container_tools
   cosign: 'v3.1.4'
+  # Used by .github/actions/security-scan and scripts/openvex/scan.sh, so both report the same findings.
+  # renovate: datasource=github-releases depName=anchore/grype depType=container_tools
+  grype: 'v0.118.0'
 
 # Testing & E2E Tools
 testing_tools:
@@ -114,7 +121,7 @@ testing_tools:
 # Cluster Dependencies
 cluster:
   # renovate: datasource=helm depName=kube-prometheus-stack depType=cluster
-  prometheus_operator: '92.14.0'
+  prometheus_operator: '92.22.0'
   # renovate: datasource=helm depName=gpu-operator depType=cluster
   gpu_operator: 'v26.7.2'
   # renovate: datasource=helm depName=cert-manager depType=cluster

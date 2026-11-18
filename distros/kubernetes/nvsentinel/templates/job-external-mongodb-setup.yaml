@@ -78,7 +78,10 @@ metadata:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 600
+  {{- $deadline := include "nvsentinel.jobActiveDeadlineSeconds" (dict "raw" $setupJob.activeDeadlineSeconds "default" 600 "key" "global.datastore.setupJob.activeDeadlineSeconds") | int }}
+  {{- if $deadline }}
+  activeDeadlineSeconds: {{ $deadline }}
+  {{- end }}
   template:
     spec:
       {{- with .Values.global.imagePullSecrets }}

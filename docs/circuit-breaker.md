@@ -257,6 +257,9 @@ Remember that resetting the breaker does not uncordon anything. It only lets fau
 **Q: My single-node test cluster tripped the breaker on the first fault**
 - Expected at any percentage: one cordoned node is the whole fleet. Disable the breaker on single-node clusters. See [Small clusters](#small-clusters).
 
+**Q: What happens on a cluster with no GPU nodes?**
+- The breaker stays `CLOSED` and fault quarantine keeps running, since there is nothing to cordon. If a node is cordoned while no GPU nodes are counted, the breaker trips, because that means `gpuNodeLabel` does not match the nodes being quarantined.
+
 **Q: Can I disable the circuit breaker?**
 - Yes, set `enabled: false` in your Helm values and upgrade the release. However, this removes an important safety mechanism.
 

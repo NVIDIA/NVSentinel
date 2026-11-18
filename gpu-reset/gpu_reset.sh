@@ -39,6 +39,9 @@
 # NOTES:
 #   - Requires root
 #   - Supports x86_64 and aarch64
+#   - With RESET_RUN_COUNT_FILE and RESET_MAX_RUNS set, the script counts its runs in the file and
+#     writes a failed result to syslog only in run RESET_MAX_RUNS. A run after that exits without a
+#     reset. Without them, every run writes its result.
 
 set -eou pipefail
 
@@ -47,6 +50,8 @@ DRIVER_ROOT="${DRIVER_ROOT:-/}"
 # outside the default PATH.
 DRIVER_BIN_PATH="${DRIVER_BIN_PATH:-}"
 NODE_NAME="${NODE_NAME:-unknown-node}"
+RESET_RUN_COUNT_FILE="${RESET_RUN_COUNT_FILE:-}"
+RESET_MAX_RUNS="${RESET_MAX_RUNS:-}"
 START_TIME=$(date +%s.%N)
 BUG_REPORT_TIMESTAMP="${BUG_REPORT_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
 # With DRIVER_ROOT=/run/nvidia/driver, this writes to that HostPath mount. The report
@@ -56,6 +61,97 @@ BUG_REPORT_DIR="${BUG_REPORT_DIR:-/var/tmp}"
 log() {
   printf "(%s) %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
+
+# The reset Job runs this script again after a failed run. A failed result in syslog makes the node
+# reboot, but a later run can still reset the GPU. So only the last run writes a failed result.
+# RUN stays 0 when the runs are not counted, and every run then writes its result.
+RUN=0
+
+count_run() {
+  local previous=0
+
+  if [ -z "$RESET_RUN_COUNT_FILE" ] || [ -z "$RESET_MAX_RUNS" ]; then
+    return 0
+  fi
+
+  if ! [[ "$RESET_MAX_RUNS" =~ ^[1-9][0-9]*$ ]]; then
+    log "WARN: RESET_MAX_RUNS must be a positive integer, got '${RESET_MAX_RUNS}'. Every run writes its result."
+    return 0
+  fi
+
+  if [ -f "$RESET_RUN_COUNT_FILE" ]; then
+    previous=$(cat "$RESET_RUN_COUNT_FILE" 2>/dev/null || true)
+
+    if ! [[ "$previous" =~ ^[0-9]+$ ]]; then
+      log "WARN: Run count file ${RESET_RUN_COUNT_FILE} holds '${previous}'. Every run writes its result."
+      return 0
+    fi
+  fi
+
+  if ! printf "%s\n" "$((previous + 1))" > "$RESET_RUN_COUNT_FILE"; then
+    log "WARN: Failed to write run count file ${RESET_RUN_COUNT_FILE}. Every run writes its result."
+    return 0
+  fi
+
+  RUN=$((previous + 1))
+}
+
+count_run
+
+if [ "$RUN" -gt 0 ]; then
+  log "INFO: Run ${RUN} of ${RESET_MAX_RUNS}."
+
+  # With restartPolicy OnFailure, the Job fails when the container restart count reaches the backoff
+  # limit, which can be after this run has started. The last run has already written the result.
+  if [ "$RUN" -gt "$RESET_MAX_RUNS" ]; then
+    log "INFO: The reset Job has no runs left. Exiting without a reset."
+    exit 1
+  fi
+fi
+
+TARGET_UUIDS="${NVIDIA_GPU_RESETS:-}"
+RESET_OUTPUT_FILE=$(mktemp)
+HEALTH_CHECK_OUTPUT_FILE=$(mktemp)
+RESULT_WRITTEN=false
+EXIT_STATUS=0
+# SYSLOG_SUCCESS is the outcome of the reset and the health check. It is empty until the summary.
+SYSLOG_SUCCESS=""
+
+# write_result writes the reset result of each target GPU to syslog.
+write_result() {
+  local success="$1"
+  local uuid
+  local original_ifs=$IFS
+
+  IFS=','
+  for uuid in $TARGET_UUIDS; do
+    # Trim leading/trailing whitespace from UUID
+    uuid=$(echo "$uuid" | xargs)
+
+    if [ -z "$uuid" ]; then
+      continue
+    fi
+
+    log "Writing reset result for ${uuid} to syslog (success: ${success})"
+    logger -t nvsentinel-gpu-reset -p daemon.err \
+      "GPU reset executed: ${uuid}, success: ${success}"
+  done
+  IFS=$original_ifs
+
+  RESULT_WRITTEN=true
+}
+
+# The last run must report a failed reset also when it exits early, for example when the nvidia-smi version
+# check fails under set -e. Without the report, the node is not rebooted. An earlier run does not report,
+# because the reset Job runs the script again. After a successful reset, a failure to write the result must
+# not report a failed reset.
+trap 'EXIT_STATUS=$?
+rm -f -- "$RESET_OUTPUT_FILE" "$HEALTH_CHECK_OUTPUT_FILE"
+if [ "$EXIT_STATUS" -ne 0 ] && [ "$RESULT_WRITTEN" = "false" ] && [ "$SYSLOG_SUCCESS" != "true" ] && [ "$RUN" -gt 0 ] &&
+  [ "$RUN" -eq "$RESET_MAX_RUNS" ] && [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ] && [ -n "$TARGET_UUIDS" ]; then
+  log "ERROR: The last run exited with status ${EXIT_STATUS} before it wrote the reset result."
+  write_result false
+fi' EXIT
 
 # chroot looks up the command with PATH after it changes root, so DRIVER_BIN_PATH is resolved
 # inside DRIVER_ROOT.
@@ -139,9 +235,6 @@ nvidia_smi_helper --version
 
 RESET_STATUS=0
 FINAL_EXIT_STATUS=0
-RESET_OUTPUT_FILE=$(mktemp)
-HEALTH_CHECK_OUTPUT_FILE=$(mktemp)
-trap 'rm -f -- "$RESET_OUTPUT_FILE" "$HEALTH_CHECK_OUTPUT_FILE"' EXIT
 
 log "INFO: Starting GPU reset workflow..."
 
@@ -181,7 +274,6 @@ else
   FINAL_EXIT_STATUS=$RESET_STATUS
   log "ERROR: Reset failed. See details below:"
   sed -e '/All done\./d' -e 's/\.$//' "$RESET_OUTPUT_FILE" | grep . || true
-  collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 fi
 
 #------------------------
@@ -202,6 +294,14 @@ else
   log "WARN: Post-reset health check skipped."
 fi
 
+# Set the outcome before anything else can fail, so that the EXIT trap does not report a failed reset after
+# a successful one.
+if [ "$FINAL_EXIT_STATUS" -ne 0 ]; then
+  SYSLOG_SUCCESS="false"
+else
+  SYSLOG_SUCCESS="true"
+fi
+
 #------------------------
 # SUMMARY
 #------------------------
@@ -212,31 +312,22 @@ DURATION=$(printf "%.3f" "$DURATION_RAW")
 
 if [ "$FINAL_EXIT_STATUS" -ne 0 ]; then
   log "FAILED: GPU reset workflow failed in ${DURATION}s."
-  SYSLOG_SUCCESS="false"
 else
   log "SUCCESS: GPU reset workflow completed in ${DURATION}s."
-  SYSLOG_SUCCESS="true"
 fi
 
-if [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ]; then
-  ORIGINAL_IFS=$IFS
-  IFS=','
-  for UUID in $TARGET_UUIDS; do
-    # Trim leading/trailing whitespace from UUID
-    UUID=$(echo "$UUID" | xargs)
-
-    if [ -z "$UUID" ]; then
-      continue
-    fi
-
-    log "Writing reset result for ${UUID} to syslog (success: ${SYSLOG_SUCCESS})"
-    logger -t nvsentinel-gpu-reset -p daemon.err \
-      "GPU reset executed: ${UUID}, success: ${SYSLOG_SUCCESS}"
-
-  done
-  IFS=$ORIGINAL_IFS
+if [ "$SYSLOG_SUCCESS" = "false" ] && [ "$RUN" -gt 0 ] && [ "$RUN" -lt "$RESET_MAX_RUNS" ]; then
+  log "Skipping writing the failed reset result to syslog: the reset Job runs the script again (run ${RUN} of ${RESET_MAX_RUNS})"
+elif [ "${WRITE_SYSLOG_EVENT:-true}" = "true" ]; then
+  write_result "$SYSLOG_SUCCESS"
 else
   log "Skipping writing reset result (success: ${SYSLOG_SUCCESS}) to syslog: WRITE_SYSLOG_EVENT is not true"
+fi
+
+# The bug report upload can take up to 2 minutes. Collect the report after the result is written, so that the
+# deadline of the reset Job cannot stop the last run before it reports a failed reset.
+if [ "$RESET_STATUS" -ne 0 ]; then
+  collect_and_upload_nvidia_bug_report || log "WARN: Continuing after nvidia-bug-report collection failure."
 fi
 
 exit "$FINAL_EXIT_STATUS"

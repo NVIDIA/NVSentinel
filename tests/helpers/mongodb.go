@@ -371,3 +371,259 @@ func CancelledHealthEventFaultRemediated(
 
 	return strings.Contains(stdout, "FAULT_REMEDIATED_TRUE")
 }
+
+// HealthEventDrainMethod reads drainDecision.method for the newest succeeded health event that
+// matches. Test nodes are reused, so an older event can carry the same message.
+// ok is false until that document is visible with a method.
+func HealthEventDrainMethod(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client, nodeName, message string,
+) (string, bool) {
+	t.Helper()
+
+	decision, ok := healthEventDrainDecision(ctx, t, restConfig, client, nodeName, message, "Succeeded")
+	if !ok || decision.method == "" {
+		return "", false
+	}
+
+	return decision.method, true
+}
+
+// HealthEventDrainScope reads the drain scope of the newest AlreadyDrained event that matches.
+// entityType and entityValue are empty when that event recorded a drain of the full node.
+// ok is false until the document is visible. method is empty when the event recorded no method.
+func HealthEventDrainScope(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client, nodeName, message string,
+) (entityType, entityValue, method string, ok bool) {
+	t.Helper()
+
+	decision, ok := healthEventDrainDecision(ctx, t, restConfig, client, nodeName, message, "AlreadyDrained")
+
+	return decision.entityType, decision.entityValue, decision.method, ok
+}
+
+// storedDrainDecision is the drain decision saved in a health event document.
+type storedDrainDecision struct {
+	entityType, entityValue, method string
+}
+
+// healthEventDrainDecision reads the drain decision of the newest event that matches the node, the
+// message, and the pod eviction status. The event document is stored only in the datastore, so the
+// check reads MongoDB or PostgreSQL. ok is false until a matching document with a decision is visible.
+func healthEventDrainDecision(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client,
+	nodeName, message, evictionStatus string,
+) (storedDrainDecision, bool) {
+	t.Helper()
+
+	if podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client); found {
+		return mongoDrainDecision(ctx, t, restConfig, client, podName, nodeName, message, evictionStatus)
+	}
+
+	if podName, found := postgresPrimaryPodName(ctx, t, client); found {
+		return postgresDrainDecision(ctx, t, restConfig, podName, nodeName, message, evictionStatus)
+	}
+
+	t.Logf("No MongoDB or PostgreSQL pod found for drain decision lookup")
+
+	return storedDrainDecision{}, false
+}
+
+// mongoDrainDecision reads the drain decision of the newest matching event from MongoDB.
+func mongoDrainDecision(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client,
+	mongoPod, nodeName, message, evictionStatus string,
+) (storedDrainDecision, bool) {
+	t.Helper()
+
+	js := fmt.Sprintf(`
+		db = db.getSiblingDB("%s");
+		const doc = db.HealthEvents.find({
+			"healthevent.nodename": %q,
+			"healthevent.message": %q,
+			"healtheventstatus.userpodsevictionstatus.status": %q
+		}).sort({ createdAt: -1 }).limit(1).toArray()[0];
+		if (!doc || !doc.healtheventstatus || !doc.healtheventstatus.draindecision) {
+			print("NOT_READY");
+		} else {
+			const decision = doc.healtheventstatus.draindecision;
+			const scope = decision.scope || {};
+			print((scope.entitytype || "") + "\t" + (scope.entityvalue || "") + "\t" + (decision.method || ""));
+		}
+	`, MongoDBDatabase, nodeName, message, evictionStatus)
+
+	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
+
+	return parseDrainDecision(stdout)
+}
+
+// postgresDrainDecision reads the drain decision of the newest matching event from PostgreSQL.
+func postgresDrainDecision(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, podName, nodeName, message, evictionStatus string,
+) (storedDrainDecision, bool) {
+	t.Helper()
+
+	query := fmt.Sprintf(`
+		SELECT CASE
+			WHEN document #> '{healtheventstatus,draindecision}' IS NULL THEN 'NOT_READY'
+			ELSE COALESCE(document #>> '{healtheventstatus,draindecision,scope,entitytype}', '')
+				|| E'\t' || COALESCE(document #>> '{healtheventstatus,draindecision,scope,entityvalue}', '')
+				|| E'\t' || COALESCE(document #>> '{healtheventstatus,draindecision,method}', '')
+			END
+		FROM health_events
+		WHERE node_name = '%s'
+		  AND document #>> '{healthevent,message}' = '%s'
+		  AND document #>> '{healtheventstatus,userpodsevictionstatus,status}' = '%s'
+		ORDER BY created_at DESC
+		LIMIT 1;
+	`, sqlLiteral(nodeName), sqlLiteral(message), sqlLiteral(evictionStatus))
+
+	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
+		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
+	if err != nil {
+		t.Logf("PostgreSQL drain decision lookup failed: %v stderr=%s", err, stderr)
+
+		return storedDrainDecision{}, false
+	}
+
+	return parseDrainDecision(stdout)
+}
+
+// parseDrainDecision splits the entity type, entity value, and method returned by a decision lookup.
+func parseDrainDecision(stdout string) (storedDrainDecision, bool) {
+	// Keep tabs. A full-node decision with no method is three empty fields separated by tabs,
+	// and TrimSpace would delete that line.
+	text := strings.Trim(stdout, "\r\n ")
+	if text == "" || strings.Contains(text, "NOT_READY") {
+		return storedDrainDecision{}, false
+	}
+
+	parts := strings.Split(text, "\t")
+	if len(parts) != 3 {
+		return storedDrainDecision{}, false
+	}
+
+	return storedDrainDecision{entityType: parts[0], entityValue: parts[1], method: parts[2]}, true
+}
+
+// HealthEventQuarantineStatus reads healtheventstatus.nodequarantined of the node's newest health
+// event with the given message, from MongoDB or PostgreSQL. ok is false until it has a status.
+func HealthEventQuarantineStatus(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client, nodeName, message string,
+) (string, bool) {
+	t.Helper()
+
+	if podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client); found {
+		js := fmt.Sprintf(`
+			db = db.getSiblingDB("%s");
+			const doc = db.HealthEvents.find({
+				"healthevent.nodename": %q,
+				"healthevent.message": %q
+			}).sort({ createdAt: -1 }).limit(1).toArray()[0];
+			if (doc && doc.healtheventstatus && doc.healtheventstatus.nodequarantined) {
+				print("NODE_QUARANTINED=" + doc.healtheventstatus.nodequarantined);
+			} else {
+				print("NOT_READY");
+			}
+		`, MongoDBDatabase, nodeName, message)
+
+		stdout, _ := ExecMongosh(ctx, t, restConfig, client, podName, js)
+
+		for _, line := range strings.Split(stdout, "\n") {
+			if status, found := strings.CutPrefix(strings.TrimSpace(line), "NODE_QUARANTINED="); found {
+				return status, true
+			}
+		}
+
+		return "", false
+	}
+
+	podName, found := postgresPrimaryPodName(ctx, t, client)
+	if !found {
+		t.Logf("No MongoDB or PostgreSQL pod found for quarantine status lookup")
+
+		return "", false
+	}
+
+	query := fmt.Sprintf(`
+		SELECT COALESCE(document #>> '{healtheventstatus,nodequarantined}', '')
+		FROM health_events
+		WHERE node_name = '%s'
+		  AND document #>> '{healthevent,message}' = '%s'
+		ORDER BY created_at DESC
+		LIMIT 1;
+	`, sqlLiteral(nodeName), sqlLiteral(message))
+
+	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
+		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
+	if err != nil {
+		t.Logf("PostgreSQL quarantine status lookup failed: %v stderr=%s", err, stderr)
+
+		return "", false
+	}
+
+	status := strings.TrimSpace(stdout)
+
+	return status, status != ""
+}
+
+// postgresPrimaryPodName returns the running PostgreSQL primary pod in the NVSentinel namespace.
+// found is false when the cluster uses MongoDB instead.
+func postgresPrimaryPodName(ctx context.Context, t *testing.T, client klient.Client) (string, bool) {
+	t.Helper()
+
+	pods := &v1.PodList{}
+	err := client.Resources().List(ctx, pods, func(opts *metav1.ListOptions) {
+		opts.LabelSelector = "app.kubernetes.io/name=postgresql,app.kubernetes.io/component=primary"
+	})
+	require.NoError(t, err, "failed to list PostgreSQL pods")
+
+	for _, pod := range pods.Items {
+		if pod.Namespace == NVSentinelNamespace && pod.Status.Phase == v1.PodRunning {
+			return pod.Name, true
+		}
+	}
+
+	return "", false
+}
+
+// sqlLiteral escapes single quotes so the value can sit inside a quoted SQL string.
+func sqlLiteral(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}
+
+// LatestHealthEventRemediationAction returns the action of the remediation decision recorded
+// on the latest HealthEvent for the node with the message, or "" when none is recorded yet.
+func LatestHealthEventRemediationAction(
+	ctx context.Context,
+	t *testing.T,
+	restConfig *rest.Config,
+	client klient.Client,
+	mongoPod, nodeName, message string,
+) string {
+	t.Helper()
+
+	js := fmt.Sprintf(`
+		db = db.getSiblingDB("%s");
+		const docs = db.HealthEvents.find({
+			"healthevent.nodename": %q,
+			"healthevent.message": %q
+		}).sort({ createdAt: -1 }).limit(1).toArray();
+		const decision = docs.length > 0 && docs[0].healtheventstatus &&
+			docs[0].healtheventstatus.remediationdecision;
+		if (decision && decision.action) {
+			print("REMEDIATION_ACTION=" + decision.action);
+		} else {
+			print("NOT_READY");
+		}
+	`, MongoDBDatabase, nodeName, message)
+
+	stdout, _ := ExecMongosh(ctx, t, restConfig, client, mongoPod, js)
+
+	for _, line := range strings.Split(stdout, "\n") {
+		if action, found := strings.CutPrefix(strings.TrimSpace(line), "REMEDIATION_ACTION="); found {
+			return action
+		}
+	}
+
+	return ""
+}

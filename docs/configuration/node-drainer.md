@@ -83,7 +83,9 @@ node-drainer:
   partialDrainEnabled: true
 ```
 
-Post-remediation validation in fault-quarantine needs to know whether an event was drained partially. `fault-quarantine.validation.partialDrainEnabled` defaults to `false`, the same as this setting. If you enable partial drain here, enable it there too so a partial drain never counts as a full drain, or set `global.partialDrainEnabled`, which overrides both subchart values:
+Post-remediation validation in fault-quarantine needs to know whether an event was drained partially. `fault-quarantine.validation.partialDrainEnabled` defaults to `false`, the same as this setting. If you enable partial drain here, enable it there too so a partial drain never counts as a full drain, or set `global.partialDrainEnabled`, which overrides both subchart values.
+
+For an event that has a recorded drain decision, the already-drained check reads that record. `fault-quarantine.validation.partialDrainEnabled` then applies only to an event that has no record:
 
 ```yaml
 global:
@@ -100,6 +102,20 @@ node-drainer:
 ```
 
 Off by default because `entity_value` holds a GPU UUID, which adds one time series per GPU in the fleet. The `drain_scope` label on `node_drainer_events_processed_total` already separates partial drains from full ones without that cardinality. Enable this only when you need per-GPU attribution and your Prometheus can carry the extra series.
+
+### AllowCompletion Drain Metric
+
+`node_drainer_awaiting_completion_event_timestamp_seconds{node}` holds the creation time of the health event behind an `allowCompletion` drain that is still waiting on pods, giving the one mode with no deadline a way to say "waiting too long": alert on `time() -` this value exceeding the longest run the drained namespaces should take.
+
+```promql
+time() - node_drainer_awaiting_completion_event_timestamp_seconds > 7200
+```
+
+The value is the event's creation time, not the moment the drain began: it is the same instant the `DeleteAfterTimeout` deadline measures from, and it can predate the drain itself. A fault quarantined, halted, then re-quarantined hours later reads as hours of waiting on the first poll — set thresholds with that in mind.
+
+Several events can be queued for one node while it drains, and each one's poll re-asserts its own event's time. The series keeps the earliest of them, so a newer event cannot hide an older wait.
+
+**Absence is not proof that nothing is waiting.** The series is removed when the node stops draining and when completion is observed, and it is never published for an event that carries no creation time. A cancellation of one of several events queued for the same node removes the series while another event still waits; that event's next poll restores its own event's time, so the gap does not restart its clock — normally within one requeue interval (exponential from `requeueBackoffBase`, capped at two minutes), though queue delays or repeated failures can extend the gap. Treat a short gap as normal; pair with the node's drain state for a definitive answer. A node drained in part rather than in whole shares this series, since it is keyed by node alone.
 
 ### Eviction Timeout
 
@@ -249,10 +265,43 @@ well: the unmatched nodes would reach the built-in eviction path with no namespa
 act on, and be marked drained while their pods keep running. An invalid selector is also rejected at
 startup.
 
-The drain path is chosen per health event from the node's labels as the informer cache holds them,
-so relabelling a node changes the path taken by subsequent events. A node the cache cannot resolve
-is retried rather than assigned a path. Only the label keys the selector references are retained in
-the node cache.
+node-drainer chooses the drain method once for each health event and records it on the event. For
+a partial drain, the record also holds the entity that is drained, for example a GPU UUID. Later
+passes drain the recorded entity, so a change to `partialDrainEnabled` during the drain does not
+change what is drained. The already-drained check reads that recorded scope for each earlier event.
+A record with no scope is a full drain. An event with no record still uses `partialDrainEnabled`.
+node-drainer stores the record before it reads, evicts or deletes a pod, and before it creates a
+custom drain CR.
+Every drain action then follows the stored record. If two node-drainer passes choose at the same
+time, only the first record is kept, and the other pass follows it. A label change during the drain
+does not change the method. node-drainer chooses the method of a new event from the labels at the
+time that event starts. A drain that is already in progress when node-drainer is upgraded has no
+record. The first pass after the upgrade chooses the method again and records it.
+
+If the method is `Custom` and the CR of another event has already drained the node, node-drainer
+marks the event drained and records only the scope. It records no method, because this event did not
+drain the node. An event that node-drainer marks `AlreadyDrained` because an earlier drain covered it
+records that scope in the same update as the status, when the event has no decision yet. A full drain
+records a decision with no scope and no method. An event that already has a decision keeps it. If
+the CR of the event itself completed before a method was recorded, as for a drain that started
+before node-drainer recorded decisions, node-drainer records `Custom`, then marks the event drained.
+
+A node the cache cannot resolve is retried rather than assigned a path. Only the label keys the
+selector references are retained in the node cache.
+
+node-drainer keeps a recorded method when the current configuration cannot carry it out. It logs
+an error, increments `node_drainer_processing_errors_total`, and retries:
+
+- The record says `Custom` and custom drain is now off. Turn custom drain back on, or end the
+  quarantine and delete the DrainRequest CR of the event. With custom drain off, node-drainer does
+  not delete that CR, so the plugin can keep draining the node. The CR is named
+  `drain-<node name>-<event ID>` and is in the custom drain namespace.
+- The record says `BuiltIn`, custom drain is on with no `nodeSelector`, and both `userNamespaces`
+  and `podDrainPolicies` are empty. Set the `nodeSelector` and one of those lists again, or end the
+  quarantine. Empty lists would mark the node drained while its pods keep running. With custom drain
+  off, empty lists act as they do for an event with no record.
+- The record has no method, or a method other than `BuiltIn` or `Custom`. A stop (`stopped: true`)
+  is one example of a record with no method. node-drainer does not choose a method in its place.
 
 ## User Namespaces
 

@@ -37,7 +37,7 @@ func (anyEval *AnyRuleSetEvaluator) Evaluate(
 	var errs *multierror.Error
 
 	for _, evaluator := range anyEval.evaluators {
-		ruleEvaluatedResult, err := evaluator.Evaluate(ctx, healthEvent)
+		ruleEvaluatedResult, err := evaluateRule(ctx, evaluator, healthEvent)
 		if ruleEvaluatedResult == common.RuleEvaluationSuccess {
 			return common.RuleEvaluationSuccess, nil
 		}

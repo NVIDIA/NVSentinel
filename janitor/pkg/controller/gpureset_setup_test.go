@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
+	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
 )
 
 // TestGPUResetReconcilerSetupWithManager_ControllerState_ValidatesRequiredConfiguration verifies that disabled
@@ -57,6 +58,46 @@ func TestGPUResetReconcilerSetupWithManager_ControllerState_ValidatesRequiredCon
 			}
 
 			require.ErrorContains(t, err, tt.expectedErr)
+		})
+	}
+}
+
+// TestGPUResetReconcilerSetupWithManager_ServiceManager_AddsGPUClients verifies that setup always adds the GPU
+// clients app to the configured service manager, also when no service manager is configured.
+func TestGPUResetReconcilerSetupWithManager_ServiceManager_AddsGPUClients(t *testing.T) {
+	tests := []struct {
+		name         string
+		managerName  string
+		expectedApps int
+	}{
+		{
+			name:         "gpu-operator service manager",
+			managerName:  "gpu-operator",
+			expectedApps: len(gpuservices.Registry["gpu-operator"].Apps) + 1,
+		},
+		{
+			name:         "no service manager",
+			managerName:  "",
+			expectedApps: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &GPUResetReconciler{
+				Config: &config.GPUResetControllerConfig{
+					Enabled:        true,
+					ServiceManager: gpuservices.Manager{Name: tt.managerName},
+				},
+			}
+
+			// Setup stops at the missing job template, after it builds the service manager.
+			err := reconciler.SetupWithManager(nil)
+			require.ErrorContains(t, err, "failed to get valid reset job template")
+
+			apps := reconciler.serviceManager.Spec.Apps
+			require.Len(t, apps, tt.expectedApps)
+			require.True(t, apps[len(apps)-1].IsGPUClients())
 		})
 	}
 }

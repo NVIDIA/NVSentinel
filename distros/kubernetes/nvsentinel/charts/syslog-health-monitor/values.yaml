@@ -49,8 +49,20 @@ priorityClassName: ""
 
 tolerations: []
 
-# Customize this if your journal is stored in a non-standard location
+# Customize this if your journal is stored in a non-standard location.
+# This is the directory that contains the journal/ directory, not the journal
+# directory itself: it is mounted at /nvsentinel/var/log and the monitor reads
+# /nvsentinel/var/log/journal/.
 journalHostPath: /var/log
+
+# The journal directory itself (e.g. /var/log/journal). When set, only this
+# directory is mounted, directly where the monitor reads it, and
+# journalHostPath is ignored. Use it where the parent directory cannot be
+# mounted as-is, e.g. under a vcluster syncer, which rewrites a hostPath of
+# exactly /var/log to a per-tenant directory. The directory must exist on every
+# node (the volume is type Directory), so only set this where the journal is
+# persistent. Regular mode only; kata mode always mounts /var/log/journal.
+journalDirectoryHostPath: ""
 
 # How far back to scan the journal after a reboot (e.g. 30m, 1h).
 # Entries older than this window are skipped to avoid re-processing
