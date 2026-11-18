@@ -50,22 +50,29 @@ var (
 // The caller checks unknown keys with CheckUndecoded before Validate, because
 // the decoder has already dropped them.
 //
+// check holds the component checks that need more than the outcome: the whole
+// rule set, or the component configuration. For example, node-drainer rejects
+// a HealthEvent rule in a stop rule set, and fault-remediation rejects an
+// action that is not in maintenance.actions. check runs only for a rule set
+// that has an outcome, so it can read the outcome without a nil check. Pass
+// nil when the component has no such checks.
+//
 // Every rule set is checked, including one with enabled set to false, so a
 // broken rule set fails at startup rather than when an operator enables it.
 // The returned error contains each problem. errors.Is matches the sentinels.
-func Validate[T Entry](ruleSets []T, outcomeKey string) error {
+func Validate[T Entry](ruleSets []T, outcomeKey string, check func(T) error) error {
 	var errs []error
 
 	seen := make(map[string]int, len(ruleSets))
 
 	for i, ruleSet := range ruleSets {
-		errs = append(errs, validateEntry(i, ruleSet, outcomeKey, seen)...)
+		errs = append(errs, validateEntry(i, ruleSet, outcomeKey, check, seen)...)
 	}
 
 	return errors.Join(errs...)
 }
 
-func validateEntry[T Entry](index int, entry T, outcomeKey string, seen map[string]int) []error {
+func validateEntry[T Entry](index int, entry T, outcomeKey string, check func(T) error, seen map[string]int) []error {
 	common := entry.Common()
 	prefix := ruleSetPrefix(index, common.Name)
 
@@ -83,17 +90,7 @@ func validateEntry[T Entry](index int, entry T, outcomeKey string, seen map[stri
 	}
 
 	errs = append(errs, validateMatch(prefix, common.Match)...)
-
-	outcome, ok := entry.Outcome()
-	if !ok || outcome == nil {
-		errs = append(errs, fmt.Errorf("%s: %w %q", prefix, ErrMissingOutcome, outcomeKey))
-
-		return errs
-	}
-
-	if err := outcome.Validate(); err != nil {
-		errs = append(errs, fmt.Errorf("%s: %w", prefix, err))
-	}
+	errs = append(errs, validateOutcome(prefix, entry, outcomeKey, check)...)
 
 	return errs
 }
@@ -166,6 +163,29 @@ func kindVariable(kind string) (string, error) {
 	default:
 		return "", ErrRuleKind
 	}
+}
+
+func validateOutcome[T Entry](prefix string, entry T, outcomeKey string, check func(T) error) []error {
+	outcome, ok := entry.Outcome()
+	if !ok || outcome == nil {
+		return []error{fmt.Errorf("%s: %w %q", prefix, ErrMissingOutcome, outcomeKey)}
+	}
+
+	var errs []error
+
+	if err := outcome.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", prefix, err))
+	}
+
+	if check == nil {
+		return errs
+	}
+
+	if err := check(entry); err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", prefix, err))
+	}
+
+	return errs
 }
 
 func ruleSetPrefix(index int, name string) string {

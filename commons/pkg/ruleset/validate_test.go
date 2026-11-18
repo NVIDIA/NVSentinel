@@ -15,6 +15,9 @@
 package ruleset_test
 
 import (
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,6 +25,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/ruleset"
+)
+
+var (
+	errStopWithEventRule = errors.New("stop rule set must use only Node rules")
+	errUnknownAction     = errors.New("action is not in maintenance.actions")
 )
 
 func TestValidate(t *testing.T) {
@@ -298,7 +306,7 @@ expression = "true"
 			t.Parallel()
 
 			sets, _ := decode(t, tt.doc)
-			err := ruleset.Validate(sets, "remediation")
+			err := ruleset.Validate(sets, "remediation", nil)
 
 			if tt.want == nil {
 				require.NoError(t, err)
@@ -332,7 +340,7 @@ expression = 'event.componentClass == "GPU"'
 action = "REPLACE_VM"
 `)
 
-	require.NoError(t, ruleset.Validate(sets, "remediation"))
+	require.NoError(t, ruleset.Validate(sets, "remediation", nil))
 	require.Len(t, sets, 1)
 	require.True(t, sets[0].IsEnabled())
 	require.Nil(t, sets[0].Enabled)
@@ -350,10 +358,10 @@ func TestValidate_NameLength(t *testing.T) {
 	tooLong := strings.Repeat("a", validation.DNS1123LabelMaxLength+1)
 
 	accepted, _ := decode(t, ruleSetNamed(maxName))
-	require.NoError(t, ruleset.Validate(accepted, "remediation"))
+	require.NoError(t, ruleset.Validate(accepted, "remediation", nil))
 
 	rejected, _ := decode(t, ruleSetNamed(tooLong))
-	err := ruleset.Validate(rejected, "remediation")
+	err := ruleset.Validate(rejected, "remediation", nil)
 	require.ErrorIs(t, err, ruleset.ErrInvalidName)
 	require.ErrorContains(t, err, tooLong)
 }
@@ -376,7 +384,7 @@ stop = true
 
 	require.False(t, sets[0].IsEnabled())
 
-	err := ruleset.Validate(sets, "remediation")
+	err := ruleset.Validate(sets, "remediation", nil)
 	require.ErrorIs(t, err, ruleset.ErrRuleExpression)
 }
 
@@ -399,7 +407,7 @@ expression = "1 + 1"
 stop = true
 `)
 
-	err := ruleset.Validate(sets, "remediation")
+	err := ruleset.Validate(sets, "remediation", nil)
 	require.ErrorIs(t, err, ruleset.ErrRuleKind)
 	require.ErrorIs(t, err, ruleset.ErrRuleExpression)
 	require.ErrorContains(t, err, "match.all[0]")
@@ -418,7 +426,7 @@ stop = true
 action = "REBOOT"
 `)
 
-	err := ruleset.Validate(sets, "remediation")
+	err := ruleset.Validate(sets, "remediation", nil)
 	require.ErrorIs(t, err, ruleset.ErrInvalidName)
 	require.ErrorIs(t, err, ruleset.ErrMatch)
 	require.ErrorIs(t, err, errExactlyOne)
@@ -427,8 +435,139 @@ action = "REBOOT"
 func TestValidate_EmptyList_ReturnsNil(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, ruleset.Validate([]testRuleSet(nil), "remediation"))
-	require.NoError(t, ruleset.Validate([]testRuleSet{}, "remediation"))
+	require.NoError(t, ruleset.Validate([]testRuleSet(nil), "remediation", nil))
+	require.NoError(t, ruleset.Validate([]testRuleSet{}, "remediation", nil))
+}
+
+func TestValidate_Check_SeesWholeRuleSet(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		kind string
+		want error
+	}{
+		{name: "StopWithNodeRule_Accepted", kind: ruleset.KindNode},
+		{name: "StopWithHealthEventRule_Rejected", kind: ruleset.KindHealthEvent, want: errStopWithEventRule},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			sets, _ := decode(t, `
+[[ruleSets]]
+name = "hold"
+
+[[ruleSets.match.all]]
+kind = "`+tt.kind+`"
+expression = "true"
+
+[ruleSets.remediation]
+stop = true
+`)
+
+			err := ruleset.Validate(sets, "remediation", stopUsesOnlyNodeRules)
+			if tt.want == nil {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorIs(t, err, tt.want)
+			require.ErrorContains(t, err, `ruleSets[0] "hold"`)
+		})
+	}
+}
+
+func TestValidate_Check_ReadsComponentConfig(t *testing.T) {
+	t.Parallel()
+
+	sets, _ := decode(t, `
+[[ruleSets]]
+name = "known"
+
+[[ruleSets.match.all]]
+kind = "Node"
+expression = "true"
+
+[ruleSets.remediation]
+action = "REBOOT"
+
+[[ruleSets]]
+name = "unknown"
+
+[[ruleSets.match.all]]
+kind = "Node"
+expression = "true"
+
+[ruleSets.remediation]
+action = "REPLACE_VM"
+
+[[ruleSets]]
+name = "stopped"
+
+[[ruleSets.match.all]]
+kind = "Node"
+expression = "true"
+
+[ruleSets.remediation]
+stop = true
+`)
+
+	err := ruleset.Validate(sets, "remediation", actionIn(map[string]struct{}{"REBOOT": {}}))
+	require.ErrorIs(t, err, errUnknownAction)
+	require.ErrorContains(t, err, `ruleSets[1] "unknown"`)
+	require.ErrorContains(t, err, `"REPLACE_VM"`)
+	require.NotContains(t, err.Error(), `"known"`)
+	require.NotContains(t, err.Error(), `"stopped"`)
+}
+
+func TestValidate_Check_RunsOnlyForRuleSetsWithOutcome(t *testing.T) {
+	t.Parallel()
+
+	sets, _ := decode(t, ruleSetNamed("on")+`
+[[ruleSets]]
+name = "off"
+enabled = false
+
+[[ruleSets.match.all]]
+kind = "Node"
+expression = "true"
+
+[ruleSets.remediation]
+stop = true
+
+[[ruleSets]]
+name = "both-fields"
+
+[[ruleSets.match.all]]
+kind = "Node"
+expression = "true"
+
+[ruleSets.remediation]
+stop = true
+action = "REBOOT"
+
+[[ruleSets]]
+name = "no-outcome"
+
+[[ruleSets.match.all]]
+kind = "Node"
+expression = "true"
+`)
+
+	var checked []string
+
+	err := ruleset.Validate(sets, "remediation", func(rs testRuleSet) error {
+		checked = append(checked, rs.Name)
+
+		return nil
+	})
+
+	require.ErrorIs(t, err, ruleset.ErrMissingOutcome)
+	require.ErrorIs(t, err, errExactlyOne)
+	require.Equal(t, []string{"on", "off", "both-fields"}, checked)
 }
 
 func ruleSetNamed(name string) string {
@@ -443,4 +582,32 @@ expression = "true"
 [ruleSets.remediation]
 stop = true
 `
+}
+
+func stopUsesOnlyNodeRules(rs testRuleSet) error {
+	if !rs.Remediation.Stopped() {
+		return nil
+	}
+
+	for _, rule := range slices.Concat(rs.Match.All, rs.Match.Any) {
+		if rule.Kind != ruleset.KindNode {
+			return errStopWithEventRule
+		}
+	}
+
+	return nil
+}
+
+func actionIn(actions map[string]struct{}) func(testRuleSet) error {
+	return func(rs testRuleSet) error {
+		if rs.Remediation.Stopped() {
+			return nil
+		}
+
+		if _, ok := actions[rs.Remediation.Action]; !ok {
+			return fmt.Errorf("%w: %q", errUnknownAction, rs.Remediation.Action)
+		}
+
+		return nil
+	}
 }

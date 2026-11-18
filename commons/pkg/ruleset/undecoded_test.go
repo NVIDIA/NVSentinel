@@ -45,7 +45,7 @@ stop = true
 	require.NotContains(t, err.Error(), "ruleSets.drain.stop")
 	require.ErrorContains(t, err, "remediation")
 
-	err = ruleset.Validate(sets, "remediation")
+	err = ruleset.Validate(sets, "remediation", nil)
 	require.ErrorIs(t, err, ruleset.ErrMissingOutcome)
 	require.ErrorContains(t, err, "remediation")
 }
@@ -72,7 +72,7 @@ acton = "REBOOT"
 	require.ErrorContains(t, err, "ruleSets.priorty")
 	require.ErrorContains(t, err, "ruleSets.remediation.acton")
 
-	require.NoError(t, ruleset.Validate(sets, "remediation"))
+	require.NoError(t, ruleset.Validate(sets, "remediation", nil))
 	require.Equal(t, 0, sets[0].Priority)
 	require.True(t, sets[0].Remediation.Stopped())
 	require.Empty(t, sets[0].Remediation.Action)

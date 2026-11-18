@@ -65,9 +65,10 @@ type Stop struct {
 
 // Outcome is the component-specific result of a rule set.
 //
-// Stopped reports whether the outcome stops the stage. Validate checks the
-// fields the component owns. For example, a remediation outcome rejects a
-// value that sets both stop and action. The shared checks live in Validate.
+// Stopped reports whether the outcome stops the stage. Validate checks only
+// the outcome fields. For example, a remediation outcome rejects a value that
+// sets both stop and action. A check that also reads the match or the
+// component configuration goes in the check function of the package Validate.
 type Outcome interface {
 	Stopped() bool
 	Validate() error
