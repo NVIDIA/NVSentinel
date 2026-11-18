@@ -509,6 +509,16 @@ func (l *Labeler) registerNodeEventHandlers() error {
 				slog.Error("Failed to handle node update event", "error", err)
 			}
 		},
+		DeleteFunc: func(obj any) {
+			// A deleted node no longer counts toward its partition's expected count.
+			nodeName, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+			if err != nil {
+				slog.Warn("Skipping node delete event with unexpected object", "error", err)
+				return
+			}
+
+			l.deviceCounts.ForgetNode(nodeName)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to add node event handler: %w", err)
@@ -873,15 +883,11 @@ func (l *Labeler) reconcileNodeLabels(
 }
 
 func (l *Labeler) newDeviceCountReconcileCache() *devicecounts.ReconcileCache {
-	var peerNodes []*v1.Node
-	if l.deviceCounts.Enabled() {
-		peerNodes = l.deviceCountCachedNodes()
-	}
-
 	// Event-driven reconciliations get a fresh cache so observations cannot
-	// outlive the informer state that triggered the event.
-	return l.deviceCounts.NewReconcileCache(
-		peerNodes,
+	// outlive the informer state that triggered the event. The fleet is listed
+	// only if a partition has to be learned by a peer walk.
+	return l.deviceCounts.NewLazyReconcileCache(
+		l.deviceCountCachedNodes,
 		l.loadResourceSlicesForNode,
 	)
 }

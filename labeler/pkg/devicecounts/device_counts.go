@@ -89,6 +89,10 @@ type ExpectedCountOverride struct {
 type Manager struct {
 	classes          []compiledClass
 	managedLabelKeys map[string]struct{}
+
+	// maxima keeps each partition's learned expected count between
+	// reconciliations, so a node event does not walk every peer again.
+	maxima *partitionMaxima
 }
 
 type compiledClass struct {
@@ -120,6 +124,11 @@ type ReconcileCache struct {
 	// peerNodes is the cache-scoped node snapshot used to learn the maximum
 	// expected count for each class and hardware partition.
 	peerNodes []*corev1.Node
+
+	// listPeerNodes, when set, supplies peerNodes the first time a partition
+	// must be learned. A node event usually finds its partition already learned,
+	// so it does not list the fleet at all.
+	listPeerNodes func() []*corev1.Node
 
 	// loadResourceSlicesForNode performs the indexed informer lookup when a node is
 	// first observed by this cache.
@@ -213,6 +222,7 @@ func NewManager(config Config) (*Manager, error) {
 
 	manager := &Manager{
 		managedLabelKeys: map[string]struct{}{},
+		maxima:           newPartitionMaxima(),
 	}
 
 	for i, classConfig := range config.Classes {
@@ -260,6 +270,18 @@ func (m *Manager) ClassCount() int {
 	return len(m.classes)
 }
 
+// ForgetNode drops a deleted node's contribution to the expected counts it
+// helped learn.
+func (m *Manager) ForgetNode(nodeName string) {
+	if !m.Enabled() {
+		return
+	}
+
+	for classIndex := range m.classes {
+		m.maxima.forget(classIndex, nodeName)
+	}
+}
+
 // CalculateAndSetDeviceCountLabels evaluates all enabled classes and writes
 // their current and expected device-count labels onto node.
 func (m *Manager) CalculateAndSetDeviceCountLabels(
@@ -287,6 +309,18 @@ func (m *Manager) NewReconcileCache(
 	}
 }
 
+// NewLazyReconcileCache creates a scoped cache that lists the peer nodes only if
+// a partition has to be learned by a peer walk.
+func (m *Manager) NewLazyReconcileCache(
+	listPeerNodes func() []*corev1.Node,
+	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
+) *ReconcileCache {
+	cache := m.NewReconcileCache(nil, loadResourceSlicesForNode)
+	cache.listPeerNodes = listPeerNodes
+
+	return cache
+}
+
 // CalculateAndSetDeviceCountLabels evaluates all enabled classes using cached
 // peer observations and writes their labels onto node.
 func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, node *corev1.Node) bool {
@@ -305,26 +339,13 @@ func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, n
 		observation := p.manager.observe(ctx, class, node, resourceSlices)
 		recordDeviceCountSource(class, node.Name, observation)
 
-		// Do not turn a missing source into current=0. The labels keep their
-		// last values until a source is available again.
-		if observation.missingSource {
-			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
-			slog.Warn("Skipping device count label update because no device count source is available on the node",
-				"node", node.Name, "class", class.Name)
-
-			continue
-		}
-
-		if observation.err != nil {
-			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
-			slog.Warn("Skipping device count label update after current count evaluation failed",
-				"node", node.Name, "class", class.Name, "error", observation.err)
-
+		if p.manager.skipUncountedNode(classIndex, class, node, observation) {
 			continue
 		}
 
 		current := observation.count
 		expected := p.expectedDeviceCount(ctx, classIndex, class, node, observation)
+		p.manager.recordContribution(classIndex, node.Name, observation, max(expected, current))
 		currentValue := strconv.Itoa(current)
 		expectedValue := strconv.Itoa(expected)
 
@@ -829,9 +850,10 @@ func (p *ReconcileCache) expectedDeviceCount(
 	return expected
 }
 
-// expectedDeviceCountForPartition computes a class/partition maximum once and caches it.
-// Without this cache, each target in a partition of P peers would repeat the
-// same P peer evaluations.
+// expectedDeviceCountForPartition returns a class/partition maximum. A partition
+// is learned by walking its peers once; after that the manager keeps the maximum
+// up to date from each reconciled node, so later reconciliations do not walk
+// the peers again.
 func (p *ReconcileCache) expectedDeviceCountForPartition(
 	ctx context.Context,
 	classIndex int,
@@ -844,12 +866,38 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 		return expected
 	}
 
+	if expected, ok := p.manager.maxima.expected(key); ok {
+		p.partitionExpected[key] = expected
+		return expected
+	}
+
+	expected := p.learnPartition(ctx, classIndex, class, node, observation)
+	p.partitionExpected[key] = expected
+
+	return expected
+}
+
+// learnPartition walks every peer in the node's partition, stores what each
+// contributes in the manager, and returns the partition's expected count.
+func (p *ReconcileCache) learnPartition(
+	ctx context.Context,
+	classIndex int,
+	class compiledClass,
+	node *corev1.Node,
+	observation countObservation,
+) int {
 	groupingLabels := class.GroupingLabels
 	if observation.source != nil {
 		groupingLabels = observation.source.GroupingLabels
 	}
 
+	if p.listPeerNodes != nil {
+		p.peerNodes = p.listPeerNodes()
+		p.listPeerNodes = nil
+	}
+
 	expected := 0
+	peers := make(map[string]int)
 
 	for _, peer := range p.peerNodes {
 		// Peers with different grouping-label values cannot share the
@@ -863,17 +911,62 @@ func (p *ReconcileCache) expectedDeviceCountForPartition(
 			continue
 		}
 
-		expected = maxCountLabel(expected, peer.Labels[class.Labels.Expected])
+		peerExpected := maxCountLabel(0, peer.Labels[class.Labels.Expected])
 
 		peerCurrent, ok := usablePeerCount(class, node.Name, peer.Name, peerObservation)
-		if ok && peerCurrent > expected {
-			expected = peerCurrent
+		if ok && peerCurrent > peerExpected {
+			peerExpected = peerCurrent
 		}
+
+		peers[peer.Name] = peerExpected
+		expected = max(expected, peerExpected)
 	}
 
-	p.partitionExpected[key] = expected
+	p.manager.maxima.learn(partitionExpectedKey{classIndex: classIndex, partitionKey: observation.partitionKey}, peers)
 
 	return expected
+}
+
+// skipUncountedNode reports whether a node has no count for a class. Do not turn
+// a missing source into current=0: the labels keep their last values until a
+// source is available again, and the node still contributes the expected count
+// it already carries, as it would to a peer walk.
+func (m *Manager) skipUncountedNode(
+	classIndex int,
+	class compiledClass,
+	node *corev1.Node,
+	observation countObservation,
+) bool {
+	if !observation.missingSource && observation.err == nil {
+		return false
+	}
+
+	m.recordContribution(classIndex, node.Name, observation, maxCountLabel(0, node.Labels[class.Labels.Expected]))
+
+	if observation.missingSource {
+		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
+		slog.Warn("Skipping device count label update because no device count source is available on the node",
+			"node", node.Name, "class", class.Name)
+
+		return true
+	}
+
+	metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
+	slog.Warn("Skipping device count label update after current count evaluation failed",
+		"node", node.Name, "class", class.Name, "error", observation.err)
+
+	return true
+}
+
+// recordContribution records what node contributes to its partition's expected
+// count, or drops its contribution when it no longer has a partition.
+func (m *Manager) recordContribution(classIndex int, nodeName string, observation countObservation, value int) {
+	if !observation.hasPartition {
+		m.maxima.forget(classIndex, nodeName)
+		return
+	}
+
+	m.maxima.record(partitionExpectedKey{classIndex: classIndex, partitionKey: observation.partitionKey}, nodeName, value)
 }
 
 func groupingLabelsMatch(groupingLabels []string, node, peer *corev1.Node) bool {
