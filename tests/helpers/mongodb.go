@@ -505,6 +505,67 @@ func parseDrainDecision(stdout string) (storedDrainDecision, bool) {
 	return storedDrainDecision{entityType: parts[0], entityValue: parts[1], method: parts[2]}, true
 }
 
+// HealthEventQuarantineStatus reads healtheventstatus.nodequarantined of the node's newest health
+// event with the given message, from MongoDB or PostgreSQL. ok is false until it has a status.
+func HealthEventQuarantineStatus(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client, nodeName, message string,
+) (string, bool) {
+	t.Helper()
+
+	if podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client); found {
+		js := fmt.Sprintf(`
+			db = db.getSiblingDB("%s");
+			const doc = db.HealthEvents.find({
+				"healthevent.nodename": %q,
+				"healthevent.message": %q
+			}).sort({ createdAt: -1 }).limit(1).toArray()[0];
+			if (doc && doc.healtheventstatus && doc.healtheventstatus.nodequarantined) {
+				print("NODE_QUARANTINED=" + doc.healtheventstatus.nodequarantined);
+			} else {
+				print("NOT_READY");
+			}
+		`, MongoDBDatabase, nodeName, message)
+
+		stdout, _ := ExecMongosh(ctx, t, restConfig, client, podName, js)
+
+		for _, line := range strings.Split(stdout, "\n") {
+			if status, found := strings.CutPrefix(strings.TrimSpace(line), "NODE_QUARANTINED="); found {
+				return status, true
+			}
+		}
+
+		return "", false
+	}
+
+	podName, found := postgresPrimaryPodName(ctx, t, client)
+	if !found {
+		t.Logf("No MongoDB or PostgreSQL pod found for quarantine status lookup")
+
+		return "", false
+	}
+
+	query := fmt.Sprintf(`
+		SELECT COALESCE(document #>> '{healtheventstatus,nodequarantined}', '')
+		FROM health_events
+		WHERE node_name = '%s'
+		  AND document #>> '{healthevent,message}' = '%s'
+		ORDER BY created_at DESC
+		LIMIT 1;
+	`, sqlLiteral(nodeName), sqlLiteral(message))
+
+	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
+		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
+	if err != nil {
+		t.Logf("PostgreSQL quarantine status lookup failed: %v stderr=%s", err, stderr)
+
+		return "", false
+	}
+
+	status := strings.TrimSpace(stdout)
+
+	return status, status != ""
+}
+
 // postgresPrimaryPodName returns the running PostgreSQL primary pod in the NVSentinel namespace.
 // found is false when the cluster uses MongoDB instead.
 func postgresPrimaryPodName(ctx context.Context, t *testing.T, client klient.Client) (string, bool) {
