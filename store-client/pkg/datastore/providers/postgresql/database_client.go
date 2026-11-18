@@ -43,6 +43,8 @@ const (
 // This provides backward compatibility with services using the legacy DatabaseClient interface
 type PostgreSQLDatabaseClient struct {
 	db         *sql.DB
+	cleaner    *changelogCleaner
+	borrowed   bool
 	tableName  string
 	connString string // For creating LISTEN connections
 }
@@ -109,6 +111,15 @@ func NewPostgreSQLDatabaseClient(db *sql.DB, tableName string) client.DatabaseCl
 		tableName:  snakeCaseTableName,
 		connString: "", // Empty connString - will fall back to polling if needed
 	}
+}
+
+// NewOwnedPostgreSQLDatabaseClient owns the pool and its optional cleaner.
+// It runs no setup DDL. Missing cleanup prerequisites defer runs until provisioned.
+func NewOwnedPostgreSQLDatabaseClient(ctx context.Context, db *sql.DB, tableName string) client.DatabaseClient {
+	c := NewPostgreSQLDatabaseClient(db, tableName).(*PostgreSQLDatabaseClient)
+	c.cleaner = startChangelogCleaner(ctx, db, nil)
+
+	return c
 }
 
 // NewPostgreSQLDatabaseClientWithConnString creates a client with connection string for LISTEN/NOTIFY
@@ -1045,6 +1056,14 @@ func (c *PostgreSQLDatabaseClient) NewChangeStreamWatcher(
 
 // Close closes the database connection
 func (c *PostgreSQLDatabaseClient) Close(ctx context.Context) error {
+	if c.borrowed {
+		return nil
+	}
+
+	if err := c.cleaner.stop(ctx); err != nil {
+		return err
+	}
+
 	return c.db.Close()
 }
 
