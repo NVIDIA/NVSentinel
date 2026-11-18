@@ -192,6 +192,7 @@ CEL expressions have access to the `event` object with the following fields:
 | `event.isFatal` | bool | Whether error is fatal |
 | `event.isHealthy` | bool | Overall health status |
 | `event.recommendedAction` | string | Recommended remediation action |
+| `event.customRecommendedAction` | string | Custom action name when `recommendedAction` is `CUSTOM`, empty otherwise |
 | `event.metadata` | map | Node metadata from MetadataAugmentor |
 
 **Entity fields:** Each entity in `entitiesImpacted` has:

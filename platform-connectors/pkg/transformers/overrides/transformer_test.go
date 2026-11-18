@@ -357,7 +357,7 @@ func TestApplyOverrides(t *testing.T) {
 		},
 		{
 			name:   "custom-action-to-other-custom-action",
-			config: customActionConfig(`event.agent == "test-agent"`, "CUSTOM", new("hardware-repair")),
+			config: customActionConfig(`event.customRecommendedAction == "replace-disk"`, "CUSTOM", new("hardware-repair")),
 			event: &pb.HealthEvent{
 				Agent:                   "test-agent",
 				IsFatal:                 true,

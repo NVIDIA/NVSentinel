@@ -126,5 +126,7 @@ func BuildEventMap(event *pb.HealthEvent) map[string]any {
 		"nodeName":          event.GetNodeName(),
 		"metadata":          maps.Clone(event.GetMetadata()),
 		"message":           event.GetMessage(),
+		// Set only when recommendedAction is CUSTOM; empty otherwise.
+		"customRecommendedAction": event.GetCustomRecommendedAction(),
 	}
 }
