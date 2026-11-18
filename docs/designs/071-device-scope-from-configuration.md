@@ -22,7 +22,7 @@ Status: Proposed (tracking issue [#2417](https://github.com/NVIDIA/NVSentinel/is
    - [Mitigations](#mitigations)
 6. [Alternatives Considered](#alternatives-considered)
    - [Derive the scoped actions from `impactedEntityScope` in fault-remediation](#derive-the-scoped-actions-from-impactedentityscope-in-fault-remediation)
-   - [Keep the mapper in the metadata-collector binary with a flag to skip NVML](#keep-the-mapper-in-the-metadata-collector-binary-with-a-flag-to-skip-nvml)
+   - [Watch the node's ResourceSlices](#watch-the-nodes-resourceslices)
    - [Use the DRA device name as the entity value](#use-the-dra-device-name-as-the-entity-value)
 7. [Notes](#notes)
    - [Non-goals](#non-goals)
@@ -62,10 +62,10 @@ flowchart TD
 
 ## Decision
 
-1. **The entity-type map becomes configuration.** One Helm value, `global.entityTypes`, defines each entity type with its device-plugin resource names, its DRA drivers and DeviceClasses, and the actions that are scoped to it. Each component that reads the map gets it from that value. The chart default is the NVIDIA `GPU_UUID` entry, so current installs behave the same.
+1. **The entity-type map becomes configuration.** One Helm value, `global.partialRemediationEntityTypes`, defines each entity type with the devices that belong to it and the actions that are scoped to it. A device is a device-plugin resource name or a DRA driver with its DeviceClasses. Each component that reads the map gets it from that value. The chart default is the NVIDIA `GPU_UUID` entry, so current installs behave the same.
 2. **Scoped actions are listed in the map.** node-drainer runs a partial drain for an event when `partialDrainEnabled` is on and the effective action of the event, including a custom action name, is listed under an entity type that the event names. `COMPONENT_RESET` is the default entry.
 3. **fault-remediation never runs a full-node action after a partial drain.** The Helm chart checks that each scoped action maps to a `maintenance.actions` entry with the same `impactedEntityScope`. At run time, fault-remediation does not create a CR for an action on the full node after a partial drain. It retries the event and increments a metric.
-4. **The mapper becomes its own container in the metadata-collector DaemonSet.** Its code moves to its own package with its own binary and image, and it no longer uses NVML. For a DRA device it reads the entity value from a ResourceSlice attribute that the map names, for example `uuid`. The DaemonSet itself does not change.
+4. **The mapper reads DRA device identity from ResourceSlices.** For a DRA device, it reads the entity value from a ResourceSlice attribute that the map names, for example `uuid`, instead of from the NVML map. The mapper stays in the metadata-collector binary and DaemonSet.
 
 ## Implementation
 
@@ -73,11 +73,10 @@ flowchart TD
 
 ```yaml
 global:
-  entityTypes:
+  partialRemediationEntityTypes:
     GPU_UUID:
-      devicePlugin:
-        resourceNames: ["nvidia.com/gpu", "nvidia.com/pgpu"]
-      dra:
+      devices:
+        - resourceNames: ["nvidia.com/gpu", "nvidia.com/pgpu"]
         - driver: gpu.nvidia.com
           deviceClasses: ["gpu.nvidia.com"]
           entityValueAttribute: uuid
@@ -88,9 +87,9 @@ An operator adds a device type with another key. This example adds a custom acti
 
 ```yaml
 global:
-  entityTypes:
+  partialRemediationEntityTypes:
     ACCEL_SERIAL:
-      dra:
+      devices:
         - driver: accel.example.com
           deviceClasses: ["accel.example.com"]
           entityValueAttribute: serial
@@ -104,24 +103,24 @@ fault-remediation:
         # ...
 ```
 
-- `devicePlugin` and `dra` are the two ways a pod can get a device. An entity type has one or both, and the chart fails if it has neither. The `GPU_UUID` default has both, as the code does today, because a cluster can use either. A source that a cluster does not use matches no devices.
-- `devicePlugin.resourceNames` lists the exact resource names that pods request, such as `nvidia.com/gpu`.
-- `dra` lists DRA drivers. `driver` is the name that the kubelet reports for an allocated device. `deviceClasses` are the names that pods use in their claims. Today one string serves both, which only works because the NVIDIA driver and its DeviceClass share a name.
+- `devices` lists the ways a pod can get a device of the entity type. An entry is either a device-plugin entry with `resourceNames`, or a DRA entry with `driver`, `deviceClasses` and `entityValueAttribute`. The chart fails if an entry mixes the two, or if an entity type has no entry. The `GPU_UUID` default has one of each, as the code does today, because a cluster can use either. An entry that a cluster does not use matches no devices.
+- `resourceNames` lists the exact resource names that pods request, such as `nvidia.com/gpu`.
+- `driver` is the name that the kubelet reports for an allocated DRA device. `deviceClasses` are the names that pods use in their claims. Today one string serves both, which only works because the NVIDIA driver and its DeviceClass share a name.
 - `entityValueAttribute` names the ResourceSlice attribute whose value is the entity value in health events (see [DRA devices](#dra-devices)).
 - `scopedActions` are action names, as `GetEffectiveActionName` returns them: a built-in action such as `COMPONENT_RESET`, or a custom action name. An action can be scoped to only one entity type, because fault-remediation's [`impactedEntityScope`](../configuration/fault-remediation.md#impactedentityscope) names one entity type for each action. The chart fails if two entries list the same action.
 
 ### Where each component reads the map
 
-The chart renders `global.entityTypes` into the configuration file of each component that needs it. Components do not read each other's configuration.
+The chart renders `global.partialRemediationEntityTypes` into the configuration file of each component that needs it. Components do not read each other's configuration.
 
 | Component | Uses | Change |
 |---|---|---|
-| Pod device mapper | `devicePlugin`, `dra` | Records only the configured resources and drivers |
+| Pod device mapper | `devices` | Records only the configured resources and drivers |
 | node-drainer | All fields | Partial drain for `scopedActions`. The pod filter, the missing-annotation check and the `drainGPUPods` filter read the configured names instead of `GPU_UUID` |
 | fault-quarantine | `scopedActions` | Post-remediation validation uses the same partial-drain decision as node-drainer |
 | fault-remediation | `scopedActions` | `impactedEntityScope` must name a configured entity type. The [scope check](#scope-check), which also reads `global.partialDrainEnabled` for events without a recorded scope |
 
-If a component's configuration has no `entityTypes` key, the code uses a built-in `GPU_UUID` entry with today's values. `global.partialDrainEnabled` stays the switch that turns partial drains off. The built-in entry is removed when NVIDIA-specific code moves out of the core into an NVIDIA plugin ([ADR-070](070-vendor-neutral-core.md#phase-4-move-vendor-code)), and the plugin chart then sets it.
+If a component's configuration has no `partialRemediationEntityTypes` key, the code uses a built-in `GPU_UUID` entry with today's values. `global.partialDrainEnabled` stays the switch that turns partial drains off. The built-in entry is removed when NVIDIA-specific code moves out of the core into an NVIDIA plugin ([ADR-070](070-vendor-neutral-core.md#phase-4-move-vendor-code)), and the plugin chart then sets it.
 
 ### Partial drain decision
 
@@ -133,7 +132,7 @@ node-drainer takes these steps in order and stops at the first one that decides.
 
 In step 3, node-drainer checks the device annotation of each pod. The annotation lists devices under resource names and DRA driver names.
 
-- node-drainer reads the resource names and DeviceClasses of the entity type that a pod requests from its spec, as it does today. If the annotation has no entry for one of them, node-drainer fails the drain and retries. For DRA, it matches a DeviceClass to the annotation through the `driver` of the same `dra` entry. This covers a pod with no annotation, as today, and an annotation that the mapper wrote before the operator added that name. The drain continues after the mapper writes the new annotation.
+- node-drainer reads the resource names and DeviceClasses of the entity type that a pod requests from its spec, as it does today. If the annotation has no entry for one of them, node-drainer fails the drain and retries. For DRA, it matches a DeviceClass to the annotation through the `driver` of the same `devices` entry. This covers a pod with no annotation, as today, and an annotation that the mapper wrote before the operator added that name. The drain continues after the mapper writes the new annotation.
 - If the annotation lists the entity value under a name of the entity type, node-drainer evicts the pod, as today.
 
 ### Scope check
@@ -148,26 +147,16 @@ The other direction is allowed: a full drain followed by a repair of one device 
 
 ### Pod device mapper
 
-The mapper code moves out of the metadata-collector binary into its own package and binary in the metadata-collector module, built as its own image on the default static base. The chart adds it as a second container to the existing metadata-collector DaemonSet:
-
-| Container | Does | Image |
-|---|---|---|
-| `metadata-collector` | NVML and `nvidia-smi` collection, `gpu_metadata.json` | CUDA base, as today |
-| `pod-device-mapper` | Pod device annotations | Static base |
-
-The mapper behaves as today, with these changes:
+The mapper stays in the metadata-collector binary and DaemonSet. It behaves as today, with these changes:
 
 - It records device-plugin devices for every configured resource name, and DRA devices for every configured driver.
-- It does not use NVML or `gpu_metadata.json`. If the NVML collection fails, only the `metadata-collector` container restarts, and the mapper keeps running.
-- It mounts only the PodResources socket. It reads `/pods` from the kubelet and patches pod annotations, as today.
+- For a DRA device, it reads the entity value from the node's ResourceSlices instead of the NVML map (see [DRA devices](#dra-devices)).
 
-The DaemonSet keeps its node selector, RuntimeClass, host settings and DRA claim. These are pod settings, so they also apply to the mapper container. As a result, the mapper still runs only on NVIDIA GPU nodes. Running it on nodes with other devices changes how the DaemonSet is scheduled, and [#2419](https://github.com/NVIDIA/NVSentinel/issues/2419) covers that.
-
-`podMapper.enabled` now adds or removes the `pod-device-mapper` container. The metadata-collector binary no longer runs the mapper.
+The DaemonSet still runs only on NVIDIA GPU nodes, and the mapper still starts only after the NVML collection succeeds. [#2419](https://github.com/NVIDIA/NVSentinel/issues/2419) covers running the mapper on other nodes and separating it from the NVML collection.
 
 #### Device-plugin devices
 
-The kubelet reports the device IDs that the device plugin assigned. The mapper records them as entity values, as today. This works when the device plugin registers each device under the same ID that health monitors put in events. For example, the NVIDIA device plugin registers a GPU as `GPU-8f6d…`, and the monitors report the same GPU as `GPU_UUID = GPU-8f6d…`. The exception is GPU sharing (time-slicing or MPS), where it registers the same GPU with a replica suffix, such as `GPU-8f6d…::0`. GPU sharing is out of scope (see [Non-goals](#non-goals)). A device plugin that uses other IDs, such as an index, cannot use partial drains through `devicePlugin`. Its devices can use DRA. The configuration documentation says this.
+The kubelet reports the device IDs that the device plugin assigned. The mapper records them as entity values, as today. This works when the device plugin registers each device under the same ID that health monitors put in events. For example, the NVIDIA device plugin registers a GPU as `GPU-8f6d…`, and the monitors report the same GPU as `GPU_UUID = GPU-8f6d…`. The exception is GPU sharing (time-slicing or MPS), where it registers the same GPU with a replica suffix, such as `GPU-8f6d…::0`. GPU sharing is out of scope (see [Non-goals](#non-goals)). A device plugin that uses other IDs, such as an index, cannot use partial drains through `resourceNames`. Its devices can use DRA. The configuration documentation will say this.
 
 #### DRA devices
 
@@ -177,14 +166,13 @@ The entity value in the event must equal the attribute value exactly. One attrib
 
 For a device that is identified by its PCI address, the entity type uses the Kubernetes standard attribute [`resource.kubernetes.io/pciBusID`](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/dynamic-resource-allocation/deviceattribute/attribute.go#L34-L39). Its value has the full `domain:bus:device.function` form, so the monitor must report the address in the same form. The `PCI` entities in NVIDIA events today do not: XID lines have no function, and NVML has an eight-digit domain.
 
-If the mapper cannot find the attribute for any configured device of a pod, it writes no annotation for that pod, and removes an existing one. A partial annotation would make node-drainer miss the pod. Without an annotation, node-drainer sees a pod with a claim and no annotation, and the partial drain waits instead. The mapper checks every annotation on each poll, every 30 seconds. After the upgrade, its first poll also removes a partial annotation that the mapper in the `metadata-collector` container wrote. [#2454](https://github.com/NVIDIA/NVSentinel/issues/2454) tracks the same fix for that mapper.
+If the mapper cannot find the attribute for any configured device of a pod, it writes no annotation for that pod, and removes an existing one. A partial annotation would make node-drainer miss the pod. Without an annotation, node-drainer sees a pod with a claim and no annotation, and the partial drain waits instead. The mapper checks every annotation on each poll, every 30 seconds. After the upgrade, its first poll also removes a partial annotation that an earlier version of the mapper wrote. [#2454](https://github.com/NVIDIA/NVSentinel/issues/2454) tracks the same fix for earlier versions.
 
-The metadata-collector ClusterRole gets `list` and `watch` on `resourceslices.resource.k8s.io`. The chart adds these only when the map has a DRA entry.
+The mapper lists the ResourceSlices of its own node, with a field selector on `spec.nodeName`, when it sees a DRA device that it has not resolved. It caches the attribute values and does not watch ResourceSlices. Today's NVML map works the same way: it is built once and kept until the mapper restarts, because a device keeps its identity while the node runs. The metadata-collector ClusterRole gets `list` on `resourceslices.resource.k8s.io` only when the map has a DRA entry.
 
 ### Backwards compatibility
 
-- **Helm values:** no key is renamed or removed. `global.entityTypes` is new, and its default keeps today's behaviour.
-- **Flags:** the metadata-collector binary still accepts `--pod-mapper-enabled`, so an older pod spec keeps starting. The chart and the images are released together. A newer image under an older chart is not supported: the pod then has no mapper, and partial drains wait.
+- **Helm values:** no key is renamed or removed. `global.partialRemediationEntityTypes` is new, and its default keeps today's behaviour.
 - **Pod annotation and event store:** no change. Old and new components read each other's data.
 - **Behaviour:** two changes, both on purpose: the chart check, and the retry of an action on the full node after a partial drain (see [Scope check](#scope-check)).
 
@@ -200,12 +188,11 @@ The metadata-collector ClusterRole gets `list` and `watch` on `resourceslices.re
 - Partial drains and scoped remediation work for any device type that has a device plugin with stable IDs or a DRA driver with an identity attribute, on the nodes where the mapper runs.
 - Custom actions with `impactedEntityScope` get a partial drain, not only a scoped repair.
 - A full-node action after a partial drain is no longer possible through configuration.
-- The mapper no longer depends on NVML, and an NVML failure no longer stops it.
+- The mapper no longer needs NVML to resolve DRA devices.
 
 ### Negative
 
-- One more image to build and release.
-- Until [#2419](https://github.com/NVIDIA/NVSentinel/issues/2419), the mapper runs only on NVIDIA GPU nodes. Other device types get partial drains only on those nodes.
+- Until [#2419](https://github.com/NVIDIA/NVSentinel/issues/2419), the mapper runs only on NVIDIA GPU nodes and only after the NVML collection succeeds. Other device types get partial drains only on those nodes.
 - An existing install with partial drains on and a `COMPONENT_RESET` entry without `impactedEntityScope`, such as the chart default `RebootNode`, fails to upgrade until the operator changes the entry to a scoped action such as `GPUReset`.
 - An event whose rule set picks an action on the full node after a partial drain retries until an operator changes the configuration. The node stays cordoned until then.
 
@@ -213,7 +200,6 @@ The metadata-collector ClusterRole gets `list` and `watch` on `resourceslices.re
 
 - The chart error names the action and the entity type, so the operator knows which `maintenance.actions` entry to change before the upgrade.
 - The retry metric has its own `error_type`, so an alert can find events that wait for a configuration fix.
-- The mapper code no longer depends on NVML, so [#2419](https://github.com/NVIDIA/NVSentinel/issues/2419) can move it to its own DaemonSet without changing it.
 
 ## Alternatives Considered
 
@@ -221,9 +207,9 @@ The metadata-collector ClusterRole gets `list` and `watch` on `resourceslices.re
 
 node-drainer would partially drain every action whose `maintenance.actions` entry has a scope. **Rejected** because subcharts cannot read each other's values, so the chart would have to move `maintenance.actions` to `global`. It also changes the drain for existing installs that have a scoped custom action and a full drain today.
 
-### Keep the mapper in the metadata-collector binary with a flag to skip NVML
+### Watch the node's ResourceSlices
 
-The binary would skip the NVML collection on request and run only the mapper. **Rejected** because the mapper would stay in the same binary and CUDA image as the NVIDIA code. [#2419](https://github.com/NVIDIA/NVSentinel/issues/2419) moves that code to the NVIDIA plugin, and the mapper would have to be separated then. A separate container now lets #2419 move the NVIDIA code without changing the mapper.
+An informer would see a change to a ResourceSlice at once. **Rejected** because every mapper pod would hold a watch on the API server, one for each GPU node, and a device does not change its identity while the node runs.
 
 ### Use the DRA device name as the entity value
 
