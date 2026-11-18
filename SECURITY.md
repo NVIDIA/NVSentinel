@@ -76,17 +76,27 @@ Each statement has these fields:
 - `subcomponents`, in each product: the packages that the reason covers, by the PURL that Grype reports. After an update to another version, the PURL no longer matches, so remove that subcomponent. Remove a product that has no subcomponents left, and a statement that has no products left. A statement without `subcomponents` applies to the vulnerability in every package of the image, so leave them out only when the reason covers every package.
 - `status`: `not_affected`.
 - `justification`: one of the [OpenVEX justifications](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md#status-justifications), for example `vulnerable_code_not_in_execute_path`.
-- `impact_statement`: why the vulnerability does not affect the image, so that a reviewer can check it.
+- `impact_statement`: why the vulnerability does not affect the image, in one or two sentences, for example "libexample1 is a library of the base image that no NVSentinel process loads." Put the evidence, such as a trace or the output of `ldd`, in the pull request that adds the statement, so that a reviewer can check it.
 
 Also increase the `version` of the document by one, and set its `timestamp` to the time of the change.
 
-To get the ID and the PURL of each critical or high finding in an image, run Grype on the image:
+To get the ID and the PURL of each critical or high finding that `.openvex.json` does not cover, scan the image like the weekly scan does:
 
 ```shell
-grype ghcr.io/nvidia/nvsentinel/gpu-reset:<tag> --only-fixed -o json \
-  | jq -r '.matches[] | select(.vulnerability.severity == "Critical" or .vulnerability.severity == "High")
-      | "\(.vulnerability.id) \(.artifact.purl)"'
+scripts/openvex/scan.sh ghcr.io/nvidia/nvsentinel/gpu-reset:<tag>
 ```
+
+The script takes the severity from the CVSS score, as the Security tab does. The severity label of Grype comes from the source of the advisory, for example the priority that Ubuntu gives it, and can differ.
+
+### Tools
+
+[`scripts/openvex/`](scripts/openvex/) has the tools for this work:
+
+- `scan.sh` scans images without and with `.openvex.json`, and lists the critical and high findings that `.openvex.json` does not cover.
+- `trace.sh` runs a Python program in its image, records the Python modules and shared libraries that each Python process of the program loads, and lists the packages that own those files. It covers only the code that the run reaches.
+- `statements.py add` adds statements from a list of findings and reasons, `statements.py prune` removes the packages that the images no longer have, and both format `.openvex.json` and set its version.
+
+Two agent skills follow these steps: [`triage-image-vulnerabilities`](skills/openvex/triage-image-vulnerabilities/SKILL.md) for new findings, and [`prune-openvex-statements`](skills/openvex/prune-openvex-statements/SKILL.md) after base image or dependency updates.
 
 ## Product Security Resources
 

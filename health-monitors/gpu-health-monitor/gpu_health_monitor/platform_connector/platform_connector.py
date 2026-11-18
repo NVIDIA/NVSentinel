@@ -113,14 +113,49 @@ def _serialized_critical_event(method: Callable[..., bool]) -> Callable[..., boo
     return wrapper
 
 
+# The (entity type, entity value) pairs that one GPU health event named, in order.
+EntityIdentity = tuple[tuple[str, str], ...]
+
+
+def _entity_identity(entities: list[platformconnector_pb2.Entity]) -> EntityIdentity:
+    return tuple((entity.entityType, entity.entityValue) for entity in entities)
+
+
+def _entities(identity: EntityIdentity) -> list[platformconnector_pb2.Entity]:
+    return [platformconnector_pb2.Entity(entityType=entity_type, entityValue=value) for entity_type, value in identity]
+
+
+def _names_same_gpu(identity: EntityIdentity, published: EntityIdentity) -> bool:
+    """True when no entity type has one value in identity and another in published.
+
+    A PCI address or UUID that the metadata lookup did not find, now or when
+    the fault was published, does not count as another GPU.
+    """
+    published_values = dict(published)
+    return all(published_values.get(entity_type, value) == value for entity_type, value in identity)
+
+
 @dataclasses.dataclass
 class EntityCacheEntry:
     active_errors: set[str] = dataclasses.field(default_factory=set)
     error_strategies: dict[str, platformconnector_pb2.ProcessingStrategy] = dataclasses.field(default_factory=dict)
+    # For each active error code of a GPU, the entities of every unhealthy event
+    # published for it. Its recoveries name the same entities, so they clear the
+    # fault downstream even after the GPU metadata file changed.
+    error_entities: dict[str, list[EntityIdentity]] = dataclasses.field(default_factory=dict)
 
     @property
     def is_healthy(self) -> bool:
         return not self.active_errors
+
+    def published_identities(self) -> list[EntityIdentity]:
+        """Every distinct entity list the active faults were published with, in a fixed order."""
+        identities: list[EntityIdentity] = []
+        for code in sorted(self.error_entities):
+            for identity in self.error_entities[code]:
+                if identity not in identities:
+                    identities.append(identity)
+        return identities
 
 
 @dataclasses.dataclass
@@ -225,6 +260,22 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
     def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
         return f"{check_name}|{entity_type}|{entity_value}"
+
+    def _recovery_entities(
+        self, identity: EntityIdentity, gpu_id: int, gpu_ids: list[int]
+    ) -> list[platformconnector_pb2.Entity]:
+        """The entities of a recovery for the fault of gpu_id that was published with identity.
+
+        The node condition also clears a GPU fault by its GPU UUID alone. When
+        the metadata file now gives the UUID of identity to another GPU, the
+        fault was published from an older copy, so the recovery leaves the UUID
+        out and clears the fault by its GPU index and PCI address. A recovery
+        with the UUID would also clear the faults of the GPU that has it now.
+        """
+        uuid = dict(identity).get("GPU_UUID")
+        if uuid and any(other != gpu_id and self._metadata_reader.get_gpu_uuid(other) == uuid for other in gpu_ids):
+            identity = tuple(entity for entity in identity if entity[0] != "GPU_UUID")
+        return _entities(identity)
 
     def _is_fatal_label(self, error_code: str) -> str:
         """is_fatal label value for a DCGM health-watch error code.
@@ -657,9 +708,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         events, so a critical event waits for a publish in progress instead of
         racing its cache update, and a fault seen by several polls during an
         outage is published once while a recovery seen afterwards is not lost
-        to a stale cache.
+        to a stale cache. The GPU metadata file is checked once per poll, so
+        every lookup of the poll reads the same copy. A recovery names the
+        entities that its fault was published with, also when the file changed
+        since, but not a GPU UUID that the file now gives to another GPU.
         """
-        with self._event_lock:
+        with self._event_lock, self._metadata_reader.pinned():
             self._publish_health_snapshot(health_details, gpu_ids, switch_ids)
 
     def _publish_health_snapshot(
@@ -733,12 +787,26 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             isHealthy = False
                             isFatal = recommended_action != platformconnector_pb2.NONE
                             key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
+                            identity = _entity_identity(entities_impacted)
 
                             entry = pending_cache_updates.get(key, self.entity_cache.get(key))
-                            if entry is None or failure_details.code not in entry.active_errors:
+                            active = entry is not None and failure_details.code in entry.active_errors
+                            published = entry.error_entities.get(failure_details.code, []) if active else []
+                            # An active fault is published again when the metadata file now names another
+                            # GPU at this index, so remediation acts on the GPU that is there. The events
+                            # published before stay active until the fault clears: fault-quarantine and the
+                            # node condition clear a GPU fault by index and PCI address, so a recovery for
+                            # the old GPU could also clear the new event.
+                            if not active or (
+                                published and not any(_names_same_gpu(identity, before) for before in published)
+                            ):
                                 existing_errors = set(entry.active_errors) if entry else set()
                                 existing_errors.add(failure_details.code)
-                                pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
+                                error_entities = dict(entry.error_entities) if entry else {}
+                                error_entities[failure_details.code] = [*published, identity]
+                                pending_cache_updates[key] = EntityCacheEntry(
+                                    active_errors=existing_errors, error_entities=error_entities
+                                )
 
                                 # The COMPONENT_RESET recommended action requires that the GPU_UUID is present on the
                                 # unhealthy HealthEvent. Sending an event with COMPONENT_RESET that is missing the GPU_UUID
@@ -793,33 +861,44 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             current_errors = {failure.code for failure in details.entity_failures[gpu_id]}
                             recovered_errors = entry.active_errors - current_errors
                             if recovered_errors:
-                                pending_cache_updates[key] = EntityCacheEntry(active_errors=current_errors)
+                                still_published = pending_cache_updates.get(key, entry).error_entities
+                                pending_cache_updates[key] = EntityCacheEntry(
+                                    active_errors=current_errors,
+                                    error_entities={
+                                        code: identities
+                                        for code, identities in still_published.items()
+                                        if code in current_errors
+                                    },
+                                )
                                 event_metadata = {}
                                 chassis_serial = self._metadata_reader.get_chassis_serial()
                                 if chassis_serial:
                                     event_metadata["chassis_serial"] = chassis_serial
 
                                 for recovered_code in sorted(recovered_errors):
-                                    health_events.append(
-                                        platformconnector_pb2.HealthEvent(
-                                            version=self._version,
-                                            agent=self._agent,
-                                            componentClass=self._component_class,
-                                            checkName=check_name,
-                                            generatedTimestamp=timestamp,
-                                            isHealthy=True,
-                                            errorCode=[recovered_code],
-                                            entitiesImpacted=entities_impacted,
-                                            message=(
-                                                f"GPU {self._get_dcgm_watch(watch_name)} watch no longer reports "
-                                                f"{recovered_code}"
-                                            ),
-                                            recommendedAction=platformconnector_pb2.NONE,
-                                            nodeName=self._node_name,
-                                            metadata=event_metadata,
-                                            processingStrategy=effective_strategy,
+                                    for recovered_identity in entry.error_entities.get(recovered_code) or [identity]:
+                                        health_events.append(
+                                            platformconnector_pb2.HealthEvent(
+                                                version=self._version,
+                                                agent=self._agent,
+                                                componentClass=self._component_class,
+                                                checkName=check_name,
+                                                generatedTimestamp=timestamp,
+                                                isHealthy=True,
+                                                errorCode=[recovered_code],
+                                                entitiesImpacted=self._recovery_entities(
+                                                    recovered_identity, gpu_id, gpu_ids
+                                                ),
+                                                message=(
+                                                    f"GPU {self._get_dcgm_watch(watch_name)} watch no longer reports "
+                                                    f"{recovered_code}"
+                                                ),
+                                                recommendedAction=platformconnector_pb2.NONE,
+                                                nodeName=self._node_name,
+                                                metadata=event_metadata,
+                                                processingStrategy=effective_strategy,
+                                            )
                                         )
-                                    )
                                     pending_metric_updates.append((check_name, gpu_id, recovered_code, 0))
                     elif details.is_complete:
 
@@ -851,24 +930,29 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             if chassis_serial:
                                 event_metadata["chassis_serial"] = chassis_serial
 
-                            health_events.append(
-                                platformconnector_pb2.HealthEvent(
-                                    version=self._version,
-                                    agent=self._agent,
-                                    componentClass=self._component_class,
-                                    checkName=check_name,
-                                    generatedTimestamp=timestamp,
-                                    isFatal=False,
-                                    isHealthy=True,
-                                    errorCode=[],
-                                    entitiesImpacted=entities_impacted,
-                                    message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
-                                    recommendedAction=platformconnector_pb2.NONE,
-                                    nodeName=self._node_name,
-                                    metadata=event_metadata,
-                                    processingStrategy=effective_strategy,
+                            # One recovery for each GPU the active faults were published for.
+                            recovered_identities = (entry.published_identities() if entry else []) or [
+                                _entity_identity(entities_impacted)
+                            ]
+                            for recovered_identity in recovered_identities:
+                                health_events.append(
+                                    platformconnector_pb2.HealthEvent(
+                                        version=self._version,
+                                        agent=self._agent,
+                                        componentClass=self._component_class,
+                                        checkName=check_name,
+                                        generatedTimestamp=timestamp,
+                                        isFatal=False,
+                                        isHealthy=True,
+                                        errorCode=[],
+                                        entitiesImpacted=self._recovery_entities(recovered_identity, gpu_id, gpu_ids),
+                                        message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
+                                        recommendedAction=platformconnector_pb2.NONE,
+                                        nodeName=self._node_name,
+                                        metadata=event_metadata,
+                                        processingStrategy=effective_strategy,
+                                    )
                                 )
-                            )
                             if had_errors:
                                 # entry is the pre-reset state, so active_errors still
                                 # names every code that needs clearing.
