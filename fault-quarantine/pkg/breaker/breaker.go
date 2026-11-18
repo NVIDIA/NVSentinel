@@ -176,10 +176,32 @@ func (b *slidingWindowBreaker) AddCordonEvent(nodeName string) {
 	b.buckets[currentBucketIndex]++
 }
 
-// ForgetNode removes a node's cordon from the sliding window. It is called when a deleted node
-// was the last GPU node, so the GPU nodes that come back do not inherit its cordon. A node that
-// is not in the window is ignored. This method is thread-safe.
-func (b *slidingWindowBreaker) ForgetNode(nodeName string) {
+// ForgetDeletedNodes removes the cordons of nodes that are no longer in the cluster from the
+// sliding window. It is called when the last GPU node is deleted, so the GPU nodes that come
+// back start with a full budget. Cordons of nodes that still exist stay, so a gpuNodeLabel that
+// does not match the quarantined nodes still trips the breaker. This method is thread-safe.
+func (b *slidingWindowBreaker) ForgetDeletedNodes(ctx context.Context) error {
+	b.mu.Lock()
+	recentCordonedNodes := slices.Collect(maps.Keys(b.nodeToIndex))
+	b.mu.Unlock()
+
+	for _, name := range recentCordonedNodes {
+		exists, err := b.cfg.K8sClient.NodeExists(ctx, name)
+		if err != nil {
+			return fmt.Errorf("failed to check whether node %s exists: %w", name, err)
+		}
+
+		if !exists {
+			b.forgetNode(name)
+		}
+	}
+
+	return nil
+}
+
+// forgetNode removes a node's cordon from the sliding window. A node that is not in the window
+// is ignored.
+func (b *slidingWindowBreaker) forgetNode(nodeName string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

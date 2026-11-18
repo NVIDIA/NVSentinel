@@ -431,9 +431,11 @@ func (r *Reconciler) SetupNodeInformerCallbacks() {
 	r.k8sClient.NodeInformer.SetOnQuarantinedNodeDeletedCallback(func(nodeName string) {
 		metrics.CurrentQuarantinedNodes.WithLabelValues(nodeName).Set(0)
 		slog.Info("Set currentQuarantinedNodes to 0 for deleted quarantined node", "node", nodeName)
+	})
 
+	r.k8sClient.NodeInformer.SetOnLastGPUNodeDeletedCallback(func() {
 		if r.breakerActive() {
-			r.forgetCordonIfNoGPUNodesLeft(nodeName)
+			r.forgetDeletedNodes()
 		}
 	})
 
@@ -441,25 +443,18 @@ func (r *Reconciler) SetupNodeInformerCallbacks() {
 	r.k8sClient.NodeInformer.SetOnManualUntaintCallback(r.queueManualUntaint)
 }
 
-// forgetCordonIfNoGPUNodesLeft removes a deleted node's cordon from the circuit breaker window
-// only when no GPU nodes remain. While GPU nodes remain, the cordon keeps counting, so nodes
-// that are replaced after quarantine still count toward the breaker.
-func (r *Reconciler) forgetCordonIfNoGPUNodesLeft(nodeName string) {
-	remaining, err := r.k8sClient.NodeInformer.CountGPUNodesInCache()
-	if err != nil {
-		slog.Warn("Keeping the deleted node's cordon in the circuit breaker window: cannot count GPU nodes",
-			"node", nodeName, "error", err)
+// forgetDeletedNodes removes the cordons of deleted nodes from the circuit breaker window once
+// no GPU nodes remain, so the GPU nodes that come back start with a full budget. While any GPU
+// node remains, deleted nodes keep counting, so nodes that are replaced after quarantine still
+// count toward the breaker.
+func (r *Reconciler) forgetDeletedNodes() {
+	if err := r.cb.ForgetDeletedNodes(context.Background()); err != nil {
+		slog.Warn("Keeping deleted nodes' cordons in the circuit breaker window", "error", err)
 
 		return
 	}
 
-	if remaining > 0 {
-		return
-	}
-
-	r.cb.ForgetNode(nodeName)
-	slog.Info("Removed the deleted node's cordon from the circuit breaker window: no GPU nodes remain",
-		"node", nodeName)
+	slog.Info("Removed deleted nodes' cordons from the circuit breaker window: no GPU nodes remain")
 }
 
 // initializeRuleSetEvaluators initializes all rule set evaluators from config

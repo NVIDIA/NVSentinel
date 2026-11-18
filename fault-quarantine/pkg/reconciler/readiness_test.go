@@ -43,8 +43,8 @@ type trippedStartupBreaker struct {
 	release chan struct{}
 }
 
-func (trippedStartupBreaker) AddCordonEvent(string) {}
-func (trippedStartupBreaker) ForgetNode(string)     {}
+func (trippedStartupBreaker) AddCordonEvent(string)                    {}
+func (trippedStartupBreaker) ForgetDeletedNodes(context.Context) error { return nil }
 func (b trippedStartupBreaker) IsTripped(ctx context.Context) (bool, error) {
 	if b.entered != nil {
 		close(b.entered)

@@ -64,6 +64,9 @@ type NodeInformer struct {
 	// onQuarantinedNodeDeleted is called when a quarantined node with annotations is deleted
 	onQuarantinedNodeDeleted func(nodeName string)
 
+	// onLastGPUNodeDeleted is called when a delete leaves no GPU nodes
+	onLastGPUNodeDeleted func()
+
 	// onManualUncordon is called when a node is manually uncordoned while having FQ annotations
 	onManualUncordon func(nodeName string) error
 
@@ -232,30 +235,6 @@ func (ni *NodeInformer) GetNodeCounts() (totalNodes int, quarantinedNodesMap map
 	}
 
 	return total, quarantinedMap, nil
-}
-
-// CountGPUNodesInCache counts GPU nodes by listing the cache. Use it in a node event callback
-// instead of GetNodeCounts: the counter behind GetNodeCounts is kept by a separate event
-// handler, which can run after the callback and still count a node the cache already removed.
-func (ni *NodeInformer) CountGPUNodesInCache() (int, error) {
-	if !ni.HasSynced() {
-		return 0, fmt.Errorf("node informer cache not synced yet")
-	}
-
-	nodes, err := ni.lister.List(labels.Everything())
-	if err != nil {
-		return 0, fmt.Errorf("failed to list nodes from cache: %w", err)
-	}
-
-	count := 0
-
-	for _, node := range nodes {
-		if ni.isGPUNode(node) {
-			count++
-		}
-	}
-
-	return count, nil
 }
 
 // GetNode retrieves a node from the informer's cache.
@@ -577,6 +556,13 @@ func (ni *NodeInformer) SetOnQuarantinedNodeDeletedCallback(callback func(nodeNa
 	ni.onQuarantinedNodeDeleted = callback
 }
 
+// SetOnLastGPUNodeDeletedCallback sets the callback function for when a delete leaves no GPU
+// nodes. It runs in the handler that keeps the GPU node count, so it sees deletes and adds in
+// the order they happened.
+func (ni *NodeInformer) SetOnLastGPUNodeDeletedCallback(callback func()) {
+	ni.onLastGPUNodeDeleted = callback
+}
+
 // SetOnManualUncordonCallback sets the callback function for when a node is manually uncordoned
 func (ni *NodeInformer) SetOnManualUncordonCallback(callback func(nodeName string) error) {
 	ni.onManualUncordon = callback
@@ -663,8 +649,13 @@ func (ni *NodeInformer) countDeletedNode(obj any) {
 		obj = tombstone.Obj
 	}
 
-	if node, ok := obj.(*v1.Node); ok && ni.isGPUNode(node) {
-		ni.gpuNodes.Add(-1)
+	node, ok := obj.(*v1.Node)
+	if !ok || !ni.isGPUNode(node) {
+		return
+	}
+
+	if ni.gpuNodes.Add(-1) == 0 && ni.onLastGPUNodeDeleted != nil {
+		ni.onLastGPUNodeDeleted()
 	}
 }
 

@@ -1230,14 +1230,15 @@ func TestIsTripped_GPUNodeJoinsAfterZero_UsesNodeCount(t *testing.T) {
 	require.False(t, tripped, "no cordons on a one-node fleet should not trip")
 }
 
-func TestForgetNode_DeletedNodeLeavesWindow(t *testing.T) {
+func TestForgetDeletedNodes_KeepsNodesThatStillExist(t *testing.T) {
 	ctx := context.Background()
 	b := newNoGPUNodeBreaker(t, ctx)
+	b.cfg.K8sClient.(*testK8sClient).existingNodes = map[string]bool{"node-b": true}
 
 	b.AddCordonEvent("node-a")
 	b.AddCordonEvent("node-b")
-	b.ForgetNode("node-a")
-	b.ForgetNode("node-not-in-window")
+	b.AddCordonEvent("node-c")
+	require.NoError(t, b.ForgetDeletedNodes(ctx))
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -1245,6 +1246,21 @@ func TestForgetNode_DeletedNodeLeavesWindow(t *testing.T) {
 	assert.Equal(t, 1, b.sumBuckets())
 	assert.NotContains(t, b.nodeToIndex, "node-a")
 	assert.Contains(t, b.nodeToIndex, "node-b")
+	assert.NotContains(t, b.nodeToIndex, "node-c")
+}
+
+func TestForgetDeletedNodes_NodeExistsError_KeepsWindow(t *testing.T) {
+	ctx := context.Background()
+	b := newNoGPUNodeBreaker(t, ctx)
+	b.cfg.K8sClient.(*testK8sClient).nodeExistsErr = fmt.Errorf("informer not synced")
+
+	b.AddCordonEvent("node-a")
+	require.Error(t, b.ForgetDeletedNodes(ctx))
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	assert.Equal(t, 1, b.sumBuckets())
 }
 
 func TestIsTripped_GPUNodesBackAfterCordonedNodeDeleted_StaysClosed(t *testing.T) {
@@ -1252,7 +1268,7 @@ func TestIsTripped_GPUNodesBackAfterCordonedNodeDeleted_StaysClosed(t *testing.T
 	b := newNoGPUNodeBreaker(t, ctx)
 
 	b.AddCordonEvent("last-gpu-node-replaced")
-	b.ForgetNode("last-gpu-node-replaced")
+	require.NoError(t, b.ForgetDeletedNodes(ctx))
 
 	nodeName := "test-node-replacement-" + generateTestID()[:6]
 	createTestNode(ctx, t, nodeName)
