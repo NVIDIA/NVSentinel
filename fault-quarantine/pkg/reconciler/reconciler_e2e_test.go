@@ -1543,85 +1543,109 @@ func TestE2E_ValidationRequestSkippedWhenNoRuleSetMatches(t *testing.T) {
 	assert.Empty(t, listValidationRequestTests(ctx, t, nodeName))
 }
 
+// TestE2E_ValidationRequestSkippedWhenDrainIsPartial covers both ways that a drained
+// COMPONENT_RESET event is a partial drain of GPU-0. A partial drain never proves that the node
+// was fully drained, so no ValidationRequest is created.
 func TestE2E_ValidationRequestSkippedWhenDrainIsPartial(t *testing.T) {
-	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
-	defer cancel()
-
-	nodeName := "e2e-validation-partial-drain-" + generateShortTestID()
-	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
-	defer func() {
-		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-	}()
-
-	tomlConfig := config.TomlConfig{
-		LabelPrefix: "k8s.nvidia.com/",
-		RuleSets: []config.QuarantineRuleSet{
-			{
-				Enabled: true, Name: "gpu-xid-critical", Version: "1",
-				Match: config.Match{Any: []config.Rule{
-					{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
-				}},
-				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
-				Cordon: config.Cordon{ShouldCordon: true},
-			},
+	tests := []struct {
+		name                string
+		partialDrainEnabled bool
+		store               func(t *testing.T, entityType, entityValue string) *mockHealthEventStore
+	}{
+		{
+			name:                "partial drain enabled and no recorded decision",
+			partialDrainEnabled: true,
+			store:               mockHealthEventStoreWithDrainedComponentResetEvent,
 		},
-		Validation: validationConfig([]config.ValidationRuleSet{
-			{
-				Enabled: true, Name: "dcgm-diag", Version: "1",
-				Match: config.Match{Any: []config.Rule{
-					{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
-				}},
-				Tests: []string{"dcgm-diag-test"},
-			},
-		}),
+		{
+			name:                "recorded partial drain after partial drain is disabled",
+			partialDrainEnabled: false,
+			store:               mockHealthEventStoreWithRecordedPartialDrain,
+		},
 	}
 
-	tomlConfig.Validation.PartialDrainEnabled = true
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+			defer cancel()
 
-	_, mockWatcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
-		TomlConfig:       tomlConfig,
-		HealthEventStore: mockHealthEventStoreWithDrainedComponentResetEvent(t, "GPU_UUID", "GPU-0"),
-	})
+			nodeName := "e2e-validation-partial-drain-" + generateShortTestID()
+			createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+			defer func() {
+				_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+			}()
 
-	eventID1 := generateTestID()
-	unhealthyBSON := createHealthEventBSON(
-		eventID1, nodeName, "GpuXidError", false, true,
-		[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
-	)
-	unhealthyBSON["fullDocument"].(datastore.Event)["healthevent"].(datastore.Event)["recommendedaction"] =
-		float64(protos.RecommendedAction_COMPONENT_RESET)
-	mockWatcher.EventsChan <- &TestEvent{Data: unhealthyBSON}
+			tomlConfig := config.TomlConfig{
+				LabelPrefix: "k8s.nvidia.com/",
+				RuleSets: []config.QuarantineRuleSet{
+					{
+						Enabled: true, Name: "gpu-xid-critical", Version: "1",
+						Match: config.Match{Any: []config.Rule{
+							{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
+						}},
+						Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+						Cordon: config.Cordon{ShouldCordon: true},
+					},
+				},
+				Validation: validationConfig([]config.ValidationRuleSet{
+					{
+						Enabled: true, Name: "dcgm-diag", Version: "1",
+						Match: config.Match{Any: []config.Rule{
+							{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+						}},
+						Tests: []string{"dcgm-diag-test"},
+					},
+				}),
+			}
 
-	t.Log("Wait for node to be quarantined with a validation annotation recorded")
-	require.Eventually(t, func() bool {
-		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-		return err == nil && node.Spec.Unschedulable &&
-			node.Annotations[common.QuarantineValidationHealthEventAnnotationKey] != ""
-	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined with a validation annotation")
+			tomlConfig.Validation.PartialDrainEnabled = tt.partialDrainEnabled
 
-	eventID2 := generateTestID()
-	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-		eventID2, nodeName, "GpuXidError", true, false,
-		[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
-	)}
+			_, mockWatcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+				TomlConfig:       tomlConfig,
+				HealthEventStore: tt.store(t, "GPU_UUID", "GPU-0"),
+			})
 
-	t.Log("Verify status is UnQuarantined (the partial-drain event never proves a full drain)")
-	require.Eventually(t, func() bool {
-		status := getStatus(eventID2)
-		return status != nil && *status == model.UnQuarantined
-	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+			eventID1 := generateTestID()
+			unhealthyBSON := createHealthEventBSON(
+				eventID1, nodeName, "GpuXidError", false, true,
+				[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
+			)
+			unhealthyBSON["fullDocument"].(datastore.Event)["healthevent"].(datastore.Event)["recommendedaction"] =
+				float64(protos.RecommendedAction_COMPONENT_RESET)
+			mockWatcher.EventsChan <- &TestEvent{Data: unhealthyBSON}
 
-	require.Eventually(t, func() bool {
-		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-		return err == nil && !node.Spec.Unschedulable
-	}, eventuallyTimeout, eventuallyPollInterval, "Node should be fully unquarantined")
+			t.Log("Wait for node to be quarantined with a validation annotation recorded")
+			require.Eventually(t, func() bool {
+				node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+				return err == nil && node.Spec.Unschedulable &&
+					node.Annotations[common.QuarantineValidationHealthEventAnnotationKey] != ""
+			}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined with a validation annotation")
 
-	t.Log("Verify the FQ taint was removed and no ValidationRequest was created")
-	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-	require.NoError(t, err)
-	assert.False(t, node.Spec.Unschedulable, "Node should be uncordoned")
-	verifyFQTaintAbsent(t, node, "nvidia.com/gpu-xid-error")
-	assert.Empty(t, listValidationRequestTests(ctx, t, nodeName))
+			eventID2 := generateTestID()
+			mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+				eventID2, nodeName, "GpuXidError", true, false,
+				[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
+			)}
+
+			t.Log("Verify status is UnQuarantined (the partial-drain event never proves a full drain)")
+			require.Eventually(t, func() bool {
+				status := getStatus(eventID2)
+				return status != nil && *status == model.UnQuarantined
+			}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+
+			require.Eventually(t, func() bool {
+				node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+				return err == nil && !node.Spec.Unschedulable
+			}, eventuallyTimeout, eventuallyPollInterval, "Node should be fully unquarantined")
+
+			t.Log("Verify the FQ taint was removed and no ValidationRequest was created")
+			node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.False(t, node.Spec.Unschedulable, "Node should be uncordoned")
+			verifyFQTaintAbsent(t, node, "nvidia.com/gpu-xid-error")
+			assert.Empty(t, listValidationRequestTests(ctx, t, nodeName))
+		})
+	}
 }
 
 func TestE2E_ValidationRequestCreatedWhenComponentResetEventFullyDrained(t *testing.T) {
