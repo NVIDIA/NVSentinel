@@ -1273,7 +1273,13 @@ func TestIsTripped_GPUNodesBackAfterCordonedNodeDeleted_StaysClosed(t *testing.T
 	nodeName := "test-node-replacement-" + generateTestID()[:6]
 	createTestNode(ctx, t, nodeName)
 	t.Cleanup(func() {
-		_ = testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := testClient.CoreV1().Nodes().Delete(cleanupCtx, nodeName, metav1.DeleteOptions{})
+		if err != nil && !errors.IsNotFound(err) {
+			t.Errorf("failed to delete node %s: %v", nodeName, err)
+		}
 	})
 
 	require.Eventually(t, func() bool {
