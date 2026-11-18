@@ -185,7 +185,7 @@ func TestEvaluatorClone_IsolatesPreparedCounterState(t *testing.T) {
 	assert.Equal(t, uint64(0), committed.snapshots["mlx5_0:1:link_downed"].Value)
 }
 
-func TestEvaluateOne_SnapshotPersistence_ByThresholdType(t *testing.T) {
+func TestEvaluateOne_LiveSnapshotTiming_ByThresholdType(t *testing.T) {
 	tests := []struct {
 		name        string
 		cfg         config.CounterConfig
@@ -193,11 +193,11 @@ func TestEvaluateOne_SnapshotPersistence_ByThresholdType(t *testing.T) {
 		elapsed     time.Duration
 		wantChanged bool
 	}{
-		{name: "unchanged delta", cfg: deltaCounter(100), value: 10, elapsed: time.Second},
+		{name: "unchanged delta", cfg: deltaCounter(100), value: 10, elapsed: time.Second, wantChanged: true},
 		{name: "changed delta", cfg: deltaCounter(100), value: 11, elapsed: time.Second, wantChanged: true},
 		{name: "velocity window pending", cfg: velocityCounter("minute", 100), value: 10, elapsed: time.Second},
-		{name: "unchanged velocity window elapsed", cfg: velocityCounter("minute", 100),
-			value: 10, elapsed: time.Minute, wantChanged: true},
+		{name: "unchanged velocity window elapsed", cfg: velocityCounter("second", 100),
+			value: 10, elapsed: time.Second, wantChanged: true},
 	}
 
 	for _, tt := range tests {
@@ -208,21 +208,16 @@ func TestEvaluateOne_SnapshotPersistence_ByThresholdType(t *testing.T) {
 			snapshots := map[string]statefile.CounterSnapshot{key: previous}
 			ev := NewEvaluator(testNode, newReaderFor(&tt.value), pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 				snapshots, nil, false)
-			manager := statefile.NewManagerWithPaths("", "")
-			require.True(t, manager.UpdateCounterSnapshots(snapshots))
-
 			now := previous.Timestamp.Add(tt.elapsed)
 			event := ev.evaluateOne(key, tt.value, now, tt.cfg, nil, checks.InfiniBandDegradationCheckName)
 			require.Nil(t, event)
-
-			assert.Equal(t, tt.wantChanged, manager.UpdateCounterSnapshots(ev.Snapshots()))
 
 			want := previous
 			if tt.wantChanged {
 				want = statefile.CounterSnapshot{Value: tt.value, Timestamp: now}
 			}
 
-			assert.Equal(t, want, manager.CounterSnapshots()[key])
+			assert.Equal(t, want, ev.Snapshots()[key])
 		})
 	}
 }

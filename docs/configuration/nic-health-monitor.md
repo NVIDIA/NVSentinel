@@ -258,11 +258,11 @@ nic-health-monitor:
 | `threshold` | number | Numeric threshold; breach when exceeded |
 | `velocityUnit` | string | For velocity thresholds: `second`, `minute`, or `hour` |
 
-#### Changing Counter Types
+#### Counter Snapshots Across Restarts
 
-Changing an existing counter from `delta` to `velocity` does not reset its saved snapshot. If the delta value has stayed unchanged, its timestamp may be old even while the monitor keeps polling. The first velocity calculation then averages increments over that longer interval, which can understate a recent burst and miss a threshold breach. Once that calculation advances the snapshot, subsequent windows use normal velocity timing.
+The monitor updates each live delta snapshot on evaluation and each live velocity snapshot when its window ends. Timestamp-only updates can wait until a poll runs at least one minute after the last successful save. A save triggered by another change also saves the latest timestamps.
 
-A velocity counter can also average a burst over a longer interval after a restart with a long gap between polls, even when `thresholdType` is unchanged. That existing behavior uses the elapsed time since the saved snapshot; the delta-to-velocity case can arise without a polling gap.
+After a pod restart, the first velocity calculation uses the saved timestamp. A deferred save or a gap in polling can make this interval longer than the configured window. This can understate a recent burst and miss a threshold breach. The same behavior applies when a restart changes a counter from `delta` to `velocity`.
 
 #### Default Counter Configuration
 
