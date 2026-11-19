@@ -83,7 +83,7 @@ Only nodes labeled `nvidia.com/gpu.present=true` are included when calculating t
 
 ### Small clusters
 
-The breaker trips when the nodes cordoned in the window reach `ceil(gpuNodes × percentage / 100)`. That formula rounds up, so the threshold falls to a single node on the smallest clusters. The table below assumes the default `maxNodes: 0`, which leaves the percentage as the only bound:
+The breaker trips when the nodes cordoned in the window reach `ceil(gpuNodes × percentage / 100)`. That formula rounds up, so the threshold falls to a single node on the smallest clusters. A deleted node keeps counting until it leaves the window. The exception is the last GPU node: when its delete leaves no GPU nodes, the cordons of every node no longer in the cluster are removed, so the GPU nodes that come back start with a full budget. Cordons of nodes still in the cluster stay. The table below assumes the default `maxNodes: 0`, which leaves the percentage as the only bound:
 
 | GPU nodes | Trips at, `percentage: 50` | Trips at, `percentage: 100` |
 |---|---|---|
@@ -258,7 +258,7 @@ Remember that resetting the breaker does not uncordon anything. It only lets fau
 - Expected at any percentage: one cordoned node is the whole fleet. Disable the breaker on single-node clusters. See [Small clusters](#small-clusters).
 
 **Q: What happens on a cluster with no GPU nodes?**
-- The breaker stays `CLOSED` and fault quarantine keeps running, since there is nothing to cordon. If a node is cordoned while no GPU nodes are counted, the breaker trips, because that means `gpuNodeLabel` does not match the nodes being quarantined.
+- The breaker stays `CLOSED` and fault quarantine keeps running, since there is nothing to cordon. If a node cordoned in the window is still in the cluster while no GPU nodes are counted, the breaker trips, because that means `gpuNodeLabel` does not match the nodes being quarantined. A cordoned node that was deleted, for example the last GPU node being replaced, does not trip it.
 
 **Q: Can I disable the circuit breaker?**
 - Yes, set `enabled: false` in your Helm values and upgrade the release. However, this removes an important safety mechanism.

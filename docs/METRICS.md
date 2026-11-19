@@ -39,7 +39,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_processing_errors_total` | Counter | `error_type` | Total number of errors encountered during event processing |
 | `fault_quarantine_cold_start_events_total` | Counter | `result` | Health events examined during startup recovery, labeled `processed`, `skipped`, `superseded`, `invalid`, or `failed` |
 | `fault_quarantine_cold_start_duration_seconds` | Histogram | - | Startup recovery duration. Buckets: ExponentialBuckets(start=0.1s, factor=2, count=18), max ~3.6 hours |
-| `fault_quarantine_event_backlog_count` | Gauge | - | Number of health events which fault quarantine is yet to process |
+| `fault_quarantine_event_backlog_count` | Gauge | - | Number of health events which fault quarantine is yet to process. Reports `-1` from registration until the process records its first event checkpoint, the baseline the count is taken from; no count exists to report before then. On PostgreSQL the change-stream watcher does not support the count, so the gauge stays `-1` there even after the first checkpoint |
 | `fault_quarantine_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
 
 ### Node Quarantine Metrics
@@ -50,6 +50,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_nodes_unquarantined_total` | Counter | `node` | Total number of nodes unquarantined |
 | `fault_quarantine_nodes_manually_uncordoned_total` | Counter | `node` | Total number of manually uncordons for nodes |
 | `fault_quarantine_nodes_manually_untainted_total` | Counter | `node` | Total number of manual taint removals for nodes |
+| `fault_quarantine_nodes_pending_cancellation` | Gauge | - | Nodes waiting for their health events to be marked `Cancelled` after a manual uncordon, a manual untaint or a dry-run switch. If it stays above zero, the cancellation keeps failing |
 | `fault_quarantine_current_quarantined_nodes` | Gauge | `node` | Current number of quarantined nodes |
 | `fault_quarantine_dry_run_actions_total` | Counter | `action` | Total number of quarantine and unquarantine actions skipped by dry run |
 
@@ -79,7 +80,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `fault_quarantine_breaker_state` | Gauge | `state` | State of the fault quarantine breaker |
 | `fault_quarantine_breaker_utilization` | Gauge | - | Fraction of GPU nodes cordoned within the circuit breaker's sliding window |
-| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, `fleetSize` when clamped, or `noGPUNodes` when no GPU nodes are counted and any recent cordon trips it) |
+| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, `fleetSize` when clamped, or `noGPUNodes` when no GPU nodes are counted, where a node cordoned in the window that is still in the cluster trips it) |
 | `fault_quarantine_get_total_nodes_duration_seconds` | Histogram | `result` | Duration of getTotalNodes calls in seconds |
 | `fault_quarantine_get_total_nodes_errors_total` | Counter | `error_type` | Total number of errors from getTotalNodes |
 
