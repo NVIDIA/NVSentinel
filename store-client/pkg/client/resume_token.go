@@ -257,6 +257,14 @@ func prepareCreateResumeControl(
 	return cutoff, nil
 }
 
+// headResumeTokenResetter is implemented by datastores that would otherwise start a watcher
+// slightly before the current head after its token is deleted. A reset (reset-on-start or a
+// CREATE transition) means "skip what accumulated", so such a datastore writes a token at its
+// current head instead of deleting it.
+type headResumeTokenResetter interface {
+	ResetResumeTokenToHead(ctx context.Context, tokenConfig TokenConfig) error
+}
+
 func deleteResumeTokenAndResume(
 	ctx context.Context,
 	dbClient DatabaseClient,
@@ -270,7 +278,11 @@ func deleteResumeTokenAndResume(
 		"tokenDatabase", tokenConfig.TokenDatabase,
 		"tokenCollection", tokenConfig.TokenCollection)
 
-	if err := dbClient.DeleteResumeToken(ctx, tokenConfig); err != nil {
+	if resetter, ok := dbClient.(headResumeTokenResetter); ok {
+		if err := resetter.ResetResumeTokenToHead(ctx, tokenConfig); err != nil {
+			return ResumeControlDecision{}, fmt.Errorf("failed to reset change stream resume token to head: %w", err)
+		}
+	} else if err := dbClient.DeleteResumeToken(ctx, tokenConfig); err != nil {
 		return ResumeControlDecision{}, fmt.Errorf("failed to delete change stream resume token: %w", err)
 	}
 

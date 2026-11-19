@@ -526,3 +526,36 @@ func TestWatcherConstruction_FullReplayBoundary_ParsesInAnySessionTimeZone(t *te
 		})
 	}
 }
+
+func TestResetResumeTokenToHead_SavesHeadWithoutMargin(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	// A reset upserts the plain database clock. The next construction then finds this row and
+	// uses it unchanged, so events that accumulated before the reset are skipped.
+	mock.ExpectExec(regexp.QuoteMeta(resetToHeadPositionQuery)).WithArgs("fault-quarantine").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	require.NotContains(t, resetToHeadPositionQuery, "INTERVAL")
+
+	err = NewPostgreSQLDatabaseClient(db, "HealthEvents").(*PostgreSQLDatabaseClient).ResetResumeTokenToHead(t.Context(),
+		client.TokenConfig{ClientName: "fault-quarantine"})
+	require.NoError(t, err)
+
+	expectPositionToken(mock, "fault-quarantine", positionToken(t, initialDBTime, 0))
+	w, err := positionConstructors()["database-client"](t.Context(), db, "fault-quarantine")
+	require.NoError(t, err)
+	assert.Equal(t, initialDBTime, w.lastTimestamp)
+	assert.Zero(t, w.lastEventID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetDatabaseClient_SupportsHeadReset(t *testing.T) {
+	// Resume control finds the head reset by type assertion. A wrapper here would silently fall
+	// back to deleting the token, and a CREATE would then replay events from the start margin.
+	dbClient := (&PostgreSQLDataStore{}).GetDatabaseClient()
+	_, ok := dbClient.(interface {
+		ResetResumeTokenToHead(context.Context, client.TokenConfig) error
+	})
+	require.True(t, ok, "GetDatabaseClient must keep ResetResumeTokenToHead")
+}

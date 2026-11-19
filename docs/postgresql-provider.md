@@ -64,7 +64,7 @@ A restart before the first acknowledgment resumes from that saved pair. A consum
 
 Load errors prevent construction, polling and delivery. A malformed token is logged and kept, and the watcher replays the changelog from the beginning, so a corrupt row cannot fail every restart. Legacy timestamp lookups retry database errors until success or context cancellation. A missing legacy changelog row resumes from the earliest later `changed_at` with eventID `0`; existing tokens are never replaced.
 
-The watcher factory and datastore paths run the configured reset before initialization. The database-client path initializes after any reset performed by its caller, including `ClientFactory`. The shared reset helper skips `event-exporter`.
+A reset is different from a first start. Reset-on-start and a circuit-breaker `CREATE` transition ask to skip events that accumulated before the reset, so they replace the token with the current database clock, with no margin, instead of deleting it. Construction then finds that row and starts exactly at the head. Deleting the row by hand still gives the first-start behavior with its five-second margin. The watcher factory and datastore paths run the configured reset before initialization. The database-client path initializes after any reset performed by its caller, including `ClientFactory`. The shared reset helper skips `event-exporter`.
 
 `Start(ctx)` uses the prepared pair and writes no checkpoint. The low-level `NewPostgreSQLChangeStreamWatcher` cannot return initialization errors, so `Start` initializes such a watcher itself. If that fails, `Start` logs the error and launches no readers.
 
