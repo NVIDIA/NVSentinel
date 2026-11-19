@@ -38,6 +38,8 @@ type cursorModeBreakerStub struct {
 
 func (*cursorModeBreakerStub) AddCordonEvent(string) {}
 
+func (*cursorModeBreakerStub) ForgetDeletedNodes(context.Context) error { return nil }
+
 func (*cursorModeBreakerStub) IsTripped(context.Context) (bool, error) {
 	return false, nil
 }
