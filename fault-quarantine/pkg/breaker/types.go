@@ -39,6 +39,8 @@ type K8sClientOperations interface {
 	// too, for example GPU operator upgrade flows, and those must not consume this
 	// breaker's budget.
 	GetCordonedNodes(ctx context.Context) (int, error)
+	// NodeExists reports whether the node is in the cluster.
+	NodeExists(ctx context.Context, name string) (bool, error)
 	EnsureCircuitBreakerConfigMap(ctx context.Context, name, namespace string, initialStatus State) error
 	ReadCircuitBreakerState(ctx context.Context, name, namespace string) (State, error)
 	WriteCircuitBreakerState(ctx context.Context, name, namespace string, status State) error
@@ -67,6 +69,8 @@ const (
 type CircuitBreaker interface {
 	// AddCordonEvent records a node cordoning event in the sliding window
 	AddCordonEvent(nodeName string)
+	// ForgetDeletedNodes removes the cordons of nodes no longer in the cluster from the sliding window
+	ForgetDeletedNodes(ctx context.Context) error
 	// IsTripped checks if the breaker should prevent further cordoning
 	IsTripped(ctx context.Context) (bool, error)
 	// ForceState manually sets the breaker state (CLOSED or TRIPPED)
