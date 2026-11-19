@@ -23,7 +23,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/eventwatcher"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -35,6 +37,8 @@ type cursorModeBreakerStub struct {
 }
 
 func (*cursorModeBreakerStub) AddCordonEvent(string) {}
+
+func (*cursorModeBreakerStub) ForgetDeletedNodes(context.Context) error { return nil }
 
 func (*cursorModeBreakerStub) IsTripped(context.Context) (bool, error) {
 	return false, nil
@@ -66,10 +70,17 @@ type resumeTokenClientStub struct {
 type coldStartCallbackWatcherStub struct {
 	eventwatcher.EventWatcherInterface
 	callback func(context.Context) error
+	process  func(context.Context, model.HealthEventWithStatus, string) (coldstart.ProcessResult, error)
 }
 
 func (s *coldStartCallbackWatcherStub) SetColdStartCallback(callback func(context.Context) error) {
 	s.callback = callback
+}
+
+func (s *coldStartCallbackWatcherStub) ProcessStoredEvent(
+	ctx context.Context, event model.HealthEventWithStatus, documentID string,
+) (coldstart.ProcessResult, error) {
+	return s.process(ctx, event, documentID)
 }
 
 type emptyHealthEventStoreStub struct {
@@ -87,6 +98,29 @@ func (s *emptyHealthEventStoreStub) FindHealthEventsByQueryBatched(
 	s.builder = builder
 
 	return s.findErr
+}
+
+// seedRefusalScanStoreStub delivers one stored event to the first (fault-phase)
+// scan and reports no superseding state to later resolver lookups.
+type seedRefusalScanStoreStub struct {
+	datastore.HealthEventStore
+	scanBuilder datastore.QueryBuilder
+	record      datastore.HealthEventWithStatus
+}
+
+func (s *seedRefusalScanStoreStub) FindHealthEventsByQueryBatched(
+	_ context.Context,
+	builder datastore.QueryBuilder,
+	_ int,
+	visit func([]datastore.HealthEventWithStatus) error,
+) error {
+	if s.scanBuilder == nil {
+		s.scanBuilder = builder
+
+		return visit([]datastore.HealthEventWithStatus{s.record})
+	}
+
+	return nil
 }
 
 func TestHandleCircuitBreakerCreate_Success_PersistsCutoffBeforeDeletingToken(t *testing.T) {
@@ -172,6 +206,57 @@ func TestConfigureColdStart_MissingCutoff_SeedsAndPersistsBoundedWindow(t *testi
 	assert.True(t, lowerBoundary.Before(upperBoundary), "seeded recovery window must be non-empty")
 	assert.False(t, lowerBoundary.After(configuredAt), "lower watermark must be captured before recovery starts")
 	assert.Equal(t, upperBoundary, persistedCutoff)
+}
+
+func TestConfigureColdStart_MissingCutoff_BreakerRefusal_PersistsLowerBound(t *testing.T) {
+	processed := 0
+	watcher := &coldStartCallbackWatcherStub{
+		process: func(
+			_ context.Context,
+			_ model.HealthEventWithStatus,
+			_ string,
+		) (coldstart.ProcessResult, error) {
+			processed++
+
+			return coldstart.ProcessResultFailed, coldstart.ErrBreakerRefused
+		},
+	}
+	store := &seedRefusalScanStoreStub{record: datastore.HealthEventWithStatus{
+		RawEvent: datastore.Event{
+			"id": "seed-refused",
+			"healthevent": map[string]any{
+				"agent": "agent", "componentClass": "GPU", "checkName": "check", "nodeName": "node-a",
+			},
+			"healtheventstatus": map[string]any{},
+		},
+	}}
+	r := NewReconciler(ReconcilerConfig{TokenConfig: client.TokenConfig{
+		ClientName: "fault-quarantine",
+	}}, nil, nil)
+	r.eventWatcher = watcher
+	var persistedCutoff time.Time
+	r.setColdStartCutoff = func(_ context.Context, clientName string, cutoff time.Time) error {
+		assert.Equal(t, "fault-quarantine", clientName)
+		persistedCutoff = cutoff
+
+		return nil
+	}
+
+	r.configureColdStart(context.Background(), false, false, time.Time{}, store)
+	require.NotNil(t, watcher.callback)
+	require.NoError(t, watcher.callback(context.Background()),
+		"a breaker refusal during the seed scan is a stop signal, not a recovery failure")
+	assert.Equal(t, 1, processed, "the scan must stop at the refused event")
+
+	_, args := store.scanBuilder.ToSQL()
+	require.NotEmpty(t, args)
+	lowerBoundary, ok := args[0].(time.Time)
+	require.True(t, ok)
+	upperBoundary, ok := args[len(args)-1].(time.Time)
+	require.True(t, ok)
+	assert.True(t, lowerBoundary.Before(upperBoundary), "seeded recovery window must be non-empty")
+	assert.Equal(t, lowerBoundary, persistedCutoff,
+		"an incomplete seed scan must persist the window's lower bound, or the next startup starts above events this scan never finished")
 }
 
 func TestConfigureColdStart_FailedSweep_DoesNotAdvanceCutoff(t *testing.T) {

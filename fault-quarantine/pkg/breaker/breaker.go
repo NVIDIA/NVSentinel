@@ -24,7 +24,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
@@ -174,6 +176,49 @@ func (b *slidingWindowBreaker) AddCordonEvent(nodeName string) {
 	b.buckets[currentBucketIndex]++
 }
 
+// ForgetDeletedNodes removes the cordons of nodes that are no longer in the cluster from the
+// sliding window. It is called when the last GPU node is deleted, so the GPU nodes that come
+// back start with a full budget. Cordons of nodes that still exist stay, so a gpuNodeLabel that
+// does not match the quarantined nodes still trips the breaker. This method is thread-safe.
+func (b *slidingWindowBreaker) ForgetDeletedNodes(ctx context.Context) error {
+	b.mu.Lock()
+	recentCordonedNodes := slices.Collect(maps.Keys(b.nodeToIndex))
+	b.mu.Unlock()
+
+	for _, name := range recentCordonedNodes {
+		exists, err := b.cfg.K8sClient.NodeExists(ctx, name)
+		if err != nil {
+			return fmt.Errorf("failed to check whether node %s exists: %w", name, err)
+		}
+
+		if !exists {
+			b.forgetNode(name)
+		}
+	}
+
+	return nil
+}
+
+// forgetNode removes a node's cordon from the sliding window. A node that is not in the window
+// is ignored.
+func (b *slidingWindowBreaker) forgetNode(nodeName string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	index, exists := b.nodeToIndex[nodeName]
+	if !exists {
+		return
+	}
+
+	delete(b.nodeToIndex, nodeName)
+
+	if bucketNodes, ok := b.indexToNodes[index]; ok && bucketNodes[nodeName] {
+		delete(bucketNodes, nodeName)
+
+		b.buckets[index]--
+	}
+}
+
 // sumBucketsLocked calculates the total number of cordon events across all buckets
 // in the sliding window. This method must be called with the mutex locked.
 // Returns the sum of all bucket values representing recent cordon events.
@@ -204,8 +249,8 @@ const (
 	boundMaxCordonedNodes Bound = "maxCordonedNodes"
 	// boundMaxCordonedPercentage is the percentage form of boundMaxCordonedNodes.
 	boundMaxCordonedPercentage Bound = "maxCordonedPercentage"
-	// boundNoGPUNodes is reported when no GPU nodes are counted, where any recent cordon trips
-	// the breaker.
+	// boundNoGPUNodes is reported when no GPU nodes are counted, where a node cordoned in the
+	// window that is still in the cluster trips the breaker.
 	boundNoGPUNodes Bound = "noGPUNodes"
 )
 
@@ -452,18 +497,37 @@ func (b *slidingWindowBreaker) getTotalNodes(ctx context.Context) (int, error) {
 	return totalNodes, nil
 }
 
-// isTrippedByRecentCordons is called when no GPU nodes are counted. It trips if the window
-// holds any cordon, since that means gpuNodeLabel does not match the nodes being
-// quarantined. Otherwise the breaker stays CLOSED.
+// isTrippedByRecentCordons is called when no GPU nodes are counted. It trips if a node cordoned
+// in the window is still in the cluster, since that means gpuNodeLabel does not match the nodes
+// being quarantined. A cordoned node that has since been deleted is not evidence of that:
+// replacing the last GPU node after quarantining it leaves a cordon in the window and no GPU
+// nodes. Otherwise the breaker stays CLOSED.
 func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bool, error) {
 	b.mu.Lock()
 	b.slideWindow(time.Now())
-	recentCordonedNodes := b.sumBuckets()
+	recentCordonedNodes := slices.Collect(maps.Keys(b.nodeToIndex))
 	b.mu.Unlock()
 
 	metrics.SetFaultQuarantineBreakerThresholdNodes(1, string(boundNoGPUNodes))
 
-	if recentCordonedNodes == 0 {
+	presentNode := ""
+
+	for _, name := range recentCordonedNodes {
+		exists, err := b.cfg.K8sClient.NodeExists(ctx, name)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to check whether a cordoned node exists", "node", name, "error", err)
+
+			return false, fmt.Errorf("failed to check whether node %s exists: %w", name, err)
+		}
+
+		if exists {
+			presentNode = name
+
+			break
+		}
+	}
+
+	if presentNode == "" {
 		metrics.SetFaultQuarantineBreakerUtilization(0)
 		metrics.SetFaultQuarantineBreakerState(string(StateClosed))
 
@@ -471,7 +535,7 @@ func (b *slidingWindowBreaker) isTrippedByRecentCordons(ctx context.Context) (bo
 	}
 
 	slog.ErrorContext(ctx, "Circuit breaker: nodes were cordoned but no GPU nodes are counted; tripping",
-		"recentCordonedNodes", recentCordonedNodes)
+		"recentCordonedNodes", len(recentCordonedNodes), "node", presentNode)
 
 	if err := b.ForceState(ctx, StateTripped); err != nil {
 		return true, fmt.Errorf("error forcing circuit breaker state to TRIPPED: %w", err)
