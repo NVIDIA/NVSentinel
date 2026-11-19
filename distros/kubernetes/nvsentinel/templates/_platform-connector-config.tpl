@@ -112,6 +112,9 @@ overrides.toml: |
     {{- if .override.recommendedAction -}}
       {{- $pairs = append $pairs (printf "recommendedAction = %q" .override.recommendedAction) -}}
     {{- end -}}
+    {{- if hasKey .override "customRecommendedAction" -}}
+      {{- $pairs = append $pairs (printf "customRecommendedAction = %q" .override.customRecommendedAction) -}}
+    {{- end -}}
     {{- $pairs | join ", " -}}
   }
   {{- end }}

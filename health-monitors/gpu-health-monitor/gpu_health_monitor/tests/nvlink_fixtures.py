@@ -14,10 +14,12 @@
 
 """Shared NVLink metadata fixtures for gpu-health-monitor tests.
 
-The three GPU shapes mirror real hardware observed while diagnosing the
+The GPU shapes mirror real hardware observed while diagnosing the
 DCGM_FR_NVLINK_DOWN false positive:
   - A100_PCIE_UNBRIDGED: the live-repro shape — NVML GetNvLinkState returns
     SUCCESS/NOT_ACTIVE for the 12 bridge links of an unbridged A100 80GB PCIe.
+  - RTX_3090_UNBRIDGED and RTX_2080_TI_UNBRIDGED: consumer bridge-capable
+    cards without an NVLink bridge.
   - H100_SXM_TRAINED: SXM part with all links trained by fabric manager.
   - L40_NO_NVLINK: no NVLink silicon; every link returns NOT_SUPPORTED.
 """
@@ -56,6 +58,25 @@ L40_NO_NVLINK: Final[dict] = {
     "nvlink_link_count": 0,
     "nvlink_active_link_count": 0,
     "nvlink_present_link_count": 0,
+}
+
+RTX_3090_UNBRIDGED: Final[dict] = {
+    "gpu_id": 0,
+    "uuid": "GPU-0",
+    "device_name": "NVIDIA GeForce RTX 3090",
+    "nvlinks": [],
+    "nvlink_link_count": 4,
+    "nvlink_active_link_count": 0,
+}
+
+
+RTX_2080_TI_UNBRIDGED: Final[dict] = {
+    "gpu_id": 0,
+    "uuid": "GPU-0",
+    "device_name": "NVIDIA GeForce RTX 2080 Ti",
+    "nvlinks": [],
+    "nvlink_link_count": 2,
+    "nvlink_active_link_count": 0,
 }
 
 

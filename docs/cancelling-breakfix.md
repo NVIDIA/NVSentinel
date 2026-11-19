@@ -44,6 +44,8 @@ kubectl get node {node-name} -o jsonpath='{.metadata.annotations.quarantinedNode
 
 If this returns `"True"`, the node was manually uncordoned.
 
+If NVSentinel cannot mark the health events as cancelled, for example during a database failover, it keeps its quarantine annotations on the node and retries in the background, and again after a restart. Until the write succeeds, node-drainer and fault-remediation can still act on those health events. Once it succeeds, NVSentinel removes the annotations and sets `quarantinedNodeUncordonedManually`. A new fault on the node in the meantime finishes the cancellation first and is then treated as a new incident. If the write still fails at that point, NVSentinel quarantines the node for the new fault anyway and the earlier health events stay active. The `fault_quarantine_nodes_pending_cancellation` metric shows how many nodes are still waiting. The metric does not count a node that NVSentinel quarantined again while the write was failing.
+
 ## Permanent Opt-Out: Disabling Break-Fix on Nodes
 
 ### When to Use This

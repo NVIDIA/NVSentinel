@@ -36,6 +36,18 @@ func (f fakeLagProvider) LagState() (lastEmptyBatch, lastEventRead time.Time) {
 	return f.lastEmptyBatch, f.lastEventRead
 }
 
+type fakeReadinessProvider struct {
+	ready bool
+}
+
+func (f *fakeReadinessProvider) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return time.Time{}, time.Time{}
+}
+
+func (f *fakeReadinessProvider) IsReady() bool {
+	return f.ready
+}
+
 func TestDatastoreReadinessChecker_Lifecycle(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	checker := NewDatastoreReadinessChecker(reg)
@@ -79,6 +91,23 @@ func TestDatastoreReadinessChecker_SetWatcher(t *testing.T) {
 	checker.SetWatcher(fakeLagProvider{})
 	assert.NoError(t, checker.Ready(ctx))
 	assert.Equal(t, float64(1), testutil.ToFloat64(checker))
+}
+
+func TestDatastoreReadinessChecker_WaitsForWatcherReadiness(t *testing.T) {
+	checker := NewDatastoreReadinessChecker(prometheus.NewRegistry())
+	watcher := &fakeReadinessProvider{}
+	checker.SetWatcher(watcher)
+
+	require.ErrorContains(t, checker.Ready(context.Background()), "datastore watcher not ready")
+	assert.Equal(t, float64(0), testutil.ToFloat64(checker))
+
+	watcher.ready = true
+	require.NoError(t, checker.Ready(context.Background()))
+	assert.Equal(t, float64(1), testutil.ToFloat64(checker))
+
+	watcher.ready = false
+	require.ErrorContains(t, checker.Ready(context.Background()), "datastore watcher not ready")
+	assert.Equal(t, float64(0), testutil.ToFloat64(checker))
 }
 
 func TestDatastoreReadinessChecker_ServerIntegration(t *testing.T) {

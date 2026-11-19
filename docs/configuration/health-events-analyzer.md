@@ -199,7 +199,7 @@ The following table summarises every flag, the XID or event type it covers, and 
 | Flag | Rule | Recommended Action | Description |
 |------|------|--------------------|-------------|
 | `enableMultipleRemediationsRule` | MultipleRemediations | `CONTACT_SUPPORT` | 5 or more remediations on the same node within 7 days |
-| `enableRepeatedXIDErrorOnSameGPURule` | RepeatedXIDErrorOnSameGPU | `CONTACT_SUPPORT` | Any XID except 31 and 45 five or more times within 24 hours on the same GPU (burst window 3 min, sticky XID window 3 h) |
+| `enableRepeatedXIDErrorOnSameGPURule` | RepeatedXIDErrorOnSameGPU | `CONTACT_SUPPORT` | Any XID whose Xid catalogue immediate action is not `IGNORE` or `RESTART_APP` (and not 45), plus the retirement failures 157 and 161, five or more times within 24 hours on the same GPU (burst window 3 min, sticky XID window 3 h) |
 | `enableRepeatedXID31OnSameGPURule` | RepeatedXID31OnSameGPU | `RUN_DCGMEUD` | XID 31 two or more times on the same GPU within 24 hours |
 | `enableRepeatedXID31OnDifferentGPURule` | RepeatedXID31OnDifferentGPU | `NONE` | XID 31 on two or more different GPUs within 24 hours |
 | `enableRepeatedXID13OnSameGPCAndTPCRule` | RepeatedXID13OnSameGPCAndTPC | `RUN_DCGMEUD` | XID 13 two or more times on the same GPC and TPC within 24 hours |
@@ -257,7 +257,7 @@ when = "size(event.errorCode) > 0 && event.errorCode[0] == '74'"
 stage = [ ... ]
 ```
 
-The expression can read these fields of the incoming event: `agent`, `checkName`, `componentClass`, `errorCode`, `isFatal`, `isHealthy`, `recommendedAction`, `nodeName`, `metadata`, and `message`. `errorCode` is a list and `metadata` is a map. The platform connector overrides and the event exporter filter use the same fields.
+The expression can read these fields of the incoming event: `agent`, `checkName`, `componentClass`, `errorCode`, `isFatal`, `isHealthy`, `recommendedAction`, `customRecommendedAction`, `nodeName`, `metadata`, and `message`. `errorCode` is a list and `metadata` is a map. The platform connector overrides and the event exporter filter use the same fields.
 
 **The expression must be true for every event that the stages can match.** If it is false for such an event, the analyzer misses that match. To write it safely, copy the stage of the rule that compares `this.` fields to constants. For example, the stage `{"$match": {"$expr": {"$eq": ["this.healthevent.errorcode.0", "74"]}}}` becomes the `when` in the example above. The analyzer resolves `this.healthevent.errorcode.0` to null when the event has no error code, so check `size(event.errorCode) > 0` before you read `event.errorCode[0]`.
 

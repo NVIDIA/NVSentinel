@@ -15,13 +15,84 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/monitor"
+	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/statefile"
 )
+
+type shutdownCounterCheck struct {
+	cancel context.CancelFunc
+	commit func()
+}
+
+func (c shutdownCounterCheck) Name() string { return checks.InfiniBandDegradationCheckName }
+
+func (c shutdownCounterCheck) Run() ([]*pb.HealthEvent, error) {
+	events, err := c.Prepare()
+	c.Commit()
+
+	return events, err
+}
+
+func (c shutdownCounterCheck) Prepare() ([]*pb.HealthEvent, error) {
+	c.cancel()
+
+	return nil, nil
+}
+
+func (c shutdownCounterCheck) Commit()  { c.commit() }
+func (c shutdownCounterCheck) Discard() {}
+
+func TestRunServerAndLoops_ShutdownFlushesLastCommittedPoll(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	bootIDPath := filepath.Join(dir, "boot_id")
+	require.NoError(t, os.WriteFile(bootIDPath, []byte("boot-1"), 0o644))
+
+	manager := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, manager.Load())
+
+	initial := statefile.CounterSnapshot{Value: 10, Timestamp: time.Unix(1000, 0).UTC()}
+	latest := statefile.CounterSnapshot{Value: initial.Value, Timestamp: initial.Timestamp.Add(55 * time.Second)}
+	require.NoError(t, manager.SaveCounterState(map[string]statefile.CounterSnapshot{"counter": initial}, nil, ""))
+
+	deadline, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+
+	ctx, cancel := context.WithCancel(deadline)
+	defer cancel()
+
+	var commitErr error
+
+	check := shutdownCounterCheck{
+		cancel: cancel,
+		commit: func() {
+			commitErr = manager.SaveCounterState(map[string]statefile.CounterSnapshot{"counter": latest}, nil, "")
+		},
+	}
+	cfg := &runtimeConfig{statePollingInterval: time.Minute}
+	nicMonitor := monitor.NewNICHealthMonitor(t.Name(), nil, "", []checks.TransactionalCheck{check},
+		cfg.statePollingInterval)
+	defer nicMonitor.Close()
+
+	require.NoError(t, runServerAndLoops(ctx, cfg, nicMonitor, manager))
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.NoError(t, commitErr)
+
+	restarted := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	require.NoError(t, restarted.Load())
+	assert.Equal(t, latest, restarted.CounterSnapshots()["counter"])
+}
 
 func writeConfigFile(t *testing.T, content string) string {
 	t.Helper()
