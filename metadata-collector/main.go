@@ -248,19 +248,19 @@ func runCollector(ctx context.Context, nvidiaSmiFailures *prometheus.CounterVec)
 		nvidiaSmiFailures.WithLabelValues(step).Inc()
 	}
 
-	// The previous file is a complete snapshot, so on a degraded run it is worth more than this
-	// one: consumers such as nic-health-monitor cannot start without nic_topology. The fresh
-	// metadata is still returned, so the pod mapper starts.
+	// A previous file that covers the failed steps is worth more than this one on a degraded run:
+	// consumers such as nic-health-monitor cannot start without nic_topology. The fresh metadata
+	// is still returned, so the pod mapper starts.
 	if len(failedSteps) > 0 {
-		if previousListsSameGPUs(*outputPath, metadata.GPUs) {
-			slog.Warn("nvidia-smi steps failed; keeping the previous metadata file, which lists the same GPUs",
+		if previousCoversFailedSteps(*outputPath, metadata, failedSteps) {
+			slog.Warn("nvidia-smi steps failed; keeping the previous metadata file, which has their data",
 				"steps", failedSteps, "output_path", *outputPath)
 
 			return metadata, nil
 		}
 
-		slog.Warn("nvidia-smi steps failed and there is no previous metadata for the same GPUs; "+
-			"writing their fields empty", "steps", failedSteps, "output_path", *outputPath)
+		slog.Warn("nvidia-smi steps failed and no previous metadata covers them; writing their fields empty",
+			"steps", failedSteps, "output_path", *outputPath)
 	}
 
 	slog.Info("Writing metadata to file", "output_path", *outputPath)
@@ -279,9 +279,12 @@ func runCollector(ctx context.Context, nvidiaSmiFailures *prometheus.CounterVec)
 	return metadata, nil
 }
 
-// previousListsSameGPUs reports whether the metadata file at path, written by an earlier run,
-// lists the same GPUs by UUID in the same order. Unreadable or unparsable files count as no.
-func previousListsSameGPUs(path string, gpus []model.GPUInfo) bool {
+// previousCoversFailedSteps reports whether the metadata file at path, written by an earlier
+// run, can stand in for this one: same driver version, same GPUs by UUID in the same order, and
+// the data of every failed step present. Without the driver check a node where a step fails on
+// every start would keep a file from before a driver upgrade, and without the data check it
+// could keep a file that is missing what this run collected. Unreadable files count as no.
+func previousCoversFailedSteps(path string, metadata *model.GPUMetadata, failedSteps []string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
@@ -292,5 +295,32 @@ func previousListsSameGPUs(path string, gpus []model.GPUInfo) bool {
 		return false
 	}
 
-	return slices.EqualFunc(previous.GPUs, gpus, func(a, b model.GPUInfo) bool { return a.UUID == b.UUID })
+	if previous.DriverVersion != metadata.DriverVersion ||
+		!slices.EqualFunc(previous.GPUs, metadata.GPUs, func(a, b model.GPUInfo) bool { return a.UUID == b.UUID }) {
+		return false
+	}
+
+	for _, step := range failedSteps {
+		if !hasStepData(&previous, step) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// hasStepData reports whether metadata has the fields that step provides.
+func hasStepData(metadata *model.GPUMetadata, step string) bool {
+	switch step {
+	case collector.StepTopo:
+		return len(metadata.NICTopology) > 0
+	case collector.StepNVLink:
+		for _, gpu := range metadata.GPUs {
+			if slices.ContainsFunc(gpu.NVLinks, func(link model.NVLink) bool { return link.RemoteLinkID == -1 }) {
+				return false
+			}
+		}
+	}
+
+	return true
 }

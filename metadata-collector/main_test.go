@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/writer"
 )
 
@@ -341,17 +342,49 @@ func TestCollectionCompletedGauge_StartsAtZero(t *testing.T) {
 	assert.InDelta(t, float64(time.Now().Unix()), testutil.ToFloat64(gauge), 5)
 }
 
-func TestPreviousListsSameGPUs(t *testing.T) {
+func TestPreviousCoversFailedSteps(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gpu_metadata.json")
-	gpus := []model.GPUInfo{{UUID: "GPU-a"}, {UUID: "GPU-b"}}
+	fresh := &model.GPUMetadata{
+		DriverVersion: "580.95.05",
+		GPUs:          []model.GPUInfo{{UUID: "GPU-a"}, {UUID: "GPU-b"}},
+	}
+	both := []string{collector.StepNVLink, collector.StepTopo}
 
-	assert.False(t, previousListsSameGPUs(path, gpus), "no previous file")
+	assert.False(t, previousCoversFailedSteps(path, fresh, both), "no previous file")
 
-	metadataWriter, err := writer.NewWriter(path)
-	require.NoError(t, err)
-	require.NoError(t, metadataWriter.Write(&model.GPUMetadata{GPUs: gpus}))
+	// writePrevious writes a complete previous file, after edit changes it.
+	writePrevious := func(edit func(*model.GPUMetadata)) {
+		t.Helper()
 
-	assert.True(t, previousListsSameGPUs(path, gpus))
-	assert.False(t, previousListsSameGPUs(path, []model.GPUInfo{{UUID: "GPU-a"}, {UUID: "GPU-c"}}))
-	assert.False(t, previousListsSameGPUs(path, gpus[:1]))
+		previous := &model.GPUMetadata{
+			DriverVersion: "580.95.05",
+			GPUs: []model.GPUInfo{
+				{UUID: "GPU-a", NVLinks: []model.NVLink{{LinkID: 0, RemoteLinkID: 34}}},
+				{UUID: "GPU-b"},
+			},
+			NICTopology: map[string][]string{"mlx5_0": {"PIX", "SYS"}},
+		}
+		edit(previous)
+
+		metadataWriter, err := writer.NewWriter(path)
+		require.NoError(t, err)
+		require.NoError(t, metadataWriter.Write(previous))
+	}
+
+	writePrevious(func(*model.GPUMetadata) {})
+	assert.True(t, previousCoversFailedSteps(path, fresh, both))
+
+	writePrevious(func(p *model.GPUMetadata) { p.GPUs[1].UUID = "GPU-c" })
+	assert.False(t, previousCoversFailedSteps(path, fresh, both), "different GPU")
+
+	writePrevious(func(p *model.GPUMetadata) { p.DriverVersion = "570.172.08" })
+	assert.False(t, previousCoversFailedSteps(path, fresh, both), "different driver version")
+
+	writePrevious(func(p *model.GPUMetadata) { p.NICTopology = nil })
+	assert.False(t, previousCoversFailedSteps(path, fresh, []string{collector.StepTopo}), "topo data missing")
+	assert.True(t, previousCoversFailedSteps(path, fresh, []string{collector.StepNVLink}), "only nvlink failed")
+
+	writePrevious(func(p *model.GPUMetadata) { p.GPUs[0].NVLinks[0].RemoteLinkID = -1 })
+	assert.False(t, previousCoversFailedSteps(path, fresh, []string{collector.StepNVLink}), "nvlink data missing")
+	assert.True(t, previousCoversFailedSteps(path, fresh, []string{collector.StepTopo}), "only topo failed")
 }
