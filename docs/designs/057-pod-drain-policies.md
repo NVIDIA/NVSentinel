@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-055: Node Drainer — Pod label policies
+# ADR-057: Node Drainer — Pod label policies
 
 ## Context
 

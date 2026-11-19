@@ -126,5 +126,8 @@ func BuildEventMap(event *pb.HealthEvent) map[string]any {
 		"nodeName":          event.GetNodeName(),
 		"metadata":          maps.Clone(event.GetMetadata()),
 		"message":           event.GetMessage(),
+		// Bound as sent. Ingress does not clear it for a built-in action, so match it
+		// together with recommendedAction == 'CUSTOM'.
+		"customRecommendedAction": event.GetCustomRecommendedAction(),
 	}
 }

@@ -77,6 +77,12 @@ type UpdateBuilder interface {
 type ChangeStreamWatcher interface {
 	Events() <-chan EventWithToken
 	Start(ctx context.Context)
+	// MarkProcessed cumulatively acknowledges the earliest tracked pending delivery matching token
+	// and every delivery before it, including entries summarized after pending-state eviction.
+	// Callers must resolve that whole delivery prefix first.
+	// Concurrent processors must acknowledge a contiguous completion watermark, not each
+	// out-of-order completion. PostgreSQL empty or unknown tokens certify no deliveries;
+	// empty-token fallback is provider-specific and must not be used to acknowledge work.
 	MarkProcessed(ctx context.Context, token []byte) error
 	Close(ctx context.Context) error
 }

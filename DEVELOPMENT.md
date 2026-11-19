@@ -1354,6 +1354,8 @@ All Go modules use consistent patterns via `common.mk`:
    go mod tidy
    ```
 
+   In a core module, also run `make dependency-licenses-lint` from the repository root. It fails when the new dependency has a license outside the allowed list in `.dependency-licenses.yaml`. If the dependency is still acceptable, add it to `exceptions` in that file with a reason; otherwise replace it.
+
 2. **For Python modules:**
    ```bash
    cd health-monitors/gpu-health-monitor/

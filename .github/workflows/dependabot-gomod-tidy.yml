@@ -1,0 +1,129 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Syncs and tidies the Go modules of a Dependabot Go update, so that the update passes gomod-lint.
+#
+# A push of Dependabot gets a read-only GITHUB_TOKEN, so this workflow only uploads the changes as a
+# patch. dependabot-gomod-push.yml checks the patch and pushes it to the branch. It runs from main and
+# never runs code of the branch. This split replaces a pull_request_target workflow, which GitHub
+# blocks by default in public repositories.
+
+name: "Dependabot Go Mod Fixup: Tidy"
+
+on:
+  push:
+    branches:
+      - "dependabot/go_modules/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tidy:
+    name: Sync Go module files
+    if: >
+      github.repository == 'nvidia/nvsentinel' &&
+      github.actor == 'dependabot[bot]' &&
+      !github.event.deleted
+    runs-on: linux-amd64-cpu8
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Dependabot branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Guard dependency-only branch
+        id: dependency-only
+        run: |
+          disallowed=$(git diff --name-only origin/main...HEAD | grep -Ev '(^|/)go\.(mod|sum)$' || true)
+          if [ -n "$disallowed" ]; then
+            echo "::notice::Skipping gomod fixup because this branch changes non-module files: $(echo "$disallowed" | tr '\n' ' ')"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read Go version
+        if: steps.dependency-only.outputs.skip != 'true'
+        id: go-version
+        run: |
+          GO_VERSION=$(awk -F"'" '/^[[:space:]]*go:/ { print $2; exit }' .versions.yaml)
+          echo "version=${GO_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        if: steps.dependency-only.outputs.skip != 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: ${{ steps.go-version.outputs.version }}
+          cache: true
+          cache-dependency-path: |
+            **/go.sum
+            **/go.mod
+
+      - name: Sync and tidy Go modules
+        if: steps.dependency-only.outputs.skip != 'true'
+        run: |
+          make dependencies-sync
+
+          for attempt in 1 2 3; do
+            make go-mod-tidy-all
+            if make gomod-lint; then
+              exit 0
+            fi
+            echo "go.mod validation still needed cleanup after attempt ${attempt}; retrying"
+          done
+
+          make gomod-lint
+
+      - name: Write the patch
+        if: steps.dependency-only.outputs.skip != 'true'
+        id: patch
+        env:
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all | cut -c4- | grep -Ev '^([^ ]+/)?go\.(mod|sum)$' || true)" ]; then
+            echo "::error::Refusing to upload non-module changes:"
+            git status --porcelain --untracked-files=all
+            exit 1
+          fi
+          # A new go.mod or go.sum is untracked. Intent-to-add puts it in the change check and in git diff.
+          git ls-files -z --others --exclude-standard | xargs -0 -r git add -N --
+          if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "No Go module fixup changes needed."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p "${RUNNER_TEMP}/gomod-fixup"
+          git diff --binary > "${RUNNER_TEMP}/gomod-fixup/fixup.patch"
+          printf '%s\n' "$BRANCH" > "${RUNNER_TEMP}/gomod-fixup/branch"
+          printf '%s\n' "$SHA" > "${RUNNER_TEMP}/gomod-fixup/sha"
+          git diff --stat
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the patch
+        if: steps.patch.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: gomod-fixup
+          path: ${{ runner.temp }}/gomod-fixup/
+          retention-days: 1
+          if-no-files-found: error

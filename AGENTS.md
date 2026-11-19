@@ -70,6 +70,7 @@ make protos-generate      # regenerate Go + Python protobuf bindings
 make dependencies-sync    # sync deps across modules via the Go workspace
 make go-mod-tidy-all      # go mod tidy in every module
 make license-headers-lint # Apache 2.0 headers on all source files
+make dependency-licenses-lint # third-party licenses of core module deps vs .dependency-licenses.yaml
 
 # Images
 make ko-build     # Go images (ko — no Dockerfile involved)
@@ -102,7 +103,7 @@ Do not do these without an explicit human instruction:
 - **Do not touch anything under `distros/kubernetes/nvsentinel/` chart versions or `.versions.yaml`** as a side effect of unrelated work — version bumps are their own change.
 - **Do not run `make dev-env`, `e2e-test`, or `kubectl` against a cluster you did not create.** Confirm your kube-context is the local Kind cluster first: `kubectl config current-context` must read `kind-nvsentinel` (defined in `.ctlptl.yaml`). Never run destructive commands against a context you do not recognise.
 - **Do not regenerate protobufs, run `go mod tidy`, or reformat files outside the scope of your change** — the diff noise buries the actual change.
-- **Do not add a dependency** without saying so; this project ships to customers and every dependency is a supply-chain surface.
+- **Do not add a dependency** without saying so; this project ships to customers and every dependency is a supply-chain surface. In a core module, `make dependency-licenses-lint` checks its license.
 - **Do not add `Co-Authored-By` or agent-attribution trailers** to commits.
 
 ## Architecture Decision Records
