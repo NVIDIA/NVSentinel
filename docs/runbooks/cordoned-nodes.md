@@ -174,6 +174,7 @@ When processing a GPUReset request, Janitor executes the following steps exposed
 - ResetJobCompleted: wait for the pod from the privileged job to disable persistence mode, reset the target GPU using nvidia-smi, re-enable persistence mode, and write a syslog event indicating the GPU has been reset. 
 - ServicesRestored: restore gpu-operator services including the nvidia-device-plugin-daemonset, nvidia-dcgm, and nvidia-dcgm-exporter.
 - Complete: complete reconciling of the GPUReset CR.
+- Succeeded: the outcome of the GPUReset. The status is `True` when the reset was successful, and `False` with the failure reason when the reset failed. The condition is absent while the GPUReset is in progress.
 
 ```bash
 status:
@@ -209,6 +210,11 @@ status:
     reason: GPUResetSucceeded
     status: "True"
     type: Complete
+  - lastTransitionTime: "2026-03-03T22:54:24Z"
+    message: GPU(s) reset successfully
+    reason: GPUResetSucceeded
+    status: "True"
+    type: Succeeded
   jobRef:
     kind: Job
     name: maintenance-10.0.6.34-69a7664f5ecd6c9af129dc2f-reset-job

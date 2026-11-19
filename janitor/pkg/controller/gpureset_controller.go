@@ -139,6 +139,13 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	reconcileDelete := !gpuReset.DeletionTimestamp.IsZero()
 	completedReconciling := gpuReset.Status.CompletionTime != nil
+
+	if completedReconciling && !reconcileDelete {
+		if err := r.recordOutcome(ctx, &gpuReset); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// A reset that failed after stopping services still owes the node its labels: only the janitor writes them
 	// back. Keep the lock and the restoration going until they are written; held labels are waited on, never
 	// overwritten.
@@ -1301,9 +1308,10 @@ func (r *GPUResetReconciler) reconcileCompletion(ctx context.Context, gr *v1alph
 	updatedGR.Status.CompletionTime = &now
 	updatedGR.Status.Phase = v1alpha1.ResetSucceeded
 
-	succeededCond := NewCondition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonGPUResetSucceeded,
+	completeCond := NewCondition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonGPUResetSucceeded,
 		jobFinishedCond.Message)
-	meta.SetStatusCondition(&updatedGR.Status.Conditions, succeededCond)
+	meta.SetStatusCondition(&updatedGR.Status.Conditions, completeCond)
+	setOutcome(&updatedGR.Status)
 
 	if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to set final status for GPUReset %s: %w", gr.Name, err)
@@ -1874,6 +1882,7 @@ func (r *GPUResetReconciler) reconcileTerminalFailure(
 
 		completeCond := NewCondition(v1alpha1.Complete, metav1.ConditionTrue, reason, message)
 		meta.SetStatusCondition(&updatedGR.Status.Conditions, completeCond)
+		setOutcome(&updatedGR.Status)
 
 		if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to set terminal failure status for GPUReset %s: %w",
@@ -1899,6 +1908,58 @@ func (r *GPUResetReconciler) reconcileTerminalFailure(
 	r.endResetSession(gr.Name)
 
 	return ctrl.Result{}, nil
+}
+
+// setOutcome sets the Succeeded condition from the Complete condition: True when the Complete condition has the
+// reason GPUResetSucceeded, False with the failure reason in all other cases. The two conditions have the same
+// reason, message and transition time. It reports whether it changed the status. A status without a true Complete
+// condition, or with a Succeeded condition, does not change.
+//
+// The phase is not used: the restoration that follows a failed reset changes the phase of a completed GPUReset.
+func setOutcome(status *v1alpha1.GPUResetStatus) bool {
+	complete := meta.FindStatusCondition(status.Conditions, string(v1alpha1.Complete))
+	if complete == nil || complete.Status != metav1.ConditionTrue {
+		return false
+	}
+
+	if meta.FindStatusCondition(status.Conditions, string(v1alpha1.Succeeded)) != nil {
+		return false
+	}
+
+	outcome := metav1.ConditionFalse
+	if complete.Reason == string(v1alpha1.ReasonGPUResetSucceeded) {
+		outcome = metav1.ConditionTrue
+	}
+
+	return meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+		Type:               string(v1alpha1.Succeeded),
+		Status:             outcome,
+		Reason:             complete.Reason,
+		Message:            complete.Message,
+		LastTransitionTime: complete.LastTransitionTime,
+	})
+}
+
+// recordOutcome sets the Succeeded condition of a GPUReset that completed before the condition existed.
+// fault-remediation reads a missing outcome condition as a reset in progress, so a completed GPUReset without one
+// would hold back further resets of its GPUs. The condition is also set on gr, so that a later status write of
+// this reconcile keeps it.
+func (r *GPUResetReconciler) recordOutcome(ctx context.Context, gr *v1alpha1.GPUReset) error {
+	updatedGR := gr.DeepCopy()
+	if !setOutcome(&updatedGR.Status) {
+		return nil
+	}
+
+	if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {
+		return fmt.Errorf("failed to record the outcome of GPUReset %s: %w", gr.Name, err)
+	}
+
+	gr.Status.Conditions = updatedGR.Status.Conditions
+
+	log.FromContext(ctx).Info("Recorded the outcome of a GPUReset that completed without a Succeeded condition",
+		"gpureset", gr.Name, "node", gr.Spec.NodeName)
+
+	return nil
 }
 
 // reconcilePhase maps a detailed GPUResetReason to its high-level GPUResetPhase.

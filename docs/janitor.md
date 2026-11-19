@@ -51,6 +51,8 @@ Issues a terminate or stop API call to the cloud provider. Used for `REPLACE_VM`
 
 Runs a privileged Kubernetes Job on the target node that performs an in-place GPU reset via `nvidia-smi`. The GPU Operator DaemonSet is paused on the node during the reset to prevent interference. On completion, the Job writes a syslog event so the Syslog Health Monitor can confirm the reset succeeded.
 
+When a GPUReset ends, the controller sets two conditions. `Complete` is `True` for each GPUReset that ended. `Succeeded` gives the outcome: `True` for a successful reset, and `False` with the failure reason for a failed reset.
+
 GPUReset supports both GPU Operator modes: device plugin and DRA. Refer to [GPU Operator modes](configuration/janitor.md#gpu-operator-modes).
 
 GPU clients outside the GPU Operator, in any namespace, can also hold the GPUs open. The controller also stops them before the reset. Refer to [GPU clients](configuration/janitor.md#gpu-clients).

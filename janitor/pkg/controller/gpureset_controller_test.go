@@ -74,6 +74,24 @@ func (m *mockNodeLock) CheckUnlock(ctx context.Context, maintenanceObject client
 	return false
 }
 
+// staleGetClient returns a fixed copy of a GPUReset for every Get, as a cache that has not received the last write
+// does. envtest cannot produce this cache lag deterministically. All other calls go to the wrapped client, so the
+// writes still go to the API server.
+type staleGetClient struct {
+	client.Client
+	stale *v1alpha1.GPUReset
+}
+
+func (c *staleGetClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object,
+	opts ...client.GetOption) error {
+	if gr, ok := obj.(*v1alpha1.GPUReset); ok {
+		c.stale.DeepCopyInto(gr)
+		return nil
+	}
+
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
 // devicePluginDeployLabels returns the deploy labels that GPU Operator sets on a GPU node in device plugin mode for
 // the operands that the gpu-operator service manager tears down.
 func devicePluginDeployLabels() map[string]string {
@@ -126,6 +144,34 @@ func markJobFailed(job *batchv1.Job) {
 		job.Status.Conditions = append(job.Status.Conditions, batchv1.JobCondition{
 			Type: condType, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded", LastTransitionTime: now,
 		})
+	}
+}
+
+// expectOutcome checks the Succeeded condition of a completed GPUReset: its status, and the reason, message and
+// transition time it shares with the Complete condition.
+func expectOutcome(reset *v1alpha1.GPUReset, status metav1.ConditionStatus, reason v1alpha1.GPUResetReason) {
+	GinkgoHelper()
+
+	succeeded := meta.FindStatusCondition(reset.Status.Conditions, string(v1alpha1.Succeeded))
+	Expect(succeeded).NotTo(BeNil(), "the Succeeded condition is missing")
+	Expect(succeeded.Status).To(Equal(status))
+	Expect(succeeded.Reason).To(Equal(string(reason)))
+
+	complete := meta.FindStatusCondition(reset.Status.Conditions, string(v1alpha1.Complete))
+	Expect(complete).NotTo(BeNil(), "the Complete condition is missing")
+	Expect(complete.Status).To(Equal(metav1.ConditionTrue))
+	Expect(succeeded.Message).To(Equal(complete.Message))
+	Expect(succeeded.LastTransitionTime.Equal(&complete.LastTransitionTime)).To(BeTrue(),
+		"the Succeeded condition has the transition time of the Complete condition")
+}
+
+// expectNoOutcomeInProgress is for use inside an Eventually. It stops the Eventually at once, and fails it, when a
+// GPUReset without a completion time has the Succeeded condition. A retried assertion is not sufficient: an outcome
+// that is present for one reconcile before the completion would be retried, and the Eventually would then pass.
+func expectNoOutcomeInProgress(reset *v1alpha1.GPUReset) {
+	if reset.Status.CompletionTime == nil &&
+		meta.FindStatusCondition(reset.Status.Conditions, string(v1alpha1.Succeeded)) != nil {
+		StopTrying("a GPUReset in progress has the Succeeded condition").Now()
 	}
 }
 
@@ -331,6 +377,11 @@ var _ = Describe("GPUReset Controller", func() {
 				require.NotNil(t, condition)
 				assert.Equal(t, string(v1alpha1.ReasonGPUAlreadyUnderMaintenance), condition.Reason)
 				assert.Equal(t, fmt.Sprintf("GPUReset/%s is active for this node", holder.Name), condition.Message)
+
+				outcome := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Succeeded))
+				require.NotNil(t, outcome)
+				assert.Equal(t, metav1.ConditionFalse, outcome.Status)
+				assert.Equal(t, string(v1alpha1.ReasonGPUAlreadyUnderMaintenance), outcome.Reason)
 			},
 			Entry(
 				"matching UUIDs set terminal status",
@@ -416,6 +467,7 @@ var _ = Describe("GPUReset Controller", func() {
 				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 
 				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				expectNoOutcomeInProgress(&updatedReset)
 				g.Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Ready))).NotTo(BeNil())
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetPending))
 			}, "10s", "250ms").Should(Succeed())
@@ -426,6 +478,7 @@ var _ = Describe("GPUReset Controller", func() {
 				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 
 				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				expectNoOutcomeInProgress(&updatedReset)
 				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Ready))).To(BeTrue())
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetPending))
 			}, "10s", "250ms").Should(Succeed())
@@ -435,6 +488,7 @@ var _ = Describe("GPUReset Controller", func() {
 			Eventually(func(g Gomega) {
 				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				expectNoOutcomeInProgress(&updatedReset)
 				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeTrue())
 			}, "10s", "250ms").Should(Succeed())
 
@@ -443,6 +497,7 @@ var _ = Describe("GPUReset Controller", func() {
 				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 
 				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				expectNoOutcomeInProgress(&updatedReset)
 				g.Expect(updatedReset.Status.JobRef).NotTo(BeNil())
 				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeTrue())
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
@@ -495,6 +550,7 @@ var _ = Describe("GPUReset Controller", func() {
 				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 
 				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				expectNoOutcomeInProgress(&updatedReset)
 				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCompleted))).To(BeTrue())
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
 			}, "10s", "250ms").Should(Succeed())
@@ -510,6 +566,7 @@ var _ = Describe("GPUReset Controller", func() {
 				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 
 				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				expectNoOutcomeInProgress(&updatedReset)
 				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesRestored))).To(BeTrue())
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
 			}, "10s", "250ms").Should(Succeed())
@@ -520,11 +577,13 @@ var _ = Describe("GPUReset Controller", func() {
 				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 
 				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				expectNoOutcomeInProgress(&updatedReset)
 				g.Expect(updatedReset.Status.CompletionTime).NotTo(BeNil())
 				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetSucceeded))
 			}, "10s", "250ms").Should(Succeed())
 			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete)).Reason).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+			expectOutcome(&updatedReset, metav1.ConditionTrue, v1alpha1.ReasonGPUResetSucceeded)
 		})
 	})
 
@@ -662,6 +721,7 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetSucceeded))
 			}, "10s", "250ms").Should(Succeed())
 			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete)).Reason).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+			expectOutcome(&updatedReset, metav1.ConditionTrue, v1alpha1.ReasonGPUResetSucceeded)
 		})
 	})
 
@@ -779,6 +839,7 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete)).Reason).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetSucceeded))
+			expectOutcome(&updatedReset, metav1.ConditionTrue, v1alpha1.ReasonGPUResetSucceeded)
 
 			// Check that the node labels were NOT modified
 			var finalNode corev1.Node
@@ -1073,6 +1134,7 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete)).Reason).To(Equal(string(v1alpha1.NodeNotFound)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&updatedReset, metav1.ConditionFalse, v1alpha1.NodeNotFound)
 		})
 
 		It("should move to Failed state if service teardown times out", func() {
@@ -1112,6 +1174,7 @@ var _ = Describe("GPUReset Controller", func() {
 			failedCond := meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete))
 			Expect(failedCond.Reason).To(Equal(string(v1alpha1.ReasonServiceTeardownTimeoutExceeded)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&updatedReset, metav1.ConditionFalse, v1alpha1.ReasonServiceTeardownTimeoutExceeded)
 		})
 
 		It("should move to Failed state if service restoration times out", func() {
@@ -1193,6 +1256,7 @@ var _ = Describe("GPUReset Controller", func() {
 			failedCond := meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete))
 			Expect(failedCond.Reason).To(Equal(string(v1alpha1.ReasonRestoreTimeoutExceeded)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&updatedReset, metav1.ConditionFalse, v1alpha1.ReasonRestoreTimeoutExceeded)
 		})
 
 		It("should move to Failed state if the reset job is deleted before finished", func() {
@@ -1243,6 +1307,7 @@ var _ = Describe("GPUReset Controller", func() {
 			failedCond := meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete))
 			Expect(failedCond.Reason).To(Equal(string(v1alpha1.ReasonResetJobNotFound)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&updatedReset, metav1.ConditionFalse, v1alpha1.ReasonResetJobNotFound)
 		})
 
 		It("should restore services and move to a Failed state if job fails", func() {
@@ -1263,6 +1328,7 @@ var _ = Describe("GPUReset Controller", func() {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				expectNoOutcomeInProgress(&updatedReset)
 				g.Expect(updatedReset.Status.JobRef).NotTo(BeNil())
 
 				// wait for job to exist
@@ -1288,6 +1354,7 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				var finalReset v1alpha1.GPUReset
 				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &finalReset)).To(Succeed())
+				expectNoOutcomeInProgress(&finalReset)
 				g.Expect(finalReset.Status.CompletionTime).NotTo(BeNil())
 			}, "10s", "100ms").Should(Succeed())
 
@@ -1297,6 +1364,244 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
 			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete)).Reason).To(Equal(string(v1alpha1.ReasonResetJobFailed)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&updatedReset, metav1.ConditionFalse, v1alpha1.ReasonResetJobFailed)
+		})
+	})
+
+	Context("Outcome of a GPUReset completed without the Succeeded condition", func() {
+		const resetName = "completed-without-outcome"
+		const nodeName = "completed-node"
+		typeNamespacedName := types.NamespacedName{Name: resetName}
+
+		AfterEach(func() {
+			reset := &v1alpha1.GPUReset{Name: resetName}
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, reset))).To(Succeed())
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, typeNamespacedName, reset)
+				if apierrors.IsNotFound(err) {
+					return
+				}
+				g.Expect(err).NotTo(HaveOccurred())
+
+				if controllerutil.ContainsFinalizer(reset, gpuResetFinalizer) {
+					controllerutil.RemoveFinalizer(reset, gpuResetFinalizer)
+					g.Expect(k8sClient.Update(ctx, reset)).To(Succeed())
+				}
+				g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, reset))).To(BeTrue())
+			}, "10s", "100ms").Should(Succeed())
+		})
+
+		// createWithStatus creates a GPUReset with the given status, and waits until the reconciler's cache has it, so
+		// that the reconcile reads that status. It returns the GPUReset as the API server stored it.
+		createWithStatus := func(status v1alpha1.GPUResetStatus) v1alpha1.GPUReset {
+			reset := &v1alpha1.GPUReset{
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{NodeName: nodeName},
+			}
+			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
+
+			reset.Status = status
+			Expect(k8sClient.Status().Update(ctx, reset)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				var cached v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cached)).To(Succeed())
+				g.Expect(cached.ResourceVersion).To(Equal(reset.ResourceVersion))
+			}, "10s", "100ms").Should(Succeed())
+
+			return *reset
+		}
+
+		// createCompleted creates a GPUReset with the status of one that completed with the given phase and
+		// conditions.
+		createCompleted := func(phase v1alpha1.GPUResetPhase, conditions ...metav1.Condition) v1alpha1.GPUReset {
+			now := metav1.Now()
+
+			return createWithStatus(v1alpha1.GPUResetStatus{
+				Phase:          phase,
+				StartTime:      &now,
+				CompletionTime: &now,
+				Conditions:     conditions,
+			})
+		}
+
+		condition := func(condType v1alpha1.GPUResetConditionType, status metav1.ConditionStatus,
+			reason v1alpha1.GPUResetReason, message string) metav1.Condition {
+			return metav1.Condition{
+				Type:               string(condType),
+				Status:             status,
+				Reason:             string(reason),
+				Message:            message,
+				LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second)),
+			}
+		}
+
+		DescribeTable("records the outcome from the Complete condition",
+			func(phase v1alpha1.GPUResetPhase, reason v1alpha1.GPUResetReason, want metav1.ConditionStatus) {
+				createCompleted(phase, condition(v1alpha1.Complete, metav1.ConditionTrue, reason, "finished earlier"))
+
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				var updated v1alpha1.GPUReset
+				Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
+				expectOutcome(&updated, want, reason)
+				Expect(updated.Status.Phase).To(Equal(phase))
+			},
+			Entry("a reset that worked", v1alpha1.ResetSucceeded, v1alpha1.ReasonGPUResetSucceeded, metav1.ConditionTrue),
+			Entry("a reset that failed", v1alpha1.ResetFailed, v1alpha1.ReasonResetJobFailed, metav1.ConditionFalse),
+			// The restoration after a failed reset sets the phase to InProgress. The phase stays InProgress when the
+			// node is deleted before the labels are restored.
+			Entry("a failed reset whose restoration changed the phase to InProgress",
+				v1alpha1.ResetInProgress, v1alpha1.ReasonResetJobCreationFailed, metav1.ConditionFalse),
+		)
+
+		It("should leave an outcome that is already recorded", func() {
+			// The recorded outcome differs from the one the Complete condition gives, so a write of the derived
+			// outcome changes the GPUReset.
+			recorded := condition(v1alpha1.Succeeded, metav1.ConditionFalse, v1alpha1.ReasonInternalError, "set earlier")
+			created := createCompleted(v1alpha1.ResetFailed,
+				condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobFailed, "finished earlier"),
+				recorded,
+			)
+
+			for range 3 {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			var updated v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
+			Expect(updated.ResourceVersion).To(Equal(created.ResourceVersion), "the GPUReset was written")
+			succeeded := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Succeeded))
+			Expect(succeeded).NotTo(BeNil())
+			Expect(succeeded.Status).To(Equal(recorded.Status))
+			Expect(succeeded.Reason).To(Equal(recorded.Reason))
+			Expect(succeeded.Message).To(Equal(recorded.Message))
+			Expect(succeeded.LastTransitionTime.Equal(&recorded.LastTransitionTime)).To(BeTrue())
+		})
+
+		It("should not record an outcome without a Complete condition", func() {
+			created := createCompleted(v1alpha1.ResetFailed)
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
+			Expect(updated.ResourceVersion).To(Equal(created.ResourceVersion), "the GPUReset was written")
+			Expect(meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Succeeded))).To(BeNil())
+		})
+
+		It("should write the same outcome again from a stale read without changing the GPUReset", func() {
+			stale := createCompleted(v1alpha1.ResetFailed,
+				condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobFailed, "finished earlier"))
+			reconciler.Client = &staleGetClient{Client: mgrClient, stale: &stale}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			var first v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &first)).To(Succeed())
+			Expect(first.ResourceVersion).NotTo(Equal(stale.ResourceVersion))
+			expectOutcome(&first, metav1.ConditionFalse, v1alpha1.ReasonResetJobFailed)
+
+			By("Reconciling again from the read that does not have the outcome")
+			for range 3 {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			var updated v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
+			Expect(updated.ResourceVersion).To(Equal(first.ResourceVersion), "the GPUReset was written again")
+			Expect(updated.Status).To(Equal(first.Status))
+		})
+
+		It("should keep the outcome when the restoration of a failed reset writes the status in the same reconcile", func() {
+			By("Creating the node with the labels of the stopped services")
+			tornDownLabels := devicePluginDeployLabels()
+			for label := range tornDownLabels {
+				tornDownLabels[label] = "false"
+			}
+			node := &corev1.Node{Name: nodeName, Labels: tornDownLabels}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, node))).To(Succeed())
+			})
+			Eventually(func(g Gomega) {
+				g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: nodeName}, &corev1.Node{})).To(Succeed())
+			}, "10s", "100ms").Should(Succeed())
+
+			By("Creating a GPUReset that an older janitor failed before the restoration started")
+			now := metav1.Now()
+			createWithStatus(v1alpha1.GPUResetStatus{
+				Phase:          v1alpha1.ResetFailed,
+				StartTime:      &now,
+				CompletionTime: &now,
+				ManagedServices: &v1alpha1.ManagedServicesStatus{
+					NodeLabels: slices.Sorted(maps.Keys(tornDownLabels)),
+				},
+				Conditions: []metav1.Condition{
+					condition(v1alpha1.ServicesTornDown, metav1.ConditionTrue, v1alpha1.ReasonServiceTeardownSucceeded,
+						"torn down"),
+					condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobCreationFailed, "held"),
+				},
+			})
+
+			By("Reconciling once: the outcome and the start of the restoration are written")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			var started v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &started)).To(Succeed())
+			expectOutcome(&started, metav1.ConditionFalse, v1alpha1.ReasonResetJobCreationFailed)
+			restored := meta.FindStatusCondition(started.Status.Conditions, string(v1alpha1.ServicesRestored))
+			Expect(restored).NotTo(BeNil())
+			Expect(restored.Reason).To(Equal(string(v1alpha1.ReasonRestoringServices)))
+			outcome := *meta.FindStatusCondition(started.Status.Conditions, string(v1alpha1.Succeeded))
+
+			By("Reconciling until the labels are restored")
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var current v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &current)).To(Succeed())
+				cond := meta.FindStatusCondition(current.Status.Conditions, string(v1alpha1.ServicesRestored))
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Reason).To(Equal(string(v1alpha1.ReasonResetJobCreationFailed)))
+			}, "10s", "100ms").Should(Succeed())
+
+			var updated v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
+			expectOutcome(&updated, metav1.ConditionFalse, v1alpha1.ReasonResetJobCreationFailed)
+			succeeded := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Succeeded))
+			Expect(succeeded.LastTransitionTime.Equal(&outcome.LastTransitionTime)).To(BeTrue())
+
+			var restoredNode corev1.Node
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &restoredNode)).To(Succeed())
+			Expect(restoredNode.Labels).To(Equal(devicePluginDeployLabels()))
+		})
+
+		It("should remove the finalizer of a deleted GPUReset without recording its outcome", func() {
+			reset := createCompleted(v1alpha1.ResetFailed,
+				condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobFailed, "finished earlier"))
+			controllerutil.AddFinalizer(&reset, gpuResetFinalizer)
+			Expect(k8sClient.Update(ctx, &reset)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &reset)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				var cached v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cached)).To(Succeed())
+				g.Expect(cached.DeletionTimestamp).NotTo(BeNil())
+			}, "10s", "100ms").Should(Succeed())
+
+			By("Reconciling once: the finalizer removal is an Update with optimistic concurrency, so a status write " +
+				"before it would make it conflict")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &v1alpha1.GPUReset{}))).To(BeTrue())
 		})
 	})
 
@@ -1424,6 +1729,51 @@ var _ = Describe("GPUReset Controller", func() {
 			By("Verifying the node label has been reverted to back false")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &updatedNode)).To(Succeed())
 			Expect(updatedNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("false"))
+		})
+
+		It("should not write the status of a GPUReset that waits on its reset job", func() {
+			Expect(k8sClient.Create(ctx, &v1alpha1.GPUReset{
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+					Selector: &v1alpha1.GPUSelector{
+						UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"},
+					},
+				},
+			})).To(Succeed())
+
+			By("Reconciling until the GPUReset waits on the running reset job")
+			var waiting v1alpha1.GPUReset
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &waiting)).To(Succeed())
+				cond := meta.FindStatusCondition(waiting.Status.Conditions, string(v1alpha1.ResetJobCompleted))
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Reason).To(Equal(string(v1alpha1.ReasonResetJobRunning)))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(waiting.Status.CompletionTime).To(BeNil())
+
+			By("Waiting for the reconciler's cache to have the last status write and the reset job")
+			jobKey := types.NamespacedName{Name: waiting.Status.JobRef.Name, Namespace: waiting.Status.JobRef.Namespace}
+			Eventually(func(g Gomega) {
+				var cached v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cached)).To(Succeed())
+				g.Expect(cached.ResourceVersion).To(Equal(waiting.ResourceVersion))
+				g.Expect(mgrClient.Get(ctx, jobKey, &batchv1.Job{})).To(Succeed())
+			}, "10s", "100ms").Should(Succeed())
+
+			By("Reconciling while the job runs: the GPUReset does not change")
+			for range 5 {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			var updatedReset v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+			Expect(updatedReset.ResourceVersion).To(Equal(waiting.ResourceVersion))
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Succeeded))).To(BeNil())
 		})
 	})
 
@@ -2141,6 +2491,8 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
 			}, "10s", "100ms").Should(Succeed())
 			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonServiceTeardownTimeoutExceeded)))
+			reset := getReset()
+			expectOutcome(&reset, metav1.ConditionFalse, v1alpha1.ReasonServiceTeardownTimeoutExceeded)
 			Expect(getReset().Status.ManagedServices).To(BeNil())
 			Expect(getNodeLabels()).To(Equal(heldLabels))
 		})
@@ -2161,6 +2513,8 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
 			}, "10s", "100ms").Should(Succeed())
 			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonRestoreTimeoutExceeded)))
+			reset := getReset()
+			expectOutcome(&reset, metav1.ConditionFalse, v1alpha1.ReasonRestoreTimeoutExceeded)
 
 			heldLabels := devicePluginDeployLabels()
 			for label := range heldLabels {
@@ -2266,6 +2620,8 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
 			}, "10s", "100ms").Should(Succeed())
 			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonResetJobCreationFailed)))
+			reset := getReset()
+			expectOutcome(&reset, metav1.ConditionFalse, v1alpha1.ReasonResetJobCreationFailed)
 
 			Eventually(func(g Gomega) {
 				reconcileTimes(1)
@@ -2276,6 +2632,87 @@ var _ = Describe("GPUReset Controller", func() {
 			expected["nvidia.com/gpu.deploy.dcgm-dra"] = "paused-for-driver-upgrade"
 			Expect(getNodeLabels()).To(Equal(expected))
 			Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetFailed))
+		})
+
+		It("should record the outcome of a failed GPUReset from the Complete condition after the restoration changed its phase", func() {
+			createNodeWithOperandPods(devicePluginDeployLabels(), devicePluginOperandPodLabels())
+			createReset()
+
+			By("Failing the reset on a label held after the teardown")
+			reconcileUntil(v1alpha1.ServicesTornDown)
+			setNodeLabel("nvidia.com/gpu.deploy.dcgm-dra", "paused-for-driver-upgrade")
+			reconciler.Config.Timeout = time.Millisecond
+			Eventually(func(g Gomega) {
+				reconcileTimes(1)
+				g.Expect(getReset().Status.CompletionTime).NotTo(BeNil())
+			}, "10s", "100ms").Should(Succeed())
+			reconciler.Config.Timeout = 30 * time.Minute
+
+			failed := getReset()
+			Expect(failed.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&failed, metav1.ConditionFalse, v1alpha1.ReasonResetJobCreationFailed)
+			outcome := *meta.FindStatusCondition(failed.Status.Conditions, string(v1alpha1.Succeeded))
+
+			// expectSameOutcome checks that the Succeeded condition did not change after the failure.
+			expectSameOutcome := func(reset v1alpha1.GPUReset) {
+				GinkgoHelper()
+
+				expectOutcome(&reset, outcome.Status, v1alpha1.GPUResetReason(outcome.Reason))
+				succeeded := meta.FindStatusCondition(reset.Status.Conditions, string(v1alpha1.Succeeded))
+				Expect(succeeded.Message).To(Equal(outcome.Message))
+				Expect(succeeded.LastTransitionTime.Equal(&outcome.LastTransitionTime)).To(BeTrue())
+			}
+
+			// waitForCache waits until the reconciler's cache has the GPUReset as the API server stores it.
+			waitForCache := func() {
+				stored := getReset()
+				Eventually(func(g Gomega) {
+					var cached v1alpha1.GPUReset
+					g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cached)).To(Succeed())
+					g.Expect(cached.ResourceVersion).To(Equal(stored.ResourceVersion))
+				}, "10s", "50ms").Should(Succeed())
+			}
+
+			By("Starting the restoration: the phase changes to InProgress, the outcome stays")
+			waitForCache()
+			reconcileTimes(1)
+			restoring := getReset()
+			Expect(restoring.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
+			Expect(getConditionReason(v1alpha1.ServicesRestored)).To(Equal(string(v1alpha1.ReasonRestoringServices)))
+			expectSameOutcome(restoring)
+
+			By("Deleting the node before the labels are restored: the phase stays InProgress")
+			Expect(k8sClient.Delete(ctx, &corev1.Node{Name: nodeName})).To(Succeed())
+			Eventually(func(g Gomega) {
+				err := reconciler.Get(ctx, types.NamespacedName{Name: nodeName}, &corev1.Node{})
+				g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+			}, "10s", "50ms").Should(Succeed())
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(getConditionReason(v1alpha1.ServicesRestored)).To(Equal(string(v1alpha1.ReasonSkipped)))
+			}, "10s", "100ms").Should(Succeed())
+			settled := getReset()
+			Expect(settled.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
+			Expect(meta.IsStatusConditionTrue(settled.Status.Conditions, string(v1alpha1.ServicesRestored))).To(BeTrue())
+			expectSameOutcome(settled)
+
+			By("Removing the outcome, as an older janitor stored the GPUReset without one")
+			Eventually(func(g Gomega) {
+				stored := getReset()
+				meta.RemoveStatusCondition(&stored.Status.Conditions, string(v1alpha1.Succeeded))
+				g.Expect(k8sClient.Status().Update(ctx, &stored)).To(Succeed())
+			}, "5s", "100ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(getReset().Status.Conditions, string(v1alpha1.Succeeded))).To(BeNil())
+			waitForCache()
+
+			By("Reconciling: the outcome comes from the Complete condition, not from the phase")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			recorded := getReset()
+			Expect(recorded.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
+			expectSameOutcome(recorded)
 		})
 
 		It("should move to a Failed state without detection if the node is not found", func() {
@@ -2293,6 +2730,7 @@ var _ = Describe("GPUReset Controller", func() {
 			updatedReset := getReset()
 			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.NodeNotFound)))
 			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&updatedReset, metav1.ConditionFalse, v1alpha1.NodeNotFound)
 			Expect(updatedReset.Status.ManagedServices).To(BeNil())
 			Expect(updatedReset.Status.JobRef).To(BeNil())
 		})

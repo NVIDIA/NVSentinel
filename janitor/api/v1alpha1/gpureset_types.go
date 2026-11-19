@@ -44,7 +44,13 @@ const (
 	ResetJobCompleted GPUResetConditionType = "ResetJobCompleted"
 	ServicesRestored  GPUResetConditionType = "ServicesRestored"
 	Terminating       GPUResetConditionType = "Terminating"
-	Complete          GPUResetConditionType = "Complete"
+	// Complete is True once the controller has finished with the GPUReset, whatever the outcome.
+	Complete GPUResetConditionType = "Complete"
+	// Succeeded is the outcome of a GPUReset that has finished: True when the GPUs were reset and the
+	// services restored, False with the failure reason when the reset failed. It is absent while the
+	// reset is in progress. A remediation that has to know whether the reset worked reads this
+	// condition, not Complete.
+	Succeeded GPUResetConditionType = "Succeeded"
 )
 
 const (
