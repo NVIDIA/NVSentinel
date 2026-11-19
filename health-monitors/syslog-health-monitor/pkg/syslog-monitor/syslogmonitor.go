@@ -492,12 +492,11 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) {
 
 	// Signal that the next journal scan must start from the beginning of
 	// the current boot rather than the tail, so entries emitted between
-	// boot and monitor startup are not missed. Only set when there was a
-	// previous boot (oldBootID != ""); on first install (no state file)
-	// the normal tail-initialization path is correct.
-	if oldBootID != "" {
-		sm.postRebootInit = true
-	}
+	// boot and monitor startup are not missed. This includes a start with
+	// no saved boot ID: a reboot clears a state file kept under /var/run,
+	// so a rebooted node looks like a first install here, and the lookback
+	// window bounds what either one reads.
+	sm.postRebootInit = true
 
 	sm.pendingPostRebootBootID = newBootID
 }
@@ -1199,7 +1198,11 @@ func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check C
 			return fmt.Errorf("check '%s': failed to seek to journal head: %w", check.Name, err)
 		}
 	} else {
-		seekTarget := time.Now().Add(-lookback)
+		if sm.bootScanSeekTarget.IsZero() {
+			sm.bootScanSeekTarget = time.Now().Add(-lookback)
+		}
+
+		seekTarget := sm.bootScanSeekTarget
 
 		slog.Info("Post-reboot: lookback window active, entries before seekTarget will be skipped",
 			"check", check.Name,
@@ -1224,7 +1227,7 @@ func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check C
 		slog.Info("Post-reboot: no journal entries found", "check", check.Name)
 
 		// No entries yet; fall back to tail initialization so the next
-		// cycle starts fresh (same as first-install behavior).
+		// cycle starts fresh (same as a start with no boot ID change).
 		return sm.initializeJournalFromTail(journal, check)
 	}
 
