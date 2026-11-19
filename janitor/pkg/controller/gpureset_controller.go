@@ -140,10 +140,10 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	reconcileDelete := !gpuReset.DeletionTimestamp.IsZero()
 	completedReconciling := gpuReset.Status.CompletionTime != nil
 
-	if completedReconciling && !reconcileDelete {
-		if err := r.recordOutcome(ctx, &gpuReset); err != nil {
-			return ctrl.Result{}, err
-		}
+	// recordOutcomeIfCompleted states what a failed outcome write does to this reconcile.
+	stale, outcomeErr := r.recordOutcomeIfCompleted(ctx, &gpuReset)
+	if stale {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	// A reset that failed after stopping services still owes the node its labels: only the janitor writes them
@@ -228,10 +228,11 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	retryUnlock := r.NodeLock.CheckUnlock(ctx, &gpuReset, gpuReset.Spec.NodeName)
 	if retryUnlock {
+		// The requeue also retries a failed outcome write.
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, outcomeErr
 }
 
 // startResetSessionIfNeeded creates or retrieves the long-lived "janitor.gpureset.reset_session" span
@@ -1942,24 +1943,67 @@ func setOutcome(status *v1alpha1.GPUResetStatus) bool {
 
 // recordOutcome sets the Succeeded condition of a GPUReset that completed before the condition existed.
 // fault-remediation reads a missing outcome condition as a reset in progress, so a completed GPUReset without one
-// would hold back further resets of its GPUs. The condition is also set on gr, so that a later status write of
-// this reconcile keeps it.
+// would hold back further resets of its GPUs.
+//
+// The patch is computed from gr and has the resourceVersion of gr as a precondition. A patch of the conditions
+// replaces the whole list, so without the precondition a read that the cache has not updated yet would replace
+// newer conditions. A failed write, a conflict included, returns the error. On success, the conditions and the
+// resourceVersion are also set on gr, so that a later status write of this reconcile keeps the condition.
 func (r *GPUResetReconciler) recordOutcome(ctx context.Context, gr *v1alpha1.GPUReset) error {
 	updatedGR := gr.DeepCopy()
 	if !setOutcome(&updatedGR.Status) {
 		return nil
 	}
 
-	if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {
+	patch := client.MergeFromWithOptions(gr, client.MergeFromWithOptimisticLock{})
+	if err := r.Status().Patch(ctx, updatedGR, patch); err != nil {
 		return fmt.Errorf("failed to record the outcome of GPUReset %s: %w", gr.Name, err)
 	}
 
 	gr.Status.Conditions = updatedGR.Status.Conditions
+	gr.ResourceVersion = updatedGR.ResourceVersion
 
 	log.FromContext(ctx).Info("Recorded the outcome of a GPUReset that completed without a Succeeded condition",
 		"gpureset", gr.Name, "node", gr.Spec.NodeName)
 
 	return nil
+}
+
+// recordOutcomeIfCompleted records the outcome of a completed GPUReset that is not being deleted, and decides what a
+// failed write does to the reconcile:
+//   - A conflict means that gr is older than the stored GPUReset, and nothing else may run with gr. stale is true,
+//     and the caller requeues the GPUReset at once, as for a conflict on a node label patch.
+//   - Any other failed write does not hold back the restoration or the release of the node lock. When the
+//     restoration is pending, the error is logged and not returned: that path always requeues the GPUReset, so the
+//     next reconcile writes the outcome again, and a returned error would drop the requeue and slow the restoration
+//     with the error backoff. In all other cases, err is the error, and the caller returns it after it released the
+//     node lock, unless the release asks for a requeue.
+func (r *GPUResetReconciler) recordOutcomeIfCompleted(
+	ctx context.Context,
+	gr *v1alpha1.GPUReset,
+) (stale bool, err error) {
+	if gr.Status.CompletionTime == nil || !gr.DeletionTimestamp.IsZero() {
+		return false, nil
+	}
+
+	err = r.recordOutcome(ctx, gr)
+
+	switch {
+	case err == nil:
+		return false, nil
+	case apierrors.IsConflict(err):
+		log.FromContext(ctx).Info("GPUReset changed since it was read, retrying", "gpureset", gr.Name,
+			"node", gr.Spec.NodeName)
+
+		return true, nil
+	case restorationPending(gr):
+		slog.WarnContext(ctx, "Unable to record the outcome of the GPUReset; the restoration continues, and its "+
+			"requeue retries the outcome", "gpureset", gr.Name, "node", gr.Spec.NodeName, "error", err)
+
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 // reconcilePhase maps a detailed GPUResetReason to its high-level GPUResetPhase.
