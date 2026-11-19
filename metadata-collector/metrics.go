@@ -75,7 +75,7 @@ func newNvidiaSmiFailuresCounter(reg prometheus.Registerer) *prometheus.CounterV
 	failures := promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
 		Name: "metadata_collector_nvidia_smi_failures_total",
 		Help: "nvidia-smi steps whose output could not be used, by command. " +
-			"The previous metadata file is kept when it is from the same driver and GPUs and has the failed steps' data.",
+			"The previous metadata file is kept when it is complete and from the same driver and GPUs.",
 	}, []string{"command"})
 
 	failures.WithLabelValues(collector.StepNVLink)

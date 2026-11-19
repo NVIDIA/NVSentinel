@@ -29,7 +29,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/writer"
 )
 
@@ -342,15 +341,14 @@ func TestCollectionCompletedGauge_StartsAtZero(t *testing.T) {
 	assert.InDelta(t, float64(time.Now().Unix()), testutil.ToFloat64(gauge), 5)
 }
 
-func TestPreviousCoversFailedSteps(t *testing.T) {
+func TestPreviousIsComplete(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gpu_metadata.json")
 	fresh := &model.GPUMetadata{
 		DriverVersion: "580.95.05",
 		GPUs:          []model.GPUInfo{{UUID: "GPU-a"}, {UUID: "GPU-b"}},
 	}
-	both := []string{collector.StepNVLink, collector.StepTopo}
 
-	assert.False(t, previousCoversFailedSteps(path, fresh, both), "no previous file")
+	assert.False(t, previousIsComplete(path, fresh), "no previous file")
 
 	// writePrevious writes a complete previous file, after edit changes it.
 	writePrevious := func(edit func(*model.GPUMetadata)) {
@@ -372,19 +370,19 @@ func TestPreviousCoversFailedSteps(t *testing.T) {
 	}
 
 	writePrevious(func(*model.GPUMetadata) {})
-	assert.True(t, previousCoversFailedSteps(path, fresh, both))
+	assert.True(t, previousIsComplete(path, fresh))
 
 	writePrevious(func(p *model.GPUMetadata) { p.GPUs[1].UUID = "GPU-c" })
-	assert.False(t, previousCoversFailedSteps(path, fresh, both), "different GPU")
+	assert.False(t, previousIsComplete(path, fresh), "different GPU")
 
 	writePrevious(func(p *model.GPUMetadata) { p.DriverVersion = "570.172.08" })
-	assert.False(t, previousCoversFailedSteps(path, fresh, both), "different driver version")
+	assert.False(t, previousIsComplete(path, fresh), "different driver version")
 
+	// Either step's data missing makes the file incomplete, whichever step failed now, so a
+	// file without nic_topology is not kept over a run that collected it but failed nvlink.
 	writePrevious(func(p *model.GPUMetadata) { p.NICTopology = nil })
-	assert.False(t, previousCoversFailedSteps(path, fresh, []string{collector.StepTopo}), "topo data missing")
-	assert.True(t, previousCoversFailedSteps(path, fresh, []string{collector.StepNVLink}), "only nvlink failed")
+	assert.False(t, previousIsComplete(path, fresh), "topo data missing")
 
 	writePrevious(func(p *model.GPUMetadata) { p.GPUs[0].NVLinks[0].RemoteLinkID = -1 })
-	assert.False(t, previousCoversFailedSteps(path, fresh, []string{collector.StepNVLink}), "nvlink data missing")
-	assert.True(t, previousCoversFailedSteps(path, fresh, []string{collector.StepTopo}), "only topo failed")
+	assert.False(t, previousIsComplete(path, fresh), "nvlink data missing")
 }

@@ -248,18 +248,18 @@ func runCollector(ctx context.Context, nvidiaSmiFailures *prometheus.CounterVec)
 		nvidiaSmiFailures.WithLabelValues(step).Inc()
 	}
 
-	// A previous file that covers the failed steps is worth more than this one on a degraded run:
+	// A complete previous file is worth more than this one on a degraded run:
 	// consumers such as nic-health-monitor cannot start without nic_topology. The fresh metadata
 	// is still returned, so the pod mapper starts.
 	if len(failedSteps) > 0 {
-		if previousCoversFailedSteps(*outputPath, metadata, failedSteps) {
-			slog.Warn("nvidia-smi steps failed; keeping the previous metadata file, which has their data",
+		if previousIsComplete(*outputPath, metadata) {
+			slog.Warn("nvidia-smi steps failed; keeping the previous metadata file, which is complete",
 				"steps", failedSteps, "output_path", *outputPath)
 
 			return metadata, nil
 		}
 
-		slog.Warn("nvidia-smi steps failed and no previous metadata covers them; writing their fields empty",
+		slog.Warn("nvidia-smi steps failed and no complete previous metadata matches; writing their fields empty",
 			"steps", failedSteps, "output_path", *outputPath)
 	}
 
@@ -279,12 +279,13 @@ func runCollector(ctx context.Context, nvidiaSmiFailures *prometheus.CounterVec)
 	return metadata, nil
 }
 
-// previousCoversFailedSteps reports whether the metadata file at path, written by an earlier
-// run, can stand in for this one: same driver version, same GPUs by UUID in the same order, and
-// the data of every failed step present. Without the driver check a node where a step fails on
-// every start would keep a file from before a driver upgrade, and without the data check it
-// could keep a file that is missing what this run collected. Unreadable files count as no.
-func previousCoversFailedSteps(path string, metadata *model.GPUMetadata, failedSteps []string) bool {
+// previousIsComplete reports whether the metadata file at path, written by an earlier run, can
+// stand in for this one: same driver version, same GPUs by UUID in the same order, and the data
+// of every nvidia-smi step present. Without the driver check a node where a step fails on every
+// start would keep a file from before a driver upgrade. The data check covers every step, not
+// only the ones that failed now, so a file left incomplete by an earlier failure is never kept
+// over a run that collected what it is missing. Unreadable files count as no.
+func previousIsComplete(path string, metadata *model.GPUMetadata) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
@@ -300,7 +301,7 @@ func previousCoversFailedSteps(path string, metadata *model.GPUMetadata, failedS
 		return false
 	}
 
-	for _, step := range failedSteps {
+	for _, step := range []string{collector.StepNVLink, collector.StepTopo} {
 		if !hasStepData(&previous, step) {
 			return false
 		}
