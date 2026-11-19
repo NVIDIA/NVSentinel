@@ -285,6 +285,20 @@ func setupE2EReconciler(t *testing.T, ctx context.Context, tomlConfig config.Tom
 	})
 }
 
+// startSessionEndWorker registers the node informer callbacks the way SetupNodeInformerCallbacks
+// does and runs the queue worker that Start() runs.
+func startSessionEndWorker(t *testing.T, r *Reconciler, fqClient *informer.FaultQuarantineClient) {
+	t.Helper()
+
+	fqClient.NodeInformer.SetOnManualUncordonCallback(r.queueManualUncordon)
+	fqClient.NodeInformer.SetOnManualUntaintCallback(r.queueManualUntaint)
+
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	t.Cleanup(stopWorker)
+
+	go r.runCancelQueue(workerCtx)
+}
+
 // setupE2EReconcilerWithOptions creates a test reconciler with full configuration control
 // Returns: (reconciler, mockWatcher, statusGetter, circuitBreaker)
 // Note: circuitBreaker will be nil when cbConfig is nil (circuit breaker disabled)
@@ -372,8 +386,7 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 		fqClient.SetLabelKeys(r.cordonedReasonLabelKey, r.uncordonedReasonLabelKey)
 	}
 
-	fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
-	fqClient.NodeInformer.SetOnManualUntaintCallback(r.handleManualUntaint)
+	startSessionEndWorker(t, r, fqClient)
 
 	stopCh := make(chan struct{})
 	t.Cleanup(func() { close(stopCh) })
@@ -611,8 +624,7 @@ func runReconcilerAndQuarantineNode(
 			fqClient.SetLabelKeys(r.cordonedReasonLabelKey, r.uncordonedReasonLabelKey)
 		}
 
-		fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
-		fqClient.NodeInformer.SetOnManualUntaintCallback(r.handleManualUntaint)
+		startSessionEndWorker(t, r, fqClient)
 
 		rulesetsConfig := rulesetsConfig{
 			TaintConfigMap:     make(map[string]*config.Taint),
@@ -744,7 +756,7 @@ func verifyUnquarantineLabels(t *testing.T, node *corev1.Node) {
 
 // MockEventWatcher is a test mock for EventWatcherInterface that can simulate various scenarios
 type MockEventWatcher struct {
-	CancelLatestQuarantiningEventsFn func(ctx context.Context, nodeName string, reason string) error
+	CancelLatestQuarantiningEventsFn func(ctx context.Context, nodeName string, eventIDs []string, reason string) error
 	ProcessEventCallbackFn           func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error)
 	StartFn                          func(ctx context.Context) error
 }
@@ -950,9 +962,11 @@ func (m *MockEventWatcher) CompleteStoredEvents(
 	return nil
 }
 
-func (m *MockEventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error {
+func (m *MockEventWatcher) CancelLatestQuarantiningEvents(
+	ctx context.Context, nodeName string, eventIDs []string, reason string,
+) error {
 	if m.CancelLatestQuarantiningEventsFn != nil {
-		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName, reason)
+		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName, eventIDs, reason)
 	}
 	// Default behavior: simulate MongoDB document not found (returns nil as per the real implementation)
 	return nil
@@ -988,10 +1002,12 @@ func TestE2E_ColdStartRecoversMissedFatalEvent(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
@@ -1006,10 +1022,12 @@ func TestE2E_ColdStartRecoversMissedFatalEvent(t *testing.T) {
 	assert.Equal(t, string(model.Quarantined), dbClient.status("missed-nvlink-event"))
 
 	// A restart after the status write must not replay the same event again.
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err = coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, 1, dbClient.callCount())
 
 	parsedRecovery, err := eventutil.ParseHealthEventFromEvent(
@@ -1052,10 +1070,12 @@ func TestE2E_ColdStartSkipsFailureSupersededByRecovery(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
@@ -1097,17 +1117,21 @@ func TestE2E_ColdStartCompletesEventForDeletedNode(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Empty(t, dbClient.status("deleted-node-event"))
 	assert.Equal(t, coldstart.RecoveryCompletionValue, dbClient.completion("deleted-node-event"))
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err = coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, 1, dbClient.callCount())
 }
 
@@ -6499,7 +6523,7 @@ func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
 	}
 
 	r.precomputeTaintInitKeys(context.Background(), ruleSetEvals, rulesetsConfig)
-	fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
+	startSessionEndWorker(t, r, fqClient)
 
 	mockWatcher := testutils.NewMockChangeStreamWatcher()
 	t.Cleanup(func() { close(mockWatcher.EventsChan) })
@@ -7068,8 +7092,10 @@ func TestE2E_ManualUncordonWithMissingMongoDoc(t *testing.T) {
 	t.Log("Setting up reconciler after simulated upgrade with eventWatcher")
 	r, _, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 	mockEventWatcher := &MockEventWatcher{}
-	mockEventWatcher.CancelLatestQuarantiningEventsFn = func(ctx context.Context, nodeName string, reason string) error {
-		return fmt.Errorf("error decoding latest quarantining event for node %s: mongo: no documents in result", nodeName)
+	// The datastore has no document for the node, so the cancel finds nothing and returns nil,
+	// like the real event watcher.
+	mockEventWatcher.CancelLatestQuarantiningEventsFn = func(ctx context.Context, nodeName string, _ []string, reason string) error {
+		return nil
 	}
 	mockEventWatcher.ProcessEventCallbackFn = func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
 		return nil, nil
