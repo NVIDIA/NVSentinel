@@ -80,3 +80,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 068 | [Datastore — Bounded Retention for the PostgreSQL Changelog (proposed)](068-postgresql-changelog-retention.md) |
 | 069 | [Janitor — Extend the GPU Reset Job with a Strategic Merge Patch](069-gpu-reset-job-extension.md) |
 | 070 | [Architecture — Vendor-Neutral Core and Vendor Plugins (proposed)](070-vendor-neutral-core.md) |
+| 075 | [Cleanup of stale NVSentinel node conditions (proposed)](075-stale-node-condition-cleanup.md) |
