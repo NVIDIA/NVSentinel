@@ -50,7 +50,7 @@ go_tools:
   # renovate: datasource=github-releases depName=boumenot/gocover-cobertura depType=go_tools
   gocover_cobertura: 'v1.5.0'
   # renovate: datasource=go depName=sigs.k8s.io/controller-runtime/tools/setup-envtest depType=go_tools
-  setup_envtest: 'v0.25.2'
+  setup_envtest: 'v0.25.3'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
   goimports: 'v0.52.0'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
