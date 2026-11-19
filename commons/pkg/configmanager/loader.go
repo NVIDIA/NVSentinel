@@ -23,6 +23,7 @@ import (
 // LoadTOMLConfig loads configuration from a TOML file into the provided config struct.
 // The config parameter should be a pointer to a struct with TOML tags.
 // Type is inferred from the config parameter.
+// Unknown keys are ignored. LoadTOMLConfigWithMetadata returns them.
 //
 // Example usage:
 //
@@ -46,9 +47,20 @@ import (
 //	    return fmt.Errorf("ServerPort must be between 1 and 65535")
 //	}
 func LoadTOMLConfig[T any](path string, config *T) error {
-	if _, err := toml.DecodeFile(path, config); err != nil {
-		return fmt.Errorf("failed to decode TOML file %s: %w", path, err)
+	_, err := LoadTOMLConfigWithMetadata(path, config)
+
+	return err
+}
+
+// LoadTOMLConfigWithMetadata loads configuration the same way as LoadTOMLConfig
+// and also returns the decode metadata. MetaData.Undecoded lists keys the config
+// type has no field for. A caller uses that list to reject a misspelled field or
+// an outcome key that belongs to a different component.
+func LoadTOMLConfigWithMetadata[T any](path string, config *T) (toml.MetaData, error) {
+	metadata, err := toml.DecodeFile(path, config)
+	if err != nil {
+		return toml.MetaData{}, fmt.Errorf("failed to decode TOML file %s: %w", path, err)
 	}
 
-	return nil
+	return metadata, nil
 }

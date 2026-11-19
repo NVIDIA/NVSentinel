@@ -134,3 +134,5 @@ kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}'
 # Monitor nodes
 kubectl get nodes -w
 ```
+
+> **Note:** `-1` is this gauge's unknown value. After the step-7 restart there may be nothing left to count (a `CREATE` cursor skipped the backlog), and on PostgreSQL the watcher does not support counting at all, so the gauge stays `-1` there.
