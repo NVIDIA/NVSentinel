@@ -40,13 +40,9 @@ type EthernetDegradationCheck struct {
 	evaluator          *Evaluator
 	pending            *Evaluator
 
-	// saveFailed records that the last state-file Save failed, so the
-	// next commit retries even when nothing changed.
-	saveFailed bool
-
 	// firstPollDeferrals counts consecutive polls deferred because the
 	// first enumeration included unreadable devices. Poll bookkeeping,
-	// deliberately outside the transactional commit (like saveFailed).
+	// deliberately outside the transactional commit.
 	firstPollDeferrals int
 }
 
@@ -185,36 +181,21 @@ func (c *EthernetDegradationCheck) Commit() {
 
 	// The prepared poll ran the baseline reconciliation when it consumed
 	// the pending flag the committed evaluator still carries.
+	var completedBaseline string
+
 	if c.evaluator.BootBaselinePending() && !c.pending.BootBaselinePending() {
-		c.state.ClearPendingBaseline(checks.EthernetDegradationCheckName)
+		completedBaseline = c.Name()
 	}
 
 	c.evaluator = c.pending
 	c.pending = nil
-	c.persist()
+
+	if err := c.state.SaveCounterState(c.evaluator.Snapshots(), c.evaluator.BreachFlags(), completedBaseline); err != nil {
+		slog.Warn("Failed to persist counter state to disk", "check", c.Name(), "error", err)
+	}
 }
 
 // Discard abandons a prepared poll after check or publication failure.
 func (c *EthernetDegradationCheck) Discard() {
 	c.pending = nil
-}
-
-func (c *EthernetDegradationCheck) persist() {
-	snapshotsChanged := c.state.UpdateCounterSnapshots(c.evaluator.Snapshots())
-	flagsChanged := c.state.UpdateBreachFlags(c.evaluator.BreachFlags())
-
-	if !snapshotsChanged && !flagsChanged && !c.saveFailed {
-		return
-	}
-
-	if err := c.state.Save(); err != nil {
-		c.saveFailed = true
-
-		slog.Warn("Failed to persist counter state to disk",
-			"check", c.Name(), "error", err)
-
-		return
-	}
-
-	c.saveFailed = false
 }
