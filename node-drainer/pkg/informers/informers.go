@@ -325,14 +325,13 @@ func cachedNodeSpec(node *v1.Node, nodeFields nodecache.Keys) v1.NodeSpec {
 }
 
 // cachedNodeLabels keeps the named labels, or every label when a rule reads
-// the label map as a whole. An empty result is nil, matching a node that had
-// no labels worth keeping.
+// the label map as a whole.
 func cachedNodeLabels(in map[string]string, nodeFields nodecache.Keys) map[string]string {
 	if !nodeFields.PruneLabels() {
 		return maps.Clone(in)
 	}
 
-	return withoutEmpty(nodeFields.RetainLabels(in, nil))
+	return withoutEmpty(nodeFields.RetainLabels(in, nil), nodeFields)
 }
 
 // cachedNodeAnnotations keeps the named annotations and the annotations
@@ -343,17 +342,22 @@ func cachedNodeAnnotations(in map[string]string, nodeFields nodecache.Keys, ownK
 		return maps.Clone(in)
 	}
 
-	return withoutEmpty(nodeFields.RetainAnnotations(in, ownKeys))
+	return withoutEmpty(nodeFields.RetainAnnotations(in, ownKeys), nodeFields)
 }
 
-// withoutEmpty turns a map with no entries into nil so callers that check for
-// a missing map see the same result as before pruning.
-func withoutEmpty(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
+// withoutEmpty turns a pruned map with no entries into nil when no Node rule
+// exists, which keeps the cache as it was before rules could widen it.
+//
+// With a Node rule, an empty map stays empty. celrule.NodeToUnstructured gives
+// a rule an empty map only for a non-nil source map. For a nil map, a guard such
+// as "scheduler" in node.metadata.labels fails with "no such key" instead of
+// evaluating to false.
+func withoutEmpty(in map[string]string, nodeFields nodecache.Keys) map[string]string {
+	if len(in) > 0 || nodeFields.HasNodeRule() {
+		return in
 	}
 
-	return in
+	return nil
 }
 
 func identityObjectMeta(name, namespace string, uid types.UID, resourceVersion string,

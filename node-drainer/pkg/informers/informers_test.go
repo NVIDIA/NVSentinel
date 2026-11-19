@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/commons/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -272,6 +273,7 @@ func TestNodeTransform_RuleFields_KeepsOnlyWhatTheRuleReads(t *testing.T) {
 		{
 			name:              "literal annotation keeps that annotation and the quarantine annotation",
 			expressions:       []string{`"example.com/team" in node.metadata.annotations`},
+			wantLabels:        map[string]string{},
 			wantAnnotations:   map[string]string{common.QuarantineHealthEventAnnotationKey: `{"events":[]}`, "example.com/team": "alpha"},
 			wantUnschedulable: true,
 		},
@@ -299,6 +301,7 @@ func TestNodeTransform_RuleFields_KeepsOnlyWhatTheRuleReads(t *testing.T) {
 		{
 			name:              "status read drops status and keeps spec",
 			expressions:       []string{`node.status.phase == "Running"`},
+			wantLabels:        map[string]string{},
 			wantAnnotations:   quarantineOnly,
 			wantUnschedulable: true,
 		},
@@ -391,6 +394,47 @@ func TestNodeTransform_RuleFields_KeepsMetadataTheRuleReads(t *testing.T) {
 			assert.Equal(t, tt.wantGeneration, cached.Generation)
 			assert.Equal(t, tt.wantCreated, cached.CreationTimestamp)
 			assert.Equal(t, tt.wantManagedFields, cached.ManagedFields)
+		})
+	}
+}
+
+// TestNodeTransform_RuleFields_AbsentKeyEvaluatesFalse runs each rule against
+// the cached node. A node that has labels and annotations, but none that the
+// rule names, must make a guard evaluate to false. It must not fail with a
+// missing-key error. A rule that fails would block the decision for the node.
+func TestNodeTransform_RuleFields_AbsentKeyEvaluatesFalse(t *testing.T) {
+	t.Parallel()
+
+	node := &v1.Node{
+		Name:        "node-a",
+		Labels:      map[string]string{"large": "metadata"},
+		Annotations: map[string]string{"unrelated": "discard"},
+	}
+
+	tests := []struct {
+		name       string
+		expression string
+		want       bool
+	}{
+		{name: "absent label", expression: `"scheduler" in node.metadata.labels`},
+		{name: "absent annotation", expression: `"example.com/team" in node.metadata.annotations`},
+		{name: "absent label negated", expression: `!("scheduler" in node.metadata.labels)`, want: true},
+		{name: "present label", expression: `"large" in node.metadata.labels`, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			transformed, err := nodeTransform(pruningFields(nil, tt.expression))(node)
+			require.NoError(t, err)
+
+			rule, err := celrule.NewNodeRule(tt.expression)
+			require.NoError(t, err)
+
+			got, err := rule.Evaluate(transformed.(*v1.Node))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
