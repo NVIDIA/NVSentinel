@@ -4,182 +4,173 @@ Status: Proposed
 
 ## Context
 
-[Issue #1673](https://github.com/NVIDIA/NVSentinel/issues/1673) reports conditions that remain after an upgrade or a check configuration change. The reporter uses conditions to track NVSentinel activity. Disabling `InfiniBandCharDeviceCheck` leaves its existing conditions behind. The reporter also describes stale Ethernet conditions since the v1.15 InfiniBand/Ethernet state-check split. Removing a detected XID from configuration can leave its text in a condition message.
+[Issue #1673](https://github.com/NVIDIA/NVSentinel/issues/1673) reports node conditions left behind after upgrades or check configuration changes. A retired check is a type that NVSentinel no longer emits at all. A disabled check remains supported but is off in the selected nodes' effective configuration. Neither silence nor age proves retirement or repair.
 
-The claim comment proposed an ordinary cleanup Job and asked three scope questions. Maintainer lalitadithya requested an ADR comparing options without Helm hooks. This record proposes a choice for review; it does not authorize implementation.
-
-### Verified current behaviour
-
-The following evidence was checked at `bbfaee0e`:
-
-- The [cleanup template](../../distros/kubernetes/nvsentinel/templates/node-condition-cleanup-hook.yaml) gates resources on `nodeConditionCleanup.enabled` (line 15). It declares Helm `post-upgrade` and Argo CD `PostSync` hooks (lines 25–29). Its [values](../../distros/kubernetes/nvsentinel/values.yaml) default to disabled with an empty `deprecatedConditions` list (lines 655–657).
-- The [cleanup script](../../distros/kubernetes/nvsentinel/files/node-condition-cleanup.sh) removes exact listed types without checking Reason or status (lines 52–67). It replaces the complete conditions array without a conditional test.
-- The [condition writer](../../platform-connectors/pkg/connectors/kubernetes/process_node_events.go) uses `CheckName` as the condition type (lines 244–258). It writes `True` while fault messages remain and `False` when they clear (lines 263–310). Reasons are `<Check>IsHealthy` or `<Check>IsNotHealthy` (lines 1077–1084). Recovery updates the condition rather than deleting it.
-- The [NIC check constants](../../health-monitors/nic-health-monitor/pkg/checks/types.go) define separate `InfiniBandStateCheck` and `EthernetStateCheck` names (lines 28–33). An InfiniBand event cannot update the Ethernet condition through this writer. The v1.15 timing comes from the issue report.
-- The [NIC chart](../../distros/kubernetes/nvsentinel/charts/nic-health-monitor/values.yaml) still enables `InfiniBandCharDeviceCheck` by default (lines 41–46). It is a supported check, not a retired type. The [DaemonSet](../../distros/kubernetes/nvsentinel/charts/nic-health-monitor/templates/daemonset.yaml) passes `enabledChecks` to the monitor (lines 107–108).
-- The [platform-connector configuration](../../distros/kubernetes/nvsentinel/templates/_platform-connector-config.tpl) contains no complete enabled-check inventory. Policy-defined names and separately configured publishers prevent a universal chart-derived inventory.
-
-[ADR-052](052-deployment-platform-connector.md) supports both node-local DaemonSets and central Deployment replicas. Cleanup must work during their coexistence. [PR #1028](https://github.com/NVIDIA/NVSentinel/pull/1028) changed MongoDB initialization to an ordinary Job because post-hooks could block Helm readiness. The current [external MongoDB Job](../../distros/kubernetes/nvsentinel/templates/job-external-mongodb-setup.yaml) uses that pattern. Its [name helper](../../distros/kubernetes/nvsentinel/templates/_helpers.tpl) hashes inputs to avoid immutable Job updates (lines 66–76). That precedent does not establish identical execution semantics across GitOps tools.
+The current [cleanup hook](../../distros/kubernetes/nvsentinel/templates/node-condition-cleanup-hook.yaml) runs after Helm upgrades or Argo CD syncs. Its [settings](../../distros/kubernetes/nvsentinel/values.yaml) default to disabled with an empty `nodeConditionCleanup.deprecatedConditions` list. The [script](../../distros/kubernetes/nvsentinel/files/node-condition-cleanup.sh) deletes listed conditions without checking ownership or fault state. Deleting a condition leaves any tracked fault, quarantine annotation and cordon in place.
 
 ## Decision
 
-Recommend **option C: an ordinary hash-named Job**, without Helm or Argo CD hook annotations, using the safety contract below. Start with explicit retired types; keep chart-derived disabled-type cleanup opt-in and limited to verified inventories.
+Use a **Hash-named cleanup Job** with no Helm or Argo CD hook annotations. It resolves retired faults through normal health-event ingestion before removing obsolete conditions.
 
-Maintainers must accept the open decisions before implementation. Keep existing defaults unchanged during the first release.
+| Target | Condition | Quarantine annotation and cordon |
+|---|---|---|
+| Retired check with a tracked fault | Publish matching healthy events; the normal writer clears the fault signal to `False`. Remove the obsolete condition after recovery completes. | Fault-quarantine removes the matching fault. It releases quarantine only when no tracked faults remain, under its normal rules. |
+| Retired check without a tracked fault | Remove the owned condition, including `True`, `False` or `Unknown`. | Leave node isolation unchanged. |
+| Disabled check | Remove only owned `False` conditions without tracked faults by default. Preserve `True`, `Unknown` and tracked faults. | Recovery requires explicit operator opt-in and verified repair. |
+
+The Job never acts on unknown types. It never edits quarantine annotations, taints, cordons, stored faults or maintenance requests directly. Recovery uses existing audit, metrics and downstream rules. It does not certify hardware health or cancel a reset already in progress.
 
 ## Implementation
 
-### Shared safety contract
+### Ownership and scope
 
-All execution options use the same input model and deletion rules:
+Require a reviewed known-check inventory and an explicit retired list. Each retired entry must identify the expected publishing agents, component classes and event versions. Require the condition Reason to equal `<Type>IsHealthy` or `<Type>IsNotHealthy`. Use exact comparisons for both type and Reason. A matching suffix alone is insufficient. Preserve kubelet conditions, NPD source conditions and mismatched Reasons.
 
-| Input | Source | Removal rule |
-|---|---|---|
-| Known checks | Reviewed built-in inventory plus explicit operator additions | Required ownership boundary; never use a suffix alone. |
-| Retired types | Explicit release-maintained list of checks no longer emitted | Remove matching owned conditions regardless of status, including `True` and `Unknown`. This policy requires maintainer acceptance. |
-| Disabled types | Known supported checks minus the effective enabled set for a verified chart inventory | Remove only `False` by default. An explicit operator setting may include `True`; preserve `Unknown`. |
+Retirement withdraws an obsolete fault identity from service. Its last fault otherwise has no publisher that can ever resolve it. Maintainers must verify that retirement also removes the need for that fault's isolation. A renamed check needs replacement coverage and an explicit transition policy. Retirement is not evidence that damaged hardware was repaired.
 
-A condition is eligible only when its type is a known check and its Reason equals `<Type>IsHealthy` or `<Type>IsNotHealthy`. Use exact string comparisons. This guard is an ownership convention, not proof against another writer using the same names. Preserve kubelet conditions, NPD source conditions, unknown types and mismatched Reasons.
+An active supported type must never enter the retired list. `InfiniBandCharDeviceCheck` remains [enabled by default](../../distros/kubernetes/nvsentinel/charts/nic-health-monitor/values.yaml). `EthernetStateCheck` and `InfiniBandStateCheck` remain [distinct supported types](../../health-monitors/nic-health-monitor/pkg/checks/types.go). Dropping an XID from a supported check does not retire the whole type.
 
-An active supported check must never enter the retired list. Neither Ethernet state checking nor IB character-device checking is globally retired. Select these checks only when the effective configuration disables them. Review historical names before adding any retired entry. A dropped XID in a still-supported condition message does not retire that condition type.
+Compute disabled candidates only where chart settings fully describe emitted names and node scope. Start with NIC `enabledChecks`. Account for monitor enablement, defaults and node selection. Exclude dynamic policies, external publishers and uncertain inventories. Reject overlapping retired/enabled sets and unknown configured entries before writes. Missing or invalid ownership evidence requires manual review, including tracked faults whose condition is absent.
 
-Compute disabled candidates only where chart settings fully describe the emitted names and node scope. Begin with the NIC `enabledChecks` inventory. Exclude policy-defined, externally managed or uncertain names. Account for monitor enablement, subchart defaults and node selection. If enabled state differs by node, require explicit scope or skip automatic cleanup. Silence and old timestamps do not establish retirement.
+### Recovery of retired faults
 
-Retired and enabled sets must not overlap. Reject ambiguous inputs before any writes. Scope the first run to an explicit node selector, with dry-run enabled. Log the input digest, node UID, type, status, category and outcome. Report counts of candidates, removals, skips and failures without copying condition messages.
+1. List selected Nodes and verify the ownership guard. Read `quarantineHealthEvent` using the existing parser, including its legacy single-event format.
+2. For each retired type, select every matching tracked identity. Reject unexpected agents, components, versions or malformed annotation data. Never infer identity from condition text.
+3. Build healthy events from those identities. Preserve `nodeName`, `agent`, `componentClass`, `checkName`, `version`, `entitiesImpacted` and `errorCode`. Set `isHealthy=true`, `isFatal=false`, action `NONE` and `processingStrategy=EXECUTE_REMEDIATION`. Clear inherited force/skip overrides. Assign a new event ID and timestamp. Reuse the batch idempotency key on transport retries. Add audit metadata containing the retirement entry, input digest and Node UID.
+4. Publish through platform-connectors using the monitor API. Keep all normal transformations, persistence and downstream processing. Verify that configured overrides and deduplication permit recovery; a suppressed or altered recovery is a failure.
+5. Observe the condition and quarantine annotation through a Node informer with a bounded deadline. Require matching tracked identities to disappear and the condition writer to finish recovery to `False`. The writer clears matching messages and sets `False` when none remain. Other faults can keep the node quarantined.
+6. Re-read the Node before removing the obsolete condition. Require the same UID, ownership guard and no remaining tracked fault for that type. Report partial recovery as failure; never replace it with condition-only deletion.
 
-### Effect of removing a True condition
+For merely-disabled checks, removal of monitoring does not withdraw the fault or prove repair. Keep faults by default. Any recovery opt-in must name checks and nodes, record operator verification, and use the same event path. Preserve disabled `Unknown` conditions even with opt-in. [Issue #1992](https://github.com/NVIDIA/NVSentinel/issues/1992) explicitly rejects quiet-period XID recovery. [ADR-059](059-derived-condition-recovery.md) provides verified, identity-scoped recovery for configured derived rules. Use that procedure for supported derived checks; do not bypass its verification or history boundary.
 
-`True` means a recorded fault, not verified current failure or recovery. Removing it hides the Kubernetes health signal from dashboards and external automation.
+### Verified recovery path
 
-Fault Quarantine consumes stored health events in its [reconciler](../../fault-quarantine/pkg/reconciler/reconciler.go), starting at lines 202–278. Recovery removes tracked faults from annotations before uncordoning (lines 1780–1874). Deleting a condition does not supply a healthy event or release quarantine. A node can therefore remain cordoned after its condition disappears. Stored faults, quarantine annotations, taints and remediation work must remain unchanged.
+These code references describe the implementation at `a161c861`:
 
-Cleanup must not synthesize recovery events. Operators must verify repair and use the applicable recovery procedure separately. This distinction follows [ADR-003](003-rule-based-node-quarantine.md) and preserves [ADR-059](059-derived-condition-recovery.md)'s proposed recovery boundary.
+- [HealthEvent schema](../../data-models/protobufs/health_event.proto), lines 78–85 and 118–139: `PlatformConnector.HealthEventOccurredV1(HealthEvents)` and the event fields above.
+- [Monitor dial path](../../health-monitors/nic-health-monitor/main.go), lines 175–193: monitors use the shared publisher with the node-local Unix domain socket or the Deployment endpoint. [Publisher transport](../../commons/pkg/healthpub/dial.go), lines 75–122, selects `HEALTH_PUBLISH_TARGET` and requires the direct-mode token.
+- [Quarantine identity](../../fault-quarantine/pkg/healthEventsAnnotation/health_events_annotation_map.go), lines 33–45 and 403–425: matching uses agent, component, check, node and version, then entities and error codes. Empty entity/code lists can broaden recovery; preserve the recorded scope.
+- [Quarantine recovery](../../fault-quarantine/pkg/reconciler/reconciler.go), lines 1804–1874: healthy events remove matching entities. Remaining faults keep quarantine active. [Annotation update](../../fault-quarantine/pkg/reconciler/reconciler.go), lines 2022–2087, retains the final entry until unquarantine succeeds.
+- [Session release](../../fault-quarantine/pkg/reconciler/reconciler.go), lines 2101–2176 and 2288–2334: normal recovery removes session annotations and actions. It preserves pre-existing taints and cordons and can require validation. [ADR-062](062-fault-quarantine-release-at-session-end.md) explains the session boundary.
+- [Condition writer](../../platform-connectors/pkg/connectors/kubernetes/process_node_events.go), lines 244–310 and 347–370: `checkName` selects the condition. Healthy events clear matching entity/error messages; an entity-free event clears all messages. An empty message set becomes `False`, not a deleted condition. Reasons follow the ownership convention at lines 1077–1084.
 
-### Job lifecycle and permissions
+Thus recovery resolves the fault through one event pipeline. The Job does not call fault-quarantine directly. It does not delete event history. MongoDB and PostgreSQL use the same ingestion contract.
 
-Use an NVSentinel Go cleanup command with context cancellation. Reuse the conditional-patch approach from `conditionsPatch` in the condition writer (lines 175–187). Re-read and recompute after conflicts. Preserve concurrent changes to every retained condition. A timeout, unreadable node or invalid input must never become an empty replacement array.
+### Condition-only fallback
 
-Hash all effective inputs and the pod specification into the Job name. Include the inventory, lists, node scope, status policy, dry-run setting, command version, image and an explicit rerun generation. Bundle immutable inputs with the Job. Use a dedicated ServiceAccount with `get,list` on Nodes and `patch` on `nodes/status`. Grant no cordon, eviction, Secret or datastore permissions. Dry-run needs only read access.
+Delete a condition without publishing only when no tracked fault for its type exists in a freshly read, valid quarantine annotation. An absent annotation counts as no tracked fault. Without a recovery publication in this run, retired types qualify at `False`, `Unknown`, or `True` with no annotation entry. For disabled types it covers only `False` by default. A disabled `True` needs the explicit verification opt-in described above.
 
-Use paginated node lists, bounded concurrency, client QPS/burst limits and bounded conflict retries with backoff. Set a run deadline and attempt limit sized for the fleet. Exit nonzero on partial failure and retain its summary. An idempotent rerun checks all guards again. No cleanup failure may block platform-connector readiness or ingestion.
+A `False` condition with a tracked fault still requires recovery. Malformed annotations, unresolved identities and ingestion failures never qualify for fallback. After publishing recovery, wait for both writers as described above before deleting the resulting `False` condition. The normal writer clears health state; this final deletion removes the unused display entry.
 
-### GitOps and execution timing
+Use conditional JSON patches that test Node UID, the observed annotation state and conditions before replacement. Re-read and recompute after conflicts. The existing [conditionsPatch](../../platform-connectors/pkg/connectors/kubernetes/process_node_events.go), lines 175–187, shows the conditions test. Preserve all retained conditions and concurrent updates. A failed read must never become an empty replacement array.
 
-Helm creates the ordinary Job on install or an input-changing upgrade. A completed Job with the same name does not run again. Argo CD and Flux reconcile it as an ordinary resource. A changed hash creates a new Job instead of patching an immutable pod template.
+### Permissions and execution
 
-Retain completed Jobs by default. TTL deletion can cause Argo CD or Flux to recreate a desired Job repeatedly. Helm alone does not continuously recreate it. Document explicit rerun generation and pruning for each tool; avoid routine Force/Replace annotations. Keep failed Jobs visible until an operator requests a rerun. GitOps Job health may affect sync status, even though ingestion remains independent.
+Use a dedicated ServiceAccount with `get,list,watch` on Nodes and `patch` on `nodes/status` for final deletion. Dry-run needs only Node reads. Grant no Node-spec writes, evictions, Secret reads, datastore access or TokenReview access to the Job.
 
-Ordinary resources provide no post-rollout ordering guarantee. Before enabling cleanup, operators must finish retiring or disabling every publisher of a target type. This includes old replicas during rolling upgrades. The barrier also covers platform-connector replicas that already accepted batches for that type. A running connector keeps queued batches and retries their writes, so a pending batch could recreate a removed condition. Complete the barrier only after observing those publisher and connector pods terminate or restart without the type. Run a separate configuration change after that barrier. Never infer this barrier from a delay. Disable and remove any older cleanup Job before changing its policy or rolling back.
+Publishing is a separate authority from Kubernetes RBAC. Project a pod-bound token for the platform-connector audience. Enable the Job's ServiceAccount in the connector's cross-node allowlist only when cleanup is enabled. The [node-binding interceptor](../../platform-connectors/pkg/auth/nodebinding.go), lines 16–75 and 224–228, defines that authority. Allow the required network path and mount the public CA bundle for Deployment mode. Socket mode mounts the local UDS and schedules the Job alongside a ready connector. Never weaken authentication to send events under the original agent name.
 
-### Rollout and upgrade
+A gRPC reply has different meanings by topology. The [node-local role](../../platform-connectors/pkg/nodelocal/role.go), lines 16–21, acknowledges queue acceptance. The [central role](../../platform-connectors/pkg/central/role.go), lines 16–30, processes inside the request and uses idempotency keys. Queue acceptance alone never proves recovery. Completion requires observed downstream state, including annotation removal for every selected fault. Timeouts leave incomplete work visible for rerun. No fallback bypasses a failed publisher.
 
-1. Ship the cleaner disabled, with empty retired entries unless each historical name has been reviewed.
-2. Preserve `nodeConditionCleanup.*` and its defaults. Add separate settings with inline documentation; remove no existing key.
-3. Require one cleanup mechanism per release. Validate conflicting enablement rather than running both against the same nodes.
-4. Complete publisher rollout, then inspect a dry-run on a selected node group.
-5. Obtain explicit approval for the retired-type status policy before enabling writes. Expand node scope after reviewing results.
-6. Enable disabled-type cleanup separately. Include `True` only after operator review of hidden faults and remaining quarantine state.
+Use context cancellation, paginated lists, an informer, bounded workers, QPS limits and bounded conflict retries. Set Job deadlines and attempt limits for the fleet size. Exit nonzero on partial failure. Log input digests, Node UIDs, identities and outcome counts without copying diagnostic messages. Recovery may produce existing audit records and metrics; repeat publication must leave node state unchanged.
 
-Rollback stops future cleanup; it cannot restore deleted conditions. Export candidate conditions before the first write for audit and manual review. Do not automatically restore snapshots over newer health data. An older monitor can recreate a removed condition, but quiet checks might never publish again. Keep retired entries across supported upgrade paths; an upgrade can skip releases.
+### Job naming and GitOps
+
+Hash every effective input and the pod specification into the Job name. Include inventories, policies, scope, dry-run, image, command version and an explicit rerun generation. Bundle immutable inputs with that Job. Changed inputs create a new name instead of updating an immutable Job template. An unchanged completed Job stays completed. Recovery itself remains idempotent after retries or manual recreation.
+
+`generateName` supplies uniqueness but no stable desired identity:
+
+| Tool | Why use the hash name |
+|---|---|
+| Helm | [Upgrade matching](https://github.com/helm/helm/blob/main/pkg/action/upgrade.go) uses resource names. A server-generated name is absent from the rendered release. Helm cannot reliably upgrade or prune that instance. Create-on-upgrade workarounds can leave a new untracked Job each time; some apply paths fail instead. |
+| Argo CD | [Generated names](https://argo-cd.readthedocs.io/en/stable/user-guide/resource_hooks/#generate-name) have explicit support for hooks. Ordinary resources need a stable desired name for matching and diffing. Unnamed create-based resources can stay OutOfSync and lack reliable pruning. Hooks would restore the lifecycle this design replaces. |
+| Flux | A [HelmRelease](https://fluxcd.io/flux/components/helm/helmreleases/) inherits Helm behavior. A [Kustomization inventory](https://fluxcd.io/flux/components/kustomize/kustomizations/#inventory) tracks named objects for drift correction and pruning. Use stable names in either mode. |
+
+These are identity constraints, not a promise that every tool accepts unnamed ordinary Jobs. Retain the current completed or failed Job without TTL deletion. Argo CD self-heal, Flux Kustomizations, or HelmRelease drift correction can recreate a deleted desired Job. Prune old hash names through Helm upgrades or enabled GitOps pruning after saving summaries. Document manual removal when pruning is disabled. Use rerun generation instead of routine Force/Replace annotations. Job failure can affect sync/release status; ingestion readiness stays independent.
+
+### Rollout and hook migration
+
+The Hash-named cleanup Job supersedes the cleanup hook. Keep the legacy hook for one transition release, disabled by default. Warn in chart notes when it is enabled. Reject simultaneous enablement of both mechanisms. Map `nodeConditionCleanup.deprecatedConditions` into the retired candidates during explicit migration, then validate every entry against the retirement inventory. Existing lists may contain merely-disabled checks; reject those entries rather than silently converting them to recovery requests.
+
+After that release, remove hook execution while retaining its value keys as deprecated aliases for the new Job. Require explicit migration approval before any old configuration enables recovery. Keep defaults disabled and lists empty. Preserve retired entries across supported skipped-release upgrades. Document this transition inline in values and release notes before implementation ships.
+
+Before enabling cleanup, observe termination of old publishers and connector pods that can hold their queued batches. This includes both topologies during coexistence under [ADR-052](052-deployment-platform-connector.md). Finish downstream processing of accepted old faults before recovery. Never infer completion from a delay. Run cleanup in a separate configuration change after this barrier.
+
+Run dry-run first on an explicit node selector. Export candidate identities for audit. Review retirement coverage and approve recovery effects before enabling writes. Expand scope after checking results. Disable and remove older cleanup Jobs before policy changes or rollback. Rollback stops future cleanup but cannot retract recovery events or restore deleted conditions. Never restore snapshots over newer health state.
 
 ### Tests and acceptance criteria
 
-- Use table-driven tests for known/unknown types, exact/mismatched Reasons, empty lists and overlapping inputs. Cover every status and both categories.
-- Use envtest for status patches. Verify kubelet, NPD and active supported conditions remain unchanged. Concurrent writer updates must survive retries.
-- Verify retired types disappear at every status under the accepted policy. Disabled `False` conditions disappear; disabled `True` conditions stay unless explicitly enabled.
-- Verify cleanup changes no stored event, quarantine annotation, taint or cordon state. A healthy node must remain schedulable without drain or remediation.
-- Test API denial, timeout, throttling, conflict exhaustion, cancellation and partial completion. Each failure must be visible and safe to rerun.
-- Render charts with NIC defaults, disabled checks, disabled monitors, custom names and node scopes. Hashes must cover every effective input and pod change.
-- Validate Helm, Argo CD and Flux lifecycle cases: install, changed inputs, unchanged completed Job, failed Job, explicit rerun, pruning and rollback. Demonstrate no continuous recreation with retained Jobs.
-- Test mixed old/new platform connectors in both ADR-052 topologies. Cleanup must wait for the documented publisher rollout barrier.
-- Measure list memory, API request rates and completion time at the target fleet size. Set budgets before enabling cleanup broadly.
+- Table-test known/unknown types, exact Reasons, all statuses, both categories, overlapping inputs and malformed or legacy annotations.
+- Use envtest for conditional patches, UID changes and concurrent writers. Preserve kubelet, NPD, active checks and unrelated conditions.
+- Test retired faults end to end through gRPC, storage, condition clearing and quarantine release on MongoDB and PostgreSQL. Include both connector topologies and mixed versions.
+- Verify another fault keeps the node cordoned. Preserve pre-existing isolation and normal validation. A healthy node must receive no cordon, drain, reset or reboot.
+- Test every agent/component/version/entity/error identity, multiple faults, overrides, deduplication, repeated publication and interrupted recovery. No partial failure may cause fallback deletion.
+- Verify disabled faults remain without explicit opt-in. Test no-tracked-fault deletion separately, including retired `True` and `False` with a tracked fault.
+- Cover denial, cancellation, timeout, throttling, conflicts and unavailable ingestion. Bound completion observation; prove queue acknowledgment alone cannot mark success.
+- Render charts for migration conflicts, aliases, inventories, authentication and node scope. Test Helm, Argo CD and Flux naming, unchanged completion, rerun, pruning, failures and rollback.
+- Test the rollout barrier with queued old batches. Measure memory, API rates and completion time before fleet rollout.
 
 ## Rationale
 
-- A separate Job keeps fleet cleanup outside ingestion and works with either platform-connector topology.
-- Explicit lists make retirement reviewable. A partial inventory avoids treating dynamic names as disabled checks.
-- Dedicated RBAC and selected node groups limit operational exposure. Every option still has cluster-wide potential through `nodes/status` access.
-- A one-shot operation fits upgrades and configuration changes without continuous API work or new controller leadership.
+- Recovery resolves obsolete faults through existing writers, audit and metrics.
+- Explicit retirement removes an identity that cannot report recovery again.
+- A separate bounded Job keeps cleanup outside ingestion startup and steady-state processing.
+- Stable hash names make execution depend on reviewed inputs across delivery tools.
 
 ## Consequences
 
 ### Positive
 
-- Operators can review stale-condition removal without relying on hooks.
-- Cleanup uses the same contract under Helm, Argo CD and Flux.
-- Event storage and module coordination remain unchanged for MongoDB and PostgreSQL.
+- Retired faults no longer strand nodes in quarantine after their conditions disappear.
+- Disabled faults remain visible until an operator verifies recovery.
+- Existing event schemas and module coordination stay unchanged.
 
 ### Negative
 
-- Maintainers must keep the known and retired inventories accurate.
-- Operators must sequence cleanup after publishers stop emitting target types.
-- A wrong retired list can hide faults across a large fleet.
-- The cleaner command, image packaging, retained Jobs and rerun procedure need maintenance.
-- Default-disabled cleanup requires operator action and cannot fix message-level residue.
+- An incorrect retirement policy can release an unsafe node.
+- Publishing requires cross-node authority and available downstream consumers.
+- Inventories, rollout ordering, retained Jobs and migration need maintenance.
 
 ### Mitigations
 
-- Require reviewed retirement entries, dry-run output and gradual node scope expansion.
-- Preserve `True` disabled conditions by default and keep quarantine recovery separate.
-- Bound API work and expose partial failure through Job status and summary logs.
-- Document pruning, rollback and skipped-release upgrades before enabling the feature.
+- Require reviewed retirement mappings, dry-run and gradual scope expansion.
+- Fail closed on uncertain identity, configuration or completion.
+- Keep disabled recovery opt-in and preserve session release rules.
 
 ## Alternatives Considered
 
-All options below inherit the shared inventory, ownership and status rules. Changing execution location cannot discover retirement from silence.
+### Platform-connectors startup reconciliation
 
-### A. Platform-connectors startup reconciliation
+**Rejected** because restarts multiply fleet work and tie cleanup to ingestion. Both deployment topologies need ownership coordination and rollout ordering.
 
-The chart supplies retired and verified disabled lists in platform-connector configuration. DaemonSet instances reconcile only their assigned node. Central replicas need one fleet owner, with coordination during mixed-mode operation. Reuse node status permissions; add node listing for fleet ownership and Lease permissions if leadership requires them.
+### Continuous controller or periodic sweep
 
-Helm, Argo CD and Flux need a configuration checksum that causes a rollout. An unchanged running pod does not discover new inputs. Cleanup failures must leave ingestion available and report incomplete work. Restarting retries work; rollback stops future removal but restores nothing.
+**Deferred** because upgrade cleanup is finite. A controller adds leadership and monitoring; a CronJob repeats fleet scans. Revisit if later nodes need continuous cleanup.
 
-**Not recommended** because cold starts can multiply API load across replicas and both topologies. Rate limits and ownership coordination add complexity to ingestion. A bad policy reaches every restarted node. It saves a separate image but increases platform-connector lifecycle and testing burden. Nodes added after startup need another trigger.
+### Operator-run cleanup command
 
-### B. Periodic sweep in platform-connectors or a small controller
+**Retained for diagnostics**, but rejected as the main delivery mechanism because every configuration change requires manual execution.
 
-Read the same lists on configuration changes. Use a shared informer with a bounded work queue and cache resync, rather than repeated fleet polling. Platform connectors need topology coordination as in A. A separate controller needs Deployment maintenance and dedicated node read/watch/status-patch RBAC. Leadership adds Lease access.
+### Cleanup hook
 
-Helm, Argo CD and Flux manage ordinary resources. Resync handles later nodes and transient failures without a new rollout. The controller reports errors and retries with backoff. Disable it before rollback; prior deletions remain irreversible.
+**Superseded** because hooks have tool-specific ordering and deletion rules. The migration above preserves configuration while retiring hook execution.
 
-**Deferred** because ongoing reconciliation repeatedly enforces a potentially wrong policy across the fleet. Rate limits bound API work but do not reduce that policy's reach. A new controller adds upgrades, leadership and monitoring. This becomes preferable if cleanup must cover continuously arriving nodes or changing policies.
+### Delete conditions for tracked faults
 
-### C variant. Regular CronJob
+**Rejected** because the quarantine annotation and cordon remain. Recovery events are the chosen mechanism for retired faults.
 
-A CronJob uses the same explicit retired and chart-derived disabled inputs, ownership guard and status rules. It needs the Job's dedicated RBAC. Helm, Argo CD and Flux manage its schedule without hooks. Use `concurrencyPolicy: Forbid`, deadlines and bounded API rates.
+### Delete by age or infer recovery from silence
 
-**Deferred** because repeated fleet scans add load when upgrade cleanup is normally finite. Suspend it before policy changes or rollback. Failed runs retain evidence and retry on the next schedule; no run restores removed state. It handles later nodes, but adds schedule and Job-history maintenance. Separate CronJobs or old Jobs can still overlap despite `Forbid`.
-
-### D. Operator-run cleanup command
-
-An operator supplies the same reviewed lists and node scope. The command enforces identical ownership and status rules with temporary dedicated RBAC. Helm, Argo CD and Flux do not execute it. A failed bounded run reports partial progress for manual retry; rollback cannot restore conditions.
-
-**Retained as a diagnostic path**, but rejected as the main delivery mechanism. It limits automatic exposure and avoids a controller. It also requires manual execution after every relevant change, which is the reported maintenance problem.
-
-### Status-quo baseline: cleanup hook
-
-The hook uses only explicit `deprecatedConditions`; it computes no disabled set and enforces neither ownership nor status guards. Its cluster RBAC allows node reads and status writes. The Job has bounded attempts and a deadline, but the script lists the fleet at once.
-
-**Rejected as the primary mechanism** because it depends on Helm/Argo hook execution and manual list maintenance. Flux behaviour depends on Helm hook settings. Failure remains separate from normal reconciliation, and rollback cannot restore deletions. Adding safety guards could reduce its blast radius, but would retain hook lifecycle maintenance.
-
-### Delete by age or synthesize healthy events
-
-**Rejected** because silence does not prove recovery or retirement. Healthy events could release quarantine through the normal event pipeline. Cleanup only removes obsolete display state.
+**Rejected** because neither proves retirement or repair. Supported checks retain their existing recovery procedures.
 
 ## Notes
 
-Open decisions for maintainers:
-
-- Accept removal of `True` retired conditions regardless of status, or require manual review for those conditions? Should disabled-`True` removal remain an explicit opt-in?
-- Replace the hook internally while preserving `nodeConditionCleanup.*`, or coexist for one release with mutually exclusive enablement?
-- Confirm message-level cleanup is out of scope, including dropped XIDs inside a still-valid condition. That needs a separate entity/error-aware policy.
-
-This ADR supersedes no existing record. It adds no implementation, dependency, public field or default behaviour change.
+This proposed record changes no implementation or default. Maintainers must accept it before implementation. It supersedes no accepted ADR. Message-level cleanup inside an active condition remains out of scope.
 
 ## References
 
-- [Issue #1673 and proposal discussion](https://github.com/NVIDIA/NVSentinel/issues/1673)
-- [PR #1028: race with Helm hooks](https://github.com/NVIDIA/NVSentinel/pull/1028)
-- [ADR-052: Deployment Platform Connector](052-deployment-platform-connector.md)
+- [Issue #1673](https://github.com/NVIDIA/NVSentinel/issues/1673)
 - [ADR-003: Rule-Based Node Quarantine](003-rule-based-node-quarantine.md)
+- [ADR-052: Deployment Platform Connector](052-deployment-platform-connector.md)
 - [ADR-059: Operator Recovery of Derived Conditions (proposed)](059-derived-condition-recovery.md)
+- [ADR-062: Release Quarantine Actions Only at Session End (proposed)](062-fault-quarantine-release-at-session-end.md)
