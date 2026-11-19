@@ -73,6 +73,8 @@ syslog-health-monitor:
 
 Entries older than this window are skipped, so a reboot does not re-report XIDs that an operator already remediated by hand. Set it to `"0"` for unlimited lookback, which scans from the head of the journal with no clipping.
 
+The monitor keeps its state file under `/var/run`, which is cleared on reboot, so it runs this scan whenever it starts with no saved boot ID. A first install and a new node start that way too and read the same window. With `"0"`, that is everything the current boot has logged.
+
 Widen the window on nodes that stay down for long service windows and whose faults you still want reported on return. Narrow it where a node accumulates historical errors you have already dealt with.
 
 ## Cancellation Rules
