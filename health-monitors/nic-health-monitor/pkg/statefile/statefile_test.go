@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -361,6 +362,179 @@ func TestSave_IsAtomic_NoTmpLeftBehind(t *testing.T) {
 
 	_, err := os.Stat(statePath + ".tmp")
 	assert.True(t, os.IsNotExist(err), "tmp file should be renamed away after a successful Save")
+}
+
+func TestFlushPendingCounterState_Clean_DoesNotWrite(t *testing.T) {
+	m, statePath, _ := tempEnv(t, "boot-1")
+	require.NoError(t, m.Load())
+	require.NoError(t, m.FlushPendingCounterState())
+	assert.NoFileExists(t, statePath)
+}
+
+func TestSaveCounterState_TimestampOnly_FlushesLatestAtDeadline(t *testing.T) {
+	m, statePath, _ := tempEnv(t, "boot-1")
+	require.NoError(t, m.Load())
+
+	now := time.Unix(1000, 0).UTC()
+	m.now = func() time.Time { return now }
+	initial := now
+	snapshots := map[string]CounterSnapshot{"counter": {Value: 10, Timestamp: initial}}
+	require.NoError(t, m.SaveCounterState(snapshots, nil, ""))
+
+	for _, elapsed := range []time.Duration{time.Second, 2 * time.Second, time.Minute - time.Millisecond} {
+		now = initial.Add(elapsed)
+		snapshots["counter"] = CounterSnapshot{Value: 10, Timestamp: now}
+		require.NoError(t, m.SaveCounterState(snapshots, nil, ""))
+		assert.Equal(t, snapshots["counter"], m.CounterSnapshots()["counter"])
+	}
+
+	reloaded, _, _ := newManagerForExisting(t, statePath, "boot-1")
+	require.NoError(t, reloaded.Load())
+	assert.Equal(t, initial, reloaded.CounterSnapshots()["counter"].Timestamp)
+
+	now = initial.Add(time.Minute)
+	require.NoError(t, m.SaveCounterState(snapshots, nil, ""), "an identical poll must flush pending timestamps")
+	require.NoError(t, reloaded.Load())
+	assert.Equal(t, snapshots["counter"], reloaded.CounterSnapshots()["counter"])
+
+	now = now.Add(time.Minute)
+	require.NoError(t, m.SaveCounterState(snapshots, nil, ""))
+	assert.Equal(t, initial.Add(time.Minute), m.lastSaveAt, "an identical poll with no pending state must not write")
+}
+
+func TestSaveCounterState_UrgentChanges_BypassInterval(t *testing.T) {
+	initial := time.Unix(1000, 0).UTC()
+	initialSnapshot := CounterSnapshot{Value: 10, Timestamp: initial}
+	changedValue := CounterSnapshot{Value: 11, Timestamp: initial.Add(time.Second)}
+	flag := CounterBreachFlag{Breached: true}
+
+	tests := []struct {
+		name       string
+		initial    map[string]CounterSnapshot
+		snapshots  map[string]CounterSnapshot
+		beforeFlag map[string]CounterBreachFlag
+		flags      map[string]CounterBreachFlag
+		baseline   string
+		wantFlags  map[string]CounterBreachFlag
+	}{
+		{name: "new key", snapshots: map[string]CounterSnapshot{"counter": changedValue}},
+		{
+			name: "changed value", initial: map[string]CounterSnapshot{"counter": initialSnapshot},
+			snapshots: map[string]CounterSnapshot{"counter": changedValue},
+		},
+		{
+			name: "breach", flags: map[string]CounterBreachFlag{"counter": flag},
+			wantFlags: map[string]CounterBreachFlag{"counter": flag},
+		},
+		{
+			name: "recovery", beforeFlag: map[string]CounterBreachFlag{"counter": flag},
+			flags: map[string]CounterBreachFlag{"counter": {Breached: false}},
+		},
+		{name: "completed baseline", baseline: "counterCheck"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, statePath, _ := tempEnv(t, "boot-1")
+			require.NoError(t, m.Load())
+
+			now := initial
+			m.now = func() time.Time { return now }
+			m.UpdateCounterSnapshots(tt.initial)
+			m.UpdateBreachFlags(tt.beforeFlag)
+			m.UpdateCounterSnapshots(map[string]CounterSnapshot{"quiet": initialSnapshot})
+
+			if tt.baseline != "" {
+				m.SetPendingBaseline(tt.baseline)
+			}
+
+			require.NoError(t, m.Save())
+
+			now = initial.Add(time.Second)
+			quiet := CounterSnapshot{Value: initialSnapshot.Value, Timestamp: now}
+			require.NoError(t, m.SaveCounterState(map[string]CounterSnapshot{"quiet": quiet}, nil, ""))
+			require.NoError(t, m.SaveCounterState(tt.snapshots, tt.flags, tt.baseline))
+			assert.Equal(t, now, m.lastSaveAt)
+
+			reloaded, _, _ := newManagerForExisting(t, statePath, "boot-1")
+			require.NoError(t, reloaded.Load())
+			assert.Equal(t, quiet, reloaded.CounterSnapshots()["quiet"])
+
+			for key, snapshot := range tt.snapshots {
+				assert.Equal(t, snapshot, reloaded.CounterSnapshots()[key])
+			}
+
+			assert.Len(t, reloaded.BreachFlags(), len(tt.wantFlags))
+
+			for key, want := range tt.wantFlags {
+				assert.Equal(t, want, reloaded.BreachFlags()[key])
+			}
+
+			assert.False(t, reloaded.PendingBaseline(tt.baseline))
+		})
+	}
+}
+
+func TestSaveCounterState_FailedWrite_RetriesIdenticalInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		elapsed time.Duration
+		value   uint64
+	}{
+		{name: "due timestamp", elapsed: time.Minute, value: 10},
+		{name: "changed value", elapsed: time.Second, value: 11},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, statePath, _ := tempEnv(t, "boot-1")
+			require.NoError(t, m.Load())
+
+			initial := time.Unix(1000, 0).UTC()
+			now := initial
+			m.now = func() time.Time { return now }
+			snapshots := map[string]CounterSnapshot{"counter": {Value: 10, Timestamp: initial}}
+			require.NoError(t, m.SaveCounterState(snapshots, nil, ""))
+
+			now = initial.Add(tt.elapsed)
+			snapshots["counter"] = CounterSnapshot{Value: tt.value, Timestamp: now}
+			require.NoError(t, os.Mkdir(statePath+".tmp", 0o755))
+			require.Error(t, m.SaveCounterState(snapshots, nil, ""))
+			assert.Equal(t, initial, m.lastSaveAt)
+			require.NoError(t, os.Remove(statePath+".tmp"))
+
+			require.NoError(t, m.SaveCounterState(snapshots, nil, ""))
+			reloaded, _, _ := newManagerForExisting(t, statePath, "boot-1")
+			require.NoError(t, reloaded.Load())
+			assert.Equal(t, snapshots["counter"], reloaded.CounterSnapshots()["counter"])
+		})
+	}
+}
+
+func TestSaveCounterState_SharedSave_FlushesAndRestartsInterval(t *testing.T) {
+	m, statePath, _ := tempEnv(t, "boot-1")
+	require.NoError(t, m.Load())
+
+	initial := time.Unix(1000, 0).UTC()
+	now := initial
+	m.now = func() time.Time { return now }
+	snapshots := map[string]CounterSnapshot{"counter": {Value: 10, Timestamp: now}}
+	require.NoError(t, m.SaveCounterState(snapshots, nil, ""))
+
+	now = initial.Add(30 * time.Second)
+	snapshots["counter"] = CounterSnapshot{Value: 10, Timestamp: now}
+	require.NoError(t, m.SaveCounterState(snapshots, nil, ""))
+	require.NoError(t, m.Save(), "a shared link-state save also writes the latest counter snapshot")
+
+	reloaded, _, _ := newManagerForExisting(t, statePath, "boot-1")
+	require.NoError(t, reloaded.Load())
+	assert.Equal(t, snapshots["counter"], reloaded.CounterSnapshots()["counter"])
+
+	now = initial.Add(time.Minute)
+	snapshots["counter"] = CounterSnapshot{Value: 10, Timestamp: now}
+	require.NoError(t, m.SaveCounterState(snapshots, nil, ""))
+	require.NoError(t, reloaded.Load())
+	assert.Equal(t, initial.Add(30*time.Second), reloaded.CounterSnapshots()["counter"].Timestamp)
 }
 
 // newManagerForExisting constructs a fresh Manager pointing at an
