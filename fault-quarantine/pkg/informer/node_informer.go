@@ -64,6 +64,9 @@ type NodeInformer struct {
 	// onQuarantinedNodeDeleted is called when a quarantined node with annotations is deleted
 	onQuarantinedNodeDeleted func(nodeName string)
 
+	// onLastGPUNodeDeleted is called when a delete leaves no GPU nodes
+	onLastGPUNodeDeleted func()
+
 	// onManualUncordon is called when a node is manually uncordoned while having FQ annotations
 	onManualUncordon func(nodeName string) error
 
@@ -553,6 +556,13 @@ func (ni *NodeInformer) SetOnQuarantinedNodeDeletedCallback(callback func(nodeNa
 	ni.onQuarantinedNodeDeleted = callback
 }
 
+// SetOnLastGPUNodeDeletedCallback sets the callback function for when a delete leaves no GPU
+// nodes. It runs in the handler that keeps the GPU node count, so it sees deletes and adds in
+// the order they happened.
+func (ni *NodeInformer) SetOnLastGPUNodeDeletedCallback(callback func()) {
+	ni.onLastGPUNodeDeleted = callback
+}
+
 // SetOnManualUncordonCallback sets the callback function for when a node is manually uncordoned
 func (ni *NodeInformer) SetOnManualUncordonCallback(callback func(nodeName string) error) {
 	ni.onManualUncordon = callback
@@ -639,8 +649,13 @@ func (ni *NodeInformer) countDeletedNode(obj any) {
 		obj = tombstone.Obj
 	}
 
-	if node, ok := obj.(*v1.Node); ok && ni.isGPUNode(node) {
-		ni.gpuNodes.Add(-1)
+	node, ok := obj.(*v1.Node)
+	if !ok || !ni.isGPUNode(node) {
+		return
+	}
+
+	if ni.gpuNodes.Add(-1) == 0 && ni.onLastGPUNodeDeleted != nil {
+		ni.onLastGPUNodeDeleted()
 	}
 }
 
