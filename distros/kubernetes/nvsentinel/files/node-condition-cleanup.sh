@@ -93,6 +93,7 @@ process_node() {
 active_jobs=0
 max_parallel=5
 processed=0
+failed=0
 
 for node in $nodes; do
   process_node "$node" &
@@ -100,7 +101,9 @@ for node in $nodes; do
   processed=$((processed + 1))
   
   if [ $active_jobs -ge $max_parallel ]; then
-    wait -n 2>/dev/null || true
+    if ! wait -n; then
+      failed=$((failed + 1))
+    fi
     active_jobs=$((active_jobs - 1))
   fi
   
@@ -109,5 +112,17 @@ for node in $nodes; do
   fi
 done
 
-wait
+# Collect the exit status of every remaining background job; a bare `wait` would discard them.
+while [ $active_jobs -gt 0 ]; do
+  if ! wait -n; then
+    failed=$((failed + 1))
+  fi
+  active_jobs=$((active_jobs - 1))
+done
+
+if [ $failed -gt 0 ]; then
+  echo "Cleanup failed: $failed of $node_count nodes failed"
+  exit 1
+fi
+
 echo "Cleanup completed for $node_count nodes"
