@@ -22,16 +22,20 @@ import (
 const (
 	// RebootNodeConditionSignalSent indicates whether the reboot signal has been sent to the CSP
 	RebootNodeConditionSignalSent = "SignalSent"
-	// RebootNodeConditionNodeReady reports whether the reboot completed, not whether
-	// the node is Ready: True means the node's boot ID changed and the reboot
-	// request was removed. The name is kept for API compatibility; prefer
-	// RebootCompleted for new automation.
+	// RebootNodeConditionNodeReady reports whether the controller considers
+	// the reboot workflow complete. In CSP mode, True means the node's boot ID
+	// changed and the reboot request was removed; in manual mode, True means
+	// the node reports Ready without the controller verifying a boot ID
+	// change. The name is kept for API compatibility with existing automation.
+	//
+	// Deprecated: use RebootNodeConditionRebootCompleted instead.
 	RebootNodeConditionNodeReady = "NodeReady"
 	// RebootNodeConditionRebootCompleted is the preferred spelling of the
-	// NodeReady condition: it reports whether the reboot action completed (the
-	// node's boot ID changed and the reboot request was removed), which is
-	// not the same as the node's Ready condition. Both conditions are set to
-	// the same value; NodeReady is deprecated in favor of this type.
+	// NodeReady condition: it reports whether the controller considers the
+	// reboot workflow complete. In CSP mode, True means the node's boot ID
+	// changed and the reboot request was removed; in manual mode, True means
+	// the node reports Ready without the controller verifying a boot ID
+	// change. Both conditions are always set to the same value.
 	RebootNodeConditionRebootCompleted = "RebootCompleted"
 	// ManualModeConditionType indicates that manual mode is enabled and outside actor is required
 	ManualModeConditionType = "ManualMode"
