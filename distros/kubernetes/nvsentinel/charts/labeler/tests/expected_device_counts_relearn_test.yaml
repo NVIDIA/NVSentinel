@@ -1,0 +1,80 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: expected device count relearn
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: renders no relearnID by default
+    asserts:
+      - notMatchRegex:
+          path: data["expected-device-counts.toml"]
+          pattern: relearnID
+
+  # The labeler reads relearnID as a key of the class, so it has to come before
+  # the class's [classes.labels] table.
+  - it: renders relearnID on the class that sets it
+    set:
+      expectedDeviceCounts:
+        enabled: true
+        classes:
+          - name: gpu
+            enabled: true
+            relearnID: 2026-11-05-mig
+            labels:
+              current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+              expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+            sources:
+              - name: gfd
+                groupingLabels:
+                  - node.kubernetes.io/instance-type
+                  - nvidia.com/gpu.product
+                currentExpression: int(node.metadata.labels['nvidia.com/gpu.count'])
+          - name: nic
+            enabled: true
+            labels:
+              current: nvsentinel.dgxc.nvidia.com/nic.count.current
+              expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
+            groupingLabels:
+              - node.kubernetes.io/instance-type
+            currentExpression: int(node.status.allocatable['nvidia.com/mlnxnics'])
+    asserts:
+      - matchRegex:
+          path: data["expected-device-counts.toml"]
+          pattern: '\[\[classes\]\]\s+name = "gpu"\s+enabled = true\s+relearnID = "2026-11-05-mig"\s+\[classes\.labels\]'
+      - notMatchRegex:
+          path: data["expected-device-counts.toml"]
+          pattern: '(?s)relearnID.*relearnID'
+
+  # YAML turns an unquoted number into a float, which the labeler rejects, so the
+  # chart refuses it instead of rendering 2.0261105e+07.
+  - it: fails on an unquoted number
+    set:
+      expectedDeviceCounts:
+        enabled: true
+        classes:
+          - name: gpu
+            enabled: true
+            relearnID: 20261105
+            labels:
+              current: nvsentinel.dgxc.nvidia.com/gpu.count.current
+              expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
+            sources:
+              - name: gfd
+                groupingLabels:
+                  - node.kubernetes.io/instance-type
+                currentExpression: int(node.metadata.labels['nvidia.com/gpu.count'])
+    asserts:
+      - failedTemplate:
+          errorPattern: relearnID must be a quoted string

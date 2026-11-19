@@ -77,6 +77,17 @@ requireDCGMReadyForBootstrap: true
 # returns a list of strings (for example GPU models) that the labeler adds to the partition key.
 # All sources of a class must count the same unit, because they write the same labels.
 # Overrides must match labels that exist in every mode, such as the instance type or a nodepool label.
+#
+# Learned expected counts never go down on their own. To relearn a class once from the current
+# counts of its nodes, for example after a MIG change, set relearnID on the class to a new value,
+# such as a date and a reason, quoted so that YAML keeps it a string, and keep it set. A new value restarts the labeler, which relearns
+# every node of the class once. See docs/configuration/labeler.md and ADR-071.
+#
+# An expected count only counts in the partition where it was learned. A class can also set
+# settledExpression, a CEL expression over the node and its ResourceSlices that returns false
+# while the devices of a node are being reconfigured. Such a node teaches no other node, and its own
+# expected count is left as it is until the expression returns true again. It is empty by default,
+# so every node counts as settled; the GPU class below shows the opt-in for the GPU Operator.
 expectedDeviceCounts:
   enabled: true
   classes:
@@ -88,6 +99,17 @@ expectedDeviceCounts:
         current: nvsentinel.dgxc.nvidia.com/gpu.count.current
         expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
       expectedCountOverrides: []
+      relearnID: ""
+      # Empty, so every node counts as settled. Under the GPU Operator, opt in by replacing the
+      # line below with the commented expression: a node is then not settled while
+      # nvidia.com/mig.config.state, which the MIG manager sets, is pending, rebooting or failed.
+      # The MIG manager stops GFD and the device plugin while it works, so this matters for a node
+      # whose MIG change failed, which keeps its expected count until the change succeeds, and for
+      # count sources the MIG manager does not stop. See docs/configuration/labeler.md.
+      # settledExpression: |
+      #   !('nvidia.com/mig.config.state' in node.metadata.labels) ||
+      #   node.metadata.labels['nvidia.com/mig.config.state'] == 'success'
+      settledExpression: ""
       sources:
         - name: dra
           resourceSliceDriver: gpu.nvidia.com
@@ -141,6 +163,7 @@ expectedDeviceCounts:
       groupingLabels:
         - node.kubernetes.io/instance-type
       expectedCountOverrides: []
+      relearnID: ""
       currentExpression: |
         int(node.status.allocatable['nvidia.com/mlnxnics'])
     # Example AWS RoCE DRA NIC class. Uncomment and adapt per environment.
