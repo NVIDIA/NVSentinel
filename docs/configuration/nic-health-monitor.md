@@ -258,6 +258,12 @@ nic-health-monitor:
 | `threshold` | number | Numeric threshold; breach when exceeded |
 | `velocityUnit` | string | For velocity thresholds: `second`, `minute`, or `hour` |
 
+#### Counter Snapshots Across Restarts
+
+The monitor updates each live delta snapshot on evaluation and each live velocity snapshot when its window ends. Timestamp-only updates can wait until a poll runs at least one minute after the last successful save. A save triggered by another change also saves the latest timestamps.
+
+On graceful shutdown, the monitor tries to save pending counter updates after polling stops. A pod that restarts on the same host boot uses the last saved snapshot. This also applies when a counter changes from `delta` to `velocity`. An abrupt exit or failed save can leave an older timestamp on disk. An older timestamp or a gap in polling can lengthen the first velocity sample. This can understate a recent burst and miss a threshold breach.
+
 #### Default Counter Configuration
 
 ```yaml

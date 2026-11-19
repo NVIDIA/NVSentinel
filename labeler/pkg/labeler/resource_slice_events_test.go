@@ -105,7 +105,10 @@ func TestResourceSliceNodeReassignmentReconcilesBothNodes(t *testing.T) {
 	require.Equal(t, "8", newNodeAfterReconciliation.Labels[testDeviceCountExpectedLabel])
 }
 
-func TestEventReconciliationUsesFreshDeviceCountCache(t *testing.T) {
+// A peer's higher count reaches the partition through the peer's own event, so
+// a later event for another node in the partition uses it without walking every
+// peer again.
+func TestEventReconciliationLearnsPeerCountFromPeerEvent(t *testing.T) {
 	nodeReceivingEvent := testNodeWithDeviceCountLabels("node-a", "", "")
 	peerNodeWithHighestDeviceCount := testNodeWithDeviceCountLabels("node-b", "", "")
 	clientset := newEnvtestClientWithNodes(t, nodeReceivingEvent, peerNodeWithHighestDeviceCount)
@@ -119,9 +122,10 @@ func TestEventReconciliationUsesFreshDeviceCountCache(t *testing.T) {
 	)
 
 	labeler.reconcileAllNodes()
-	require.NoError(t, labeler.resourceSliceInformer.GetIndexer().Add(
-		testResourceSliceForNode("slice-b-3", peerNodeWithHighestDeviceCount.Name),
-	))
+
+	newPeerSlice := testResourceSliceForNode("slice-b-3", peerNodeWithHighestDeviceCount.Name)
+	require.NoError(t, labeler.resourceSliceInformer.GetIndexer().Add(newPeerSlice))
+	labeler.handleResourceSliceEvent(newPeerSlice)
 
 	require.NoError(t, labeler.handleNodeEvent(nodeReceivingEvent))
 

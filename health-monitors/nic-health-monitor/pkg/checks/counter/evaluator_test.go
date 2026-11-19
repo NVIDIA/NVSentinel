@@ -185,6 +185,78 @@ func TestEvaluatorClone_IsolatesPreparedCounterState(t *testing.T) {
 	assert.Equal(t, uint64(0), committed.snapshots["mlx5_0:1:link_downed"].Value)
 }
 
+func TestEvaluateOne_LiveSnapshotTiming_ByThresholdType(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         config.CounterConfig
+		value       uint64
+		elapsed     time.Duration
+		wantChanged bool
+	}{
+		{name: "unchanged delta", cfg: deltaCounter(100), value: 10, elapsed: time.Second, wantChanged: true},
+		{name: "changed delta", cfg: deltaCounter(100), value: 11, elapsed: time.Second, wantChanged: true},
+		{name: "velocity window pending", cfg: velocityCounter("minute", 100), value: 10, elapsed: time.Second},
+		{name: "unchanged velocity window elapsed", cfg: velocityCounter("second", 100),
+			value: 10, elapsed: time.Second, wantChanged: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const key = "mlx5_0:1:counter"
+
+			previous := statefile.CounterSnapshot{Value: 10, Timestamp: time.Unix(1000, 0)}
+			snapshots := map[string]statefile.CounterSnapshot{key: previous}
+			ev := NewEvaluator(testNode, newReaderFor(&tt.value), pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+				snapshots, nil, false)
+			now := previous.Timestamp.Add(tt.elapsed)
+			event := ev.evaluateOne(key, tt.value, now, tt.cfg, nil, checks.InfiniBandDegradationCheckName)
+			require.Nil(t, event)
+
+			want := previous
+			if tt.wantChanged {
+				want = statefile.CounterSnapshot{Value: tt.value, Timestamp: now}
+			}
+
+			assert.Equal(t, want, ev.Snapshots()[key])
+		})
+	}
+}
+
+func TestEvaluateOne_GracefulRestartAfterDelta_BreachesVelocityThreshold(t *testing.T) {
+	manager, statePath, bootIDPath := counterStateManagerWithPaths(t)
+	const key = "mlx5_0:1:link_downed"
+
+	initial := statefile.CounterSnapshot{Value: 10, Timestamp: time.Unix(1000, 0).UTC()}
+	require.NoError(t, manager.SaveCounterState(map[string]statefile.CounterSnapshot{key: initial}, nil, ""))
+
+	deltaCfg := deltaCounter(10)
+	delta := NewEvaluator(testNode, nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION, manager.CounterSnapshots(), nil, false)
+	lastPoll := initial.Timestamp.Add(55 * time.Second)
+	require.Nil(t, delta.evaluateOne(key, initial.Value, lastPoll, deltaCfg, nil, checks.InfiniBandDegradationCheckName))
+	require.NoError(t, manager.SaveCounterState(delta.Snapshots(), delta.BreachFlags(), ""))
+
+	velocityCfg := deltaCfg
+	velocityCfg.ThresholdType = thresholdTypeVelocity
+	velocityCfg.VelocityUnit = velocityUnitSecond
+
+	restarted := statefile.NewManagerWithPaths(statePath, bootIDPath)
+	burstAt := lastPoll.Add(5 * time.Second)
+	burstValue := initial.Value + 100
+
+	require.NoError(t, restarted.Load())
+
+	stale := NewEvaluator(testNode, nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION, restarted.CounterSnapshots(), nil, false)
+	assert.Nil(t, stale.evaluateOne(key, burstValue, burstAt, velocityCfg, nil, checks.InfiniBandDegradationCheckName))
+
+	require.NoError(t, manager.FlushPendingCounterState())
+	require.NoError(t, restarted.Load())
+
+	fresh := NewEvaluator(testNode, nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION, restarted.CounterSnapshots(), nil, false)
+	event := fresh.evaluateOne(key, burstValue, burstAt, velocityCfg, nil, checks.InfiniBandDegradationCheckName)
+	require.NotNil(t, event)
+	assert.False(t, event.IsHealthy)
+}
+
 func TestEvaluateCounters_DeltaBreachAndLatch(t *testing.T) {
 	value := uint64(0)
 	reader := newReaderFor(&value)
