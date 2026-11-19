@@ -37,23 +37,21 @@ const loadResumeTokenQuery = `SELECT resume_token FROM resume_tokens WHERE clien
 
 // Inspect activity first, then sample the clock; the CTE dependency fixes that order.
 // A writer open during the scan bounds the start with its xact_start, however long it runs.
-// pg_stat_activity is not consistent with the clock, so no order of observations is exact:
-// this order can miss a writer that starts between the scan and the clock sample. Its
-// changed_at is below the saved start, so the poll excludes its row whenever it commits,
-// unless a NOTIFY recovers it once LISTEN runs. Sampling the clock first would instead miss
-// an open writer that commits between the two observations. Closing either window exactly
-// needs commit-order data such as track_commit_timestamp.
-// Visible non-client backends cannot write the changelog. PostgreSQL also hides backend_type
-// without statistics privileges, so an unknown type must still be treated as a possible writer.
-// Hidden or disabled activity gives no start bound. Prepared transactions detach from their
-// session and can commit between any two observations, so any database that allows them
-// (max_prepared_transactions > 0) gets the full-replay boundary too.
-// The boundary must round-trip through JSON and Go's time parser in every session time zone.
+// pg_stat_activity is not consistent with the clock, so a writer can start between the scan
+// and the clock sample without being seen. Its changed_at is its transaction start, which is
+// after the scan, so subtracting a few seconds from the clock sample covers it: the margin
+// only has to exceed this statement's own duration, not any writer's lifetime.
+// Count client backends, plus rows whose backend_type is hidden from this role but which still
+// show a user (usesysid), since those may be clients. Background workers show neither and
+// cannot write the changelog. Hidden clients and disabled tracking give no start bound.
+// Prepared transactions detach from their session and can commit between any two
+// observations, so any database that allows them (max_prepared_transactions > 0) also gets
+// the full-replay boundary. That boundary must parse in every session time zone.
 const insertInitialPositionQuery = `WITH activity AS MATERIALIZED (
 	SELECT MIN(xact_start) AS oldest_start,
-		COALESCE(bool_or(state IS NULL OR state = 'disabled'), FALSE) AS unknown_start
+		COALESCE(bool_or(state = 'disabled' OR backend_type IS NULL), FALSE) AS unknown_start
 	FROM pg_stat_activity
-	WHERE (backend_type = 'client backend' OR backend_type IS NULL)
+	WHERE (backend_type = 'client backend' OR (backend_type IS NULL AND usesysid IS NOT NULL))
 		AND datname = current_database() AND pid <> pg_backend_pid()
 ), bound AS MATERIALIZED (
 	SELECT activity.oldest_start, activity.unknown_start, clock_timestamp() AS observed_at
@@ -63,7 +61,7 @@ INSERT INTO resume_tokens (client_name, resume_token, last_updated)
 SELECT $1, jsonb_build_object('timestamp',
 	CASE WHEN bound.unknown_start OR current_setting('max_prepared_transactions')::int > 0
 	THEN TIMESTAMPTZ '1970-01-01 00:00:00+00'
-	ELSE LEAST(bound.observed_at, bound.oldest_start) END,
+	ELSE LEAST(bound.observed_at - INTERVAL '5 seconds', bound.oldest_start) END,
 	'eventID', 0), statement_timestamp()
 FROM bound
 ON CONFLICT (client_name) DO NOTHING`
