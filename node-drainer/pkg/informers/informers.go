@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -41,6 +42,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
@@ -67,11 +69,12 @@ type Informers struct {
 type PodFilter func(*v1.Pod) bool
 
 // NewInformers creates the pod and node informers used to observe drainable workloads.
-// The pod cache retains only the labels named by podLabelKeys, and the node cache only
-// those named by nodeLabelKeys.
+// The pod cache retains only the labels named by podLabelKeys. The node cache retains
+// the fields in nodeFields. Build it with NodeFields, and add each Node rule with
+// AddNodeExpression.
 func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
-	nodeLabelKeys []string, podLabelKeys ...string) (*Informers, error) {
+	nodeFields nodecache.Keys, podLabelKeys ...string) (*Informers, error) {
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,
@@ -98,7 +101,7 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}
 
 	nodeInformer := informerFactory.Core().V1().Nodes().Informer()
-	if err := nodeInformer.SetTransform(nodeTransform(nodeLabelKeys...)); err != nil {
+	if err := nodeInformer.SetTransform(nodeTransform(nodeFields)); err != nil {
 		return nil, fmt.Errorf("failed to set node informer transform: %w", err)
 	}
 
@@ -247,45 +250,110 @@ func trimPodReadyConditions(conditions []v1.PodCondition) []v1.PodCondition {
 	return cached
 }
 
-// nodeTransform keeps only the quarantine annotation and the labels named by
-// nodeLabelKeys, so the node cache stays small on large clusters.
-func nodeTransform(nodeLabelKeys ...string) cache.TransformFunc {
+// NodeFields is the starting pruning set for the node cache. labelKeys are the
+// keys customDrain.nodeSelector reads. A caller adds each Node rule to the
+// result with AddNodeExpression. With no keys and no rules, the cache keeps
+// only the annotations in NodeAnnotationKeys.
+func NodeFields(labelKeys []string) nodecache.Keys {
+	fields := nodecache.NewPruningKeys()
+
+	for _, key := range labelKeys {
+		fields.AddLabel(key)
+	}
+
+	return fields
+}
+
+// NodeAnnotationKeys are the annotations node-drainer reads for its own use.
+// The node cache keeps them whatever nodeFields holds.
+func NodeAnnotationKeys() []string {
+	return []string{common.QuarantineHealthEventAnnotationKey}
+}
+
+// nodeTransform keeps the identity of the node, NodeAnnotationKeys, and
+// the fields in nodeFields. Status is always dropped. Spec and the rest of
+// metadata are kept only when a Node rule was added, because that is when a
+// rule can read them. With no rules the cache stays as small as it is today.
+func nodeTransform(nodeFields nodecache.Keys) cache.TransformFunc {
+	annotationKeys := NodeAnnotationKeys()
+
 	return func(obj any) (any, error) {
 		node, ok := obj.(*v1.Node)
 		if !ok {
 			return obj, nil
 		}
 
-		var annotations map[string]string
-		if quarantineHealthEvent, exists := node.Annotations[common.QuarantineHealthEventAnnotationKey]; exists {
-			annotations = map[string]string{
-				common.QuarantineHealthEventAnnotationKey: quarantineHealthEvent,
-			}
-		}
+		objectMeta := cachedNodeObjectMeta(node, nodeFields)
+		objectMeta.Labels = cachedNodeLabels(node.Labels, nodeFields)
+		objectMeta.Annotations = cachedNodeAnnotations(node.Annotations, nodeFields, annotationKeys)
 
-		var nodeLabels map[string]string
-
-		for _, key := range nodeLabelKeys {
-			if value, exists := node.Labels[key]; exists {
-				if nodeLabels == nil {
-					nodeLabels = make(map[string]string)
-				}
-
-				nodeLabels[key] = value
-			}
-		}
-
-		objectMeta := identityObjectMeta(
-			node.Name,
-			"",
-			node.UID,
-			node.ResourceVersion,
-			annotations,
-		)
-		objectMeta.Labels = nodeLabels
-
-		return &v1.Node{ObjectMeta: objectMeta}, nil
+		return &v1.Node{
+			ObjectMeta: objectMeta,
+			Spec:       cachedNodeSpec(node, nodeFields),
+		}, nil
 	}
+}
+
+// cachedNodeObjectMeta returns the metadata of node without labels and
+// annotations, which the caller prunes. With no Node rule it keeps only the
+// identity. With a Node rule it keeps every other metadata field, such as
+// generation and creationTimestamp, because a rule can read any of them.
+// managedFields is large, so it is kept only when a rule reads it.
+func cachedNodeObjectMeta(node *v1.Node, nodeFields nodecache.Keys) metav1.ObjectMeta {
+	if !nodeFields.HasNodeRule() {
+		return identityObjectMeta(node.Name, "", node.UID, node.ResourceVersion, nil)
+	}
+
+	objectMeta := node.ObjectMeta
+	objectMeta.Labels = nil
+	objectMeta.Annotations = nil
+
+	if nodeFields.PruneManagedFields() {
+		objectMeta.ManagedFields = nil
+	}
+
+	return *objectMeta.DeepCopy()
+}
+
+// cachedNodeSpec keeps spec when a Node rule can read it, and drops it otherwise.
+func cachedNodeSpec(node *v1.Node, nodeFields nodecache.Keys) v1.NodeSpec {
+	if !nodeFields.HasNodeRule() {
+		return v1.NodeSpec{}
+	}
+
+	return *node.Spec.DeepCopy()
+}
+
+// cachedNodeLabels keeps the named labels, or every label when a rule reads
+// the label map as a whole. An empty result is nil, matching a node that had
+// no labels worth keeping.
+func cachedNodeLabels(in map[string]string, nodeFields nodecache.Keys) map[string]string {
+	if !nodeFields.PruneLabels() {
+		return maps.Clone(in)
+	}
+
+	return withoutEmpty(nodeFields.RetainLabels(in, nil))
+}
+
+// cachedNodeAnnotations keeps the named annotations and the annotations
+// node-drainer reads for its own use. A rule that reads the annotation map as
+// a whole keeps every annotation.
+func cachedNodeAnnotations(in map[string]string, nodeFields nodecache.Keys, ownKeys []string) map[string]string {
+	if !nodeFields.PruneAnnotations() {
+		return maps.Clone(in)
+	}
+
+	return withoutEmpty(nodeFields.RetainAnnotations(in, ownKeys))
+}
+
+// withoutEmpty turns a map with no entries into nil so callers that check for
+// a missing map see the same result as before pruning.
+func withoutEmpty(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+
+	return in
 }
 
 func identityObjectMeta(name, namespace string, uid types.UID, resourceVersion string,

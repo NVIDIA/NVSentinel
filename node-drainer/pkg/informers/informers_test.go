@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
@@ -163,7 +164,7 @@ func TestInformerTransformsPassThroughUnknownObjects(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, tombstone, transformedPodObject)
 
-	transformedNodeObject, err := nodeTransform()(tombstone)
+	transformedNodeObject, err := nodeTransform(NodeFields(nil))(tombstone)
 	require.NoError(t, err)
 	assert.Equal(t, tombstone, transformedNodeObject)
 }
@@ -184,7 +185,7 @@ func TestNodeTransformRetainsEventAndEvaluatorFields(t *testing.T) {
 		Status: v1.NodeStatus{Phase: v1.NodeRunning},
 	}
 
-	transformed, err := nodeTransform()(node)
+	transformed, err := nodeTransform(NodeFields(nil))(node)
 	require.NoError(t, err)
 
 	transformedNode := transformed.(*v1.Node)
@@ -209,10 +210,200 @@ func TestNodeTransform_RequestedLabels_RetainsOnlyRequestedLabels(t *testing.T) 
 		Labels: map[string]string{"scheduler": "slurm", "large": "metadata"},
 	}
 
-	transformed, err := nodeTransform("scheduler", "absent")(node)
+	transformed, err := nodeTransform(NodeFields([]string{"scheduler", "absent"}))(node)
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]string{"scheduler": "slurm"}, transformed.(*v1.Node).Labels)
+}
+
+// TestNodeTransform_RuleFields_KeepsOnlyWhatTheRuleReads checks the cache against
+// the shapes of Node rule ADR-064 calls out. With no rule, the cache matches today.
+func TestNodeTransform_RuleFields_KeepsOnlyWhatTheRuleReads(t *testing.T) {
+	t.Parallel()
+
+	node := &v1.Node{
+		Name: "node-a",
+		Labels: map[string]string{
+			"scheduler":        "slurm",
+			"example.com/pool": "inference",
+			"large":            "metadata",
+		},
+		Annotations: map[string]string{
+			common.QuarantineHealthEventAnnotationKey: `{"events":[]}`,
+			"example.com/team":                        "alpha",
+			"unrelated":                               "discard",
+		},
+		Spec:   v1.NodeSpec{Unschedulable: true},
+		Status: v1.NodeStatus{Phase: v1.NodeRunning},
+	}
+	quarantineOnly := map[string]string{
+		common.QuarantineHealthEventAnnotationKey: `{"events":[]}`,
+	}
+
+	tests := []struct {
+		name              string
+		labelKeys         []string
+		expressions       []string
+		wantLabels        map[string]string
+		wantAnnotations   map[string]string
+		wantUnschedulable bool
+	}{
+		{
+			name:            "no rules",
+			wantAnnotations: quarantineOnly,
+		},
+		{
+			name:              "custom drain label and rule label are both kept",
+			labelKeys:         []string{"scheduler"},
+			expressions:       []string{`node.metadata.labels["example.com/pool"] == "inference"`},
+			wantLabels:        map[string]string{"scheduler": "slurm", "example.com/pool": "inference"},
+			wantAnnotations:   quarantineOnly,
+			wantUnschedulable: true,
+		},
+		{
+			name: "literal label keeps that label and the spec",
+			expressions: []string{
+				`"scheduler" in node.metadata.labels && node.metadata.labels["scheduler"] == "slurm"`,
+			},
+			wantLabels:        map[string]string{"scheduler": "slurm"},
+			wantAnnotations:   quarantineOnly,
+			wantUnschedulable: true,
+		},
+		{
+			name:              "literal annotation keeps that annotation and the quarantine annotation",
+			expressions:       []string{`"example.com/team" in node.metadata.annotations`},
+			wantAnnotations:   map[string]string{common.QuarantineHealthEventAnnotationKey: `{"events":[]}`, "example.com/team": "alpha"},
+			wantUnschedulable: true,
+		},
+		{
+			name:              "label prefix keeps every label",
+			expressions:       []string{`node.metadata.labels.exists(k, k.startsWith("example.com/"))`},
+			wantLabels:        node.Labels,
+			wantAnnotations:   quarantineOnly,
+			wantUnschedulable: true,
+		},
+		{
+			name:              "size of the label map keeps every label",
+			expressions:       []string{`size(node.metadata.labels) > 0`},
+			wantLabels:        node.Labels,
+			wantAnnotations:   quarantineOnly,
+			wantUnschedulable: true,
+		},
+		{
+			name:              "computed label key keeps every label",
+			expressions:       []string{`node.metadata.labels[node.metadata.name] == "node-a"`},
+			wantLabels:        node.Labels,
+			wantAnnotations:   quarantineOnly,
+			wantUnschedulable: true,
+		},
+		{
+			name:              "status read drops status and keeps spec",
+			expressions:       []string{`node.status.phase == "Running"`},
+			wantAnnotations:   quarantineOnly,
+			wantUnschedulable: true,
+		},
+		{
+			name:              "unparseable expression keeps every label and annotation",
+			expressions:       []string{`node.metadata.labels[`},
+			wantLabels:        node.Labels,
+			wantAnnotations:   node.Annotations,
+			wantUnschedulable: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			transformed, err := nodeTransform(pruningFields(tt.labelKeys, tt.expressions...))(node)
+			require.NoError(t, err)
+
+			cached := transformed.(*v1.Node)
+			assert.Equal(t, tt.wantLabels, cached.Labels)
+			assert.Equal(t, tt.wantAnnotations, cached.Annotations)
+			assert.Equal(t, tt.wantUnschedulable, cached.Spec.Unschedulable)
+			assert.Empty(t, cached.Status)
+		})
+	}
+}
+
+// TestNodeTransform_RuleFields_KeepsMetadataTheRuleReads covers metadata that is
+// not a label or an annotation. A rule that reads generation must see the real
+// value, not zero. With no rule, the cache keeps only the identity, as today.
+func TestNodeTransform_RuleFields_KeepsMetadataTheRuleReads(t *testing.T) {
+	t.Parallel()
+
+	created := metav1.NewTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	managedFields := []metav1.ManagedFieldsEntry{{Manager: "kubelet", Operation: metav1.ManagedFieldsOperationUpdate}}
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "node-a",
+			UID:               types.UID("node-uid"),
+			ResourceVersion:   "42",
+			Generation:        3,
+			CreationTimestamp: created,
+			ManagedFields:     managedFields,
+		},
+	}
+
+	tests := []struct {
+		name              string
+		expressions       []string
+		wantGeneration    int64
+		wantCreated       metav1.Time
+		wantManagedFields []metav1.ManagedFieldsEntry
+	}{
+		{
+			name: "no rules keeps only the identity",
+		},
+		{
+			name:           "generation read keeps generation",
+			expressions:    []string{`node.metadata.generation == 3`},
+			wantGeneration: 3,
+			wantCreated:    created,
+		},
+		{
+			name:           "label read still keeps the other metadata fields",
+			expressions:    []string{`"scheduler" in node.metadata.labels`},
+			wantGeneration: 3,
+			wantCreated:    created,
+		},
+		{
+			name:              "managedFields read keeps managedFields",
+			expressions:       []string{`size(node.metadata.managedFields) > 0`},
+			wantGeneration:    3,
+			wantCreated:       created,
+			wantManagedFields: managedFields,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			transformed, err := nodeTransform(pruningFields(nil, tt.expressions...))(node)
+			require.NoError(t, err)
+
+			cached := transformed.(*v1.Node)
+			assert.Equal(t, node.Name, cached.Name)
+			assert.Equal(t, node.UID, cached.UID)
+			assert.Equal(t, node.ResourceVersion, cached.ResourceVersion)
+			assert.Equal(t, tt.wantGeneration, cached.Generation)
+			assert.Equal(t, tt.wantCreated, cached.CreationTimestamp)
+			assert.Equal(t, tt.wantManagedFields, cached.ManagedFields)
+		})
+	}
+}
+
+// pruningFields builds the cache set the way startup does, then adds Node expressions.
+func pruningFields(labelKeys []string, expressions ...string) nodecache.Keys {
+	fields := NodeFields(labelKeys)
+
+	for _, expression := range expressions {
+		fields.AddNodeExpression(expression)
+	}
+
+	return fields
 }
 
 func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
@@ -233,7 +424,7 @@ func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
 	}
 
 	client := fake.NewSimpleClientset(systemPod, daemonPod, eligiblePod, node)
-	informers, err := NewInformers(client, 0, new(5), false, false, `^kube-system$`, nil)
+	informers, err := NewInformers(client, 0, new(5), false, false, `^kube-system$`, NodeFields(nil))
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -277,7 +468,7 @@ func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	informers, err := NewInformers(client, 0, new(5), false, false, "", nil)
+	informers, err := NewInformers(client, 0, new(5), false, false, "", NodeFields(nil))
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -434,7 +625,7 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 		}
 	}
 
-	informers, err := NewInformers(client, 0, new(5), true, false, "", nil)
+	informers, err := NewInformers(client, 0, new(5), true, false, "", NodeFields(nil))
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 

@@ -31,14 +31,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 
 	v1 "k8s.io/api/core/v1"
 	toolscache "k8s.io/client-go/tools/cache"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
+	nodefields "github.com/nvidia/nvsentinel/commons/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
@@ -46,13 +45,6 @@ import (
 
 // nodeRuleKind is the Rule.Kind whose expressions read the cached node.
 const nodeRuleKind = "Node"
-
-// Path segments of the two maps this package prunes.
-const (
-	metadataSegment    = "metadata"
-	labelsSegment      = "labels"
-	annotationsSegment = "annotations"
-)
 
 // Operational are the keys fault-quarantine reads or removes on its own
 // account, which no expression mentions and so nothing can derive.
@@ -72,10 +64,7 @@ type Operational struct {
 // empty set would make the shipped opt-out rules evaluate as though the label
 // were absent, and fault-quarantine would cordon nodes their owners excluded.
 type Keys struct {
-	labels           map[string]struct{}
-	annotations      map[string]struct{}
-	pruneLabels      bool
-	pruneAnnotations bool
+	inner nodefields.Keys
 }
 
 // Derive returns the keys a cached node must retain for cfg's rules and for
@@ -85,17 +74,12 @@ type Keys struct {
 // disabled ones, so this over-retains for them, which costs a few map entries
 // and cannot make a rule evaluate against a key the cache dropped.
 func Derive(cfg config.TomlConfig, operational Operational) Keys {
-	keys := Keys{
-		labels:           make(map[string]struct{}),
-		annotations:      make(map[string]struct{}),
-		pruneLabels:      true,
-		pruneAnnotations: true,
-	}
+	keys := Keys{inner: nodefields.NewPruningKeys()}
 
 	keys.addOperational(cfg, operational)
 
 	for _, expression := range nodeRuleExpressions(cfg) {
-		keys.addExpression(expression)
+		logExpressionEffect(keys.inner.AddNodeExpression(expression))
 	}
 
 	keys.log()
@@ -130,13 +114,13 @@ func nodeRuleExpressions(cfg config.TomlConfig) []string {
 // addOperational records the keys that do not come from any expression.
 func (k *Keys) addOperational(cfg config.TomlConfig, operational Operational) {
 	for _, key := range common.QuarantineAnnotationKeys {
-		k.annotations[key] = struct{}{}
+		k.inner.AddAnnotation(key)
 	}
 
-	k.labels[statemanager.NVSentinelStateLabelKey] = struct{}{}
+	k.inner.AddLabel(statemanager.NVSentinelStateLabelKey)
 
 	if operational.GPUNodeLabelKey != "" {
-		k.labels[operational.GPUNodeLabelKey] = struct{}{}
+		k.inner.AddLabel(operational.GPUNodeLabelKey)
 	}
 
 	// The prefix comes from cfg because that is what the reconciler builds these
@@ -150,111 +134,37 @@ func (k *Keys) addOperational(cfg config.TomlConfig, operational Operational) {
 		cordonlabels.UncordonedReasonSuffix,
 		cordonlabels.UncordonedTimestampSuffix,
 	} {
-		k.labels[cordonlabels.Key(cfg.LabelPrefix, suffix)] = struct{}{}
+		k.inner.AddLabel(cordonlabels.Key(cfg.LabelPrefix, suffix))
 	}
 
 	for _, ruleSet := range cfg.RuleSets {
 		if ruleSet.Label.Key != "" {
-			k.labels[ruleSet.Label.Key] = struct{}{}
+			k.inner.AddLabel(ruleSet.Label.Key)
 		}
 	}
 }
 
-// addExpression records what one expression reads off the node. An expression
-// that cannot be parsed, or whose reads cannot be described by a set of paths,
-// leaves both maps whole.
-//
-// celrule derives the paths in the environment it compiles Node rules in, so
-// they describe the reads the rules perform.
-func (k *Keys) addExpression(expression string) {
-	paths, isComplete, err := celrule.NodeFieldPaths(expression)
-	if err != nil {
+// logExpressionEffect reports a rule the cache cannot prune against.
+// The same messages were logged when this derivation lived in this package.
+func logExpressionEffect(effect nodefields.RuleEffect) {
+	if effect.ParseError != nil {
 		slog.Error("Caching whole node labels and annotations: a Node rule does not parse",
-			"expression", expression, "error", err)
-		k.retainAllLabels()
-		k.retainAllAnnotations()
+			"expression", effect.Expression, "error", effect.ParseError)
 
 		return
 	}
 
-	if !isComplete {
+	if effect.Incomplete {
 		slog.Info("Caching whole node labels and annotations: a Node rule uses the node as a whole",
-			"expression", expression)
-		k.retainAllLabels()
-		k.retainAllAnnotations()
-
-		return
-	}
-
-	for _, path := range paths {
-		k.addPath(path)
+			"expression", effect.Expression)
 	}
 }
 
-// addPath records one derived field path. Only the label and annotation maps
-// are pruned, so a path into spec or status is nothing this has to keep.
-func (k *Keys) addPath(path []string) {
-	if len(path) == 0 {
-		// The whole object is read, which no set of keys describes.
-		k.retainAllLabels()
-		k.retainAllAnnotations()
-
-		return
-	}
-
-	if path[0] != metadataSegment {
-		return
-	}
-
-	if len(path) == 1 {
-		// The whole of metadata is read, so both maps come with it.
-		k.retainAllLabels()
-		k.retainAllAnnotations()
-
-		return
-	}
-
-	switch path[1] {
-	case labelsSegment:
-		k.addMapPath(path, k.labels, k.retainAllLabels)
-	case annotationsSegment:
-		k.addMapPath(path, k.annotations, k.retainAllAnnotations)
-	}
-}
-
-// addMapPath records a path that reaches one of the pruned maps. A path that
-// stops at the map itself reads every entry; one that continues names a key.
-func (k *Keys) addMapPath(path []string, into map[string]struct{}, retainAll func()) {
-	if len(path) == 2 {
-		retainAll()
-
-		return
-	}
-
-	into[path[2]] = struct{}{}
-}
-
-func (k *Keys) retainAllLabels() {
-	k.pruneLabels = false
-}
-
-func (k *Keys) retainAllAnnotations() {
-	k.pruneAnnotations = false
-}
-
-// log reports what the cache will keep
-func (k *Keys) log() {
+// log reports what the cache will keep.
+func (k Keys) log() {
 	slog.Info("Node cache transform derived from rule CEL",
-		"retainedLabels", retainedForLog(k.labels, k.pruneLabels),
-		"retainedAnnotations", retainedForLog(k.annotations, k.pruneAnnotations))
-}
-
-func retainedForLog(keys map[string]struct{}, prune bool) string {
-	if !prune {
-		return "<all>"
-	}
-
-	return fmt.Sprint(slices.Sorted(maps.Keys(keys)))
+		"retainedLabels", k.inner.RetainedLabelNames(),
+		"retainedAnnotations", k.inner.RetainedAnnotationNames())
 }
 
 // Transform returns the node informer's cache transform. It clears the status,
@@ -276,12 +186,10 @@ func (k Keys) Transform() toolscache.TransformFunc {
 		// annotation being one of the retained keys.
 		sessionLabels, sessionLabelsKnown := appliedLabelKeys(node.Annotations)
 
-		if k.pruneAnnotations {
-			node.Annotations = retain(node.Annotations, k.annotations, nil)
-		}
+		node.Annotations = k.inner.RetainAnnotations(node.Annotations, nil)
 
-		if k.pruneLabels && sessionLabelsKnown {
-			node.Labels = retain(node.Labels, k.labels, sessionLabels)
+		if k.inner.PruneLabels() && sessionLabelsKnown {
+			node.Labels = k.inner.RetainLabels(node.Labels, sessionLabels)
 		}
 
 		return node, nil
@@ -325,31 +233,4 @@ func appliedLabelKeys(annotations map[string]string) (keys []string, known bool)
 	}
 
 	return keys, true
-}
-
-// retain returns the entries of in named by keys or extra, and preserves a nil
-// map as nil so callers that test for absence behave as they did before.
-//
-// The retained keys are iterated rather than the map, because the point of
-// this is that there are far fewer of them than there are entries.
-func retain(in map[string]string, keys map[string]struct{}, extra []string) map[string]string {
-	if in == nil {
-		return nil
-	}
-
-	out := make(map[string]string, len(keys)+len(extra))
-
-	for key := range keys {
-		if value, present := in[key]; present {
-			out[key] = value
-		}
-	}
-
-	for _, key := range extra {
-		if value, present := in[key]; present {
-			out[key] = value
-		}
-	}
-
-	return out
 }
