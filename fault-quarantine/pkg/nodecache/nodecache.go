@@ -169,9 +169,10 @@ func (k Keys) log() {
 
 // Transform returns the node informer's cache transform. It clears the status,
 // which is the bulk of a node's bytes, and prunes the label and annotation
-// maps to the retained keys, which is the bulk of its map entries.
+// maps to the retained keys, which is the bulk of its map entries. It also
+// drops managedFields, unless a rule reads it.
 //
-// Spec and the identity metadata are left whole. Spec is small, and the cordon
+// Spec and the rest of metadata are left whole. Spec is small, and the cordon
 // path, manual-untaint detection and pre-existing taint marking all read it.
 func (k Keys) Transform() toolscache.TransformFunc {
 	return func(obj any) (any, error) {
@@ -181,6 +182,10 @@ func (k Keys) Transform() toolscache.TransformFunc {
 		}
 
 		node.Status = v1.NodeStatus{}
+
+		if k.inner.PruneManagedFields() {
+			node.ManagedFields = nil
+		}
 
 		// Read before pruning, so this does not depend on the applied-labels
 		// annotation being one of the retained keys.
