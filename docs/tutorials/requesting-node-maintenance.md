@@ -81,14 +81,15 @@ kubectl get crd maintenancerequests.nvsentinel.dgxc.nvidia.com validationrequest
 # validationrequests.nvsentinel.nvidia.com         <timestamp>
 ```
 
-If the command returns `NotFound`, apply the CRDs from the chart:
+Apply the CRDs from the chart whatever the check returns — an existing CRD can still be an older schema, because Helm installs a subchart's CRDs once, at install, and never upgrades them:
 
 ```bash
-NVSENTINEL_VERSION="<v1.25.0 or later>"
+NVSENTINEL_VERSION="<the version you are deploying>"
+PULL_DIR="$(mktemp -d)"
 
-helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar
-kubectl apply -f nvsentinel/charts/lifecycle-manager/crds/
-# Expected:
+helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar --untardir "$PULL_DIR"
+kubectl apply -f "$PULL_DIR/nvsentinel/charts/lifecycle-manager/crds/"
+# Expected (created on first apply, configured when the CRD already exists):
 # customresourcedefinition.apiextensions.k8s.io/maintenancerequests.nvsentinel.dgxc.nvidia.com created
 # customresourcedefinition.apiextensions.k8s.io/validationrequests.nvsentinel.nvidia.com created
 ```

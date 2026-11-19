@@ -315,10 +315,12 @@ func recoverHistoryWithInitialAnnotation(
 		recoveryStoreRecord(t, "newer-failure", base.Add(time.Minute), newerFailure),
 	}}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
 		ColdStartAfterTime: base.Add(-time.Minute), ColdStartUntilTime: base.Add(time.Hour),
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	node, err := clientset.CoreV1().Nodes().Get(ctx, oldHealthy.GetNodeName(), metav1.GetOptions{})
 	require.NoError(t, err)
 	require.True(t, node.Spec.Unschedulable)
@@ -562,10 +564,12 @@ func TestColdStartHealthyEventNeverUncordonsBeforeNewerFailedEntity(t *testing.T
 		oldCheckWideHealthy, newerFailureA,
 	}}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
 		ColdStartAfterTime: base.Add(-time.Minute), ColdStartUntilTime: base.Add(time.Hour),
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.False(t, uncordonObserved,
 		"a partially outdated recovery must never expose a schedulable node with a newer active fault")
 	node, err := clientset.CoreV1().Nodes().Get(ctx, "node-a", metav1.GetOptions{})
@@ -732,17 +736,19 @@ func TestColdStartHealthyPhaseUsesPersistedFaultPhaseOutcomes(t *testing.T) {
 				oldRecord, newerRecord,
 			}}
 
-			require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+			completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 				HealthEventStore: store, EventProcessor: watcher,
 				ColdStartAfterTime: base.Add(-time.Minute), ColdStartUntilTime: base.Add(time.Hour),
-			}))
+			})
+			require.NoError(t, err)
+			require.True(t, completed)
 			node, err := clientset.CoreV1().Nodes().Get(ctx, "node-a", metav1.GetOptions{})
 			require.NoError(t, err)
 			assert.Equal(t, test.wantCordoned, node.Spec.Unschedulable)
 			assert.False(t, uncordonObserved,
 				"an older recovery must never uncordon past a newer failed health state")
-			_, completed := db.completed["newer-failure"]
-			assert.Equal(t, test.wantCompletion, completed)
+			_, gotCompletion := db.completed["newer-failure"]
+			assert.Equal(t, test.wantCompletion, gotCompletion)
 			if test.wantCordoned {
 				finalAnnotation := healthEventsAnnotation.NewHealthEventsAnnotationMap()
 				require.NoError(t, json.Unmarshal(
@@ -784,10 +790,12 @@ func TestColdStartCompletedNewerHealthyStateStillSupersedesOlderFault(t *testing
 		recoveryStoreRecord(t, "newer-healthy", base.Add(time.Minute), newerHealthy),
 	}}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store, EventProcessor: watcher,
 		ColdStartAfterTime: base.Add(-time.Minute), ColdStartUntilTime: base.Add(time.Hour),
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	node, err := clientset.CoreV1().Nodes().Get(ctx, "node-a", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.False(t, node.Spec.Unschedulable)
@@ -840,13 +848,14 @@ func TestColdStartComplexProjectionUsesBoundedCoverAndProgresses(t *testing.T) {
 	})
 	store := &phaseAwareRecoveryStore{db: db, events: records}
 
-	err := coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store, EventProcessor: watcher,
 		ColdStartAfterTime: base.Add(-time.Minute), ColdStartUntilTime: base.Add(time.Hour),
 	})
 	require.NoError(t, err)
-	_, completed := db.completed["old-failure"]
-	assert.False(t, completed, "an applied fault records node status rather than a skip completion")
+	require.True(t, completed)
+	_, gotCompletion := db.completed["old-failure"]
+	assert.False(t, gotCompletion, "an applied fault records node status rather than a skip completion")
 	assert.Equal(t, 1, db.statusWrites, "the source event must receive one durable quarantine status")
 	assert.Len(t, matchAll.seen, 1, "overflow must evaluate the original event conservatively")
 	node, getErr := clientset.CoreV1().Nodes().Get(ctx, "node-a", metav1.GetOptions{})
@@ -909,10 +918,12 @@ func TestColdStartResidualProjectionReachesRuleEvaluation(t *testing.T) {
 		oldFailure, newerRecovery,
 	}}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
 		ColdStartAfterTime: base.Add(-time.Minute), ColdStartUntilTime: base.Add(time.Hour),
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, [][]string{{"48"}}, code79.seen,
 		"an outdated 79 effect must not reach a CEL rule after only 48 remains")
 	node, err := clientset.CoreV1().Nodes().Get(ctx, "node-a", metav1.GetOptions{})
@@ -964,10 +975,12 @@ func TestColdStartWithoutSupersessionPreservesCompoundRuleSemantics(t *testing.T
 	}
 	store := &recoveryHistoryStoreStub{events: []datastore.HealthEventWithStatus{record}}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
 		ColdStartAfterTime: base.Add(-time.Minute), ColdStartUntilTime: base.Add(time.Hour),
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, [][]string{{"48", "79"}}, bothCodes.seen,
 		"an event with no outdated effects must reach CEL unchanged")
 	node, err := clientset.CoreV1().Nodes().Get(ctx, "node-a", metav1.GetOptions{})
@@ -1034,10 +1047,12 @@ func TestColdStartPartialSupersessionPreservesResidualCompoundRuleSemantics(t *t
 		oldFailure, newerRecovery,
 	}}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store, EventProcessor: processor,
 		ColdStartAfterTime: base.Add(-time.Minute), ColdStartUntilTime: base.Add(time.Hour),
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Contains(t, bothCodes.seen, []string{"48", "79"},
 		"B retains both codes and must reach a compound CEL rule as one coherent residual event")
 	node, err := clientset.CoreV1().Nodes().Get(ctx, "node-a", metav1.GetOptions{})
@@ -1102,8 +1117,9 @@ func TestColdStartProjectionTransientFailureAppliesNoPartialActions(t *testing.T
 		ColdStartAfterTime: base.Add(-time.Minute), ColdStartUntilTime: base.Add(time.Hour),
 	}
 
-	err := coldstart.Handle(ctx, deps)
+	completed, err := coldstart.Handle(ctx, deps)
 	require.ErrorIs(t, err, transientErr)
+	require.False(t, completed)
 	node, err := clientset.CoreV1().Nodes().Get(ctx, "node-a", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.False(t, node.Spec.Unschedulable)
@@ -1111,7 +1127,9 @@ func TestColdStartProjectionTransientFailureAppliesNoPartialActions(t *testing.T
 		"a successful projection must not mutate the node before every projection evaluates")
 
 	flaky.err = nil
-	require.NoError(t, coldstart.Handle(ctx, deps))
+	completed, err = coldstart.Handle(ctx, deps)
+	require.NoError(t, err)
+	require.True(t, completed)
 	node, err = clientset.CoreV1().Nodes().Get(ctx, "node-a", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.True(t, node.Spec.Unschedulable)

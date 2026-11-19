@@ -37,6 +37,9 @@ type Override struct {
 	IsFatal           *bool   `toml:"isFatal,omitempty"`
 	IsHealthy         *bool   `toml:"isHealthy,omitempty"`
 	RecommendedAction *string `toml:"recommendedAction,omitempty"`
+	// CustomRecommendedAction names the custom action (ADR-036). It is set together with
+	// RecommendedAction "CUSTOM", and only then.
+	CustomRecommendedAction *string `toml:"customRecommendedAction,omitempty"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -89,11 +92,31 @@ func (r *Rule) Validate() error {
 		}
 	}
 
+	if err := r.Override.validateCustomAction(); err != nil {
+		return fmt.Errorf("(%s): %w", r.Name, err)
+	}
+
+	return nil
+}
+
+// validateCustomAction rejects a CUSTOM action without a name, as platform-connectors rejects
+// such an event from a monitor, and a name without CUSTOM, which nothing would read.
+func (o *Override) validateCustomAction() error {
+	isCustom := o.RecommendedAction != nil && *o.RecommendedAction == pb.RecommendedAction_CUSTOM.String()
+
+	if isCustom && (o.CustomRecommendedAction == nil || *o.CustomRecommendedAction == "") {
+		return fmt.Errorf("recommendedAction CUSTOM requires a non-empty customRecommendedAction")
+	}
+
+	if !isCustom && o.CustomRecommendedAction != nil {
+		return fmt.Errorf("customRecommendedAction requires recommendedAction CUSTOM")
+	}
+
 	return nil
 }
 
 func (o *Override) isEmpty() bool {
-	return o.IsFatal == nil && o.IsHealthy == nil && o.RecommendedAction == nil
+	return o.IsFatal == nil && o.IsHealthy == nil && o.RecommendedAction == nil && o.CustomRecommendedAction == nil
 }
 
 func (o *Override) ParseRecommendedAction() (pb.RecommendedAction, error) {
