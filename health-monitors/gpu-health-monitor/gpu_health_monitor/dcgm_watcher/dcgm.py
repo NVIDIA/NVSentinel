@@ -392,6 +392,7 @@ class DCGMWatcher:
         self._health_watches = self._get_available_health_watches()
         log.debug(f"Got available health watches {self._health_watches}")
         metrics.num_health_watches.set(len(self._health_watches))
+        metrics.num_fields.set(len(self._get_available_fields()))
 
         self._error_codes = self._get_available_error_codes()
         log.debug(f"Got available error codes {self._error_codes}")

@@ -50,7 +50,7 @@ go_tools:
   # renovate: datasource=github-releases depName=boumenot/gocover-cobertura depType=go_tools
   gocover_cobertura: 'v1.5.0'
   # renovate: datasource=go depName=sigs.k8s.io/controller-runtime/tools/setup-envtest depType=go_tools
-  setup_envtest: 'v0.25.2'
+  setup_envtest: 'v0.25.3'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
   goimports: 'v0.52.0'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
@@ -99,14 +99,14 @@ container_tools:
   cosign: 'v3.1.4'
   # Used by .github/actions/security-scan and scripts/openvex/scan.sh, so both report the same findings.
   # renovate: datasource=github-releases depName=anchore/grype depType=container_tools
-  grype: 'v0.118.0'
+  grype: 'v0.121.3'
 
 # Testing & E2E Tools
 testing_tools:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind depType=testing_tools
   kind: '0.33.0'
   # renovate: datasource=github-releases depName=helm/helm depType=testing_tools
-  helm: 'v4.3.1'
+  helm: 'v4.3.2'
   # renovate: datasource=github-releases depName=helm-unittest/helm-unittest depType=testing_tools
   helm_unittest: 'v1.2.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/kwok depType=testing_tools
@@ -116,7 +116,7 @@ testing_tools:
   # renovate: datasource=github-releases depName=tilt-dev/ctlptl depType=testing_tools
   ctlptl: '0.9.6'
   # renovate: datasource=github-releases depName=tilt-dev/tilt depType=testing_tools
-  tilt: '0.37.8'
+  tilt: '0.37.9'
 
 # Cluster Dependencies
 cluster:
