@@ -23,6 +23,7 @@ Status: Proposed (tracking issue [#2417](https://github.com/NVIDIA/NVSentinel/is
 6. [Alternatives Considered](#alternatives-considered)
    - [Derive the scoped actions from `impactedEntityScope` in fault-remediation](#derive-the-scoped-actions-from-impactedentityscope-in-fault-remediation)
    - [Watch the node's ResourceSlices](#watch-the-nodes-resourceslices)
+   - [Keep an existing annotation after a restart](#keep-an-existing-annotation-after-a-restart)
    - [Use the DRA device name as the entity value](#use-the-dra-device-name-as-the-entity-value)
 7. [Notes](#notes)
    - [Non-goals](#non-goals)
@@ -168,7 +169,9 @@ For a device that is identified by its PCI address, the entity type uses the Kub
 
 If the mapper cannot find the attribute for any configured device of a pod, it writes no annotation for that pod, and removes an existing one. A partial annotation would make node-drainer miss the pod. Without an annotation, node-drainer sees a pod with a claim and no annotation, and the partial drain waits instead. The mapper checks every annotation on each poll, every 30 seconds. After the upgrade, its first poll also removes a partial annotation that an earlier version of the mapper wrote. [#2454](https://github.com/NVIDIA/NVSentinel/issues/2454) tracks the same fix for earlier versions.
 
-The mapper lists the ResourceSlices of its own node, with a field selector on `spec.nodeName`, when it sees a DRA device that it has not resolved. It caches the attribute values and does not watch ResourceSlices. Today's NVML map works the same way: it is built once and kept until the mapper restarts, because a device keeps its identity while the node runs. The metadata-collector ClusterRole gets `list` on `resourceslices.resource.k8s.io` only when the map has a DRA entry.
+The mapper resolves a DRA device once and remembers the result. A device keeps its identity while the node runs, so the cache needs no refresh and the mapper does not watch ResourceSlices. Like today's NVML map, the cache lasts until the mapper restarts.
+
+To resolve a device, the mapper lists the ResourceSlices of its own node, filtered by `spec.nodeName` and `spec.driver`, with `resourceVersion: "0"` so that the API server answers from its cache instead of etcd. It does this only when a pod on the node has a DRA device that is not in the cache yet, so a node without such pods never calls the API. If the answer does not have the device yet, the mapper tries again on the next poll. The metadata-collector ClusterRole gets `list` on ResourceSlices only when the map has a DRA entry.
 
 ### Backwards compatibility
 
@@ -210,6 +213,10 @@ node-drainer would partially drain every action whose `maintenance.actions` entr
 ### Watch the node's ResourceSlices
 
 An informer would see a change to a ResourceSlice at once. **Rejected** because every mapper pod would hold a watch on the API server, one for each GPU node, and a device does not change its identity while the node runs.
+
+### Keep an existing annotation after a restart
+
+The mapper would keep an annotation with one value for each DRA device of the pod, and list ResourceSlices only for other pods. This saves the lists after an upgrade, but not on the first install, where no pod has an annotation. **Rejected** because a changed `entityValueAttribute` would not reach running pods: their annotations keep the old values, and a partial drain would miss them.
 
 ### Use the DRA device name as the entity value
 
