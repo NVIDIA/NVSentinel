@@ -1487,7 +1487,7 @@ func setupConfiguredTest(t *testing.T, tomlConfig config.TomlConfig, dryRun bool
 		tomlConfig.DrainGPUPods,
 		dryRun,
 		tomlConfig.SystemNamespaces,
-		nil,
+		informers.NodeFields(nil),
 		policies.LabelKeys()...,
 	)
 	require.NoError(t, err)
@@ -1603,7 +1603,7 @@ func setupCustomDrain(t *testing.T, customDrainConfig config.CustomDrainConfig,
 		false,
 		false,
 		tomlConfig.SystemNamespaces,
-		customDrainNodes.LabelKeys(),
+		informers.NodeFields(customDrainNodes.LabelKeys()),
 	)
 	require.NoError(t, err)
 
@@ -1893,6 +1893,95 @@ func TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess(t *testing.T) {
 	assert.GreaterOrEqual(t, afterSkipped, beforeSkipped+1, "EventsProcessed with drain_status=skipped should increment for already drained nodes")
 }
 
+// TestReconciler_CoveredAlreadyDrainedRecordsScope stores the scope of a partial event in the
+// same update that marks it AlreadyDrained. The earlier event completed a full drain.
+func TestReconciler_CoveredAlreadyDrainedRecordsScope(t *testing.T) {
+	nodeName := "scope-record-node"
+	updates, err := processCoveredPartialEvent(t, nodeName, 1, nil)
+	require.NoError(t, err)
+
+	require.Len(t, updates.writes, 1)
+	assertScopeOnlyDecision(t, updates.writes[0], "GPU-0")
+	require.Contains(t, updates.filters[0], "healtheventstatus.draindecision")
+	assert.Nil(t, updates.filters[0]["healtheventstatus.draindecision"])
+
+	partialSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName,
+		string(evaluator.DrainScopePartial))
+	require.GreaterOrEqual(t, partialSkipped, 1.0)
+}
+
+// TestReconciler_CoveredAlreadyDrainedKeepsExistingRecord does not replace a decision that is
+// already stored on the event.
+func TestReconciler_CoveredAlreadyDrainedKeepsExistingRecord(t *testing.T) {
+	updates, err := processCoveredPartialEvent(t, "scope-kept-node", 1, func(event map[string]any) {
+		event["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = &protos.DrainDecision{
+			Method: model.DrainMethodBuiltIn,
+			Scope:  &protos.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-0"},
+		}
+	})
+	require.NoError(t, err)
+
+	require.Len(t, updates.writes, 1)
+	_, wroteDecision := updates.writes[0]["healtheventstatus.draindecision"]
+	assert.False(t, wroteDecision, "an event that already has a record keeps it")
+	assertEvictionStatus(t, updates.writes[0], model.AlreadyDrained)
+}
+
+// TestReconciler_CoveredAlreadyDrainedRequeuesWhenRecordExists loses the compare-and-set because
+// another writer stored a decision first. The status stays unchanged and the pass is retried.
+func TestReconciler_CoveredAlreadyDrainedRequeuesWhenRecordExists(t *testing.T) {
+	updates, err := processCoveredPartialEvent(t, "scope-race-node", 0, nil)
+	require.ErrorContains(t, err, "already recorded")
+
+	require.Len(t, updates.filters, 1)
+	require.Contains(t, updates.filters[0], "healtheventstatus.draindecision",
+		"the update must match only while no decision is stored")
+	assert.Nil(t, updates.filters[0]["healtheventstatus.draindecision"])
+}
+
+// TestReconciler_HealthyAndSkipRecordNoScope keeps a healthy event and a skipped event free of a
+// drain decision. Neither one was covered by an earlier drain.
+func TestReconciler_HealthyAndSkipRecordNoScope(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	tests := []struct {
+		name   string
+		mutate func(*protos.HealthEvent)
+	}{
+		{
+			name:   "healthy",
+			mutate: func(event *protos.HealthEvent) { event.IsHealthy = true },
+		},
+		{
+			name: "skip",
+			mutate: func(event *protos.HealthEvent) {
+				event.DrainOverrides = &protos.BehaviourOverrides{Skip: true}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updates := recordStatusUpdates(setup.mockCollection, 1)
+			event := createHealthEvent(healthEventOptions{
+				nodeName:        tt.name + "-node",
+				nodeQuarantined: model.Quarantined,
+			})
+			tt.mutate(event["healthevent"].(*protos.HealthEvent))
+
+			require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
+				setup.healthEventStore, tt.name+"-node"))
+
+			require.Len(t, updates.writes, 1)
+			_, wroteDecision := updates.writes[0]["healtheventstatus.draindecision"]
+			assert.False(t, wroteDecision)
+			assertEvictionStatus(t, updates.writes[0], model.AlreadyDrained)
+		})
+	}
+}
+
 // Helper functions for reading Prometheus metrics
 
 func getCounterValue(t *testing.T, counter prometheus.Counter) float64 {
@@ -2021,6 +2110,110 @@ func TestReconciler_CancelledEventWithOngoingDrain(t *testing.T) {
 	pod, err := setup.client.CoreV1().Pods("timeout-test").Get(setup.ctx, "stuck-pod", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.Nil(t, pod.DeletionTimestamp, "pod should not be deleted after cancellation")
+}
+
+// TestReconciler_StoredCancelledEventAfterRestart_DoesNotDrain covers a restart of node-drainer
+// after fault-quarantine marked a session Cancelled and before the drain wrote its terminal
+// status. The startup scan queues the event with its stored Cancelled status, and the new
+// reconciler holds no cancellation in memory. The event must end Cancelled without a drain.
+func TestReconciler_StoredCancelledEventAfterRestart_DoesNotDrain(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "immediate-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	nodeName := testutils.GenerateTestNodeName("cancelled-after-restart")
+	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName,
+		map[string]string{statemanager.NVSentinelStateLabelKey: string(statemanager.DrainingLabelValue)}, nil)
+	createNamespace(setup.ctx, t, setup.client, "immediate-test")
+	createPod(setup.ctx, t, setup.client, "immediate-test", "user-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	var (
+		mu             sync.Mutex
+		evictionStatus string
+	)
+
+	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, _ any, update any) (*sdkclient.UpdateResult, error) {
+		if updateMap, ok := update.(map[string]any); ok {
+			if setMap, ok := updateMap["$set"].(map[string]any); ok {
+				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any); ok {
+					mu.Lock()
+					evictionStatus = fmt.Sprintf("%v", statusMap["status"])
+					mu.Unlock()
+				}
+			}
+		}
+
+		return &sdkclient.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
+	}
+
+	beforeCancelled := getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check")
+
+	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore,
+		healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Cancelled})
+	require.NoError(t, err)
+
+	mu.Lock()
+	assert.Equal(t, string(model.Cancelled), evictionStatus, "the drain must end with the Cancelled status")
+	mu.Unlock()
+
+	assert.Equal(t, beforeCancelled+1, getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check"),
+		"CancelledEvent metric should increment")
+
+	require.Eventually(t, func() bool {
+		node, err := setup.client.CoreV1().Nodes().Get(setup.ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		_, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
+
+		return !exists
+	}, 15*time.Second, 500*time.Millisecond, "the draining label should be removed")
+
+	require.Never(t, func() bool {
+		pod, err := setup.client.CoreV1().Pods("immediate-test").Get(setup.ctx, "user-pod", metav1.GetOptions{})
+		return err != nil || pod.DeletionTimestamp != nil
+	}, 3*time.Second, 200*time.Millisecond, "the pod of a cancelled session must not be evicted")
+}
+
+// TestReconciler_CancelledEventKeepsDrainingLabelOfNewerDrain checks that a cancelled event
+// leaves the draining label and state to a newer event that is still draining the node.
+func TestReconciler_CancelledEventKeepsDrainingLabelOfNewerDrain(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "timeout-*", Mode: config.ModeDeleteAfterTimeout},
+	}, false)
+
+	nodeName := testutils.GenerateTestNodeName("cancelled-older-event")
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "timeout-test")
+	createPod(setup.ctx, t, setup.client, "timeout-test", "user-pod", nodeName, v1.PodRunning, nil, nil, nil)
+
+	now := time.Now()
+
+	// The newer event starts a drain that waits for the timeout, so it stays in progress.
+	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore,
+		healthEventOptions{
+			nodeName: nodeName, eventID: nodeName + "-newer", nodeQuarantined: model.Quarantined, createdAt: now,
+		})
+	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
+
+	beforeCancelled := getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check")
+
+	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore,
+		healthEventOptions{
+			nodeName: nodeName, eventID: nodeName + "-older", nodeQuarantined: model.Cancelled,
+			createdAt: now.Add(-time.Minute),
+		})
+	require.NoError(t, err)
+
+	assert.Equal(t, beforeCancelled+1, getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check"),
+		"the older event is cancelled")
+
+	require.Never(t, func() bool {
+		node, err := setup.client.CoreV1().Nodes().Get(setup.ctx, nodeName, metav1.GetOptions{})
+		return err != nil ||
+			node.Labels[statemanager.NVSentinelStateLabelKey] != string(statemanager.DrainingLabelValue)
+	}, 2*time.Second, 200*time.Millisecond, "the newer drain keeps the draining label")
 }
 
 // TestReconciler_UnQuarantinedEventCancelsOngoingDrain validates that UnQuarantined events cancel all in-progress drains for a node
@@ -2624,7 +2817,7 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		false,
 		false,
 		tomlConfig.SystemNamespaces,
-		nil,
+		informers.NodeFields(nil),
 	)
 	require.NoError(t, err)
 
@@ -3199,4 +3392,106 @@ func (s *decisionAlreadyRecordedStore) UpdateDocument(
 	}
 
 	return s.mockDataStore.UpdateDocument(ctx, filter, update)
+}
+
+// processCoveredPartialEvent processes an AlreadyQuarantined GPU-0 event on a node whose earlier
+// event completed a full drain, and returns the status updates it wrote. matched is the document
+// count that the fake database reports for each update. mutate, when set, changes the event first.
+func processCoveredPartialEvent(t *testing.T, nodeName string, matched int64,
+	mutate func(event map[string]any)) (*statusUpdateCapture, error) {
+	t.Helper()
+
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	prepareCoveredNode(t, setup, nodeName)
+	updates := recordStatusUpdates(setup.mockCollection, matched)
+
+	event := partialQuarantinedEvent(nodeName, model.AlreadyQuarantined)
+	if mutate != nil {
+		mutate(event)
+	}
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+
+	return updates, err
+}
+
+type statusUpdateCapture struct {
+	writes  []map[string]any
+	filters []map[string]any
+}
+
+func recordStatusUpdates(collection *MockMongoCollection, matched int64) *statusUpdateCapture {
+	capture := &statusUpdateCapture{}
+	collection.UpdateDocumentFunc = func(_ context.Context, filter, update any) (*sdkclient.UpdateResult, error) {
+		if filterMap, ok := filter.(map[string]any); ok {
+			capture.filters = append(capture.filters, filterMap)
+		}
+
+		if updateMap, ok := update.(map[string]any); ok {
+			if setMap, ok := updateMap["$set"].(map[string]any); ok {
+				capture.writes = append(capture.writes, setMap)
+			}
+		}
+
+		return &sdkclient.UpdateResult{MatchedCount: matched, ModifiedCount: matched}, nil
+	}
+
+	return capture
+}
+
+func prepareCoveredNode(t *testing.T, setup *testSetup, nodeName string) {
+	t.Helper()
+
+	annotationValue, err := createHealthEventAnnotationsMap([]*protos.HealthEvent{{Id: "previous-event"}})
+	require.NoError(t, err)
+	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, map[string]string{"test": "true"},
+		map[string]string{common.QuarantineHealthEventAnnotationKey: annotationValue})
+	waitForNodeInInformer(t, setup.informersInstance, nodeName)
+
+	setup.healthEventStore.healthEvents = []datastore.HealthEventWithStatus{{
+		HealthEventStatus: datastore.HealthEventStatus{
+			NodeQuarantined: ptr.To(datastore.Quarantined),
+			UserPodsEvictionStatus: datastore.OperationStatus{
+				Status: datastore.StatusSucceeded,
+			},
+			DrainDecision: &datastore.DrainDecision{Method: model.DrainMethodBuiltIn},
+		},
+		HealthEvent: &protos.HealthEvent{RecommendedAction: protos.RecommendedAction_RESTART_VM},
+	}}
+}
+
+func partialQuarantinedEvent(nodeName string, status model.Status) map[string]any {
+	return createHealthEvent(healthEventOptions{
+		nodeName:          nodeName,
+		nodeQuarantined:   status,
+		recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		entitiesImpacted: []*protos.Entity{{
+			EntityType:  "GPU_UUID",
+			EntityValue: "GPU-0",
+		}},
+	})
+}
+
+func assertScopeOnlyDecision(t *testing.T, setMap map[string]any, entityValue string) {
+	t.Helper()
+
+	stored, ok := setMap["healtheventstatus.draindecision"].(*datastore.DrainDecision)
+	require.True(t, ok)
+	assert.Empty(t, stored.Method)
+	require.NotNil(t, stored.Scope)
+	assert.Equal(t, "GPU_UUID", stored.Scope.EntityType)
+	assert.Equal(t, entityValue, stored.Scope.EntityValue)
+	assertEvictionStatus(t, setMap, model.AlreadyDrained)
+}
+
+func assertEvictionStatus(t *testing.T, setMap map[string]any, status model.Status) {
+	t.Helper()
+
+	statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, string(status), statusMap["status"])
 }

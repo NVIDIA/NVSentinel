@@ -40,6 +40,12 @@ platformConnector:
   affinity: {}
 ```
 
+## Kubernetes API Permissions
+
+`platformConnector.k8sConnector.enabled` controls the Kubernetes sink in both platform connector roles. When disabled, their ClusterRoles omit `nodes/status` and `events` permissions. When enabled, the sink can update node conditions and create or update Kubernetes Events. Neither connector role needs `pods/eviction`; the node drainer owns workload eviction.
+
+Authentication still needs `create` on `tokenreviews`. The metadata augmentor needs `get` on `nodes`. The node-local role retains its existing node and pod discovery reads. Other components, including the labeler, metadata collector and enabled action controllers, have separate permissions. Disabling the Kubernetes sink does not make the whole installation read-only or remove host access.
+
 ## Event Processing Pipeline
 
 Configures the event processing pipeline that processes health events before storage and Kubernetes propagation. Transformers mutate events in order before connector fan-out.
@@ -152,7 +158,7 @@ platformConnector:
 
 ## Override Transformer Configuration
 
-Applies CEL-based rules to modify health event properties (isFatal, isHealthy, recommendedAction).
+Applies CEL-based rules to modify health event properties (isFatal, isHealthy, recommendedAction, customRecommendedAction).
 
 ```yaml
 platformConnector:
@@ -172,7 +178,9 @@ platformConnector:
 Array of override rules evaluated in order (first match wins):
 - **name**: Human-readable rule name for logging
 - **when**: CEL expression that evaluates to boolean
-- **override**: Properties to modify (isFatal, isHealthy, recommendedAction)
+- **override**: Properties to modify (isFatal, isHealthy, recommendedAction, customRecommendedAction)
+
+To send a fault to a custom remediation action, set `recommendedAction: "CUSTOM"` and set `customRecommendedAction` to the action name. Each of the two needs the other: platform-connectors does not start if a rule sets only one of them, or sets an empty name. An override to a built-in action clears the `customRecommendedAction` of the event.
 
 ### CEL Expression Context
 
@@ -190,6 +198,7 @@ CEL expressions have access to the `event` object with the following fields:
 | `event.isFatal` | bool | Whether error is fatal |
 | `event.isHealthy` | bool | Overall health status |
 | `event.recommendedAction` | string | Recommended remediation action |
+| `event.customRecommendedAction` | string | Custom action name, as sent. Check `event.recommendedAction == 'CUSTOM'` as well, because an event with a built-in action can also carry a name |
 | `event.metadata` | map | Node metadata from MetadataAugmentor |
 
 **Entity fields:** Each entity in `entitiesImpacted` has:
@@ -209,6 +218,20 @@ transformers:
           isFatal: false
           recommendedAction: "NONE"
 ```
+
+**Send a fault to a custom action:**
+```yaml
+transformers:
+  OverrideTransformer:
+    rules:
+      - name: "nvlink-to-hardware-repair"
+        when: 'event.checkName == "GpuNvlinkWatch" && event.isFatal == true'
+        override:
+          recommendedAction: "CUSTOM"
+          customRecommendedAction: "hardware-repair"
+```
+
+fault-remediation must have an entry for the action name in `maintenance.actions`. See [Custom remediation plugin](../tutorials/plugin-custom-remediation.md).
 
 ## Deduplication Transformer Configuration
 

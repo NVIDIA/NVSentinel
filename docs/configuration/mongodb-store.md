@@ -41,7 +41,7 @@ mongodb-store:
 
 ## Switching backends on an existing installation
 
-Do **NOT** switch backends by changing the two flags on a live release with `helm upgrade`. The upgrade fails partway through with an immutable field error on the database initialization Job, and by then it has already deployed parts of the other backend. The result is two MongoDB clusters running side by side and services pointed at the wrong one.
+**Never switch backends in place.** Changing useBitnami and usePerconaOperator does not migrate the data. Services may connect to a new, empty database, leaving existing health events unavailable. Node annotations and remediation resources may then refer to events that are not in the new database. Follow this runbook to remove and redeploy the installation. Use the dump and restore path if you need to preserve health events.
 
 Switching backends reinstalls the datastore; the migration runbook's default path carries the health event data over with a dump and restore, and only its opt-out clean path drops it. Follow the [MongoDB Bitnami to Percona migration runbook](../runbooks/mongodb-bitnami-to-percona-migration.md) for the full procedure, including the cleanup steps and the handling of in-flight quarantines.
 
@@ -164,6 +164,70 @@ Notes:
 - It runs after the operator-generated users secret exists, which means the operator has already reconciled the resource. A missing resource at that point is therefore an error rather than a first install, which is what lets the check fail instead of skipping.
 - The resource is found by listing the namespace, not by name, so renaming it changes nothing. If the namespace holds more than one, the check refuses to guess which belongs to the release.
 - This runs only when the Job runs, so it cannot see a render. It does not replace `psmdbVersion`, which is what catches the values disagreeing with each other before anything is applied.
+
+### Linux kernel 6.19 and newer
+
+On nodes running Linux kernel 6.19 or newer, the Percona backend can fail to start. `mongodb-rs0-0` exits within a second of starting and stays in `CrashLoopBackOff`, and fault-quarantine, node-drainer, fault-remediation and platform-connectors restart in a loop because they cannot reach the datastore. `kubectl logs --previous` for the `mongod` container is empty.
+
+Kernels 6.19 through 7.0.13 break the way TCMalloc, MongoDB's memory allocator, uses rseq for its per-CPU caches, so MongoDB 8.0 refuses to start on those kernels ([SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912)). The mongod release the chart deploys refuses on every kernel 6.19 and newer, including kernels that already carry the fix. Ubuntu kernels also hide their upstream release from `uname -r`, which shows a zero patch level (`7.0.0-43-generic` for a kernel built from 7.0.14), so later mongod releases can still refuse on them. The container log stays empty because the entrypoint script, `/opt/percona/ps-entry.sh`, which the init container copies from the operator image, runs `mongod --version` to read the version, consumes the refusal message, and exits.
+
+To check a node's kernel:
+
+```bash
+uname -r
+# Ubuntu only: the last field is the upstream kernel release
+cat /proc/version_signature
+```
+
+To see the refusal directly, run the mongod image on a machine with the same kernel:
+
+```bash
+docker run --rm --entrypoint mongod percona/percona-server-mongodb:8.0.26-11 --version
+```
+
+On an affected kernel this prints `MongoDB cannot start: Linux kernel versions 6.19 and newer has a known incompatibility with this version of MongoDB` and exits 1.
+
+The Percona image sets `GLIBC_TUNABLES=glibc.pthread.rseq=0`, which leaves rseq for TCMalloc to register. Setting it to `1` lets glibc keep rseq, so TCMalloc falls back to per-thread caches, does not use rseq, and mongod starts:
+
+```yaml
+mongodb-store:
+  psmdb-db:
+    replsets:
+      rs0:
+        env:
+          - name: GLIBC_TUNABLES
+            value: "glibc.pthread.rseq=1"
+```
+
+With this setting, mongod logs startup warning 8718500, which says the performance impact is critical and asks for `GLIBC_TUNABLES=glibc.pthread.rseq=0`. Leave the setting in place: on these kernels, following that advice brings the startup failure back.
+
+Helm replaces lists rather than merging them. If your values already set `env` for `rs0`, add this entry to that list instead of defining a second one.
+
+The cost is some allocator performance under heavy concurrency, which matters little at the load NVSentinel puts on its datastore.
+
+Changing `env` changes the pod spec, and on a healthy replica set the operator restarts mongod on the next upgrade. The operator restarts pods only once every replica is ready, though, so a mongod pod that is already crash-looping never picks up the new setting. After the upgrade, wait until the operator has written the setting into the StatefulSet template, then delete each crash-looping mongod pod. A pod deleted before that comes back with the old setting:
+
+```bash
+kubectl get statefulset mongodb-rs0 -n nvsentinel \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="mongod")].env}'
+kubectl delete pod -n nvsentinel mongodb-rs0-0
+```
+
+To confirm the setting reached the pod:
+
+```bash
+kubectl get pod mongodb-rs0-0 -n nvsentinel \
+  -o jsonpath='{.spec.containers[?(@.name=="mongod")].env}'
+kubectl get pods -n nvsentinel
+```
+
+On a fresh install, the `create-mongodb-database` Job runs while mongod is down. If mongod stays down past the Job's deadline, the Job fails and Helm does not re-create it, so the database users are missing even after mongod starts. An install whose Job already completed keeps its users. Check the Job, and if it failed, follow [Init Job deadline](#init-job-deadline):
+
+```bash
+kubectl get job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
+```
+
+Before removing the entry, rerun the `docker run` command above with the new image tag on a machine with each kernel you run. If it prints the version instead of the refusal, the entry can go. The check only works for releases that include the refusal: older MongoDB 8.0 releases print the version on an affected kernel and crash after startup. On kernels 6.19 through 7.0.13, no MongoDB 8.0 release runs without this setting. Progress is tracked in [#2410](https://github.com/NVIDIA/NVSentinel/issues/2410).
 
 ### Volume size
 
@@ -457,9 +521,9 @@ A completed Job is immutable. Changing `oplogSizeMB` (or the replica-member list
 
 ### HealthEvents TTL
 
-`collectionExpirySeconds` (default `2592000` / 30d). Same key for external Mongo. The init Job is `create-mongodb-database-<seconds>-<scriptHash>` (`-l app.kubernetes.io/name=create-mongodb-database`).
+`collectionExpirySeconds` (default `2592000` / 30d). Same key for external Mongo. The init Job is `create-mongodb-database-<seconds>-<hash>` (`-l app.kubernetes.io/name=create-mongodb-database`).
 
-A completed Job is immutable. TTL, oplog size, and a hash of the mongosh init script are in the Job name so Helm/Argo create a new Job when expiry, oplog, or indexes change. Argo also has `Force=true,Replace=true` so a Failed first run is recreated on sync. For Helm, if you need to rerun the same script, delete the Job by that label and upgrade.
+A completed Job is immutable, so the Job gets a new name when it must change. The name holds the TTL and one hash. The hash covers `oplogSizeMB`, `oplogAllowShrink` and the rendered Job pod template, which includes the mongosh init script. Helm and Argo CD create a new Job when the TTL, an oplog setting or the indexes change. They also create a new Job when the Job pod changes, for example `mongodb.nodeSelector`, tolerations, images or `global.imagePullSecrets`. Argo also has `Force=true,Replace=true` so a Failed first run is recreated on sync. For Helm, if you need to rerun the same script, delete the Job by that label and upgrade.
 
 ```yaml
 mongodb-store:

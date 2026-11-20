@@ -39,7 +39,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_processing_errors_total` | Counter | `error_type` | Total number of errors encountered during event processing |
 | `fault_quarantine_cold_start_events_total` | Counter | `result` | Health events examined during startup recovery, labeled `processed`, `skipped`, `superseded`, `invalid`, or `failed` |
 | `fault_quarantine_cold_start_duration_seconds` | Histogram | - | Startup recovery duration. Buckets: ExponentialBuckets(start=0.1s, factor=2, count=18), max ~3.6 hours |
-| `fault_quarantine_event_backlog_count` | Gauge | - | Number of health events which fault quarantine is yet to process |
+| `fault_quarantine_event_backlog_count` | Gauge | - | Number of health events which fault quarantine is yet to process. Reports `-1` from registration until the process records its first event checkpoint, the baseline the count is taken from; no count exists to report before then. On PostgreSQL the change-stream watcher does not support the count, so the gauge stays `-1` there even after the first checkpoint |
 | `fault_quarantine_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
 
 ### Node Quarantine Metrics
@@ -50,6 +50,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_nodes_unquarantined_total` | Counter | `node` | Total number of nodes unquarantined |
 | `fault_quarantine_nodes_manually_uncordoned_total` | Counter | `node` | Total number of manually uncordons for nodes |
 | `fault_quarantine_nodes_manually_untainted_total` | Counter | `node` | Total number of manual taint removals for nodes |
+| `fault_quarantine_nodes_pending_cancellation` | Gauge | - | Nodes waiting for their health events to be marked `Cancelled` after a manual uncordon, a manual untaint or a dry-run switch. If it stays above zero, the cancellation keeps failing |
 | `fault_quarantine_current_quarantined_nodes` | Gauge | `node` | Current number of quarantined nodes |
 | `fault_quarantine_dry_run_actions_total` | Counter | `action` | Total number of quarantine and unquarantine actions skipped by dry run |
 
@@ -79,7 +80,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `fault_quarantine_breaker_state` | Gauge | `state` | State of the fault quarantine breaker |
 | `fault_quarantine_breaker_utilization` | Gauge | - | Fraction of GPU nodes cordoned within the circuit breaker's sliding window |
-| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, `fleetSize` when clamped, or `noGPUNodes` when no GPU nodes are counted and any recent cordon trips it) |
+| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, `fleetSize` when clamped, or `noGPUNodes` when no GPU nodes are counted, where a node cordoned in the window that is still in the cluster trips it) |
 | `fault_quarantine_get_total_nodes_duration_seconds` | Histogram | `result` | Duration of getTotalNodes calls in seconds |
 | `fault_quarantine_get_total_nodes_errors_total` | Counter | `error_type` | Total number of errors from getTotalNodes |
 
@@ -437,7 +438,7 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `dcgm_api_latency`                                      | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
 | `dcgm_reconcile_time`                                   | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
 | `number_of_health_watches`                              | Gauge     | -                                  | Number of DCGM health watches available                                                                   |
-| `number_of_fields`                                      | Gauge     | -                                  | Number of available DCGM fields to monitor                                                                |
+| `number_of_fields`                                      | Gauge     | -                                  | Number of `DCGM_FI_DEV*` constants exposed by the installed DCGM Python bindings                            |
 | `callback_failures_total`                               | Counter   | `class_name`, `func_name`          | Number of times a callback function has thrown an exception                                               |
 | `callback_success_total`                                | Counter   | `class_name`, `func_name`          | Number of times a callback function has successfully completed                                            |
 | `dcgm_api_failures_total`                               | Counter   | `error_name`                       | Number of DCGM API errors                                                                                 |
@@ -446,6 +447,8 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `gpu_temp_limit_margin_blank_total`                     | Counter   | -                                  | Number of poll cycles where DCGM field 153 (T.Limit) returned a blank value                                |
 | `gpu_temp_limit_slowdown_threshold_missing_total`       | Counter   | -                                  | Number of poll cycles where slowdown T.Limit metadata from NVML field 194 is missing                      |
 | `gpu_power_brake_reasons_blank_total`                   | Counter   | -                                  | Number of GPU polls where DCGM clocks-event-reasons was missing or blank, so GpuPowerBrakeWatch could not be evaluated |
+
+The `number_of_fields` and `number_of_health_watches` gauges describe the binding inventory. They do not confirm active watches, hardware support, successful polling or valid samples. A field can appear in the inventory while its monitor is disabled.
 
 ---
 

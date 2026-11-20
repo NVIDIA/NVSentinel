@@ -1,4 +1,4 @@
-# ADR-045: Node Validation
+# ADR-049: Node Validation
 
 ## Context
 

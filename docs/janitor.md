@@ -51,9 +51,33 @@ Issues a terminate or stop API call to the cloud provider. Used for `REPLACE_VM`
 
 Runs a privileged Kubernetes Job on the target node that performs an in-place GPU reset via `nvidia-smi`. The GPU Operator DaemonSet is paused on the node during the reset to prevent interference. On completion, the Job writes a syslog event so the Syslog Health Monitor can confirm the reset succeeded.
 
+When a GPUReset ends, the controller sets two conditions. `Complete` is `True` for each GPUReset that ended. `Succeeded` gives the outcome: `True` for a successful reset, and `False` with the failure reason for a failed reset.
+
 GPUReset supports both GPU Operator modes: device plugin and DRA. Refer to [GPU Operator modes](configuration/janitor.md#gpu-operator-modes).
 
 GPU clients outside the GPU Operator, in any namespace, can also hold the GPUs open. The controller also stops them before the reset. Refer to [GPU clients](configuration/janitor.md#gpu-clients).
+
+## Before You Enable It: Apply the CRDs
+
+The Janitor's CRD manifests ship inside the `janitor` subchart (`nvsentinel/charts/janitor/crds/` in the OCI chart): three for the maintenance custom resources (`rebootnodes`, `terminatenodes`, `gpuresets` in the `janitor.dgxc.nvidia.com` group) and `externalremediationrequests` (`nvsentinel.dgxc.nvidia.com` group). Helm does not apply a subchart's CRDs during `helm upgrade`, so on an existing installation the CRDs are absent — or left at an older schema — until you apply them yourself. Check before you enable the module:
+
+```bash
+kubectl get crd rebootnodes.janitor.dgxc.nvidia.com terminatenodes.janitor.dgxc.nvidia.com gpuresets.janitor.dgxc.nvidia.com externalremediationrequests.nvsentinel.dgxc.nvidia.com
+```
+
+Apply the CRDs from the chart whatever the check returns — `NotFound` means the kinds are absent, but an existing CRD can still be an older schema, because Helm installs a subchart's CRDs once, at install, and never upgrades them:
+
+```bash
+NVSENTINEL_VERSION="<the version you are deploying>"
+PULL_DIR="$(mktemp -d)"
+
+helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar --untardir "$PULL_DIR"
+kubectl apply -f "$PULL_DIR/nvsentinel/charts/janitor/crds/"
+```
+
+Pull the chart at the version you are deploying, not the installed one — the controller you are about to run writes `status.managedServices`, and the API server prunes fields an older CRD schema does not know, losing the stopped-services record the restore path reads.
+
+Without the CRDs, enabling the module leaves the Janitor controller crash-looping on `no matches for kind "GPUReset"`, and Fault Remediation cannot create its maintenance CRs (`no matches for kind "RebootNode"`) — remediation requests retry forever instead of reaching an executor. The identical pre-flight for lifecycle-manager is in [Requesting node maintenance](tutorials/requesting-node-maintenance.md).
 
 ## Configuration
 
