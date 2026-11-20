@@ -509,6 +509,16 @@ func (l *Labeler) registerNodeEventHandlers() error {
 				slog.Error("Failed to handle node update event", "error", err)
 			}
 		},
+		DeleteFunc: func(obj any) {
+			// A deleted node's count must stop raising its partition's expected count.
+			nodeName, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+			if err != nil {
+				slog.Warn("Skipping node delete event with unexpected object", "error", err)
+				return
+			}
+
+			l.deviceCounts.ForgetNode(nodeName)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to add node event handler: %w", err)
@@ -577,8 +587,13 @@ func (l *Labeler) reconcileAllNodes() {
 
 	// Share one cache across the fleet sweep. Peer CEL results and partition
 	// maxima are therefore computed once and reused by every target node, while
-	// indexed ResourceSlices are loaded at most once per node.
-	deviceCountCache := l.deviceCounts.NewReconcileCache(nodes, l.loadResourceSlicesForNode)
+	// indexed ResourceSlices are loaded at most once per node. The nodes are
+	// listed again when a partition is read in full, so that read sees the
+	// informer as it is at that moment rather than at the start of the sweep.
+	deviceCountCache := l.deviceCounts.NewLazyReconcileCache(
+		l.deviceCountCachedNodes,
+		l.loadResourceSlicesForNode,
+	)
 	for _, node := range nodes {
 		if err := l.reconcileNodeLabels(node.Name, deviceCountCache); err != nil {
 			slog.Error("Failed to reconcile node labels", "node", node.Name, "error", err)
@@ -873,15 +888,11 @@ func (l *Labeler) reconcileNodeLabels(
 }
 
 func (l *Labeler) newDeviceCountReconcileCache() *devicecounts.ReconcileCache {
-	var peerNodes []*v1.Node
-	if l.deviceCounts.Enabled() {
-		peerNodes = l.deviceCountCachedNodes()
-	}
-
 	// Event-driven reconciliations get a fresh cache so observations cannot
-	// outlive the informer state that triggered the event.
-	return l.deviceCounts.NewReconcileCache(
-		peerNodes,
+	// outlive the informer state that triggered the event. The nodes are listed
+	// only if a partition has to be read in full, which most events do not need.
+	return l.deviceCounts.NewLazyReconcileCache(
+		l.deviceCountCachedNodes,
 		l.loadResourceSlicesForNode,
 	)
 }
@@ -948,6 +959,12 @@ func (l *Labeler) calculateAndSetNodeLabels(
 		// that actually removed labels, so the metric reflects how often the gate
 		// fired (ADR-040).
 		metrics.NodeLabelsSkippedManaged.Inc()
+
+		// Labeler leaves this node's labels alone, but the node still has the same
+		// hardware as the rest of its partition, so its counts still matter to
+		// the other nodes' expected counts.
+		deviceCountCache.RememberPeerCounts(l.ctx, node)
+
 		return l.stripDetectionLabels(node), nil
 	}
 

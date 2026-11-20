@@ -167,11 +167,57 @@ func TestReconcileCacheSeparatesClassesAndPartitions(t *testing.T) {
 	require.Equal(t, "3", nodeInHardwarePartitionY.Labels[testNICCountExpectedLabel])
 	require.Equal(t, "30", nodeInHardwarePartitionY.Labels[testGPUCountExpectedLabel])
 
+	// Each node is looked up once when it is reconciled and once for each of the
+	// two classes when its partition is read in full. Lookups are not reused, so
+	// a slice that changes during a sweep is never counted from an earlier one.
 	require.Equal(t, map[string]int{
-		"node-a": 1,
-		"node-b": 1,
-		"node-c": 1,
+		"node-a": 3,
+		"node-b": 3,
+		"node-c": 3,
 	}, resourceSliceLookupCountByNode)
+}
+
+func TestReconcileCache_SliceChangeDuringSweep_CountsTheNewSlices(t *testing.T) {
+	config := Config{
+		Enabled: true,
+		Classes: []ClassConfig{
+			{
+				Name:    "nic",
+				Enabled: true,
+				Labels: Labels{
+					Current:  testNICCountCurrentLabel,
+					Expected: testNICCountExpectedLabel,
+				},
+				GroupingLabels:    []string{"hardware"},
+				CurrentExpression: "resourceSlices.size()",
+			},
+		},
+	}
+
+	nodeA := testNode("node-a", map[string]string{"hardware": "x"})
+	nodeB := testNode("node-b", map[string]string{"hardware": "x"})
+	resourceSlicesByNode := map[string][]*resourcev1.ResourceSlice{
+		"node-a": {testResourceSlice("slice-a", "node-a")},
+		"node-b": {testResourceSlice("slice-b-1", "node-b")},
+	}
+
+	manager := newTestManager(t, config)
+	sweep := manager.NewReconcileCache(
+		[]*corev1.Node{nodeA, nodeB},
+		func(node *corev1.Node) []*resourcev1.ResourceSlice { return resourceSlicesByNode[node.Name] },
+	)
+
+	// The sweep reconciles node-a first, which reads node-b's single slice.
+	sweep.CalculateAndSetDeviceCountLabels(context.Background(), nodeA)
+
+	// node-b gets a second slice before the sweep reaches it.
+	resourceSlicesByNode["node-b"] = append(resourceSlicesByNode["node-b"],
+		testResourceSlice("slice-b-2", "node-b"))
+
+	sweep.CalculateAndSetDeviceCountLabels(context.Background(), nodeB)
+	require.Equal(t, "2", nodeB.Labels[testNICCountCurrentLabel],
+		"the sweep must count node-b's slices as they are when it reaches node-b")
+	require.Equal(t, "2", nodeB.Labels[testNICCountExpectedLabel])
 }
 
 func TestMissingPeerResourceSlicesDoNotLowerExpectedDeviceCount(t *testing.T) {

@@ -128,6 +128,7 @@ amd64-mongodb-no-tls:
 
   # fault_quarantine_test.go
   - TestDontCordonIfEventDoesntMatchCELExpression
+  - TestDontCordonNodeWithManagedByNVSentinelFalse
 
   # health_events_analyzer_recovery_test.go
   - TestHealthEventsAnalyzerAnnotationRecovery
@@ -183,6 +184,7 @@ amd64-postgresql:
 
   # fault_quarantine_test.go
   - TestDontCordonIfEventDoesntMatchCELExpression
+  - TestDontCordonNodeWithManagedByNVSentinelFalse
   - TestFaultQuarantineWithProcessingStrategy
   - TestPreCordonedNodeHandling
 

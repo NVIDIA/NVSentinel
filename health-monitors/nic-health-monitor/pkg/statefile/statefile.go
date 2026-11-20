@@ -46,6 +46,16 @@ const (
 	// reboots (see Load). The DaemonSet bind-mounts /proc into
 	// /nvsentinel/proc so tests can point at an alternate path.
 	DefaultBootIDPath = "/nvsentinel/proc/sys/kernel/random/boot_id"
+
+	counterSnapshotSaveInterval = time.Minute
+)
+
+type counterSavePriority uint8
+
+const (
+	counterSaveNone counterSavePriority = iota
+	counterSaveTimestamp
+	counterSaveImmediate
 )
 
 // MonitorState is the on-disk schema. Only fields defined in this
@@ -199,7 +209,7 @@ type MissingCharDeviceFlag struct {
 }
 
 // CounterSnapshot stores the value and wall-clock timestamp of a counter
-// reading. For delta thresholds the snapshot is updated every poll;
+// reading. For delta thresholds it is updated on each evaluation;
 // for velocity thresholds it is held for the configured velocityUnit
 // window so the rate can be computed over real elapsed time.
 type CounterSnapshot struct {
@@ -235,6 +245,10 @@ type Manager struct {
 	bootIDPath string
 	state      MonitorState
 	loaded     bool
+	now        func() time.Time
+
+	lastSaveAt  time.Time
+	counterSave counterSavePriority
 
 	// scope is the current discovery-scope fingerprint (see
 	// MonitorState.Scope). Set via SetScope before Load.
@@ -261,6 +275,7 @@ func NewManagerWithPaths(statePath, bootIDPath string) *Manager {
 		path:       statePath,
 		bootIDPath: bootIDPath,
 		state:      MonitorState{Version: SchemaVersion},
+		now:        time.Now,
 	}
 }
 
@@ -300,6 +315,9 @@ func (m *Manager) Paths() (string, string) {
 func (m *Manager) Load() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	m.lastSaveAt = time.Time{}
+	m.counterSave = counterSaveNone
 
 	currentBootID, err := m.readBootID()
 	if err != nil {
@@ -907,9 +925,9 @@ func (m *Manager) ClearPendingBaseline(check string) {
 	delete(m.state.PendingBaselines, check)
 }
 
-// CounterSnapshots returns a copy of the persisted counter snapshots.
-// Each evaluator seeds its in-memory snapshot map from this on startup
-// so that delta and velocity windows survive pod restarts.
+// CounterSnapshots returns a copy of the latest committed counter snapshots.
+// On startup, evaluators seed their snapshot maps from the last state loaded
+// from disk.
 func (m *Manager) CounterSnapshots() map[string]CounterSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -925,27 +943,34 @@ func (m *Manager) CounterSnapshots() map[string]CounterSnapshot {
 // (the IB and Ethernet evaluators) must scope their input to the keys
 // they actually own — otherwise one evaluator's loaded-but-not-written
 // view of a sibling key could clobber the sibling's update. Returns
-// true if any persisted snapshot value or timestamp actually changed;
-// callers only Save when true.
+// true if any snapshot value or timestamp changed in the manager's map.
 func (m *Manager) UpdateCounterSnapshots(snapshots map[string]CounterSnapshot) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	return m.updateCounterSnapshotsLocked(snapshots) != counterSaveNone
+}
+
+func (m *Manager) updateCounterSnapshotsLocked(snapshots map[string]CounterSnapshot) counterSavePriority {
 	if m.state.CounterSnapshots == nil {
 		m.state.CounterSnapshots = make(map[string]CounterSnapshot, len(snapshots))
 	}
 
-	changed := false
+	priority := counterSaveNone
 
 	for k, v := range snapshots {
 		old, exists := m.state.CounterSnapshots[k]
-		if !exists || old.Value != v.Value || !old.Timestamp.Equal(v.Timestamp) {
+		switch {
+		case !exists || old.Value != v.Value:
 			m.state.CounterSnapshots[k] = v
-			changed = true
+			priority = counterSaveImmediate
+		case !old.Timestamp.Equal(v.Timestamp):
+			m.state.CounterSnapshots[k] = v
+			priority = max(priority, counterSaveTimestamp)
 		}
 	}
 
-	return changed
+	return priority
 }
 
 // BreachFlags returns a copy of the persisted breach flags so an
@@ -970,6 +995,10 @@ func (m *Manager) UpdateBreachFlags(flags map[string]CounterBreachFlag) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	return m.updateBreachFlagsLocked(flags)
+}
+
+func (m *Manager) updateBreachFlagsLocked(flags map[string]CounterBreachFlag) bool {
 	if m.state.BreachFlags == nil {
 		m.state.BreachFlags = make(map[string]CounterBreachFlag, len(flags))
 	}
@@ -990,6 +1019,54 @@ func (m *Manager) UpdateBreachFlags(flags map[string]CounterBreachFlag) bool {
 	}
 
 	return changed
+}
+
+// SaveCounterState merges owned counter state from a committed poll. It
+// defers timestamp-only writes for one minute after the last successful
+// save. Any save includes the latest pending timestamps.
+// completedBaseline is empty unless the poll completed a boot baseline.
+func (m *Manager) SaveCounterState(
+	snapshots map[string]CounterSnapshot, flags map[string]CounterBreachFlag, completedBaseline string,
+) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.counterSave = max(m.counterSave, m.updateCounterSnapshotsLocked(snapshots))
+
+	if m.updateBreachFlagsLocked(flags) {
+		m.counterSave = counterSaveImmediate
+	}
+
+	if completedBaseline != "" && m.state.PendingBaselines[completedBaseline] {
+		delete(m.state.PendingBaselines, completedBaseline)
+
+		m.counterSave = counterSaveImmediate
+	}
+
+	switch m.counterSave {
+	case counterSaveTimestamp:
+		if !m.lastSaveAt.IsZero() && m.now().Sub(m.lastSaveAt) < counterSnapshotSaveInterval {
+			return nil
+		}
+	case counterSaveImmediate:
+	case counterSaveNone:
+		return nil
+	}
+
+	return m.saveLocked()
+}
+
+// FlushPendingCounterState saves pending counter updates without waiting
+// for the usual save interval. Call it after the polling loops stop.
+func (m *Manager) FlushPendingCounterState() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.counterSave == counterSaveNone {
+		return nil
+	}
+
+	return m.saveLocked()
 }
 
 // Save writes the current state to disk atomically (tmp file + rename).
@@ -1041,6 +1118,9 @@ func (m *Manager) saveLocked() error {
 	if err := os.Rename(tmp, m.path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, m.path, err)
 	}
+
+	m.lastSaveAt = m.now()
+	m.counterSave = counterSaveNone
 
 	return nil
 }
