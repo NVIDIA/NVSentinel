@@ -16,6 +16,9 @@
 # Checks the exit status of files/node-condition-cleanup.sh with a stubbed kubectl.
 # Requires bash and jq.
 #
+# Run by `make helm-test` (and therefore by the helm-charts job in lint-test.yml), so it is
+# exercised on every PR that runs the chart tests.
+#
 # Usage: node-condition-cleanup_test.sh
 
 set -euo pipefail
@@ -25,7 +28,9 @@ STUB_DIR="$(mktemp -d)"
 trap 'rm -rf "$STUB_DIR"' EXIT
 
 # Stub kubectl: three nodes, each carrying the deprecated condition. A patch fails for the nodes
-# listed in FAIL_NODES (space separated).
+# listed in FAIL_NODES (space separated); with PATCH_ERR=notfound the failure is a NotFound
+# (node deleted mid-run). A get fails for the nodes in GET_FAIL_NODES, with GET_ERR=notfound for
+# a NotFound and a Forbidden error otherwise.
 cat > "$STUB_DIR/kubectl" <<'STUB'
 #!/bin/bash
 case "$1" in
@@ -33,13 +38,27 @@ get)
   if [ "$2" = "nodes" ]; then
     echo "node-a node-b node-c"
   else
+    for n in $GET_FAIL_NODES; do
+      if [ "$3" = "$n" ]; then
+        if [ "$GET_ERR" = "notfound" ]; then
+          echo "Error from server (NotFound): nodes \"$n\" not found" >&2
+        else
+          echo "Error from server (Forbidden): nodes \"$n\" is forbidden" >&2
+        fi
+        exit 1
+      fi
+    done
     echo '{"status":{"conditions":[{"type":"Ready","status":"True"},{"type":"Old","status":"True"}]}}'
   fi
   ;;
 patch)
   for n in $FAIL_NODES; do
     if [ "$3" = "$n" ]; then
-      echo "Error from server (Forbidden): nodes/status \"$n\" is forbidden" >&2
+      if [ "$PATCH_ERR" = "notfound" ]; then
+        echo "Error from server (NotFound): nodes \"$n\" not found" >&2
+      else
+        echo "Error from server (Forbidden): nodes/status \"$n\" is forbidden" >&2
+      fi
       exit 1
     fi
   done
@@ -49,7 +68,8 @@ STUB
 chmod +x "$STUB_DIR/kubectl"
 
 run_cleanup() {
-  PATH="$STUB_DIR:$PATH" DEPRECATED_CONDITIONS="Old" FAIL_NODES="$1" bash "$SCRIPT"
+  PATH="$STUB_DIR:$PATH" DEPRECATED_CONDITIONS="Old" FAIL_NODES="$1" GET_FAIL_NODES="${2:-}" \
+    GET_ERR="${GET_ERR:-}" PATCH_ERR="${PATCH_ERR:-}" bash "$SCRIPT"
 }
 
 status=0
@@ -77,6 +97,33 @@ status=0
 output=$(run_cleanup "node-a node-b node-c") || status=$?
 if [ "$status" -eq 0 ] || ! grep -q "3 of 3 nodes failed" <<< "$output"; then
   echo "FAIL: expected exit 1 and '3 of 3 nodes failed' when every patch fails (status $status)"
+  echo "$output"
+  exit 1
+fi
+
+# A node deleted between the get and the patch must not fail the hook.
+status=0
+output=$(PATCH_ERR=notfound run_cleanup "node-b") || status=$?
+if [ "$status" -ne 0 ]; then
+  echo "FAIL: expected exit 0 when a node disappears before the patch, got $status"
+  echo "$output"
+  exit 1
+fi
+
+# A node already gone at get time is skipped too.
+status=0
+output=$(GET_ERR=notfound run_cleanup "" "node-b") || status=$?
+if [ "$status" -ne 0 ]; then
+  echo "FAIL: expected exit 0 when a node disappears before the get, got $status"
+  echo "$output"
+  exit 1
+fi
+
+# A get that fails for any other reason (e.g. RBAC) must fail the hook, not read as "no conditions".
+status=0
+output=$(run_cleanup "" "node-b") || status=$?
+if [ "$status" -eq 0 ] || ! grep -q "1 of 3 nodes failed" <<< "$output"; then
+  echo "FAIL: expected exit 1 and '1 of 3 nodes failed' when a get is forbidden (status $status)"
   echo "$output"
   exit 1
 fi
