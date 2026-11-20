@@ -205,9 +205,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 
 ### Health Event Authentication Metrics
 
-These track the node-binding interceptor that stops a caller on one node from
-submitting health events naming another node. See
-[Health Event Authentication](platform-connectors.md#health-event-node-binding).
+These track the node-binding interceptor that stops a caller on one node from submitting health events naming another node. See [Health Event Authentication](platform-connectors.md#health-event-node-binding).
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
@@ -234,27 +232,17 @@ sum(rate(platform_connector_auth_violations_total{reason=~"node_mismatch|token_i
 
 ### Prometheus Connector Metrics
 
-Every health monitor publishes through the platform connector, so this one metric covers
-`gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`,
-`kubernetes-object-monitor` and `health-events-analyzer` without per-monitor instrumentation.
-Enabled with `platformConnector.promConnector.enabled` (default `false`, like the other optional connectors).
+Every health monitor publishes through the platform connector, so this one metric covers `gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`, `kubernetes-object-monitor` and `health-events-analyzer` without per-monitor instrumentation. Enabled with `platformConnector.promConnector.enabled` (default `false`, like the other optional connectors).
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `health_events_total` | Counter | `node`, `agent`, `check_name`, `recommended_action`, `is_fatal`, `is_healthy` | Health events received by the platform connector. `recommended_action` is the enum name (`NONE`, `CONTACT_SUPPORT`, `RESTART_VM`, …); a `CUSTOM` action reports as `CUSTOM` rather than expanding `customRecommendedAction`, which is operator-defined and unbounded |
 
-`node` carries the **event's own** `nodeName`, not the node of the connector pod that
-received it. That distinction matters: the DaemonSet monitors publish over the node-local
-socket so the two coincide, but `health-events-analyzer` is a Deployment whose derived
-events describe other nodes, and an allowlisted cross-node publisher can name any node. An
-explicit label makes every agent correct without a `kube_pod_info` join.
+`node` carries the **event's own** `nodeName`, not the node of the connector pod that received it. That distinction matters: the DaemonSet monitors publish over the node-local socket so the two coincide, but `health-events-analyzer` is a Deployment whose derived events describe other nodes, and an allowlisted cross-node publisher can name any node. An explicit label makes every agent correct without a `kube_pod_info` join.
 
-`errorCode` is excluded because it is unbounded: suffixed XIDs such as
-`145.RLW_SRC_TRACK` would grow the series set without limit. `node` is bounded by the fleet.
+`errorCode` is excluded because it is unbounded: suffixed XIDs such as `145.RLW_SRC_TRACK` would grow the series set without limit. `node` is bounded by the fleet.
 
-`is_fatal` is kept even though producers derive it as `recommendedAction != NONE`. The
-redundancy is the point: a producer that disagrees with that derivation becomes visible
-rather than silent.
+`is_fatal` is kept even though producers derive it as `recommendedAction != NONE`. The redundancy is the point: a producer that disagrees with that derivation becomes visible rather than silent.
 
 Useful queries:
 
@@ -595,17 +583,11 @@ The CSP health monitor tracks cloud provider maintenance events and node health 
 
 ## Change Stream Metrics
 
-Emitted by `store-client`, so they appear on every module that reads the change stream:
-`event-exporter`, `fault-quarantine`, `health-events-analyzer`, `node-drainer`, and
-`fault-remediation`, on both the MongoDB and PostgreSQL providers. The `client` label is the
-consumer's name.
+Emitted by `store-client`, so they appear on every module that reads the change stream: `event-exporter`, `fault-quarantine`, `health-events-analyzer`, `node-drainer`, and `fault-remediation`, on both the MongoDB and PostgreSQL providers. The `client` label is the consumer's name.
 
-`fault-remediation` serves only controller-runtime's registry, so it passes that registry
-explicitly; the others use the default registry.
+`fault-remediation` serves only controller-runtime's registry, so it passes that registry explicitly; the others use the default registry.
 
-`datastore_connected` is the one exception in this table: it comes from `commons/pkg/server`
-rather than `store-client`, is exported only by `fault-quarantine`, `node-drainer` and
-`fault-remediation`, and carries no `client` label.
+`datastore_connected` is the one exception in this table: it comes from `commons/pkg/server` rather than `store-client`, is exported only by `fault-quarantine`, `node-drainer` and `fault-remediation`, and carries no `client` label.
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
@@ -615,8 +597,7 @@ rather than `store-client`, is exported only by `fault-quarantine`, `node-draine
 | `change_stream_reopens_total` | Counter | `client`, `result` | Attempts to reopen the stream after a runtime failure. `success` is a disconnect that the watcher recovered from by reopening the stream; `failure` is one attempt that did not get through; `exhausted` is the recovery budget running out, after which the watcher stops and the process is expected to exit so the pod restarts — pair it with `kube_pod_container_status_restarts_total` |
 | `datastore_connected` | Gauge | none | PostgreSQL watcher readiness. It is `1` while LISTEN is connected and subscribed, or after polling succeeds, unless a database read has failed; after a failed read it stays `0` until another read succeeds. An active subscription can report ready before its first poll finishes and while a multi-batch catch-up is still draining. Readiness does not mean the catch-up is complete or guarantee replay of rows whose notifications were missed before subscription. Poll batches are read in `(changed_at, id)` order, and the cursor advances only after channel delivery or filter consumption. `BIGSERIAL` IDs and `changed_at DEFAULT NOW()` are assigned before a transaction commits, so a long-running transaction can become visible after a poll has advanced past its sort position. A later catch-up cannot find that row from the forward cursor; if its NOTIFY was missed while disconnected, the row can be skipped. If LISTEN is active, its NOTIFY can fetch the row by ID and deliver it after newer rows, so global commit order is not guaranteed. A TRIPPED Fault Quarantine breaker halts event dequeuing independently, so this gauge can remain `1` while that component is deliberately stopped. Other watchers remain ready once registered unless they expose readiness state. This metric does not measure processing progress. `kube_pod_status_ready` reports the readiness result with pod labels |
 
-Lag is measured against the consumer's **own filtered stream**, so a module whose pipeline
-admits nothing still reports zero lag while it is caught up.
+Lag is measured against the consumer's **own filtered stream**, so a module whose pipeline admits nothing still reports zero lag while it is caught up.
 
 ### Suggested alerts
 
@@ -638,15 +619,9 @@ admits nothing still reports zero lag while it is caught up.
 
 Each of these is a way a consumer can be behind while the gauge reads zero.
 
-1. **Replication lag.** The MongoDB stream is opened `SecondaryPreferred` with no max staleness,
-   so an empty batch means "caught up with the secondary I am reading", not with the primary.
-2. **Data skipped after a resume-token recovery.** When a stored token is too old for the oplog
-   the watcher reopens from now, so lag reads near zero precisely when the most was skipped.
-   Read `change_stream_lag_seconds` together with `change_stream_resume_token_recoveries_total`:
-   a lag of zero is only reassuring if the recoveries counter has not moved.
-3. **Durable position.** This measures the watcher's progress against its own stream, not
-   whether its position was persisted. A consumer that reads an event and dies before
-   `MarkProcessed` succeeds looks healthy here, because the read did happen.
+1. **Replication lag.** The MongoDB stream is opened `SecondaryPreferred` with no max staleness, so an empty batch means "caught up with the secondary I am reading", not with the primary.
+2. **Data skipped after a resume-token recovery.** When a stored token is too old for the oplog the watcher reopens from now, so lag reads near zero precisely when the most was skipped. Read `change_stream_lag_seconds` together with `change_stream_resume_token_recoveries_total`: a lag of zero is only reassuring if the recoveries counter has not moved.
+3. **Durable position.** This measures the watcher's progress against its own stream, not whether its position was persisted. A consumer that reads an event and dies before `MarkProcessed` succeeds looks healthy here, because the read did happen.
 
 ---
 

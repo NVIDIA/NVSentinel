@@ -69,14 +69,12 @@ labeler:
 The Labeler applies these labels to nodes:
 
 ### DCGM Version
-**Label**: `nvsentinel.dgxc.nvidia.com/dcgm.version`
-**Values**: `3.x`, `4.x`, or empty if not detected
+**Label**: `nvsentinel.dgxc.nvidia.com/dcgm.version` **Values**: `3.x`, `4.x`, or empty if not detected
 
 Indicates which major version of DCGM is running on the node.
 
 ### Driver Installed
-**Label**: `nvsentinel.dgxc.nvidia.com/driver.installed`
-**Values**: `true` or `false`
+**Label**: `nvsentinel.dgxc.nvidia.com/driver.installed` **Values**: `true` or `false`
 
 Indicates whether the NVIDIA driver is installed on the node. The Labeler detects drivers by watching for:
 - `nvidia-driver-daemonset` pods (GPU Operator managed)
@@ -96,8 +94,7 @@ With this setting the Labeler sets `driver.installed=true` on every GPU node (`n
 Do not apply the label manually with `kubectl label`. Instead, enable `assumeDriverInstalled`; without it, the Labeler computes an empty desired value for a node with no driver pod and silently removes a manually applied `driver.installed` label as stale on its next relevant reconciliation — for example, any Labeler restart, a driver or DCGM pod readiness change on the node, or a change to the node labels the Labeler watches — so a manual label cannot be relied on to persist.
 
 ### Kata Enabled
-**Label**: `nvsentinel.dgxc.nvidia.com/kata.enabled`
-**Values**: `true` or `false`
+**Label**: `nvsentinel.dgxc.nvidia.com/kata.enabled` **Values**: `true` or `false`
 
 Indicates whether the node is running Kata Containers runtime (detected from node labels).
 

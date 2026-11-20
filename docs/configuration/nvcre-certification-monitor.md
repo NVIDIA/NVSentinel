@@ -216,8 +216,7 @@ kubectl get certification -n <namespace> <name> \
 
 ### Metrics
 
-The monitor exports Prometheus metrics on the `metrics` container port
-(`global.metricsPort`, default 2112) at `/metrics`.
+The monitor exports Prometheus metrics on the `metrics` container port (`global.metricsPort`, default 2112) at `/metrics`.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
@@ -228,8 +227,7 @@ The monitor exports Prometheus metrics on the `metrics` container port
 | `nvcre_certification_monitor_active_failures` | gauge | | `(node, variant, reason)` failures asserted by terminal Certifications |
 | `nvcre_certification_monitor_malformed_node_annotations` | gauge | | Nodes skipped in the last sweep because their annotation is unparsable |
 
-A non-zero `malformed_node_annotations`, a rising `sweep_errors_total` or a
-rising `publish_errors_total` means the monitor cannot record or deliver failures and needs attention.
+A non-zero `malformed_node_annotations`, a rising `sweep_errors_total` or a rising `publish_errors_total` means the monitor cannot record or deliver failures and needs attention.
 
 ## Recovery and Operator Actions
 

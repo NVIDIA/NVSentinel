@@ -47,9 +47,7 @@ Look at **Conditions** and **Events** sections for hardware failures.
 
 ### 4. Analyze the Pattern
 
-**Same error on all nodes?** → Configuration issue or infrastructure problem
-**Specific node group affected?** → Likely a deployment issue or a rack level infrastructure problem
-**Issues resolved?** → Temporary infrastructure problem
+**Same error on all nodes?** → Configuration issue or infrastructure problem **Specific node group affected?** → Likely a deployment issue or a rack level infrastructure problem **Issues resolved?** → Temporary infrastructure problem
 
 ### 5. Check for Flapping Health Checks
 

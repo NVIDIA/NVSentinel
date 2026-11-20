@@ -63,12 +63,7 @@ gpu-health-monitor:
 
 The monitor checks multiple GPU health aspects through DCGM. Below are some of the key health watches - this is not an exhaustive list and may evolve over time as DCGM capabilities expand:
 
-**Memory Errors**: Single-bit and double-bit ECC errors
-**Thermal Issues**: Temperature violations and throttling events
-**PCIe Problems**: PCIe replay errors and link issues
-**Power Issues**: Power violations and power capping events
-**InfoROM Errors**: GPU InfoROM corruption
-**NVLink Errors**: NVLink connectivity and error detection
+**Memory Errors**: Single-bit and double-bit ECC errors **Thermal Issues**: Temperature violations and throttling events **PCIe Problems**: PCIe replay errors and link issues **Power Issues**: Power violations and power capping events **InfoROM Errors**: GPU InfoROM corruption **NVLink Errors**: NVLink connectivity and error detection
 
 > **Note**: The specific health watches available depend on your DCGM version and GPU model. NVIDIA regularly adds new health checks and monitoring capabilities to DCGM. Consult your DCGM documentation for the complete list of supported health watches for your environment.
 

@@ -179,10 +179,7 @@ initContainers:
         mountPath: /var/run
 ```
 
-If a `DCGM_ST_*` status still prevents the diagnostic from completing after
-retries, `preflight-dcgm-diag` emits a non-fatal unhealthy HealthEvent with
-`RecommendedAction=NONE` and exits successfully so the workload is not blocked by
-a preflight infrastructure failure.
+If a `DCGM_ST_*` status still prevents the diagnostic from completing after retries, `preflight-dcgm-diag` emits a non-fatal unhealthy HealthEvent with `RecommendedAction=NONE` and exits successfully so the workload is not blocked by a preflight infrastructure failure.
 
 ### preflight-nccl-loopback
 
@@ -328,9 +325,7 @@ spec:
 
 No `gangDiscovery` configuration is needed for this fallback path either.
 
-The default chart RBAC grants read access to both native resources:
-`scheduling.k8s.io/podgroups` for Kubernetes 1.36 and later, and
-`scheduling.k8s.io/workloads` for Kubernetes 1.35.
+The default chart RBAC grants read access to both native resources: `scheduling.k8s.io/podgroups` for Kubernetes 1.36 and later, and `scheduling.k8s.io/workloads` for Kubernetes 1.35.
 
 ### PodGroup-based schedulers (Volcano, Run:ai / OSMO, and similar)
 

@@ -99,8 +99,7 @@ Configure how different workloads are evacuated:
 
 ### Pod Drain Policies
 
-Use `podDrainPolicies` when workloads in the same namespace need different eviction modes.
-Set `userNamespaces: []` to clear the default namespace rule; configuring both lists is rejected.
+Use `podDrainPolicies` when workloads in the same namespace need different eviction modes. Set `userNamespaces: []` to clear the default namespace rule; configuring both lists is rejected.
 
 ```yaml
 node-drainer:
@@ -115,17 +114,9 @@ node-drainer:
       mode: Immediate
 ```
 
-The first matching policy wins. Each policy requires a unique name, a Kubernetes label
-selector, a list of controller `ownerKinds` or both, and an eviction mode. The optional
-`namespace` glob restricts where it applies.
-Pods that match no policy are outside the drain scope and do not block completion, so selectors
-must cover every workload that should be drained. System namespace and DaemonSet exclusions,
-GPU-only filtering and partial GPU drain scope still apply. Force drain changes selected pods
-to `Immediate` without including unmatched pods. Custom drain cannot be combined with policies
-unless `customDrain.nodeSelector` scopes it to part of the cluster.
+The first matching policy wins. Each policy requires a unique name, a Kubernetes label selector, a list of controller `ownerKinds` or both, and an eviction mode. The optional `namespace` glob restricts where it applies. Pods that match no policy are outside the drain scope and do not block completion, so selectors must cover every workload that should be drained. System namespace and DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. Force drain changes selected pods to `Immediate` without including unmatched pods. Custom drain cannot be combined with policies unless `customDrain.nodeSelector` scopes it to part of the cluster.
 
-See [Pod Drain Policies configuration](configuration/node-drainer.md#pod-drain-policies)
-for selector syntax, owner kinds, label updates and timeout behavior.
+See [Pod Drain Policies configuration](configuration/node-drainer.md#pod-drain-policies) for selector syntax, owner kinds, label updates and timeout behavior.
 
 ### Graceful Eviction
 - Uses Kubernetes Eviction API

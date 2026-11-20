@@ -280,9 +280,7 @@ Healthy events are not downgraded by deduplication. Before they continue downstr
 
 ## Prometheus Connector
 
-Records every health event reaching the platform connector as a Prometheus counter. It has
-no sink and no external dependency: it only observes, so it cannot fail or block the
-connectors it shares the event fan-out with.
+Records every health event reaching the platform connector as a Prometheus counter. It has no sink and no external dependency: it only observes, so it cannot fail or block the connectors it shares the event fan-out with.
 
 ```yaml
 platformConnector:
@@ -293,19 +291,13 @@ platformConnector:
 ### Parameters
 
 #### enabled
-Registers `health_events_total{node, agent, check_name, recommended_action, is_fatal, is_healthy}`
-on the existing metrics endpoint. Defaults to `false`, like the other optional connectors.
+Registers `health_events_total{node, agent, check_name, recommended_action, is_fatal, is_healthy}` on the existing metrics endpoint. Defaults to `false`, like the other optional connectors.
 
 ### When to use it
 
-Every monitor publishes through the platform connector, so one connector covers
-`gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`,
-`kubernetes-object-monitor` and `health-events-analyzer` at once.
+Every monitor publishes through the platform connector, so one connector covers `gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`, `kubernetes-object-monitor` and `health-events-analyzer` at once.
 
-On a fleet where actionable events are rare, this is the metric that answers "what needs
-attention right now" without querying the datastore. See
-[Prometheus Connector Metrics](../METRICS.md#prometheus-connector-metrics) for the label
-rationale and example queries.
+On a fleet where actionable events are rare, this is the metric that answers "what needs attention right now" without querying the datastore. See [Prometheus Connector Metrics](../METRICS.md#prometheus-connector-metrics) for the label rationale and example queries.
 
 ## gRPC Sink Connector
 

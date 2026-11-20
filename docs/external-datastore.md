@@ -6,13 +6,9 @@
 
 ## Overview
 
-When the datastore is enabled, NVSentinel deploys its own MongoDB database inside the same
-Kubernetes cluster it monitors. This works well for general deployments, but creates an overhead problem for lean GPU
-clusters that are focused purely on compute workloads.
+When the datastore is enabled, NVSentinel deploys its own MongoDB database inside the same Kubernetes cluster it monitors. This works well for general deployments, but creates an overhead problem for lean GPU clusters that are focused purely on compute workloads.
 
-NVSentinel can connect to an **externally managed database** —
-such as a hosted MongoDB or PostgreSQL service from a cloud provider — instead of running one
-inside the monitored cluster.
+NVSentinel can connect to an **externally managed database** — such as a hosted MongoDB or PostgreSQL service from a cloud provider — instead of running one inside the monitored cluster.
 
 ### Common Requirements
 
@@ -37,16 +33,9 @@ To connect to an external DB, supply these values:
 
 ## `MONGODB_URI` only from a Kubernetes Secret (external MongoDB)
 
-For **external** managed MongoDB (`global.mongodbStore.enabled: false` and
-`global.datastore.provider: mongodb`), the full URI is **not** written to the datastore
-ConfigMap. You must create an existing Secret whose **data key** is exactly `MONGODB_URI` and
-set `global.datastore.credentialsFromSecret.name`. Helm fails if that name is missing, or if
-`global.datastore.uri` is set for this mode.
+For **external** managed MongoDB (`global.mongodbStore.enabled: false` and `global.datastore.provider: mongodb`), the full URI is **not** written to the datastore ConfigMap. You must create an existing Secret whose **data key** is exactly `MONGODB_URI` and set `global.datastore.credentialsFromSecret.name`. Helm fails if that name is missing, or if `global.datastore.uri` is set for this mode.
 
-**In-cluster MongoDB** (for example Tilt / `global.mongodbStore.enabled: true`): when no
-`credentialsFromSecret` is set, the chart builds a credential-free `MONGODB_URI` in the
-ConfigMap from `global.datastore.connection` (host, port, `extraParams`). You can still set
-`credentialsFromSecret` to override with a Secret.
+**In-cluster MongoDB** (for example Tilt / `global.mongodbStore.enabled: true`): when no `credentialsFromSecret` is set, the chart builds a credential-free `MONGODB_URI` in the ConfigMap from `global.datastore.connection` (host, port, `extraParams`). You can still set `credentialsFromSecret` to override with a Secret.
 
 1. Create the Secret. Set `MONGODB_URI` in your shell to the full string from your provider (for example MongoDB Atlas **Connect → Drivers**), or put that single line in a local file that is never committed:
 
@@ -69,9 +58,7 @@ ConfigMap from `global.datastore.connection` (host, port, `extraParams`). You ca
        # ... tls, connection, auth as usual ...
    ```
 
-DB-consuming workloads use `envFrom.secretRef` when `credentialsFromSecret.name` is set;
-otherwise they read `MONGODB_URI` from the ConfigMap. The embedded `datastore.yaml` does not
-include a MongoDB `uri` field from Helm values in either mode.
+DB-consuming workloads use `envFrom.secretRef` when `credentialsFromSecret.name` is set; otherwise they read `MONGODB_URI` from the ConfigMap. The embedded `datastore.yaml` does not include a MongoDB `uri` field from Helm values in either mode.
 
 ---
 
@@ -87,9 +74,7 @@ Use the **exact connection string** your provider shows in its console as the **
 
 ### Database and Collection Setup (Automatic)
 
-You do **not** need to manually create the `HealthEventsDatabase` database or any collections
-in any of the CSPs below. On `helm install`, and on every upgrade that changes the Job name, NVSentinel
-automatically runs the `<release>-external-mongodb-setup-<collectionExpirySeconds>-<hash>` Job (`-l app.kubernetes.io/name=external-mongodb-setup`) which:
+You do **not** need to manually create the `HealthEventsDatabase` database or any collections in any of the CSPs below. On `helm install`, and on every upgrade that changes the Job name, NVSentinel automatically runs the `<release>-external-mongodb-setup-<collectionExpirySeconds>-<hash>` Job (`-l app.kubernetes.io/name=external-mongodb-setup`) which:
 
 - Creates the `HealthEventsDatabase` database (MongoDB creates it lazily on first write)
 - Creates the `HealthEvents`, `ResumeTokens`, and `MaintenanceEvents` collections if they don't exist
@@ -117,8 +102,7 @@ All you need is a cluster endpoint and a database user with read/write access.
 
 #### Step 1 — Obtain a DocumentDB Cluster
 
-**Choose one of the two options below** depending on whether you are creating a new cluster
-or connecting to one that already exists.
+**Choose one of the two options below** depending on whether you are creating a new cluster or connecting to one that already exists.
 
 ---
 
@@ -229,10 +213,7 @@ The key **must** be named `ca.crt` — this is what the Helm chart volume mounts
 
 #### Step 5 — Helm Values Configuration
 
-Create a values override file (e.g. `values-aws-docdb.yaml`) with your connection details.
-Put the full connection string (with password) in a Kubernetes Secret with data key
-`MONGODB_URI` (see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb))
-and set `credentialsFromSecret.name`.
+Create a values override file (e.g. `values-aws-docdb.yaml`) with your connection details. Put the full connection string (with password) in a Kubernetes Secret with data key `MONGODB_URI` (see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb)) and set `credentialsFromSecret.name`.
 
 Example values:
 
@@ -310,15 +291,13 @@ Always create the **"Azure DocumentDB (with MongoDB compatibility)"** resource, 
 
 #### Step 1 — Obtain a DocumentDB Cluster
 
-**Choose one of the two options below** depending on whether you are creating a new cluster
-or connecting to one that already exists.
+**Choose one of the two options below** depending on whether you are creating a new cluster or connecting to one that already exists.
 
 ---
 
 ##### Option A — Create a New Cluster
 
-In Azure Portal, create a new **"Azure DocumentDB (with MongoDB compatibility)"** resource
-(vCore tier, MongoDB 8.0, SCRAM auth). Match the region to your AKS cluster.
+In Azure Portal, create a new **"Azure DocumentDB (with MongoDB compatibility)"** resource (vCore tier, MongoDB 8.0, SCRAM auth). Match the region to your AKS cluster.
 
 ---
 
@@ -339,17 +318,13 @@ Go to **Settings → Connection Strings** and copy the **Primary Connection Stri
 
 If you assemble the URI yourself, percent-encode reserved characters in the database user’s password: `#` → `%23`, `@` → `%40`, `%` → `%25`
 
-> If special characters are not encoded, `platform-connectors` will fail with
-> `MongoParseError: Password contains unescaped characters` on startup.
+> If special characters are not encoded, `platform-connectors` will fail with `MongoParseError: Password contains unescaped characters` on startup.
 
 ---
 
 #### Step 2 — Helm Values Configuration
 
-Create a values override file (e.g. `values-cosmosdb-test.yaml`) with your connection details.
-Put the connection string in a Secret (`MONGODB_URI` key) and set
-`credentialsFromSecret.name` — see
-[`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
+Create a values override file (e.g. `values-cosmosdb-test.yaml`) with your connection details. Put the connection string in a Secret (`MONGODB_URI` key) and set `credentialsFromSecret.name` — see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
 
 ```yaml
 global:
@@ -394,8 +369,7 @@ MongoDB Atlas is the recommended solution. Atlas uses the standard MongoDB drive
 
 #### Step 1 — Obtain a MongoDB Atlas Cluster
 
-**Choose one of the two options below** depending on whether you are creating a new cluster
-or connecting to one that already exists.
+**Choose one of the two options below** depending on whether you are creating a new cluster or connecting to one that already exists.
 
 ---
 
@@ -442,9 +416,7 @@ kubectl get nodes -o wide
 
 No CA certificate secret is needed — Atlas uses DigiCert public CA which is trusted by the Go TLS runtime by default.
 
-Store the Atlas connection string in a Kubernetes Secret (`MONGODB_URI` key)
-and set `credentialsFromSecret.name` — see
-[`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
+Store the Atlas connection string in a Kubernetes Secret (`MONGODB_URI` key) and set `credentialsFromSecret.name` — see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
 
 Create a values override file `values-atlas-gcp.yaml`:
 

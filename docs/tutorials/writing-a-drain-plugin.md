@@ -1,20 +1,15 @@
 # Tutorial: Writing a Drain Plugin
 
-This tutorial walks you through building a **drain plugin** with
-[Kubebuilder](https://book.kubebuilder.io) — from `kubebuilder init` to a deployed controller that
-drains a node on NVSentinel's behalf.
+This tutorial walks you through building a **drain plugin** with [Kubebuilder](https://book.kubebuilder.io) — from `kubebuilder init` to a deployed controller that drains a node on NVSentinel's behalf.
 
 By the end you will have:
 
 - A Kubebuilder project whose controller reconciles **`DrainRequest`** custom resources and drains a node.
-- A **custom drain policy** the built-in drainers don't have: it **only drains on allowed weekdays**
-  and defers (requeues) otherwise — showing how a plugin gates a drain instead of just deleting pods.
+- A **custom drain policy** the built-in drainers don't have: it **only drains on allowed weekdays** and defers (requeues) otherwise — showing how a plugin gates a drain instead of just deleting pods.
 - A container image for it, built and deployed with the generated `make` targets.
 - Verification of **both paths** — a deferred drain and a completed drain — by flipping one env var.
 
-> **Who is this for?** Teams **already running NVSentinel** who need NVSentinel's drain step to
-> hand off to a custom plugin (Slurm, NVCF, a custom workload manager, …) instead
-> of evicting pods directly.
+> **Who is this for?** Teams **already running NVSentinel** who need NVSentinel's drain step to hand off to a custom plugin (Slurm, NVCF, a custom workload manager, …) instead of evicting pods directly.
 
 > **Just want the AI to do it?** Jump to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
 
@@ -23,11 +18,9 @@ By the end you will have:
 ## Prerequisites
 
 - **`go`** 1.24+ — builds the controller.
-- **`kubebuilder`** 4.x — scaffolds the project. It vendors `controller-gen` and `kustomize`
-  through the generated `Makefile`, so you don't install those separately.
+- **`kubebuilder`** 4.x — scaffolds the project. It vendors `controller-gen` and `kustomize` through the generated `Makefile`, so you don't install those separately.
 - **`docker`** — builds and pushes the container image (`make docker-build docker-push`).
-- **`kubectl`** with access to any Kubernetes cluster — deploys and verifies the plugin
-  (`make deploy`).
+- **`kubectl`** with access to any Kubernetes cluster — deploys and verifies the plugin (`make deploy`).
 
 Install Kubebuilder if you don't have it:
 
@@ -41,23 +34,17 @@ chmod +x kubebuilder && sudo mv kubebuilder /usr/local/bin/
 
 ## 1. What is a drain plugin
 
-NVSentinel remediates a faulty node in stages: **detect → quarantine (cordon) → drain →
-remediate**. The **drain** stage is owned by the **node-drainer**. By default node-drainer
-evicts pods itself (built-in modes: `Immediate`, `AllowCompletion`, `DeleteAfterTimeout`).
+NVSentinel remediates a faulty node in stages: **detect → quarantine (cordon) → drain → remediate**. The **drain** stage is owned by the **node-drainer**. By default node-drainer evicts pods itself (built-in modes: `Immediate`, `AllowCompletion`, `DeleteAfterTimeout`).
 
-That is not always enough. Some clusters need the drain coordinated by custom policies. A **drain
-plugin** lets you replace node-drainer's eviction step with your own logic.
+That is not always enough. Some clusters need the drain coordinated by custom policies. A **drain plugin** lets you replace node-drainer's eviction step with your own logic.
 
 When **custom drain** is enabled, node-drainer no longer evicts pods. Instead it:
 
-1. Renders a Go template you ship (a **drain-template** ConfigMap) into a **`DrainRequest`**
-   custom resource — **one per health event**
-2. **Polls** that `DrainRequest`'s status, waiting for a configured condition
-   (`DrainComplete=True`).
+1. Renders a Go template you ship (a **drain-template** ConfigMap) into a **`DrainRequest`** custom resource — **one per health event**
+2. **Polls** that `DrainRequest`'s status, waiting for a configured condition (`DrainComplete=True`).
 3. Once the condition is set, marks the drain complete and **deletes** the `DrainRequest`.
 
-Your plugin is a standard **Kubernetes controller** that reconciles `DrainRequest` objects: do
-whatever draining your environment needs, then set `status.conditions[DrainComplete]=True`.
+Your plugin is a standard **Kubernetes controller** that reconciles `DrainRequest` objects: do whatever draining your environment needs, then set `status.conditions[DrainComplete]=True`.
 
 ```mermaid
 graph LR
@@ -78,23 +65,16 @@ You ship **two things** and flip **one switch**:
 
 ## 2. The contract — the `DrainRequest` CRD
 
-The CRD is `DrainRequest` in group/version **`nvsentinel.nvidia.com/v1alpha1`**, **namespaced**
-(node-drainer creates them in `nvsentinel`). You define this CRD yourself — its `spec` and
-`status` fields are described below.
+The CRD is `DrainRequest` in group/version **`nvsentinel.nvidia.com/v1alpha1`**, **namespaced** (node-drainer creates them in `nvsentinel`). You define this CRD yourself — its `spec` and `status` fields are described below.
 
-**`spec`** — node-drainer fills this in from the triggering `HealthEvent` via your template. A
-plugin only has to define the fields it actually uses, so for this tutorial we keep the spec to
-**two fields**:
+**`spec`** — node-drainer fills this in from the triggering `HealthEvent` via your template. A plugin only has to define the fields it actually uses, so for this tutorial we keep the spec to **two fields**:
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `nodeName` | string | The node being drained. Handy for logging/status; our plugin puts it in the completion message. |
 | `podsToDrain` | map<string,[]string> | namespace → pod names node-drainer determined are evictable for this event. Your plugin drains exactly these. Empty = nothing to do. |
 
-> node-drainer offers more optional context you can add if your drain logic needs it — `checkName`,
-> `recommendedAction`, `errorCode`, `healthEventID`, `entitiesImpacted`, `metadata`, `reason`.
-> Fields your CRD doesn't declare are simply pruned. node-drainer derives the CR's name and
-> namespace from the health event, not from `spec`, so none of these are strictly required.
+> node-drainer offers more optional context you can add if your drain logic needs it — `checkName`, `recommendedAction`, `errorCode`, `healthEventID`, `entitiesImpacted`, `metadata`, `reason`. Fields your CRD doesn't declare are simply pruned. node-drainer derives the CR's name and namespace from the health event, not from `spec`, so none of these are strictly required.
 
 **`status`** — what *your plugin* writes:
 
@@ -106,20 +86,17 @@ type DrainRequestStatus struct {
 
 ### The completion contract
 
-node-drainer waits for a `status.conditions[]` entry whose **Type** and **Status** match its
-configuration. The convention (and what this tutorial uses) is:
+node-drainer waits for a `status.conditions[]` entry whose **Type** and **Status** match its configuration. The convention (and what this tutorial uses) is:
 
 ```
 Type: DrainComplete   Status: True
 ```
 
-Setting that condition is the **one thing your reconcile must guarantee** once the node is truly
-drained. Everything else is up to you.
+Setting that condition is the **one thing your reconcile must guarantee** once the node is truly drained. Everything else is up to you.
 
 ### The golden rules
 
-1. **Reconcile is idempotent.** It can be called many times for the same `DrainRequest`. Make it
-   a no-op once `DrainComplete=True`.
+1. **Reconcile is idempotent.** It can be called many times for the same `DrainRequest`. Make it a no-op once `DrainComplete=True`.
 2. **Only set `DrainComplete=True` when the drain is actually done.** — requeue and re-check until then.
 3. **One `DrainRequest` per health event.** node-drainer deletes it after completion.
 
@@ -127,17 +104,14 @@ drained. Everything else is up to you.
 
 ## 3. Scaffold the project with Kubebuilder
 
-Create an empty directory and initialize a Kubebuilder project. The `--domain` becomes the CRD
-group suffix and the `--repo` is your Go module path — neither needs to be inside the NVSentinel
-repo.
+Create an empty directory and initialize a Kubebuilder project. The `--domain` becomes the CRD group suffix and the `--repo` is your Go module path — neither needs to be inside the NVSentinel repo.
 
 ```bash
 mkdir demo-drainer && cd demo-drainer
 kubebuilder init --domain nvidia.com --repo github.com/example/demo-drainer
 ```
 
-Now scaffold the API **and** its controller. Using `--group nvsentinel` with the
-`nvidia.com` domain produces the contract group `nvsentinel.nvidia.com`:
+Now scaffold the API **and** its controller. Using `--group nvsentinel` with the `nvidia.com` domain produces the contract group `nvsentinel.nvidia.com`:
 
 ```bash
 kubebuilder create api \
@@ -162,16 +136,13 @@ demo-drainer/
 └── config/                                  # kustomize: CRD, RBAC, manager Deployment, samples
 ```
 
-You only edit two files (`drainrequest_types.go`, `drainrequest_controller.go`); the `Makefile`
-regenerates everything else.
+You only edit two files (`drainrequest_types.go`, `drainrequest_controller.go`); the `Makefile` regenerates everything else.
 
 ---
 
 ## 4. Define the API types
 
-Open `api/v1alpha1/drainrequest_types.go` and replace the scaffolded `DrainRequestSpec` /
-`DrainRequestStatus` with the contract fields. Leave the generated `DrainRequest`,
-`DrainRequestList`, and `SchemeBuilder.Register(...)` as Kubebuilder wrote them.
+Open `api/v1alpha1/drainrequest_types.go` and replace the scaffolded `DrainRequestSpec` / `DrainRequestStatus` with the contract fields. Leave the generated `DrainRequest`, `DrainRequestList`, and `SchemeBuilder.Register(...)` as Kubebuilder wrote them.
 
 ```go
 // DrainRequestSpec is filled in by node-drainer from the triggering HealthEvent.
@@ -211,22 +182,13 @@ make generate   # api/v1alpha1/zz_generated.deepcopy.go
 make manifests  # config/crd/bases/nvsentinel.nvidia.com_drainrequests.yaml
 ```
 
-> Using the standard `DrainRequest` kind means node-drainer's template shape renders straight
-> into it. If you need a different schema, change these types and your template together —
-> node-drainer is schema-agnostic and only cares about the GVK and the completion condition.
+> Using the standard `DrainRequest` kind means node-drainer's template shape renders straight into it. If you need a different schema, change these types and your template together — node-drainer is schema-agnostic and only cares about the GVK and the completion condition.
 
 ---
 
 ## 5. Implement the controller
 
-Open `internal/controller/drainrequest_controller.go`. Replace the generated `Reconcile` body and
-`SetupWithManager`, add two small helpers, and update the RBAC markers. Our worked example does
-something the built-in drainers don't: it **only drains on allowed weekdays**. When today is an
-allowed day it evicts exactly the pods node-drainer listed in `spec.podsToDrain`; on any other day
-it records *why* on the CR and **requeues until the next allowed day** without touching a single
-pod. This is the key pattern for a gated drain — returning `ctrl.Result{RequeueAfter: …}` instead of
-completing. The allowed days come from a `DRAIN_DAYS` environment variable (default
-`Mon,Tue,Wed,Thu,Fri`), which also makes both paths easy to verify.
+Open `internal/controller/drainrequest_controller.go`. Replace the generated `Reconcile` body and `SetupWithManager`, add two small helpers, and update the RBAC markers. Our worked example does something the built-in drainers don't: it **only drains on allowed weekdays**. When today is an allowed day it evicts exactly the pods node-drainer listed in `spec.podsToDrain`; on any other day it records *why* on the CR and **requeues until the next allowed day** without touching a single pod. This is the key pattern for a gated drain — returning `ctrl.Result{RequeueAfter: …}` instead of completing. The allowed days come from a `DRAIN_DAYS` environment variable (default `Mon,Tue,Wed,Thu,Fri`), which also makes both paths easy to verify.
 
 ```go
 package controller
@@ -428,8 +390,7 @@ The `pods` RBAC marker means you must regenerate the ClusterRole:
 make manifests  # updates config/rbac/role.yaml with pods:delete
 ```
 
-Finally, feed the `DRAIN_DAYS` env var into the reconciler in `cmd/main.go`. Kubebuilder generated a
-`DrainRequestReconciler{Client, Scheme}` literal — add the `DrainDays` field and a tiny env helper:
+Finally, feed the `DRAIN_DAYS` env var into the reconciler in `cmd/main.go`. Kubebuilder generated a `DrainRequestReconciler{Client, Scheme}` literal — add the `DrainDays` field and a tiny env helper:
 
 ```go
 // where the reconciler is constructed
@@ -469,9 +430,7 @@ That's a complete, contract-correct drain plugin. Everything else is packaging a
 
 ## 6. Build and push the image
 
-Kubebuilder already generated a multi-stage, distroless `Dockerfile`. Build and push it with the
-`Makefile` targets, pointing `IMG` at a registry your cluster can pull from (Docker Hub here —
-replace `{dockerhub-user}`):
+Kubebuilder already generated a multi-stage, distroless `Dockerfile`. Build and push it with the `Makefile` targets, pointing `IMG` at a registry your cluster can pull from (Docker Hub here — replace `{dockerhub-user}`):
 
 ```bash
 docker login   # once, to authenticate
@@ -480,24 +439,17 @@ export IMG=docker.io/{dockerhub-user}/demo-drainer:dev
 make docker-build docker-push IMG=$IMG
 ```
 
-> Use a **public** repo so the cluster can pull without credentials. For a private repo, add an
-> `imagePullSecret` to the manager via `config/`.
+> Use a **public** repo so the cluster can pull without credentials. For a private repo, add an `imagePullSecret` to the manager via `config/`.
 
 ---
 
 ## 7. Deploy and verify
 
-Use the generated kustomize harness to install the CRD, RBAC, and controller, then verify the plugin
-two ways. **[§7b](#7b-verify-the-plugin-independently)** hands it a `DrainRequest` by hand — fast, and
-needs no other NVSentinel components. **[§7c](#7c-verify-the-full-remediation-flow-end-to-end)** wires
-the plugin into NVSentinel and drives the real end-to-end flow — inject a real GPU fault and watch
-NVSentinel cordon the node, create the `DrainRequest`, and your plugin drain the workload.
+Use the generated kustomize harness to install the CRD, RBAC, and controller, then verify the plugin two ways. **[§7b](#7b-verify-the-plugin-independently)** hands it a `DrainRequest` by hand — fast, and needs no other NVSentinel components. **[§7c](#7c-verify-the-full-remediation-flow-end-to-end)** wires the plugin into NVSentinel and drives the real end-to-end flow — inject a real GPU fault and watch NVSentinel cordon the node, create the `DrainRequest`, and your plugin drain the workload.
 
 ### 7a. Deploy with `make`
 
-`make install` applies the CRD; `make deploy` applies the RBAC and the manager Deployment
-(kustomize puts the manager in the `demo-drainer-system` namespace and grants a cluster-wide
-ClusterRole, so it reconciles `DrainRequest`s in any namespace):
+`make install` applies the CRD; `make deploy` applies the RBAC and the manager Deployment (kustomize puts the manager in the `demo-drainer-system` namespace and grants a cluster-wide ClusterRole, so it reconciles `DrainRequest`s in any namespace):
 
 ```bash
 make install                 # CRD only
@@ -508,9 +460,7 @@ kubectl rollout status deploy/demo-drainer-controller-manager -n demo-drainer-sy
 
 ### 7b. Verify the plugin independently
 
-Create a workload and hand the plugin a `DrainRequest` **by hand**. We verify **both** the weekday
-gate — draining is deferred on a disallowed day, and completes once the day is allowed — by flipping
-the `DRAIN_DAYS` env var (which restarts the manager and re-reconciles the request each time).
+Create a workload and hand the plugin a `DrainRequest` **by hand**. We verify **both** the weekday gate — draining is deferred on a disallowed day, and completes once the day is allowed — by flipping the `DRAIN_DAYS` env var (which restarts the manager and re-reconciles the request each time).
 
 ```bash
 # Create a workload and let the scheduler place it on some node.
@@ -531,8 +481,7 @@ NOT_TODAY=$([ "$TODAY" = "Sun" ] && echo Mon || echo Sun)
 MGR="deploy/demo-drainer-controller-manager -n demo-drainer-system"
 ```
 
-**Path 1 — deferred (disallowed day).** Point the policy at a day that isn't today, then submit the
-request:
+**Path 1 — deferred (disallowed day).** Point the policy at a day that isn't today, then submit the request:
 
 ```bash
 kubectl set env $MGR DRAIN_DAYS=$NOT_TODAY
@@ -565,8 +514,7 @@ Expected (the message names *today*, which is not in the allowed set):
 DrainDeferred  True  OutsideDrainWindow  {today} is not an allowed drain day; deferring
 ```
 
-**Path 2 — completed (allowed day).** Now allow today. Restarting the manager re-reconciles the
-existing request immediately:
+**Path 2 — completed (allowed day).** Now allow today. Restarting the manager re-reconciles the existing request immediately:
 
 ```bash
 kubectl set env $MGR DRAIN_DAYS=$TODAY
@@ -591,23 +539,17 @@ Expected:
 DrainComplete  True  DrainComplete  Drained 1 pod(s) from {your-node}
 ```
 
-> In production node-drainer creates the `DrainRequest` in `nvsentinel`; the cluster-wide
-> ClusterRole means the same controller handles it there too.
+> In production node-drainer creates the `DrainRequest` in `nvsentinel`; the cluster-wide ClusterRole means the same controller handles it there too.
 
 ### 7c. Verify the full remediation flow (end-to-end)
 
-This wires the plugin into NVSentinel and drives the real path — **detect → quarantine (cordon) →
-drain → complete** — observable as the node's state label moving `quarantined → draining →
-drain-succeeded`.
+This wires the plugin into NVSentinel and drives the real path — **detect → quarantine (cordon) → drain → complete** — observable as the node's state label moving `quarantined → draining → drain-succeeded`.
 
 #### Step 1 — Configure the cluster to use your plugin
 
-node-drainer only creates `DrainRequest`s when **custom-drain mode** is enabled and pointed at your
-CR. Two config pieces do that, and both must be part of your NVSentinel deployment:
+node-drainer only creates `DrainRequest`s when **custom-drain mode** is enabled and pointed at your CR. Two config pieces do that, and both must be part of your NVSentinel deployment:
 
-**a. A drain-template ConfigMap** — node-drainer renders this Go template into a `DrainRequest`. Our
-minimal CRD defines `nodeName` and `podsToDrain`, so those are the only fields we render
-(`.PodsToDrain` is exactly the set our controller acts on):
+**a. A drain-template ConfigMap** — node-drainer renders this Go template into a `DrainRequest`. Our minimal CRD defines `nodeName` and `podsToDrain`, so those are the only fields we render (`.PodsToDrain` is exactly the set our controller acts on):
 
 ```yaml
 apiVersion: v1
@@ -630,11 +572,7 @@ data:
       {{- end }}
 ```
 
-**b. node-drainer Helm values** pointing at your CR. `customDrain` is mutually exclusive with
-`userNamespaces` (leave the latter empty), and the condition fields must match what your controller
-sets. To hand only part of the cluster to the plugin, set `customDrain.nodeSelector` and keep
-`userNamespaces` configured for the rest — see
-[Scoping custom drain to part of the cluster](../configuration/node-drainer.md#scoping-custom-drain-to-part-of-the-cluster):
+**b. node-drainer Helm values** pointing at your CR. `customDrain` is mutually exclusive with `userNamespaces` (leave the latter empty), and the condition fields must match what your controller sets. To hand only part of the cluster to the plugin, set `customDrain.nodeSelector` and keep `userNamespaces` configured for the rest — see [Scoping custom drain to part of the cluster](../configuration/node-drainer.md#scoping-custom-drain-to-part-of-the-cluster):
 
 ```yaml
 node-drainer:
@@ -655,27 +593,20 @@ node-drainer:
     statusConditionStatus: "True"
 ```
 
-With the two pieces above applied, node-drainer renders the template into a `DrainRequest` for any
-node it decides to drain, polls its status, and — once your controller sets `DrainComplete=True` —
-marks the node drained and deletes the CR.
+With the two pieces above applied, node-drainer renders the template into a `DrainRequest` for any node it decides to drain, polls its status, and — once your controller sets `DrainComplete=True` — marks the node drained and deletes the CR.
 
-**c. Allow today in the plugin.** The weekday gate must be open, or the plugin defers and node-drainer
-times out waiting:
+**c. Allow today in the plugin.** The weekday gate must be open, or the plugin defers and node-drainer times out waiting:
 
 ```bash
 kubectl set env deploy/demo-drainer-controller-manager -n demo-drainer-system DRAIN_DAYS=$(date -u +%a)
 kubectl rollout status deploy/demo-drainer-controller-manager -n demo-drainer-system
 ```
 
-> **Deploy NVSentinel with this configuration.** The rest of this section needs a full NVSentinel
-> install — `platform-connectors`, `fault-quarantine`, `node-drainer` (with the `customDrain` values
-> above), and `gpu-health-monitor` — all running, plus your plugin from [§7a](#7a-deploy-with-make).
+> **Deploy NVSentinel with this configuration.** The rest of this section needs a full NVSentinel install — `platform-connectors`, `fault-quarantine`, `node-drainer` (with the `customDrain` values above), and `gpu-health-monitor` — all running, plus your plugin from [§7a](#7a-deploy-with-make).
 
 #### Step 2 — Run a workload on the node you'll fault
 
-Pick the GPU node you'll inject the fault into, then pin the workload to it so the pods you expect to
-be drained actually land there. node-drainer fills `podsToDrain` from **non-system** namespaces that
-have evictable pods on the node:
+Pick the GPU node you'll inject the fault into, then pin the workload to it so the pods you expect to be drained actually land there. node-drainer fills `podsToDrain` from **non-system** namespaces that have evictable pods on the node:
 
 ```bash
 # The node you'll inject the error into (replace with your target GPU node).
@@ -692,16 +623,14 @@ kubectl rollout status deploy/victim -n workload
 
 #### Step 3 — Inject an XID error
 
-Inject a fatal XID (95, an uncontained ECC error) into a GPU on `$NODE` through DCGM.
-`gpu-health-monitor` watches the same DCGM and turns it into a fatal GPU health event:
+Inject a fatal XID (95, an uncontained ECC error) into a GPU on `$NODE` through DCGM. `gpu-health-monitor` watches the same DCGM and turns it into a fatal GPU health event:
 
 ```bash
 dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 230 -v 95
 ```
 
 - `-f 230` is `DCGM_FI_DEV_XID_ERRORS`; `-v 95` injects **XID 95**; `--gpuid 1` picks the GPU.
-- Run it against the DCGM instance on `$NODE` (e.g. `kubectl exec` into the `nvidia-dcgm` pod on that
-  node)
+- Run it against the DCGM instance on `$NODE` (e.g. `kubectl exec` into the `nvidia-dcgm` pod on that node)
 
 #### Step 4 — Verify: cordon → DrainRequest → workload drained
 
@@ -714,12 +643,9 @@ CORDONED:.spec.unschedulable,\
 STATE:.metadata.labels.dgxc\.nvidia\.com/nvsentinel-state"
 ```
 
-Expected `STATE` progression: `(none)` → `quarantined` (fault-quarantine cordoned it) → `draining`
-(node-drainer started) → `drain-succeeded`.
+Expected `STATE` progression: `(none)` → `quarantined` (fault-quarantine cordoned it) → `draining` (node-drainer started) → `drain-succeeded`.
 
-node-drainer creates the CR (`drain-{NODE}-{EVENTID}` in `nvsentinel`) and your plugin acts on it. The
-CR is short-lived — node-drainer **deletes it** once your plugin sets `DrainComplete=True` — so watch
-promptly or read the plugin's logs:
+node-drainer creates the CR (`drain-{NODE}-{EVENTID}` in `nvsentinel`) and your plugin acts on it. The CR is short-lived — node-drainer **deletes it** once your plugin sets `DrainComplete=True` — so watch promptly or read the plugin's logs:
 
 ```bash
 # The CR node-drainer rendered from your template, with spec.podsToDrain filled in.
@@ -730,9 +656,7 @@ kubectl get drainrequest -n nvsentinel -o yaml | grep -A20 'spec:'
 kubectl logs -l control-plane=controller-manager -n demo-drainer-system --tail=20
 ```
 
-Finally, confirm the workload was drained — the node reaches `drain-succeeded` and the victim pods are
-gone (the Deployment schedules replacements, but the node stays cordoned so they don't land back on
-it):
+Finally, confirm the workload was drained — the node reaches `drain-succeeded` and the victim pods are gone (the Deployment schedules replacements, but the node stays cordoned so they don't land back on it):
 
 ```bash
 kubectl get node "$NODE" -o jsonpath='{.metadata.labels.dgxc\.nvidia\.com/nvsentinel-state}{"\n"}'
@@ -751,9 +675,7 @@ kubectl uncordon "$NODE"
 
 ## Appendix: One-shot AI prompt
 
-Paste this to an AI coding agent. It is **self-contained**: the plugin is a standalone Kubebuilder
-project that can be created in **any repository** (it does not need to be inside the NVSentinel
-repo). Replace the bracketed parts.
+Paste this to an AI coding agent. It is **self-contained**: the plugin is a standalone Kubebuilder project that can be created in **any repository** (it does not need to be inside the NVSentinel repo). Replace the bracketed parts.
 
 ```text
 Create a new NVSentinel drain plugin named "[my-drainer]" that drains a node ONLY on allowed

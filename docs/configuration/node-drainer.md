@@ -238,13 +238,7 @@ Pod labels are read from the informer cache on each reconciliation and before ev
 
 ## Scoping custom drain to part of the cluster
 
-`customDrain.enabled: true` replaces node-drainer's own eviction with a
-[drain plugin](../tutorials/writing-a-drain-plugin.md), for the whole cluster. Set
-`customDrain.nodeSelector` when only some nodes are drained that way — a Slurm or LSF partition
-alongside nodes running ordinary Kubernetes workloads, for example. Nodes matching the selector go
-through the plugin; every other node keeps the built-in eviction path, so `userNamespaces` or
-`podDrainPolicies` must stay configured for them. The selector uses standard
-[Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors).
+`customDrain.enabled: true` replaces node-drainer's own eviction with a [drain plugin](../tutorials/writing-a-drain-plugin.md), for the whole cluster. Set `customDrain.nodeSelector` when only some nodes are drained that way — a Slurm or LSF partition alongside nodes running ordinary Kubernetes workloads, for example. Nodes matching the selector go through the plugin; every other node keeps the built-in eviction path, so `userNamespaces` or `podDrainPolicies` must stay configured for them. The selector uses standard [Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors).
 
 ```yaml
 node-drainer:
@@ -257,48 +251,21 @@ node-drainer:
       mode: "AllowCompletion"
 ```
 
-With an empty or omitted `nodeSelector`, every node goes through custom
-drain, and configuring `userNamespaces` or `podDrainPolicies` alongside it is rejected at startup.
+With an empty or omitted `nodeSelector`, every node goes through custom drain, and configuring `userNamespaces` or `podDrainPolicies` alongside it is rejected at startup.
 
-A `nodeSelector` with neither `userNamespaces` nor `podDrainPolicies` is rejected at startup as
-well: the unmatched nodes would reach the built-in eviction path with no namespace and no policy to
-act on, and be marked drained while their pods keep running. An invalid selector is also rejected at
-startup.
+A `nodeSelector` with neither `userNamespaces` nor `podDrainPolicies` is rejected at startup as well: the unmatched nodes would reach the built-in eviction path with no namespace and no policy to act on, and be marked drained while their pods keep running. An invalid selector is also rejected at startup.
 
-node-drainer chooses the drain method once for each health event and records it on the event. For
-a partial drain, the record also holds the entity that is drained, for example a GPU UUID. Later
-passes drain the recorded entity, so a change to `partialDrainEnabled` during the drain does not
-change what is drained. The already-drained check reads that recorded scope for each earlier event.
-A record with no scope is a full drain. An event with no record still uses `partialDrainEnabled`.
-node-drainer stores the record before it reads, evicts or deletes a pod, and before it creates a
-custom drain CR.
-Every drain action then follows the stored record. If two node-drainer passes choose at the same
-time, only the first record is kept, and the other pass follows it. A label change during the drain
-does not change the method. node-drainer chooses the method of a new event from the labels at the
-time that event starts.
+node-drainer chooses the drain method once for each health event and records it on the event. For a partial drain, the record also holds the entity that is drained, for example a GPU UUID. Later passes drain the recorded entity, so a change to `partialDrainEnabled` during the drain does not change what is drained. The already-drained check reads that recorded scope for each earlier event. A record with no scope is a full drain. An event with no record still uses `partialDrainEnabled`. node-drainer stores the record before it reads, evicts or deletes a pod, and before it creates a custom drain CR. Every drain action then follows the stored record. If two node-drainer passes choose at the same time, only the first record is kept, and the other pass follows it. A label change during the drain does not change the method. node-drainer chooses the method of a new event from the labels at the time that event starts.
 
-If the method is `Custom` and the CR of another event has already drained the node, node-drainer
-marks the event drained and records only the scope. It records no method, because this event did not
-drain the node. An event that node-drainer marks `AlreadyDrained` because an earlier drain covered it
-records that scope in the same update as the status, when the event has no decision yet. A full drain
-records a decision with no scope and no method. An event that already has a decision keeps it.
+If the method is `Custom` and the CR of another event has already drained the node, node-drainer marks the event drained and records only the scope. It records no method, because this event did not drain the node. An event that node-drainer marks `AlreadyDrained` because an earlier drain covered it records that scope in the same update as the status, when the event has no decision yet. A full drain records a decision with no scope and no method. An event that already has a decision keeps it.
 
-A node the cache cannot resolve is retried rather than assigned a path. Only the label keys the
-selector references are retained in the node cache.
+A node the cache cannot resolve is retried rather than assigned a path. Only the label keys the selector references are retained in the node cache.
 
-node-drainer keeps a recorded method when the current configuration cannot carry it out. It logs
-an error, increments `node_drainer_processing_errors_total`, and retries:
+node-drainer keeps a recorded method when the current configuration cannot carry it out. It logs an error, increments `node_drainer_processing_errors_total`, and retries:
 
-- The record says `Custom` and custom drain is now off. Turn custom drain back on, or end the
-  quarantine and delete the DrainRequest CR of the event. With custom drain off, node-drainer does
-  not delete that CR, so the plugin can keep draining the node. The CR is named
-  `drain-<node name>-<event ID>` and is in the custom drain namespace.
-- The record says `BuiltIn`, custom drain is on with no `nodeSelector`, and both `userNamespaces`
-  and `podDrainPolicies` are empty. Set the `nodeSelector` and one of those lists again, or end the
-  quarantine. Empty lists would mark the node drained while its pods keep running. With custom drain
-  off, empty lists act as they do for an event with no record.
-- The record has no method, or a method other than `BuiltIn` or `Custom`. A stop (`stopped: true`)
-  is one example of a record with no method. node-drainer does not choose a method in its place.
+- The record says `Custom` and custom drain is now off. Turn custom drain back on, or end the quarantine and delete the DrainRequest CR of the event. With custom drain off, node-drainer does not delete that CR, so the plugin can keep draining the node. The CR is named `drain-<node name>-<event ID>` and is in the custom drain namespace.
+- The record says `BuiltIn`, custom drain is on with no `nodeSelector`, and both `userNamespaces` and `podDrainPolicies` are empty. Set the `nodeSelector` and one of those lists again, or end the quarantine. Empty lists would mark the node drained while its pods keep running. With custom drain off, empty lists act as they do for an event with no record.
+- The record has no method, or a method other than `BuiltIn` or `Custom`. A stop (`stopped: true`) is one example of a record with no method. node-drainer does not choose a method in its place.
 
 ## User Namespaces
 
@@ -406,9 +373,7 @@ kubectl get events -n default \
   --field-selector "involvedObject.kind=Node,involvedObject.name=$NODE"
 ```
 
-Node Drainer events are created in the **`default`** namespace (`Type=Normal`,
-`Source=nvsentinel-node-drainer`). Example output for a pod `training-job-0` in namespace
-`batch-jobs` on node `gpu-node-42`:
+Node Drainer events are created in the **`default`** namespace (`Type=Normal`, `Source=nvsentinel-node-drainer`). Example output for a pod `training-job-0` in namespace `batch-jobs` on node `gpu-node-42`:
 
 #### `Immediate`
 

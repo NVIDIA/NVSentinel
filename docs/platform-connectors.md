@@ -246,12 +246,7 @@ Standard gRPC interface for health monitors to report events - protocol buffer-b
 
 ### Health Event Node Binding
 
-Every health event names the node it concerns, and nothing downstream re-derives
-that name: fault-quarantine cordons `nodeName` verbatim and fault-remediation
-stamps it onto the `RebootNode` CR. A publisher that names the wrong node has
-that carried straight through to a cordon, drain or reboot of that node, so
-platform-connector is the one place the claim can be checked against the
-publisher making it.
+Every health event names the node it concerns, and nothing downstream re-derives that name: fault-quarantine cordons `nodeName` verbatim and fault-remediation stamps it onto the `RebootNode` CR. A publisher that names the wrong node has that carried straight through to a cordon, drain or reboot of that node, so platform-connector is the one place the claim can be checked against the publisher making it.
 
 Two classes of publisher share the per-node Unix socket:
 
@@ -260,12 +255,7 @@ Two classes of publisher share the per-node Unix socket:
 | Node-local | gpu, syslog, nic, preflight checks, custom monitors | No — always their own node |
 | Cluster-scoped | csp-health-monitor, kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor, health-events-analyzer, lifecycle-manager (MaintenanceRequest controller) | Yes, by design |
 
-Every first-party monitor presents a credential: a projected Kubernetes
-ServiceAccount token minted for a dedicated audience, validated with the
-TokenReview API. On Kubernetes 1.30+ the API server writes the bound
-pod's **node** into the token at issuance and reports it back from TokenReview
-(`authentication.kubernetes.io/node-name`), so the token carries a verified
-statement of *where its holder runs* that the holder cannot alter.
+Every first-party monitor presents a credential: a projected Kubernetes ServiceAccount token minted for a dedicated audience, validated with the TokenReview API. On Kubernetes 1.30+ the API server writes the bound pod's **node** into the token at issuance and reports it back from TokenReview (`authentication.kubernetes.io/node-name`), so the token carries a verified statement of *where its holder runs* that the holder cannot alter.
 
 The rule, per caller:
 
@@ -276,57 +266,19 @@ The rule, per caller:
 | Valid token, any other ServiceAccount, claim matches | Scoped to the connector's own node. A blank `nodeName` is filled in; a *different* one is rejected (`node_mismatch`). |
 | No token, or a token without a node claim | Scoped to the connector's own node, exactly as a tokenless caller would be. Reaching the socket already granted that much. Exception: the connector rejects a token without a node claim from an allowlisted ServiceAccount (`cross_node_claim_absent`, or `unbound_cross_node_token` if the token has no pod binding). |
 
-Rejecting rather than rewriting is deliberate: silently redirecting an event
-about node B onto node A would turn a misdirected event into a real outage on
-the wrong node, and would hide the misconfiguration that produced it.
+Rejecting rather than rewriting is deliberate: silently redirecting an event about node B onto node A would turn a misdirected event into a real outage on the wrong node, and would hide the misconfiguration that produced it.
 
-**Missing node claims.** Below Kubernetes 1.30, or with the pod-node-info
-feature disabled, tokens carry no node claim. A node-local caller presenting
-such a token authenticates normally and is pinned to the connector's own node —
-the same scope it would get with no token at all — so node-local monitors keep
-working with no change. Every such case is counted in
-`platform_connector_auth_node_claim_total{result="absent"}`.
+**Missing node claims.** Below Kubernetes 1.30, or with the pod-node-info feature disabled, tokens carry no node claim. A node-local caller presenting such a token authenticates normally and is pinned to the connector's own node — the same scope it would get with no token at all — so node-local monitors keep working with no change. Every such case is counted in `platform_connector_auth_node_claim_total{result="absent"}`.
 
-There is no setting to reject claimless tokens: an allowlisted caller already
-requires one (`cross_node_claim_absent`), and refusing them for node-local
-callers would gain nothing, since reaching the socket already grants that scope.
-NVSentinel requires Kubernetes 1.34 and pod-node info has been GA since 1.32, so
-in practice every scheduled pod's token carries a claim.
+There is no setting to reject claimless tokens: an allowlisted caller already requires one (`cross_node_claim_absent`), and refusing them for node-local callers would gain nothing, since reaching the socket already grants that scope. NVSentinel requires Kubernetes 1.34 and pod-node info has been GA since 1.32, so in practice every scheduled pod's token carries a claim.
 
-For **preflight checks** this works without any allowlisting: the check
-container is injected into the customer's pod and presents a token minted
-against the customer's own ServiceAccount — whatever it is — and only the
-token's node claim is enforced. The whole batch is validated before any of it
-is forwarded, so a batch is either accepted in full or rejected in full.
+For **preflight checks** this works without any allowlisting: the check container is injected into the customer's pod and presents a token minted against the customer's own ServiceAccount — whatever it is — and only the token's node claim is enforced. The whole batch is validated before any of it is forwarded, so a batch is either accepted in full or rejected in full.
 
-Availability is preserved three ways. Verified tokens are **cached for a flat
-two minutes**, for every caller rather than only elevated ones, so a steady-state
-publisher costs one TokenReview per token per two minutes instead of one per
-batch. The TTL is deliberately not the token's own expiry: TokenReview is the
-only check that notices the bound pod being deleted, so this window is how long
-a deleted pod's token keeps working, and honouring `exp` would stretch that to
-the whole token lifetime — an hour by default. The accepted trade is that an
-authenticated caller stays accepted for up to two minutes after its token
-expires or its pod is deleted. An unreachable API server is
-**retried inside the call** with exponential backoff for a few seconds before
-anything is surfaced. Past that the connector **fails closed** with
-`Unavailable` by default, which every publisher treats as retryable.
-`global.platformConnectorAuth.failOpenOnUnavailable: true` changes this: the
-caller falls back to a degraded node-local scope instead of being rejected —
-an outage says nothing about the caller's credential — with a blank or
-matching node name accepted and stamped as usual in either `mode`. An event
-naming a different node is where `mode` matters: under `mode: enforce` (the
-default) it is kept retryable rather than silently accepted or counted as a
-mismatch; under `mode: audit` that same outcome is recorded and then let
-through like any other audited violation, so the event is forwarded as-is.
-See [Authentication Configuration](configuration/authentication.md) for the
-detail. Tokenless callers never trigger a TokenReview at all, so custom
-monitors keep working with no API-server dependency whatsoever.
+Availability is preserved three ways. Verified tokens are **cached for a flat two minutes**, for every caller rather than only elevated ones, so a steady-state publisher costs one TokenReview per token per two minutes instead of one per batch. The TTL is deliberately not the token's own expiry: TokenReview is the only check that notices the bound pod being deleted, so this window is how long a deleted pod's token keeps working, and honouring `exp` would stretch that to the whole token lifetime — an hour by default. The accepted trade is that an authenticated caller stays accepted for up to two minutes after its token expires or its pod is deleted. An unreachable API server is **retried inside the call** with exponential backoff for a few seconds before anything is surfaced. Past that the connector **fails closed** with `Unavailable` by default, which every publisher treats as retryable. `global.platformConnectorAuth.failOpenOnUnavailable: true` changes this: the caller falls back to a degraded node-local scope instead of being rejected — an outage says nothing about the caller's credential — with a blank or matching node name accepted and stamped as usual in either `mode`. An event naming a different node is where `mode` matters: under `mode: enforce` (the default) it is kept retryable rather than silently accepted or counted as a mismatch; under `mode: audit` that same outcome is recorded and then let through like any other audited violation, so the event is forwarded as-is. See [Authentication Configuration](configuration/authentication.md) for the detail. Tokenless callers never trigger a TokenReview at all, so custom monitors keep working with no API-server dependency whatsoever.
 
 #### Configuration
 
-All settings live under `global.platformConnectorAuth` so the server-side
-allowlist and the publishers' projected tokens cannot drift apart:
+All settings live under `global.platformConnectorAuth` so the server-side allowlist and the publishers' projected tokens cannot drift apart:
 
 | Key | Default | Purpose |
 |-----|---------|---------|
@@ -338,72 +290,29 @@ allowlist and the publishers' projected tokens cannot drift apart:
 | `mode` | `enforce` | `enforce` rejects a violating request. `audit` validates every request and still increments `platform_connector_auth_violations_total` by reason, but lets the request through instead of rejecting it — use it to roll node-binding out against real traffic, confirm the violation counters stay at zero, then switch to `enforce` with evidence. One exception applies in both modes: an event with no node name from a caller resolved to verified cross-node scope is always rejected, since nothing downstream can handle it — a caller that fell back to a degraded scope under `failOpenOnUnavailable` was never verified as cross-node, so this does not apply to it. |
 | `failOpenOnUnavailable` | `false` | Must be a real YAML boolean; a quoted `"false"` is refused rather than read as false. When `true`, a validator that never reached a verdict (the API server was unreachable, or the call timed out) falls back to a degraded node-local scope instead of rejecting the request, since an outage says nothing about the caller's credential. Under `mode: enforce` a rejected credential (an invalid or malformed token) is always rejected regardless of this setting; under `mode: audit` it is recorded and let through like any other violation instead. |
 
-There is no `requireNodeClaim`: whether a claim is checked is not
-configurable, only what happens after a violation is found (`mode`) and how an
-unavailable validator is treated (`failOpenOnUnavailable`). See
-[Authentication Configuration](configuration/authentication.md) for the full
-detail on both, including how a degraded scope treats a blank vs. a
-differently-named node.
+There is no `requireNodeClaim`: whether a claim is checked is not configurable, only what happens after a violation is found (`mode`) and how an unavailable validator is treated (`failOpenOnUnavailable`). See [Authentication Configuration](configuration/authentication.md) for the full detail on both, including how a degraded scope treats a blank vs. a differently-named node.
 
-A **custom cluster-scoped monitor** needs three things: a projected token volume
-with the configured audience, its token path passed to the client dial, and its
-fully-qualified username added to `crossNodeServiceAccounts` — in any namespace;
-there is one list and it always takes the complete
-`system:serviceaccount:<namespace>:<name>` form. A custom *node-local* monitor
-needs no changes: it already reports its own node.
+A **custom cluster-scoped monitor** needs three things: a projected token volume with the configured audience, its token path passed to the client dial, and its fully-qualified username added to `crossNodeServiceAccounts` — in any namespace; there is one list and it always takes the complete `system:serviceaccount:<namespace>:<name>` form. A custom *node-local* monitor needs no changes: it already reports its own node.
 
-At the ConfigMap level (relevant only when bypassing the chart): a config that
-omits `enableNodeBindingAuth` entirely **fails startup** — there is no default.
-A value that is neither `true` nor `false` fails startup as well.
+At the ConfigMap level (relevant only when bypassing the chart): a config that omits `enableNodeBindingAuth` entirely **fails startup** — there is no default. A value that is neither `true` nor `false` fails startup as well.
 
 #### Where to run the cluster-scoped monitors
 
-The six cluster-scoped publishers — `csp-health-monitor`,
-`kubernetes-object-monitor`, `nvcre-certification-monitor`, `slurm-drain-monitor`,
-`health-events-analyzer` and the MaintenanceRequest controller of
-`lifecycle-manager` — are the only bundled identities allowed to name a node
-other than their own, and all six ship **disabled by default**
-(`global.<monitor>.enabled: false`; for `lifecycle-manager`, both
-`global.lifecycleManager.enabled` and
-`lifecycle-manager.controllers.maintenanceRequest.enabled` are `false`). Their
-usernames are derived from the release namespace for whichever are enabled, so
-enabling one is what grants it cross-node reach — a deliberate act, because it
-lets that ServiceAccount have any node in the cluster cordoned, drained and
-rebooted.
+The six cluster-scoped publishers — `csp-health-monitor`, `kubernetes-object-monitor`, `nvcre-certification-monitor`, `slurm-drain-monitor`, `health-events-analyzer` and the MaintenanceRequest controller of `lifecycle-manager` — are the only bundled identities allowed to name a node other than their own, and all six ship **disabled by default** (`global.<monitor>.enabled: false`; for `lifecycle-manager`, both `global.lifecycleManager.enabled` and `lifecycle-manager.controllers.maintenanceRequest.enabled` are `false`). Their usernames are derived from the release namespace for whichever are enabled, so enabling one is what grants it cross-node reach — a deliberate act, because it lets that ServiceAccount have any node in the cluster cordoned, drained and rebooted.
 
-Run them on nodes that do not also run user workloads — a system or control
-plane node pool rather than a GPU node serving tenants. The reason is the
-credential, not the code: their pods hold a projected token that platform-connector
-accepts for any node name, and that token file is readable by every container in
-the pod. Keeping those pods away from tenant workloads keeps the one credential
-with cluster-wide reach off the machines where untrusted code runs.
+Run them on nodes that do not also run user workloads — a system or control plane node pool rather than a GPU node serving tenants. The reason is the credential, not the code: their pods hold a projected token that platform-connector accepts for any node name, and that token file is readable by every container in the pod. Keeping those pods away from tenant workloads keeps the one credential with cluster-wide reach off the machines where untrusted code runs.
 
-Express it with `nodeSelector`, `affinity` or tolerations for a tainted system
-pool, whichever your cluster already uses. Node-local monitors (gpu, syslog,
-nic, preflight checks) need no such placement: their tokens attest the node
-they run on and grant nothing beyond it, which is why they are safe to run
-everywhere.
+Express it with `nodeSelector`, `affinity` or tolerations for a tainted system pool, whichever your cluster already uses. Node-local monitors (gpu, syslog, nic, preflight checks) need no such placement: their tokens attest the node they run on and grant nothing beyond it, which is why they are safe to run everywhere.
 
 #### Enabling node binding on a live cluster
 
-platform-connector and the publishers are subcharts of one release, so a single
-`helm upgrade` moves them together and you cannot sequence one before the other.
-What you can control is *when enforcement starts*.
+platform-connector and the publishers are subcharts of one release, so a single `helm upgrade` moves them together and you cannot sequence one before the other. What you can control is *when enforcement starts*.
 
-When you set `global.platformConnectorAuth.enabled` to `true` on a running
-release, the pods restart on their own schedule. Thus there is a window in
-which a connector that has already restarted (and is enforcing) sees a publisher
-pod that has not yet been replaced and is therefore still sending no token.
+When you set `global.platformConnectorAuth.enabled` to `true` on a running release, the pods restart on their own schedule. Thus there is a window in which a connector that has already restarted (and is enforcing) sees a publisher pod that has not yet been replaced and is therefore still sending no token.
 
-That exposure is narrow. A tokenless publisher is not rejected outright — it is
-pinned to its own node, so node-local publishers are unaffected either way. Only
-a *cluster-scoped* publisher is affected, and only for the seconds between the
-connector restarting and its own pod being replaced: its cross-node events are
-rejected with `node_mismatch` for that window, and its next attempt succeeds.
+That exposure is narrow. A tokenless publisher is not rejected outright — it is pinned to its own node, so node-local publishers are unaffected either way. Only a *cluster-scoped* publisher is affected, and only for the seconds between the connector restarting and its own pod being replaced: its cross-node events are rejected with `node_mismatch` for that window, and its next attempt succeeds.
 
-To avoid rejections during the rollout, set `global.platformConnectorAuth.mode`
-to `audit` first. Switch to `enforce` when the violation counters stay at zero.
-See [`mode`](configuration/authentication.md#mode).
+To avoid rejections during the rollout, set `global.platformConnectorAuth.mode` to `audit` first. Switch to `enforce` when the violation counters stay at zero. See [`mode`](configuration/authentication.md#mode).
 
 Watch the rollout with:
 
@@ -419,13 +328,7 @@ Related metrics:
 | `platform_connector_auth_violations_total` | `reason` | Batches that violated the node-binding rule. Rejected under `mode: enforce`; recorded but let through under `mode: audit`, except `missing_node_name` from a caller resolved to verified cross-node scope, which is always rejected. |
 | `platform_connector_auth_node_claim_total` | `result` | Whether the token carried a node claim (`verified`, `absent`) |
 
-Not every `reason` means a caller was rejected. `validator_unavailable`,
-`validator_timeout` and `validator_error` mean no verdict could be reached — an
-unreachable API server increments them for every in-flight request. Exclude them
-when alerting on suspected credential abuse, or a control-plane blip reads as an
-attack. `validator_error` also counts a permanent TokenReview failure, such as a
-missing `create` permission on `tokenreviews`. Under `mode: enforce` it always
-rejects the request. See [METRICS.md](METRICS.md) for the full list.
+Not every `reason` means a caller was rejected. `validator_unavailable`, `validator_timeout` and `validator_error` mean no verdict could be reached — an unreachable API server increments them for every in-flight request. Exclude them when alerting on suspected credential abuse, or a control-plane blip reads as an attack. `validator_error` also counts a permanent TokenReview failure, such as a missing `create` permission on `tokenreviews`. Under `mode: enforce` it always rejects the request. See [METRICS.md](METRICS.md) for the full list.
 
 ### Ring Buffer Architecture
 Parallel event processing with independent queues:

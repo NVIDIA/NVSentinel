@@ -1,13 +1,8 @@
 # HealthEvent Data Model Reference
 
-This document is the authoritative reference for the `HealthEvent` data model — the
-fundamental unit of data that flows through NVSentinel. Every fault detected by any
-health monitor is represented as a `HealthEvent`, and every downstream module
-(quarantine, drain, remediation, export) consumes and enriches this structure.
+This document is the authoritative reference for the `HealthEvent` data model — the fundamental unit of data that flows through NVSentinel. Every fault detected by any health monitor is represented as a `HealthEvent`, and every downstream module (quarantine, drain, remediation, export) consumes and enriches this structure.
 
-> **Audience**: Developers building custom health monitors, writing CEL quarantine
-> rules, integrating external systems via the event exporter, or debugging the
-> fault-remediation pipeline.
+> **Audience**: Developers building custom health monitors, writing CEL quarantine rules, integrating external systems via the event exporter, or debugging the fault-remediation pipeline.
 
 ## Table of Contents
 
@@ -69,10 +64,7 @@ message HealthEvent {
 
 ## Field Reference
 
-If you are building a custom health monitor, the table below shows what happens
-when a field is omitted or left at its zero value. See
-[Writing a Health Monitor](./tutorials/writing-a-health-monitor.md) for the
-end-to-end walkthrough.
+If you are building a custom health monitor, the table below shows what happens when a field is omitted or left at its zero value. See [Writing a Health Monitor](./tutorials/writing-a-health-monitor.md) for the end-to-end walkthrough.
 
 | # | Field | Type | Description | If omitted / zero value |
 |---|-------|------|-------------|------------------------|
@@ -126,15 +118,13 @@ func GetEffectiveActionName(he *protos.HealthEvent) string {
 }
 ```
 
-The effective action name is looked up in the Helm-configured `maintenance.actions`
-map to find the CRD template, API group, kind, and completion condition to create.
+The effective action name is looked up in the Helm-configured `maintenance.actions` map to find the CRD template, API group, kind, and completion condition to create.
 
 ---
 
 ## ProcessingStrategy Enum
 
-Controls whether downstream modules (fault-quarantine, node-drainer,
-fault-remediation) may modify cluster state in response to this event.
+Controls whether downstream modules (fault-quarantine, node-drainer, fault-remediation) may modify cluster state in response to this event.
 
 | Value | Numeric | Behavior |
 |-------|---------|----------|
@@ -177,8 +167,7 @@ Per-event overrides that let a health monitor bypass default pipeline behavior.
 | `force = true` | Force immediate eviction for **all** namespaces, ignoring per-namespace eviction strategies (allow-completion timeouts are bypassed). |
 | `skip = true` | Skip drain entirely. The event's `UserPodsEvictionStatus` is marked `AlreadyDrained` so fault-remediation proceeds immediately. |
 
-> **Use case**: Debug/test events (e.g. fault-injection demos) set `drainOverrides.skip = true`
-> to exercise the remediation pipeline without waiting for pod eviction.
+> **Use case**: Debug/test events (e.g. fault-injection demos) set `drainOverrides.skip = true` to exercise the remediation pipeline without waiting for pod eviction.
 
 ---
 
@@ -220,9 +209,7 @@ type HealthEventWithStatus struct {
 }
 ```
 
-The `HealthEvent` portion is **immutable after ingestion** (except for dedup
-strategy downgrade). The `HealthEventStatus` portion is **progressively enriched**
-by each downstream module as it processes the event.
+The `HealthEvent` portion is **immutable after ingestion** (except for dedup strategy downgrade). The `HealthEventStatus` portion is **progressively enriched** by each downstream module as it processes the event.
 
 ---
 
@@ -327,17 +314,13 @@ message HealthEventResource {
 }
 ```
 
-The `spec` field holds the immutable `HealthEvent`; the `status` field holds the
-progressively-enriched `HealthEventStatus`. This mirrors the standard Kubernetes
-spec/status convention.
+The `spec` field holds the immutable `HealthEvent`; the `status` field holds the progressively-enriched `HealthEventStatus`. This mirrors the standard Kubernetes spec/status convention.
 
 ---
 
 ## External Remediation Request
 
-When the configured remediation action produces an
-`ExternalRemediationRequest` (ExtRR) — for any `recommendedAction`, not only
-`CUSTOM` — the full `HealthEvent` is embedded in the CRD spec:
+When the configured remediation action produces an `ExternalRemediationRequest` (ExtRR) — for any `recommendedAction`, not only `CUSTOM` — the full `HealthEvent` is embedded in the CRD spec:
 
 ```protobuf
 message ExternalRemediationRequestSpec {
@@ -345,8 +328,7 @@ message ExternalRemediationRequestSpec {
 }
 ```
 
-The ExtRR is cluster-scoped (like RebootNode, TerminateNode, GPUReset CRDs) and
-carries status conditions for coordination with external repair systems:
+The ExtRR is cluster-scoped (like RebootNode, TerminateNode, GPUReset CRDs) and carries status conditions for coordination with external repair systems:
 
 | Condition Type | Set by | Meaning |
 |---------------|--------|---------|
@@ -357,16 +339,13 @@ carries status conditions for coordination with external repair systems:
 
 ## Tracing Correlation
 
-Each module that processes an event writes its span ID into
-`HealthEventStatus.spanIds[serviceName]`. This enables end-to-end trace correlation:
+Each module that processes an event writes its span ID into `HealthEventStatus.spanIds[serviceName]`. This enables end-to-end trace correlation:
 
 ```
 platform-connector → fault-quarantine → node-drainer → fault-remediation
 ```
 
-The span ID written to the datastore becomes the **parent span** for the next
-module's processing, creating a causal chain across independent services that
-communicate only through MongoDB change streams.
+The span ID written to the datastore becomes the **parent span** for the next module's processing, creating a causal chain across independent services that communicate only through MongoDB change streams.
 
 See [Distributed Tracing](./tracing.md) for setup and querying.
 

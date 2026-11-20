@@ -46,7 +46,7 @@ PostgreSQL doesn't have native change streams like MongoDB. The provider emulate
 
 ### Durable Watcher Start Position
 
-Every error-returning PostgreSQL watcher constructor loads or creates its saved position before it returns. This rule applies with or without changelog retention. It is a correctness fix and a superset of ADR-068's retention requirement.
+Every error-returning PostgreSQL watcher constructor loads or creates its saved position before it returns. This rule applies with or without changelog retention.
 
 For a missing `resume_tokens` row, the constructor saves `{timestamp, eventID}` with eventID `0`. The timestamp is the earlier of database `clock_timestamp()` minus five seconds and the oldest other client session's transaction start in the current database. The same insert inspects activity first and then samples the clock, on the reserved connection. A writer open during the inspection is bounded by its transaction start. A writer that starts between the inspection and the clock sample has a `changed_at` after the inspection, and the five-second margin covers it, because it only has to exceed this one statement's duration. An idle or long transaction moves the start earlier and can increase replay. The watcher reads back the stored pair and uses it as its read position. Concurrent constructors for the same client use the winning row. Existing rows remain unchanged.
 
@@ -54,11 +54,11 @@ The insert inspects `client backend` sessions in the current database, excluding
 
 Hidden client activity or disabled client activity tracking prevents a reliable transaction-start bound. Either condition selects the Unix epoch, `1970-01-01T00:00:00+00:00`, which precedes every changelog row and parses in every session time zone. A database that allows prepared transactions (`max_prepared_transactions` above `0`) also selects this boundary. A prepared transaction leaves its session, PostgreSQL exposes only its PREPARE time, and it can commit at any moment, so no observation can bound it.
 
-For a new consumer, this fallback replays the whole available changelog. Only changelog retention would bound that replay; NVSentinel does not implement changelog retention yet. The watcher logs one warning after loading the saved boundary. The warning names the consumer, lists the possible causes and links to this section. Existing tokens remain unchanged.
+For a new consumer, this fallback replays the whole available changelog. Only changelog retention would bound that replay; NVSentinel does not implement changelog retention. The watcher logs one warning after loading the saved boundary. The warning names the consumer, lists the possible causes and links to this section. Existing tokens remain unchanged.
 
 The standard chart uses one shared PostgreSQL role for all datastore writers and consumers. PostgreSQL defaults `max_prepared_transactions` to `0`, which disables prepared transactions. With activity tracking enabled, the standard chart normally never triggers this fallback. Custom roles, disabled tracking or enabled prepared transactions can trigger it.
 
-Use the same role for all writers, or ask the database operator to grant the consumer role `pg_read_all_stats`. Enable client activity tracking. If no client uses two-phase commit, keep `max_prepared_transactions` at `0`. These steps prevent future fallback choices; they do not replace an existing saved replay boundary. No privilege is granted automatically. See [PostgreSQL activity visibility](https://www.postgresql.org/docs/16/monitoring-stats.html#MONITORING-STATS-VIEWS) and [prepared transactions](https://www.postgresql.org/docs/16/view-pg-prepared-xacts.html). The [prepared-transaction setting](https://www.postgresql.org/docs/16/runtime-config-resource.html#GUC-MAX-PREPARED-TRANSACTIONS) documents the default.
+Use the same role for all writers, or ask the database operator to grant the consumer role `pg_read_all_stats`. Enable client activity tracking. If no client uses two-phase commit, keep `max_prepared_transactions` at `0`. These steps prevent future fallback choices; they do not replace an existing saved replay boundary. No privilege is granted automatically. The PostgreSQL documentation describes the statistics views, the `pg_prepared_xacts` view and the `max_prepared_transactions` setting.
 
 A restart before the first acknowledgment resumes from that saved pair. A consumer that rarely acknowledges keeps its first start pair until an acknowledgment advances it. For example, fault-remediation can stay quiet on a healthy cluster. Each restart reads the changelog again from that pair. This adds replay cost without losing events.
 
@@ -68,13 +68,13 @@ A reset is different from a first start. Reset-on-start and a circuit-breaker `C
 
 `Start(ctx)` uses the prepared pair and writes no checkpoint. The low-level `NewPostgreSQLChangeStreamWatcher` cannot return initialization errors, so `Start` initializes such a watcher itself. If that fails, `Start` logs the error and launches no readers.
 
-Initial persistence does not establish ADR-054 lag evidence; lag stays unknown until a poll records progress or an empty batch. An initial row with eventID `0` uses the same `last_updated` stale-token threshold as any other checkpoint.
+Initial persistence is not evidence that the consumer is caught up, so lag stays unknown until a poll records progress or an empty batch. An initial row with eventID `0` uses the same `last_updated` stale-token threshold as any other checkpoint.
 
 ### Recovery and Retention Rollout
 
 Disable changelog cleanup before removing an active client's token. Use reset-on-start where supported, or delete that client's `resume_tokens` row. Restart the consumer and verify its saved start pair. That pair can precede the database clock when another client transaction was open, or be the Unix epoch when activity is hidden or prepared transactions are enabled. This recovery can skip events between the old position and the new start pair. The database-client path requires manual deletion unless its caller provides reset handling.
 
-Keep cleanup disabled until every store-owning component supports initial persistence and verified, acknowledgment-safe checkpoints. Verify that every active watcher has a saved position before enabling cleanup. A nonempty token table cannot prove rollout completeness. Disable cleanup before downgrading a reader. Initial persistence alone does not complete ADR-068; the age and previous-snapshot guards remain required.
+Keep cleanup disabled until every store-owning component supports initial persistence and verified, acknowledgment-safe checkpoints. Verify that every active watcher has a saved position before enabling cleanup. A nonempty token table cannot prove rollout completeness. Disable cleanup before downgrading a reader.
 
 ### Delivery Acknowledgments
 

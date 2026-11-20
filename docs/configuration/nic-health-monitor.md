@@ -349,14 +349,11 @@ nic-health-monitor:
 
 Counters outside this list are rejected at startup with a validation error.
 
-**Standard IB counters** (`counters/`):
-`excessive_buffer_overrun_errors`, `link_downed`, `link_error_recovery`, `local_link_integrity_errors`, `port_rcv_discards`, `port_rcv_errors`, `port_rcv_remote_physical_errors`, `port_rcv_switch_relay_errors`, `port_xmit_discards`, `port_xmit_wait`, `symbol_error`, `symbol_error_fatal`
+**Standard IB counters** (`counters/`): `excessive_buffer_overrun_errors`, `link_downed`, `link_error_recovery`, `local_link_integrity_errors`, `port_rcv_discards`, `port_rcv_errors`, `port_rcv_remote_physical_errors`, `port_rcv_switch_relay_errors`, `port_xmit_discards`, `port_xmit_wait`, `symbol_error`, `symbol_error_fatal`
 
-**Extended counters** (`hw_counters/`):
-`implied_nak_seq_err`, `local_ack_timeout_err`, `out_of_sequence`, `packet_seq_err`, `req_transport_retries_exceeded`, `rnr_nak_retry_err`, `roce_slow_restart`
+**Extended counters** (`hw_counters/`): `implied_nak_seq_err`, `local_ack_timeout_err`, `out_of_sequence`, `packet_seq_err`, `req_transport_retries_exceeded`, `rnr_nak_retry_err`, `roce_slow_restart`
 
-**Ethernet statistics** (`statistics/`):
-`carrier_changes`, `rx_crc_errors`, `rx_errors`, `rx_missed_errors`, `tx_carrier_errors`, `tx_errors`
+**Ethernet statistics** (`statistics/`): `carrier_changes`, `rx_crc_errors`, `rx_errors`, `rx_missed_errors`, `tx_carrier_errors`, `tx_errors`
 
 ### Counter Customization Examples
 

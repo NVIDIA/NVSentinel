@@ -169,23 +169,15 @@ The CEL context exposes:
 
 #### Node fields available to expressions
 
-To limit informer memory use, the Labeler does not cache complete Node objects.
-The following fields are always retained:
+To limit informer memory use, the Labeler does not cache complete Node objects. The following fields are always retained:
 
 - `metadata.name`, `metadata.uid`, and `metadata.resourceVersion`
 - all `metadata.labels`
 - the `nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed` annotation, when present
 
-When expected device counts have at least one enabled class, the Labeler also
-retains `status.allocatable` and `status.capacity`. Device-count expressions
-that read Node data must use `node.metadata.labels`,
-`node.status.allocatable`, or `node.status.capacity`.
+When expected device counts have at least one enabled class, the Labeler also retains `status.allocatable` and `status.capacity`. Device-count expressions that read Node data must use `node.metadata.labels`, `node.status.allocatable`, or `node.status.capacity`.
 
-All other Node fields are discarded before caching, including `spec`, other
-annotations, `status.conditions`, addresses, images, and node information.
-When expected device counts are disabled, all of `status` is discarded.
-Expressions that reference discarded fields are unsupported and receive only
-the field's empty or absent value.
+All other Node fields are discarded before caching, including `spec`, other annotations, `status.conditions`, addresses, images, and node information. When expected device counts are disabled, all of `status` is discarded. Expressions that reference discarded fields are unsupported and receive only the field's empty or absent value.
 
 For classes without a matching override, the expected value is learned as the maximum current or existing expected count among nodes with the same configured grouping-label values. Learned expected counts can rise automatically, but do not fall automatically when a node reports fewer devices.
 

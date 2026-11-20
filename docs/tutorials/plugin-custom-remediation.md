@@ -1,7 +1,6 @@
 # Tutorial: Plugin Custom Remediation
 
-This tutorial walks you through extending NVSentinel's **fault-remediation** stage with your own
-repair automation — for example, a custom controller.
+This tutorial walks you through extending NVSentinel's **fault-remediation** stage with your own repair automation — for example, a custom controller.
 
 By the end you will understand:
 
@@ -9,9 +8,7 @@ By the end you will understand:
 - How to register a **custom remediation action** with no NVSentinel code changes.
 - The status-condition completion contract your controller must implement.
 
-> **Who is this for?** Teams **already running NVSentinel** — who need a repair step
-> NVSentinel does not ship out of the box (CSP RMA tickets, multi-step orchestration, …) instead of
-> the built-in reboot / terminate / GPU-reset actions.
+> **Who is this for?** Teams **already running NVSentinel** — who need a repair step NVSentinel does not ship out of the box (CSP RMA tickets, multi-step orchestration, …) instead of the built-in reboot / terminate / GPU-reset actions.
 
 > **Just want the AI to do it?** Jump to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
 
@@ -53,25 +50,19 @@ Your controller watches the CR and performs the actual repair.
 
 ## 2. Integration approach
 
-fault-remediation creates a Kubernetes CR for your action; your controller watches it, runs the
-repair, and reports completion via a status condition.
+fault-remediation creates a Kubernetes CR for your action; your controller watches it, runs the repair, and reports completion via a status condition.
 
 ### Why your CR must expose status conditions
 
-fault-remediation's status checker only understands **Kubernetes-style conditions** — it looks for a
-`status.conditions[]` entry whose `type` equals `completeConditionType` and reads its `status`
-(`True` → done, `False` → failed/retry).
+fault-remediation's status checker only understands **Kubernetes-style conditions** — it looks for a `status.conditions[]` entry whose `type` equals `completeConditionType` and reads its `status` (`True` → done, `False` → failed/retry).
 
-Many external orchestrators report completion differently (e.g. a phase field, a job exit code, or a
-ticket status). Use a thin wrapper CRD whose controller translates external completion into
-`status.conditions[Complete]=True`.
+Many external orchestrators report completion differently (e.g. a phase field, a job exit code, or a ticket status). Use a thin wrapper CRD whose controller translates external completion into `status.conditions[Complete]=True`.
 
 ---
 
 ## 3. The completion contract
 
-Whatever CR NVSentinel creates, fault-remediation decides "is this repair done?" by reading a status
-condition:
+Whatever CR NVSentinel creates, fault-remediation decides "is this repair done?" by reading a status condition:
 
 ```yaml
 status:
@@ -85,19 +76,12 @@ status:
 Behavior of the status checker:
 
 - **Condition `True`** → repair succeeded; equivalent events are marked covered.
-- **Condition `False`** → repair failed; NVSentinel drops the group and **creates a new CR to retry**.
-  There is no "terminal failure" state — if a repair is unrecoverable, keep the condition off `True`
-  (leave it `Unknown`/absent) rather than setting `False`, or stop requeueing after your own retry budget.
+- **Condition `False`** → repair failed; NVSentinel drops the group and **creates a new CR to retry**. There is no "terminal failure" state — if a repair is unrecoverable, keep the condition off `True` (leave it `Unknown`/absent) rather than setting `False`, or stop requeueing after your own retry budget.
 - **Condition missing / `Unknown`** → repair in progress; NVSentinel **skips** creating a duplicate CR.
 
-fault-remediation derives an **effective equivalence group** from the matched action — and, when
-`impactedEntityScope` is set, the impacted entity (e.g. `reset-GPU-123`). It skips creating a new CR
-only while a CR in that effective group (or a superseding group) is in progress or already succeeded;
-it does **not** deduplicate every repair on the node.
+fault-remediation derives an **effective equivalence group** from the matched action — and, when `impactedEntityScope` is set, the impacted entity (e.g. `reset-GPU-123`). It skips creating a new CR only while a CR in that effective group (or a superseding group) is in progress or already succeeded; it does **not** deduplicate every repair on the node.
 
-`supersedingEquivalenceGroups` lets a broader action cover a narrower one. The **subordinate** action
-lists the group that supersedes it. For example, a node reboot has the same effect as an RMA, so the
-`hardware-rma` action lists `restart`:
+`supersedingEquivalenceGroups` lets a broader action cover a narrower one. The **subordinate** action lists the group that supersedes it. For example, a node reboot has the same effect as an RMA, so the `hardware-rma` action lists `restart`:
 
 ```yaml
 hardware-rma:
@@ -120,14 +104,11 @@ recommendedAction: CUSTOM
 customRecommendedAction: hardware-rma
 ```
 
-> To send an event from a monitor that you cannot change to your custom action, use a
-> platform-connector override that sets `recommendedAction: CUSTOM` and `customRecommendedAction`.
-> See [Override Transformer Configuration](../configuration/platform-connectors.md#override-transformer-configuration).
+> To send an event from a monitor that you cannot change to your custom action, use a platform-connector override that sets `recommendedAction: CUSTOM` and `customRecommendedAction`. See [Override Transformer Configuration](../configuration/platform-connectors.md#override-transformer-configuration).
 
 ### Step 2 — Register the action in fault-remediation Helm values
 
-Add your action and its template to
-`distros/kubernetes/nvsentinel/charts/fault-remediation/values.yaml`:
+Add your action and its template to `distros/kubernetes/nvsentinel/charts/fault-remediation/values.yaml`:
 
 ```yaml
 maintenance:
@@ -166,9 +147,7 @@ Key fields:
 | `impactedEntityScope` | Optional — per-entity (e.g. per-GPU) dedup; custom actions may set this |
 | `templates` | Go template rendered into the CR body |
 
-> **RBAC:** fault-remediation auto-generates RBAC from `maintenance.actions` (resource name =
-> lowercase `kind` + `s`). Use CRD kinds with regular plurals (`RemediationRequest` →
-> `remediationrequests`); irregular plurals (`Policy` → `policys`) break RBAC.
+> **RBAC:** fault-remediation auto-generates RBAC from `maintenance.actions` (resource name = lowercase `kind` + `s`). Use CRD kinds with regular plurals (`RemediationRequest` → `remediationrequests`); irregular plurals (`Policy` → `policys`) break RBAC.
 
 ### Step 3 — Template variables
 
@@ -205,16 +184,11 @@ status:
 **Golden rules** (same as any NVSentinel plugin):
 
 1. Reconcile is **idempotent** — a no-op once `Complete=True`.
-2. **Make non-idempotent repairs durably idempotent.** A controller restart (or a retry after a
-   `False` condition, which spawns a fresh CR) can re-run your repair before `Complete=True` is
-   persisted. Guard one-shot side effects (opening a ticket, calling a CSP API) with a durable key
-   such as `spec.healthEventId` or a status phase, so the effect happens **at most once**.
-3. Only set `Complete=True` when the repair is **actually** done; requeue until then. Set
-   `Complete=False` only when you want NVSentinel to retry with a new CR.
+2. **Make non-idempotent repairs durably idempotent.** A controller restart (or a retry after a `False` condition, which spawns a fresh CR) can re-run your repair before `Complete=True` is persisted. Guard one-shot side effects (opening a ticket, calling a CSP API) with a durable key such as `spec.healthEventId` or a status phase, so the effect happens **at most once**.
+3. Only set `Complete=True` when the repair is **actually** done; requeue until then. Set `Complete=False` only when you want NVSentinel to retry with a new CR.
 4. One CR per health event — NVSentinel manages its lifecycle via the equivalence group.
 
-Build and push the controller image with Kubebuilder's Makefile, pointing `IMG` at a registry
-**your cluster can pull from**:
+Build and push the controller image with Kubebuilder's Makefile, pointing `IMG` at a registry **your cluster can pull from**:
 
 ```bash
 docker login   # once, to authenticate
@@ -225,22 +199,15 @@ make docker-build docker-push IMG=$IMG
 make install && make deploy IMG=$IMG
 ```
 
-> Use a **public** repo so the cluster can pull without credentials. For a private registry (e.g.
-> NVCR), add the cluster's `imagePullSecret` to the controller Deployment via `config/`.
+> Use a **public** repo so the cluster can pull without credentials. For a private registry (e.g. NVCR), add the cluster's `imagePullSecret` to the controller Deployment via `config/`.
 
-For a full Kubebuilder scaffold, reconciler walkthrough, and one-shot AI prompt, see
-[Writing a Drain Plugin — Appendix: One-shot AI prompt](./writing-a-drain-plugin.md#appendix-one-shot-ai-prompt)
-— the pattern is the same (NVSentinel creates the CR and polls a status condition; your controller
-reconciles it and sets completion), even though the upstream stage is node-drainer instead of
-fault-remediation.
+For a full Kubebuilder scaffold, reconciler walkthrough, and one-shot AI prompt, see [Writing a Drain Plugin — Appendix: One-shot AI prompt](./writing-a-drain-plugin.md#appendix-one-shot-ai-prompt) — the pattern is the same (NVSentinel creates the CR and polls a status condition; your controller reconciles it and sets completion), even though the upstream stage is node-drainer instead of fault-remediation.
 
 ---
 
 ## Appendix: One-shot AI prompt
 
-Paste this to an AI coding agent. It is **self-contained**: the controller is a standalone Kubebuilder
-project in **any repository**; produce Helm values snippets for fault-remediation registration
-(separate from the controller repo). Replace the bracketed parts.
+Paste this to an AI coding agent. It is **self-contained**: the controller is a standalone Kubebuilder project in **any repository**; produce Helm values snippets for fault-remediation registration (separate from the controller repo). Replace the bracketed parts.
 
 ```text
 Create a new NVSentinel custom remediation plugin named "[my-action]" (e.g. "hardware-rma") that

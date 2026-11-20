@@ -262,8 +262,7 @@ The default of `10` handles clusters up to ~3,300 nodes at typical event rates.
 
 ### Scale-Up Guide
 
-**Event production rate**: ~10 events/sec per 1,000 nodes (~36,000 events/hour)
-**Per-worker throughput**: ~3.3 events/sec (at 300ms publish latency)
+**Event production rate**: ~10 events/sec per 1,000 nodes (~36,000 events/hour) **Per-worker throughput**: ~3.3 events/sec (at 300ms publish latency)
 
 | Workers | Throughput (events/sec) | Max Nodes Supported |
 |---------|-------------------------|---------------------|

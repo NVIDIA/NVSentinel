@@ -64,13 +64,7 @@ Maximum time to wait for informer caches to synchronize on startup. Increase thi
 
 Policies define which Kubernetes resources to monitor and when to generate health events.
 
-The default chart configures only the `ReplaceNotReadyNode` policy. NPD condition
-policies are intentionally opt-in because NVSentinel does not install or own
-the cluster's NPD configuration. See the
-[NPD integration tutorial](../tutorials/integrating-node-problem-detector.md)
-and
-the NPD remediation values (`values-npd-remediation.yaml` in the NVSentinel chart)
-before making NPD conditions actionable.
+The default chart configures only the `ReplaceNotReadyNode` policy. NPD condition policies are intentionally opt-in because NVSentinel does not install or own the cluster's NPD configuration. See the [NPD integration tutorial](../tutorials/integrating-node-problem-detector.md) and the NPD remediation values (`values-npd-remediation.yaml` in the NVSentinel chart) before making NPD conditions actionable.
 
 ### Policy Structure
 
@@ -224,9 +218,7 @@ nodeAssociation:
 
 ## Monitoring by resource kind
 
-Each policy watches one Kubernetes resource type. Set `resource.group`, `resource.version`,
-and `resource.kind` accordingly. Write predicates with the [common CEL patterns](#common-patterns)
-on the `resource` object.
+Each policy watches one Kubernetes resource type. Set `resource.group`, `resource.version`, and `resource.kind` accordingly. Write predicates with the [common CEL patterns](#common-patterns) on the `resource` object.
 
 ### Node
 
@@ -237,8 +229,7 @@ resource:
   kind: Node
 ```
 
-Nodes are cluster-scoped — do not set `resource.namespace`. Do not set `nodeAssociation`; the
-monitor uses the Node name automatically.
+Nodes are cluster-scoped — do not set `resource.namespace`. Do not set `nodeAssociation`; the monitor uses the Node name automatically.
 
 ### Pod
 
@@ -250,12 +241,7 @@ resource:
   namespace: default   # optional; omit to watch all namespaces
 ```
 
-Pods must include `nodeAssociation` (usually `resource.spec.nodeName`; see
-[direct reference](#direct-field-reference)). Gate predicates so every matched Pod has a
-non-empty node — e.g. `has(resource.spec.nodeName) && resource.spec.nodeName != ""` — so
-unscheduled Pods never match; otherwise the reconciler falls back to the Pod name when
-association is empty. For production DaemonSet operator monitoring, see
-[Monitoring Critical Operators](../monitoring-critical-operators.md).
+Pods must include `nodeAssociation` (usually `resource.spec.nodeName`; see [direct reference](#direct-field-reference)). Gate predicates so every matched Pod has a non-empty node — e.g. `has(resource.spec.nodeName) && resource.spec.nodeName != ""` — so unscheduled Pods never match; otherwise the reconciler falls back to the Pod name when association is empty. For production DaemonSet operator monitoring, see [Monitoring Critical Operators](../monitoring-critical-operators.md).
 
 ### Event
 
@@ -266,14 +252,11 @@ resource:
   kind: Event
 ```
 
-Events must include `nodeAssociation` that resolves the node from the object the event is
-about — typically a `lookup()` on `resource.regarding`.
+Events must include `nodeAssociation` that resolves the node from the object the event is about — typically a `lookup()` on `resource.regarding`.
 
 ### Policy name and output
 
-The policy `name` is sent as the health event `checkName`. Whether that becomes a node
-condition or a Kubernetes Event on the node depends on `isFatal` — see
-[INTEGRATIONS](../INTEGRATIONS.md#condition-vs-event-behavior).
+The policy `name` is sent as the health event `checkName`. Whether that becomes a node condition or a Kubernetes Event on the node depends on `isFatal` — see [INTEGRATIONS](../INTEGRATIONS.md#condition-vs-event-behavior).
 
 ## Policy Examples
 
@@ -327,8 +310,7 @@ policies:
 
 ### Example 3: Warning Event on Pod
 
-Event objects do not store the node name directly. Resolve the node by looking up the Pod
-referenced by `resource.regarding`.
+Event objects do not store the node name directly. Resolve the node by looking up the Pod referenced by `resource.regarding`.
 
 ```yaml
 policies:

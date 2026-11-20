@@ -160,9 +160,7 @@ healthEvent:
     skip: true                  # Or use force: true; do not set both
 ```
 
-For each override block, `force` and `skip` are mutually exclusive. Use `force`
-when this policy should perform the action regardless of normal rules, or `skip`
-when this policy should bypass the action.
+For each override block, `force` and `skip` are mutually exclusive. Use `force` when this policy should perform the action regardless of normal rules, or `skip` when this policy should bypass the action.
 
 ## Testing Policies
 

@@ -123,6 +123,4 @@ Gather diagnostics before remediation for troubleshooting and root cause analysi
 
 The Fault Remediation module creates CRDs consumed by external operators:
 
-**Janitor Operator**: Watches for maintenance CRDs and performs cloud provider API calls to reboot/terminate nodes.
-**Custom Break-Fix Systems**: Define custom CRD schemas and deploy operators to integrate with your own maintenance systems.
-**Manual Workflow Systems**: Deploy a controller that creates tickets from CRs for manual processing in your ticketing system.
+**Janitor Operator**: Watches for maintenance CRDs and performs cloud provider API calls to reboot/terminate nodes. **Custom Break-Fix Systems**: Define custom CRD schemas and deploy operators to integrate with your own maintenance systems. **Manual Workflow Systems**: Deploy a controller that creates tickets from CRs for manual processing in your ticketing system.
