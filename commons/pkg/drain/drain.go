@@ -98,9 +98,10 @@ func didDrainCompleteForEvent(ctx context.Context, healthEventStore datastore.He
 }
 
 // earlierDrainScope returns the entity an earlier drain covered, or nil for a drain of the full node.
-// A recorded decision keeps the scope that was drained, so a later change to partialDrainEnabled does not
-// rewrite it. An event with no record was written before decisions were stored, so its scope is derived again.
-// The entity-type map was not configurable then, so the derivation uses the built-in entry.
+// node-drainer records the scope on each event before it drains, so a later change to partialDrainEnabled or
+// to partialRemediationEntityTypes does not rewrite it. An event without a record was drained by a version
+// that did not record the scope and gave partial drains only to COMPONENT_RESET on GPU_UUID, so its scope is
+// derived from the built-in entry.
 func earlierDrainScope(status *datastore.HealthEventWithStatus, healthEvent *protos.HealthEvent,
 	partialDrainEnabled bool) (*protos.Entity, error) {
 	if decision := status.HealthEventStatus.DrainDecision; decision != nil {

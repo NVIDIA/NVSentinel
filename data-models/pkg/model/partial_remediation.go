@@ -57,8 +57,8 @@ type PartialRemediationDevice struct {
 // GPUUUIDEntityType is the entity type of the built-in entry.
 const GPUUUIDEntityType = "GPU_UUID"
 
-// DefaultPartialRemediationEntityTypes returns the built-in GPU_UUID entry, which matches the behaviour
-// before the map was configurable.
+// DefaultPartialRemediationEntityTypes returns the built-in GPU_UUID entry. Components use it when their
+// configuration has no partialRemediationEntityTypes key, and the chart default sets the same entry.
 func DefaultPartialRemediationEntityTypes() PartialRemediationEntityTypes {
 	return PartialRemediationEntityTypes{
 		GPUUUIDEntityType: {
