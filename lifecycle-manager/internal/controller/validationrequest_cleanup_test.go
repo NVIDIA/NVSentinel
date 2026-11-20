@@ -117,4 +117,124 @@ var _ = Describe("ValidationRequest provider cleanup", func() {
 		_, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("keeps the node claim until the provider delete of a timed-out attempt is accepted", func() {
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		vrName, nodeName := "vr-cleanup-claim-"+suffix, "node-cleanup-claim-"+suffix
+		testConfig := defaultTestConfig()
+		provider := testConfig.Validation.Spec.Providers["test-provider"]
+		provider.TimeoutSeconds = 0
+		testConfig.Validation.Spec.Providers["test-provider"] = provider
+
+		failDelete := false
+		intercepted := interceptor.NewClient(k8sClient.(client.WithWatch), interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if failDelete {
+					return fmt.Errorf("injected provider deletion failure")
+				}
+
+				return c.Delete(ctx, obj, opts...)
+			},
+		})
+		r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+			config: testConfig, client: intercepted, nodeNames: []string{nodeName},
+			spec: v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+		})
+		vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, maxReconcileIterations)
+		objectName := vr.Status.TestGroups[0].Attempts[0].ObjectName
+
+		failDelete = true
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).To(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, req.NamespacedName, &vr)).To(Succeed())
+		Expect(vr.Status.TestGroups[0].Attempts[0].FailureReason).To(Equal(v1alpha1.FailureReasonTestTimeout))
+		Expect(getNode(ctx, nodeName).Annotations[annotationActiveValidationRequest]).To(Equal(vrName),
+			"the node stays claimed while the provider object still exists")
+
+		failDelete = false
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, req.NamespacedName, &vr)).To(Succeed())
+		Expect(vr.Status.Phase).To(Equal(v1alpha1.PhaseFailed))
+		Expect(getNode(ctx, nodeName).Annotations[annotationActiveValidationRequest]).To(BeEmpty())
+
+		stale := &unstructured.Unstructured{}
+		stale.SetGroupVersionKind(testJobGVK)
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{
+			Name: objectName, Namespace: testNamespace}, stale))).To(BeTrue())
+	})
+
+	It("retries cleanup of persisted attempts when another group fails to reconcile", func() {
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		vrName := "vr-cleanup-indep-" + suffix
+		nodeNames := []string{"node-cleanup-indep-a-" + suffix, "node-cleanup-indep-b-" + suffix}
+
+		failDelete, failReadOf := false, ""
+		intercepted := interceptor.NewClient(k8sClient.(client.WithWatch), interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if failDelete {
+					return fmt.Errorf("injected provider deletion failure")
+				}
+
+				return c.Delete(ctx, obj, opts...)
+			},
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+				opts ...client.GetOption) error {
+				if _, ok := obj.(*unstructured.Unstructured); ok && failReadOf != "" && key.Name == failReadOf {
+					return fmt.Errorf("injected provider read failure")
+				}
+
+				return c.Get(ctx, key, obj, opts...)
+			},
+		})
+		r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+			config: twoTestConfig(false, false), client: intercepted, nodeNames: nodeNames,
+			spec: v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{
+				{Name: nodeNames[0]}, {Name: nodeNames[1]}}},
+		})
+		vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, maxReconcileIterations)
+
+		var running []*v1alpha1.TestGroupStatus
+
+		for i := range vr.Status.TestGroups {
+			if vr.Status.TestGroups[i].Phase == v1alpha1.PhaseRunning {
+				running = append(running, &vr.Status.TestGroups[i])
+			}
+		}
+
+		Expect(running).To(HaveLen(2))
+
+		objectA := running[0].Attempts[0].ObjectName
+		objectB := running[1].Attempts[0].ObjectName
+		Expect(updateObjectStatus(ctx, objectA, testSuccessCondType)).To(Succeed())
+
+		failDelete = true
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).To(HaveOccurred())
+		Expect(k8sClient.Get(ctx, req.NamespacedName, &vr)).To(Succeed())
+		Expect(attemptPhaseOf(&vr, objectA)).To(Equal(v1alpha1.PhaseSucceeded))
+
+		failDelete, failReadOf = false, objectB
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).To(HaveOccurred())
+
+		providerA := &unstructured.Unstructured{}
+		providerA.SetGroupVersionKind(testJobGVK)
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{
+			Name: objectA, Namespace: testNamespace}, providerA))).To(BeTrue(),
+			"the persisted attempt is cleaned up even though the other group could not be read")
+	})
 })
+
+func attemptPhaseOf(vr *v1alpha1.ValidationRequest, objectName string) v1alpha1.Phase {
+	for _, g := range vr.Status.TestGroups {
+		for _, a := range g.Attempts {
+			if a.ObjectName == objectName {
+				return a.Phase
+			}
+		}
+	}
+
+	return ""
+}

@@ -433,6 +433,13 @@ func (r *ValidationRequestReconciler) reconcileRunning(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest) (ctrl.Result, error) {
 	hasFailedTestGroups, hasRunningTestGroups, hasPendingTestGroups, err := r.reconcileTestGroups(ctx, validationRequest)
 	if err != nil {
+		// A failure while reconciling one running TestGroup must not block cleanup of attempts that an earlier
+		// reconcile already persisted for other TestGroups.
+		if cleanupErr := r.cleanupPersistedTestGroupObjects(ctx, validationRequest.Name); cleanupErr != nil {
+			slog.WarnContext(ctx, "Failed to clean up finished TestGroup objects", "validationRequest",
+				validationRequest.Name, "error", cleanupErr)
+		}
+
 		return ctrl.Result{}, err
 	}
 
@@ -451,6 +458,17 @@ func (r *ValidationRequestReconciler) reconcileRunning(ctx context.Context,
 	allTerminal := !hasRunningTestGroups && (!hasPendingTestGroups || hasFailedTestGroups)
 
 	if allTerminal {
+		// Persist the attempt results and delete the provider objects before releasing the nodes. If a provider
+		// object cannot be deleted, the nodes stay claimed so another request cannot create a second object on them.
+		if err := r.Status().Update(ctx, validationRequest); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update ValidationRequest %q status before completion: %w",
+				validationRequest.Name, err)
+		}
+
+		if err := r.cleanupFinishedTestGroupObjects(ctx, validationRequest); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		phase := terminalPhase(hasFailedTestGroups, validationRequest)
 		return r.completeValidationRequest(ctx, validationRequest, phase, nil, nil)
 	}
@@ -739,6 +757,17 @@ func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Conte
 		"failedNodes", failedNodes)
 
 	return nil
+}
+
+// cleanupPersistedTestGroupObjects cleans up using the ValidationRequest as stored in the API server, so it only acts
+// on attempt results that are already durable.
+func (r *ValidationRequestReconciler) cleanupPersistedTestGroupObjects(ctx context.Context, name string) error {
+	var persisted v1alpha1.ValidationRequest
+	if err := r.Get(ctx, client.ObjectKey{Name: name}, &persisted); err != nil {
+		return client.IgnoreNotFound(fmt.Errorf("get ValidationRequest %q: %w", name, err))
+	}
+
+	return r.cleanupFinishedTestGroupObjects(ctx, &persisted)
 }
 
 // cleanupFinishedTestGroupObjects runs only after attempt status has been persisted. Keeping the
