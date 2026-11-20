@@ -59,6 +59,7 @@ jobs:
         component:
           - gpu-health-monitor-dcgm3
           - gpu-health-monitor-dcgm4
+          - gpu-health-monitor-dcgm4.8.0-plus
           - syslog-health-monitor
           - log-collector
           - file-server-cleanup
@@ -74,6 +75,8 @@ jobs:
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm3'
           - component: gpu-health-monitor-dcgm4
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4'
+          - component: gpu-health-monitor-dcgm4.8.0-plus
+            make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4.8.0-plus'
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-build'
           # Log Collection (Docker-based)
