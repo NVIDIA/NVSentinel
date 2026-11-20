@@ -119,3 +119,44 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: Action COMPONENT_RESET is in the scopedActions of both ACCEL_SERIAL and GPU_UUID. An action can be scoped to only one entity type.
+
+  - it: fails for an entity type with an empty name
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes:
+        "":
+          devices:
+            - resourceNames: ["example.com/accel"]
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes has an entity type with an empty name
+
+  - it: fails for an empty scoped action
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.GPU_UUID.scopedActions: [""]
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes.GPU_UUID.scopedActions has an empty action. An empty list turns partial drains off for the entity type.
+
+  - it: fails for an empty resource name
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - resourceNames: [""]
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes.ACCEL_SERIAL.devices[0].resourceNames has an empty name.
+
+  - it: fails for an empty DeviceClass name
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - driver: accel.example.com
+            deviceClasses: [""]
+            entityValueAttribute: serial
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes.ACCEL_SERIAL.devices[0].deviceClasses has an empty name.

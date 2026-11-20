@@ -801,3 +801,20 @@ func (s *completedDrainStore) FindHealthEventsByQuery(context.Context,
 	datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
 	return []datastore.HealthEventWithStatus{s.event}, nil
 }
+
+// TestEvaluateEventWithDatabase_ScopedActionWithoutEntity_ReturnsErrorForRetry checks that an event whose
+// scoped action has no entity of the configured type is retried, not marked Failed, so a fix to
+// scopedActions lets the drain continue.
+func TestEvaluateEventWithDatabase_ScopedActionWithoutEntity_ReturnsErrorForRetry(t *testing.T) {
+	evaluator := &NodeDrainEvaluator{config: config.TomlConfig{PartialDrainEnabled: true}}
+	event := quarantinedEvent("node-1")
+	event.HealthEvent.RecommendedAction = protos.RecommendedAction_COMPONENT_RESET
+	event.HealthEvent.EntitiesImpacted = []*protos.Entity{{EntityType: "NIC", EntityValue: "eth0"}}
+
+	recorder := &decisionRecorder{}
+
+	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, nil, recorder.record)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Empty(t, recorder.decisions)
+}
