@@ -2,9 +2,9 @@
 
 ## Context
 
-NVHV ([Health Validation](https://github.com/dsx-ai-factory/health-validation)) runs node health checks, such as DCGM's health checks and Xid detection, and reports the result as one verdict for the node. Serving that verdict over gRPC (`health.verdict.v1.VerdictService/Evaluate`, through `health-validation serve`) isn't in NVHV yet: it is in flight in [NVHV PR 268](https://github.com/dsx-ai-factory/health-validation/pull/268), and this design depends on it. Each result in the verdict has a severity and an action. NVSentinel wants to use these checks: first Xid detection to move XID from syslog-health-monitor to NVHV, then DCGM's health checks, which replace the DCGM health checks in gpu-health-monitor (GHM).
+NVHV ([Health Validation](https://github.com/dsx-ai-factory/health-validation)) runs node health checks, such as DCGM's health checks and Xid detection, and reports the result as one verdict for the node. Serving that verdict over gRPC (`health.verdict.v1.VerdictService/Evaluate`, through `health-validation serve`) isn't in NVHV yet: it is in flight in [NVHV PR 268](https://github.com/dsx-ai-factory/health-validation/pull/268), and this design depends on it. Each result in the verdict has a severity and an action. NVSentinel plans to use these checks in place of its own, one kind at a time, such as Xid detection, done today by syslog-health-monitor, and the DCGM health checks, done today by gpu-health-monitor (GHM).
 
-Every kind of check needs the same things from NVSentinel: a way to run NVHV on each GPU node, call it, turn its verdict into health events, and handle NVHV being down. This ADR decides those shared parts once; each kind of check has its own design for how its results become events.
+Every kind of check needs the same things from NVSentinel: a way to run NVHV on each GPU node, call it, turn its verdict into health events, and handle NVHV being down. This ADR decides those shared parts once; how each kind of check's results become events will be designed separately.
 
 ## Decision
 
@@ -29,10 +29,10 @@ flowchart TB
 
 - **Pod.** One pod per GPU node, from a DaemonSet in NVSentinel's chart, with two containers: the monitor, and NVHV (`health-validation serve`, loopback only) from the image NVHV publishes.
   - **NVHV owns:** running the checks, each result's severity and action, and the connections to the sources it reads (for example DCGM, NVML and the host journal).
-  - **The monitor owns:** the poll interval, the faults it reported, de-duplication, saved state, and the events.
-- **Poll.** Every poll interval (configurable, default 15 s) the monitor calls `Evaluate` and gets one verdict for the node. It turns the results into events as each kind of check's design describes, and publishes only what changed; when nothing changed, it publishes nothing.
-- **Publishing.** The events of one poll go to NVSentinel's platform connector in one batch, through NVSentinel's shared publishing client: the node-local platform connector socket, or a central connector when `HEALTH_PUBLISH_TARGET` is set. Within a batch, every new fault goes before any recovery, so a fault that clears while another appears never leaves the node with no active fault for a moment. The monitor updates its record of reported faults only after the batch was delivered; if publishing fails, the next poll sends the same events again.
-- **NVHV unreachable.** When the call to NVHV fails (`DEADLINE_EXCEEDED`, `UNAVAILABLE`, `INTERNAL`, or no connection), it is an application error, not a node condition: the monitor logs it, sends no health event, and neither raises nor clears any fault until NVHV answers again. Kubernetes restarts NVHV through its liveness probe.
+  - **The monitor owns:** the poll interval, the faults it reported, saved state, and the events.
+- **Poll.** Every poll interval (configurable, default 15 s) the monitor calls `Evaluate` and gets one verdict for the node. It turns the results into events in the way designed for each kind of check, and publishes only what changed; when nothing changed, it publishes nothing.
+- **Publishing.** The events of one poll go to NVSentinel's platform connector in one batch, through NVSentinel's shared publishing client: the node-local platform connector socket, or a central connector when `HEALTH_PUBLISH_TARGET` is set. The monitor updates its record of reported faults only after the batch was delivered; if publishing fails, the next poll sends the same events again.
+- **NVHV unreachable.** When the call to NVHV fails (`DEADLINE_EXCEEDED`, `UNAVAILABLE`, `INTERNAL`, or no connection), the monitor logs it, sends no health event, and neither raises nor clears any fault until NVHV answers again. Kubernetes restarts NVHV through its liveness probe.
 - **Chart.** NVSentinel's chart provides:
   - `global.nvidiaHealthValidationMonitor.enabled`, which turns the monitor on for the whole cluster.
   - one poll interval, configurable in the chart (default 15 s), passed to the monitor and to the NVHV settings that depend on it;
@@ -45,7 +45,6 @@ flowchart TB
 
 - **NVHV owns its build.** The sidecar runs the image NVHV publishes, including the libraries its checks load, such as DCGM's.
 - **Failures stay apart.** Kubernetes restarts each container on its own, so an NVHV crash doesn't take the monitor down, and NVHV gets its own liveness probe.
-- **Loopback only.** NVHV's `serve` accepts only a loopback address ([NVHV PR 268](https://github.com/dsx-ai-factory/health-validation/pull/268)), so its API, which has no authentication, can't be reached from outside the pod. The sidecar shares the pod's network, so the monitor calls it at `localhost` with no Service or TLS.
 - **One monitor for every check.** Polling, publishing, deployment and NVHV error handling are written once; a new kind of check adds only how its results become events and its settings.
 
 ## Consequences
@@ -58,15 +57,11 @@ flowchart TB
 
 ### Negative
 
-- **NVSentinel depends on NVHV:** the gRPC server ([NVHV PR 268](https://github.com/dsx-ai-factory/health-validation/pull/268), not merged yet), its published image, and the NVHV changes each kind of check needs.
-- **NVHV down means no checks.** While NVHV is unreachable, the monitor sees nothing; it only logs it.
-- **One NVHV evaluation at a time.** A check that hangs in NVHV, such as a stuck DCGM call, blocks every other kind of check until NVHV recovers or restarts.
+- **NVSentinel's detection depends on NVHV.** Everything the monitor reports comes from NVHV's verdict. While NVHV is unreachable (crashed, hung, restarting, or never started), no checks run on the node and no fault is raised or cleared; the monitor only logs it and emit the metric for alert.
 
 ### Mitigations
 
 - NVHV's liveness probe restarts it when it hangs, and the native sidecar keeps the monitor from polling before NVHV is listening.
-- Each kind of check reads only its own results and keeps its own state, so a failure in one doesn't move the other's state.
-- Scripts and rules that act on one kind of check filter by check name, not by agent.
 
 ## Alternatives Considered
 
