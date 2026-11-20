@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
@@ -402,6 +403,36 @@ func TestTransform_ClearsStatus(t *testing.T) {
 	require.Equal(t, v1.NodeStatus{}, cached.Status)
 }
 
+func TestTransform_ManagedFields_KeptOnlyWhenARuleReadsThem(t *testing.T) {
+	managedFields := []metav1.ManagedFieldsEntry{{Manager: "kubelet"}}
+
+	tests := []struct {
+		name       string
+		expression string
+		want       []metav1.ManagedFieldsEntry
+	}{
+		{name: "shipped predicate drops them", expression: shippedPredicate},
+		{name: "a rule that reads them keeps them", expression: `size(node.metadata.managedFields) > 0`, want: managedFields},
+		{name: "a rule that uses the whole node keeps them", expression: `size(node) > 0`, want: managedFields},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keys := Derive(nodeRuleConfig(tt.expression), testOperational())
+
+			node := &v1.Node{Name: "test-node", ManagedFields: managedFields}
+
+			transformed, err := keys.Transform()(node)
+			require.NoError(t, err)
+
+			cached, ok := transformed.(*v1.Node)
+			require.True(t, ok)
+
+			require.Equal(t, tt.want, cached.ManagedFields)
+		})
+	}
+}
+
 func TestTransform_NonNodeObject_ReturnsError(t *testing.T) {
 	keys := Derive(nodeRuleConfig(shippedPredicate), testOperational())
 
@@ -416,7 +447,9 @@ func TestZeroKeys_Transform_PrunesNothing(t *testing.T) {
 	labels := map[string]string{"kubernetes.io/arch": "amd64"}
 	annotations := map[string]string{"unrelated": "kept"}
 
-	node := &v1.Node{Name: "test-node", Labels: labels, Annotations: annotations}
+	managedFields := []metav1.ManagedFieldsEntry{{Manager: "kubelet"}}
+
+	node := &v1.Node{Name: "test-node", Labels: labels, Annotations: annotations, ManagedFields: managedFields}
 
 	transformed, err := Keys{}.Transform()(node)
 	require.NoError(t, err)
@@ -426,5 +459,6 @@ func TestZeroKeys_Transform_PrunesNothing(t *testing.T) {
 
 	require.Equal(t, labels, cached.Labels)
 	require.Equal(t, annotations, cached.Annotations)
+	require.Equal(t, managedFields, cached.ManagedFields)
 	require.Equal(t, v1.NodeStatus{}, cached.Status)
 }
