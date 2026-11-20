@@ -16,11 +16,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -109,7 +111,7 @@ func main() {
 		})
 	}
 
-	metadata, err := runCollector(ctx)
+	metadata, err := runCollector(ctx, newNvidiaSmiFailuresCounter(prometheus.DefaultRegisterer))
 	if err != nil {
 		slog.Error("Metadata collector failed", "error", err)
 		cancel()
@@ -212,7 +214,7 @@ func pollPodDevices(ctx context.Context, podDeviceMapper mapper.PodDeviceMapper,
 	}
 }
 
-func runCollector(ctx context.Context) (*model.GPUMetadata, error) {
+func runCollector(ctx context.Context, nvidiaSmiFailures *prometheus.CounterVec) (*model.GPUMetadata, error) {
 	slog.Info("Initializing NVML")
 
 	nvmlWrapper := &nvml.NVMLWrapper{}
@@ -241,6 +243,26 @@ func runCollector(ctx context.Context) (*model.GPUMetadata, error) {
 		"nvswitch_count", len(metadata.NVSwitches),
 	)
 
+	failedSteps := metadataCollector.FailedSteps()
+	for _, step := range failedSteps {
+		nvidiaSmiFailures.WithLabelValues(step).Inc()
+	}
+
+	// A complete previous file is worth more than this one on a degraded run:
+	// consumers such as nic-health-monitor cannot start without nic_topology. The fresh metadata
+	// is still returned, so the pod mapper starts.
+	if len(failedSteps) > 0 {
+		if previousIsComplete(*outputPath, metadata) {
+			slog.Warn("nvidia-smi steps failed; keeping the previous metadata file, which is complete",
+				"steps", failedSteps, "output_path", *outputPath)
+
+			return metadata, nil
+		}
+
+		slog.Warn("nvidia-smi steps failed and no complete previous metadata matches; writing their fields empty",
+			"steps", failedSteps, "output_path", *outputPath)
+	}
+
 	slog.Info("Writing metadata to file", "output_path", *outputPath)
 
 	metadataWriter, err := writer.NewWriter(*outputPath)
@@ -255,4 +277,51 @@ func runCollector(ctx context.Context) (*model.GPUMetadata, error) {
 	slog.Info("Successfully wrote GPU metadata", "output_path", *outputPath)
 
 	return metadata, nil
+}
+
+// previousIsComplete reports whether the metadata file at path, written by an earlier run, can
+// stand in for this one: same driver version, same GPUs by UUID in the same order, and the data
+// of every nvidia-smi step present. Without the driver check a node where a step fails on every
+// start would keep a file from before a driver upgrade. The data check covers every step, not
+// only the ones that failed now, so a file left incomplete by an earlier failure is never kept
+// over a run that collected what it is missing. Unreadable files count as no.
+func previousIsComplete(path string, metadata *model.GPUMetadata) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+
+	var previous model.GPUMetadata
+	if err := json.Unmarshal(data, &previous); err != nil {
+		return false
+	}
+
+	if previous.DriverVersion != metadata.DriverVersion ||
+		!slices.EqualFunc(previous.GPUs, metadata.GPUs, func(a, b model.GPUInfo) bool { return a.UUID == b.UUID }) {
+		return false
+	}
+
+	for _, step := range []string{collector.StepNVLink, collector.StepTopo} {
+		if !hasStepData(&previous, step) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// hasStepData reports whether metadata has the fields that step provides.
+func hasStepData(metadata *model.GPUMetadata, step string) bool {
+	switch step {
+	case collector.StepTopo:
+		return len(metadata.NICTopology) > 0
+	case collector.StepNVLink:
+		for _, gpu := range metadata.GPUs {
+			if slices.ContainsFunc(gpu.NVLinks, func(link model.NVLink) bool { return link.RemoteLinkID == -1 }) {
+				return false
+			}
+		}
+	}
+
+	return true
 }

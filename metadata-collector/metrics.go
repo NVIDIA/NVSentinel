@@ -17,6 +17,8 @@ package main
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
 )
 
 // podMapperMetrics is the alertable surface for the poll loop: a total to alert on a rising
@@ -63,4 +65,21 @@ func newCollectionCompletedGauge(reg prometheus.Registerer) prometheus.Gauge {
 		Help: "Unix time GPU metadata collection completed, or 0 while it is still running. " +
 			"Collection can block on a wedged GPU driver, so 0 long after process start means it has stalled.",
 	})
+}
+
+// newNvidiaSmiFailuresCounter makes a degraded collection visible: collection still completes
+// when an nvidia-smi step fails, so the completed timestamp alone reads healthy.
+//
+// Both series are created at 0, so the first failure is an increase that increase() can see.
+func newNvidiaSmiFailuresCounter(reg prometheus.Registerer) *prometheus.CounterVec {
+	failures := promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+		Name: "metadata_collector_nvidia_smi_failures_total",
+		Help: "nvidia-smi steps whose output could not be used, by command. " +
+			"The previous metadata file is kept when it is complete and from the same driver and GPUs.",
+	}, []string{"command"})
+
+	failures.WithLabelValues(collector.StepNVLink)
+	failures.WithLabelValues(collector.StepTopo)
+
+	return failures
 }

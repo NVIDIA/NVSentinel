@@ -45,6 +45,7 @@ type fakeNVMLClient struct {
 	driverVersion         string
 	chassisSerial         *string
 	getChassisSerialCalls int
+	nvlinkErr             error
 }
 
 // GetDeviceCount returns the configured device count.
@@ -62,9 +63,9 @@ func (f *fakeNVMLClient) BuildDeviceMap() (map[string]gonvml.Device, error) {
 	return map[string]gonvml.Device{}, nil
 }
 
-// ParseNVLinkTopologyWithContext returns an empty topology map.
+// ParseNVLinkTopologyWithContext returns an empty topology map and the configured error.
 func (f *fakeNVMLClient) ParseNVLinkTopologyWithContext(context.Context) (map[int]nvml.GPUNVLinkTopology, error) {
-	return map[int]nvml.GPUNVLinkTopology{}, nil
+	return map[int]nvml.GPUNVLinkTopology{}, f.nvlinkErr
 }
 
 // GetGPUInfo returns a stub GPUInfo for the given index.
@@ -182,6 +183,7 @@ func TestCollectPopulatesNICTopology(t *testing.T) {
 	assert.Equal(t, matrix.Relationships, metadata.NICTopology)
 	assert.Equal(t, 0, metadata.GPUs[0].NUMANode)
 	assert.Equal(t, 1, metadata.GPUs[1].NUMANode)
+	assert.Empty(t, collector.FailedSteps())
 }
 
 // TestCollectTopoFailureLeavesTopologyEmpty verifies the collector does
@@ -195,6 +197,19 @@ func TestCollectTopoFailureLeavesTopologyEmpty(t *testing.T) {
 	metadata, err := collector.Collect(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, metadata.NICTopology)
+	assert.Equal(t, []string{StepTopo}, collector.FailedSteps())
+}
+
+// TestCollectRecordsFailedSteps verifies that failed nvidia-smi steps are reported, so the
+// caller can count them and keep the previous metadata file.
+func TestCollectRecordsFailedSteps(t *testing.T) {
+	fake := &fakeNVMLClient{deviceCount: 1, driverVersion: "560.35.03", nvlinkErr: fmt.Errorf("nvlink -R timed out")}
+
+	collector := NewCollector(fake, &fakeNICTopoCollector{err: fmt.Errorf("topo -m exited 1")})
+
+	_, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{StepNVLink, StepTopo}, collector.FailedSteps())
 }
 
 // TestCollectNoNICsLeavesTopologyEmptyButPopulatesNUMA verifies that a
@@ -248,6 +263,7 @@ func TestCollectGPUCountMismatchDropsTopology(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, metadata.NICTopology, "topology must be dropped on GPU count mismatch")
 	assert.Equal(t, -1, metadata.GPUs[0].NUMANode, "NUMA must stay -1 when topology is dropped")
+	assert.Equal(t, []string{StepTopo}, collector.FailedSteps())
 }
 
 func TestCheckGPUCountMismatch(t *testing.T) {
@@ -273,4 +289,3 @@ func TestCheckGPUCountMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "3 GPU columns")
 	assert.Contains(t, err.Error(), "1 GPUs")
 }
-

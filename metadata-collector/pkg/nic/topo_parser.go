@@ -22,13 +22,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvidiasmi"
 )
 
 const topoCommandTimeout = 30 * time.Second
@@ -79,7 +80,7 @@ func RunTopoCommand(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, topoCommandTimeout)
 	defer cancel()
 
-	output, err := exec.CommandContext(ctx, "nvidia-smi", "topo", "-m").CombinedOutput()
+	output, err := nvidiasmi.Run(ctx, "topo", "-m")
 	if err != nil {
 		return "", fmt.Errorf("nvidia-smi topo -m failed: %w (output: %s)", err, string(output))
 	}
