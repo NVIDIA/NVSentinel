@@ -119,6 +119,8 @@ janitor:
 
 When `true`, the Janitor creates the Custom Resource but does not call the Janitor Provider to execute any node operation. Use this to test the fault-remediation → janitor CR creation pipeline without triggering actual node reboots, terminations, or GPU resets.
 
+A GPUReset waits before it stops any service, with a `ManualMode` condition whose reason is `OutsideActorRequired`. It changes no node label and creates no reset Job. When manual mode is turned off and janitor restarts, the GPUReset continues with a new start time, so the time it waited does not count against the timeout. A GPUReset that had already started stopping services when manual mode was turned on finishes normally.
+
 ## HTTP Port
 
 ```yaml

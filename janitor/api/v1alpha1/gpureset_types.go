@@ -45,6 +45,8 @@ const (
 	ServicesRestored  GPUResetConditionType = "ServicesRestored"
 	Terminating       GPUResetConditionType = "Terminating"
 	Complete          GPUResetConditionType = "Complete"
+	// ManualMode is true while the GPUReset waits because janitor runs in manual mode.
+	ManualMode GPUResetConditionType = "ManualMode"
 )
 
 const (
@@ -52,6 +54,9 @@ const (
 	ReasonResetPending       GPUResetReason = "Pending"
 	ReasonReadyForReset      GPUResetReason = "ReadyForReset"
 	ReasonResourceContention GPUResetReason = "ResourceContention"
+	// Manual mode reasons
+	ReasonOutsideActorRequired GPUResetReason = "OutsideActorRequired"
+	ReasonManualModeDisabled   GPUResetReason = "ManualModeDisabled"
 
 	// In-progress reasons
 	ReasonSkipped                    GPUResetReason = "Skipped"

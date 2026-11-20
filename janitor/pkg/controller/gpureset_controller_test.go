@@ -2297,6 +2297,59 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(updatedReset.Status.JobRef).To(BeNil())
 		})
 
+		It("should wait in manual mode without stopping services or creating the reset job, and continue when manual mode is off", func() {
+			manualMode := true
+			reconciler.Config.ManualMode = &manualMode
+			nodeLabels := devicePluginDeployLabels()
+			createNodeWithOperandPods(nodeLabels, devicePluginOperandPodLabels())
+			createReset()
+
+			By("Reconciling until the reset waits in manual mode")
+			observed := reconcileUntil(v1alpha1.ManualMode)
+			observed = append(observed, reconcileTimes(3)...)
+			Expect(getConditionReason(v1alpha1.ManualMode)).To(Equal(string(v1alpha1.ReasonOutsideActorRequired)))
+
+			waiting := getReset()
+			Expect(waiting.Status.Phase).To(Equal(v1alpha1.ResetPending))
+			Expect(meta.FindStatusCondition(waiting.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeNil())
+			Expect(waiting.Status.JobRef).To(BeNil())
+			Expect(waiting.Status.CompletionTime).To(BeNil())
+
+			By("Verifying no node label was changed and no reset job exists")
+			expectUnchanged(observed, nodeLabels, nil)
+			var jobList batchv1.JobList
+			Expect(k8sClient.List(ctx, &jobList, client.InNamespace("default"))).To(Succeed())
+			for _, job := range jobList.Items {
+				Expect(job.Name).NotTo(HavePrefix(resetName))
+			}
+
+			By("Moving the start time back past the timeout while the reset waits")
+			oldStart := metav1.NewTime(time.Now().Add(-2 * reconciler.Config.Timeout))
+			waiting.Status.StartTime = &oldStart
+			Expect(k8sClient.Status().Update(ctx, &waiting)).To(Succeed())
+			Eventually(func(g Gomega) {
+				var cached v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cached)).To(Succeed())
+				g.Expect(cached.Status.StartTime).NotTo(BeNil())
+				g.Expect(cached.Status.StartTime.Time).To(BeTemporally("~", oldStart.Time, time.Second))
+			}, "10s", "100ms").Should(Succeed())
+
+			By("Turning manual mode off and reconciling until the reset is complete")
+			manualMode = false
+			reconcileUntil(v1alpha1.Complete)
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+
+			done := getReset()
+			manualModeCond := meta.FindStatusCondition(done.Status.Conditions, string(v1alpha1.ManualMode))
+			Expect(manualModeCond).NotTo(BeNil())
+			Expect(manualModeCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(manualModeCond.Reason).To(Equal(string(v1alpha1.ReasonManualModeDisabled)))
+			Expect(time.Since(done.Status.StartTime.Time)).To(BeNumerically("<", time.Minute))
+			for label := range devicePluginDeployLabels() {
+				Expect(getNodeLabels()).To(HaveKeyWithValue(label, "true"))
+			}
+		})
+
 		Context("with the GPU clients", func() {
 			const clientsNamespace = "gpu-clients"
 
