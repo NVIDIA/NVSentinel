@@ -665,7 +665,9 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			},
 		},
 		{
-			name:            "Partial drain failure if impacted entity is missing GPU UUID",
+			// The event has no entity for its scoped action. The drain is retried, so a fix to scopedActions lets it
+			// continue, instead of ending with drain-failed.
+			name:            "Partial drain is retried if impacted entity is missing GPU UUID",
 			nodeName:        "completion-node",
 			namespaces:      []string{"completion-test"},
 			nodeQuarantined: model.Quarantined,
@@ -685,9 +687,16 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				},
 			},
 			recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
-			expectedNodeLabel: ptr.To(string(statemanager.DrainFailedLabelValue)),
-			expectError:       false,
+			expectError:       true,
 			numReconciles:     1,
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				require.ErrorContains(t, err, "no supported entities for a partial drain")
+
+				node, getErr := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+				require.NoError(t, getErr)
+				assert.NotEqual(t, string(statemanager.DrainFailedLabelValue),
+					node.Labels[statemanager.NVSentinelStateLabelKey])
+			},
 		},
 		{
 			name:            "Partial drain failure if GPU pod is missing device annotation",
@@ -1485,6 +1494,7 @@ func setupConfiguredTest(t *testing.T, tomlConfig config.TomlConfig, dryRun bool
 		1*time.Minute,
 		new(2),
 		tomlConfig.DrainGPUPods,
+		tomlConfig.EntityTypes(),
 		dryRun,
 		tomlConfig.SystemNamespaces,
 		informers.NodeFields(nil),
@@ -1601,6 +1611,7 @@ func setupCustomDrain(t *testing.T, customDrainConfig config.CustomDrainConfig,
 		1*time.Minute,
 		new(2),
 		false,
+		tomlConfig.EntityTypes(),
 		false,
 		tomlConfig.SystemNamespaces,
 		informers.NodeFields(customDrainNodes.LabelKeys()),
@@ -2815,6 +2826,7 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		1*time.Minute,
 		new(2),
 		false,
+		tomlConfig.EntityTypes(),
 		false,
 		tomlConfig.SystemNamespaces,
 		informers.NodeFields(nil),

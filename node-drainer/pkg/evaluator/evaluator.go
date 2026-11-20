@@ -131,25 +131,11 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	nodeName := healthEvent.HealthEvent.NodeName
 	statusStr := healthEvent.HealthEventStatus.NodeQuarantined
 
+	// The event has no entity for its scoped action. Return the error so the queue retries the event with
+	// backoff: a fix to scopedActions lets the drain continue. A terminal Failed status would end the drain.
 	partialDrainEntity, err := e.eventDrainScope(healthEvent)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to check if node should be partially drained",
-			"node", nodeName,
-			"error", err)
-
-		_, span := tracing.StartSpan(ctx, "node_drainer.evaluate_event")
-		defer span.End()
-
-		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("node_drainer.error.type", "partial_drain_check_failed"),
-			attribute.String("node_drainer.error.message", err.Error()),
-		)
-
-		return &DrainActionResult{
-			Action: ActionUpdateStatus,
-			Status: model.StatusFailed,
-		}, nil
+		return nil, fmt.Errorf("failed to find the partial drain entity for node %s: %w", nodeName, err)
 	}
 
 	result := e.handleAlreadyQuarantined(ctx, statusStr, healthEvent, partialDrainEntity, healthEventStore)
@@ -177,7 +163,7 @@ func (e *NodeDrainEvaluator) eventDrainScope(healthEvent model.HealthEventWithSt
 		return recorded.GetScope(), nil
 	}
 
-	return drain.PartialDrainEntity(healthEvent.HealthEvent, e.config.PartialDrainEnabled)
+	return drain.PartialDrainEntity(healthEvent.HealthEvent, e.config.PartialDrainEnabled, e.config.EntityTypes())
 }
 
 // selectDrainMethod chooses BuiltIn or Custom for this event. A new decision carries the
@@ -853,7 +839,7 @@ func (e *NodeDrainEvaluator) isNodeAlreadyDrained(ctx context.Context, currentEv
 // ScopeForEvent reports the drain scope for a metric label. A recorded decision wins, so a change
 // to partialDrainEnabled does not relabel a drain that already happened. A nil decision is derived.
 func ScopeForEvent(decision *protos.DrainDecision, healthEvent *protos.HealthEvent,
-	partialDrainEnabled bool) (DrainScope, *protos.Entity) {
+	partialDrainEnabled bool, entityTypes model.PartialRemediationEntityTypes) (DrainScope, *protos.Entity) {
 	if decision != nil {
 		if scope := decision.GetScope(); scope != nil {
 			return DrainScopePartial, scope
@@ -862,14 +848,15 @@ func ScopeForEvent(decision *protos.DrainDecision, healthEvent *protos.HealthEve
 		return DrainScopeFull, nil
 	}
 
-	return DrainScopeFor(healthEvent, partialDrainEnabled)
+	return DrainScopeFor(healthEvent, partialDrainEnabled, entityTypes)
 }
 
 // DrainScopeFor reports whether the event drains the whole node or a single entity, and the
 // entity when the drain is partial. Callers need both, so returning them together keeps the
 // scope label and the entity from being derived independently and drifting apart.
-func DrainScopeFor(healthEvent *protos.HealthEvent, partialDrainEnabled bool) (DrainScope, *protos.Entity) {
-	entity, err := drain.PartialDrainEntity(healthEvent, partialDrainEnabled)
+func DrainScopeFor(healthEvent *protos.HealthEvent, partialDrainEnabled bool,
+	entityTypes model.PartialRemediationEntityTypes) (DrainScope, *protos.Entity) {
+	entity, err := drain.PartialDrainEntity(healthEvent, partialDrainEnabled, entityTypes)
 	if err != nil || entity == nil {
 		return DrainScopeFull, nil
 	}

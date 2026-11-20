@@ -62,6 +62,7 @@ type Informers struct {
 	clientset              kubernetes.Interface
 	notReadyTimeoutMinutes *int
 	drainGPUPods           bool
+	entityTypes            model.PartialRemediationEntityTypes
 	dryRunMode             []string
 }
 
@@ -71,10 +72,11 @@ type PodFilter func(*v1.Pod) bool
 // NewInformers creates the pod and node informers used to observe drainable workloads.
 // The pod cache retains only the labels named by podLabelKeys. The node cache retains
 // the fields in nodeFields. Build it with NodeFields, and add each Node rule with
-// AddNodeExpression.
+// AddNodeExpression. entityTypes names the devices that partial drains and drainGPUPods
+// look for.
 func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
-	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
-	nodeFields nodecache.Keys, podLabelKeys ...string) (*Informers, error) {
+	notReadyTimeoutMinutes *int, drainGPUPods bool, entityTypes model.PartialRemediationEntityTypes,
+	dryRun bool, systemNamespaces string, nodeFields nodecache.Keys, podLabelKeys ...string) (*Informers, error) {
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,
@@ -123,6 +125,7 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		),
 		notReadyTimeoutMinutes: notReadyTimeoutMinutes,
 		drainGPUPods:           drainGPUPods,
+		entityTypes:            entityTypes,
 		dryRunMode:             dryRunMode,
 	}, nil
 }
@@ -484,54 +487,22 @@ func matchesPodFilters(pod *v1.Pod, filters []PodFilter) bool {
 }
 
 /*
-This function will filter pods which are using the provided partialDrainEntity. If the partialDrainEntity is nil, all
-pods will be returned which corresponds to a full drain. The partialDrainEntity is initialized by calling
-shouldExecutePartialDrain in evaluator.go. Currently, if the recommended action is COMPONENT_RESET, the
-partialDrainEntity will be the GPU_UUID provided in the HealthEvent.
+filterPodsUsingEntity keeps the pods that use the partialDrainEntity. A nil partialDrainEntity is a full drain, so
+every pod is kept. drain.PartialDrainEntity picks the entity from the scopedActions of
+partialRemediationEntityTypes, for example GPU_UUID for COMPONENT_RESET.
 
-The metadata-collector adds devices with resource names for entities that support partial drains as a pod annotation to
-allow the node-drainer to look up the set of pods which are leveraging that entity. This is configured in
-pod_device_annotation.go which provides a map from impacted entities supporting partial drain to a list of device
-resource names corresponding to that entity type. For example:
-
-	"GPU_UUID": {
-		"nvidia.com/gpu",
-		"nvidia.com/pgpu",
-	},
-
-The metadata-collector will add the following device annotation to any pod that is assigned GPU devices:
+The metadata-collector pod device mapper records the devices of each pod in a pod annotation, keyed by the
+device-plugin resource name or the DRA driver name:
 
 	annotations:
 	  dgxc.nvidia.com/devices: '{"devices":{"nvidia.com/gpu":["GPU-123"]}}'
 
-When the node-drainer receives an unhealthy HealthEvent for COMPONENT_RESET with GPU_UUID = GPU-123, we will only drain
-pods with a device annotation that includes GPU-123:
+For an event with GPU_UUID = GPU-123, we only drain the pods whose annotation lists GPU-123 under a resource name
+or a driver of the GPU_UUID entity type.
 
-	{
-	  healthevent: {
-	    version: Long('1'),
-	    agent: 'syslog-health-monitor',
-	    componentclass: 'GPU',
-	    checkname: 'SysLogsXIDError',
-	    isfatal: true,
-	    ishealthy: false,
-	    message: 'ROBUST_CHANNEL_CTXSW_TIMEOUT_ERROR',
-	    recommendedaction: 2,
-	    errorcode: [
-	      '48'
-	    ],
-	    entitiesimpacted: [
-	      {
-	        entitytype: 'PCI',
-	        entityvalue: '0000:03:00'
-	      },
-	      {
-	        entitytype: 'GPU_UUID',
-	        entityvalue: 'GPU-123'
-	      }
-	    ],
-
-...
+The annotation can miss a device: the mapper has not seen the pod yet, or it wrote the annotation before the
+operator configured that resource name or driver. Such a pod could use the failed device, so the drain fails and
+is retried until the mapper records the device.
 */
 func (i *Informers) filterPodsUsingEntity(ctx context.Context, pods []*v1.Pod, partialDrainEntity *protos.Entity,
 	nodeName string) ([]*v1.Pod, error) {
@@ -539,7 +510,7 @@ func (i *Informers) filterPodsUsingEntity(ctx context.Context, pods []*v1.Pod, p
 		return pods, nil
 	}
 
-	resourceNames, supportedEntity := model.EntityTypeToResourceNames[partialDrainEntity.EntityType]
+	entityType, supportedEntity := i.entityTypes[partialDrainEntity.EntityType]
 	if !supportedEntity {
 		return nil, fmt.Errorf("unsupported impacted entity for partial drains: %s",
 			partialDrainEntity.EntityType)
@@ -549,32 +520,21 @@ func (i *Informers) filterPodsUsingEntity(ctx context.Context, pods []*v1.Pod, p
 		"nodeName", nodeName, "entityType", partialDrainEntity.EntityType,
 		"entityValue", partialDrainEntity.EntityValue)
 
+	annotationKeys := entityType.AnnotationKeys()
+
 	var filteredPods []*v1.Pod
 
 	for _, pod := range pods {
-		deviceAnnotationJSON, podHasDeviceAnnotation := pod.Annotations[model.PodDeviceAnnotationName]
-		// While we can't detect a stale annotation for devices, we can detect pods that are requesting GPUs that do
-		// not have the device annotation at all which would indicate an issue with the metadata-collector.
-		if !podHasDeviceAnnotation {
-			isPodRequestingDevices, err := i.isPodRequestingDevices(ctx, pod, resourceNames)
-			if err != nil {
-				return nil, fmt.Errorf("failed to check device requests for pod %s: %w", pod.Name, err)
-			}
-
-			if isPodRequestingDevices {
-				return nil, fmt.Errorf("pod %s is requesting devices but is missing device annotation; "+
-					"partial drains need the metadata-collector pod device mapper (podMapper.enabled)", pod.Name)
-			}
-
-			continue
+		deviceAnnotation, hasAnnotation, err := podDeviceAnnotation(pod)
+		if err != nil {
+			return nil, err
 		}
 
-		var deviceAnnotation model.DeviceAnnotation
-		if err := json.Unmarshal([]byte(deviceAnnotationJSON), &deviceAnnotation); err != nil {
-			return nil, fmt.Errorf("error unmarshalling device annotation for pod %s: %w", pod.Name, err)
+		if err := i.checkAnnotationRecordsRequests(ctx, pod, entityType, deviceAnnotation, hasAnnotation); err != nil {
+			return nil, err
 		}
 
-		if isPodUsingPartialDrainEntity(deviceAnnotation, resourceNames, partialDrainEntity) {
+		if isPodUsingPartialDrainEntity(deviceAnnotation, annotationKeys, partialDrainEntity) {
 			slog.Info("Pod is eligible to be drained since it's using impacted entity",
 				"podName", pod.Name, "nodeName", nodeName, "entityType", partialDrainEntity.EntityType,
 				"entityValue", partialDrainEntity.EntityValue)
@@ -585,27 +545,123 @@ func (i *Informers) filterPodsUsingEntity(ctx context.Context, pods []*v1.Pod, p
 	return filteredPods, nil
 }
 
-// isPodRequestingDevices reports whether a pod requests the devices through container limits or DRA claims.
-func (i *Informers) isPodRequestingDevices(ctx context.Context, pod *v1.Pod, resourceNames []string) (bool, error) {
+// podDeviceAnnotation parses the device annotation of the pod. The bool is false when the pod has none.
+func podDeviceAnnotation(pod *v1.Pod) (model.DeviceAnnotation, bool, error) {
+	var deviceAnnotation model.DeviceAnnotation
+
+	deviceAnnotationJSON, ok := pod.Annotations[model.PodDeviceAnnotationName]
+	if !ok {
+		return deviceAnnotation, false, nil
+	}
+
+	if err := json.Unmarshal([]byte(deviceAnnotationJSON), &deviceAnnotation); err != nil {
+		return deviceAnnotation, true, fmt.Errorf("error unmarshalling device annotation for pod %s: %w", pod.Name, err)
+	}
+
+	return deviceAnnotation, true, nil
+}
+
+// checkAnnotationRecordsRequests returns an error when the pod requests a device of the entity type that its
+// device annotation has no entry for.
+func (i *Informers) checkAnnotationRecordsRequests(ctx context.Context, pod *v1.Pod,
+	entityType model.PartialRemediationEntityType, deviceAnnotation model.DeviceAnnotation, hasAnnotation bool) error {
+	unrecorded, err := i.unrecordedRequest(ctx, pod, entityType, deviceAnnotation)
+	if err != nil {
+		return fmt.Errorf("failed to check device requests for pod %s: %w", pod.Name, err)
+	}
+
+	switch {
+	case unrecorded == "":
+		return nil
+	case !hasAnnotation:
+		return fmt.Errorf("pod %s is requesting devices but is missing device annotation; "+
+			"partial drains need the metadata-collector pod device mapper (podMapper.enabled)", pod.Name)
+	default:
+		return fmt.Errorf("pod %s is requesting %s but its device annotation has no entry for it; "+
+			"the drain waits for the metadata-collector pod device mapper to record it", pod.Name, unrecorded)
+	}
+}
+
+// unrecordedRequest describes the first device of the entity type that the pod requests and the device
+// annotation has no entry for, or returns "" when the annotation records every request. Resource names come
+// from container limits. DRA requests come from the drivers of the pod's claims (see claimDrivers), which are the
+// names the annotation uses.
+func (i *Informers) unrecordedRequest(ctx context.Context, pod *v1.Pod,
+	entityType model.PartialRemediationEntityType, deviceAnnotation model.DeviceAnnotation) (string, error) {
+	for _, resourceName := range entityType.ResourceNames() {
+		if !hasAnnotationEntry(deviceAnnotation, resourceName) && isPodRequestingResource(pod, resourceName) {
+			return "resource " + resourceName, nil
+		}
+	}
+
+	// Reading a claim is an API call, so skip it when the annotation has an entry for every driver.
+	if len(pod.Spec.ResourceClaims) == 0 || hasAnnotationEntries(deviceAnnotation, entityType.Drivers()) {
+		return "", nil
+	}
+
+	claimed, err := i.claimedDrivers(ctx, pod, entityType)
+	if err != nil {
+		return "", err
+	}
+
+	for _, device := range claimed {
+		if !hasAnnotationEntry(deviceAnnotation, device.driver) {
+			return device.description, nil
+		}
+	}
+
+	return "", nil
+}
+
+func hasAnnotationEntry(deviceAnnotation model.DeviceAnnotation, name string) bool {
+	_, ok := deviceAnnotation.Devices[name]
+	return ok
+}
+
+func hasAnnotationEntries(deviceAnnotation model.DeviceAnnotation, names []string) bool {
+	for _, name := range names {
+		if !hasAnnotationEntry(deviceAnnotation, name) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isPodRequestingResource(pod *v1.Pod, resourceName string) bool {
+	resourceNames := []string{resourceName}
+
+	return areContainersRequestingDevice(pod.Spec.Containers, resourceNames) ||
+		areContainersRequestingDevice(pod.Spec.InitContainers, resourceNames)
+}
+
+// isPodRequestingDevices reports whether a pod requests any of the devices through container limits or DRA claims.
+func (i *Informers) isPodRequestingDevices(ctx context.Context, pod *v1.Pod,
+	devices model.PartialRemediationEntityType) (bool, error) {
+	resourceNames := devices.ResourceNames()
 	if areContainersRequestingDevice(pod.Spec.Containers, resourceNames) ||
 		areContainersRequestingDevice(pod.Spec.InitContainers, resourceNames) {
 		return true, nil
 	}
 
-	return i.isPodClaimingDeviceClass(ctx, pod, resourceNames)
+	return i.isPodClaimingDeviceClass(ctx, pod, devices.DeviceClasses())
 }
 
 // isPodClaimingDeviceClass reports whether any DRA claim of the pod requests one of the device classes.
 func (i *Informers) isPodClaimingDeviceClass(ctx context.Context, pod *v1.Pod,
 	deviceClassNames []string) (bool, error) {
+	if len(deviceClassNames) == 0 {
+		return false, nil
+	}
+
 	for _, podClaim := range pod.Spec.ResourceClaims {
-		claimSpec, err := i.getPodResourceClaimSpec(ctx, pod, podClaim)
+		claim, err := i.getPodResourceClaim(ctx, pod, podClaim)
 		if err != nil {
 			return false, fmt.Errorf("failed to resolve claim %s of pod %s/%s: %w",
 				podClaim.Name, pod.Namespace, pod.Name, err)
 		}
 
-		if claimSpec != nil && isClaimRequestingDeviceClass(claimSpec, deviceClassNames) {
+		if claim != nil && isClaimRequestingDeviceClass(&claim.Spec, deviceClassNames) {
 			return true, nil
 		}
 	}
@@ -613,11 +669,70 @@ func (i *Informers) isPodClaimingDeviceClass(ctx context.Context, pod *v1.Pod,
 	return false, nil
 }
 
-// getPodResourceClaimSpec returns the spec of the ResourceClaim a pod claim uses, or nil when the pod needs no
+// claimedDriver is a DRA driver of the entity type that a claim of the pod uses, with a description for errors.
+type claimedDriver struct {
+	driver      string
+	description string
+}
+
+// claimedDrivers returns the DRA drivers of the entity type that the claims of the pod use.
+func (i *Informers) claimedDrivers(ctx context.Context, pod *v1.Pod,
+	entityType model.PartialRemediationEntityType) ([]claimedDriver, error) {
+	var claimed []claimedDriver
+
+	for _, podClaim := range pod.Spec.ResourceClaims {
+		claim, err := i.getPodResourceClaim(ctx, pod, podClaim)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve claim %s of pod %s/%s: %w",
+				podClaim.Name, pod.Namespace, pod.Name, err)
+		}
+
+		if claim != nil {
+			claimed = append(claimed, claimDrivers(claim, entityType)...)
+		}
+	}
+
+	return claimed, nil
+}
+
+// claimDrivers returns the DRA drivers of the entity type that the claim uses. For an allocated claim, they come
+// from the allocation, so a FirstAvailable sub-request that was not selected does not count. For a claim that is
+// not allocated yet, they come from the DeviceClasses of every request and sub-request.
+func claimDrivers(claim *resourcev1.ResourceClaim, entityType model.PartialRemediationEntityType) []claimedDriver {
+	var claimed []claimedDriver
+
+	if allocation := claim.Status.Allocation; allocation != nil {
+		drivers := entityType.Drivers()
+
+		for _, result := range allocation.Devices.Results {
+			if slices.Contains(drivers, result.Driver) {
+				claimed = append(claimed, claimedDriver{
+					driver:      result.Driver,
+					description: "a device of DRA driver " + result.Driver,
+				})
+			}
+		}
+
+		return claimed
+	}
+
+	for _, deviceClass := range claimDeviceClasses(&claim.Spec) {
+		if driver, ok := entityType.DriverForDeviceClass(deviceClass); ok {
+			claimed = append(claimed, claimedDriver{
+				driver:      driver,
+				description: fmt.Sprintf("DeviceClass %s of DRA driver %s", deviceClass, driver),
+			})
+		}
+	}
+
+	return claimed
+}
+
+// getPodResourceClaim returns the ResourceClaim a pod claim uses, or nil when the pod needs no
 // claim for it. A claim generated from a ResourceClaimTemplate is bound to the pod in status.resourceClaimStatuses
 // before the pod is scheduled, so the template itself is never read and deleting it does not affect the lookup.
-func (i *Informers) getPodResourceClaimSpec(ctx context.Context, pod *v1.Pod,
-	podClaim v1.PodResourceClaim) (*resourcev1.ResourceClaimSpec, error) {
+func (i *Informers) getPodResourceClaim(ctx context.Context, pod *v1.Pod,
+	podClaim v1.PodResourceClaim) (*resourcev1.ResourceClaim, error) {
 	claimName := podClaim.ResourceClaimName
 	if claimName == nil {
 		for _, claimStatus := range pod.Status.ResourceClaimStatuses {
@@ -643,30 +758,37 @@ func (i *Informers) getPodResourceClaimSpec(ctx context.Context, pod *v1.Pod,
 		return nil, fmt.Errorf("failed to get ResourceClaim %s/%s: %w", pod.Namespace, *claimName, err)
 	}
 
-	return &claim.Spec, nil
+	return claim, nil
 }
 
 func isClaimRequestingDeviceClass(claimSpec *resourcev1.ResourceClaimSpec, deviceClassNames []string) bool {
+	return slices.ContainsFunc(claimDeviceClasses(claimSpec), func(deviceClass string) bool {
+		return slices.Contains(deviceClassNames, deviceClass)
+	})
+}
+
+// claimDeviceClasses returns the DeviceClasses of every request and sub-request of the claim.
+func claimDeviceClasses(claimSpec *resourcev1.ResourceClaimSpec) []string {
+	var deviceClasses []string
+
 	for _, request := range claimSpec.Devices.Requests {
-		if request.Exactly != nil && slices.Contains(deviceClassNames, request.Exactly.DeviceClassName) {
-			return true
+		if request.Exactly != nil {
+			deviceClasses = append(deviceClasses, request.Exactly.DeviceClassName)
 		}
 
 		for _, subRequest := range request.FirstAvailable {
-			if slices.Contains(deviceClassNames, subRequest.DeviceClassName) {
-				return true
-			}
+			deviceClasses = append(deviceClasses, subRequest.DeviceClassName)
 		}
 	}
 
-	return false
+	return deviceClasses
 }
 
-func isPodUsingPartialDrainEntity(deviceAnnotation model.DeviceAnnotation, resourceNames []string,
+func isPodUsingPartialDrainEntity(deviceAnnotation model.DeviceAnnotation, annotationKeys []string,
 	partialDrainEntity *protos.Entity) bool {
-	for _, resourceName := range resourceNames {
-		if devicesForResource, ok := deviceAnnotation.Devices[resourceName]; ok {
-			if slices.Contains(devicesForResource, partialDrainEntity.EntityValue) {
+	for _, key := range annotationKeys {
+		if devicesForKey, ok := deviceAnnotation.Devices[key]; ok {
+			if slices.Contains(devicesForKey, partialDrainEntity.EntityValue) {
 				return true
 			}
 		}
@@ -727,8 +849,9 @@ func (i *Informers) filterEvictablePods(pods []*v1.Pod, partialDrainEntity *prot
 	return filteredPods
 }
 
-// filterPodsWithGPURequests keeps pods with a device annotation, and unannotated pods that request GPUs through
-// container limits or DRA claims, so a missed metadata-collector update does not leave a GPU pod running.
+// filterPodsWithGPURequests keeps pods with a device annotation, and unannotated pods that request a device of any
+// entity type in partialRemediationEntityTypes through container limits or DRA claims, so a missed
+// metadata-collector update does not leave a device pod running.
 func (i *Informers) filterPodsWithGPURequests(ctx context.Context, pods []*v1.Pod) ([]*v1.Pod, error) {
 	filteredPods := []*v1.Pod{}
 
@@ -737,7 +860,7 @@ func (i *Informers) filterPodsWithGPURequests(ctx context.Context, pods []*v1.Po
 		if !isPodRequestingGPU {
 			var err error
 
-			isPodRequestingGPU, err = i.isPodRequestingDevices(ctx, pod, model.EntityTypeToResourceNames["GPU_UUID"])
+			isPodRequestingGPU, err = i.isPodRequestingDevices(ctx, pod, i.entityTypes.AllDevices())
 			if err != nil {
 				return nil, fmt.Errorf("failed to check GPU requests for pod %s: %w", pod.Name, err)
 			}

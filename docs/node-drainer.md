@@ -142,7 +142,7 @@ Multiple timeout mechanisms prevent stuck drains:
 Automatically resumes drain operations after restarts - queries datastore for in-progress drains and continues from where it left off.
 
 ### Partial Drain Functionality
-For GPU faults that can be remediated with a GPU reset, the Node Drainer only drains selected pods using the unhealthy GPU. For faults that require a node reboot, it drains all eligible pods on the node selected by the configured namespace rules or pod policies.
+For faults whose action repairs one device, such as a GPU reset, the Node Drainer only drains the pods that use the unhealthy device. `global.partialRemediationEntityTypes` lists these actions and the devices they cover; by default, `COMPONENT_RESET` for NVIDIA GPUs. For faults that require a node reboot, it drains all eligible pods on the node selected by the configured namespace rules or pod policies. See [Partial Drain](configuration/node-drainer.md#partial-drain).
 
 ### GPU-Only Draining
-When `drainGPUPods: true` is set, the Node Drainer filters pod eviction to only target workloads that request GPU resources. The feature detects GPU resources using device annotations provided by the Metadata Collector, which tracks GPU allocation across the cluster. Pods without the annotation are also drained if a DRA ResourceClaim requests the `gpu.nvidia.com` DeviceClass for them. Default is `false`.
+When `drainGPUPods: true` is set, the Node Drainer filters pod eviction to only target workloads that request GPU resources. The feature detects GPU resources using device annotations provided by the Metadata Collector, which tracks GPU allocation across the cluster. Pods without the annotation are also drained if they request a device listed in `global.partialRemediationEntityTypes`, for example through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. Default is `false`.
