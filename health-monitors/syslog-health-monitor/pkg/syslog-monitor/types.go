@@ -96,6 +96,10 @@ type SyslogMonitor struct {
 	// journal instead of the tail, so entries emitted between boot and
 	// monitor startup are not missed. Single-goroutine access.
 	postRebootInit bool
+	// bootScanSeekTarget is the time the boot-start scan seeks to. It is
+	// taken once, so a scan that stops before it stores a cursor seeks to
+	// the same entries on the next poll. Single-goroutine access.
+	bootScanSeekTarget time.Time
 	// bootLookbackWindow limits how far back the post-reboot journal scan
 	// reaches. Configurable via --boot-lookback-window CLI flag.
 	bootLookbackWindow time.Duration

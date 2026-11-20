@@ -115,6 +115,24 @@ func allPermanentErrors(errs []error) bool {
 	return true
 }
 
+// ErrBreakerRefused marks an event the circuit breaker refused to process.
+// Recovery treats it as a stop signal rather than a processing failure: the
+// refused events stay unresolved and retry on the next startup.
+var ErrBreakerRefused = errors.New("circuit breaker is tripped")
+
+func logBreakerStoppedRecovery(ctx context.Context, progress *recoveryProgress) {
+	// Event failures recorded before the refusal stay visible in the stop
+	// line, so a refusal does not swallow failures that a reader of the log
+	// would otherwise never see.
+	attrs := []any{"prior_event_failures", progress.failures}
+	if progress.firstErr != nil {
+		attrs = append(attrs, "prior_first_error", progress.firstErr)
+	}
+
+	slog.ErrorContext(ctx, "Circuit breaker TRIPPED during cold-start recovery; stopping the scan. "+
+		"Unrecovered events stay unresolved and retry on the next startup", attrs...)
+}
+
 // WithRecoveryContext marks event processing as cold-start replay. Consumers
 // can use it to bypass eventually-consistent caches between ordered events.
 func WithRecoveryContext(ctx context.Context) context.Context {
@@ -219,6 +237,19 @@ type Dependencies struct {
 	ColdStartUntilTime time.Time
 }
 
+// normalizeColdStartWindow fills in a missing lower bound so an upper bound
+// alone cannot produce an empty recovery window. Callers should supply their
+// startup watermark; this is a bounded fallback for direct use.
+func normalizeColdStartWindow(deps *Dependencies, startedAt time.Time) {
+	if deps.ColdStartAfterTime.IsZero() {
+		if deps.ColdStartUntilTime.IsZero() {
+			deps.ColdStartAfterTime = startedAt
+		} else {
+			deps.ColdStartAfterTime = deps.ColdStartUntilTime.Add(-defaultColdStartLookback)
+		}
+	}
+}
+
 type recoveryProgress struct {
 	firstErr error
 	failures int
@@ -234,13 +265,18 @@ type storedRecoveryEvent struct {
 // recoveries so an older recovery cannot transiently uncordon a node before a
 // newer fault in the same scan is restored. Events that overlap newer state
 // are projected or skipped; terminal decisions are persisted for later scans.
-func Handle(ctx context.Context, deps Dependencies) error {
+//
+// The boolean reports whether the scan ran to completion. False with a nil
+// error means the circuit breaker refused an event and the scan stopped
+// early: the unprocessed events stay unresolved, and a caller that persists
+// a scan watermark must not advance it past them.
+func Handle(ctx context.Context, deps Dependencies) (bool, error) {
 	if deps.HealthEventStore == nil {
-		return fmt.Errorf("health event store is required")
+		return false, fmt.Errorf("health event store is required")
 	}
 
 	if deps.EventProcessor == nil {
-		return fmt.Errorf("event processor is required")
+		return false, fmt.Errorf("event processor is required")
 	}
 
 	startedAt := time.Now().UTC()
@@ -250,15 +286,7 @@ func Handle(ctx context.Context, deps Dependencies) error {
 
 	slog.InfoContext(ctx, "Recovering unresolved fault-quarantine events")
 
-	if deps.ColdStartAfterTime.IsZero() {
-		if deps.ColdStartUntilTime.IsZero() {
-			deps.ColdStartAfterTime = startedAt
-		} else {
-			// Callers should supply their startup watermark. Keep a bounded fallback
-			// for direct use so an upper bound cannot produce an empty recovery window.
-			deps.ColdStartAfterTime = deps.ColdStartUntilTime.Add(-defaultColdStartLookback)
-		}
-	}
+	normalizeColdStartWindow(&deps, startedAt)
 
 	resolver := newSupersessionResolver(deps.HealthEventStore, deps.ColdStartUntilTime)
 	progress := &recoveryProgress{}
@@ -273,8 +301,14 @@ func Handle(ctx context.Context, deps Dependencies) error {
 			return progress.recoverBatch(ctx, resolver, deps.EventProcessor, events, false)
 		},
 	)
+	if errors.Is(err, ErrBreakerRefused) {
+		logBreakerStoppedRecovery(ctx, progress)
+
+		return false, nil
+	}
+
 	if err != nil {
-		return fmt.Errorf("fault-quarantine cold start failed: %w", err)
+		return false, fmt.Errorf("fault-quarantine cold start failed: %w", err)
 	}
 
 	// If any fault failed transiently, do not run recoveries against incomplete
@@ -288,19 +322,25 @@ func Handle(ctx context.Context, deps Dependencies) error {
 				return progress.recoverBatch(ctx, resolver, deps.EventProcessor, events, true)
 			},
 		)
+		if errors.Is(err, ErrBreakerRefused) {
+			logBreakerStoppedRecovery(ctx, progress)
+
+			return false, nil
+		}
+
 		if err != nil {
-			return fmt.Errorf("fault-quarantine healthy recovery phase failed: %w", err)
+			return false, fmt.Errorf("fault-quarantine healthy recovery phase failed: %w", err)
 		}
 	}
 
 	if progress.firstErr != nil {
-		return fmt.Errorf("fault-quarantine cold start completed with %d event failures: %w",
+		return false, fmt.Errorf("fault-quarantine cold start completed with %d event failures: %w",
 			progress.failures, progress.firstErr)
 	}
 
 	slog.InfoContext(ctx, "Fault-quarantine event recovery completed")
 
-	return nil
+	return true, nil
 }
 
 func (p *recoveryProgress) recoverBatch(
@@ -340,11 +380,30 @@ func (p *recoveryProgress) recoverEvents(
 			completions = append(completions, *completion)
 		}
 
+		if errors.Is(err, ErrBreakerRefused) {
+			// The breaker stopped the scan mid-batch. Persist what completed
+			// ahead of the refusal so it is not recovered again; the refused
+			// event and the rest stay unresolved for the next startup.
+			if flushErr := p.completeBatch(ctx, processor, completions); flushErr != nil {
+				return flushErr
+			}
+
+			return err
+		}
+
 		if err := p.recordFailure(ctx, err); err != nil {
 			return err
 		}
 	}
 
+	return p.completeBatch(ctx, processor, completions)
+}
+
+func (p *recoveryProgress) completeBatch(
+	ctx context.Context,
+	processor EventProcessor,
+	completions []StoredEventCompletion,
+) error {
 	if len(completions) == 0 {
 		return nil
 	}
@@ -379,18 +438,16 @@ func (p *recoveryProgress) recordFailure(ctx context.Context, err error) error {
 	return nil
 }
 
-func recoverStoredEvent(
+// validateStoredEvent reports what to do with an event that may be too
+// malformed to process. A non-nil completion means the event is terminal
+// (invalid) and needs no further processing. A non-nil error means the event
+// could not even be classified. Nil, nil means the event is processable.
+func validateStoredEvent(
 	ctx context.Context,
-	resolver *supersessionResolver,
-	processor EventProcessor,
 	event storedRecoveryEvent,
+	documentID StoredDocumentID,
+	idErr error,
 ) (*StoredEventCompletion, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	documentID, idErr := storedDocumentID(event.record.RawEvent)
-
 	if event.parseErr != nil {
 		slog.ErrorContext(ctx, "Skipping invalid stored health event",
 			"documentID", documentID.String, "error", event.parseErr)
@@ -407,6 +464,26 @@ func recoverStoredEvent(
 		return nil, recordRecoveryFailure(fmt.Errorf("cannot identify stored event: %w", idErr))
 	}
 
+	return nil, nil
+}
+
+func recoverStoredEvent(
+	ctx context.Context,
+	resolver *supersessionResolver,
+	processor EventProcessor,
+	event storedRecoveryEvent,
+) (*StoredEventCompletion, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	documentID, idErr := storedDocumentID(event.record.RawEvent)
+
+	completion, err := validateStoredEvent(ctx, event, documentID, idErr)
+	if err != nil || completion != nil {
+		return completion, err
+	}
+
 	superseded, effects, err := resolver.resolve(
 		ctx, event.parsed, event.record.CreatedAt, documentID.String)
 	if err != nil {
@@ -420,6 +497,12 @@ func recoverStoredEvent(
 	result, err := processor.ProcessStoredEvent(
 		withRecoveryEffects(ctx, effects), event.parsed, documentID.String)
 	if err != nil {
+		if errors.Is(err, ErrBreakerRefused) {
+			// The breaker refused the event. Propagate the refusal unwrapped so
+			// the scan stops without the refusal counting as a failure.
+			return nil, err
+		}
+
 		return nil, recordRecoveryFailure(fmt.Errorf("failed to recover stored event: %w", err))
 	}
 

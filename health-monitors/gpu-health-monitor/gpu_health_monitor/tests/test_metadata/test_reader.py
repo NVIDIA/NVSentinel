@@ -25,6 +25,8 @@ from gpu_health_monitor.tests.nvlink_fixtures import (
     A100_PCIE_UNBRIDGED,
     H100_SXM_TRAINED,
     L40_NO_NVLINK,
+    RTX_2080_TI_UNBRIDGED,
+    RTX_3090_UNBRIDGED,
     make_metadata_reader,
 )
 
@@ -344,6 +346,45 @@ def test_classify_no_nvlink_silicon(tmp_path: Path) -> None:
     """L40-class GPU with zero hardware links: NO_NVLINK_HARDWARE."""
     reader = make_metadata_reader(tmp_path, [L40_NO_NVLINK])
     assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.NO_NVLINK_HARDWARE
+
+
+@pytest.mark.parametrize("gpu", [RTX_3090_UNBRIDGED, RTX_2080_TI_UNBRIDGED])
+def test_classify_unbridged_geforce_rtx(tmp_path: Path, gpu: dict) -> None:
+    """Observed RTX models with bridge links present but zero active: UNBRIDGED_PCIE."""
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNBRIDGED_PCIE
+
+
+def test_classify_unsupported_geforce_rtx_unknown(tmp_path: Path) -> None:
+    """A bridge-capable RTX model outside the observed allowlist: UNKNOWN."""
+    gpu = {**RTX_3090_UNBRIDGED, "device_name": "NVIDIA GeForce RTX 4090"}
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
+
+
+def test_classify_geforce_rtx_pcie_without_hardware_count(tmp_path: Path) -> None:
+    """Supported RTX model with PCIe suffix but no hardware count: UNKNOWN."""
+    gpu = {
+        **RTX_3090_UNBRIDGED,
+        "device_name": "NVIDIA GeForce RTX 3090 PCIe",
+    }
+    gpu = {key: value for key, value in gpu.items() if key != "nvlink_link_count"}
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
+
+
+def test_classify_geforce_rtx_without_nvlink_hardware(tmp_path: Path) -> None:
+    """GeForce RTX with zero hardware links: NO_NVLINK_HARDWARE."""
+    gpu = {**RTX_3090_UNBRIDGED, "nvlink_link_count": 0}
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.NO_NVLINK_HARDWARE
+
+
+def test_classify_geforce_rtx_unknown_without_hardware_count(tmp_path: Path) -> None:
+    """GeForce RTX without a hardware count: UNKNOWN, fail closed."""
+    gpu = {k: v for k, v in RTX_3090_UNBRIDGED.items() if k != "nvlink_link_count"}
+    reader = make_metadata_reader(tmp_path, [gpu])
+    assert reader.classify_nvlink_down(0) is NVLinkDownExpectation.UNKNOWN
 
 
 @pytest.mark.parametrize(

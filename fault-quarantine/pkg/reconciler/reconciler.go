@@ -352,12 +352,13 @@ func (r *Reconciler) configureColdStart(
 	r.eventWatcher.SetColdStartCallback(func(ctx context.Context) error {
 		coldStartUntil := time.Now().UTC()
 
-		if err := coldstart.Handle(ctx, coldstart.Dependencies{
+		completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 			HealthEventStore:   healthEventStore,
 			EventProcessor:     r.eventWatcher,
 			ColdStartAfterTime: effectiveColdStartAfter,
 			ColdStartUntilTime: coldStartUntil,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 
@@ -365,7 +366,21 @@ func (r *Reconciler) configureColdStart(
 			return nil
 		}
 
-		if err := r.setColdStartCutoff(ctx, r.config.TokenConfig.ClientName, coldStartUntil); err != nil {
+		cutoff := coldStartUntil
+		if !completed {
+			// The breaker refused an event, so the scan stopped before its
+			// upper bound: persist the window's lower bound instead, or the
+			// next startup starts above events this scan never finished.
+			// Skipping the save would not fix it - the next startup would
+			// seed a new lower bound at its own startup time. Events that
+			// did complete re-scan cheaply: they carry terminal decisions
+			// the scan skips.
+			cutoff = effectiveColdStartAfter
+
+			slog.InfoContext(ctx, "Cold-start seed scan stopped early; persisting the window's lower bound as the cutoff")
+		}
+
+		if err := r.setColdStartCutoff(ctx, r.config.TokenConfig.ClientName, cutoff); err != nil {
 			return fmt.Errorf("failed to persist initial fault-quarantine cold-start cutoff: %w", err)
 		}
 
@@ -418,8 +433,28 @@ func (r *Reconciler) SetupNodeInformerCallbacks() {
 		slog.Info("Set currentQuarantinedNodes to 0 for deleted quarantined node", "node", nodeName)
 	})
 
+	r.k8sClient.NodeInformer.SetOnLastGPUNodeDeletedCallback(func() {
+		if r.breakerActive() {
+			r.forgetDeletedNodes()
+		}
+	})
+
 	r.k8sClient.NodeInformer.SetOnManualUncordonCallback(r.queueManualUncordon)
 	r.k8sClient.NodeInformer.SetOnManualUntaintCallback(r.queueManualUntaint)
+}
+
+// forgetDeletedNodes removes the cordons of deleted nodes from the circuit breaker window once
+// no GPU nodes remain, so the GPU nodes that come back start with a full budget. While any GPU
+// node remains, deleted nodes keep counting, so nodes that are replaced after quarantine still
+// count toward the breaker.
+func (r *Reconciler) forgetDeletedNodes() {
+	if err := r.cb.ForgetDeletedNodes(context.Background()); err != nil {
+		slog.Warn("Keeping deleted nodes' cordons in the circuit breaker window", "error", err)
+
+		return
+	}
+
+	slog.Info("Removed deleted nodes' cordons from the circuit breaker window: no GPU nodes remain")
 }
 
 // initializeRuleSetEvaluators initializes all rule set evaluators from config
@@ -632,7 +667,7 @@ func (r *Reconciler) checkCircuitBreakerAndHalt(ctx context.Context) (bool, erro
 		)
 
 		if coldstart.IsRecoveryContext(ctx) {
-			return true, fmt.Errorf("circuit breaker is tripped")
+			return true, coldstart.ErrBreakerRefused
 		}
 
 		<-ctx.Done()
