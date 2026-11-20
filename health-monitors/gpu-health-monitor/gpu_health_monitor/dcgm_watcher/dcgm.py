@@ -670,6 +670,19 @@ class DCGMWatcher:
             [operation, elapsed_seconds, self._dcgm_mode],
         )
 
+    def _report_version_mismatch(self, error: Exception) -> None:
+        """Record a client/hostengine DCGM version mismatch without a health event.
+
+        During a DCGM upgrade the old lane pod sees this until the labeler moves
+        the node to the matching lane, so it must not cordon the node.
+        """
+        log.error(
+            f"DCGM hostengine rejected this image's DCGM API version: {error}. "
+            "The node's nvsentinel.dgxc.nvidia.com/dcgm.version label does not match the hostengine; "
+            "not reporting a connectivity failure, exiting"
+        )
+        metrics.dcgm_api_failures.labels("version_mismatch").inc()
+
     def _probe(self, operation: str) -> AbstractContextManager[None]:
         """Track a blocking DCGM call, when the watchdog is enabled."""
         if self._probe_watchdog is None:
@@ -1382,6 +1395,10 @@ class DCGMWatcher:
                                     dcgm_handle
                                 )
                         except Exception as e:
+                            if types.is_dcgm_version_mismatch(e):
+                                self._report_version_mismatch(e)
+                                # The finally block below releases the handle and group.
+                                raise types.DCGMVersionMismatchError(str(e)) from e
                             log.error(f"Error getting DCGM handle: {e}")
                             metrics.dcgm_api_failures.labels("dcgm_initialize_monitoring").inc()
                             self._report_connectivity_failed()

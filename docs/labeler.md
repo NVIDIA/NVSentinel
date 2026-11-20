@@ -10,7 +10,7 @@ Think of it as auto-configuration for NVSentinel - it detects your environment a
 
 Different clusters have different GPU software configurations:
 
-- **DCGM versions**: Clusters may run DCGM 3.x or 4.x with different APIs
+- **DCGM versions**: Clusters may run DCGM 3.x, 4.x earlier than 4.8.0, or 4.8.0 and later, with different APIs
 - **Container runtimes**: Some clusters use Kata Containers with different log access patterns
 - **Driver variations**: Different driver installation methods across environments
 
@@ -70,9 +70,17 @@ The Labeler applies these labels to nodes:
 
 ### DCGM Version
 **Label**: `nvsentinel.dgxc.nvidia.com/dcgm.version`
-**Values**: `3.x`, `4.x`, or empty if not detected
+**Values**: `3.x`, `4.x`, `4.8.0-plus`, or empty if not detected
 
-Indicates which major version of DCGM is running on the node.
+Indicates which DCGM version lane is running on the node:
+
+| Value | DCGM version on the node |
+|---|---|
+| `3.x` | 3.x |
+| `4.x` | 4.x earlier than 4.8.0 |
+| `4.8.0-plus` | 4.8.0 and later 4.x |
+
+A DCGM client must not be newer than its hostengine. From DCGM 4.8.0, a client works with the same or a newer hostengine, so 4.x is split into two lanes at 4.8.0. If a DCGM 4 image tag has no parseable minor and patch version (for example `dcgm:4.7-ubuntu24.04`), the Labeler uses `4.x` and logs a warning.
 
 ### Driver Installed
 **Label**: `nvsentinel.dgxc.nvidia.com/driver.installed`
