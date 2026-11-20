@@ -1469,77 +1469,6 @@ var _ = Describe("GPUReset Controller", func() {
 			}
 		}
 
-		// readStale makes the reconciler read the GPUReset as it is now, as a cache that does not receive the later
-		// writes does. It then writes the status change to the stored GPUReset, so that each reconcile reads a
-		// GPUReset that is older than the stored one. It returns the stored GPUReset.
-		readStale := func(change func(status *v1alpha1.GPUResetStatus)) v1alpha1.GPUReset {
-			var stale v1alpha1.GPUReset
-			Expect(k8sClient.Get(ctx, typeNamespacedName, &stale)).To(Succeed())
-			reconciler.Client = &staleGetClient{Client: mgrClient, stale: &stale}
-
-			stored := stale.DeepCopy()
-			change(&stored.Status)
-			Expect(k8sClient.Status().Update(ctx, stored)).To(Succeed())
-			Expect(stored.ResourceVersion).NotTo(Equal(stale.ResourceVersion))
-
-			return *stored
-		}
-
-		// addServicesRestored gives the status a ServicesRestored condition, as the restoration after a failed reset
-		// writes it.
-		addServicesRestored := func(status *v1alpha1.GPUResetStatus) {
-			meta.SetStatusCondition(&status.Conditions, condition(v1alpha1.ServicesRestored, metav1.ConditionFalse,
-				v1alpha1.ReasonResetJobFailed, "written after the read"))
-		}
-
-		// createFailedRestoring creates the node with the labels of the stopped services, and a failed GPUReset
-		// without an outcome whose restoration is in progress. It returns the node labels.
-		createFailedRestoring := func() map[string]string {
-			tornDownLabels := devicePluginDeployLabels()
-			for label := range tornDownLabels {
-				tornDownLabels[label] = "false"
-			}
-			node := &corev1.Node{Name: nodeName, Labels: maps.Clone(tornDownLabels)}
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-			DeferCleanup(func() {
-				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, node))).To(Succeed())
-			})
-			Eventually(func(g Gomega) {
-				g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: nodeName}, &corev1.Node{})).To(Succeed())
-			}, "10s", "100ms").Should(Succeed())
-
-			now := metav1.Now()
-			createWithStatus(v1alpha1.GPUResetStatus{
-				Phase:          v1alpha1.ResetInProgress,
-				StartTime:      &now,
-				CompletionTime: &now,
-				ManagedServices: &v1alpha1.ManagedServicesStatus{
-					NodeLabels: slices.Sorted(maps.Keys(tornDownLabels)),
-				},
-				Conditions: []metav1.Condition{
-					condition(v1alpha1.ServicesTornDown, metav1.ConditionTrue, v1alpha1.ReasonServiceTeardownSucceeded,
-						"torn down"),
-					condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobCreationFailed, "held"),
-					condition(v1alpha1.ServicesRestored, metav1.ConditionFalse, v1alpha1.ReasonRestoringServices,
-						"restoring"),
-				},
-			})
-
-			return tornDownLabels
-		}
-
-		// expectStoredUnchanged checks that the reconcile did not write the GPUReset, and returns it.
-		expectStoredUnchanged := func(stored v1alpha1.GPUReset) v1alpha1.GPUReset {
-			GinkgoHelper()
-
-			var updated v1alpha1.GPUReset
-			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
-			Expect(updated.ResourceVersion).To(Equal(stored.ResourceVersion), "the GPUReset was written")
-			Expect(updated.Status).To(Equal(stored.Status))
-
-			return updated
-		}
-
 		DescribeTable("records the outcome from the Complete condition",
 			func(phase v1alpha1.GPUResetPhase, reason v1alpha1.GPUResetReason, want metav1.ConditionStatus) {
 				createCompleted(phase, condition(v1alpha1.Complete, metav1.ConditionTrue, reason, "finished earlier"))
@@ -1597,67 +1526,62 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Succeeded))).To(BeNil())
 		})
 
-		It("should requeue a settled GPUReset without a write or the release of the node lock when it read an older one", func() {
+		It("should write the same outcome again from a stale read without changing the GPUReset", func() {
+			stale := createCompleted(v1alpha1.ResetFailed,
+				condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobFailed, "finished earlier"))
+			reconciler.Client = &staleGetClient{Client: mgrClient, stale: &stale}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			var first v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &first)).To(Succeed())
+			Expect(first.ResourceVersion).NotTo(Equal(stale.ResourceVersion))
+			expectOutcome(&first, metav1.ConditionFalse, v1alpha1.ReasonResetJobFailed)
+
+			By("Reconciling again from the read that does not have the outcome")
+			for range 3 {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			var updated v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
+			Expect(updated.ResourceVersion).To(Equal(first.ResourceVersion), "the GPUReset was written again")
+			Expect(updated.Status).To(Equal(first.Status))
+		})
+
+		It("should release the node lock of a settled GPUReset, and then return a failed outcome write", func() {
 			createCompleted(v1alpha1.ResetFailed,
 				condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobFailed, "finished earlier"))
-			stored := readStale(addServicesRestored)
+			injected := apierrors.NewInternalError(errors.New("the outcome write is refused"))
+			reconciler.Client = &failOutcomeClient{Client: mgrClient, err: injected}
 			lock := &mockNodeLock{}
+			reconciler.NodeLock = lock
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(lock.unlockChecks).To(Equal(1), "the reconcile did not release the node lock")
+			Expect(err).To(MatchError(injected))
+		})
+
+		It("should requeue a settled GPUReset without recording the outcome when the release of the node lock asks for a requeue", func() {
+			created := createCompleted(v1alpha1.ResetFailed,
+				condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobFailed, "finished earlier"))
+			lock := &mockNodeLock{retryUnlock: true}
 			reconciler.NodeLock = lock
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-			Expect(lock.unlockChecks).To(BeZero(), "the reconcile released the node lock")
+			Expect(lock.unlockChecks).To(Equal(1))
 
-			updated := expectStoredUnchanged(stored)
+			var updated v1alpha1.GPUReset
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
+			Expect(updated.ResourceVersion).To(Equal(created.ResourceVersion), "the GPUReset was written")
 			Expect(meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Succeeded))).To(BeNil())
 		})
 
-		It("should requeue a GPUReset whose restoration is pending without a write or a restoration when it read an older one", func() {
-			tornDownLabels := createFailedRestoring()
-			stored := readStale(func(status *v1alpha1.GPUResetStatus) {
-				meta.SetStatusCondition(&status.Conditions, condition(v1alpha1.ServicesRestored,
-					metav1.ConditionFalse, v1alpha1.ReasonRestoringServices, "still restoring"))
-			})
-
-			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-
-			expectStoredUnchanged(stored)
-
-			var current corev1.Node
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &current)).To(Succeed())
-			Expect(current.Labels).To(Equal(tornDownLabels), "the reconcile restored the labels")
-		})
-
-		DescribeTable("should release the node lock of a settled GPUReset when the outcome write fails",
-			func(retryUnlock bool) {
-				createCompleted(v1alpha1.ResetFailed,
-					condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobFailed, "finished earlier"))
-				injected := apierrors.NewInternalError(errors.New("the outcome write is refused"))
-				reconciler.Client = &failOutcomeClient{Client: mgrClient, err: injected}
-				lock := &mockNodeLock{retryUnlock: retryUnlock}
-				reconciler.NodeLock = lock
-
-				result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-				Expect(lock.unlockChecks).To(Equal(1), "the reconcile did not release the node lock")
-
-				if retryUnlock {
-					Expect(err).NotTo(HaveOccurred())
-					Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-
-					return
-				}
-
-				Expect(err).To(MatchError(injected))
-				Expect(apierrors.IsConflict(err)).To(BeFalse())
-			},
-			Entry("and return the error after the release", false),
-			Entry("and retry the outcome with the requeue that the release asks for", true),
-		)
-
-		It("should keep the outcome when the restoration of a failed reset writes the status in the same reconcile", func() {
+		It("should record the outcome of a failed GPUReset when its pending restoration has ended", func() {
 			By("Creating the node with the labels of the stopped services")
 			tornDownLabels := devicePluginDeployLabels()
 			for label := range tornDownLabels {
@@ -1688,69 +1612,31 @@ var _ = Describe("GPUReset Controller", func() {
 				},
 			})
 
-			By("Reconciling once: the outcome and the start of the restoration are written")
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			var started v1alpha1.GPUReset
-			Expect(k8sClient.Get(ctx, typeNamespacedName, &started)).To(Succeed())
-			expectOutcome(&started, metav1.ConditionFalse, v1alpha1.ReasonResetJobCreationFailed)
-			restored := meta.FindStatusCondition(started.Status.Conditions, string(v1alpha1.ServicesRestored))
-			Expect(restored).NotTo(BeNil())
-			Expect(restored.Reason).To(Equal(string(v1alpha1.ReasonRestoringServices)))
-			outcome := *meta.FindStatusCondition(started.Status.Conditions, string(v1alpha1.Succeeded))
-
-			By("Reconciling until the labels are restored")
+			By("Reconciling until the restoration has ended: the GPUReset has no outcome while the restoration runs")
+			var restored v1alpha1.GPUReset
 			Eventually(func(g Gomega) {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				g.Expect(err).NotTo(HaveOccurred())
 
-				var current v1alpha1.GPUReset
-				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &current)).To(Succeed())
-				cond := meta.FindStatusCondition(current.Status.Conditions, string(v1alpha1.ServicesRestored))
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &restored)).To(Succeed())
+				if meta.FindStatusCondition(restored.Status.Conditions, string(v1alpha1.Succeeded)) != nil {
+					StopTrying("the GPUReset has the Succeeded condition while its restoration runs").Now()
+				}
+
+				cond := meta.FindStatusCondition(restored.Status.Conditions, string(v1alpha1.ServicesRestored))
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Reason).To(Equal(string(v1alpha1.ReasonResetJobCreationFailed)))
 			}, "10s", "100ms").Should(Succeed())
 
-			var updated v1alpha1.GPUReset
-			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
-			expectOutcome(&updated, metav1.ConditionFalse, v1alpha1.ReasonResetJobCreationFailed)
-			succeeded := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Succeeded))
-			Expect(succeeded.LastTransitionTime.Equal(&outcome.LastTransitionTime)).To(BeTrue())
-
 			var restoredNode corev1.Node
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &restoredNode)).To(Succeed())
 			Expect(restoredNode.Labels).To(Equal(devicePluginDeployLabels()))
-		})
 
-		It("should restore the labels of a failed GPUReset when the outcome write fails, and record the outcome later", func() {
-			createFailedRestoring()
-			injected := apierrors.NewInternalError(errors.New("the outcome write is refused"))
-			reconciler.Client = &failOutcomeClient{Client: mgrClient, err: injected}
-
-			By("Reconciling until the labels are restored: no reconcile returns the failed outcome write")
+			By("Reconciling once more, after the cache has the end of the restoration: the outcome is recorded")
 			Eventually(func(g Gomega) {
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-				if err != nil {
-					StopTrying("a reconcile returned an error").Wrap(err).Now()
-				}
-
-				var current corev1.Node
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &current)).To(Succeed())
-				g.Expect(current.Labels).To(Equal(devicePluginDeployLabels()))
-			}, "10s", "100ms").Should(Succeed())
-
-			var restored v1alpha1.GPUReset
-			Expect(k8sClient.Get(ctx, typeNamespacedName, &restored)).To(Succeed())
-			Expect(meta.FindStatusCondition(restored.Status.Conditions, string(v1alpha1.Succeeded))).To(BeNil())
-
-			By("Letting the outcome write through: the next reconcile records the outcome")
-			reconciler.Client = mgrClient
-			Eventually(func(g Gomega) {
-				var stored, cached v1alpha1.GPUReset
-				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &stored)).To(Succeed())
+				var cached v1alpha1.GPUReset
 				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cached)).To(Succeed())
-				g.Expect(cached.ResourceVersion).To(Equal(stored.ResourceVersion))
+				g.Expect(cached.ResourceVersion).To(Equal(restored.ResourceVersion))
 			}, "10s", "100ms").Should(Succeed())
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
