@@ -96,7 +96,7 @@ To run the mapper on nodes with other devices, an operator changes `podMapper.no
 Until ADR-070 creates the NVIDIA plugin chart, the metadata-collector chart renders both DaemonSets, so every key that operators set today keeps working (see [Run the mapper from a chart of its own now](#run-the-mapper-from-a-chart-of-its-own-now)):
 
 - `podMapper.enabled` decides whether the chart renders the mapper DaemonSet. The chart compares the value as a string, as the partial-drain install check does today, so a quoted `"false"` still turns the mapper off. That install check keeps reading the same key.
-- `podMapper.maxConsecutiveFailures` and `kubeletHost` apply to the mapper.
+- `podMapper.maxConsecutiveFailures` and `kubeletHost` apply to the mapper. Off the host network, `localhost` is the mapper pod itself. So when `kubeletHost` is `{}` or a loopback address, the chart gives the mapper the node IP (`status.hostIP`).
 - `nodeSelector`, `tolerations`, `affinity`, `priorityClassName`, `updateStrategy`, `podAnnotations`, `logLevel` and `metrics.enabled` apply to both DaemonSets, with the same `global` fallbacks, as they apply to the one pod today.
 - `metrics.port` applies only to the discovery, which binds it on the node, where it can collide with another port. The mapper uses `global.metricsPort`, like the other modules on the pod network, because the namespace NetworkPolicy allows only that port.
 - `runtimeClassName`, `nriPlugin`, `extraEnv` and the additional volumes apply only to the discovery. Their documented use is the driver libraries.
