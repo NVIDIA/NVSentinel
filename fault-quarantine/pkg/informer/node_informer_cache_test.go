@@ -80,6 +80,11 @@ func TestNewNodeInformer_DerivedKeys_CachesOnlyRetainedEntries(t *testing.T) {
 	// Nothing reads this one.
 	require.NotContains(t, node.Labels, "label", "cached node retained a label nothing reads")
 	require.NotContains(t, node.Annotations, "annotation", "cached node retained an annotation nothing reads")
+	require.Nil(t, node.ManagedFields, "cached node retained managedFields that no rule reads")
+
+	// The rest of metadata is kept.
+	require.Equal(t, "test-uid", string(node.UID), "cached node is missing a metadata field")
+	require.NotEmpty(t, node.OwnerReferences, "cached node is missing a metadata field")
 
 	// Spec is never pruned: the cordon path and untaint detection read it.
 	require.Equal(t, "10.0.0.0/24", node.Spec.PodCIDR, "cached node is missing a spec field")

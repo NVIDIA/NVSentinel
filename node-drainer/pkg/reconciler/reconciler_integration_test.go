@@ -1487,7 +1487,7 @@ func setupConfiguredTest(t *testing.T, tomlConfig config.TomlConfig, dryRun bool
 		tomlConfig.DrainGPUPods,
 		dryRun,
 		tomlConfig.SystemNamespaces,
-		nil,
+		informers.NodeFields(nil),
 		policies.LabelKeys()...,
 	)
 	require.NoError(t, err)
@@ -1603,7 +1603,7 @@ func setupCustomDrain(t *testing.T, customDrainConfig config.CustomDrainConfig,
 		false,
 		false,
 		tomlConfig.SystemNamespaces,
-		customDrainNodes.LabelKeys(),
+		informers.NodeFields(customDrainNodes.LabelKeys()),
 	)
 	require.NoError(t, err)
 
@@ -2817,7 +2817,7 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		false,
 		false,
 		tomlConfig.SystemNamespaces,
-		nil,
+		informers.NodeFields(nil),
 	)
 	require.NoError(t, err)
 
