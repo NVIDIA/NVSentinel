@@ -219,6 +219,11 @@ func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
 		assert.Equal(t, "GPUAlreadyUnderMaintenance", cond["reason"])
 		assert.Contains(t, cond["message"], firstCRName, "message should name the holder CR")
 
+		outcome := helpers.GetCRCondition(completedCR, "Succeeded")
+		require.NotNil(t, outcome, "Succeeded condition should be set")
+		assert.Equal(t, "False", outcome["status"], "Succeeded should be False for terminal failure")
+		assert.Equal(t, "GPUAlreadyUnderMaintenance", outcome["reason"])
+
 		return ctx
 	})
 
@@ -286,6 +291,10 @@ func TestJanitorDuplicateGPUResetNonOverlappingGPUs(t *testing.T) {
 		require.NotNil(t, cond, "Complete condition should be set on second GPUReset")
 		assert.NotEqual(t, "GPUAlreadyUnderMaintenance", cond["reason"],
 			"non-overlapping GPUReset should not get GPUAlreadyUnderMaintenance")
+
+		outcome := helpers.GetCRCondition(completedCR, "Succeeded")
+		require.NotNil(t, outcome, "Succeeded condition should be set on second GPUReset")
+		assert.Equal(t, cond["reason"], outcome["reason"], "Succeeded should have the reason of Complete")
 
 		return ctx
 	})

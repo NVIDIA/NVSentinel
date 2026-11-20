@@ -55,7 +55,7 @@ fault-remediation:
         version: "v1alpha1"
         kind: "GPUReset"
         scope: "Cluster"
-        completeConditionType: "Complete"
+        completeConditionType: "Succeeded"
         templateFileName: "gpureset-template.yaml"
         equivalenceGroup: "reset"
         impactedEntityScope: "GPU_UUID"
