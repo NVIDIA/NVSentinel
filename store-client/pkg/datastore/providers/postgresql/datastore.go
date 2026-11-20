@@ -172,12 +172,18 @@ func (p *PostgreSQLDataStore) GetDB() *sql.DB {
 func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	ctx context.Context, config any,
 ) (datastore.ChangeStreamWatcher, error) {
+	return p.newChangeStreamWatcher(ctx, config, client.ResetResumeTokenOnStartIfConfigured)
+}
+
+func (p *PostgreSQLDataStore) newChangeStreamWatcher(
+	ctx context.Context, config any, reset resetResumeTokenFunc,
+) (datastore.ChangeStreamWatcher, error) {
 	clientName, tableName, pipeline, err := parseWatcherConfig(config)
 	if err != nil {
 		return nil, err
 	}
 
-	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(
+	resumeControlDecision, err := reset(
 		ctx,
 		p.GetDatabaseClient(),
 		client.TokenConfig{ClientName: clientName},
@@ -199,6 +205,10 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	// Create and return PostgreSQL change stream watcher
 	// Default to hybrid mode for best performance and reliability
 	watcher := NewPostgreSQLChangeStreamWatcher(p.db, clientName, snakeCaseTableName, p.connString, ModeHybrid)
+	if err := watcher.initializeResumePosition(ctx); err != nil {
+		return nil, fmt.Errorf("initialize PostgreSQL watcher position: %w", err)
+	}
+
 	watcher.pipeline = pipeline
 	watcher.pipelineFilter = pipelineFilter
 
