@@ -85,8 +85,8 @@ type Evaluator struct {
 	reader             sysfs.Reader
 	processingStrategy pb.ProcessingStrategy
 
-	// snapshots is the persisted (value, timestamp) per counter. For
-	// delta thresholds it is updated every poll; for velocity thresholds
+	// snapshots is the live (value, timestamp) per counter. For
+	// delta thresholds it is updated on each evaluation; for velocity thresholds
 	// it is held for the duration of a window so rates are computed over
 	// real elapsed time.
 	snapshots map[string]statefile.CounterSnapshot
@@ -206,7 +206,7 @@ func (e *Evaluator) HasState() bool {
 }
 
 // Snapshots returns a copy of this evaluator's owned snapshots so the
-// caller can persist them via statefile.Manager.UpdateCounterSnapshots.
+// caller can persist them via statefile.Manager.SaveCounterState.
 // Only keys this evaluator has actually evaluated (via evaluateOne) are
 // returned; cross-evaluator keys carried in the in-memory map (loaded
 // from the shared state file at construction) are filtered out so the
@@ -225,7 +225,7 @@ func (e *Evaluator) Snapshots() map[string]statefile.CounterSnapshot {
 
 // BreachFlags returns a copy of this evaluator's owned breach flags.
 // Keys explicitly cleared during this lifetime are returned with
-// Breached=false so that statefile.Manager.UpdateBreachFlags can
+// Breached=false so that statefile.Manager.SaveCounterState can
 // propagate the deletion to the persisted map (the merge logic deletes
 // any incoming Breached=false entry).
 func (e *Evaluator) BreachFlags() map[string]statefile.CounterBreachFlag {
@@ -424,9 +424,8 @@ func (e *Evaluator) baselineOne(
 	return e.baselineEvent(counterCfg, entities, checkName)
 }
 
-// evaluateDelta evaluates a delta-typed counter. Snapshot is advanced
-// every poll regardless of whether a breach was detected so the next
-// poll's delta is measured against the latest reading.
+// evaluateDelta advances the live snapshot on each evaluation so the next
+// poll measures the change from the latest reading.
 func (e *Evaluator) evaluateDelta(
 	key string,
 	currentValue uint64,
