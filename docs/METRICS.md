@@ -438,7 +438,7 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `dcgm_api_latency`                                      | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
 | `dcgm_reconcile_time`                                   | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
 | `number_of_health_watches`                              | Gauge     | -                                  | Number of DCGM health watches available                                                                   |
-| `number_of_fields`                                      | Gauge     | -                                  | Number of available DCGM fields to monitor                                                                |
+| `number_of_fields`                                      | Gauge     | -                                  | Number of `DCGM_FI_DEV*` constants exposed by the installed DCGM Python bindings                            |
 | `callback_failures_total`                               | Counter   | `class_name`, `func_name`          | Number of times a callback function has thrown an exception                                               |
 | `callback_success_total`                                | Counter   | `class_name`, `func_name`          | Number of times a callback function has successfully completed                                            |
 | `dcgm_api_failures_total`                               | Counter   | `error_name`                       | Number of DCGM API errors                                                                                 |
@@ -447,6 +447,8 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `gpu_temp_limit_margin_blank_total`                     | Counter   | -                                  | Number of poll cycles where DCGM field 153 (T.Limit) returned a blank value                                |
 | `gpu_temp_limit_slowdown_threshold_missing_total`       | Counter   | -                                  | Number of poll cycles where slowdown T.Limit metadata from NVML field 194 is missing                      |
 | `gpu_power_brake_reasons_blank_total`                   | Counter   | -                                  | Number of GPU polls where DCGM clocks-event-reasons was missing or blank, so GpuPowerBrakeWatch could not be evaluated |
+
+The `number_of_fields` and `number_of_health_watches` gauges describe the binding inventory. They do not confirm active watches, hardware support, successful polling or valid samples. A field can appear in the inventory while its monitor is disabled.
 
 ---
 
