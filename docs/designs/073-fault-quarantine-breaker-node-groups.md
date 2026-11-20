@@ -267,12 +267,13 @@ Tests:
 
 - A trip in one group still stops quarantines and recovery for all nodes.
 - Operators have more configuration and more metrics.
-- A group rule that fails at run time stops the stream for all nodes until the rule or the node is corrected.
+- Startup validates every rule and places every node (see [Validation](#validation)). But a rule can still fail for a node that is added or changes later. That failure stops the stream for all nodes until the rule or the node is corrected.
 - The bounds of a group with domains depend on the size of a domain, so each cluster needs its own values.
 - On a cluster that is one domain, the breaker cannot tell a failed domain from a bad signal on every node.
 - For nodes without a domain label, the domain bound is weaker, because it counts them as one domain. The node bounds limit that case.
 - With a domain label that a discovery component computes, a label that disappears or changes during a fault can make the domain bound count too many domains or too few. The node bounds limit both cases.
 - The membership rule (one winner) is different from the fault-quarantine rule sets (every match applies).
+- A node type is defined in two places: the `Node` rules of the quarantine rule sets and the node group. If the two differ, the quarantines of those nodes count against a different breaker than the operator expects. They always count against one breaker: the group that the node matches, or the cluster breaker. A group whose nodes no quarantine rule set covers never counts a node.
 
 ### Mitigations
 
@@ -280,6 +281,7 @@ Tests:
 - The `group` label lets operators make an alert for each group.
 - The documentation gives sizing rules for groups with domains.
 - The documentation states the membership rule, with a link to ADR-064.
+- The node count of each breaker, in the startup log and in the metrics, shows a difference between the two definitions of a node type. A reference from a rule set to a node group removes the second definition (see [Future work](#future-work)).
 
 ## Alternatives Considered
 
