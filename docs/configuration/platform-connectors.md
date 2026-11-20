@@ -40,6 +40,12 @@ platformConnector:
   affinity: {}
 ```
 
+## Kubernetes API Permissions
+
+`platformConnector.k8sConnector.enabled` controls the Kubernetes sink in both platform connector roles. When disabled, their ClusterRoles omit `nodes/status` and `events` permissions. When enabled, the sink can update node conditions and create or update Kubernetes Events. Neither connector role needs `pods/eviction`; the node drainer owns workload eviction.
+
+Authentication still needs `create` on `tokenreviews`. The metadata augmentor needs `get` on `nodes`. The node-local role retains its existing node and pod discovery reads. Other components, including the labeler, metadata collector and enabled action controllers, have separate permissions. Disabling the Kubernetes sink does not make the whole installation read-only or remove host access.
+
 ## Event Processing Pipeline
 
 Configures the event processing pipeline that processes health events before storage and Kubernetes propagation. Transformers mutate events in order before connector fan-out.

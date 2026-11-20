@@ -41,7 +41,7 @@ mongodb-store:
 
 ## Switching backends on an existing installation
 
-Do **NOT** switch backends by changing the two flags on a live release with `helm upgrade`. The upgrade fails partway through with an immutable field error on the database initialization Job, and by then it has already deployed parts of the other backend. The result is two MongoDB clusters running side by side and services pointed at the wrong one.
+**Never switch backends in place.** Changing useBitnami and usePerconaOperator does not migrate the data. Services may connect to a new, empty database, leaving existing health events unavailable. Node annotations and remediation resources may then refer to events that are not in the new database. Follow this runbook to remove and redeploy the installation. Use the dump and restore path if you need to preserve health events.
 
 Switching backends reinstalls the datastore; the migration runbook's default path carries the health event data over with a dump and restore, and only its opt-out clean path drops it. Follow the [MongoDB Bitnami to Percona migration runbook](../runbooks/mongodb-bitnami-to-percona-migration.md) for the full procedure, including the cleanup steps and the handling of in-flight quarantines.
 
@@ -521,9 +521,9 @@ A completed Job is immutable. Changing `oplogSizeMB` (or the replica-member list
 
 ### HealthEvents TTL
 
-`collectionExpirySeconds` (default `2592000` / 30d). Same key for external Mongo. The init Job is `create-mongodb-database-<seconds>-<scriptHash>` (`-l app.kubernetes.io/name=create-mongodb-database`).
+`collectionExpirySeconds` (default `2592000` / 30d). Same key for external Mongo. The init Job is `create-mongodb-database-<seconds>-<hash>` (`-l app.kubernetes.io/name=create-mongodb-database`).
 
-A completed Job is immutable. TTL, oplog size, and a hash of the mongosh init script are in the Job name so Helm/Argo create a new Job when expiry, oplog, or indexes change. Argo also has `Force=true,Replace=true` so a Failed first run is recreated on sync. For Helm, if you need to rerun the same script, delete the Job by that label and upgrade.
+A completed Job is immutable, so the Job gets a new name when it must change. The name holds the TTL and one hash. The hash covers `oplogSizeMB`, `oplogAllowShrink` and the rendered Job pod template, which includes the mongosh init script. Helm and Argo CD create a new Job when the TTL, an oplog setting or the indexes change. They also create a new Job when the Job pod changes, for example `mongodb.nodeSelector`, tolerations, images or `global.imagePullSecrets`. Argo also has `Force=true,Replace=true` so a Failed first run is recreated on sync. For Helm, if you need to rerun the same script, delete the Job by that label and upgrade.
 
 ```yaml
 mongodb-store:
