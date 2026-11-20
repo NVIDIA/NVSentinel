@@ -145,7 +145,7 @@ Errors follow ADR-064, with one difference:
 - **Percentages.** A group measures its percentages against its own nodes. A group does not use `gpuNodeLabel`.
 - **Caps.** The node bounds of a group are capped at the number of nodes of the group.
 - **The cluster breaker.** When node groups are set, the cluster breaker covers the nodes in no group, and it counts only their quarantines. It measures its percentages against the nodes that it covers and that match `gpuNodeLabel`, as today. Thus a node group for LPU nodes does not change the limits of the GPU nodes.
-- **A node that moves.** If a label change moves a node to another group, its window entries stay where they were recorded. Its standing count moves with the node.
+- **A node that moves.** If a label change moves a node to another group, its window entries stay where they were recorded. Its standing count moves with the node. For the domain bounds of the new group, the rules for the domain of a node in [Failure domains](#failure-domains) apply.
 
 A breaker with no nodes:
 
@@ -211,7 +211,8 @@ With `maxDomains: 2`, one failed domain does not trip, and it needs no reset. A 
 
 The domain of a node:
 
-- fault-quarantine fixes the domain of a node when it starts the quarantine. It reads the label at that time, and it stores the domain in a new quarantine annotation. A later change or loss of the label does not move a quarantined node to another domain, and a restart does not change it. [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) asked for this rule.
+- fault-quarantine fixes the domain of a node when it starts the quarantine. It reads the label at that time, and it stores the domain in a new quarantine annotation, together with the `topologyKey` that it read. A later change or loss of the label does not move a quarantined node to another domain, and a restart does not change it. [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) asked for this rule.
+- A quarantined node can have no stored domain for the `topologyKey` of its group. This occurs when the quarantine started before the group had failure domains, when the `topologyKey` of the group changes, and when the node moves to a group with a different `topologyKey`. fault-quarantine then reads the label of that key when it first counts the node in the group, at startup or at the change, and it stores that domain. It does not use a domain that is stored for a different key. Thus a rack value never counts as a domain in a group that counts zones, and quarantines in many racks that are older than the domain bounds do not count as one domain.
 - A node that has no label and no stored domain counts in one shared domain for its group, the unknown domain. fault-quarantine logs a warning and reports these nodes in a metric. One domain for each such node would count a rack without labels as many domains, and a failed rack would trip.
 - The unknown domain has a cost. Nodes without a label can be in different racks, but they all count as one domain, so the domain bound cannot find the second rack. Only the node bounds protect against a failure or a bad signal on such nodes. The breaker then trips at the node bound. With labels, it trips at the domain bound, which is the first quarantine in the domain that reaches the bound. The metric for nodes without a domain label shows this exposure before a fault occurs.
 - Match the group on a stable label, not on the domain label. A node then stays in its group when it loses its domain label.
@@ -242,7 +243,7 @@ Each step is a separate PR. A cluster with no node groups does not change at eit
 
 Tests:
 
-- Unit tests: the winner, equal priorities, a disabled group, and a rule error before and after the winner. The window and the standing count of each group. A group with no nodes, and the cluster breaker with no node that matches `gpuNodeLabel`. The series of each group. The domain of a node at quarantine, stored, and unknown. Nodes without a domain label, some in one rack and some in a second rack: they count as one domain, and the node bound trips. A node that loses its label before the quarantine counts in the unknown domain. A node whose label changes to the value of a different domain counts in that domain. The node bounds for a domain bound of 2 and of 3.
+- Unit tests: the winner, equal priorities, a disabled group, and a rule error before and after the winner. The window and the standing count of each group. A group with no nodes, and the cluster breaker with no node that matches `gpuNodeLabel`. The series of each group. The domain of a node at quarantine, stored, and unknown. A quarantined node with no stored domain for the `topologyKey` of its group: an older quarantine, a changed key, and a move to a group with a different key. Nodes without a domain label, some in one rack and some in a second rack: they count as one domain, and the node bound trips. A node that loses its label before the quarantine counts in the unknown domain. A node whose label changes to the value of a different domain counts in that domain. The node bounds for a domain bound of 2 and of 3.
 - E2E tests: a burst on one node type trips by the limits of its group. A full domain is quarantined with no trip, and a second domain trips. A restart while tripped restores `trippedBy` and the series. With no node groups, nothing changes except the `group` label.
 
 ## Rationale
