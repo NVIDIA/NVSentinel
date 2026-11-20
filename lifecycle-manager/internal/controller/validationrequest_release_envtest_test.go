@@ -57,13 +57,14 @@ var errReleaseNodeRead = errors.New("injected Node read failure")
 // precise point of the reconcile without changing the reconciler.
 type releaseRaceClient struct {
 	client.Client
-	afterDelete      func(context.Context, client.Object) error
-	beforeNodeRead   func(context.Context) error
-	providerRead     bool
-	beforePatch      func(context.Context, client.Object) error
-	failNodeReads    bool
-	quarantinedReads int
-	conflicts        int
+	afterDelete            func(context.Context, client.Object) error
+	beforeNodeRead         func(context.Context) error
+	providerRead           bool
+	nodeReadsAfterProvider int
+	beforePatch            func(context.Context, client.Object) error
+	failNodeReads          bool
+	quarantinedReads       int
+	conflicts              int
 }
 
 func (c *releaseRaceClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object,
@@ -73,6 +74,9 @@ func (c *releaseRaceClient) Get(ctx context.Context, key client.ObjectKey, obj c
 	}
 	if obj.GetObjectKind().GroupVersionKind() == testJobGVK {
 		c.providerRead = true
+	}
+	if _, ok := obj.(*corev1.Node); ok && c.providerRead {
+		c.nodeReadsAfterProvider++
 	}
 	if _, ok := obj.(*corev1.Node); ok && c.providerRead && c.beforeNodeRead != nil {
 		fn := c.beforeNodeRead
@@ -211,13 +215,15 @@ func (f *releaseFixture) reconcile() v1alpha1.ValidationRequest {
 	return reconcileForIterations(ctx, f.reconciler, f.request, 1)
 }
 
-// afterTestRead runs fn once, between the last readiness check of the running group and the release. The provider
-// resource of a completed group is only deleted after the release and the status write, so the point is found by
-// counting the Node reads that follow the read of the provider resource: skip is the number of them that precede
-// the injection (1 skips the running group's readiness check; 0 when that check is served from a stale cache).
+// afterTestRead runs fn once, after the running group's readiness check and before the release. The running group
+// reads its Nodes before the provider resource, so the Node reads that follow the read of the provider resource begin
+// with the release preflight: skip is the number of them that precede the injection (0 injects before the first
+// preflight read, so the change is first seen by the preflight; 1 would skip that read and leave only the
+// patch-time check to observe it).
 func (f *releaseFixture) afterTestRead(skip int, fn func(ctx context.Context) error) *bool {
 	fired := false
 	f.client.providerRead = false
+	f.client.nodeReadsAfterProvider = 0
 	f.client.beforeNodeRead = nil
 	var arm func(ctx context.Context) error
 	arm = func(ctx context.Context) error {
@@ -231,6 +237,14 @@ func (f *releaseFixture) afterTestRead(skip int, fn func(ctx context.Context) er
 	}
 	f.client.beforeNodeRead = arm
 	return &fired
+}
+
+// expectRejectedByPreflight asserts that the release was refused by the preflight, before any node was re-read for a
+// release patch. After the provider read, the Node reads are one preflight read per node plus one read per node by the
+// patch that retains the gate of the failed request; a rejection at patch time adds at least one more read.
+func (f *releaseFixture) expectRejectedByPreflight(nodeCount int) {
+	Expect(f.client.nodeReadsAfterProvider).To(Equal(2*nodeCount),
+		"the preflight must reject the release before any patch-time read")
 }
 
 // beforeReleasePatch runs fn once, immediately before the patch that would uncordon the named node is sent.
@@ -342,7 +356,7 @@ var _ = Describe("Validation release readiness check", func() {
 			case "during-test":
 				Expect(setQuarantine(ctx, nodeName, annotation)).To(Succeed())
 			case "after-readiness", "empty-annotation":
-				fired = fixture.afterTestRead(1, func(ctx context.Context) error {
+				fired = fixture.afterTestRead(0, func(ctx context.Context) error {
 					return setQuarantine(ctx, nodeName, annotation)
 				})
 			case "patch-conflict":
@@ -370,6 +384,7 @@ var _ = Describe("Validation release readiness check", func() {
 				expectReleaseBlocked(vr, readinessViolation{node: nodeName, criterion: "not-under-quarantine"})
 			default:
 				expectReleaseBlocked(vr, readinessViolation{node: nodeName, criterion: "not-under-quarantine"})
+				fixture.expectRejectedByPreflight(1)
 			}
 			Expect(node.Annotations).To(HaveKeyWithValue(releaseQuarantineAnnotation, annotation))
 			Expect(fixture.client.quarantinedReads).To(BeNumerically(">", 0))
@@ -388,7 +403,7 @@ var _ = Describe("Validation release readiness check", func() {
 		fixture := newReleaseFixture("release-label", releaseFixtureOptions{}, nodeName)
 		vr := fixture.running()
 		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
-		fired := fixture.afterTestRead(1, func(ctx context.Context) error {
+		fired := fixture.afterTestRead(0, func(ctx context.Context) error {
 			return removeNodeLabel(ctx, nodeName, "ready")
 		})
 
@@ -396,6 +411,7 @@ var _ = Describe("Validation release readiness check", func() {
 		Expect(*fired).To(BeTrue())
 		Expect(getNode(ctx, nodeName).Annotations).NotTo(HaveKey(releaseQuarantineAnnotation))
 		expectReleaseBlocked(vr, readinessViolation{node: nodeName, criterion: "test-criterion"})
+		fixture.expectRejectedByPreflight(1)
 		expectGateRetained(nodeName)
 		checkNodeValidationState(ctx, vr.Name, []string{nodeName}, v1alpha1.PhaseFailed)
 	})
@@ -511,13 +527,14 @@ var _ = Describe("Validation release readiness check", func() {
 		Expect(vr.Status.TestGroups).To(HaveLen(1))
 		Expect(vr.Status.TestGroups[0].Nodes).To(ConsistOf(nodeA, nodeB))
 		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
-		fired := fixture.afterTestRead(1, func(ctx context.Context) error {
+		fired := fixture.afterTestRead(0, func(ctx context.Context) error {
 			return setQuarantine(ctx, nodeB, releaseQuarantineEvent)
 		})
 
 		vr = fixture.reconcile()
 		Expect(*fired).To(BeTrue())
 		expectReleaseBlocked(vr, readinessViolation{node: nodeB, criterion: "not-under-quarantine"})
+		fixture.expectRejectedByPreflight(2)
 		expectGateRetained(nodeA)
 		expectGateRetained(nodeB)
 		checkNodeValidationState(ctx, vr.Name, []string{nodeA, nodeB}, v1alpha1.PhaseFailed)
@@ -548,12 +565,13 @@ var _ = Describe("Validation release readiness check", func() {
 		fixture := newReleaseFixture("release-old", releaseFixtureOptions{}, nodeName)
 		vr := fixture.running()
 		Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testSuccessCondType)).To(Succeed())
-		fired := fixture.afterTestRead(1, func(ctx context.Context) error {
+		fired := fixture.afterTestRead(0, func(ctx context.Context) error {
 			return setQuarantine(ctx, nodeName, releaseQuarantineEvent)
 		})
 		vr = fixture.reconcile()
 		Expect(*fired).To(BeTrue())
 		expectReleaseBlocked(vr, readinessViolation{node: nodeName, criterion: "not-under-quarantine"})
+		fixture.expectRejectedByPreflight(1)
 
 		r, req := newValidationRequestTestSetup(ctx, "release-new", validationRequestTestCase{
 			config: fixture.config,
