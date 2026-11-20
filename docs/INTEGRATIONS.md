@@ -119,7 +119,7 @@ nvidia.com/gpu-nvlink-error
 nvidia.com/syslog-xid-error
 ```
 
-**Option 2: Hierarchical (proposed pattern)**
+**Option 2: Hierarchical**
 ```
 gpu.health/memory-error
 nvlink.health/link-down
@@ -880,26 +880,11 @@ status:
 - **Quarantine Rules:** `distros/kubernetes/nvsentinel/charts/fault-quarantine/values.yaml`
 - **Module Config:** `distros/kubernetes/nvsentinel/values.yaml`
 
-### Code Locations
-
-- **Condition Setting:** `platform-connectors/pkg/connectors/kubernetes/process_node_events.go`
-- **Taint Application:** `fault-quarantine/pkg/informer/k8s_client.go`
-- **Drain Logic:** `node-drainer/pkg/drainer/drainer.go`
-- **Remediation Triggering:** `fault-remediation/pkg/remediation/remediation.go`
-
 ## Related Documentation
 
-- [ADR-003: Rule-Based Node Quarantine](./designs/003-rule-based-node-quarantine.md) - CEL-based quarantine rules
-- [ADR-009: Fault Remediation Triggering](./designs/009-fault-remediation-triggering.md) - Remediation workflow
 - [Data Flow Documentation](./DATA_FLOW.md) - End-to-end event flow
-- [Helm Chart Configuration](../distros/kubernetes/README.md) - Deployment configuration
+- Helm Chart Configuration (`distros/kubernetes/README.md` in the NVSentinel repository) - Deployment configuration
 
-## Contributing
+## API Stability
 
-This document describes the proposed API contract for NVSentinel node health signaling. Changes to condition types, taint keys, or label keys require review and follow the deprecation policy.
-
-To propose changes:
-1. Open an issue describing the use case
-2. Discuss impact on external integrations
-3. Follow the versioning and deprecation guidelines
-4. Update this document as part of the PR
+This document describes the API contract for NVSentinel node health signaling. Changes to condition types, taint keys, or label keys require review and follow the deprecation policy.

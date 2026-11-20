@@ -12,13 +12,12 @@ By the end you will have:
 
 > **Just want the AI to do it?** Jump to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
 
-> **Safety:** Use a test node that has no important workloads. When NVSentinel releases a node, it stops its health monitors on that node. NVSentinel takes the node back when the external system reports that the repair is complete. NVSentinel also takes the node back when an operator deletes the ExternalRemediationRequest, or when janitor deletes it at the time limit in section 2.
+> **Safety:** Use a test node that has no important workloads. When NVSentinel releases a node, it stops its health monitors on that node. NVSentinel takes the node back when the external system reports that the repair is complete. NVSentinel also takes the node back when an operator deletes the ExternalRemediationRequest.
 
 ---
 
 ## Prerequisites
 
-- NVSentinel v1.24.0 or later.
 - NVSentinel with fault-quarantine, node-drainer, fault-remediation and janitor enabled. These components are disabled by default.
 - Helm 3.14 or later and `kubectl`.
 - Cluster-admin access to upgrade the NVSentinel Helm release and to create a ClusterRole.
@@ -26,7 +25,7 @@ By the end you will have:
 
 You do not need a finished external system for this tutorial. In the validation step, you act as the external system with `kubectl`.
 
-See the [NVSentinel Helm chart guide](../../distros/kubernetes/README.md) for the complete NVSentinel prerequisites.
+See the NVSentinel Helm chart guide (`distros/kubernetes/README.md` in the NVSentinel repository) for the complete NVSentinel prerequisites.
 
 ---
 
@@ -70,9 +69,7 @@ To take the node back, janitor removes the taint and the label.
 
 NVSentinel never contacts the external system. The external system watches the cluster for new ExternalRemediationRequests. When the repair is complete, the external system writes the result on the same ExternalRemediationRequest.
 
-For the design rationale and limitations, see [ADR-040](../designs/040-external-remediation-request.md).
-
-> **Note:** ADR-040 was written before the release, and some details changed. The released API group is `nvsentinel.dgxc.nvidia.com/v1`, the resource is cluster-scoped, and the short name is `extrr`.
+> **Note:** An ExternalRemediationRequest has the API version `nvsentinel.dgxc.nvidia.com/v1`. It is cluster-scoped, and its short name is `extrr`.
 
 ---
 
@@ -105,7 +102,7 @@ The result controls what NVSentinel does next:
 
 janitor adds a finalizer to each ExternalRemediationRequest. A finalizer stops Kubernetes from removing an object until a controller completes its cleanup. Because of this finalizer, a deletion always returns the node to NVSentinel. To take back a node after `ExternalRemediationComplete=False`, delete the ExternalRemediationRequest.
 
-> **Note:** janitor never deletes an open ExternalRemediationRequest. In a default install, janitor deletes it 336 hours after `status.completionTime` is set. At that time the node is already back with NVSentinel, so the deletion does not change the node. Janitor versions before the fix for [issue #2072](https://github.com/NVIDIA/NVSentinel/issues/2072) count the 336 hours from creation and delete open requests. The template in section 4 disables the time limit for those versions.
+> **Note:** janitor never deletes an open ExternalRemediationRequest. In a default install, janitor deletes it 336 hours after `status.completionTime` is set. At that time the node is already back with NVSentinel, so the deletion does not change the node.
 
 ---
 
@@ -190,7 +187,7 @@ fault-remediation:
 | Part of the template | Reason |
 | --- | --- |
 | `name: extrr-{{.HealthEventID}}` | The name becomes the value of the release taint. Kubernetes limits a taint value to 63 characters. This name has 42 characters or fewer. |
-| `nvsentinel.nvidia.com/preserve: "true"` | Stops janitor from deleting the ExternalRemediationRequest. Janitor versions before the fix for issue #2072 need it, because they delete open requests after 336 hours. On later versions it is optional: remove it to delete completed requests 336 hours after completion. |
+| `nvsentinel.nvidia.com/preserve: "true"` | Stops janitor from deleting the ExternalRemediationRequest. The annotation is optional. Remove it to let janitor delete completed requests 336 hours after completion. |
 | `trace-id` and `span-id` | Connect the ExternalRemediationRequest to the trace of the original health event. |
 | `printf "%q"` | Puts each text value in quotes. A `message` that contains a colon or a quote then cannot break the YAML. |
 | `spec.healthEvent` | The fields that the external system reads. The template copies only fields that have one value. |
@@ -385,7 +382,7 @@ The external system can be a Kubernetes controller, a script, or an operator who
 5. **Ignore closed requests.** When `status.completionTime` is set, janitor already took the node back. Take no action on the node.
 6. **Stop when someone deletes the request.** When `metadata.deletionTimestamp` is set, janitor returns the node to NVSentinel before Kubernetes removes the object. Stop all work on the node when this field appears.
 
-For a reference implementation of rule 4, see the `SetExtRRComplete` function in [tests/helpers/kube.go](../../tests/helpers/kube.go). It uses the Kubernetes unstructured client, which reads and writes any object as a map. The external system then does not need NVSentinel Go types.
+An external system can use the Kubernetes unstructured client to follow rule 4. This client reads and writes any object as a map, so the external system does not need NVSentinel Go types.
 
 For a full Kubebuilder scaffold of a controller that reconciles a custom resource, see [Writing a Drain Plugin](./writing-a-drain-plugin.md).
 
@@ -482,7 +479,7 @@ kubectl get node "$NODE" -o jsonpath='{.metadata.annotations.quarantineHealthEve
 
 - If a new ExternalRemediationRequest exists for the node, the fault is still present.
 - If the list still contains the check that started the repair, the health monitor did not publish a healthy event yet. The health monitors start again after janitor takes the node back.
-- A monitor that runs outside the node, such as kubernetes-object-monitor or csp-health-monitor, can miss its first check after the node returns. ADR-040 lists this as a known limitation. To return the node to service, see [Cancelling Break-Fix Workflows](../cancelling-breakfix.md).
+- A monitor that runs outside the node, such as kubernetes-object-monitor or csp-health-monitor, can miss its first check after the node returns. To return the node to service, see [Cancelling Break-Fix Workflows](../cancelling-breakfix.md).
 - A tripped circuit breaker also stops the uncordon. See the [circuit breaker runbook](../runbooks/circuit-breaker.md).
 
 ---
@@ -497,7 +494,7 @@ Help me connect an external repair system to NVSentinel with ExternalRemediation
 - Kubernetes context: [context]
 - NVSentinel namespace: [namespace, default nvsentinel]
 - NVSentinel Helm release: [release, default nvsentinel]
-- NVSentinel version: [v1.24.0 or later]
+- NVSentinel version: [version]
 - Test node: [node]
 - External system ServiceAccount: [namespace/name]
 
@@ -520,10 +517,7 @@ Follow these requirements:
      external-remediation. Do not set impactedEntityScope or namespace.
    - Add maintenance.templates."external-remediation.yaml" as shown in section 4
      of docs/tutorials/integrating-external-remediation.md. Name the object
-     extrr-{{.HealthEventID}}. Keep the annotation
-     nvsentinel.nvidia.com/preserve: "true" if janitor is older than the fix
-     for issue #2072. Without it, those versions delete the object after 336
-     hours and take the node back during the repair.
+     extrr-{{.HealthEventID}}.
    - Use plain Go text/template only. Sprig functions are not available.
 
 3. Run helm upgrade with --reset-then-reuse-values and the values file. Do not

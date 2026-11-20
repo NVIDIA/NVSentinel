@@ -112,8 +112,6 @@ The type of the status condition that gives the outcome of the maintenance. faul
 
 For `GPUReset`, use `Succeeded`. The janitor sets the `Complete` condition of a GPUReset to `True` when the GPUReset ends, also when the reset failed. Thus `Complete` cannot tell a failed reset from a successful reset.
 
-Only a janitor that sets the `Succeeded` condition can be used with this value. With an earlier janitor, the condition stays absent, and fault-remediation reads each GPUReset as in progress. When you upgrade, the janitor adds the condition to each GPUReset that ended before the upgrade and is not being deleted. If your values set `completeConditionType: "Complete"` for `GPUReset`, change the value to `Succeeded`. `helm upgrade --reuse-values` keeps the value that you set.
-
 #### namespace
 Kubernetes namespace where maintenance CRs will be created.
 
@@ -138,7 +136,7 @@ The maintenance template is a Go template that generates the Kubernetes CR YAML 
 - `.NodeName` (string) - Name of the node requiring maintenance
 - `.HealthEventID` (string) - Unique ID of the triggering health event
 - `.HealthEvent` (HealthEvent) - The entire content of the triggering health event
-- `.RecommendedAction` (int) - Numeric action code from health event (see [health_event.proto](https://github.com/NVIDIA/NVSentinel/blob/main/data-models/protobufs/health_event.proto))
+- `.RecommendedAction` (int) - Numeric action code from health event (see [RecommendedAction Enum](../health-event-data-model.md#recommendedaction-enum))
 - `.RecommendedActionName` (string) - Action name from the health event
 - `.ImpactedEntityScopeValue` (string) - The GPU_UUID used in COMPONENT_RESET remediation actions
 - `.ApiGroup` (string) - Value from `maintenance.apiGroup`

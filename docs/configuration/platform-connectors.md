@@ -44,7 +44,7 @@ platformConnector:
 
 `platformConnector.k8sConnector.enabled` controls the Kubernetes sink in both platform connector roles. When disabled, their ClusterRoles omit `nodes/status` and `events` permissions. When enabled, the sink can update node conditions and create or update Kubernetes Events. Neither connector role needs `pods/eviction`; the node drainer owns workload eviction.
 
-Authentication still needs `create` on `tokenreviews`. The metadata augmentor needs `get` on `nodes`. The node-local role retains its existing node and pod discovery reads. Other components, including the labeler, metadata collector and enabled action controllers, have separate permissions. Disabling the Kubernetes sink does not make the whole installation read-only or remove host access.
+Authentication still needs `create` on `tokenreviews`. The metadata augmentor needs `get` on `nodes`. The node-local role retains its node and pod discovery reads. Other components, including the labeler, metadata collector and enabled action controllers, have separate permissions. Disabling the Kubernetes sink does not make the whole installation read-only or remove host access.
 
 ## Event Processing Pipeline
 
@@ -136,7 +136,7 @@ platformConnector:
       skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
 ```
 
-Leave it empty to disable the behavior. The value must match the key and value that `commons/pkg/managed` defines, so change it only together with that constant. Only the exact value opts a node out; any other value, including an absent label or a typo, leaves the node managed normally. Label a node to hand it to another owner — a hardware team working on it, or an external remediation system — without disabling NVSentinel for the rest of the fleet.
+Leave it empty to disable the behavior. Do not set a different value, because janitor and labeler also use this label with a fixed key and value. Only the exact value opts a node out; any other value, including an absent label or a typo, leaves the node managed normally. Label a node to hand it to another owner — a hardware team working on it, or an external remediation system — without disabling NVSentinel for the rest of the fleet.
 
 A new label takes effect within the metadata cache time, once the connector can read the node. Removing the label takes effect on the node's next event: the connector reads an opted-out node again for each event. If that read fails, the node stays opted out.
 
@@ -296,12 +296,11 @@ platformConnector:
 Registers `health_events_total{node, agent, check_name, recommended_action, is_fatal, is_healthy}`
 on the existing metrics endpoint. Defaults to `false`, like the other optional connectors.
 
-### Why it lives here rather than in each monitor
+### When to use it
 
 Every monitor publishes through the platform connector, so one connector covers
 `gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`,
-`kubernetes-object-monitor` and `health-events-analyzer` at once. It is also already the
-authority on severity, since `isFatal` is derived from `recommendedAction`.
+`kubernetes-object-monitor` and `health-events-analyzer` at once.
 
 On a fleet where actionable events are rare, this is the metric that answers "what needs
 attention right now" without querying the datastore. See
@@ -341,9 +340,9 @@ platformConnector:
     tokenPath: "/var/run/secrets/nvsentinel/grpcsink/token"
 ```
 
-The target must be an external sink, not another NVSentinel platform connector. A connector's own token is bound to the node its pod runs on, and a receiving connector rejects a token whose node claim names a different node, so chaining connectors cannot authenticate. Fan-in belongs to the datastore, which every connector already writes to.
+The target must be an external sink, not another NVSentinel platform connector. A receiving connector accepts events only for the node that the token of the sending connector names. It rejects events about other nodes (`node_mismatch`), so a chained connector cannot forward the events of the whole cluster. Fan-in belongs to the datastore, which every connector already writes to.
 
-Restrict which pods can reach the target with a network policy. See [ADR-033](../designs/033-grpc-sink-connector.md) for the design rationale.
+Restrict which pods can reach the target with a network policy.
 
 ## Datastore Client Certificates
 
@@ -387,7 +386,7 @@ Enables Kubernetes connector for creating node conditions and events.
 
 #### maxRetries
 
-Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `25`; positive integers override the default. Negative and non-integer values are rejected. An existing explicit value, such as `3`, still limits each write to that retry count.
+Maximum retries for each failed Kubernetes write, after its initial attempt. Omission or `0` selects `25`; positive integers override the default. Negative and non-integer values are rejected.
 
 On the node-local DaemonSet these settings govern the Kubernetes queue. The deployment platform connector retries each write the same way inside the request, but no longer than the `ConditionUpdateTimeout` of the `deployment` object in its config.json; `maxRetryDuration` cannot extend it. A write that still fails is counted in `platform_connector_best_effort_failures_total{connector="kubernetes"}` and `k8s_platform_connector_dropped_writes_total`, and the batch is acknowledged anyway.
 
@@ -414,7 +413,7 @@ platformConnector:
 
 The default count of 25 allows 69.5 seconds of outer backoff, but the default one-minute deadline stops retries sooner. The five-minute example raises both limits so its deadline controls the window. API calls and client-go retries also consume the time budget. A large batch shares one deadline across its writes.
 
-A write that exhausts its retry count is discarded; other writes can still run within the batch deadline. When the deadline expires, remaining writes are discarded and the connector advances to the next batch. A lost healthy recovery can therefore still leave a condition set. These bounded retries do not guarantee delivery through longer outages or pod restarts. Newer batches accumulate in memory during backpressure; this change does not add a persistent queue or an ingress memory limit.
+A write that exhausts its retry count is discarded; other writes can still run within the batch deadline. When the deadline expires, remaining writes are discarded and the connector advances to the next batch. A lost healthy recovery can therefore still leave a condition set. These bounded retries do not guarantee delivery through longer outages or pod restarts. Newer batches accumulate in memory during backpressure. There is no persistent queue and no ingress memory limit.
 
 #### Drop metrics
 
@@ -437,7 +436,7 @@ Maximum length of node condition messages in characters.
 #### compactedHealthEventMsgLen
 Budget, in bytes, for the part of each event's message that precedes its recommended action. The default is `72` and it must be greater than zero.
 
-One node condition message can carry several health events. The connector compacts only when their combined length exceeds `maxNodeConditionMessageLength`: it first drops messages with a duplicate identity (same error code, entity and recommended action), then shortens each remaining message's free-text diagnostic to this budget while keeping the entity identifiers that recovery needs. If the result still does not fit, the connector removes diagnostic text. It also shortens GPU UUID values to 8 characters plus `...` when the same entry also has a GPU or PCI identifier. This form keeps the error code, entity tokens and recommended action, and is used only when it saves bytes. A healthy GPU event clears an entry that names its GPU index and PCI address, or its complete GPU UUID. A shortened UUID does not match, so a shortened entry clears only through its GPU index and PCI address. If the list still exceeds the limit, the existing byte-level cut remains the final fallback. Lower this value to fit more events into one condition; raise it to keep more of each event's original text.
+One node condition message can carry several health events. The connector compacts only when their combined length exceeds `maxNodeConditionMessageLength`: it first drops messages with a duplicate identity (same error code, entity and recommended action), then shortens each remaining message's free-text diagnostic to this budget while keeping the entity identifiers that recovery needs. If the result still does not fit, the connector removes diagnostic text. It also shortens GPU UUID values to 8 characters plus `...` when the same entry also has a GPU or PCI identifier. This form keeps the error code, entity tokens and recommended action, and is used only when it saves bytes. A healthy GPU event clears an entry that names its GPU index and PCI address, or its complete GPU UUID. A shortened UUID does not match, so a shortened entry clears only through its GPU index and PCI address. If the list still exceeds the limit, a byte-level cut is the final fallback. Lower this value to fit more events into one condition; raise it to keep more of each event's original text.
 
 #### qps
 Queries per second allowed to the Kubernetes API server.
@@ -458,11 +457,11 @@ platformConnector:
 
 ## Deployment Platform Connector
 
-The platform connector binary can also run as a central Deployment (`--mode=deployment`). This page calls it the deployment platform connector. A publisher on `publishTo: deployment` sends its events directly to the deployment platform connector over TLS, with a bearer token. It does not use the socket of the node-local DaemonSet. The design is [ADR 052](../designs/052-deployment-platform-connector.md).
+The platform connector binary can also run as a central Deployment (`--mode=deployment`). This page calls it the deployment platform connector. A publisher on `publishTo: deployment` sends its events directly to the deployment platform connector over TLS, with a bearer token. It does not use the socket of the node-local DaemonSet.
 
 The deployment platform connector is off by default. To move to it, do these steps in this order:
 
-1. Set `platformConnector.deployment.enabled: true` on the umbrella chart. Keep every publisher on `publishTo: socket`. The chart then renders the Deployment, its Service, its certificate and its network policy. The replicas need the idempotency index. The datastore setup creates it, like every other index. On MongoDB, the setup Job creates it. The upgrade to a chart version that adds the index runs the Job again, because the Job script changed. On PostgreSQL, the components that set up the tables create it when they start: fault-quarantine, fault-remediation, health-events-analyzer and node-drainer. The platform connector does not create it. A replica exits when it has waited five minutes for the index. Thus a missing index shows as CrashLoopBackOff, not as a pod that is quietly not ready. The replica tries again after each restart until the index exists. Wait until the replicas are ready.
+1. Set `platformConnector.deployment.enabled: true` on the umbrella chart. Keep every publisher on `publishTo: socket`. The chart then renders the Deployment, its Service, its certificate and its network policy. The replicas need the idempotency index. The datastore setup creates it, like every other index. On MongoDB, the setup Job creates it. On PostgreSQL, the components that set up the tables create it when they start: fault-quarantine, fault-remediation, health-events-analyzer and node-drainer. The platform connector does not create it. A replica exits when it has waited five minutes for the index. Thus a missing index shows as CrashLoopBackOff, not as a pod that is quietly not ready. The replica tries again after each restart until the index exists. Wait until the replicas are ready.
 2. Move the publishers to the deployment platform connector, then turn off the DaemonSet:
    1. Set `publishTo: deployment` on each enabled monitor subchart: `gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `kubernetes-object-monitor`, `slurm-drain-monitor`, `csp-health-monitor`, `nvcre-certification-monitor` and `health-events-analyzer`.
    2. If the MaintenanceRequest controller of the lifecycle manager is on, set `lifecycle-manager.publishTo: deployment`. See [Lifecycle Manager](lifecycle-manager.md#maintenancerequest-controller).
@@ -526,6 +525,6 @@ When `--kubeconfig` is set:
 - The Kubernetes connector uses that kubeconfig instead of `InClusterConfig()`
 - `MetadataAugmentor` uses the same kubeconfig for node metadata lookups
 
-When `--kubeconfig` is unset, existing in-cluster behavior is unchanged.
+When `--kubeconfig` is unset, both use the in-cluster configuration.
 
-The bundled Helm chart continues to rely on in-cluster authentication and does not need to set this flag.
+The bundled Helm chart uses in-cluster authentication and does not set this flag.

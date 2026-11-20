@@ -3,10 +3,6 @@
 Operator reference for how health-event publishers authenticate to
 platform-connector: who may submit health events, and about which node.
 
-> The older `docs/platform-connectors.md` predates these changes and describes
-> the previous behaviour. Where it disagrees with this document, this document
-> is correct.
-
 ---
 
 ## Health-event publishers (platform-connector)
@@ -25,11 +21,11 @@ global:
 
 ### `enabled`
 
-Must be a **real YAML boolean** and must be set explicitly — there is no
-default. A quoted `"false"` is refused rather than read as `true`, and `null`
-or `0` is refused rather than silently disabling enforcement. The connector
-also refuses to start if the ConfigMap omits the key, so an old chart driving
-new images fails loudly instead of guessing whether authentication is required.
+Must be a **real YAML boolean**. The chart default is `true`. A `null` or
+non-boolean value fails the render: a quoted `"false"` is not read as `true`,
+and `null` or `0` does not silently disable enforcement. The connector also
+refuses to start if the ConfigMap omits the key. It does not guess whether
+authentication is required.
 
 Disabling this lets any caller that can reach the connector's socket submit an
 event naming any node. It is not a supported production configuration.
@@ -71,11 +67,10 @@ of the validator's own availability. `token_invalid` (a rejected or malformed
 credential) does say something about the caller and is always rejected under
 `mode: enforce`, regardless of this setting.
 
-Defaults to `false`: an unreachable validator rejects the request, matching
-behaviour before this setting existed. Set `true` to fall back to a
-**degraded** node-local scope instead — a guess, not a verified identity —
-so that a control-plane blip degrades publishers to their own node rather
-than blocking their health events outright:
+Defaults to `false`: an unreachable validator rejects the request. Set `true`
+to fall back to a **degraded** node-local scope instead — a guess, not a
+verified identity — so that a control-plane blip degrades publishers to their
+own node rather than blocking their health events outright:
 
 - An event with a blank or matching node name is accepted and stamped exactly
   as a verified node-local caller's would be, in either `mode`. This is the
@@ -90,8 +85,8 @@ than blocking their health events outright:
   would alert on as suspected credential abuse) and not rejected in a way
   publishers treat as non-retryable; it is retried once the validator
   recovers instead of being dropped for good. Under `mode: audit` that same
-  `Unavailable` is what gets recorded and then let through by `auditOrReject`
-  like any other violation, so the event is forwarded with whatever node name
+  `Unavailable` is what gets recorded and then let through like any other
+  audited violation, so the event is forwarded with whatever node name
   it carried.
 
 ### `audience`
@@ -120,7 +115,10 @@ in the cluster cordoned, drained and rebooted — add sparingly.
 The bundled cluster-scoped monitors — `csp-health-monitor`,
 `kubernetes-object-monitor`, `nvcre-certification-monitor`,
 `slurm-drain-monitor` and `health-events-analyzer` — are **derived from the
-release namespace** for whichever of them are enabled.
+release namespace** for whichever of them are enabled. The chart adds the
+`lifecycle-manager` ServiceAccount in the same way when
+`global.lifecycleManager.enabled` and
+`lifecycle-manager.controllers.maintenanceRequest.enabled` are both `true`.
 They do not belong in this list, and installing into a namespace other than
 `nvsentinel` needs no edit.
 
@@ -188,22 +186,12 @@ cluster already uses.
 | `missing_node_name` | An event carried no node name and none could be stamped. |
 | `token_invalid` | TokenReview rejected the token. |
 | `malformed_credentials` | The authorization header was duplicated, or did not use the Bearer scheme. On the node-local socket a *completely absent* header is not a violation — that caller is accepted and pinned to the connector's node; on the deployment platform connector it is counted as `token_missing`. |
-| `validator_unavailable` / `validator_timeout` / `validator_error` | The API server could not be reached, or returned no identity. With `failOpenOnUnavailable: true`, `validator_unavailable` and `validator_timeout` still increment this counter but fall back to a degraded node-local scope instead of rejecting the request — see [`failOpenOnUnavailable`](#failopenonunavailable) for how that scope treats a blank vs. a differently-named node. |
+| `validator_unavailable` / `validator_timeout` / `validator_error` | The API server could not be reached, or returned no identity. `validator_error` also counts a permanent TokenReview failure, such as a missing `create` permission on `tokenreviews`, and always rejects the request under `mode: enforce`. With `failOpenOnUnavailable: true`, `validator_unavailable` and `validator_timeout` still increment this counter but fall back to a degraded node-local scope instead of rejecting the request — see [`failOpenOnUnavailable`](#failopenonunavailable) for how that scope treats a blank vs. a differently-named node. |
 
 A healthy cluster reports zero violations. A sustained non-zero
 `validator_unavailable` is an API-server problem, not a caller problem.
 
 ---
-
-## Migration
-
-| Old | New |
-|---|---|
-| `crossNodeServiceAccounts` listing the bundled monitors | Remove them; they are derived from the release namespace. |
-
-Upgrade the chart and the images together. New images against an old chart do
-not start: the connector requires `enableNodeBindingAuth` to be present, and an
-old chart does not write it.
 
 ## Deployment platform connector
 

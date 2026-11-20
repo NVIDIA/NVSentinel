@@ -146,7 +146,6 @@ nic-health-monitor:
 - **Ports still training at boot are not reported.** A port that comes up before the delay is dropped.
 - **Survives restarts.** The suppression time is kept in the state file, so a pod restart does not restart the wait. This includes a restart while the reboot baseline is still owed because a device is unreadable. A reboot or discovery-scope change resets it, and the next first poll decides again.
 - **Recorded while off.** The monitor saves the suppression time even when the option is off. If you turn the option on later, a port that has stayed down since its suppression is reported at the first poll after the delay, without a reboot.
-- **Upgrades.** Versions before this option did not save a suppression time. After an upgrade, a port suppressed by the older version is picked up only after the next reboot or discovery-scope change.
 
 ## Poll Stall Detection
 
@@ -177,9 +176,9 @@ nic-health-monitor:
 | Value | Behavior |
 |-------|----------|
 | `never` (default) | Never expect `issm`. `umad`/`uverbs` still cover the RDMA-fatal cases, and a platform that legitimately does not create `issm` nodes (e.g. GB300) is never falsely flagged. |
-| `always` | Expect one `issm` per InfiniBand-mode port. Enable only where `issm` nodes are guaranteed to be created (behavior prior to this option). |
+| `always` | Expect one `issm` per InfiniBand-mode port. Enable only where `issm` nodes are guaranteed to be created. |
 
-**Why this exists:** on newer hardware such as GB300 the platform does not create `issm` device nodes, so the previous unconditional check falsely marked every such GPU node `REPLACE_VM`. `issm` presence cannot be inferred from any port attribute — on a fabric run by an external subnet manager every compute port reads `SM_DISABLED` (`cap_mask` bit `0x400`) whether or not `issm` exists — so the check is an explicit opt-in rather than an inferred default.
+**Why this exists:** on newer hardware such as GB300 the platform does not create `issm` device nodes, so an unconditional `issm` check falsely marks every such GPU node `REPLACE_VM`. `issm` presence cannot be inferred from any port attribute — on a fabric run by an external subnet manager every compute port reads `SM_DISABLED` (`cap_mask` bit `0x400`) whether or not `issm` exists — so the check is an explicit opt-in rather than an inferred default.
 
 Changing this value forces a one-time baseline reconciliation on the next pod start (when there are outstanding `issm` conditions to clear), so stale `issm` conditions are cleared immediately rather than being held until the next reboot.
 

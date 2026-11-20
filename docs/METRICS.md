@@ -4,10 +4,10 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 
 ## Table of Contents
 
-- [Fault Quarantine Module](#fault-quarantine)
-- [Node Drainer Module](#node-drainer)
-- [Fault Remediation Module](#fault-remediation)
-- [Labeler Module](#labeler)
+- [Fault Quarantine Module](#fault-quarantine-module)
+- [Node Drainer Module](#node-drainer-module)
+- [Fault Remediation Module](#fault-remediation-module)
+- [Labeler Module](#labeler-module)
 - [Janitor](#janitor)
 - [Platform Connectors](#platform-connectors)
 - [Health Events Analyzer](#health-events-analyzer)
@@ -405,7 +405,7 @@ These metrics track the internal ring buffer workqueue performance:
 
 ### Health Event Publisher
 
-The Go health monitors send their events through the shared publishing client (`commons/pkg/healthpub`). The `monitor` label names the monitor. The socket rows apply to the node-local path; the direct-mode rows apply only when a monitor publishes to the deployment platform connector (`HEALTH_PUBLISH_TARGET` set, which the chart's `publishTo: deployment` does once the chart ships).
+The Go health monitors send their events through the shared publishing client (`commons/pkg/healthpub`). The `monitor` label names the monitor. The socket rows apply to the node-local path; the direct-mode rows apply only when a monitor publishes to the deployment platform connector (`HEALTH_PUBLISH_TARGET` set, which the chart's `publishTo: deployment` does).
 
 | Metric Name                                                       | Type    | Labels              | Description                                                                                                                                                                       |
 |-------------------------------------------------------------------|---------|---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -612,12 +612,11 @@ rather than `store-client`, is exported only by `fault-quarantine`, `node-draine
 | `change_stream_lag_seconds` | Gauge | `client` | Seconds since this consumer last had evidence it was caught up with its own change stream, from either an empty batch or the server-side timestamp of the last event it read. Absent until one of those has been observed |
 | `change_stream_lag_known` | Gauge | `client` | 1 once `change_stream_lag_seconds` can be computed for this consumer, 0 before then |
 | `change_stream_resume_token_recoveries_total` | Counter | `client`, `phase` | Times a stale or invalid resume token was deleted, restarting the stream from the current position |
-| `change_stream_reopens_total` | Counter | `client`, `result` | Attempts to reopen the stream after a runtime failure. `success` is a disconnect that would previously have ended the stream permanently; `failure` is one attempt that did not get through; `exhausted` is the recovery budget running out, after which the watcher stops and the process is expected to exit so the pod restarts — pair it with `kube_pod_container_status_restarts_total` |
+| `change_stream_reopens_total` | Counter | `client`, `result` | Attempts to reopen the stream after a runtime failure. `success` is a disconnect that the watcher recovered from by reopening the stream; `failure` is one attempt that did not get through; `exhausted` is the recovery budget running out, after which the watcher stops and the process is expected to exit so the pod restarts — pair it with `kube_pod_container_status_restarts_total` |
 | `datastore_connected` | Gauge | none | PostgreSQL watcher readiness. It is `1` while LISTEN is connected and subscribed, or after polling succeeds, unless a database read has failed; after a failed read it stays `0` until another read succeeds. An active subscription can report ready before its first poll finishes and while a multi-batch catch-up is still draining. Readiness does not mean the catch-up is complete or guarantee replay of rows whose notifications were missed before subscription. Poll batches are read in `(changed_at, id)` order, and the cursor advances only after channel delivery or filter consumption. `BIGSERIAL` IDs and `changed_at DEFAULT NOW()` are assigned before a transaction commits, so a long-running transaction can become visible after a poll has advanced past its sort position. A later catch-up cannot find that row from the forward cursor; if its NOTIFY was missed while disconnected, the row can be skipped. If LISTEN is active, its NOTIFY can fetch the row by ID and deliver it after newer rows, so global commit order is not guaranteed. A TRIPPED Fault Quarantine breaker halts event dequeuing independently, so this gauge can remain `1` while that component is deliberately stopped. Other watchers remain ready once registered unless they expose readiness state. This metric does not measure processing progress. `kube_pod_status_ready` reports the readiness result with pod labels |
 
 Lag is measured against the consumer's **own filtered stream**, so a module whose pipeline
-admits nothing still reports zero lag while it is caught up. See
-[ADR-054](designs/054-changestream-lag-metrics.md).
+admits nothing still reports zero lag while it is caught up.
 
 ### Suggested alerts
 

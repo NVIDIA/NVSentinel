@@ -286,7 +286,7 @@ The `labeler_device_count_source{node, class, source}` gauge shows the source th
 
 - A class with `sources` must not set a class-level `currentExpression` or `groupingLabels`. The labeler does not start with such a class.
 - `expectedCountOverrides` stay at class level and apply to all sources. Use match labels that exist in every mode, such as `node.kubernetes.io/instance-type` or a nodepool label. Do not use `nvidia.com/gpu.product`, because GPUCluster mode does not set it.
-- Classes without `sources` work as before. A hand-written GPU DRA class in that form can report `0` on a node with only another driver's slices, so move it to `sources`.
+- A class without `sources` uses its class-level `currentExpression` and `groupingLabels`. A hand-written GPU DRA class in that form can report `0` on a node with only another driver's slices, so move it to `sources`.
 
 ### Kata Detection Examples
 
@@ -318,7 +318,7 @@ The labeler watches for specific pod labels to detect DCGM and driver status.
 ```yaml
 metadata:
   labels:
-    app: nvidia-dcgm
+    app: nvidia-dcgm # or nvidia-dcgm-dra in GPUCluster (DRA) mode
 ```
 
 **Driver Pods:**
@@ -328,4 +328,4 @@ metadata:
     app: nvidia-driver-daemonset
 ```
 
-If your GPU Operator configures its operands with different labels, the labeler will not detect the components.
+If your GPU Operator configures its operands with different labels, set them in [DCGM Pod Discovery](#dcgm-pod-discovery) and [Driver Pod Discovery](#driver-pod-discovery).

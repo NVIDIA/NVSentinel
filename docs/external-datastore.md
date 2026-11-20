@@ -1,94 +1,22 @@
 # External Datastore Support for NVSentinel
 
-> This document tracks the design decisions, implementation plan, and per-CSP configuration
-> for connecting NVSentinel to externally managed database services.
+> This document describes the per-CSP configuration for connecting NVSentinel to externally managed database services.
 
 ---
 
 ## Overview
 
-By default, NVSentinel deploys its own MongoDB database inside the same Kubernetes cluster it
-monitors. This works well for general deployments, but creates an overhead problem for lean GPU
+When the datastore is enabled, NVSentinel deploys its own MongoDB database inside the same
+Kubernetes cluster it monitors. This works well for general deployments, but creates an overhead problem for lean GPU
 clusters that are focused purely on compute workloads.
 
-This feature adds support for connecting NVSentinel to an **externally managed database** —
+NVSentinel can connect to an **externally managed database** —
 such as a hosted MongoDB or PostgreSQL service from a cloud provider — instead of running one
 inside the monitored cluster.
 
-### Supported External Services (Target)
-
-| Cloud Provider | MongoDB-compatible | PostgreSQL-compatible |
-|---|---|---|
-| AWS | Amazon DocumentDB | Amazon RDS / Aurora PostgreSQL |
-| Azure | Azure Cosmos DB for MongoDB | Azure Database for PostgreSQL |
-| Google Cloud | MongoDB Atlas on GCP | Cloud SQL for PostgreSQL |
-| OCI | MongoDB on OCI | Oracle Autonomous Database |
-
----
-
-## Problem Statement
-
-- Clusters focused on GPU workloads should not have to host a database
-- Running a 3-replica MongoDB replicaset inside a GPU cluster wastes resources
-- Customers want to use managed, hosted database services from their cloud provider
-- Managed services offer built-in HA, backups, and scaling without operator burden
-
----
-
-## Design Decision: Configuration Approach
-
-### Options Considered
-
-#### Option A — Extend existing `global.datastore` section
-
-The `global.datastore` section already exists in `values.yaml` as a foundation for
-switching between database providers (MongoDB, PostgreSQL). This same section is extended
-to also support external/hosted databases by adding `uri`, `tls`, and `auth` sub-sections.
-
-**Pros:**
-- `configmap-datastore.yaml` already exists and creates `nvsentinel-datastore-config` when
-  `global.datastore` is set — the Helm scaffolding is in place
-- All 7 DB-consuming service templates (`daemonset`, `fault-quarantine`, `fault-remediation`,
-  `health-events-analyzer`, `node-drainer`, `event-exporter`, `csp-health-monitor`) already
-  contain the switch logic:
-  `{{ if .Values.global.datastore }}nvsentinel-datastore-config{{ else }}mongodb-config{{ end }}`
-- Services that don't use the DB (`janitor`, `labeler`, `syslog-health-monitor`) correctly
-  don't reference either ConfigMap — no changes needed there
-- No new config section needed — less user-facing complexity
-
-**Cons:**
-- Was originally designed for switching providers (mongodb vs postgresql), not for external DB
-  support — the concept is being stretched beyond its original intent
-- Currently lacks `uri`, `tls`, `auth` fields — needs significant extension
-- `configmap-datastore.yaml` no longer embeds `MONGODB_URI` for provider `mongodb`; the chart
-  requires a pre-created Secret (`MONGODB_URI` key) and `credentialsFromSecret.name`.
-- The init job (`mongodb-store/templates/jobs.yaml`) hardcodes `mongodb-config` — it does
-  NOT participate in the `global.datastore` switching path and must be separately updated
-- Risk of confusion between "which provider" and "where is it running" (internal vs external)
-
-#### Option B — New `externalMongodb` / `externalPostgresql` sections
-
-**Pros:**
-- Very explicit and clear — user immediately knows this section is for external databases only
-- No risk of breaking existing teams already using `global.datastore` for PostgreSQL — that
-  section is untouched
-- Each DB type has its own dedicated, focused config — easier to reason about per provider
-- Cleaner separation of concerns: `global.mongodbStore.enabled` controls internal deployment,
-  `externalMongodb` controls external connection — no overlap
-
-**Cons:**
-- Requires a new separate section per database type (`externalMongodb`, `externalPostgresql`) —
-  grows as more providers are added in the future
-- All 7 service templates that already switch on `global.datastore` would need to also handle
-  the new section — more template logic to maintain across the codebase
-- TLS and auth configuration would be duplicated per DB type section (e.g., both
-  `externalMongodb.tls` and `externalPostgresql.tls`)
-- The existing `configmap-datastore.yaml` and switching logic already present in 7 service
-  templates would be bypassed entirely — prior work not reused
-
 ### Common Requirements
 
-Whichever option is chosen, the user will need to supply these to connect to an external DB:
+To connect to an external DB, supply these values:
 
 | Field | Purpose | Example |
 |---|---|---|
@@ -100,55 +28,10 @@ Whichever option is chosen, the user will need to supply these to connect to an 
 
 | Scenario | `mongodbStore.enabled` | External MongoDB URI | Result |
 |---|---|---|---|
-| Internal MongoDB | `true` | N/A | Deploy Bitnami/Percona MongoDB in-cluster (unchanged) |
+| Internal MongoDB | `true` | N/A | Deploy Bitnami/Percona MongoDB in-cluster |
 | External MongoDB | `false` | Secret `MONGODB_URI` + `credentialsFromSecret.name` | Connect to external MongoDB — nothing deployed in-cluster |
 | External PostgreSQL | `false` | Per PostgreSQL values (e.g. connection / optional `uri`) | Connect to external PostgreSQL — nothing deployed in-cluster |
 | Neither | `false` | No | No DB configured — services will have no connection |
-
----
-
-## Implementation Plan
-
-> **Note:** The detailed Helm chart implementation plan (Phase 1) depends on the design
-> decision above (Option A vs Option B) and will be filled in once that is finalized.
-> Phases 2 and 3 are common to both options.
-
-### Phase 1 — Helm Chart Changes
-
-> To be detailed after design decision is made. At a high level, regardless of which option
-> is chosen, the following areas will need changes:
->
-> - `values.yaml` — new config fields for external DB connection (URI, TLS, auth)
-> - `configmap-datastore.yaml` (Option A) or a new ConfigMap template (Option B) — to pass
->   the external URI and credentials to services as environment variables
-> - `mongodb-store/templates/jobs.yaml` — make TLS flags and X.509 user creation conditional
->   so the init job can connect to an external DB
-> - Deployment templates (all DB-consuming subcharts) — conditional cert mounting based on
->   whether TLS and/or client certs are configured
-
-### Phase 2 — Per-CSP Testing and Documentation
-
-- [x] AWS DocumentDB
-- [x] Azure Cosmos DB for MongoDB (Azure DocumentDB vCore)
-- [x] Google Cloud (MongoDB Atlas on GCP)
-- [ ] OCI
-
-### Phase 3 — Example Values Files
-
-- [x] `values-aws-docdb.yaml`
-- [x] `values-azure-cosmosdb.yaml`
-- [x] `values-atlas-gcp.yaml`
-- [ ] `values-oci-mongodb.yaml`
-
----
-
-## What Does NOT Change
-
-- **Go application code** — already reads `MONGODB_URI` as a plain string from the environment.
-  External MongoDB supplies that via `envFrom.secretRef` only.
-- **Default behavior** — all existing deployments with `mongodbStore.enabled: true` are
-  completely unaffected. This is purely additive.
-- **PostgreSQL internal support** — existing `postgresql.enabled: true` path is unchanged.
 
 ---
 
@@ -194,14 +77,12 @@ include a MongoDB `uri` field from Helm values in either mode.
 
 ## Per-CSP Configuration Guide
 
-> This section will be filled in as each CSP is tested.
-
 ### Connection URI format reference (Secret `MONGODB_URI` value)
 
 Use the **exact connection string** your provider shows in its console as the **literal value** of key `MONGODB_URI` in the Kubernetes Secret (never as `global.datastore.uri` for MongoDB). Do not paste real credentials into docs or source control.
 
 - **MongoDB Atlas:** `mongodb+srv` SRV string from **Connect → Drivers**; include the database path (for example `/HealthEventsDatabase`) and query options your deployment needs (for example `retryWrites=false`).
-- **AWS DocumentDB:** `mongodb` URL to the cluster endpoint with TLS and replica-set query parameters per [AWS DocumentDB connection documentation](https://docs.aws.amazon.com/documentdb/latest/developerguide/connect-to-replica-set.html).
+- **AWS DocumentDB:** `mongodb` URL to the cluster endpoint with TLS and replica-set query parameters per the AWS DocumentDB connection documentation.
 - **Azure DocumentDB vCore:** `mongodb+srv` string from **Settings → Connection Strings** (primary); includes host under `mongocluster.cosmos.azure.com` and the TLS/auth query parameters the portal provides.
 
 ### Database and Collection Setup (Automatic)
@@ -379,7 +260,7 @@ global:
 
 #### Networking and Security Groups
 
-This was the most common source of connectivity failures during testing. EKS pods can have IPs from **multiple CIDR ranges** depending on the CNI configuration — not just the primary VPC CIDR.
+EKS pods can have IPs from **multiple CIDR ranges** depending on the CNI configuration — not just the primary VPC CIDR.
 
 In the DocumentDB cluster's security group, add an inbound rule for **each** CIDR range your pods use:
 
@@ -438,9 +319,6 @@ or connecting to one that already exists.
 
 In Azure Portal, create a new **"Azure DocumentDB (with MongoDB compatibility)"** resource
 (vCore tier, MongoDB 8.0, SCRAM auth). Match the region to your AKS cluster.
-
-> Refer to the [Azure DocumentDB quickstart](https://learn.microsoft.com/en-us/azure/cosmos-db/mongodb/vcore/quickstart-portal)
-> for full creation steps.
 
 ---
 
@@ -523,7 +401,7 @@ or connecting to one that already exists.
 
 ##### Option A — Create a New Cluster
 
-1. Go to [cloud.mongodb.com](https://cloud.mongodb.com) → **Create a deployment**
+1. Go to cloud.mongodb.com → **Create a deployment**
 2. Choose **M0 (Free)** for testing or **M10+** for production
 3. Select **GCP** as the provider and choose the region closest to your GKE cluster (e.g. `us-central1`)
 4. Name the cluster and click **Create**
@@ -556,7 +434,7 @@ kubectl get nodes -o wide
 # Note the EXTERNAL-IP or INTERNAL-IP column for each node
 ```
 
-> M10+ clusters support VPC peering with GCP. Refer to the [Atlas VPC Peering documentation](https://www.mongodb.com/docs/atlas/security-vpc-peering/) for production setup.
+> M10+ clusters support VPC peering with GCP.
 
 ---
 
@@ -594,13 +472,11 @@ global:
 
 ### OCI
 
-**Status:** Skipped — no viable managed MongoDB service available on OCI.
+**Status:** This guide has no configuration steps for OCI. No viable managed MongoDB service is available on OCI.
 
 ---
 
-#### Research Summary
-
-All available OCI-native options were evaluated:
+#### Options on OCI
 
 | Option | Change Streams | Notes |
 |---|---|---|
@@ -609,20 +485,10 @@ All available OCI-native options were evaluated:
 | OCI Marketplace MongoDB (Apps4Rent, ScaleGrid) | Yes | Only paid third-party options; available in limited regions (UK South London only). |
 | Self-managed MongoDB on OCI Compute VM | Yes | Full MongoDB compatibility including Change Streams. Oracle's own reference architecture for MongoDB on OCI recommends this approach. |
 
-The only viable option is a **self-managed MongoDB deployment on OCI Compute VMs**. However,
-when attempting to create a Compute instance in the OCI Console (both US West San Jose and
-UK South London regions, multiple compartments), no VM images appeared under any OS tab
-(Oracle Linux, Ubuntu, Red Hat) and no shapes were available for selection.
-
-OCI testing is skipped for now.
+The only viable option is a **self-managed MongoDB deployment on OCI Compute VMs**.
 
 ---
 
 ## References
 
-- [Issue #376 — External Datastore Support](https://github.com/nvidia/nvsentinel/issues/376)
-- [PR #965 — Optional TLS for MongoDB](https://github.com/nvidia/nvsentinel/pull/965)
 - [PostgreSQL Provider Documentation](./postgresql-provider.md)
-- [MongoDB Atlas Documentation](https://www.mongodb.com/docs/atlas/)
-- [AWS DocumentDB Developer Guide](https://docs.aws.amazon.com/documentdb/latest/developerguide/)
-- [Azure Cosmos DB for MongoDB](https://learn.microsoft.com/en-us/azure/cosmos-db/mongodb/)

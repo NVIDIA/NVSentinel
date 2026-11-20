@@ -5,7 +5,7 @@ This runbook describes how to move an existing NVSentinel installation from the 
 Common reasons to migrate:
 
 - Your cluster has ARM64 nodes. The Bitnami MongoDB images are only published for amd64, so the default backend cannot run there. The Percona images are multi-arch. See [MongoDB Store Configuration](../configuration/mongodb-store.md) for details.
-- You want the operator features described in [ADR-013](../designs/013-mongodb-bitnami-migration.md), such as automated lifecycle management and integrated backups.
+- You want features of the Percona Operator, such as automated lifecycle management and integrated backups.
 
 The commands below assume the release name `nvsentinel` in the namespace `nvsentinel`. Adjust both if your installation differs.
 
@@ -24,7 +24,7 @@ The runbook is a sequence of steps. Where a step has options, pick the one that 
 
 ## What to expect
 
-- **The default path preserves your health event data.** The dump and restore carry the events into the new backend with their document IDs intact, so node annotations and remediation resources stay valid and in-flight fault handling resumes. In testing, a node quarantined before the migration stayed quarantined through it, node-drainer resolved the event behind the annotation without errors, and fault-remediation recognized its existing maintenance resource on cold start instead of creating a duplicate.
+- **The default path preserves your health event data.** The dump and restore carry the events into the new backend with their document IDs intact, so node annotations and remediation resources stay valid and in-flight fault handling resumes.
 - **The clean path (3b) drops all health event data.** Monitors repopulate the new database as they detect issues, but history is lost, and one-time faults such as GPU XIDs that were already read from the logs are never raised again.
 - **Never switch backends in place.** Changing `useBitnami` and `usePerconaOperator` does not migrate the data. Services may connect to a new, empty database, leaving existing health events unavailable. Node annotations and remediation resources may then refer to events that are not in the new database. Follow this runbook to remove and redeploy the installation. Use the dump and restore path if you need to preserve health events.
 - **No cloud infrastructure changes are required.** Both backends listen on the same ports (27017 for mongod, 9216 for metrics), every Service is cluster-internal, storage comes from the same StorageClass, and nothing calls cloud APIs. The migration is entirely in-cluster. The three things to check on locked-down environments: the Percona images (`percona/*` and the `lachlanevenson/k8s-kubectl` helper) must be pullable from your registry path, whoever runs the migration needs cluster-level Kubernetes RBAC (the Percona path installs cluster-scoped CRDs), and any custom network policies or exposure you built against the old service name need updating.
@@ -154,7 +154,7 @@ If you prefer the manual commands, they are: `kubectl delete pvc -l 'app.kuberne
 kubectl delete rebootnodes,terminatenodes,gpuresets,externalremediationrequests -l app.kubernetes.io/managed-by=nvsentinel --ignore-not-found=true
 ```
 
-These remediation resources are cluster scoped (kubectl ignores any namespace flag for them), so the command selects by the ownership label fault-remediation puts on everything it creates rather than deleting every instance on the cluster. If `kubectl get rebootnodes` still lists `maintenance-*` resources afterwards, they were created without the label (for example by an older release); review them and delete by name if they belong to this installation.
+These remediation resources are cluster scoped (kubectl ignores any namespace flag for them), so the command selects by the ownership label fault-remediation puts on everything it creates rather than deleting every instance on the cluster. If `kubectl get rebootnodes` still lists `maintenance-*` resources afterwards, they were created without the label; review them and delete by name if they belong to this installation.
 
 ## Step 6: Deploy the Percona backend
 
@@ -190,7 +190,7 @@ helm upgrade --install nvsentinel <chart> -n nvsentinel -f <your-values.yaml> --
 
 The `--wait-for-jobs` flag makes Helm wait for the MongoDB init Job (`-l app.kubernetes.io/name=create-mongodb-database`) as well; `--wait` alone only waits for the workloads.
 
-Either way, the deploy takes longer than a Bitnami one because the operator starts first, then builds the replica set, and only then can the database initialization job finish. As a reference point from validation runs: the operator was up within a minute, the replica set reached `ready` about 3 minutes in, the initialization job completed about 2 minutes after that, and the NVSentinel services settled shortly after; the whole deploy typically finishes well within 10 minutes. The redeploy creates fresh consumer deployments at their normal replica counts, so the step 3a scale-downs do not carry over.
+Either way, the deploy takes longer than a Bitnami one because the operator starts first, then builds the replica set, and only then can the database initialization job finish. The operator is typically up within a minute. The replica set reaches `ready` about 3 minutes in, and the initialization job completes about 2 minutes after that. The NVSentinel services settle shortly after. The whole deploy typically finishes well within 10 minutes. The redeploy creates fresh consumer deployments at their normal replica counts, so the step 3a scale-downs do not carry over.
 
 ## Step 7: Verify
 
@@ -220,7 +220,7 @@ On GitOps-managed clusters these restarts are rollout restarts, not spec changes
 
 ## After the migration
 
-- **Path 3a: the event exporter re-exports everything**, including resolved events. With no resume token in the new datastore, its backfill treats every restored event as new; in testing this was an exact one-to-one re-export of the whole collection. Warn the owners of the downstream sink to expect duplicates.
+- **Path 3a: the event exporter re-exports everything**, including resolved events. With no resume token in the new datastore, its backfill treats every restored event as new. Warn the owners of the downstream sink to expect duplicates.
 - **Path 3a: restored quarantine state is latent.** Fault handling is event driven, so a restored quarantine is re-evaluated when the next event or a component cold start touches that node, not spontaneously. This is normal; the state is correct, it just does not generate activity on its own.
 - **Path 3a: no CSP maintenance replay.** The restored maintenance events carry the CSP health monitor's progress watermark, so it resumes where it left off.
 - **Path 3b: CSP maintenance events replay.** The CSP health monitor tracks its progress through the provider's maintenance feed using the database itself. With the database wiped, it re-ingests every maintenance event still visible in the provider API, which can re-quarantine nodes for maintenance you already handled. Expect this for one polling cycle.

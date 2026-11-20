@@ -131,7 +131,7 @@ nodeAssociation:
 
 #### Cached Fields
 
-The `resource` variable is served from the informer cache, not fetched per evaluation. Policies are read once at startup, so the fields each expression touches are derived from the compiled CEL and the cache keeps only those, plus the metadata the informer itself needs (`apiVersion`, `kind`, `metadata.name`, `metadata.namespace`, `metadata.uid`, `metadata.resourceVersion`, `metadata.deletionTimestamp`). A node object is mostly labels, annotations, managed fields and cached image lists, none of which a typical predicate reads, so this cuts the cache to a fraction of its former size on large clusters. The retained fields are logged per resource kind at startup.
+The `resource` variable is served from the informer cache, not fetched per evaluation. Policies are read once at startup, so the fields each expression touches are derived from the compiled CEL and the cache keeps only those, plus the metadata the informer itself needs (`apiVersion`, `kind`, `metadata.name`, `metadata.namespace`, `metadata.uid`, `metadata.resourceVersion`, `metadata.deletionTimestamp`). A node object is mostly labels, annotations, managed fields and cached image lists, none of which a typical predicate reads, so this cuts the cache to a fraction of the full size on large clusters. The retained fields are logged per resource kind at startup.
 
 A recorded field keeps its whole subtree, so comprehensions and computed map keys need no special care: `resource.status.conditions.filter(c, c.type == "Ready")` keeps every field of every condition, and `resource.metadata.labels[resource.spec.nodeName]` keeps all of `metadata.labels`.
 

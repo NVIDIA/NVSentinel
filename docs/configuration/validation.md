@@ -133,7 +133,7 @@ A ValidationRequest is only created if at least one event from the quarantine se
 
 ## Enabling NVCRE Validation
 
-[NVCRE](https://github.com/NVIDIA/cluster-readiness-engine) support adds new node or post-remediation validation tests from an NVCRE test provider. The default configuration only supports a k8s-job-provider test provider that can run a dcgm-diag-test. The nvcre-provider is an additional test provider which currently supports nccl-loopback-nvswitch and nccl-all-reduce tests. An operator must opt-in to running NVCRE after enabling lifecycle-manager with its existing defaults.
+[NVCRE](https://github.com/NVIDIA/cluster-readiness-engine) support adds new node or post-remediation validation tests from an NVCRE test provider. The default configuration only supports a k8s-job-provider test provider that can run a dcgm-diag-test. The nvcre-provider is an additional test provider which supports nccl-loopback-nvswitch and nccl-all-reduce tests. An operator must opt-in to running NVCRE after enabling lifecycle-manager with its existing defaults.
 
 To use the NVCRE test provider:
 
@@ -206,9 +206,9 @@ The example values-nvcre.yaml is tailored for a GB200 GCP environment. To suppor
 
 ### Example NVCRE ValidationRequests
 
-These examples were captured from a live GB200 GCP staging cluster with values-nvcre.yaml applied.
+These examples come from a GB200 GCP cluster with values-nvcre.yaml applied.
 
-After injecting an XID 95 into DCGM, which triggered a RESTART_VM remediation, fault-quarantine created the following ValidationRequest to run dcgm-diag-test and nccl-loopback-nvswitch against the recovered node:
+After an XID 95 fault and its RESTART_VM remediation, fault-quarantine creates this ValidationRequest to run dcgm-diag-test and nccl-loopback-nvswitch against the recovered node:
 
 ```yaml
 apiVersion: nvsentinel.nvidia.com/v1alpha1
@@ -242,7 +242,7 @@ status:
         - nccl-loopback-nvswitch
 ```
 
-After 2 new nodes joined the cluster, the node-validation-controller batched them into a single ValidationRequest that ran dcgm-diag-test, nccl-loopback-nvswitch, and nccl-all-reduce:
+When 2 new nodes join the cluster, the node-validation-controller batches them into a single ValidationRequest that runs dcgm-diag-test, nccl-loopback-nvswitch, and nccl-all-reduce:
 
 ```yaml
 apiVersion: nvsentinel.nvidia.com/v1alpha1

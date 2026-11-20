@@ -53,7 +53,7 @@ janitor:
     timeout: "25m"
 ```
 
-Choose a value that covers the slowest expected operation for your cloud provider. AWS, Azure, and OCI node reboots typically complete within 25 minutes. GCP can be shorter. On Akamai (LKE), one GPU node reboot and one node recycle each took about 3 minutes in testing. For `kind` clusters used in development, a much shorter value (e.g. `"5m"`) is sufficient.
+Choose a value that covers the slowest expected operation for your cloud provider. AWS, Azure, and OCI node reboots typically complete within 25 minutes. GCP can be shorter. On Akamai (LKE), a GPU node reboot and a node recycle each take about 3 minutes. For `kind` clusters used in development, a much shorter value (e.g. `"5m"`) is sufficient.
 
 ## CSP Provider Connection
 
@@ -276,8 +276,6 @@ The controller changes a node label only when it holds the enabled or the disabl
 
 When no operand pod runs on the node, the controller skips the teardown and the restore. The `ServicesTornDown` and `ServicesRestored` conditions then have the reason `Skipped`.
 
-A GPUReset that an earlier janitor version started has no record. For such a GPUReset, the controller treats every operand whose node label currently holds its disabled value as stopped, and restores those.
-
 Before the controller creates the reset Job, it makes sure that no pod of a stopped operand runs on the node.
 
 The janitor Pod cache holds only the pods in the service manager namespace that have one of the `app` labels of the service manager.
@@ -313,7 +311,6 @@ Know these limits:
 - The controller does not delete pods. Only the DaemonSet controller removes a pod when the label changes. A Deployment, StatefulSet or Job pod stays on the node. The teardown then fails with the reason `ServiceTeardownTimeoutExceeded`, and the controller logs the names of the GPU client pods that still run.
 - The controller does not stop processes that run on the host outside Kubernetes, for example `nvidia-persistenced` or a host DCGM.
 - The controller reads the GPU client pods from the API server, not from the janitor Pod cache. Each check lists the pods of one node, and reads the DaemonSet of each DaemonSet pod that does not select the label itself.
-- If you roll janitor back to an earlier version during a reset, the earlier version does not restore this label. Set the label back to `true` by hand: `kubectl label node <node> nvidia.com/gpu.deploy.client=true --overwrite`.
 
 Before GPU Operator 26.7, put the GPU client on a node label that the `gpu-operator` service manager already sets to `false`, for example `nvidia.com/gpu.deploy.dcgm=true`.
 
@@ -321,7 +318,7 @@ Before GPU Operator 26.7, put the GPU client on a node label that the `gpu-opera
 When `true`, the reset job writes a kernel syslog message on reset completion. Useful for correlating reset events with node-level logs.
 
 ### resetJob.runtimeClassName
-RuntimeClass name for the GPU reset Job. Defaults to `nvidia`. GPU Operator `GPUCluster` (DRA) mode creates no `nvidia` RuntimeClass, so with `global.gpuDraEnabled: true` this value must be `""`; the chart refuses to render otherwise. The Job is privileged and reaches the driver through `resetJob.hostDriverRootPath`, so it does not need a RuntimeClass in either mode; on ClusterPolicy clusters the default is kept for compatibility. Also set it to `""` on a ClusterPolicy cluster that has no `nvidia` RuntimeClass, for example with the GPU Operator NRI plugin enabled.
+RuntimeClass name for the GPU reset Job. Defaults to `nvidia`. GPU Operator `GPUCluster` (DRA) mode creates no `nvidia` RuntimeClass, so with `global.gpuDraEnabled: true` this value must be `""`; the chart refuses to render otherwise. The Job is privileged and reaches the driver through `resetJob.hostDriverRootPath`, so it does not need a RuntimeClass in either mode. Also set it to `""` on a ClusterPolicy cluster that has no `nvidia` RuntimeClass, for example with the GPU Operator NRI plugin enabled.
 
 ### resetJob.hostDriverRootPath
 Host path containing the NVIDIA driver filesystem. The reset Job mounts it at `resetJob.driverRoot` inside the reset container.
@@ -543,7 +540,7 @@ Organization name in the certificate subject.
 
 ## Inactive Values
 
-The janitor chart carries `autoscaling`, `livenessProbe`, `readinessProbe`, `podSecurityContext` and `securityContext` in `values.yaml`, but no template reads them. They are Helm scaffold left from the chart's creation:
+The janitor chart carries `autoscaling`, `livenessProbe`, `readinessProbe`, `podSecurityContext` and `securityContext` in `values.yaml`, but no template reads them:
 
 - `autoscaling` renders no HorizontalPodAutoscaler. The Deployment always uses `replicaCount`.
 - `livenessProbe` and `readinessProbe` add no probes to the pod.

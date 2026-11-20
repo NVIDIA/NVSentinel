@@ -4,7 +4,7 @@ This guide covers the settings to check when installing NVSentinel on SUSE Linux
 
 ## GPU Operator mode
 
-RKE2 documents two GPU Operator setups ([RKE2 GPU Operator docs](https://docs.rke2.io/add-ons/gpu_operators)):
+RKE2 documents two GPU Operator setups:
 
 - **Default (non-NRI)**: GPU Operator creates the `nvidia` RuntimeClass. metadata-collector's default `runtimeClassName: nvidia` works.
 - **NRI plugin mode** (`cdi.nriPluginEnabled: true`): there is no `nvidia` RuntimeClass. Set `metadata-collector.nriPlugin.enabled: true` and add the NVSentinel namespace to the toolkit's `NRI_MANAGEMENT_CDI_DEVICE_NAMESPACES`. See [GPU Operator NRI plugin mode](../configuration/metadata-collector.md#gpu-operator-nri-plugin-mode).
@@ -89,4 +89,4 @@ Both datastore images, `bitnamilegacy/postgresql:16.4` and `percona/percona-serv
 
 ## Host diagnostics
 
-`sos` and `supportconfig` are both installed on SUSE Linux Enterprise Server 16. Log-collector currently runs `sos` only on GCP and AWS, so collect host diagnostics on other nodes manually, for example with `supportconfig`.
+`sos` and `supportconfig` are both installed on SUSE Linux Enterprise Server 16. Log-collector runs `sos` only on GCP and AWS, so collect host diagnostics on other nodes manually, for example with `supportconfig`.

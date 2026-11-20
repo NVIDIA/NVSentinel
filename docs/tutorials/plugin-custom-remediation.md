@@ -47,7 +47,7 @@ Your controller watches the CR and performs the actual repair.
 | Action source | Example | Config key in `maintenance.actions` |
 |---------------|---------|-------------------------------------|
 | Built-in enum | `RESTART_VM`, `COMPONENT_RESET`, `REPLACE_VM` | `RESTART_VM`, `COMPONENT_RESET`, … |
-| Custom string ([ADR-036](../designs/036-custom-remediation-actions.md)) | `recommendedAction: CUSTOM`, `customRecommendedAction: hardware-rma` | `hardware-rma` |
+| Custom string | `recommendedAction: CUSTOM`, `customRecommendedAction: hardware-rma` | `hardware-rma` |
 
 ---
 
@@ -233,10 +233,6 @@ For a full Kubebuilder scaffold, reconciler walkthrough, and one-shot AI prompt,
 — the pattern is the same (NVSentinel creates the CR and polls a status condition; your controller
 reconciles it and sets completion), even though the upstream stage is node-drainer instead of
 fault-remediation.
-
-For a full working example (custom health monitor, CRD, controller, and Helm values), see the
-[local custom remediation demo](../../demos/local-custom-remediation-demo/README.md) — a memory-pressure
-monitor and reclaim controller on a local KIND cluster (no GPU required).
 
 ---
 

@@ -41,7 +41,7 @@ GPU Health Monitor starts an in-process DCGM hostengine and exposes it to pod-lo
 ## DCGM Version Selection
 
 > [!WARNING]
-> **Deprecated:** DCGM 3.x support is deprecated and will be removed on 30 November 2026. DCGM 3.x is end-of-life and gets no more patches. After the removal, NVSentinel will not detect faults on nodes running DCGM 3.x. To find these nodes, run `kubectl get nodes -l nvsentinel.dgxc.nvidia.com/dcgm.version=3.x`. Upgrade DCGM on these nodes to 4.x. If you have any concerns, please provide feedback in [PR #2102](https://github.com/NVIDIA/NVSentinel/pull/2102). Refer to [GPU Health Monitor: DCGM 3.x Support Removal](../deprecations/gpu-health-monitor-dcgm-3-support-removal.md) for the details.
+> **Deprecated:** DCGM 3.x support is deprecated and will be removed on 30 November 2026. DCGM 3.x is end-of-life and gets no more patches. After the removal, NVSentinel will not detect faults on nodes running DCGM 3.x. To find these nodes, run `kubectl get nodes -l nvsentinel.dgxc.nvidia.com/dcgm.version=3.x`. Upgrade DCGM on these nodes to 4.x. Refer to [GPU Health Monitor: DCGM 3.x Support Removal](../deprecations/gpu-health-monitor-dcgm-3-support-removal.md) for the details.
 
 Use a GPU Health Monitor image from the same DCGM major version as its hostengine. The node `nvsentinel.dgxc.nvidia.com/dcgm.version` label selects the 3.x or 4.x monitor image.
 
@@ -225,12 +225,12 @@ Enables DCGM IMEX health monitoring. It defaults to `false`. In DRA deployments,
 
 With DCGM 4.7 or newer hostengine, `false` removes IMEX from the requested health-watch mask while retaining NVLink monitoring. With an older hostengine, the monitor filters the legacy `DCGM_FR_IMEX_UNHEALTHY` incident before it is combined with GPU incidents. The hostengine version controls which behavior is available.
 
-Set this to `true` only where the IMEX daemon is expected to be continuously available. This restores the previous monitoring behavior. IMEX incidents are global DCGM entities, but GPU-health-monitor's existing routing can attribute them to GPU 0. Dedicated node-level IMEX event handling is deferred to a separate change.
+Set this to `true` only where the IMEX daemon is expected to be continuously available. IMEX incidents are global DCGM entities, but GPU-health-monitor's routing can attribute them to GPU 0.
 
 ### suppressedErrorCodes
 List of DCGM error code names (as reported by DCGM, e.g. `DCGM_FR_CLOCK_THROTTLE_POWER`) to suppress. Suppression is scoped to the listed error codes only — other incidents on the same health watch (e.g. other `GpuPowerWatch` error codes) are still reported.
 
-The defaults include throttling: of the errors these two watches raise, it is the only one that tracks load rather than a fault, and it maps to `NONE`, so it only ever produced node events.
+The defaults include throttling: of the errors these two watches raise, it is the only one that tracks load rather than a fault, and it maps to `NONE`, so it only ever produces node events.
 
 | Watch | Suppressed | Still reported |
 | --- | --- | --- |
@@ -243,7 +243,7 @@ The defaults also include the NVLink bit error rate (BER) codes `DCGM_FR_NVLINK_
 
 The cost is the same as in DCGM 4.7: a link with a truly high BER also produces no health event. Other `GpuNvlinkWatch` codes are still reported. To alert on BER, use the DCGM fields `DCGM_FI_DEV_NVLINK_SYMBOL_BER_RATIO` (1216) and `DCGM_FI_DEV_NVLINK_EFFECTIVE_BER_RATIO` (1218) with a threshold from your hardware vendor. If you set your own `suppressedErrorCodes`, your list replaces the default list, so add these two codes to it. The `dcgm_health_check_suppressed_incidents` metric counts each dropped incident by `error_code`.
 
-`DCGM_FR_NVLINK_ERROR_CRITICAL` (71) temporarily maps to `NONE` as clarity is not there around supported recovery and counter-clearing procedure(DCGM Issue =>  https://github.com/NVIDIA/DCGM/issues/318 ). Both WARN and FAIL incidents produce non-fatal unhealthy events. The default quarantine policy does not cordon nodes for these events. This applies to every incident with code 71, including other NVLink errors that share this code. Other error codes retain their configured actions.
+`DCGM_FR_NVLINK_ERROR_CRITICAL` (71) maps to `NONE`, because DCGM does not define a supported recovery and counter-clearing procedure for it. Both WARN and FAIL incidents produce non-fatal unhealthy events. The default quarantine policy does not cordon nodes for these events. This applies to every incident with code 71, including other NVLink errors that share this code. Other error codes retain their configured actions.
 
 Genuine power and cooling faults are unaffected, arriving as `GPU_HW_POWER_BRAKE_VIOLATION` via [`GpuPowerBrakeWatch`](#hardware-power-brake-detection) and `GPU_TEMP_HW_SLOWDOWN_VIOLATION` via `GpuThermalMarginWatch`, both `CONTACT_SUPPORT`. `DCGM_FR_THROTTLING_VIOLATION` is not suppressed either: it comes only from `dcgmi diag`, not these watches.
 
@@ -300,7 +300,7 @@ Leave it `"False"` if any GPU pool uses NVLink bridges. An unbridged card and a 
 
 `GpuPowerBrakeWatch` fails a GPU whose clocks-event-reasons mask has the hardware power brake bit (`0x80`) set, meaning the power delivery path is forcing clocks down. It reads `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` directly, in the same way `GpuThermalMarginWatch` reads field 153, because DCGM's POWER health watch does not report the brake.
 
-That distinction matters. The POWER watch's dominant code, `DCGM_FR_CLOCK_THROTTLE_POWER`, tracks power-capped clock throttling, maps to `NONE`, and is suppressed by default under [DCGM Health Check Incident Suppression](#dcgm-health-check-incident-suppression) above. On a 288-node GB200 cluster it was observed active on 69% of nodes while exactly 50% had a brake asserted, correlating with neither the brake bit nor the SW power cap bit (`0x04`). A sustained brake is a power delivery fault, so it needs its own signal rather than sharing a non-actionable one.
+That distinction matters. The POWER watch's dominant code, `DCGM_FR_CLOCK_THROTTLE_POWER`, tracks power-capped clock throttling, maps to `NONE`, and is suppressed by default under [DCGM Health Check Incident Suppression](#dcgm-health-check-incident-suppression) above. A sustained brake is a power delivery fault, so it needs its own signal rather than sharing a non-actionable one.
 
 `GPU_HW_POWER_BRAKE_VIOLATION` maps to `CONTACT_SUPPORT` in `dcgmerrorsmapping.csv`, matching the thermal precedent: an asserted brake is a facility or power delivery problem, not something a node reboot resolves.
 
@@ -314,7 +314,7 @@ gpu-health-monitor:
 
 ### gpuPowerBrakeMonitoringEnabled
 
-Enables the watch. Off by default so existing deployments see no behaviour change. If neither `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` nor the older `DCGM_FI_DEV_CLOCK_THROTTLE_REASONS` is available in the running DCGM build, the monitor logs a warning and disables itself.
+Enables the watch. Off by default. If neither `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` nor the older `DCGM_FI_DEV_CLOCK_THROTTLE_REASONS` is available in the running DCGM build, the monitor logs a warning and disables itself.
 
 ### gpuPowerBrakeStoreOnly
 
@@ -341,7 +341,7 @@ When enabled, the chart adds a `wait-for-dcgm` init container. Each attempt crea
 
 The default 10-second hard timeout leaves time for DCGM's own 5-second connection timeout to return and log a specific connection error first; the parent timeout remains a backstop for a genuinely stuck native call.
 
-The gate is disabled by default for backward compatibility and supports `operator-service` and `external-hostengine`. It cannot be enabled in `embedded-mode`, because the main GPU health monitor container starts the embedded hostengine; Helm rejects that combination rather than creating a pod that can never leave init.
+The gate is disabled by default and supports `operator-service` and `external-hostengine`. It cannot be enabled in `embedded-mode`, because the main GPU health monitor container starts the embedded hostengine; Helm rejects that combination rather than creating a pod that can never leave init.
 
 While DCGM remains unavailable, the pod stays in `Init:0/1`; ordinary readiness failures do not restart the init container. This state should be monitored with the deployment's existing pod-state alerts (for example, kube-state-metrics). An `Init:CrashLoopBackOff` instead indicates an image, configuration, or implementation failure. After startup, runtime DCGM failures are still handled by the GPU health monitor's connectivity checks; the startup gate does not replace runtime failure handling or debouncing.
 
@@ -394,7 +394,7 @@ gpu-health-monitor:
 
 `successThreshold` is the number of consecutive successful cycles required to clear an already-published connectivity failure. A failed cycle during recovery resets the success streak and keeps the existing unhealthy event active. The threshold does not delay the initial healthy baseline event emitted for a node with no prior connectivity state.
 
-Both values must be integers greater than or equal to `1`. They default to `1`, preserving the existing fail-once and recover-once behavior. Raising `failureThreshold` filters shorter connectivity interruptions at the cost of up to `failureThreshold - 1` additional poll intervals of detection latency.
+Both values must be integers greater than or equal to `1`. They default to `1`, which gives fail-once and recover-once behavior. Raising `failureThreshold` filters shorter connectivity interruptions at the cost of up to `failureThreshold - 1` additional poll intervals of detection latency.
 
 The debounce state belongs to the running monitor process and is not persisted. Restarting the process resets both observation streaks. The replacement process emits its normal initial healthy baseline as soon as a complete health check succeeds, allowing platform state left by the previous process to converge without waiting for `successThreshold`.
 
@@ -411,7 +411,7 @@ Runtime debounce and the startup gate address different phases:
 - `runtimeDebounce` filters short connectivity transitions after the monitor is running.
 - In remote modes, a probe hang is debounced on time instead of cycles: it is published once DCGM has been unreachable for `failureThreshold * pollIntervalSeconds`. A hung call has no later poll to count, and the liveness probe restarts the container before a long deadline elapses, so the start of the unreachable window is persisted under the monitor's state directory and resumed after a restart. Any successful cycle ends the window, and a failure more than ten minutes after the previous one starts a new window, which covers the kubelet's capped restart backoff. With the default `failureThreshold: 1` the hang is published as soon as it is detected. The embedded-mode `GpuDcgmUnresponsive` event is not delayed: its fault is node-local.
 
-`dcgmHealthCheck.connectivityFailureEscalationThreshold` continues to count consecutive failed observations. If its threshold is lower than the debounce failure threshold, the first published unhealthy event may already recommend `RESTART_BM`; configure escalation at or above `failureThreshold` when a preliminary `CONTACT_SUPPORT` event is desired.
+`dcgmHealthCheck.connectivityFailureEscalationThreshold` counts consecutive failed observations. If its threshold is lower than the debounce failure threshold, the first published unhealthy event may already recommend `RESTART_BM`; configure escalation at or above `failureThreshold` when a preliminary `CONTACT_SUPPORT` event is desired.
 
 Example behavior for `failureThreshold: 4` and `successThreshold: 2`:
 
@@ -477,7 +477,7 @@ gpu-health-monitor:
       DCGM_FR_NVLINK_DOWN: 2
 ```
 
-Use this for a code whose single-poll occurrences are transients rather than faults. `DCGM_FR_NVLINK_DOWN` is the motivating case: on SXM systems the NVLink links are briefly down after every node boot while they train, so a routine maintenance reboot otherwise produces a FATAL event carrying `RESTART_VM`. `_is_nvlink_down_false_positive` cannot cover this, because it is metadata-based and deliberately fails closed on SXM where an untrained link is indistinguishable from a dead one. A time-based threshold separates them: an untrained link trains, a dead one does not.
+Use this for a code whose single-poll occurrences are transients rather than faults. `DCGM_FR_NVLINK_DOWN` is the motivating case: on SXM systems the NVLink links are briefly down after every node boot while they train, so a routine maintenance reboot otherwise produces a FATAL event carrying `RESTART_VM`. The [NVLink-down suppression](#nvlink-suppression-on-unbridged-pcie-cards) cannot cover this, because it is metadata-based and deliberately fails closed on SXM where an untrained link is indistinguishable from a dead one. A time-based threshold separates them: an untrained link trains, a dead one does not.
 
 The streak is keyed on `(error code, GPU)` and resets whenever the code is absent for that GPU in a poll, so a code that appears on alternate polls for a GPU never accumulates and is never published. Note the key is the code and GPU, not the individual link: a GPU reporting one down link on one poll and a different one on the next keeps its streak, because that GPU has had a link down continuously. A streak also survives a failed poll, since a DCGM timeout observes nothing and must not clear it.
 

@@ -69,7 +69,7 @@ policies are intentionally opt-in because NVSentinel does not install or own
 the cluster's NPD configuration. See the
 [NPD integration tutorial](../tutorials/integrating-node-problem-detector.md)
 and
-[NPD remediation values](../../distros/kubernetes/nvsentinel/values-npd-remediation.yaml)
+the NPD remediation values (`values-npd-remediation.yaml` in the NVSentinel chart)
 before making NPD conditions actionable.
 
 ### Policy Structure
@@ -150,7 +150,7 @@ Boolean indicating if this is a fatal error that should trigger quarantine.
 Human-readable error message included in the health event.
 
 ##### recommendedAction
-Action code from health event proto (see [health_event.proto](https://github.com/NVIDIA/NVSentinel/blob/main/data-models/protobufs/health_event.proto)).
+Action code from the HealthEvent `RecommendedAction` enum (see [HealthEvent Data Model Reference](../health-event-data-model.md#recommendedaction-enum)).
 
 ##### errorCode
 Array of error code strings for categorization and filtering.
@@ -238,7 +238,7 @@ resource:
 ```
 
 Nodes are cluster-scoped — do not set `resource.namespace`. Do not set `nodeAssociation`; the
-monitor uses the Node name automatically ([ADR-011](../designs/011-kubernetes-object-monitor.md)).
+monitor uses the Node name automatically.
 
 ### Pod
 
@@ -267,7 +267,7 @@ resource:
 ```
 
 Events must include `nodeAssociation` that resolves the node from the object the event is
-about — typically a `lookup()` on `resource.regarding` ([ADR-011](../designs/011-kubernetes-object-monitor.md)).
+about — typically a `lookup()` on `resource.regarding`.
 
 ### Policy name and output
 
@@ -389,9 +389,6 @@ policies:
       errorCode:
         - POD_FAILED
 ```
-
-For a fatal GPU-runtime Event policy, see the `NVMLError` example in
-[ADR-011](../designs/011-kubernetes-object-monitor.md).
 
 ### Observe a policy
 

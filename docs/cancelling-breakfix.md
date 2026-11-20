@@ -28,11 +28,11 @@ kubectl uncordon {node-name}
 
 NVSentinel detects the uncordon and immediately:
 - Stops the automated workflow
-- Cleans up quarantine state (annotations, taints, labels)
+- Removes its quarantine annotations and its cordon labels
 - Marks health events as cancelled
 - Returns the node to normal operation
 
-The node can schedule new workloads right away. If the health issue happens again later, NVSentinel will treat it as a new incident.
+Taints and labels that a quarantine rule applied stay on the node. To schedule workloads that do not tolerate such a taint, remove the taint by hand. Apart from that, the node can schedule new workloads right away. If the health issue happens again later, NVSentinel will treat it as a new incident.
 
 ### Checking Cancellation Status
 

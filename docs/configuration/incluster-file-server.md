@@ -192,6 +192,6 @@ curl http://localhost:8080/{NODE_NAME}/
 
 The cleanup sidecar runs on the `sleepInterval` schedule and deletes any file whose modification time is older than `retentionDays`. The cleanup runs in the background; it does not interrupt active HTTP downloads.
 
-If the volume fills unexpectedly — for example, after a large-scale node failure that triggers many concurrent log collections — follow the emergency cleanup procedure in `docs/runbooks/log-rotation-failures.md`.
+If the volume fills unexpectedly — for example, after a large-scale node failure that triggers many concurrent log collections — follow the emergency cleanup procedure in [Log Rotation Failures](../runbooks/log-rotation-failures.md).
 
 Monitor the `fileserver_disk_space_free_bytes` metric to receive early warning before the volume reaches capacity.

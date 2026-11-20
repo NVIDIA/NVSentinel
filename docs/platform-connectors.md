@@ -38,7 +38,7 @@ Platform Connectors typically runs as a DaemonSet in the cluster:
 
 The event processing pipeline runs transformers in order, allowing each transformer to build on previous enrichments. The ring buffer architecture ensures events are processed reliably even under high load, with retry logic for transient failures.
 
-The same binary can also run as a central Deployment, the deployment platform connector. Monitors set to `publishTo: deployment` publish to it directly over TLS, with a bearer token. It runs the pipeline and both connectors inside each request. It acknowledges a batch only after it stores the batch. See [Deployment Platform Connector](configuration/platform-connectors.md#deployment-platform-connector) and [ADR 052](designs/052-deployment-platform-connector.md).
+The same binary can also run as a central Deployment, the deployment platform connector. Monitors set to `publishTo: deployment` publish to it directly over TLS, with a bearer token. It runs the pipeline and both connectors inside each request. It acknowledges a batch only after it stores the batch. See [Deployment Platform Connector](configuration/platform-connectors.md#deployment-platform-connector).
 
 ## Configuration
 
@@ -258,13 +258,11 @@ Two classes of publisher share the per-node Unix socket:
 | Class | Components | Names other nodes? |
 |-------|------------|--------------------|
 | Node-local | gpu, syslog, nic, preflight checks, custom monitors | No — always their own node |
-| Cluster-scoped | csp-health-monitor, kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor, health-events-analyzer | Yes, by design |
+| Cluster-scoped | csp-health-monitor, kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor, health-events-analyzer, lifecycle-manager (MaintenanceRequest controller) | Yes, by design |
 
 Every first-party monitor presents a credential: a projected Kubernetes
 ServiceAccount token minted for a dedicated audience, validated with the
-TokenReview API — the same mechanism
-[ADR-030](designs/030-grpc-tls-authentication.md) chose for the janitor to
-janitor-provider channel. On Kubernetes 1.30+ the API server writes the bound
+TokenReview API. On Kubernetes 1.30+ the API server writes the bound
 pod's **node** into the token at issuance and reports it back from TokenReview
 (`authentication.kubernetes.io/node-name`), so the token carries a verified
 statement of *where its holder runs* that the holder cannot alter.
@@ -276,7 +274,7 @@ The rule, per caller:
 | Valid token whose node claim names a **different** node | Rejected with `PermissionDenied` (`node_claim_mismatch`), for **every** caller including allowlisted ones. A mismatch means the credential is being presented somewhere other than where it was issued. Cross-node reach is permission to *name* other nodes, not to *present the credential from* other nodes. |
 | Valid token, ServiceAccount on the allowlist, claim matches | Supplied node names accepted as sent. The token must additionally be bound to a running pod on a scheduled node — both a pod UID and a node claim. A token minted with `kubectl create token` (no `--bound-object-ref`) has neither and is refused outright, for own-node events too. |
 | Valid token, any other ServiceAccount, claim matches | Scoped to the connector's own node. A blank `nodeName` is filled in; a *different* one is rejected (`node_mismatch`). |
-| No token, or a token without a node claim | Scoped to the connector's own node, exactly as a tokenless caller would be. Reaching the socket already granted that much. |
+| No token, or a token without a node claim | Scoped to the connector's own node, exactly as a tokenless caller would be. Reaching the socket already granted that much. Exception: the connector rejects a token without a node claim from an allowlisted ServiceAccount (`cross_node_claim_absent`, or `unbound_cross_node_token` if the token has no pod binding). |
 
 Rejecting rather than rewriting is deliberate: silently redirecting an event
 about node B onto node A would turn a misdirected event into a real outage on
@@ -332,7 +330,7 @@ allowlist and the publishers' projected tokens cannot drift apart:
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `enabled` | `true` | Master switch, and a real boolean — a quoted `"false"` is refused rather than read as true. Must be set explicitly; the connector fails to start if the ConfigMap omits it. Disabling lets any caller name any node; not supported in production. |
+| `enabled` | `true` | Master switch, and a real boolean — a `null` or non-boolean value, such as a quoted `"false"`, fails the render. The connector fails to start if the ConfigMap omits it. Disabling lets any caller name any node; not supported in production. |
 | `audience` | `platform-connector.nvsentinel.nvidia.com` | Audience the projected tokens are minted for and TokenReview must echo back. |
 | `tokenExpirationSeconds` | `3600` | Token lifetime. Must be a whole number in `600 <= x <= 2^32`; Kubernetes rejects anything else. |
 | `tokenMountPath` | `/var/run/secrets/nvsentinel/platform-connector` | Where publishers mount the token. |
@@ -356,17 +354,18 @@ needs no changes: it already reports its own node.
 
 At the ConfigMap level (relevant only when bypassing the chart): a config that
 omits `enableNodeBindingAuth` entirely **fails startup** — there is no default.
-A ConfigMap without the key predates this version and is missing the audience
-and allowlist too, so guessing the intended behaviour from it would be worse than
-refusing. A value that is neither `true` nor `false` fails startup as well.
+A value that is neither `true` nor `false` fails startup as well.
 
 #### Where to run the cluster-scoped monitors
 
-The five cluster-scoped publishers — `csp-health-monitor`,
-`kubernetes-object-monitor`, `nvcre-certification-monitor`, `slurm-drain-monitor`
-and `health-events-analyzer` — are the only bundled identities allowed to name a
-node other than their own, and all five ship **disabled by default**
-(`global.<monitor>.enabled: false`). Their
+The six cluster-scoped publishers — `csp-health-monitor`,
+`kubernetes-object-monitor`, `nvcre-certification-monitor`, `slurm-drain-monitor`,
+`health-events-analyzer` and the MaintenanceRequest controller of
+`lifecycle-manager` — are the only bundled identities allowed to name a node
+other than their own, and all six ship **disabled by default**
+(`global.<monitor>.enabled: false`; for `lifecycle-manager`, both
+`global.lifecycleManager.enabled` and
+`lifecycle-manager.controllers.maintenanceRequest.enabled` are `false`). Their
 usernames are derived from the release namespace for whichever are enabled, so
 enabling one is what grants it cross-node reach — a deliberate act, because it
 lets that ServiceAccount have any node in the cluster cordoned, drained and
@@ -385,13 +384,14 @@ nic, preflight checks) need no such placement: their tokens attest the node
 they run on and grant nothing beyond it, which is why they are safe to run
 everywhere.
 
-#### Staging a rolling upgrade
+#### Enabling node binding on a live cluster
 
 platform-connector and the publishers are subcharts of one release, so a single
 `helm upgrade` moves them together and you cannot sequence one before the other.
 What you can control is *when enforcement starts*.
 
-Pods restart on their own schedule after an upgrade, so there is a window in
+When you set `global.platformConnectorAuth.enabled` to `true` on a running
+release, the pods restart on their own schedule. Thus there is a window in
 which a connector that has already restarted (and is enforcing) sees a publisher
 pod that has not yet been replaced and is therefore still sending no token.
 
@@ -401,30 +401,15 @@ a *cluster-scoped* publisher is affected, and only for the seconds between the
 connector restarting and its own pod being replaced: its cross-node events are
 rejected with `node_mismatch` for that window, and its next attempt succeeds.
 
-**If you need zero exposure**, upgrade in two steps rather than one:
+To avoid rejections during the rollout, set `global.platformConnectorAuth.mode`
+to `audit` first. Switch to `enforce` when the violation counters stay at zero.
+See [`mode`](configuration/authentication.md#mode).
 
-```bash
-# 1. New images everywhere, enforcement off. No token volumes are mounted and
-#    no --platform-connector-token-path flag is passed.
-helm upgrade nvsentinel <chart> -n nvsentinel --set global.platformConnectorAuth.enabled=false
-
-# 2. Wait until every publisher pod is Running on the new image, then enable.
-helm upgrade nvsentinel <chart> -n nvsentinel --set global.platformConnectorAuth.enabled=true
-```
-
-Step 2 still restarts the publishers to add their token volumes, but by then
-every pod is on an image that knows how to send the token, so the only gap is
-the pod restart itself.
-
-Watch either approach with:
+Watch the rollout with:
 
 ```text
 sum(rate(platform_connector_auth_violations_total{reason="node_mismatch"}[5m]))
 ```
-
-The other direction — old chart, new images — does not start at all: the
-connector requires `enableNodeBindingAuth` to be present, and an old chart does
-not write it.
 
 Related metrics:
 
@@ -438,42 +423,9 @@ Not every `reason` means a caller was rejected. `validator_unavailable`,
 `validator_timeout` and `validator_error` mean no verdict could be reached — an
 unreachable API server increments them for every in-flight request. Exclude them
 when alerting on suspected credential abuse, or a control-plane blip reads as an
-attack. See [METRICS.md](METRICS.md) for the full list.
-
-#### Chart and image versions must move together
-
-The chart passes `--platform-connector-token-path` to each publisher when
-`global.platformConnectorAuth.enabled` is true. That flag does not exist in
-images built before this feature, and Go's flag parser rejects unknown flags at
-startup, so a chart that is newer than the images it deploys puts those
-publishers into `CrashLoopBackOff` with:
-
-```text
-flag provided but not defined: -platform-connector-token-path
-```
-
-This is a startup failure, not a health-event failure: the pod never serves. It
-is also not limited to the connector — it hits every publisher the chart passes
-the flag to.
-
-Upgrade the images together with (or before) the chart. `global.image.tag` must
-resolve to an image that contains this feature. If the chart has already been
-rolled out ahead of the images, the fastest way back to a serving cluster is to
-turn the feature off rather than to roll the chart back:
-
-```bash
-helm upgrade nvsentinel <chart> --reuse-values --set global.platformConnectorAuth.enabled=false
-```
-
-That drops the flag, the token volume and the connector's enforcement in one
-step, leaving the pre-feature behavior. Re-enable it once the images are current.
-
-The other direction, old chart with new images, does not start at all. The
-connector requires `enableNodeBindingAuth` to be present in its ConfigMap and
-refuses to start when it is absent, and an old chart does not write that key.
-Roll the chart and the images together.
-
-
+attack. `validator_error` also counts a permanent TokenReview failure, such as a
+missing `create` permission on `tokenreviews`. Under `mode: enforce` it always
+rejects the request. See [METRICS.md](METRICS.md) for the full list.
 
 ### Ring Buffer Architecture
 Parallel event processing with independent queues:

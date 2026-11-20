@@ -78,17 +78,17 @@ Keep cleanup disabled until every store-owning component supports initial persis
 
 ### Delivery Acknowledgments
 
-`MarkProcessed(token)` acknowledges the earliest tracked pending delivery with that token and every delivery before it. Resolve that entire delivery prefix before acknowledging. Concurrent consumers must use a contiguous completion watermark, as described in [ADR-056](designs/056-concurrent-node-partitioned-event-processing.md).
+`MarkProcessed(token)` acknowledges the earliest tracked pending delivery with that token and every delivery before it. Resolve that entire delivery prefix before acknowledging. Concurrent consumers must use a contiguous completion watermark.
 
 The provider tracks matching deliveries before enqueueing them. Buffered events count as pending. It saves the read cursor only when no deliveries remain pending. Otherwise, it saves the smaller of the cursor and the position strictly before every pending delivery in `(changed_at, id)` order. Before handing out a late NOTIFY row behind the persisted checkpoint, the provider saves the rewound position. A failed rewind leaves the row undelivered and its notification ID available for the next catch-up pass. The fetch loop logs the failure and retries the pass. Rewind saves and acknowledgment saves use the same lock. A late NOTIFY row can move the saved position backward. A restart can therefore replay acknowledged events as well as pending events.
 
-Empty, unknown, evicted-only, and already acknowledged tokens certify no outstanding deliveries. Acknowledgments never advance the read cursor past unread rows. Empty tokens retain the existing processed-row update at the read cursor. All tokens retain the cumulative `processed = TRUE WHERE id <= token` update. This flag does not prove that all consumers acknowledged a row.
+Empty, unknown, evicted-only, and already acknowledged tokens certify no outstanding deliveries. Acknowledgments never advance the read cursor past unread rows. For an empty token, the provider marks the changelog rows up to the read cursor as processed. For other tokens, it runs the cumulative `processed = TRUE WHERE id <= token` update. This flag does not prove that all consumers acknowledged a row.
 
 The provider tracks at most 4,096 individual pending deliveries per watcher. The Helm value `health-events-analyzer.maxInFlight` sets the partitioned processor limit and defaults to `1000`. The watcher and adapter channels each buffer 100 events. The adapter can hold one additional event, and the watcher can register one event before its send blocks. Thus, `maxInFlight + 202` deliveries can await acknowledgment. Values up to `3894` fit within the 4,096-entry window; `3895` or higher can exceed it. Acknowledgments can then fall outside the tracked window. The saved position stays at the eviction floor until a tracked cumulative acknowledgment clears the evicted backlog. No events are skipped; a restart can replay them. At the limit, it evicts the oldest tracked entry and retains a floor. The floor stores the minimum position and maximum delivery sequence across evicted entries. Checkpoints stay strictly before that floor until an acknowledgment matches a tracked delivery after all evicted entries. That cumulative acknowledgment clears the floor. Eviction bounds memory without blocking delivery, including when a consumer drops failed events. The watcher logs once per saturation episode; clearing the floor ends that episode.
 
 Abandoned sends remain pending because the read cursor already includes those rows. A final watermark flush after cancellation or Close must preserve their replay on restart.
 
-Checkpoint write failures return to the caller. The token schema and startup resume behavior stay unchanged. These rules implement acknowledgment safety independently of the proposed [retention protocol](postgresql-changelog-retention-protocol.md#consumer-bound-and-idle-checkpoints). They do not implement retention or idle checkpoints.
+Checkpoint write failures return to the caller. The provider does not delete rows from the `datastore_changelog` table.
 
 ## Configuration
 
@@ -166,7 +166,7 @@ The provider recognizes these environment variables:
 - `DATASTORE_SSLROOTCERT` - CA certificate path
 - `POSTGRESQL_CLIENT_CERT_MOUNT_PATH` - Certificate directory path
 
-Alternatively, use `MONGODB_CLIENT_CERT_MOUNT_PATH` for backward compatibility - the SDK handles both.
+The provider also accepts `MONGODB_CLIENT_CERT_MOUNT_PATH` as the certificate directory path.
 
 ## Development with Tilt
 
@@ -298,14 +298,6 @@ Key indexes for performance:
 The change stream poll reads the changelog rows of one table after its resume position, in `(changed_at, id)` order. The `idx_changelog_resume_all` index serves this query. Without it, each poll reads and sorts all changelog rows of the table.
 
 Fault Quarantine, Node Drainer, Fault Remediation and the Health Events Analyzer create the index at start if it is missing. They build it with `CREATE INDEX CONCURRENTLY`, so changelog writes continue during the build. The components build it one at a time, under the setup lock.
-
-On an upgrade with a large `datastore_changelog` table, the build can take several minutes. Fault Quarantine, Node Drainer and Fault Remediation do not become ready until it is done, so the rollout takes longer, and `helm upgrade --wait` can reach its timeout. To prevent this, create the index before the upgrade:
-
-```sql
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_changelog_resume_all ON datastore_changelog (table_name, changed_at, id);
-```
-
-The components then find the index and skip the build.
 
 ### Query Optimization
 
@@ -470,9 +462,6 @@ kubectl exec -i nvsentinel-postgresql-0 -n nvsentinel -- \
 
 ## References
 
-- [PostgreSQL Official Documentation](https://www.postgresql.org/docs/)
-- [PostgreSQL JSONB Documentation](https://www.postgresql.org/docs/current/datatype-json.html)
-- [Bitnami PostgreSQL Helm Chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql)
 - [NVSentinel PostgreSQL Schema](./postgresql-schema.sql)
 
 ## Support

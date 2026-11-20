@@ -94,7 +94,7 @@ kubectl get daemonset gpu-health-monitor -n nvsentinel -o yaml | grep -A 3 "/var
 
 Both should be mounted from hostPath at `/var/run/nvsentinel`.
 
-### 6. Verify Resolution
+### 5. Verify Resolution
 
 ```bash
 # Watch health monitor logs for successful sends

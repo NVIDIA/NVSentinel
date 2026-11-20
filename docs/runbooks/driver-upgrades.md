@@ -14,7 +14,7 @@ During GPU Operator or driver upgrades, DCGM on affected nodes becomes temporari
 
 **Potential Issues:**
 - When multiple nodes are upgraded in parallel, the circuit breaker may trip, preventing NVSentinel from processing new events and leaving nodes in a cordoned state.
-- When the circuit breaker resets after maintenance, NVSentinel may process queued events, potentially causing the circuit breaker to trip again or nodes to be cordoned and uncordoned repeatedly (tracked in [#450](https://github.com/NVIDIA/NVSentinel/issues/450)).
+- When the circuit breaker resets after maintenance, NVSentinel may process queued events, potentially causing the circuit breaker to trip again or nodes to be cordoned and uncordoned repeatedly.
 - These behaviors can cause cluster availability issues.
 
 **Solution:** Temporarily disable NVSentinel management on nodes undergoing GPU driver or GPU Operator upgrades.

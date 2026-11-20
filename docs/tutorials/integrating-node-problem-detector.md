@@ -33,10 +33,9 @@ By the end you will have:
 - Cluster-admin access to install a privileged DaemonSet and patch Node status.
 - Shell or SSH access to at least one disposable Linux node for end-to-end
   validation.
-- An NVSentinel release that contains the NPD KOM policies.
 
-See the [NVSentinel Helm chart guide](../../distros/kubernetes/README.md) for
-the complete NVSentinel prerequisites.
+See the NVSentinel Helm chart guide (`distros/kubernetes/README.md` in the
+NVSentinel repository) for the complete NVSentinel prerequisites.
 
 ---
 
@@ -69,9 +68,6 @@ approved NVSentinel actions. KOM is not limited to these conditions. If a
 custom NPD configuration publishes another permanent Node Condition, add a KOM
 policy for its condition type, status, and reason as shown in
 [Configure a custom NPD Node Condition](#configure-a-custom-npd-node-condition).
-
-For the design rationale and limitations, see
-[ADR-053](../designs/053-npd-checks-integration.md).
 
 ---
 
@@ -140,9 +136,9 @@ kubectl get pods --namespace "$NPD_NAMESPACE" \
 
 NPD policies are intentionally excluded from the default KOM values because
 NVSentinel does not install NPD or control how an operator handles its
-conditions. The repository provides an explicit
-[NPD remediation overlay](../../distros/kubernetes/nvsentinel/values-npd-remediation.yaml)
-for clusters where NVSentinel should own these conditions.
+conditions. The repository provides an explicit NPD remediation overlay,
+`distros/kubernetes/nvsentinel/values-npd-remediation.yaml`, for clusters where
+NVSentinel should own these conditions.
 
 Download or copy `values-npd-remediation.yaml` and use it as the values file.
 It enables KOM, retains the default `ReplaceNotReadyNode` policy, and adds the three
@@ -206,7 +202,7 @@ NPD overlay. For a new release, Helm has no previous values to reuse and
 installs from the chart defaults plus the overlay.
 
 ```bash
-NVSENTINEL_VERSION="<release-containing-the-NPD-policies>"
+NVSENTINEL_VERSION="<version>"
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \

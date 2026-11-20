@@ -87,5 +87,4 @@ A CEL expression selects which failure reasons and test categories become health
 
 ## Further Reading
 
-- [ADR-055: NVCRE Certification Monitor](./designs/055-nvcre-certification-monitor.md) for the full design, decision tables and edge cases.
 - [Fault Quarantine](./fault-quarantine.md) for how rulesets and taint holds work.

@@ -15,8 +15,6 @@ Two in-cluster backends are supported: **Bitnami** (default) and **Percona Opera
 
 Both flags must always be set together. Setting them explicitly in your values, rather than relying on the chart defaults, is recommended for any long-lived installation: it keeps your deployment on its current backend even if the chart default changes in a future release. Upgrading a release across a backend change does not work in place and forces a full remove-and-redeploy migration, so an accidental switch is worth guarding against.
 
-See [ADR-013: MongoDB Migration from Bitnami](../designs/013-mongodb-bitnami-migration.md) for the rationale behind the dual-backend design and for licensing details.
-
 To use a cloud-managed MongoDB (DocumentDB, Atlas, etc.) instead of in-cluster storage, see [External Datastore](../external-datastore.md).
 
 ## ARM64 support
@@ -55,7 +53,7 @@ PASSWORDS ERROR: You must provide your current passwords when upgrading the rele
 
 The chart reads the `mongodb` Secret during template rendering, which happens before any Job or init container can create it. Create the Secret yourself first, then run the same upgrade again. The Percona backend does not have this behaviour.
 
-**Avoid this by creating the Secret at install time.** The Quick Start in the [README](https://github.com/NVIDIA/NVSentinel#quick-start) creates it alongside the namespace, before the first `helm upgrade --install`. The Secret costs nothing while the datastore is off, and it makes enabling the datastore later a single command. The rest of this section is for installations that already exist without it.
+**Avoid this by creating the Secret at install time.** The Quick Start section of `README.md` in the repository root creates it alongside the namespace, before the first `helm upgrade --install`. The Secret costs nothing while the datastore is off, and it makes enabling the datastore later a single command. The rest of this section is for installations that already exist without it.
 
 ### Check before you create anything
 
@@ -118,7 +116,6 @@ When Percona is enabled, the replica set is configured under `psmdb-db` instead 
 
 - **Service endpoint:** `mongodb-rs0.{namespace}.svc.{clusterDomain}:27017`, where `{clusterDomain}` is `global.clusterDomain` (default `cluster.local`; see [Cluster Domain](README.md#cluster-domain))
 - **Metrics:** `percona/mongodb_exporter` sidecar on port `9216` (configured in default `psmdb-db` values)
-- **Operator reference:** [Percona Operator for MongoDB](https://docs.percona.com/percona-operator-for-mongodb/)
 
 The chart-generated `MONGODB_URI` follows the selected backend automatically (`mongodb-headless` for Bitnami, `mongodb-rs0` for Percona). If you set `global.datastore.connection.host` explicitly in your values, it must match the backend you selected.
 
@@ -140,7 +137,7 @@ The **mongod** version (`psmdb-db.image.tag`) is separate. It is a different pro
 
 #### Upgrading
 
-[Percona permits upgrading only to the nearest `major.minor`](https://docs.percona.com/percona-operator-for-mongodb/update-operator.html). The render enforces this: it fails when `crVersion` is more than one minor behind the operator, when the major versions differ, or when `crVersion` is ahead of the operator.
+Percona permits upgrading only to the nearest `major.minor`. The render enforces this: it fails when `crVersion` is more than one minor behind the operator, when the major versions differ, or when `crVersion` is ahead of the operator.
 
 **One minor of skew is allowed on purpose**, because that is how the documented upgrade is performed. Moving from 1.21 to 1.23 on a live cluster is two steps:
 
@@ -169,7 +166,7 @@ Notes:
 
 On nodes running Linux kernel 6.19 or newer, the Percona backend can fail to start. `mongodb-rs0-0` exits within a second of starting and stays in `CrashLoopBackOff`, and fault-quarantine, node-drainer, fault-remediation and platform-connectors restart in a loop because they cannot reach the datastore. `kubectl logs --previous` for the `mongod` container is empty.
 
-Kernels 6.19 through 7.0.13 break the way TCMalloc, MongoDB's memory allocator, uses rseq for its per-CPU caches, so MongoDB 8.0 refuses to start on those kernels ([SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912)). The mongod release the chart deploys refuses on every kernel 6.19 and newer, including kernels that already carry the fix. Ubuntu kernels also hide their upstream release from `uname -r`, which shows a zero patch level (`7.0.0-43-generic` for a kernel built from 7.0.14), so later mongod releases can still refuse on them. The container log stays empty because the entrypoint script, `/opt/percona/ps-entry.sh`, which the init container copies from the operator image, runs `mongod --version` to read the version, consumes the refusal message, and exits.
+Kernels 6.19 through 7.0.13 break the way TCMalloc, MongoDB's memory allocator, uses rseq for its per-CPU caches, so MongoDB 8.0 refuses to start on those kernels (MongoDB issue SERVER-121912). The mongod release the chart deploys refuses on every kernel 6.19 and newer, including kernels that already carry the fix. Ubuntu kernels also hide their upstream release from `uname -r`, which shows a zero patch level (`7.0.0-43-generic` for a kernel built from 7.0.14), so later mongod releases can still refuse on them. The container log stays empty because the entrypoint script, `/opt/percona/ps-entry.sh`, which the init container copies from the operator image, runs `mongod --version` to read the version, consumes the refusal message, and exits.
 
 To check a node's kernel:
 
@@ -227,7 +224,7 @@ On a fresh install, the `create-mongodb-database` Job runs while mongod is down.
 kubectl get job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 ```
 
-Before removing the entry, rerun the `docker run` command above with the new image tag on a machine with each kernel you run. If it prints the version instead of the refusal, the entry can go. The check only works for releases that include the refusal: older MongoDB 8.0 releases print the version on an affected kernel and crash after startup. On kernels 6.19 through 7.0.13, no MongoDB 8.0 release runs without this setting. Progress is tracked in [#2410](https://github.com/NVIDIA/NVSentinel/issues/2410).
+Before removing the entry, rerun the `docker run` command above with the new image tag on a machine with each kernel you run. If it prints the version instead of the refusal, the entry can go. The check only works for releases that include the refusal: older MongoDB 8.0 releases print the version on an affected kernel and crash after startup. On kernels 6.19 through 7.0.13, no MongoDB 8.0 release runs without this setting.
 
 ### Volume size
 
@@ -413,7 +410,7 @@ If mongod already fails, see [MongoDB Connection Error](../runbooks/mongodb-conn
 
 `oplogSizeMB` (default `990`, MongoDB's minimum) is the replica-set oplog size in megabytes. Helm does **not** compute this from the PVC. `990` is Mongo's floor, not a 24-hour window.
 
-Fault Quarantine, Node Drainer, Fault Remediation, and Event Exporter resume from change-stream tokens. If the token ages off the oplog during an outage, they resume from now and **silently skip** events (issue #1594). Size the oplog so tokens survive the longest outage you will tolerate, then keep that size under about **half** the **live** data volume so WiredTiger still has room for collections.
+Fault Quarantine, Node Drainer, Fault Remediation, and Event Exporter resume from change-stream tokens. If the token ages off the oplog during an outage, they resume from now and **silently skip** events. Size the oplog so tokens survive the longest outage you will tolerate, then keep that size under about **half** the **live** data volume so WiredTiger still has room for collections.
 
 #### What to set (summary)
 
@@ -454,8 +451,8 @@ oplogSizeMB ≈ event_rate_per_sec × oplog_entry_bytes × window_seconds × ext
 
 | Term | Meaning | How to get it | If you cannot measure yet |
 | ---- | ------- | ------------- | ------------------------- |
-| `event_rate_per_sec` | HealthEvents inserts per second | `count` in a known window on `HealthEvents`, or scale from a similar cluster | Issue #1594 uses **~500/s at ~100k nodes** (~5/s per 1k nodes). Linear-scale from your node count; this is a noisy-cluster ceiling, not an idle cluster. |
-| `oplog_entry_bytes` | Bytes of one health-event insert in the oplog | Issue #1594 measured **~350 B** uncompressed. Live: oplog `size` ÷ inserts in that window | **350** |
+| `event_rate_per_sec` | HealthEvents inserts per second | `count` in a known window on `HealthEvents`, or scale from a similar cluster | Use **~500/s at ~100k nodes** (~5/s per 1k nodes). Linear-scale from your node count; this is a noisy-cluster ceiling, not an idle cluster. |
+| `oplog_entry_bytes` | Bytes of one health-event insert in the oplog | A measured insert is **~350 B** uncompressed. Live: oplog `size` ÷ inserts in that window | **350** |
 | `window_seconds` | How long a resume token must remain in the oplog | 24h = `86400`; 48h = `172800` | **86400** |
 | `extra_writes` | Other oplog traffic per health event (resume-token updates, fault-handling writes) | Live: (oplog bytes in a window) ÷ (health-event count × 350). At high ingest this is usually a small multiplier | **1.5** (1.0 if you only count the insert; 1.5 leaves headroom for tokens and extra processor writes) |
 
@@ -513,7 +510,7 @@ The same integer must also be on mongod startup so a **new** empty member (repla
 
 `--set oplogSizeMB=1400` alone is not enough; also set `--oplogSize=1400` (Bitnami) or `replication.oplogSizeMB: 1400` (Percona). Changing flags or the config file does **not** resize a member that already has data — the init Job still runs `replSetResizeOplog` on every reachable member.
 
-The Job **never shrinks** an existing oplog unless you set `mongodb-store.oplogAllowShrink: true`. Shrinking truncates the oldest entries immediately; change-stream watchers then hit `ChangeStreamHistoryLost` and resume from now (silent event loss — issue #1594).
+The Job **never shrinks** an existing oplog unless you set `mongodb-store.oplogAllowShrink: true`. Shrinking truncates the oldest entries immediately; change-stream watchers then hit `ChangeStreamHistoryLost` and resume from now (silent event loss).
 
 External Mongo is not resized. Resize is skipped when there is no PVC: Bitnami `mongodb.persistence.enabled=false` (emptyDir) or Percona `volumeSpec.hostPath` / `emptyDir`.
 

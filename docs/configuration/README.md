@@ -77,7 +77,7 @@ fault-remediation:
 
 ### IPv6
 
-NVSentinel runs on IPv4, IPv6-only and dual-stack clusters. On an IPv6-only or dual-stack cluster, set `global.ipv6.enabled: true`. The default is `false`. With the default, the chart renders the same manifests as before.
+NVSentinel runs on IPv4, IPv6-only and dual-stack clusters. On an IPv6-only or dual-stack cluster, set `global.ipv6.enabled: true`. The default is `false`.
 
 ```yaml
 global:
@@ -167,8 +167,8 @@ global:
   systemPriorityClassName: ""  # control-plane components (Deployments)
 ```
 
-Both default to empty, which leaves the field off the pod spec entirely and preserves the
-existing behaviour. Any component can also be set individually, and the global takes
+Both default to empty, which leaves the field off the pod spec entirely.
+Any component can also be set individually, and the global takes
 precedence when both are set, consistent with how `tolerations` behaves:
 
 ```yaml

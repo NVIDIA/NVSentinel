@@ -213,8 +213,8 @@ mongod uses one file descriptor for each client connection. Each platform-connec
 
 **Symptoms:**
 
-- MongoDB pods are in `CrashLoopBackOff`. In [issue #1555](https://github.com/NVIDIA/NVSentinel/issues/1555), mongod exited with code 139.
-- MongoDB does not become ready. With Bitnami, the `mongodb` StatefulSet shows fewer than 3 ready replicas. In issue #1555 it showed `0/3`, and because of the `OrderedReady` policy, the last replica did not start. With the Percona Operator, `kubectl -n nvsentinel get perconaservermongodb` does not show `ready`.
+- MongoDB pods are in `CrashLoopBackOff`. mongod can exit with code 139.
+- MongoDB does not become ready. With Bitnami, the `mongodb` StatefulSet shows fewer than 3 ready replicas, for example `0/3`. Because of the `OrderedReady` policy, the last replica can fail to start. With the Percona Operator, `kubectl -n nvsentinel get perconaservermongodb` does not show `ready`.
 - fault-quarantine, node-drainer and fault-remediation crash with `ReplicaSetNoPrimary` or `connection refused`.
 
 **Diagnosis:**

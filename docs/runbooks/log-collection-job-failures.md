@@ -43,7 +43,7 @@ kubectl describe pod -n nvsentinel $FAILED_POD
 ```bash
 # Verify nvidia-driver-daemonset is running on the node
 NODE_NAME=$(kubectl get job -n nvsentinel $FAILED_JOB -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="NODE_NAME")].value}')
-kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset --field-selector spec.nodeName=$NODE_NAME
+kubectl get pods -n gpu-operator -l app.kubernetes.io/component=nvidia-driver --field-selector spec.nodeName=$NODE_NAME
 
 # Check if node is accessible
 kubectl get node $NODE_NAME
@@ -59,7 +59,7 @@ kubectl get pods -n nvsentinel -l app.kubernetes.io/name=incluster-file-server
 
 **Error in logs**:
 ```text
-[ERROR] nvidia-driver-daemonset pod not found on node worker-01 in namespace gpu-operator
+[ERROR] NVIDIA driver pod not found on node worker-01 in namespace gpu-operator
 ```
 
 **Cause**: GPU operator not deployed or driver pod not running on the node
@@ -70,7 +70,7 @@ kubectl get pods -n nvsentinel -l app.kubernetes.io/name=incluster-file-server
 kubectl get pods -n gpu-operator
 
 # Check if GPU operator is deployed on the node
-kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset --field-selector spec.nodeName=$NODE_NAME
+kubectl get pods -n gpu-operator -l app.kubernetes.io/component=nvidia-driver --field-selector spec.nodeName=$NODE_NAME
 
 # If missing, check node labels and taints
 kubectl describe node $NODE_NAME | grep -A 5 "Labels:"
@@ -173,17 +173,6 @@ kubectl exec -n nvsentinel $FILE_SERVER_POD -- find /usr/share/nginx/html -type 
 # Option 3: Increase PVC size (if supported by storage class)
 kubectl patch pvc -n nvsentinel nvsentinel-incluster-file-server-data -p '{"spec":{"resources":{"requests":{"storage":"100Gi"}}}}'
 ```
-
-### Issue 6: nvidia-bug-report.sh not found in driver container
-
-**Error in logs**:
-```text
-error: OCI runtime exec failed: exec: "nvidia-bug-report.sh": executable file not found in $PATH
-```
-
-**Cause**: GPU Operator's `nvidia-driver-ctr` keeps NVIDIA binaries under `/run/nvidia/driver/usr/bin`, which is not on the default `kubectl exec` PATH.
-
-**Solution**: Upgrade to a log-collector image that prepends `/run/nvidia/driver/usr/bin` to PATH (or chroots into `DRIVER_ROOT`) before invoking `nvidia-bug-report.sh`. Workaround: disable log collection so remediation is not delayed by the collection timeout.
 
 ## Resolution Steps
 

@@ -74,6 +74,4 @@ For detailed configuration including per-check env vars, fabric-specific NCCL se
 ## Related Documentation
 
 - [Preflight configuration guide](./configuration/preflight.md) — full Helm values reference
-- [ADR-026: Preflight checks](./designs/026-preflight-checks.md) — architecture and design rationale
-- [ADR-035: Inline DCGM config](./designs/035-preflight-inline-dcgm-config.md) — design rationale for inline env var configuration
 - [GPU Health Monitor](./gpu-health-monitor.md) — continuous runtime GPU monitoring (complementary to preflight)

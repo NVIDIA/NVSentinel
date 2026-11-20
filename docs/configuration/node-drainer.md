@@ -228,13 +228,13 @@ Each policy has a unique, non-empty `name`, a `podSelector`, `ownerKinds` or bot
 
 For built-in workloads, the labels that controllers add can also be used: `podSelector: "statefulset.kubernetes.io/pod-name"` selects StatefulSet pods and `podSelector: "batch.kubernetes.io/job-name"` selects Job pods. Labels come from the pod template, so any workload can carry them; `ownerKinds` matches the controller reference, which the controller sets when it creates the pod.
 
-Policy order takes precedence over mode: an early `AllowCompletion` match cannot be overridden by a later `Immediate` match. There is no namespace fallback in policy mode. Ensure the selectors cover every workload that should participate in draining. To retain namespace-based draining instead, leave `podDrainPolicies` empty and configure `userNamespaces` as before.
+Policy order takes precedence over mode: an early `AllowCompletion` match cannot be overridden by a later `Immediate` match. There is no namespace fallback in policy mode. Ensure the selectors cover every workload that should participate in draining. To use namespace-based draining instead, leave `podDrainPolicies` empty and configure `userNamespaces`.
 
-Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. `DrainOverrides.Skip` retains its existing behavior. Custom drain configuration cannot be combined with pod drain policies unless `customDrain.nodeSelector` scopes it to part of the cluster; see [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
+Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. Policies do not change how `DrainOverrides.Skip` works. Custom drain configuration cannot be combined with pod drain policies unless `customDrain.nodeSelector` scopes it to part of the cluster; see [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
 
 Pod labels are read from the informer cache on each reconciliation and before eviction or timeout deletion. Changing a relevant label changes the policy on a subsequent observation. API deletion preconditions prevent a stale observation from deleting a relabelled or replaced pod. Configuration changes require restarting node-drainer. Only label keys referenced by policies are retained in its pod cache. The cache keeps the kind and controller flag of each owner reference.
 
-`DeleteAfterTimeout` continues to use `deleteAfterTimeoutMinutes` measured from the health event's creation, including after a restart. Policies do not introduce a new timeout. Policies never choose a mode from the workload kind by default; operators list the owner kinds in `ownerKinds`, or workload owners opt in through labels.
+`DeleteAfterTimeout` uses `deleteAfterTimeoutMinutes` measured from the health event's creation, including after a restart. Policies do not introduce a new timeout. Policies never choose a mode from the workload kind by default; operators list the owner kinds in `ownerKinds`, or workload owners opt in through labels.
 
 ## Scoping custom drain to part of the cluster
 
@@ -257,7 +257,7 @@ node-drainer:
       mode: "AllowCompletion"
 ```
 
-An empty or omitted `nodeSelector` keeps the original behavior: every node goes through custom
+With an empty or omitted `nodeSelector`, every node goes through custom
 drain, and configuring `userNamespaces` or `podDrainPolicies` alongside it is rejected at startup.
 
 A `nodeSelector` with neither `userNamespaces` nor `podDrainPolicies` is rejected at startup as
@@ -275,16 +275,13 @@ custom drain CR.
 Every drain action then follows the stored record. If two node-drainer passes choose at the same
 time, only the first record is kept, and the other pass follows it. A label change during the drain
 does not change the method. node-drainer chooses the method of a new event from the labels at the
-time that event starts. A drain that is already in progress when node-drainer is upgraded has no
-record. The first pass after the upgrade chooses the method again and records it.
+time that event starts.
 
 If the method is `Custom` and the CR of another event has already drained the node, node-drainer
 marks the event drained and records only the scope. It records no method, because this event did not
 drain the node. An event that node-drainer marks `AlreadyDrained` because an earlier drain covered it
 records that scope in the same update as the status, when the event has no decision yet. A full drain
-records a decision with no scope and no method. An event that already has a decision keeps it. If
-the CR of the event itself completed before a method was recorded, as for a drain that started
-before node-drainer recorded decisions, node-drainer records `Custom`, then marks the event drained.
+records a decision with no scope and no method. An event that already has a decision keeps it.
 
 A node the cache cannot resolve is retried rather than assigned a path. Only the label keys the
 selector references are retained in the node cache.

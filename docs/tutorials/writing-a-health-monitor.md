@@ -19,8 +19,8 @@ By the end you will have:
 
 - **Tools:** `docker` and `kubectl`.
 - **A cluster with NVSentinel running.** Verification needs NVSentinel already running — at minimum
-  `platform-connectors` (it sets the node condition this tutorial verifies). See
-  [`DEVELOPMENT.md`](../../DEVELOPMENT.md) if you need to bring a cluster up locally, and confirm the
+  `platform-connectors` (it sets the node condition this tutorial verifies). See `DEVELOPMENT.md`
+  in the NVSentinel repository root if you need to bring a cluster up locally, and confirm the
   core pods are green with `kubectl get pods -n nvsentinel` *before* verifying — otherwise a failed
   verification just means an unhealthy cluster, not a broken monitor.
 
@@ -57,7 +57,8 @@ Key consequences of this design:
 
 ## 2. The contract (the only API you must speak)
 
-The contract lives in [`data-models/protobufs/health_event.proto`](../../data-models/protobufs/health_event.proto).
+The contract lives in `data-models/protobufs/health_event.proto`. The
+[HealthEvent Data Model Reference](../health-event-data-model.md) describes each field.
 Go types are generated into the package `github.com/nvidia/nvsentinel/data-models/pkg/protos`.
 
 There is exactly **one RPC**:
@@ -105,8 +106,8 @@ enum ProcessingStrategy {
 }
 ```
 
-`RecommendedAction` values (from
-[`data-models/protobufs/health_event.proto`](../../data-models/protobufs/health_event.proto)):
+`RecommendedAction` values (from `data-models/protobufs/health_event.proto`; see also
+[RecommendedAction Enum](../health-event-data-model.md#recommendedaction-enum)):
 
 | Value | Meaning |
 |-------|---------|
@@ -469,7 +470,7 @@ Deploy the image as a DaemonSet, then trigger a fault and watch it flow through 
 (Needs the [Prerequisites](#prerequisites).)
 
 **Apply the DaemonSet.** We start `CHECK_TARGET` at a guaranteed-unreachable, reserved
-[TEST-NET](https://www.rfc-editor.org/rfc/rfc5737) address so the monitor reports a fault right
+TEST-NET address (RFC 5737) so the monitor reports a fault right
 away — then we'll point it at a reachable endpoint to clear it. It mounts the platform-connector
 socket (`hostPath` `/var/run/nvsentinel` → `/var/run`) and sets `NODE_NAME` via the downward API:
 

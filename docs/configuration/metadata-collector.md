@@ -84,7 +84,7 @@ Switching modes in order:
 2. Switch the GPU Operator to `GPUCluster` mode.
 3. `helm upgrade` with `global.gpuDraEnabled: true`.
 
-Switching back needs only steps 2 and 3 with `false`; the label stays. With the default `false` the chart renders exactly as before.
+Switching back needs only steps 2 and 3 with `false`; the label stays.
 
 ## GPU Operator NRI plugin mode
 
@@ -111,7 +111,7 @@ toolkit:
 
 If the namespace is missing, the toolkit skips the injection and logs only at info level on its own pod, so metadata-collector crash-loops with `NVML: ERROR_LIBRARY_NOT_FOUND` and shows no other error. Check the toolkit log for `is not in one of the allowed namespaces`.
 
-`nriPlugin.enabled` cannot be combined with `global.gpuDraEnabled`: GPUCluster (DRA) mode has no Container Toolkit and so no NRI plugin. The chart refuses to render if both are set. With the default `false` the chart renders exactly as before.
+`nriPlugin.enabled` cannot be combined with `global.gpuDraEnabled`: GPUCluster (DRA) mode has no Container Toolkit and so no NRI plugin. The chart refuses to render if both are set.
 
 ## Host-path driver access (host-installed driver)
 
@@ -136,7 +136,7 @@ metadata-collector:
         type: Directory
 ```
 
-`additionalHostVolumes`, `additionalVolumeMounts`, and `extraEnv` default to empty lists. Existing RuntimeClass-based installs are unchanged.
+`additionalHostVolumes`, `additionalVolumeMounts`, and `extraEnv` default to empty lists.
 
 ## GPU Operator driver upgrades and MIG changes
 
@@ -258,7 +258,7 @@ metadata-collector \
 
 An absent `KUBELET_HOST` defaults to `localhost`. An explicit kubelet kubeconfig overrides that variable. The collector does not reuse API server credentials for the kubelet. It does not load `KUBECONFIG` or a home-directory kubeconfig implicitly.
 
-Explicit configurations must use HTTPS, verify server certificates, and provide credentials. Set the kubelet server to an address in its serving certificate, such as `https://gpu-node.example:10250`. Provide the correct CA and, if needed, `tls-server-name`. The existing in-cluster kubelet TLS behavior is unchanged.
+Explicit configurations must use HTTPS, verify server certificates, and provide credentials. Set the kubelet server to an address in its serving certificate, such as `https://gpu-node.example:10250`. Provide the correct CA and, if needed, `tls-server-name`.
 
 ### Credentials and permissions
 
@@ -278,8 +278,8 @@ Without an explicit kubelet kubeconfig, the transport rereads the projected Serv
 
 ### Startup and failure handling
 
-Hardware inventory remains enabled. Pod-to-GPU mapping remains enabled unless `--pod-mapper-enabled=false` turns it off, see [Disabling the Pod Mapper](#disabling-the-pod-mapper). PodResources socket handling is unchanged. When the mapper is enabled, the kubelet socket must exist and be accessible when the mapper starts.
+Hardware inventory remains enabled. Pod-to-GPU mapping remains enabled unless `--pod-mapper-enabled=false` turns it off, see [Disabling the Pod Mapper](#disabling-the-pod-mapper). When the mapper is enabled, the kubelet socket must exist and be accessible when the mapper starts.
 
-The existing 30-second poll period and `--pod-mapper-max-consecutive-failures` limit remain unchanged. The default limit is 10 failed polls. Persistent authentication, authorization, or socket failures remain errors; the collector does not report them as successful mapping.
+The 30-second poll period and the `--pod-mapper-max-consecutive-failures` limit also apply. The default limit is 10 failed polls. Persistent authentication, authorization, or socket failures remain errors; the collector does not report them as successful mapping.
 
 A missing kubeconfig or credential file is a configuration error. HTTP 401 indicates rejected credentials. HTTP 403 indicates denied permission. TLS errors require correct CA trust and server identity; do not disable verification to work around them.

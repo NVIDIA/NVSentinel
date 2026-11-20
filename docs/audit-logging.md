@@ -53,7 +53,7 @@ When Helm enables audit logging, the chart also mounts a **hostPath** volume at 
 
 - **Default directory**: `/var/log/nvsentinel` (override with `AUDIT_LOG_BASE_PATH` if you extend the chart to set it).
 - **Default file name**: `{POD_NAME}-audit.log` (if `{POD_NAME}` is unset, the component name is used).
-- **Rotation**: [lumberjack](https://github.com/natefinch/lumberjack)-style rotation: max file size, retained backups, max age, optional gzip of rotated files — controlled by Helm values mapped to `AUDIT_LOG_*` environment variables (see [Configuration](#configuration)).
+- **Rotation**: lumberjack-style rotation: max file size, retained backups, max age, optional gzip of rotated files — controlled by Helm values mapped to `AUDIT_LOG_*` environment variables (see [Configuration](#configuration)).
 
 Example line (pretty-printed; on disk it is a single line per request):
 

@@ -24,7 +24,7 @@ NVSentinel uses a **publish-subscribe** pattern through MongoDB change streams:
 
 ### Preflight (optional admission checks)
 
-**Preflight** does not publish events through MongoDB or platform connectors. A **mutating admission webhook** injects init containers into GPU pods in labeled namespaces. Each check sends its result as a health event to the platform connector. By default it uses the node-local Unix domain socket (`PLATFORM_CONNECTOR_SOCKET`). When `preflight.publishTo` is `deployment`, it sends the event directly to the deployment platform connector. The event then follows the normal ingestion path. This is separate from the change-stream pipeline above because the checks publish only at pod start. Multi-node checks use **gang discovery** and ConfigMap coordination ([ADR-026](./designs/026-preflight-checks.md), [configuration](./configuration/preflight.md)).
+**Preflight** does not publish events through MongoDB or platform connectors. A **mutating admission webhook** injects init containers into GPU pods in labeled namespaces. Each check sends its result as a health event to the platform connector. By default it uses the node-local Unix domain socket (`PLATFORM_CONNECTOR_SOCKET`). When `preflight.publishTo` is `deployment`, it sends the event directly to the deployment platform connector. The event then follows the normal ingestion path. This is separate from the change-stream pipeline above because the checks publish only at pod start. Multi-node checks use **gang discovery** and ConfigMap coordination ([configuration](./configuration/preflight.md)).
 
 ```mermaid
 graph TB
@@ -246,7 +246,7 @@ Sends via gRPC
 
 **What it does:**
 1. Validates the event (schema, required fields)
-2. Inserts event into MongoDB `health_events` collection
+2. Inserts event into MongoDB `HealthEvents` collection
 3. Updates Kubernetes node condition (if applicable)
 4. Updates Kubernetes node events (if applicable)
 
@@ -662,9 +662,10 @@ spec:
 ### MongoDB Connections
 - **Write Path**: Platform Connectors → MongoDB (insert)
 - **Read Path**: All core modules ← MongoDB (change streams)
-- **Connection String**: `mongodb://nvsentinel-mongodb:27017/nvsentinel`
-- **Collection**: `health_events`
-- **Indexes**: `nodeName`, `agent`, `created_at`, `status`
+- **Connection String**: `mongodb://mongodb-headless.{namespace}.svc.{clusterDomain}:27017/?replicaSet=rs0&tls=true` for the default in-cluster MongoDB (the Percona backend uses the host `mongodb-rs0`)
+- **Database**: `HealthEventsDatabase`
+- **Collection**: `HealthEvents`
+- **Indexes**: a TTL index on `createdAt`, and compound indexes on `healthevent` fields such as `nodename`, `agent` and `checkname`
 
 ### Kubernetes API Connections
 - **Authentication**: ServiceAccount tokens

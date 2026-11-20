@@ -21,7 +21,7 @@ By the end you will have:
   - At least one namespace is labeled `nvsentinel.nvidia.com/preflight=enabled`.
   - You can schedule a GPU pod (device plugin or DRA).
 
-See [Preflight overview](../preflight.md), [ADR-026](../designs/026-preflight-checks.md), and [Preflight configuration](../configuration/preflight.md) for how preflight works. [DEVELOPMENT.md](../../DEVELOPMENT.md) covers local dev cluster setup.
+See [Preflight overview](../preflight.md) and [Preflight configuration](../configuration/preflight.md) for how preflight works. `DEVELOPMENT.md` in the NVSentinel repository root covers local dev cluster setup.
 
 ---
 
@@ -306,7 +306,7 @@ helm upgrade nvsentinel ./distros/kubernetes/nvsentinel \
 kubectl rollout status deploy/preflight-injector -n nvsentinel
 ```
 
-Because `defaultEnabled: false`, pods must select this check via annotation (see [ADR-034](../designs/034-preflight-check-selection.md)):
+Because `defaultEnabled: false`, pods must select this check via annotation:
 
 ```yaml
 nvsentinel.nvidia.com/preflight-checks: "preflight-demo-gpu-visible"
@@ -371,7 +371,7 @@ kubectl delete pod preflight-demo-test -n training
 
 ### E2E (in-repo checks only)
 
-If you contributed the check under `preflight-checks/` in the NVSentinel repo (build context and Makefile differ — see [DEVELOPMENT.md](../../DEVELOPMENT.md#creating-a-new-preflight-check)):
+If you contributed the check under `preflight-checks/` in the NVSentinel repo (build context and Makefile differ — see the "Creating a New Preflight Check" section of `DEVELOPMENT.md` in the repository root):
 
 ```bash
 make -C preflight-checks/{your-check} lint-test

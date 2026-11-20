@@ -6,7 +6,7 @@ NVSentinel can use PostgreSQL instead of MongoDB as the health-events datastore.
 
 For architecture, schema, TLS modes, and MongoDB migration, see [PostgreSQL Provider](../postgresql-provider.md).
 
-To use a cloud-managed PostgreSQL service (RDS, Azure Database for PostgreSQL, Cloud SQL), see [External Datastore](../external-datastore.md).
+To use an external or cloud-managed PostgreSQL server, set `postgresql.enabled: false` and set `global.datastore.connection` to the address of that server.
 
 ## Enable in-cluster PostgreSQL
 
@@ -49,24 +49,9 @@ helm upgrade --install nvsentinel {chart-path} \
 
 Server TLS and `pg_hba` are under `postgresql.primary.*` (see the example values file). The modules create the schema when they start, so the example sets no init script.
 
-Older versions of the example file created `resume_tokens` from an init script, with a `last_event_id` column where the modules expect `resume_token`. On such an install the modules log `Failed to save resume position` and receive the whole changelog again after each restart. To check, run `\d resume_tokens` in the NVSentinel database: the old layout lists `last_event_id`. To repair it, replace the table in one transaction:
-
-```sql
-BEGIN;
-DROP TABLE resume_tokens;
-CREATE TABLE resume_tokens (
-    client_name VARCHAR(255) PRIMARY KEY,
-    resume_token JSONB NOT NULL,
-    last_updated TIMESTAMPTZ DEFAULT NOW()
-);
-COMMIT;
-```
-
-The old table holds no saved positions. Running modules keep their place in the changelog and save it to the new table after the next event they process, so no restart is needed.
-
 ### The `postgresql` subchart is upstream
 
-Everything under `postgresql.` other than `postgresql.enabled` belongs to the vendored [Bitnami PostgreSQL chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql) (chart 15.5.38, PostgreSQL 16.4.0), not to NVSentinel. Its full value reference is the upstream chart's own documentation and `distros/kubernetes/nvsentinel/charts/postgresql/values.yaml`; this page does not repeat it.
+Everything under `postgresql.` other than `postgresql.enabled` belongs to the vendored Bitnami PostgreSQL chart (chart 15.5.38, PostgreSQL 16.4.0), not to NVSentinel. Its full value reference is the upstream chart's own documentation and `distros/kubernetes/nvsentinel/charts/postgresql/values.yaml`; this page does not repeat it.
 
 The keys NVSentinel's own example sets are these:
 

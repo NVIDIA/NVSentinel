@@ -279,7 +279,7 @@ If your publish latency is lower (e.g., 100ms for a co-located endpoint), each w
 
 ## Event Filter
 
-Selects which events reach the sink. An empty expression exports everything, which is the default and matches previous behaviour.
+Selects which events reach the sink. An empty expression exports everything. This is the default.
 
 ```yaml
 event-exporter:
@@ -297,11 +297,11 @@ CEL over the health event. Must evaluate to a boolean; an event whose expression
 
 Use it when you want to drop events before they reach the sink. This is common when the sink sends out notifications rather than archiving everything, since most events recommend no action and are not worth notifying on.
 
-Exporting everything to a data lake and filtering at the destination remains the default.
+Exporting everything to a data lake and filtering at the destination is the default.
 
 ### Available fields
 
-The expression is evaluated against the vocabulary in `commons/pkg/celevent`, shared with the platform connector's [override transformer](platform-connectors.md#override-transformer-configuration), so an expression learned for one works in the other:
+The expression uses the same vocabulary as the platform connector's [override transformer](platform-connectors.md#override-transformer-configuration), so an expression learned for one works in the other:
 
 | Field | Type |
 | --- | --- |

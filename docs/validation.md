@@ -2,7 +2,7 @@
 
 ## Overview
 
-If a cluster has deployed GPU Operator and NVSentinel, there is no mechanism to ensure that new GPU nodes or existing nodes which underwent remediation are validated prior to being marked as schedulable. New nodes are able to accept GPU workloads after the nvidia-device-plugin advertises GPU capacity on a given node. Additionally, existing nodes which were remediated by NVSentinel are able to accept GPU workloads after the fault-quarantine module unquarantines them. In either case, there is no ability for an operator to declare that a set of GPU performance tests must succeed prior to a node being returned to service.
+Validation runs a set of GPU tests on a node before the node returns to service. It covers new GPU nodes and nodes that NVSentinel remediated. Without validation, a new node accepts GPU workloads when the nvidia-device-plugin advertises GPU capacity on the node. A remediated node accepts GPU workloads when the fault-quarantine module unquarantines it. Validation lets an operator declare a set of GPU tests that must succeed before a node returns to service.
 
 Note that NVSentinel remediation actions do not include any verification that the remediation action successfully resolved the underlying GPU fault (outside the same fault re-occurring and being re-emitted by the corresponding health monitor). Similarly, new nodes joining a cluster could represent either new hardware being deployed or existing hardware being re-provisioned. In either case, this hardware should be validated, especially if the underlying hardware previously belonged to a node that was terminated and returned for repair to the given provider.
 

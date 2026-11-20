@@ -167,9 +167,9 @@ The hostengine deletes the field groups of a client only when it sees the client
 - Node condition `GpuDcgmConnectivityFailure` stays `True`
 - Step 4 passes: `dcgmi` reaches the hostengine
 - GPU monitor logs show one of these errors on each retry:
-  - `Error getting DCGM handle: Duplicate key passed to function`. A stale field group still holds the name that the monitor uses. Older monitor versions do not delete it.
+  - `Error getting DCGM handle: Duplicate key passed to function`. A stale field group still holds the name that the monitor uses.
   - `Error getting DCGM handle: Max limit reached for the object`. The hostengine has no free slots. It allows 64 field groups and 64 entity groups in total, for all clients.
-- Metric `dcgm_api_failures_total{error_name="dcgm_initialize_monitoring"}` increases. This metric counts every setup failure after the monitor connects, so other causes are possible. Use the log errors above to confirm the cause. Older monitor versions do not have this metric value. A failed connection increments `error_name="ErrorInitDCGMHandle"` instead.
+- Metric `dcgm_api_failures_total{error_name="dcgm_initialize_monitoring"}` increases. This metric counts every setup failure after the monitor connects, so other causes are possible. Use the log errors above to confirm the cause. A failed connection increments `error_name="ErrorInitDCGMHandle"` instead.
 
 List the field groups and the entity groups on the hostengine. Run the commands in the GPU monitor pod. `dcgmi` accepts only one address. If the `--dcgm-addr` value from step 2 has one address, use it for `{DCGM_ADDR}`. If it has more than one, use the address from the last `Successfully created DCGM handle to` log line:
 
@@ -179,9 +179,9 @@ kubectl exec -n nvsentinel {GPU_HEALTH_MONITOR_POD} -- dcgmi fieldgroup -l --hos
 kubectl exec -n nvsentinel {GPU_HEALTH_MONITOR_POD} -- dcgmi group -l --host {DCGM_ADDR}
 ```
 
-Each output shows the total, for example `8 field groups found.` The monitor creates one entity group named `dcgm_health` and one field group named `nvsentinel_field_monitors`. Monitor versions v1.10.0 to v1.20.0 name the field group `gpu_temp_limit`. More than one group with the same monitor name confirms this failure. A total close to 64 in either list only indicates this failure, because the active groups of other clients also count. Before you restart the hostengine, read the group names in each list and identify the stale groups. The `Duplicate key passed to function` error needs only one stale group. In this case, one field group with the monitor field-group name confirms this failure, whatever the totals are.
+Each output shows the total, for example `8 field groups found.` The monitor creates one entity group named `dcgm_health` and one field group named `nvsentinel_field_monitors`. More than one group with the same monitor name confirms this failure. A total close to 64 in either list only indicates this failure, because the active groups of other clients also count. Before you restart the hostengine, read the group names in each list and identify the stale groups. The `Duplicate key passed to function` error needs only one stale group. In this case, one field group with the monitor field-group name confirms this failure, whatever the totals are.
 
-Newer monitor versions delete stale groups by name. Each time the monitor connects, it first deletes every entity group named `dcgm_health` and every field group named `nvsentinel_field_monitors`. Then it creates new groups with these names. It also deletes every field group named `gpu_temp_limit`, which older versions leave after an unclean stop. The monitor selects these groups by name, not by owner. If another client uses one of these names, the monitor also deletes the group of that client. Groups with other names stay. Metric `dcgm_api_failures_total{error_name="stale_group_cleanup"}` increases when the monitor cannot list or delete a group. The monitor tries again at the next connection.
+The monitor deletes stale groups by name. Each time the monitor connects, it first deletes every entity group named `dcgm_health` and every field group named `nvsentinel_field_monitors`. Then it creates new groups with these names. It also deletes every field group named `gpu_temp_limit`. The monitor selects these groups by name, not by owner. If another client uses one of these names, the monitor also deletes the group of that client. Groups with other names stay. Metric `dcgm_api_failures_total{error_name="stale_group_cleanup"}` increases when the monitor cannot list or delete a group. The monitor tries again at the next connection.
 
 **Resolution:** restart the hostengine. The restart deletes all stale groups.
 

@@ -128,8 +128,6 @@ nvsentinel.nvidia.com/preflight-checks: ""
 
 When the annotation is absent, `defaultEnabled` on each init container controls whether it runs. For gang-aware checks (`nccl-allreduce`), all pods in the gang must have the same annotation value — mismatches are detected and fail fast before torchrun launches.
 
-See [ADR-034](../designs/034-preflight-check-selection.md) for design details.
-
 ## Init containers (check configuration)
 
 The `initContainers` list in the preflight chart defines which checks the webhook injects. Each entry is a standard `corev1.Container` plus preflight-specific controls such as `defaultEnabled`, `inheritUserEnv`, and `inheritUserVolumeMounts` — you control images, env vars, resource limits, security contexts, and volume mounts.
@@ -411,7 +409,7 @@ kubectl label namespace {training-namespace} nvsentinel.nvidia.com/preflight=ena
 
 #### Step 3 — Verify image pull secrets
 
-If preflight check images are in a private registry, set `injectedImagePullSecrets` in the preflight Helm values (`[charts/preflight/values.yaml](../../distros/kubernetes/nvsentinel/charts/preflight/values.yaml)`). The webhook injects those secrets into admitted pods as `spec.imagePullSecrets`.
+If preflight check images are in a private registry, set `injectedImagePullSecrets` in the preflight Helm values (`charts/preflight/values.yaml` of the NVSentinel chart). The webhook injects those secrets into admitted pods as `spec.imagePullSecrets`.
 
 Check whether any secrets are configured:
 
@@ -451,7 +449,7 @@ The ConfigMap name starts with `preflight-`, but long gang IDs are sanitized and
 
 ### Grove
 
-[Grove](https://github.com/ai-dynamo/grove) is **not supported** for preflight gang coordination today. Its gang model is **hierarchical** — multiple nested scheduling layers — while preflight's `preflight-nccl-allreduce` coordination assumes a **single flat PodGroup** per gang.
+[Grove](https://github.com/ai-dynamo/grove) is **not supported** for preflight gang coordination. Its gang model is **hierarchical** — multiple nested scheduling layers — while preflight's `preflight-nccl-allreduce` coordination assumes a **single flat PodGroup** per gang.
 
 Grove's hierarchy looks like this:
 
@@ -463,8 +461,6 @@ PodCliqueSet
                     └── podReferences[]
 ```
 
-Tracking issue: [NVIDIA/NVSentinel#1354 — Parallelism-aware preflight checks](https://github.com/NVIDIA/NVSentinel/issues/1354).
-
 ### Per-namespace gang discovery
 
 The Helm `gangDiscovery` value sets only the **cluster-wide default**. To make a specific namespace use a different gang-scheduling system (for example, Volcano for one team while everyone else uses native Kubernetes), create a **`PreflightConfig`** custom resource in that namespace. It is reconciled at runtime — no Helm upgrade and no controller restart.
@@ -474,7 +470,7 @@ A pod is resolved as follows:
 1. If the pod's namespace has a `PreflightConfig` with a `gangDiscovery` block, that discoverer is used.
 2. Otherwise, the cluster-wide `gangDiscovery` Helm value is used as the default.
 
-`PreflightConfig` is namespaced (`preflight.nvsentinel.nvidia.com/v1alpha1`); the object's own namespace is its scope. Its `spec.gangDiscovery` block uses the same schema as the Helm `gangDiscovery` value — an empty block selects native Kubernetes discovery. (`spec` is intentionally a container for per-namespace preflight settings, so future options can be added alongside `gangDiscovery`.)
+`PreflightConfig` is namespaced (`preflight.nvsentinel.nvidia.com/v1alpha1`); the object's own namespace is its scope. Its `spec.gangDiscovery` block uses the same schema as the Helm `gangDiscovery` value — an empty block selects native Kubernetes discovery.
 
 ```yaml
 # team-a uses Volcano; every other namespace uses the cluster-wide default.
@@ -577,7 +573,7 @@ gangCoordination:
   # mirrorResourceClaims: true  # Mirror DRA claims to init containers (default true)
 ```
 
-For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integration](../designs/026-preflight-checks.md) and `mirrorResourceClaims` above. A DRA GPU pod always gets its claims mirrored, whatever `mirrorResourceClaims` says. See [DRA GPU pods](#dra-gpu-pods).
+With `mirrorResourceClaims: true` (the default), the webhook adds each claim in `spec.resourceClaims` of a gang member pod to the injected init containers. A DRA GPU pod always gets its claims mirrored, whatever `mirrorResourceClaims` says. See [DRA GPU pods](#dra-gpu-pods).
 
 ## DRA GPU pods
 
@@ -599,7 +595,7 @@ For a pod with no GPU resource request, the webhook reads each entry in `spec.re
 
 One GPU request is enough. The webhook then injects the checks and copies all of the pod's resource claims into each check, including NIC and IMEX claims. The NCCL checks need the NIC and IMEX devices to test the network. The webhook adds each claim one time only.
 
-A pod that requests a GPU resource from `gpuResourceNames` does not go through this detection. The webhook makes no API calls for it, and its behaviour does not change.
+A pod that requests a GPU resource from `gpuResourceNames` does not go through this detection. The webhook makes no API calls for it.
 
 ### Failures
 
@@ -717,12 +713,9 @@ This is useful when you want namespace-wide opt-in via `namespaceSelector` but o
 
 Full defaults and comments: `distros/kubernetes/nvsentinel/charts/preflight/values.yaml`.
 
-Tilt development often trims init containers to DCGM-only; see `distros/kubernetes/nvsentinel/values-tilt.yaml`.
-
 ## Observability
 
 - Webhook pod: liveness/readiness probes use `/healthz` on the webhook port.
-- Prometheus metric names for check containers and the injector are specified in [ADR-026 § Metrics](../designs/026-preflight-checks.md#metrics); wire scrapers to your init container images and deployment as your environment allows.
 
 ## Debugging preflight failures
 
@@ -790,8 +783,4 @@ kubectl describe node {node-name} | grep -A3 Conditions
 
 ## Related documentation
 
-- [ADR-026: Preflight checks](../designs/026-preflight-checks.md)
-- [ADR-035: Inline DCGM config](../designs/035-preflight-inline-dcgm-config.md) — design rationale for inline env var configuration
-- [gRPC / TLS authentication](../designs/030-grpc-tls-authentication.md) (mentions preflight among webhooks)
-- [Helm chart README](../../distros/kubernetes/README.md)
-- E2E test entry point: `tests/preflight_test.go` (build tag `amd64_group`)
+- Helm chart guide (`distros/kubernetes/README.md` in the NVSentinel repository)

@@ -18,13 +18,12 @@ By the end you will have:
 
 ## Prerequisites
 
-- NVSentinel v1.25.0 or later.
 - NVSentinel with fault-quarantine and node-drainer enabled. These components are disabled by default.
 - Helm 3.14 or later and `kubectl`.
 - Cluster-admin access to upgrade the NVSentinel Helm release and to create a ClusterRole.
 - A test node that NVSentinel can cordon and drain.
 
-See the [NVSentinel Helm chart guide](../../distros/kubernetes/README.md) for the complete NVSentinel prerequisites.
+See the NVSentinel Helm chart guide (`distros/kubernetes/README.md` in the NVSentinel repository) for the complete NVSentinel prerequisites.
 
 ---
 
@@ -46,8 +45,6 @@ The health event names an action, such as a reboot. After node-drainer drains th
 The MaintenanceRequest stays in the cluster until you delete it. While it exists, the node stays cordoned. When you delete it, lifecycle-manager publishes a clearing event, and fault-quarantine uncordons the node.
 
 > **Note:** NVSentinel acts when you create the MaintenanceRequest. It does not wait for `startTime`. The `startTime` field is for information only. NVSentinel shows the value in the `kubectl get` output but does not use it to schedule work.
-
-For the design rationale and limitations, see [ADR-051](../designs/051-maintenance-request.md).
 
 ---
 
@@ -97,7 +94,7 @@ kubectl apply -f "$PULL_DIR/nvsentinel/charts/lifecycle-manager/crds/"
 Apply the values file. The `--reset-then-reuse-values` flag applies the new chart defaults, then keeps your current values.
 
 ```bash
-NVSENTINEL_VERSION="<v1.25.0 or later>"
+NVSENTINEL_VERSION="<the version you are deploying>"
 
 helm upgrade nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
@@ -489,7 +486,7 @@ Help me put a node into maintenance with an NVSentinel MaintenanceRequest in thi
 - Kubernetes context: [context]
 - NVSentinel namespace: [namespace, default nvsentinel]
 - NVSentinel Helm release: [release, default nvsentinel]
-- NVSentinel version: [v1.25.0 or later]
+- NVSentinel version: [version]
 - Target node: [node]
 - ServiceAccount for automation: [namespace/name, or none if I create MaintenanceRequests by hand]
 

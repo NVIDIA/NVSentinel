@@ -1,6 +1,6 @@
 # Recovering an analyzer condition
 
-Annotation recovery is opt-in for configured aggregation rules and currently requires MongoDB. It does not verify hardware health for you. After repairing and checking the affected hardware, an operator or approved automation records that verification on the Kubernetes Node. The analyzer publishes the healthy derived event; platform-connectors and fault-quarantine handle condition updates and uncordoning.
+Annotation recovery is opt-in for configured aggregation rules and requires MongoDB. It does not verify hardware health for you. After repairing and checking the affected hardware, an operator or approved automation records that verification on the Kubernetes Node. The analyzer publishes the healthy derived event; platform-connectors and fault-quarantine handle condition updates and uncordoning.
 
 ## Enable recovery
 
@@ -25,7 +25,7 @@ Keep the rule's existing stages and other settings. Match `entity_types` to the 
 
 If the derived fault should cordon the node, configure a fault-quarantine rule that matches its `health-events-analyzer` agent and rule name (`checkName`). The default quarantine rules do not match analyzer events. Recovery releases quarantine through fault-quarantine's normal healthy-event handling.
 
-Rules without a recovery block do not acquire automatic recovery behavior. There is no healthy-source trigger in this version. In particular, stopping XID error logs is not an explicit healthy transition. The built-in Go XID burst detector is outside these configurable mappings.
+Rules without a recovery block do not acquire automatic recovery behavior. There is no healthy-source trigger. In particular, stopping XID error logs is not an explicit healthy transition. The built-in Go XID burst detector is outside these configurable mappings.
 
 ## Request recovery
 
@@ -75,5 +75,3 @@ kubectl annotate node worker-1 recovery.nvsentinel.nvidia.com/repeated-xid-
 Removing the annotation does not remove the recovery metadata already stored with the healthy event. That metadata prevents pre-verification events from immediately recreating the derived condition and survives analyzer restarts. Keep recovery records at least as long as the rule's queryable history. Kubernetes Events follow normal expiration and should be exported separately if you need a durable operator audit.
 
 Transient failures retry with backoff. A permanent publication rejection stops retries for the current request until its value changes or the analyzer restarts. Correct the underlying problem before submitting another verification. Malformed stored records fail the recovery request without changing the source processor's existing checkpoint policy.
-
-See [ADR-059](designs/059-derived-condition-recovery.md) for the design and failure handling.

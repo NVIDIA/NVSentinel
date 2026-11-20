@@ -44,7 +44,7 @@ Without register-level decoding, all XID 74 events look identical. The Analyzer 
 
 ### MultipleRemediations Rule
 
-The MultipleRemediations rule fires when the same node has been remediated more than once within a 7-day window. This signals that automated repair is not resolving the underlying hardware problem. Unlike a standard quarantine condition, the Analyzer does not emit a corresponding healthy event for this rule — the node condition must be cleared manually by a cluster operator after investigation.
+The MultipleRemediations rule fires when the same node has been remediated five or more times within a 7-day window. This signals that automated repair is not resolving the underlying hardware problem. Unlike a standard quarantine condition, the Analyzer does not emit a corresponding healthy event for this rule — the node condition must be cleared manually by a cluster operator after investigation.
 
 ### NIC Rules
 

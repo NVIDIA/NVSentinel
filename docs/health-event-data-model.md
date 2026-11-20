@@ -8,13 +8,6 @@ health monitor is represented as a `HealthEvent`, and every downstream module
 > **Audience**: Developers building custom health monitors, writing CEL quarantine
 > rules, integrating external systems via the event exporter, or debugging the
 > fault-remediation pipeline.
->
-> **Document type**: Reference. Expected lifetime: same as the proto schema it
-> describes. This document must be updated in the same PR that modifies
-> `data-models/protobufs/health_event.proto` or
-> `data-models/protobufs/external_remediation.proto`. If you change a field,
-> enum value, or status transition in those files, update the corresponding
-> section here before merging.
 
 ## Table of Contents
 
@@ -153,7 +146,7 @@ fault-remediation) may modify cluster state in response to this event.
 **Where strategy is enforced**:
 
 - **Platform connector** normalizes `UNSPECIFIED` → `EXECUTE_REMEDIATION` at ingestion.
-- **Deduplication transformer** downgrades repeated unhealthy events to `STORE_AND_ANALYSE` within a suppression window (see [ADR-039](./designs/039-health-event-deduplication.md)).
+- **Deduplication transformer** downgrades repeated unhealthy events to `STORE_AND_ANALYSE` within a suppression window.
 - **Fault-quarantine** skips events where `processingStrategy != EXECUTE_REMEDIATION`.
 - **Health-events-analyzer** queries for `STORE_AND_ANALYSE` events specifically.
 
@@ -260,8 +253,8 @@ Each field is written by a specific module at a specific pipeline stage:
 | `faultRemediated` | **fault-remediation** | `BoolValue` — `nil` (absent) = not yet processed; `true` = repair CR created and confirmed; `false` = repair failed or skipped |
 | `lastRemediationTimestamp` | **fault-remediation** | When the remediation CR was last created |
 | `spanIds` | **all modules** | Distributed tracing span IDs per service (e.g. `{"platform-connector": "abc123", "fault-quarantine": "def456"}`) |
-| `drainDecision` | **node-drainer** | The drain method chosen for the event. node-drainer writes `ruleSet`, `method` and `scope` once, only when no decision is stored, and before it reads or evicts pods or creates a custom drain CR. Every drain action follows the stored record. See [ADR-064](designs/064-node-and-device-selection.md) |
-| `remediationDecision` | **fault-remediation** | The remediation action chosen for the event, written before the log collector and the maintenance CR. See [ADR-064](designs/064-node-and-device-selection.md) |
+| `drainDecision` | **node-drainer** | The drain method chosen for the event. node-drainer writes `ruleSet`, `method` and `scope` once, only when no decision is stored, and before it reads or evicts pods or creates a custom drain CR. Every drain action follows the stored record. |
+| `remediationDecision` | **fault-remediation** | The remediation action chosen for the event, written before the log collector and the maintenance CR. |
 
 ### Drain and Remediation Decisions
 
@@ -360,8 +353,6 @@ carries status conditions for coordination with external repair systems:
 | `NVSentinelOwnershipReleased` | ExtRR reconciler | NVSentinel has released the node (taint applied, ready for external work) |
 | `ExternalRemediationComplete` | External system | External repair is done; NVSentinel can re-admit the node |
 
-See [ADR-040](./designs/040-external-remediation-request.md) for the full design.
-
 ---
 
 ## Tracing Correlation
@@ -452,6 +443,3 @@ See [Distributed Tracing](./tracing.md) for setup and querying.
 - [Node Drainer](./node-drainer.md) — eviction strategies
 - [Fault Remediation](./fault-remediation.md) — CRD creation and action routing
 - [Event Exporter](./event-exporter.md) — CloudEvents transformation
-- [ADR-021: Health Event Property Overrides](./designs/021-health-event-property-overrides.md)
-- [ADR-025: Processing Strategy](./designs/025-processing-strategy-for-health-checks.md)
-- [ADR-039: Health Event Deduplication](./designs/039-health-event-deduplication.md)

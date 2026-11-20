@@ -103,8 +103,8 @@ Replace `ExternalHostFault`, `HostFaultDetected`, the policy `name`, `message`,
 
 Use `componentClass: GPU` when the condition represents a problem specific to a
 GPU workload rather than the host itself (inference-integrity errors, model
-divergence, and similar). NVSentinel will associate the event with the GPU
-rather than the whole node.
+divergence, and similar). The event carries `componentClass: GPU`, but its
+impacted entity is the Node, not a GPU.
 
 > **Limitation:** KOM publishes the Node as the impacted entity in the
 > `HealthEvent` — it does not enumerate individual GPUs on that node. The event
@@ -213,7 +213,7 @@ Apply the updated values:
 >     enabled: false
 >   faultQuarantine:
 >     enabled: false
->   node-drainer:
+>   nodeDrainer:
 >     enabled: false
 > ```
 
@@ -344,7 +344,7 @@ kubectl logs deployment/kubernetes-object-monitor --namespace nvsentinel
 
 CEL expressions are strict about quoting and field paths. Test the predicate
 against a node's JSON with `kubectl get node <node> -o json` and the
-[CEL Playground](https://playcel.undistro.io/) before deploying.
+CEL Playground before deploying.
 
 ### A node is cordoned but the condition was already cleared
 

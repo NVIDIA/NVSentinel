@@ -94,7 +94,7 @@ The monitors follow NVSentinel's **"Report Raw, Correlate Centrally"** pattern: 
 
 ## Supported Hardware
 
-> **Current scope**: Mellanox/NVIDIA InfiniBand and RoCE devices only. The architecture is designed to be extensible for future NIC vendors.
+> **Scope**: Mellanox/NVIDIA InfiniBand and RoCE devices only.
 
 | Vendor | Detection | State Monitoring | Counter Monitoring | Syslog Monitoring |
 |--------|-----------|-----------------|-------------------|-------------------|

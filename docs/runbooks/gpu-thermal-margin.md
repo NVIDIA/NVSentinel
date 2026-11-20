@@ -2,7 +2,7 @@
 
 ## Overview
 
-`GpuThermalMarginWatch` monitors each GPU's live thermal margin (DCGM field 153, `DCGM_FI_DEV_GPU_TEMP_LIMIT`) against the per-SKU hardware-slowdown T.Limit offset published by the metadata-collector (NVML field 194, `FI_DEV_TEMPERATURE_SLOWDOWN_TLIMIT`). When a GPU's margin stays below its slowdown threshold for `gpuTempLimitMinConsecutivePolls` consecutive polls (3 by default), the GPU has been at or past the temperature at which the hardware engages thermal slowdown, and the fatal event for GpuThermalMarginWatch occurs. The feature is described in [ADR-042: GPU Thermal Margin](../designs/042-gpu-temp-limit-field-monitoring.md).
+`GpuThermalMarginWatch` monitors each GPU's live thermal margin (DCGM field 153, `DCGM_FI_DEV_GPU_TEMP_LIMIT`) against the per-SKU hardware-slowdown T.Limit offset published by the metadata-collector (NVML field 194, `FI_DEV_TEMPERATURE_SLOWDOWN_TLIMIT`). When a GPU's margin stays below its slowdown threshold for `gpuTempLimitMinConsecutivePolls` consecutive polls (3 by default), the GPU has been at or past the temperature at which the hardware engages thermal slowdown, and the fatal event for GpuThermalMarginWatch occurs.
 
 **Key points:**
 
@@ -68,8 +68,8 @@ kubectl exec -n nvsentinel {GPU_MONITOR_POD} -- curl -s localhost:2112/metrics |
 
 - `gpu_temp_limit_margin_blank` rising means field 153 is returning blank or unavailable values (DCGM not reporting margin); the GPU is skipped. Investigate DCGM using the [GPU Monitor DCGM Connectivity Failures](./gpu-monitor-dcgm-failures.md) runbook.
 - `gpu_temp_limit_slowdown_threshold_missing` rising means the metadata threshold is missing (step 3).
-- `dcgm_api_failures{dcgm_field="dcgm_field_153_get_latest"}` rising means DCGM read errors.
-- `nvsentinel_feature_flag_enabled{flag="gpu_temp_limit_store_only"}` set to `1` means the check is in observe-only mode (see "Observe-only / dry-run mode" below).
+- `dcgm_api_failures{error_name="dcgm_field_153_get_since"}` rising means DCGM read errors.
+- `nvsentinel_feature_flag_enabled{flag="store_only_mode"}` set to `1` means the whole monitor is in observe-only mode, this check included. No metric shows [`gpuTempLimitStoreOnly`](../configuration/gpu-health-monitor.md#gputemplimitstoreonly), which puts only this check in observe-only mode and is `true` by default.
 
 ### 5. Remediate a Real Thermal Fault
 

@@ -129,7 +129,7 @@ The analyzer keeps the events from one node in order. Thus, more workers cannot 
 
 The rule results do not change. The analyzer publishes the matched events in rule order, as it does when it runs the queries one at a time.
 
-The analyzer runs the same queries, and each query examines the same documents. But in measurements on MongoDB, the datastore used more CPU for each event when the queries ran at the same time. 
+The analyzer runs the same queries, and each query examines the same documents. But on MongoDB, the datastore uses more CPU for each event when the queries run at the same time. 
 
 Use these guidelines:
 
