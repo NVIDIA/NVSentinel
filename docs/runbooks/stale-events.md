@@ -21,7 +21,7 @@ The module recovers from this error automatically. It deletes its stale resume t
 
 The modules must also start fresh, without processing the accumulated events, in these cases:
 
-1. **Disabled modules** - Fault handling modules were disabled for a long time while health events continued to accumulate. For this case, do step 2 before you enable the modules again.
+1. **Disabled modules** - Fault handling modules were disabled for a long time while health events continued to accumulate. For this case, do step 2 before you enable the modules again. To enable each module with one replica, set `replicaCount: 1` in the values of its subchart. Then continue at step 4.
 2. **Circuit breaker tripped** - The circuit breaker stayed tripped for an extended period, and many unprocessed events accumulated. A restart does not reset the breaker, and fault-quarantine processes no health events while the breaker is tripped. For this case, follow the [circuit breaker runbook](./circuit-breaker.md) instead of the procedure below. It tells you how to investigate the cause before you reset the breaker. To skip the accumulated health events, reset the breaker with the `CREATE` cursor.
 
 ## Procedure
@@ -38,7 +38,7 @@ Before you change the resume-control ConfigMap, stop the fault handling modules.
 
 ### 2. Set the Resume-Control Keys to CREATE
 
-In the resume-control ConfigMap, set the key of each module to `CREATE`. Set a key only for a module that your installation deploys, or that you enable again after this step. A module that does not run cannot set its key back to `RESUME`. This command sets the keys of all three modules:
+In the resume-control ConfigMap, set the key of each module to `CREATE`. Set a key only for a module that your installation deploys, or that you enable again after this step. A module that does not run cannot set its key back to `RESUME`. This command sets the keys of all three modules. If a module does not run after this procedure, remove its key from the command:
 
 ```bash
 kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
@@ -48,9 +48,11 @@ kubectl -n nvsentinel patch configmap resume-control \
   -p '{"data":{"fault-quarantine":"CREATE","fault-remediation":"CREATE","node-drainer":"CREATE"}}'
 ```
 
-### 3. Restore Fault Handling Deployments
+### 3. Start One Replica of Each Deployment
 
-Scale each deployment back to the number of replicas that you recorded before the scale-down. At startup, each module reads its `CREATE` key, deletes its resume token and sets the key back to `RESUME`.
+> **Important**: Start only one replica of each deployment. If two replicas start at the same time, both can run the reset. The second reset can delete the resume token that the first replica saved.
+
+Scale each deployment to one replica. At startup, each module reads its `CREATE` key, deletes its resume token and sets the key back to `RESUME`.
 
 Wait for the rollout to complete:
 
@@ -60,15 +62,26 @@ kubectl rollout status deployment/fault-remediation -n nvsentinel
 kubectl rollout status deployment/node-drainer -n nvsentinel
 ```
 
-If you stopped the reconciliation of a GitOps controller, start it again after the rollout.
+### 4. Check the Resume-Control Keys
 
-### 4. Verify Recovery
-
-Check that each module set its key back to `RESUME`:
+For each module whose key you set in step 2, wait until the module sets its key back to `RESUME`:
 
 ```bash
-kubectl -n nvsentinel get configmap resume-control -o yaml
+kubectl -n nvsentinel wait configmap/resume-control \
+  --for=jsonpath='{.data.fault-quarantine}'=RESUME --timeout=180s
+kubectl -n nvsentinel wait configmap/resume-control \
+  --for=jsonpath='{.data.fault-remediation}'=RESUME --timeout=180s
+kubectl -n nvsentinel wait configmap/resume-control \
+  --for=jsonpath='{.data.node-drainer}'=RESUME --timeout=180s
 ```
+
+If a command times out, examine the logs of that module before you continue.
+
+### 5. Restore the Replicas
+
+If a deployment needs more than one replica, scale it to that number. The new replicas read `RESUME`, so they do not run the reset. If you set `replicaCount: 1` for this procedure, also set `replicaCount` to the number of replicas that the deployment needs. If you stopped the reconciliation of a GitOps controller, start it again.
+
+### 6. Verify Recovery
 
 Check that the modules process events without errors:
 

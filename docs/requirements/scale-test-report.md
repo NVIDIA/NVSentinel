@@ -76,7 +76,7 @@ At 100,000 nodes with a pod on every node, the full control plane needs about 18
 
 The modules that use the most memory are, in order:
 
-- platform-connector: 47.7 GB across three replicas. Each replica uses 15.9 GB when MongoDB accepts health events more slowly than they arrive and every publisher connection holds a waiting request. Each replica uses 7.6 GB when MongoDB accepts health events as fast as they arrive.
+- platform-connector: 47.7 GB across three replicas. Each replica uses an estimated 15.9 GB when MongoDB accepts health events more slowly than they arrive. The worst-case model in [Ingest rate and sizing](#ingest-rate-and-sizing) gives up to 17.1 GB, which the recommended 16 Gi limit covers. Each replica uses 7.6 GB when MongoDB accepts health events as fast as they arrive.
 - kubernetes-object-monitor: 19.8 GB (15 GB with minimal pods).
 - labeler: 6.6 GB.
 - janitor: 4.9 GB.
@@ -507,7 +507,7 @@ The test measured ten fleet sizes, with three connections per node: one for each
 | 35,000  | 105,000     | 8,346 MB          | 2,784 MB    | 5,846 MB                    | 0.46                | 3 Gi                | 6 Gi              | 200m             | 300m           |
 | 50,000  | 150,000     | 11,863 MB         | 3,954 MB    | 8,303 MB                    | 0.74                | 4 Gi                | 8 Gi              | 250m             | 400m           |
 | 75,000  | 224,985     | 17,797 MB         | 5,945 MB    | 12,485 MB                   | 1.70                | 6 Gi                | 12 Gi             | 600m             | 900m           |
-| 100,000 | 299,985     | 22,698 MB         | 7,566 MB    | 15,889 MB                   | 1.94                | 8 Gi                | 15 Gi             | 650m             | 1000m          |
+| 100,000 | 299,985     | 22,698 MB         | 7,566 MB    | 15,889 MB                   | 1.94                | 8 Gi                | 16 Gi             | 650m             | 1000m          |
 
 
 ![Connector memory against fleet size](images/connector-memory-fleet.png)
@@ -518,7 +518,7 @@ Requests and limits are per replica. The CPU figures are the measured use divide
 
 The working-set columns are from the **quiet** sweep. In this sweep, MongoDB accepted health events as fast as publishers sent them, so almost no request waited. A connection then cost about 79 KiB. MongoDB is behind when it accepts health events more slowly than publishers send them. Each connection then also holds a request that waits for its write. Such a connection costs 165-171 KiB, about 2.1x quiet.
 
-The "MongoDB behind" column is the quiet per-replica figure times 2.1. The memory limit covers that figure, rounded up to the next whole Gi. The 1.5x rule that the rest of this report uses does not apply to platform-connector. Its memory follows the requests in flight, and the quiet sweep has none. The resource requests stay at the measured values. A limit costs nothing until the process uses it.
+The "MongoDB behind" column is the quiet per-replica figure times 2.1. The memory limit covers that figure and the saturated cost from step 2 of [Ingest rate and sizing](#ingest-rate-and-sizing). It is the next whole Gi above both, and at least 2 Gi. The 1.5x rule that the rest of this report uses does not apply to platform-connector. Its memory follows the requests in flight, and the quiet sweep has none. The resource requests stay at the measured values, and a limit costs nothing until the process uses it.
 
 #### Ingest rate and sizing
 
@@ -581,14 +581,14 @@ Size the pool first. Then size the replica count:
 | Step | Quantity                                                                        | Basis                                                                                                                                       |
 | ---- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1    | pool size per replica (`DATASTORE_MAX_CONNECTIONS`) = target throughput x how long a write takes / replicas | the write time that you measure on the cluster that you size, at that throughput and not at rest. The result is the writes in flight, not the publisher connections |
-| 2    | publisher connections per replica `<= M_limit / (a + b)` | 26,000 at a 4Gi limit if the datastore saturates, 56,000 if `W` stays low |
+| 2    | publisher connections per replica `<= (M_limit - M_fixed) / (a + b)` | 25,000 at a 4Gi limit if the datastore saturates, 53,500 in the quiet case |
 | 3    | `R = ceil(publisher connections / publisher connections per replica)` | how many publishers the fleet has, and the limit from step 2 |
 | 4    | size for one replica down: each remaining replica holds `R / (R - 1)` times its connections, 1.5x at three replicas | the PodDisruptionBudget permits one replica down, and the other replicas absorb its connections. One measurement went from 2,265 MB to 2,851 MB per replica |
 
 
 ![Replicas required, by memory limit](images/connector-replicas-needed.png)
 
-This example uses three publishers per node, with MongoDB behind. Step 2 then shows that three replicas at 4Gi support about **26,000 nodes**, or 17,000 with one replica down. A 100,000-node fleet needs about 15 GiB per replica: three replicas at 15Gi, or twelve at 4Gi. With step 4, the fleet needs three replicas at about 22.5 GiB, or thirteen at 4Gi.
+The figure shows the quiet case, at 235 KiB per node. This example is for the saturated case, with three publishers per node and MongoDB behind. Step 2 then shows that three replicas at 4Gi support about **25,000 nodes**, or 16,500 with one replica down. A 100,000-node fleet needs about 16 GiB per replica: three replicas at 16Gi, or twelve at 4Gi. With step 4, the fleet needs three replicas at 24Gi, or thirteen at 4Gi.
 
 Replicas give throughput and memory capacity, so when you scale for one, the other also changes. Nothing in the chart or the metrics shows this. Replicas are also not a free substitute, for the reason in [Scaling out](#scaling-out). CPU is never the limit in either case: 1.94 cores across three replicas at 100,000 nodes, against a limit of 2 cores for each replica.
 

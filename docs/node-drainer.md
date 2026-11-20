@@ -69,6 +69,7 @@ Node Drainer supports three eviction modes for different workload types:
 
 - Does not evict the pods, and waits with no time limit
 - A pod that does not exit by itself, such as a Deployment or StatefulSet pod, stays on the node, and the drain does not complete
+- In a full drain, Node Drainer does not wait for a pod that stays NotReady for longer than `notReadyTimeoutMinutes`. The drain can then complete, and Fault Remediation can create a maintenance CR while this pod stays on the node
 - Best for Jobs and batch workloads that exit by themselves
 
 **Immediate**: Evict pods immediately without waiting

@@ -56,13 +56,16 @@ Positive `qps` values enable client-side throttling. The value `0` uses the clie
 
 ### Change Stream Resume Token
 
+> **Important**: In step 3, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then delete the resume token that the first replica saved.
+
 To make node-drainer skip accumulated health events and start from the current stream head, do these steps:
 
 1. Scale node-drainer to zero.
 2. In the shared resume-control ConfigMap, set the key of node-drainer to `CREATE`.
-3. Restore the replicas of node-drainer.
+3. Scale node-drainer to one replica.
+4. After node-drainer sets the key back to `RESUME`, restore the replicas of node-drainer.
 
-During the next startup, node-drainer does these actions:
+During the startup in step 3, node-drainer does these actions:
 
 - It deletes only its own resume token.
 - It records a cold-start cutoff timestamp.
@@ -71,16 +74,23 @@ During the next startup, node-drainer does these actions:
 
 Later restarts still run cold-start recovery, but only for records newer than the recorded cutoff.
 
+Run these commands one at a time. If a `kubectl wait` command fails, find the cause before you continue.
+
 ```bash
 REPLICAS=$(kubectl -n nvsentinel get deployment node-drainer -o jsonpath='{.spec.replicas}')
 kubectl -n nvsentinel scale deployment/node-drainer --replicas=0
 kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+kubectl -n nvsentinel wait --for=delete pod -l app.kubernetes.io/name=node-drainer --timeout=180s
 kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
   kubectl -n nvsentinel create configmap resume-control
 kubectl -n nvsentinel patch configmap resume-control \
   --type merge \
   -p '{"data":{"node-drainer":"CREATE"}}'
-kubectl -n nvsentinel scale deployment/node-drainer --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel scale deployment/node-drainer --replicas=1
+kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+kubectl -n nvsentinel wait configmap/resume-control \
+  --for=jsonpath='{.data.node-drainer}'=RESUME --timeout=180s && \
+  kubectl -n nvsentinel scale deployment/node-drainer --replicas="${REPLICAS:-1}"
 kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
 ```
 
@@ -200,7 +210,7 @@ node-drainer:
   notReadyTimeoutMinutes: 5
 ```
 
-If a pod is in NotReady state for longer than this timeout, node-drainer removes it from the list of pods to evict. This prevents eviction attempts on pods that are already unhealthy and unlikely to respond to eviction requests.
+In a full drain, node-drainer skips a pod that is in NotReady state for longer than this timeout. It does not evict the pod, and it does not wait for the pod in any eviction mode. Thus, the drain can complete while the pod stays on the node. Node-drainer skips these pods because they are already unhealthy and unlikely to respond to eviction requests.
 
 ### GPU-Only Draining
 
@@ -271,7 +281,7 @@ For built-in workloads, you can also use the labels that controllers add. For ex
 
 Policy order takes precedence over mode. A later `Immediate` match cannot override an early `AllowCompletion` match. Policy mode has no namespace fallback. Write selectors that cover every workload that node-drainer must drain. To use namespace-based draining instead, leave `podDrainPolicies` empty and configure `userNamespaces`.
 
-Policies narrow the eligible workloads. System namespace exclusions, DaemonSet exclusions, GPU-only filtering and the partial GPU drain scope still apply. `DrainOverrides.Force` changes the mode of the selected pods to `Immediate`, but does not widen that scope. Policies do not change how `DrainOverrides.Skip` works. You cannot combine a custom drain configuration with pod drain policies, unless `customDrain.nodeSelector` limits custom drain to part of the cluster. See [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
+Policies narrow the eligible workloads. System namespace exclusions, DaemonSet exclusions, GPU-only filtering and the partial GPU drain scope still apply. [`drainOverrides.force`](../health-event-data-model.md#drainoverrides) changes the mode of the selected pods to `Immediate`, but does not widen that scope. Policies do not change how `drainOverrides.skip` works. You cannot combine a custom drain configuration with pod drain policies, unless `customDrain.nodeSelector` limits custom drain to part of the cluster. See [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
 
 Node-drainer reads pod labels from the informer cache on each reconciliation, and before eviction or timeout deletion. If you change a relevant label, the policy changes on a later observation. API deletion preconditions prevent a stale observation from deleting a relabeled or replaced pod. To apply configuration changes, restart node-drainer. The pod cache of node-drainer keeps only the label keys that policies reference. The cache keeps the kind and controller flag of each owner reference.
 
@@ -335,7 +345,7 @@ node-drainer:
 
 #### name
 
-Namespace name or pattern to match. `*` matches all user namespaces, including the namespaces that have their own entry. If more than one entry matches a namespace, the mode with the highest priority applies: `Immediate`, then `DeleteAfterTimeout`, then `AllowCompletion`. The order and the specificity of the entries do not change the result.
+Namespace name or pattern to match. `*` matches all user namespaces, including the namespaces that have their own entry. If more than one entry matches a namespace, the mode with the highest priority applies: `Immediate`, then `DeleteAfterTimeout`, then `AllowCompletion`. The order and the specificity of the entries do not change the result. If a health event sets `drainOverrides.force`, node-drainer uses `Immediate` for every namespace that an entry matches. The `mode` of the entries then has no effect.
 
 #### mode
 
@@ -358,6 +368,8 @@ userNamespaces:
 #### AllowCompletion
 
 Does not evict pods. Waits with no time limit until each pod exits by itself. A pod that does not exit by itself, such as a Deployment or StatefulSet pod, stays on the node. The drain then does not complete, and fault-remediation does not create a maintenance CR. To find such a drain, see [AllowCompletion Drain Metric](#allowcompletion-drain-metric).
+
+> **Note**: In a full drain, node-drainer does not wait for a pod that stays NotReady for longer than `notReadyTimeoutMinutes`. The drain can then complete, and fault-remediation can create a maintenance CR while this pod stays on the node. See [Not Ready Timeout](#not-ready-timeout).
 
 Best for: Jobs and batch workloads that exit by themselves.
 

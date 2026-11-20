@@ -7,9 +7,9 @@ NVSentinel detects GPU and hardware faults and exposes them through standard Kub
 NVSentinel integration has five layers:
 
 1. **Is a node bad?** → Check **[Taints](#1-is-a-node-bad-check-taints)**
-   - Taints mark nodes with hardware issues
+   - Fault Quarantine cordons or taints a node that has hardware issues
    - Use taints for scheduling decisions and filtering
-   - In automation, react to the presence or absence of a taint
+   - In automation, check the taints and whether the node is cordoned
 
 2. **Why is a node bad?** → Check **[Node Conditions](#2-why-is-a-node-bad-check-node-conditions)**
    - Node conditions give detailed diagnostic information
@@ -102,11 +102,13 @@ For more context, see [DATA_FLOW.md](./DATA_FLOW.md). At a high level, NVSentine
 
 ## 1. Is a Node Bad? Check Taints
 
-**Use taints for all scheduling and automation decisions.**
+**Use taints for scheduling and automation decisions. If one of your rulesets adds no taint, also check whether the node is cordoned.**
 
-Taints are the primary signal that a node has hardware issues. Configure your external systems to monitor the presence or absence of taints. Use this signal to make scheduling decisions, trigger alerts, or start remediation workflows.
+> **Important**: Taints are **optional**. Most default Fault Quarantine rulesets only cordon the node. Automation that checks only taints does not find the nodes that these rulesets quarantine. To use taints with these rulesets, add a `taint` section, as in [Configuring Taints](#configuring-taints).
 
-> **Note**: Taints are **optional**. Most default Fault Quarantine rulesets only cordon the node. To use taints with these rulesets, add a `taint` section, as in [Configuring Taints](#configuring-taints). The default ruleset for the NVCRE Certification Monitor is different. It applies the taint `nvsentinel.dgxc.nvidia.com/nvcre-cert-failed=true:NoSchedule` and does not cordon the node. If your automation checks only `nvidia.com/` taint keys, also check the `nvsentinel.dgxc.nvidia.com/nvcre-cert-failed` key.
+Each Fault Quarantine ruleset can cordon the node, add a taint, or do both. Configure your external systems to monitor the taints and the cordon state of each node. Use these signals to make scheduling decisions, trigger alerts, or start remediation workflows. An operator or another tool can also cordon a node. When Fault Quarantine cordons a node, it also sets the `{labelPrefix}cordon-by` label, as in [Generated Labels](./configuration/fault-quarantine.md#generated-labels). To see which fault NVSentinel found, check the node conditions, as in [section 2](#2-why-is-a-node-bad-check-node-conditions).
+
+> **Note**: The default ruleset for the NVCRE Certification Monitor does not cordon the node. It applies the taint `nvsentinel.dgxc.nvidia.com/nvcre-cert-failed=true:NoSchedule`. If your automation checks only `nvidia.com/` taint keys, also check the `nvsentinel.dgxc.nvidia.com/nvcre-cert-failed` key.
 
 ### Taint Structure
 
@@ -190,6 +192,12 @@ kubectl get nodes -o json | jq '.items[]
   | select(.spec.taints[]? 
   | select(.key | startswith("nvidia.com/"))) 
   | .metadata.name'
+```
+
+**Check for cordoned nodes:**
+
+```shell
+kubectl get nodes --field-selector spec.unschedulable=true
 ```
 
 **Check for a specific error type:**
@@ -720,7 +728,7 @@ NVSentinel supports three eviction modes:
 | `AllowCompletion`    | Does not evict the pod. Waits with no time limit until the pod exits by itself | Jobs and batch workloads that exit by themselves |
 | `DeleteAfterTimeout` | Waits up to the timeout, then force deletes the pod | Long-running jobs that need time to checkpoint      |
 
-> **Warning**: In `AllowCompletion` mode, a pod that does not exit by itself, such as a StatefulSet pod, stays on the faulty node. The drain then does not complete, and Fault Remediation does not create a maintenance CR. To find such a drain, see [AllowCompletion Drain Metric](./configuration/node-drainer.md#allowcompletion-drain-metric).
+> **Warning**: In `AllowCompletion` mode, a pod that does not exit by itself, such as a StatefulSet pod, stays on the faulty node. The drain then does not complete, and Fault Remediation does not create a maintenance CR. In a full drain, Node Drainer does not wait for a pod that stays NotReady for longer than `notReadyTimeoutMinutes`. The drain can then complete, and Fault Remediation can create a maintenance CR while this pod stays on the node. To find a drain that does not complete, see [AllowCompletion Drain Metric](./configuration/node-drainer.md#allowcompletion-drain-metric).
 
 ### Configuration
 
@@ -758,7 +766,7 @@ userNamespaces:
 ### Eviction Workflow
 
 1. **System Namespace Skip**: Node Drainer never evicts pods in system namespaces (kube-system, nvsentinel, and the other system namespaces)
-2. **Mode Selection**: Node Drainer finds every `userNamespaces` entry that matches the namespace of a pod. If more than one entry matches, the mode with the highest priority applies: `Immediate`, then `DeleteAfterTimeout`, then `AllowCompletion`. The order and the specificity of the entries do not change the result. For example, if the `*` entry has `Immediate` and the `database` entry has `AllowCompletion`, Node Drainer evicts the pods in `database` immediately
+2. **Mode Selection**: Node Drainer finds every `userNamespaces` entry that matches the namespace of a pod. If more than one entry matches, the mode with the highest priority applies: `Immediate`, then `DeleteAfterTimeout`, then `AllowCompletion`. The order and the specificity of the entries do not change the result. For example, if the `*` entry has `Immediate` and the `database` entry has `AllowCompletion`, Node Drainer evicts the pods in `database` immediately. If a health event sets [`drainOverrides.force`](./health-event-data-model.md#drainoverrides), Node Drainer uses `Immediate` for every namespace that an entry matches
 3. **Pod Completion**: In `AllowCompletion` mode, Node Drainer does not evict the pod. It waits until the pod exits by itself
 4. **Timeout Handling**: Node Drainer force deletes stuck or timed-out pods, based on the configuration
 5. **NotReady Detection**: In a full drain, Node Drainer skips pods that stay in the NotReady state for longer than `notReadyTimeoutMinutes`. It does not evict them or wait for them

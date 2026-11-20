@@ -44,13 +44,16 @@ fault-remediation:
 
 ### Change Stream Resume Token
 
+> **Important**: In step 3, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then delete the resume token that the first replica saved.
+
 To make fault-remediation skip the accumulated health events and start from the current stream head, do these steps:
 
 1. Scale fault-remediation to zero.
 2. Set its key in the shared resume-control ConfigMap to `CREATE`.
-3. Restore its replicas.
+3. Scale fault-remediation to one replica.
+4. After fault-remediation sets the key back to `RESUME`, restore its replicas.
 
-During startup, fault-remediation does these actions:
+During the startup in step 3, fault-remediation does these actions:
 
 - It deletes only its own resume token.
 - It records a cold-start cutoff timestamp.
@@ -59,16 +62,23 @@ During startup, fault-remediation does these actions:
 
 Later restarts still run the cold-start recovery, but only for records newer than the recorded cutoff.
 
+Run these commands one at a time. If a `kubectl wait` command fails, find the cause before you continue.
+
 ```bash
 REPLICAS=$(kubectl -n nvsentinel get deployment fault-remediation -o jsonpath='{.spec.replicas}')
 kubectl -n nvsentinel scale deployment/fault-remediation --replicas=0
 kubectl -n nvsentinel rollout status deployment/fault-remediation --timeout=180s
+kubectl -n nvsentinel wait --for=delete pod -l app.kubernetes.io/name=fault-remediation --timeout=180s
 kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
   kubectl -n nvsentinel create configmap resume-control
 kubectl -n nvsentinel patch configmap resume-control \
   --type merge \
   -p '{"data":{"fault-remediation":"CREATE"}}'
-kubectl -n nvsentinel scale deployment/fault-remediation --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel scale deployment/fault-remediation --replicas=1
+kubectl -n nvsentinel rollout status deployment/fault-remediation --timeout=180s
+kubectl -n nvsentinel wait configmap/resume-control \
+  --for=jsonpath='{.data.fault-remediation}'=RESUME --timeout=180s && \
+  kubectl -n nvsentinel scale deployment/fault-remediation --replicas="${REPLICAS:-1}"
 kubectl -n nvsentinel rollout status deployment/fault-remediation --timeout=180s
 ```
 

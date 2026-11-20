@@ -317,7 +317,7 @@ Registers `health_events_total{node, agent, check_name, recommended_action, is_f
 
 Every monitor publishes through platform-connectors, so one connector covers `gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`, `kubernetes-object-monitor` and `health-events-analyzer` at the same time.
 
-This counter measures the volume of health events over time. It does not show which faults are active, because a health event stays in the count after its fault recovers. On a fleet where actionable health events are rare, an increase of the counter shows new actionable health events without a query to the datastore. To see the last reported fault state of a node, examine its node conditions. For the label rationale and example queries, see [Prometheus Connector Metrics](../METRICS.md#prometheus-connector-metrics).
+This counter measures the volume of health events over time. It also counts healthy and non-actionable health events. It does not show which faults are active, because a health event stays in the count after its fault recovers. To find new actionable health events without a query to the datastore, use `increase(health_events_total{is_healthy="false",recommended_action!="NONE"}[5m]) > 0`. To see the last reported fault state of a node, examine its node conditions. For the label rationale and example queries, see [Prometheus Connector Metrics](../METRICS.md#prometheus-connector-metrics).
 
 ## gRPC Sink Connector
 

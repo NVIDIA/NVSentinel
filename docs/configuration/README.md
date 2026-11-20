@@ -119,13 +119,16 @@ Use GPU Operator v26.7.1 or later. Earlier GPU Operator versions do not support 
 
 Watcher-based components persist change stream resume tokens. After a restart, a component uses its token to resume from the last processed health event.
 
+> **Important**: In step 3, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then delete the resume token that the first replica saved.
+
 To skip the accumulated health events and start from the current stream head, do these steps:
 
 1. Scale the component to zero.
 2. In the runtime resume-control ConfigMap, patch the key of the component from `RESUME` to `CREATE`.
-3. Restore the replicas of the component.
+3. Scale the component to one replica.
+4. After the component sets its key back to `RESUME`, restore the replicas of the component.
 
-The component then does these actions:
+During the startup in step 3, the component does these actions:
 
 - It deletes only its own resume token.
 - It records a cold-start cutoff timestamp.
@@ -137,18 +140,23 @@ Later restarts still run cold-start recovery, but only for records that are newe
 
 Helm does not create the resume-control ConfigMap. If the ConfigMap is missing, the components create it at runtime. Thus, GitOps tools such as Argo CD do not revert your patches to its data. When a component starts and its key is missing, the component writes its key as `RESUME`. Thus, over time, the ConfigMap gets an explicit state for each component.
 
-This example does a one-shot reset for node-drainer:
+This example does a one-shot reset for node-drainer. Run these commands one at a time. If a `kubectl wait` command fails, find the cause before you continue.
 
 ```bash
 REPLICAS=$(kubectl -n nvsentinel get deployment node-drainer -o jsonpath='{.spec.replicas}')
 kubectl -n nvsentinel scale deployment/node-drainer --replicas=0
 kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+kubectl -n nvsentinel wait --for=delete pod -l app.kubernetes.io/name=node-drainer --timeout=180s
 kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
   kubectl -n nvsentinel create configmap resume-control
 kubectl -n nvsentinel patch configmap resume-control \
   --type merge \
   -p '{"data":{"node-drainer":"CREATE"}}'
-kubectl -n nvsentinel scale deployment/node-drainer --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel scale deployment/node-drainer --replicas=1
+kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+kubectl -n nvsentinel wait configmap/resume-control \
+  --for=jsonpath='{.data.node-drainer}'=RESUME --timeout=180s && \
+  kubectl -n nvsentinel scale deployment/node-drainer --replicas="${REPLICAS:-1}"
 kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
 ```
 

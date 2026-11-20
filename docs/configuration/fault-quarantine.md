@@ -56,24 +56,34 @@ Positive `qps` values enable client-side throttling. The value `0` uses the clie
 
 ### Change Stream Resume Token
 
+> **Important**: In step 3, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then delete the resume token that the first replica saved.
+
 To make fault-quarantine skip accumulated health events and start from the current stream head, do these steps:
 
 1. Scale fault-quarantine to zero.
 2. In the shared resume-control ConfigMap, set the key of fault-quarantine to `CREATE`.
-3. Restore the replicas of fault-quarantine.
+3. Scale fault-quarantine to one replica.
+4. After fault-quarantine sets the key back to `RESUME`, restore the replicas of fault-quarantine.
 
-During the next startup, fault-quarantine deletes only its own resume token, and sets the key back to `RESUME`.
+During the startup in step 3, fault-quarantine deletes only its own resume token, and sets the key back to `RESUME`.
+
+Run these commands one at a time. If a `kubectl wait` command fails, find the cause before you continue.
 
 ```bash
 REPLICAS=$(kubectl -n nvsentinel get deployment fault-quarantine -o jsonpath='{.spec.replicas}')
 kubectl -n nvsentinel scale deployment/fault-quarantine --replicas=0
 kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
+kubectl -n nvsentinel wait --for=delete pod -l app.kubernetes.io/name=fault-quarantine --timeout=180s
 kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
   kubectl -n nvsentinel create configmap resume-control
 kubectl -n nvsentinel patch configmap resume-control \
   --type merge \
   -p '{"data":{"fault-quarantine":"CREATE"}}'
-kubectl -n nvsentinel scale deployment/fault-quarantine --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel scale deployment/fault-quarantine --replicas=1
+kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
+kubectl -n nvsentinel wait configmap/resume-control \
+  --for=jsonpath='{.data.fault-quarantine}'=RESUME --timeout=180s && \
+  kubectl -n nvsentinel scale deployment/fault-quarantine --replicas="${REPLICAS:-1}"
 kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
 ```
 
