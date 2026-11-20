@@ -97,7 +97,8 @@ Until ADR-070 creates the NVIDIA plugin chart, the metadata-collector chart rend
 
 - `podMapper.enabled` decides whether the chart renders the mapper DaemonSet. The chart compares the value as a string, as the partial-drain install check does today, so a quoted `"false"` still turns the mapper off. That install check keeps reading the same key.
 - `podMapper.maxConsecutiveFailures` and `kubeletHost` apply to the mapper.
-- `nodeSelector`, `tolerations`, `affinity`, `priorityClassName`, `updateStrategy`, `podAnnotations`, `logLevel` and `metrics` apply to both DaemonSets, with the same `global` fallbacks, as they apply to the one pod today.
+- `nodeSelector`, `tolerations`, `affinity`, `priorityClassName`, `updateStrategy`, `podAnnotations`, `logLevel` and `metrics.enabled` apply to both DaemonSets, with the same `global` fallbacks, as they apply to the one pod today.
+- `metrics.port` applies only to the discovery, which binds it on the node, where it can collide with another port. The mapper uses `global.metricsPort`, like the other modules on the pod network, because the namespace NetworkPolicy allows only that port.
 - `runtimeClassName`, `nriPlugin`, `extraEnv` and the additional volumes apply only to the discovery. Their documented use is the driver libraries.
 - `resources` applies to the discovery. The mapper uses `podMapper.resources`, or `resources` when that is unset, so a limit that an operator raised for the mapper still applies.
 - `podMapper.image`, `podMapper.resources` and `podMapper.nodeSelector` are new.
@@ -120,7 +121,7 @@ Because all mapper pods start at once, every mapper on a node with DRA pods list
 - **`gpu_metadata.json`:** the path and format do not change, and its readers do not change.
 - **Helm values:** every `metadata-collector` key keeps working, and the new keys are under `podMapper` (see [Chart](#chart)).
 - **Flags:** the metadata-collector binary still accepts `--pod-mapper-enabled` and `--pod-mapper-max-consecutive-failures`, and ignores them with a log line, so an older pod spec keeps starting.
-- **Metrics:** the mapper metrics keep their names. They now come from the mapper DaemonSet's pods, so a query that filters them by the metadata-collector pod no longer matches. The metrics port moves from the node IP to the pod IP. The chart's PodMonitor still scrapes it, because the mapper pod has the release instance label and a port named `metrics`.
+- **Metrics:** the mapper metrics keep their names. They now come from the mapper DaemonSet's pods, so a query that filters them by the metadata-collector pod no longer matches. The mapper's metrics port moves from the node IP to the pod IP, and its number comes from `global.metricsPort`, so it changes on a cluster that set `metrics.port`. The chart's PodMonitor still scrapes it, because the mapper pod has the release instance label and a port named `metrics`, and the namespace NetworkPolicy allows `global.metricsPort`.
 - **Images:** the chart and the images are released together. A newer metadata-collector image under an older chart is not supported: the pod then has no mapper, and partial drains wait.
 
 ## Rationale
