@@ -99,26 +99,33 @@ func (c *staleGetClient) Get(ctx context.Context, key client.ObjectKey, obj clie
 }
 
 // failOutcomeClient fails the status patch of a GPUReset that has the Succeeded condition with err, as an API server
-// that refuses the outcome write does. All other calls go to the wrapped client, so the writes that it does not fail
-// still go to the API server.
+// that refuses the outcome write does. When onFail is set, it runs each time a patch is failed, before the error is
+// returned, so that a test can observe the state at the moment of the outcome write. All other calls go to the
+// wrapped client, so the writes that it does not fail still go to the API server.
 type failOutcomeClient struct {
 	client.Client
-	err error
+	err    error
+	onFail func()
 }
 
 func (c *failOutcomeClient) Status() client.SubResourceWriter {
-	return &failOutcomeStatusWriter{SubResourceWriter: c.Client.Status(), err: c.err}
+	return &failOutcomeStatusWriter{SubResourceWriter: c.Client.Status(), err: c.err, onFail: c.onFail}
 }
 
 type failOutcomeStatusWriter struct {
 	client.SubResourceWriter
-	err error
+	err    error
+	onFail func()
 }
 
 func (w *failOutcomeStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch,
 	opts ...client.SubResourcePatchOption) error {
 	if gr, ok := obj.(*v1alpha1.GPUReset); ok &&
 		meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.Succeeded)) != nil {
+		if w.onFail != nil {
+			w.onFail()
+		}
+
 		return w.err
 	}
 
@@ -1555,11 +1562,17 @@ var _ = Describe("GPUReset Controller", func() {
 			createCompleted(v1alpha1.ResetFailed,
 				condition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonResetJobFailed, "finished earlier"))
 			injected := apierrors.NewInternalError(errors.New("the outcome write is refused"))
-			reconciler.Client = &failOutcomeClient{Client: mgrClient, err: injected}
 			lock := &mockNodeLock{}
 			reconciler.NodeLock = lock
+			// unlockChecksAtWrite records how often the node lock was released when the outcome write was tried.
+			unlockChecksAtWrite := -1
+			reconciler.Client = &failOutcomeClient{Client: mgrClient, err: injected, onFail: func() {
+				unlockChecksAtWrite = lock.unlockChecks
+			}}
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(unlockChecksAtWrite).NotTo(Equal(-1), "the reconcile did not try the outcome write")
+			Expect(unlockChecksAtWrite).To(Equal(1), "the reconcile tried the outcome write before it released the node lock")
 			Expect(lock.unlockChecks).To(Equal(1), "the reconcile did not release the node lock")
 			Expect(err).To(MatchError(injected))
 		})
