@@ -1,0 +1,121 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: partial remediation entity types
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+templates:
+  - charts/node-drainer/templates/configmap.yaml
+  - templates/partial-remediation-entity-types-validation.yaml
+set:
+  global.nodeDrainer.enabled: true
+tests:
+  - it: renders the default GPU_UUID entry into the node-drainer config
+    template: charts/node-drainer/templates/configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\n\[partialRemediationEntityTypes\]\n  \[partialRemediationEntityTypes\.GPU_UUID\]\n    scopedActions = \["COMPONENT_RESET"\]\n'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[\[partialRemediationEntityTypes\.GPU_UUID\.devices\]\]\n +resourceNames = \["nvidia\.com/gpu", "nvidia\.com/pgpu"\]\n'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[\[partialRemediationEntityTypes\.GPU_UUID\.devices\]\]\n +deviceClasses = \["gpu\.nvidia\.com"\]\n +driver = "gpu\.nvidia\.com"\n +entityValueAttribute = "uuid"\n'
+
+  - it: renders an added entity type next to the default
+    template: charts/node-drainer/templates/configmap.yaml
+    set:
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - driver: accel.example.com
+            deviceClasses: ["accel.example.com"]
+            entityValueAttribute: serial
+        scopedActions: ["accel-reset"]
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[partialRemediationEntityTypes\.ACCEL_SERIAL\]\n +scopedActions = \["accel-reset"\]\n'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[partialRemediationEntityTypes\.GPU_UUID\]'
+
+  # Helm replaces a list instead of merging it, so an empty list removes the default actions.
+  - it: renders no scoped action when the default actions are replaced with an empty list
+    template: charts/node-drainer/templates/configmap.yaml
+    set:
+      global.partialRemediationEntityTypes.GPU_UUID.scopedActions: []
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[partialRemediationEntityTypes\.GPU_UUID\]\n +scopedActions = \[\]\n'
+
+  - it: accepts the default map
+    template: templates/partial-remediation-entity-types-validation.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: fails for an entity type without devices
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        scopedActions: ["accel-reset"]
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes.ACCEL_SERIAL has no devices. Add a device-plugin entry with resourceNames, or a DRA entry with driver, deviceClasses and entityValueAttribute.
+
+  - it: fails for an entry that mixes device-plugin and DRA fields
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - resourceNames: ["example.com/accel"]
+            driver: accel.example.com
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes.ACCEL_SERIAL.devices[0] sets resourceNames and DRA fields. An entry is either a device-plugin entry with resourceNames, or a DRA entry with driver, deviceClasses and entityValueAttribute.
+
+  - it: fails for an empty entry
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - resourceNames: []
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes.ACCEL_SERIAL.devices[0] is empty. Set resourceNames, or driver, deviceClasses and entityValueAttribute.
+
+  - it: fails for a DRA entry without entityValueAttribute
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - driver: accel.example.com
+            deviceClasses: ["accel.example.com"]
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes.ACCEL_SERIAL.devices[0] is a DRA entry, so it needs driver, deviceClasses and entityValueAttribute.
+
+  - it: fails for an action scoped to two entity types
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - resourceNames: ["example.com/accel"]
+        scopedActions: ["COMPONENT_RESET"]
+    asserts:
+      - failedTemplate:
+          errorMessage: Action COMPONENT_RESET is in the scopedActions of both ACCEL_SERIAL and GPU_UUID. An action can be scoped to only one entity type.

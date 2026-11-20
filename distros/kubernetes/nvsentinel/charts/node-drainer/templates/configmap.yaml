@@ -67,3 +67,9 @@ data:
       statusConditionType = {{ .Values.customDrain.statusConditionType | quote }}
       statusConditionStatus = {{ .Values.customDrain.statusConditionStatus | quote }}
     {{- end }}
+
+    {{- /* Tables must follow every top-level key, so this block stays last. Without the key,
+    node-drainer uses its built-in GPU_UUID entry; an empty map configures no entity type. */}}
+    {{- if hasKey $global "partialRemediationEntityTypes" }}
+    {{- dict "partialRemediationEntityTypes" ($global.partialRemediationEntityTypes | default dict) | toToml | nindent 4 }}
+    {{- end }}

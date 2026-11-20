@@ -100,13 +100,14 @@ func didDrainCompleteForEvent(ctx context.Context, healthEventStore datastore.He
 // earlierDrainScope returns the entity an earlier drain covered, or nil for a drain of the full node.
 // A recorded decision keeps the scope that was drained, so a later change to partialDrainEnabled does not
 // rewrite it. An event with no record was written before decisions were stored, so its scope is derived again.
+// The entity-type map was not configurable then, so the derivation uses the built-in entry.
 func earlierDrainScope(status *datastore.HealthEventWithStatus, healthEvent *protos.HealthEvent,
 	partialDrainEnabled bool) (*protos.Entity, error) {
 	if decision := status.HealthEventStatus.DrainDecision; decision != nil {
 		return scopeEntity(decision.Scope), nil
 	}
 
-	return PartialDrainEntity(healthEvent, partialDrainEnabled)
+	return PartialDrainEntity(healthEvent, partialDrainEnabled, model.DefaultPartialRemediationEntityTypes())
 }
 
 // scopeEntity copies a stored scope into the proto entity the coverage check compares.
@@ -154,29 +155,34 @@ func getHealthEventFromId(ctx context.Context, healthEventStore datastore.Health
 
 /*
 PartialDrainEntity returns the entity the given HealthEvent's drain is scoped to (a partial
-drain) or nil if it requires a full drain. Recall that a given HealthEvent qualifies
-for a partial drain only if partial drain is enabled (the partialDrainEnabled value in the
-node-drainer Helm chart), its RecommendedAction is COMPONENT_RESET, and it has a supported
-impacted entity, which is configured in pod_device_annotation.go.
+drain) or nil if it requires a full drain. A HealthEvent qualifies for a partial drain only if
+partial drain is enabled (the partialDrainEnabled value in the node-drainer Helm chart) and its
+effective action, including a custom action name, is listed in the scopedActions of an entity type.
+The drain is then scoped to the first entity of the event with that type and a non-empty value.
 
-If partial drain is enabled and the recommended action is COMPONENT_RESET but the given HealthEvent
-does not include a supported entity for partial drain, we will return an error. In all other cases,
-we will proceed with a full drain.
+If the action is scoped but the given HealthEvent has no such entity, we will return an error and the
+drain is retried. In all other cases, we will proceed with a full drain.
 */
-func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled bool) (*protos.Entity, error) {
-	if !partialDrainEnabled || healthEvent.RecommendedAction != protos.RecommendedAction_COMPONENT_RESET {
+func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled bool,
+	entityTypes model.PartialRemediationEntityTypes) (*protos.Entity, error) {
+	if !partialDrainEnabled {
+		return nil, nil
+	}
+
+	entityType, scoped := entityTypes.EntityTypeForAction(model.GetEffectiveActionName(healthEvent))
+	if !scoped {
 		return nil, nil
 	}
 
 	for _, entity := range healthEvent.GetEntitiesImpacted() {
-		_, supportedEntity := model.EntityTypeToResourceNames[entity.EntityType]
-		if supportedEntity && len(entity.EntityValue) != 0 {
+		if entity.EntityType == entityType && len(entity.EntityValue) != 0 {
 			return entity, nil
 		}
 	}
 
-	return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s",
-		healthEvent.NodeName)
+	return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s; "+
+		"action %s is scoped to entity type %s", healthEvent.NodeName, model.GetEffectiveActionName(healthEvent),
+		entityType)
 }
 
 func doesDrainCoverPartialEntity(ctx context.Context, drainCompleted bool, partialEntity,

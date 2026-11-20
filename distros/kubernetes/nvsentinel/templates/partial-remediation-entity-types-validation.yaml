@@ -1,0 +1,48 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Renders nothing; only validates global.partialRemediationEntityTypes, which
+# the components that run partial drains read. Each component also validates the
+# map when it starts, but an install fails earlier here, with the value path.
+{{- $types := (.Values.global | default dict).partialRemediationEntityTypes | default dict }}
+{{- if not (kindIs "map" $types) }}
+{{- fail "global.partialRemediationEntityTypes must be a map from entity type to its devices and scopedActions" }}
+{{- end }}
+{{- $actionOwner := dict }}
+{{- range $name := keys $types | sortAlpha }}
+{{- $path := printf "global.partialRemediationEntityTypes.%s" $name }}
+{{- $entityType := index $types $name | default dict }}
+{{- if not $entityType.devices }}
+{{- fail (printf "%s has no devices. Add a device-plugin entry with resourceNames, or a DRA entry with driver, deviceClasses and entityValueAttribute." $path) }}
+{{- end }}
+{{- range $i, $device := $entityType.devices }}
+{{- $isDevicePlugin := not (empty $device.resourceNames) }}
+{{- $isDRA := or $device.driver $device.deviceClasses $device.entityValueAttribute }}
+{{- if and $isDevicePlugin $isDRA }}
+{{- fail (printf "%s.devices[%d] sets resourceNames and DRA fields. An entry is either a device-plugin entry with resourceNames, or a DRA entry with driver, deviceClasses and entityValueAttribute." $path $i) }}
+{{- end }}
+{{- if not (or $isDevicePlugin $isDRA) }}
+{{- fail (printf "%s.devices[%d] is empty. Set resourceNames, or driver, deviceClasses and entityValueAttribute." $path $i) }}
+{{- end }}
+{{- if and $isDRA (not (and $device.driver $device.deviceClasses $device.entityValueAttribute)) }}
+{{- fail (printf "%s.devices[%d] is a DRA entry, so it needs driver, deviceClasses and entityValueAttribute." $path $i) }}
+{{- end }}
+{{- end }}
+{{- range $action := $entityType.scopedActions | default list }}
+{{- if and (hasKey $actionOwner $action) (ne (index $actionOwner $action) $name) }}
+{{- fail (printf "Action %s is in the scopedActions of both %s and %s. An action can be scoped to only one entity type." $action (index $actionOwner $action) $name) }}
+{{- end }}
+{{- $_ := set $actionOwner $action $name }}
+{{- end }}
+{{- end }}
