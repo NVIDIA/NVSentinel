@@ -314,7 +314,7 @@ func TestResolveManager(t *testing.T) {
 
 		want := gpuOperator.Spec
 		want.Namespace = "nvidia-gpu-operator"
-		if !reflect.DeepEqual(got, Manager{Name: "gpu-operator", Namespace: "nvidia-gpu-operator", Spec: want}) {
+		if !reflect.DeepEqual(got, Manager{Name: "gpu-operator", Spec: want}) {
 			t.Errorf("Unexpected manager %+v", got)
 		}
 		if Registry["gpu-operator"].Namespace != "gpu-operator" {

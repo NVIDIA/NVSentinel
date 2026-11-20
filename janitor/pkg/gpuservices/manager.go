@@ -24,6 +24,7 @@ import (
 type Manager struct {
 	Name string `mapstructure:"name" json:"name"`
 	// Namespace overrides the namespace of a built-in manager. A custom spec sets its namespace in the spec.
+	// ResolveManager moves it into Spec.Namespace, which is the only namespace to read after resolution.
 	Namespace string      `mapstructure:"namespace" json:"namespace,omitempty"`
 	Spec      ManagerSpec `mapstructure:"spec" json:"spec"`
 }
@@ -196,7 +197,6 @@ func ResolveManager(config Manager) (Manager, error) {
 		return Manager{}, err
 	}
 
-	manager.Namespace = config.Namespace
 	manager.Spec.Namespace = config.Namespace
 
 	return manager, nil

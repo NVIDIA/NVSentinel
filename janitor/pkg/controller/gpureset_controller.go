@@ -733,10 +733,19 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 				return ctrl.Result{}, err
 			}
 
+			// A GPU Operator upgrade or reinstall can remove every operand pod for a while. A wrong namespace stays
+			// empty, so wait for the GPUReset timeout before failing.
 			if !found {
-				return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonServiceManagerNotFound,
-					fmt.Sprintf("No %s managed service pod runs in namespace %s on any node; check the service "+
-						"manager namespace", managerName, r.serviceManager.Spec.Namespace))
+				if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
+					return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonServiceManagerNotFound,
+						fmt.Sprintf("No %s managed service pod exists in namespace %s on any node for the GPUReset "+
+							"timeout; check the service manager namespace", managerName, r.serviceManager.Spec.Namespace))
+				}
+
+				log.Info("Waiting for a managed service pod in the service manager namespace", "node", gr.Spec.NodeName,
+					"manager", managerName, "namespace", r.serviceManager.Spec.Namespace, "recheck_after", 10*time.Second)
+
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 			}
 		}
 
@@ -1722,8 +1731,8 @@ func (r *GPUResetReconciler) runningApps(
 	return running, nil
 }
 
-// serviceManagerFound reports whether a pod of any managed service runs in the service manager namespace, on any
-// node. A manager without managed services is always found. A wrong namespace finds no pods, and the teardown would
+// serviceManagerFound reports whether a pod of any managed service exists in the service manager namespace, on any
+// node, in any phase. A manager without managed services is always found. A wrong namespace finds no pods, and the teardown would
 // otherwise skip and reset the GPU while the services still hold it.
 func (r *GPUResetReconciler) serviceManagerFound(ctx context.Context) (bool, error) {
 	apps := withoutGPUClients(r.serviceManager.Spec.Apps)
