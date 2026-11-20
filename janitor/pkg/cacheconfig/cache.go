@@ -30,6 +30,22 @@ import (
 	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
 )
 
+// QuarantineAnnotationKey is the node annotation that fault-quarantine sets while it holds the node quarantined.
+// It has the same value as QuarantineHealthEventAnnotationKey in fault-quarantine.
+const QuarantineAnnotationKey = "quarantineHealthEvent"
+
+// NodeOutOfService reports whether the node is cordoned or quarantined by NVSentinel. A quarantine ruleset can
+// taint a node without cordoning it.
+func NodeOutOfService(node *corev1.Node) bool {
+	if node.Spec.Unschedulable {
+		return true
+	}
+
+	_, quarantined := node.Annotations[QuarantineAnnotationKey]
+
+	return quarantined
+}
+
 // Build returns cache options that retain only Node and Pod fields read by
 // Janitor. When GPU reset is enabled, the Pod cache is also limited to the
 // configured GPU service manager's namespace and the pods of its apps.
@@ -125,14 +141,21 @@ func transformNodeForCache(obj any) (any, error) {
 
 	readyConditions := nodeConditionsForCache(node.Status.Conditions)
 
+	// NodeOutOfService needs only the presence of the quarantine annotation, so its value is dropped.
+	var annotations map[string]string
+	if _, quarantined := node.Annotations[QuarantineAnnotationKey]; quarantined {
+		annotations = map[string]string{QuarantineAnnotationKey: ""}
+	}
+
 	node.TypeMeta = metav1.TypeMeta{}
 	node.ObjectMeta = metav1.ObjectMeta{
 		Name:            node.Name,
 		UID:             node.UID,
 		ResourceVersion: node.ResourceVersion,
 		Labels:          node.Labels,
+		Annotations:     annotations,
 	}
-	node.Spec = corev1.NodeSpec{Taints: node.Spec.Taints}
+	node.Spec = corev1.NodeSpec{Taints: node.Spec.Taints, Unschedulable: node.Spec.Unschedulable}
 	node.Status = corev1.NodeStatus{Conditions: readyConditions}
 
 	return node, nil

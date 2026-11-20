@@ -721,6 +721,11 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 			return ctrl.Result{}, fmt.Errorf("failed to get node %s for service teardown: %w", gr.Spec.NodeName, err)
 		}
 
+		if refuseNodeInService(r.Config.RequireNodeOutOfService, node) {
+			return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonNodeInService,
+				"Node is neither cordoned nor quarantined, refusing to reset its GPUs")
+		}
+
 		running, err := r.runningAppsFn(ctx, gr.Spec.NodeName, teardownCandidates(r.serviceManager.Spec.Apps, node.Labels))
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to find %s managed services on node %s: %w",
@@ -2016,6 +2021,8 @@ func reconcilePhase(reason v1alpha1.GPUResetReason) v1alpha1.GPUResetPhase {
 	case v1alpha1.ReasonInternalError:
 		return v1alpha1.ResetFailed
 	case v1alpha1.ReasonGPUAlreadyUnderMaintenance:
+		return v1alpha1.ResetFailed
+	case v1alpha1.ReasonNodeInService:
 		return v1alpha1.ResetFailed
 	default:
 		return v1alpha1.ResetUnknown

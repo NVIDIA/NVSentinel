@@ -88,6 +88,8 @@ const (
 	ReasonRestoreTimeoutExceeded         GPUResetReason = "RestoreTimeoutExceeded"
 	ReasonInternalError                  GPUResetReason = "InternalError"
 	ReasonGPUAlreadyUnderMaintenance     GPUResetReason = "GPUAlreadyUnderMaintenance"
+	// ReasonNodeInService means that the node is neither cordoned nor quarantined, so janitor refuses the reset.
+	ReasonNodeInService GPUResetReason = "NodeInService"
 )
 
 // GPUSelector allows specifying GPUs by different identifier types.

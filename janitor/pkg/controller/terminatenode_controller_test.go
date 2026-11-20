@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -124,6 +125,51 @@ var _ = Describe("TerminateNodeReconciler", func() {
 				}
 				return updatedTerminateNode.Status.StartTime != nil
 			}, timeout, interval).Should(BeTrue())
+		})
+	})
+
+	Context("When the node must be out of service", func() {
+		BeforeEach(func() {
+			reconciler.Config.RequireNodeOutOfService = new(true)
+		})
+
+		reconcileOnce := func() (*metav1.Condition, *metav1.Time) {
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: crName}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName}, &updated)).To(Succeed())
+
+			return meta.FindStatusCondition(updated.Status.Conditions,
+				janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent), updated.Status.CompletionTime
+		}
+
+		It("Should refuse to terminate a node that is neither cordoned nor quarantined", func() {
+			mockCSP.Server.SetTerminateFailure(fmt.Errorf("the terminate signal must not be sent"))
+
+			signalSent, completionTime := reconcileOnce()
+			Expect(signalSent).NotTo(BeNil())
+			Expect(signalSent.Status).To(Equal(metav1.ConditionFalse))
+			Expect(signalSent.Reason).To(Equal("NodeInService"))
+			Expect(completionTime).NotTo(BeNil())
+		})
+
+		It("Should terminate a cordoned node", func() {
+			node.Spec.Unschedulable = true
+			Expect(k8sClient.Update(ctx, node)).To(Succeed())
+
+			signalSent, _ := reconcileOnce()
+			Expect(signalSent).NotTo(BeNil())
+			Expect(signalSent.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("Should terminate a node that NVSentinel quarantined without a cordon", func() {
+			node.Annotations = map[string]string{"quarantineHealthEvent": "[]"}
+			Expect(k8sClient.Update(ctx, node)).To(Succeed())
+
+			signalSent, _ := reconcileOnce()
+			Expect(signalSent).NotTo(BeNil())
+			Expect(signalSent.Status).To(Equal(metav1.ConditionTrue))
 		})
 	})
 
