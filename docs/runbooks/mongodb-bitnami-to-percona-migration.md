@@ -69,7 +69,7 @@ scripts/mongodb-migration/preflight.sh
 
 Before you continue, resolve all FAIL rows. While the check is blocked, it exits 2. Then make the three decisions that the later steps depend on:
 
-- **Data path:** preserve health event data (3a, the default) or start clean (3b). If the cluster has active quarantines or in-flight remediations, prefer 3a.
+- **Data path:** preserve health event data (3a, the default) or start clean (3b). If the cluster has active quarantines or in-flight remediations, prefer 3a. On path 3a, `migrate-data.sh` connects to MongoDB at `svc.cluster.local` hostnames. Thus, if your cluster uses another DNS domain, the dump and the restore of path 3a fail. On such a cluster, use path 3b.
 - **Management path:** GitOps-managed (steps 2, 4a, 6a) or Helm-managed (4b, 6b).
 - **Quarantined nodes:** record the list that the preflight reports. On path 3a, these nodes keep their quarantine state automatically. On path 3b, you must decide for each node, because the monitors do not detect one-time faults again:
 
@@ -298,7 +298,7 @@ Do these continuity checks:
 | `mongodb-0` stuck in `Init:ImagePullBackOff`, events show `no match for platform in manifest` | Bitnami MongoDB images have no ARM64 build | Use the Percona backend on ARM64 nodes |
 | Scaled-down components start again on their own during steps 3 and 4 | A GitOps controller with automated sync (or self-heal) still reconciles | Stop reconciliation (step 2). Then do the affected step again from its start |
 | Operator logs show `requested storage (...) is less than actual storage (...)`, the `perconaservermongodb` resource stays in `error`, services report `ReplicaSetNoPrimary` | The minimum volume size of the cloud provider is larger than the requested size, so reconciliation stops before the replica set initializes | Set `volumeSpec` to at least the provider minimum (step 6). Delete the `mongod-data-*` PVCs. Redeploy |
-| All datastore consumers crash-loop with connection errors right after the redeploy, TLS handshakes fail or connections close immediately | Leftover TLS secrets from the previous backend still exist, so client certificates belong to the old certificate authority | Do step 5 again completely. Then redeploy |
+| All datastore consumers crash-loop with connection errors right after the redeploy, TLS handshakes fail or connections close immediately | Leftover TLS secrets from the previous backend still exist, so client certificates belong to the old certificate authority | If the installation is GitOps-managed, stop reconciliation again (step 2). Then do steps 4, 5 and 6 again. Step 5 also deletes the volumes of the new backend. Before step 8, these volumes contain no restored data. The dump archive of path 3a is a local file, so step 5 does not touch it |
 | MongoDB init Job (`-l app.kubernetes.io/name=create-mongodb-database`) `Failed` with `DeadlineExceeded` after a long stall | The job never retries after it exceeds its deadline | Run `kubectl delete job -l app.kubernetes.io/name=create-mongodb-database -n nvsentinel`. Then apply the deployment again: run the `helm upgrade` again, or sync the application again. This creates the job again, and the job completes against the healthy replica set |
 | `helm upgrade` fails with `cannot patch "create-mongodb-database-..." ... field is immutable` | The backend flags were changed on a live installation, without this runbook | Run `helm rollback <release> <last-good-revision>`. If it gives an error, try one more time. Then manually delete everything that the failed upgrade created. These objects are the `perconaservermongodb` resource, the `nvsentinel-psmdb-operator` deployment and its ServiceAccount, Role and RoleBinding, and the `mongod-data-*` PVCs. They also include the `internal-mongodb-users`, `percona-server-mongodb-users` and `mongodb-encryption-key` secrets. After the rollback, Helm does not track these objects, so `helm uninstall` does not remove them either. Then follow this runbook from step 1 |
 | node-drainer logs repeat `unexpected number of events for node ...` every minute | A node annotation refers to a health event that does not exist in the datastore (path 3b with fault state kept, or a partial restore) | Clear the quarantine annotations of that node as in step 5 |
@@ -308,14 +308,14 @@ Do these continuity checks:
 
 Do not roll back to Bitnami on an ARM64-only cluster. The Bitnami images do not run on ARM64 nodes.
 
-To return to Bitnami, do the same procedure in the other direction:
+To return to Bitnami, do the same procedure in the other direction. The restore of `migrate-data.sh` writes only into the Percona backend, so it cannot restore an archive into Bitnami. Thus, a rollback drops all health event data, as on path 3b:
 
 1. If the installation is GitOps-managed, stop reconciliation.
-2. To keep the health event data, make the dump as in step 3a. The dump detects the Percona source automatically and takes the same `--stop-writers` flag.
+2. Record the quarantined-node list with the command in step 1.
 3. Remove the installation.
-4. Delete the Percona leftovers. If you did not make a dump, also clear the fault state, as on path 3b in step 5.
+4. Delete the Percona leftovers. Also clear the fault state, as on path 3b in step 5.
 5. Redeploy with `useBitnami: true` and `usePerconaOperator: false`.
-6. If you made a dump, restore it as in step 8. Then restart the consumers.
+6. Handle each node in the quarantined-node list manually, as on path 3b. See [After the migration](#after-the-migration).
 
 Delete these Percona leftovers after the removal:
 

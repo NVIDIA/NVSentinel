@@ -410,11 +410,9 @@ COPY --from=builder /src/demo-health-monitor /demo-health-monitor
 ENTRYPOINT ["/demo-health-monitor"]
 ```
 
-Build the image. Then push it to a registry that your cluster can pull from. This example uses Docker Hub, so replace `{dockerhub-user}` with your Docker Hub username. Run these commands from the directory that contains `demo-health-monitor`:
+Build the image. Then push it to a registry that your cluster can pull from. This example uses Docker Hub, so replace `{dockerhub-user}` with your Docker Hub username. Run these commands in the `demo-health-monitor` directory:
 
 ```bash
-cd demo-health-monitor
-
 docker login     # once, to authenticate to Docker Hub
 
 docker build -t docker.io/{dockerhub-user}/demo-health-monitor:dev .
@@ -430,6 +428,8 @@ docker push docker.io/{dockerhub-user}/demo-health-monitor:dev
 ## 7. Run and verify
 
 Deploy the image as a DaemonSet. Then cause a fault. Watch the fault move through the pipeline. This section needs the [Prerequisites](#prerequisites).
+
+> **Safety:** The DaemonSet runs a monitor pod on each node. At first, each pod sends a fatal health event with the `EXECUTE_REMEDIATION` strategy. The default fault-quarantine rules do not match the agent `demo-health-monitor`. If a rule in your release matches these health events, fault-quarantine cordons each node that runs a monitor pod. If node-drainer is also enabled, it drains these nodes with its configured eviction modes. Before you apply the DaemonSet, make sure that no fault-quarantine rule matches these health events, or use a test cluster.
 
 **Apply the DaemonSet.** At first, `CHECK_TARGET` is a reserved TEST-NET address (RFC 5737) that is always unreachable, so the monitor reports a fault immediately. Later, you set `CHECK_TARGET` to a reachable endpoint to clear the fault. The DaemonSet mounts the platform-connector socket (`hostPath` `/var/run/nvsentinel` → `/var/run`). It also sets `NODE_NAME` through the downward API:
 

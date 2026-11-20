@@ -112,6 +112,8 @@ The default KOM values intentionally do not include NPD policies, because NVSent
 
 Download or copy `values-npd-remediation.yaml`. Use it as the values file. The overlay enables KOM, keeps the default `ReplaceNotReadyNode` policy and adds the three supported NPD policies.
 
+Helm replaces a list completely when a values file sets it. As a result, on an existing release, the overlay replaces the complete KOM policy list, including your custom policies. Before you install or upgrade, add each existing policy that you need to the `kubernetes-object-monitor.policies` list of the overlay. To show your values for the release, run `helm get values nvsentinel --namespace nvsentinel`.
+
 ### Configure a custom NPD Node Condition
 
 NPD can publish more permanent node conditions from custom monitor configurations. When NPD publishes such a condition, add a matching policy to the existing `kubernetes-object-monitor.policies` list in your copy of `values-npd-remediation.yaml`.

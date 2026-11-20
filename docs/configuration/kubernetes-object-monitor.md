@@ -434,6 +434,8 @@ The Helm chart automatically generates RBAC permissions from the configured poli
 - **Node resources**: Get write permissions (patch/update) for annotations
 - **All other resources**: Get read-only permissions (get/list/watch)
 
+The generated rules cover only the kinds that policies watch. For a kind that a policy looks up but no policy watches, grant `get`, `list` and `watch` yourself. See [Cached Fields](../kubernetes-object-monitor.md#cached-fields).
+
 For a new policy on a Custom Resource, make sure that the CRD is installed before you deploy the module.
 
 ## Policy Design Guidelines

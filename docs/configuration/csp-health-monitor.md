@@ -184,7 +184,7 @@ csp-health-monitor:
   logLevel: info
   
   configToml:
-    clusterName: "production-eks-cluster"
+    clusterName: "prod-eks-cluster"
     maintenanceEventPollIntervalSeconds: 60
     triggerQuarantineWorkflowTimeLimitMinutes: 30
     postMaintenanceHealthyDelayMinutes: 15

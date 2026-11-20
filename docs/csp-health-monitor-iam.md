@@ -75,6 +75,8 @@ In the commands below, replace these placeholders:
 - `{ACCOUNT_ID}` — AWS account ID (12-digit number). The script gets it from the `aws sts get-caller-identity` command.
 - `{AWS_REGION}` — AWS region where the EKS cluster runs (for example, `us-east-1`)
 
+> **Important (EKS)**: If your cluster name has more than 19 characters, the default IAM role name is too long. Use a custom role name in steps 4 and 5, as the note after these commands shows.
+
 ```bash
 # 1. Create IAM policy
 aws iam create-policy \
@@ -131,6 +133,31 @@ aws iam attach-role-policy \
     --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/CSPHealthMonitorPolicy
 ```
 
+> **Custom IAM role name (EKS)**: If your cluster name has more than 19 characters, use a custom IAM role name. By default, the chart builds the IAM role name as `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`. An AWS IAM role name has a **64-character limit**, and the default suffix has 45 characters. Thus, the cluster name can have only **19 characters**.
+>
+> To use a custom role name, use it in steps 4 and 5 instead of the default name:
+>
+> ```bash
+> # 4. Create IAM role
+> aws iam create-role \
+>     --role-name my-custom-nvsentinel-role \
+>     --assume-role-policy-document file://trust-policy.json
+>
+> # 5. Attach policy to role
+> aws iam attach-role-policy \
+>     --role-name my-custom-nvsentinel-role \
+>     --policy-arn arn:aws:iam::$ACCOUNT_ID:policy/CSPHealthMonitorPolicy
+> ```
+>
+> Then set `configToml.aws.iamRoleName` to the custom role name in the Helm values:
+>
+> ```yaml
+> csp-health-monitor:
+>   configToml:
+>     aws:
+>       iamRoleName: "my-custom-nvsentinel-role"
+> ```
+
 ### Helm Configuration
 
 ```yaml
@@ -145,23 +172,6 @@ csp-health-monitor:
       # Optional: override the default IAM role name
       # iamRoleName: "my-custom-nvsentinel-role"
 ```
-
-> **Important (EKS)**: If your cluster name has more than 19 characters, use a custom IAM role name. By default, the chart builds the IAM role name as `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`. An AWS IAM role name has a **64-character limit**, and the default suffix has 45 characters. Thus, the cluster name can have only **19 characters**.
->
-> To use a custom role name, create the IAM role with that name instead:
->
-> ```bash
-> aws iam create-role \
->     --role-name my-custom-nvsentinel-role \
->     --assume-role-policy-document file://trust-policy.json
-> ```
->
-> Then set `aws.iamRoleName` to the custom role name in the Helm values:
->
-> ```yaml
-> aws:
->   iamRoleName: "my-custom-nvsentinel-role"
-> ```
 
 ## Additional Resources
 

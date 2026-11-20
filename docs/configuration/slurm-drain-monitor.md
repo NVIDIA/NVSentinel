@@ -134,7 +134,7 @@ Component class associated with the health event. The monitor forwards this conf
 
 #### isFatal
 
-When `false` (default), the health event triggers `CONTACT_SUPPORT`, not the full quarantine + drain + remediation pipeline. If you want NVSentinel to automatically quarantine and remediate the node when this pattern matches, set it to `true`. Otherwise, keep the default.
+When `false` (default), the pattern routes the health event to notification and escalation workflows, not to automated remediation. `isFatal: true` alone does not start automated quarantine, drain or remediation. For these actions, configure all the items in [Default Pattern](../slurm-drain-monitor.md#default-pattern).
 
 #### message
 
@@ -142,7 +142,7 @@ Optional human-readable description included in the health event. To use the raw
 
 #### recommendedAction
 
-NVSentinel remediation action associated with this pattern. Typical values: `CONTACT_SUPPORT`, `REBOOT_NODE`, `TERMINATE_NODE`.
+NVSentinel remediation action associated with this pattern. The value must be a name of the `RecommendedAction` enum, such as `CONTACT_SUPPORT`, `RESTART_BM`, `RESTART_VM` or `REPLACE_VM`. If the name is not valid, the monitor does not start.
 
 ## Processing Strategy
 
@@ -196,7 +196,7 @@ slurm-drain-monitor:
 
 ### Example 3: Fatal Pattern Triggering Automated Remediation
 
-Use `isFatal: true` and a non-CONTACT_SUPPORT action to trigger the full quarantine and remediation pipeline for a specific failure class.
+This example uses `isFatal: true` and the `RESTART_BM` action. NVSentinel quarantines, drains and remediates the node only if a fault-quarantine ruleset also matches these health events. See [Default Pattern](../slurm-drain-monitor.md#default-pattern).
 
 ```yaml
 slurm-drain-monitor:
@@ -214,5 +214,5 @@ slurm-drain-monitor:
       componentClass: NODE
       isFatal: true
       message: "GPU hardware fault detected by Slurm health check"
-      recommendedAction: REBOOT_NODE
+      recommendedAction: RESTART_BM
 ```

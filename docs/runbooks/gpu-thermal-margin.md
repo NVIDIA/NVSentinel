@@ -113,7 +113,7 @@ A real `GPU_TEMP_HW_SLOWDOWN_VIOLATION` (`CONTACT_SUPPORT`) shows that the GPU r
 
 ### 6. Verify Resolution
 
-After you resolve the thermal condition (fix the cooling or correct the threshold), run this command:
+After you resolve the thermal condition (fix the cooling or correct the threshold), verify the result. If `gpuTempLimitStoreOnly` is `true` (the default), the node has no `GpuThermalMarginWatch` condition. Thus, verify that the `dcgm_health_active_events{event_type="GpuThermalMarginWatch"}` series of the GPU from step 1 has the value 0. If `gpuTempLimitStoreOnly` is `false`, run this command:
 
 ```bash
 kubectl get node {NODE_NAME} -o json | jq '.status.conditions[] | select(.type=="GpuThermalMarginWatch")'

@@ -140,7 +140,7 @@ Kubernetes namespace in which fault-remediation creates the maintenance CRs.
 
 #### equivalenceGroup
 
-Defines which remediation actions are equivalent for deduplication. If a previous CR is in a non-terminal state, the actions in the same group deduplicate against each other. This occurs even if the CRD types are different.
+Defines which remediation actions are equivalent for deduplication. The actions in the same group deduplicate against each other, even if the CRD types are different. If a previous CR of the group is in progress, fault-remediation creates no new CR. If that CR succeeded, fault-remediation creates no new CR for a health event that arrived before the CR. It marks that health event as remediated. A health event that arrives later can get a new CR.
 
 #### supersedingEquivalenceGroups
 
@@ -264,7 +264,7 @@ After validation releases the node, the count for the next fault also starts fro
 
 After the cap, the health monitors can send more health events for the same fault. Fault-remediation closes each of these health events before the log collector starts. Thus, a capped node gets no more log-collector Jobs.
 
-If an unattended loop is worse than an unremediated node in your cluster, set a cap. If an operator monitors the `remediation-failed` state by other means, you can keep the value at `0`. Otherwise, set a cap.
+If an unattended loop is worse than an unremediated node in your cluster, set a cap. With `0`, fault-remediation never sets `remediation-failed` because of a loop. Thus, an operator who watches only that state does not see the loop. If an operator detects remediation loops by other means, you can keep the value at `0`. Otherwise, set a cap.
 
 ## Update Retry Configuration
 

@@ -151,7 +151,7 @@ node-drainer:
   evictionTimeoutInSeconds: "60"
 ```
 
-Node-drainer passes this timeout as the `GracePeriodSeconds` in the Kubernetes eviction API call. Node-drainer uses this timeout only for the `Immediate` eviction mode. Other modes respect the configured `terminationGracePeriodSeconds` of the pod.
+Node-drainer passes this timeout as the `GracePeriodSeconds` in the Kubernetes eviction API call. Node-drainer uses this timeout only for the `Immediate` eviction mode. The other modes do not evict pods. `AllowCompletion` waits until the pods exit by themselves. At its deadline, `DeleteAfterTimeout` force deletes the remaining pods with a grace period of `0`.
 
 ### Requeue Backoff Base
 
@@ -227,9 +227,8 @@ annotations:
 
 #### Behavior
 
-- **When enabled (`true`)**: During drain operations, node-drainer evicts only pods that have GPU device annotations, or that request GPUs through container limits or DRA claims
+- **When enabled (`true`)**: During drain operations, node-drainer evicts only pods that have GPU device annotations, or that request GPUs through container limits or DRA claims. It keeps pods without GPU requests, to maintain critical infrastructure services
 - **When disabled (`false`)**: Node-drainer evicts all eligible pods in the configured namespaces (default behavior)
-- Node-drainer keeps pods without GPU requests, to maintain critical infrastructure services
 
 ## Pod Drain Policies
 
@@ -336,7 +335,7 @@ node-drainer:
 
 #### name
 
-Namespace name or pattern to match. To match all user namespaces that you do not configure explicitly, use `*`.
+Namespace name or pattern to match. `*` matches all user namespaces, including the namespaces that have their own entry. If more than one entry matches a namespace, the mode with the highest priority applies: `Immediate`, then `DeleteAfterTimeout`, then `AllowCompletion`. The order and the specificity of the entries do not change the result.
 
 #### mode
 
@@ -346,7 +345,7 @@ Eviction strategy to apply for pods in matching namespaces. Valid values: `Immed
 
 #### Immediate
 
-Evicts pods with a minimal grace period, and does not wait for completion.
+Evicts pods with a grace period of `evictionTimeoutInSeconds` (60 seconds by default), and does not wait for completion.
 
 Best for: Stateless applications that restart quickly.
 
@@ -358,9 +357,9 @@ userNamespaces:
 
 #### AllowCompletion
 
-Waits for pods to terminate gracefully. Respects their `terminationGracePeriodSeconds`.
+Does not evict pods. Waits with no time limit until each pod exits by itself. A pod that does not exit by itself, such as a Deployment or StatefulSet pod, stays on the node. The drain then does not complete, and fault-remediation does not create a maintenance CR. To find such a drain, see [AllowCompletion Drain Metric](#allowcompletion-drain-metric).
 
-Best for: Most workloads, including stateful applications and services.
+Best for: Jobs and batch workloads that exit by themselves.
 
 ```yaml
 userNamespaces:
@@ -408,6 +407,7 @@ userNamespaces:
     mode: "Immediate"
   - name: "batch-jobs"
     mode: "DeleteAfterTimeout"
+  # Database - no eviction; the drain waits until the pods exit by themselves
   - name: "database"
     mode: "AllowCompletion"
   - name: "*"
@@ -480,7 +480,7 @@ Create a Helm values overlay for NVSentinel node-drainer per-namespace drain mod
 
 Modes (exact strings): Immediate, AllowCompletion, DeleteAfterTimeout.
 - Immediate: Eviction API; evictionTimeoutInSeconds as a quoted string (e.g. "60")
-- AllowCompletion: wait for pod exit (terminationGracePeriodSeconds)
+- AllowCompletion: no eviction; wait with no time limit until the pod exits by itself (Jobs, batch)
 - DeleteAfterTimeout: force-delete after deleteAfterTimeoutMinutes from health-event createdAt
 
 YAML under global.nodeDrainer and node-drainer:
@@ -488,7 +488,7 @@ YAML under global.nodeDrainer and node-drainer:
   node-drainer.evictionTimeoutInSeconds: "60"
   node-drainer.deleteAfterTimeoutMinutes: [minutes, default 60]
   node-drainer.systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
-  node-drainer.userNamespaces (specific globs before "*"; omit customDrain):
+  node-drainer.userNamespaces (entry order does not matter; if several entries match a namespace, Immediate wins, then DeleteAfterTimeout, then AllowCompletion; omit customDrain):
     [ns1] → Immediate     (default: frontend)
     [ns2] → DeleteAfterTimeout (default: batch-jobs)
     [ns3] → AllowCompletion  (default: database)

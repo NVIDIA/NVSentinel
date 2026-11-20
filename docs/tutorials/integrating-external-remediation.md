@@ -376,7 +376,7 @@ rm complete-patch.json
 The external system can be a Kubernetes controller, a script, or an operator who uses `kubectl`. In every form, it must follow the contract in [section 2](#2-the-completion-contract). A controller must obey these rules:
 
 1. **Start work only after the release.** Watch ExternalRemediationRequests. Start a repair only when `NVSentinelOwnershipReleased` is `True`.
-2. **Do each repair one time.** A restart of the controller can run the same step again before the controller writes the result. Use the name of the ExternalRemediationRequest as a durable key for an action that must run only once. An example of such an action is a support ticket.
+2. **Do each repair one time.** A restart of the controller can run the same step again before the controller writes the result. Use the name of the ExternalRemediationRequest as a durable key for an action that must run only once. An example of such an action is a support ticket. Send the key to the system that runs the action. That system must reject a repeated key, or the controller must find the first result by the key.
 3. **Write the result only at the end.** Set `ExternalRemediationComplete=True` only when the repair is complete. Set `False` only when the external system stops work on the node.
 4. **Change only the `ExternalRemediationComplete` condition.** NVSentinel owns all other fields in the ExternalRemediationRequest. A status update replaces the full `conditions` list. To change the condition, do these steps:
    1. Read the ExternalRemediationRequest.
@@ -401,13 +401,14 @@ Then search the fault-remediation logs for the reason:
 
 ```bash
 kubectl logs deployment/fault-remediation --namespace nvsentinel \
-  | grep -E "Action not found in remediation configuration|Skipping event for node due to existing CR|Maximum remediation attempts reached"
+  | grep -E "Action not found in remediation configuration|Existing CR is still in progress|Skipping event for node due to existing CR|Maximum remediation attempts reached"
 ```
 
 | Log message | Cause | Fix |
 | --- | --- | --- |
 | `Action not found in remediation configuration` | The health event names an action that `maintenance.actions` does not contain. The `action` field in the log line shows the name. fault-remediation also logs this line for actions that it does not handle, such as `NONE`. Ignore those lines. | If `action` is `external-remediation`, fault-remediation did not load the action. See [section 4](#4-add-the-externalremediationrequest-template). If `action` has a different value, make sure that the health event sets `recommendedAction: CUSTOM` and `customRecommendedAction: external-remediation`. |
-| `Skipping event for node due to existing CR` | An ExternalRemediationRequest for the node is still open. fault-remediation creates only one for each node at a time. | Wait until the open ExternalRemediationRequest closes, or delete it. |
+| `Existing CR is still in progress, requeueing event until the CR reaches a terminal state` | An ExternalRemediationRequest for the node is still open. fault-remediation retries the health event until `ExternalRemediationComplete` is `True` or `False`. | Wait until the open ExternalRemediationRequest closes, or delete it. |
+| `Skipping event for node due to existing CR` | An ExternalRemediationRequest for the node already completed, and the health event arrived before that request. fault-remediation marks the health event as remediated. | No fix is necessary. A later health event can get a new ExternalRemediationRequest. |
 | `Maximum remediation attempts reached for equivalence group, giving up` | The node reached the `maxRemediationAttempts` limit. | See [Fault Remediation Configuration](../configuration/fault-remediation.md). |
 
 ### NVSentinelOwnershipReleased stays Unknown

@@ -239,7 +239,7 @@ circuitBreaker:
   duration: "5m"
 ```
 
-Absolute bound only, for "never cordon more than 2 nodes regardless of cluster size":
+Absolute burst bound only, for "never cordon more than 2 nodes in any 5 minutes, regardless of cluster size":
 
 ```yaml
 circuitBreaker:
@@ -249,7 +249,7 @@ circuitBreaker:
   duration: "5m"
 ```
 
-Burst bound plus a standing bound. It allows no more than 5 cordons in any 5 minutes, and never more than 20 nodes out of service at the same time:
+Burst bound plus a standing bound. It allows no more than 5 cordons in any 5 minutes. It also allows no more than 20 nodes that NVSentinel cordoned at the same time:
 
 ```yaml
 circuitBreaker:

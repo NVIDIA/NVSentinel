@@ -20,6 +20,8 @@ During GPU Operator or driver upgrades, DCGM on affected nodes becomes temporari
 
 **Solution:** Temporarily disable NVSentinel management on nodes during their GPU driver or GPU Operator upgrades.
 
+The opt-out label of this procedure takes effect only through a match condition of kind `Node` in the fault-quarantine rule sets. The default rule sets include this condition. If you use custom rule sets, make sure that each one includes this condition before you start. Otherwise, NVSentinel can still quarantine the nodes during the upgrade. See [Rule Sets](../configuration/fault-quarantine.md#rule-sets).
+
 ## Procedure
 
 ### 1. Disable NVSentinel Management on Target Nodes

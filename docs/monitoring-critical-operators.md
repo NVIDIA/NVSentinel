@@ -19,11 +19,12 @@ These policies monitor **DaemonSet pods** in the `gpu-operator` and `network-ope
 The policy detects pods that stay stuck in any non-progressing state, for example:
 
 - Stuck in init container execution (pod phase is `Pending`)
-- `Pending` because of resource constraints
 - `CrashLoopBackOff` in main containers (pod phase is `Running`, but the container crashes)
 - `CrashLoopBackOff` in init containers (pod phase is `Pending`)
 - `ImagePullBackOff` errors
 - Any other state that prevents the pod from becoming healthy
+
+The policies do not detect a pod that the scheduler cannot schedule, for example because its node does not have enough resources. This pod has no `spec.nodeName` and no `status.startTime`. Both predicates require these fields.
 
 ### Pod Health Tracking (DaemonSet Only)
 
@@ -155,7 +156,7 @@ The policy triggers when **all** of the following conditions are true:
 | Stuck in init containers               | `Pending`   | Yes (phase check)             |
 | Init container `CrashLoopBackOff`      | `Pending`   | Yes (phase check)             |
 | Main container `CrashLoopBackOff`      | `Running`   | Yes (containerStatuses check) |
-| `Pending` (scheduling/resource issues) | `Pending`   | Yes (phase check)             |
+| `Pending` (scheduling/resource issues) | `Pending`   | No (no `spec.nodeName`)       |
 | `ImagePullBackOff` / `ErrImagePull`    | `Pending`   | Yes (phase check)             |
 | `Failed` phase                         | `Failed`    | Yes (phase check)             |
 | Normal initialization (< threshold)    | Any         | No (grace period)             |
@@ -169,7 +170,7 @@ The kubernetes-object-monitor tracks each pod individually, by its name. This si
 ### Scenario: Pod Becomes Unhealthy
 
 1. **Pod enters unhealthy state** (for example, init container stuck, CrashLoopBackOff) → NVSentinel cordons the node after the threshold
-2. **Pod becomes healthy** (Running with all containers ready) → NVSentinel uncordons the node
+2. **Pod becomes healthy** (phase `Running` or `Succeeded`, and no container in `CrashLoopBackOff`) → NVSentinel uncordons the node, even if a container is not ready
 
 ### Scenario: Main Container CrashLoopBackOff
 

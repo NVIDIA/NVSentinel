@@ -160,11 +160,11 @@ The sections below give the data for each component.
 
 ### kubernetes-object-monitor
 
-kubernetes-object-monitor watches Nodes and Pods, with one watch for each enabled policy. It applies a transform that it derives from the CEL expressions of the policies. The shipped Pod policy is cluster-wide, so it watches every pod in the cluster. The benchmark policy for the grid below has a scope of one namespace, so that the number of watched pods is the controlled variable. The marginal cost per node is **132,000 B/node**: from 2.86 G at 10,005 nodes to 14.70 G at 100,005 nodes, with no watched pods. CPU did not limit the process in either of these two measurements.
+kubernetes-object-monitor watches Nodes and Pods, with one watch for each enabled policy. It applies a transform that it derives from the CEL expressions of the policies. A cluster-wide Pod policy, such as the `PodOnUnschedulableNode` policy without the benchmark changes in [Deployed configuration](#deployed-configuration), watches every pod in the cluster. The benchmark policy for the grid below has a scope of one namespace, so that the number of watched pods is the controlled variable. The marginal cost per node is **132,000 B/node**: from 2.86 G at 10,005 nodes to 14.70 G at 100,005 nodes, with no watched pods. CPU did not limit the process in either of these two measurements.
 
-**The Pod transform removes almost all of the object.** In the test, a pod arrived at 40,644 B on the wire. The transform keeps eight fields of it: `apiVersion`, `kind`, five pieces of `metadata`, `spec.nodeName` and `status.phase`. These fields are **~175 B, under half a percent of what the API server sent**. The transform drops all other fields before they reach the cache. In a production pod, these other fields are mostly the container spec and env.
+**The Pod transform can remove almost all of the object.** In the test, a pod arrived at 40,644 B on the wire. If a Pod policy reads only `status.phase` and `spec.nodeName`, the transform keeps eight fields: `apiVersion`, `kind`, five pieces of `metadata`, `spec.nodeName` and `status.phase`. These fields are **~175 B, under half a percent of what the API server sent**. The transform drops all other fields before they reach the cache. In a production pod, these other fields are mostly the container spec and env.
 
-For each row, the test restarted the process and let it converge. The rows use the benchmark Pod policy in [Deployed configuration](#deployed-configuration).
+For each row, the test restarted the process and let it converge. The rows use the benchmark Pod policy in [Deployed configuration](#deployed-configuration). This policy reads `metadata.annotations` as a whole map, so the transform keeps all 20,039 B of the annotations of each pod, not ~175 B.
 
 
 | Nodes   | Watched pods | CPU limit | CPU med/peak `[M]` | Throttled `[M]` | Working set peak `[M]` | Rec. request | Rec. limit |
@@ -514,7 +514,7 @@ The test measured ten fleet sizes, with three connections per node: one for each
 
 Memory is proportional to fleet size, at about 235 KiB per node. The cost per node is flat to within 6.5% across a fiftyfold range of fleet sizes. About 97% of the memory is for the connections of a node, and 3% is for the cached labels of the node. For this reason, one publisher fewer per node removes about a third of the cost, but an empty `allowedLabels` removes only 3%. For the measurement, see [Connector memory: connections against label cache](#connector-memory-connections-against-label-cache-m).
 
-Requests and limits are per replica. The CPU figures are the measured use divided by three.
+Requests and limits are per replica. The CPU figures are the measured use divided by three. The memory limits do not include the headroom for one replica down that step 4 of [Ingest rate and sizing](#ingest-rate-and-sizing) gives.
 
 The working-set columns are from the **quiet** sweep. In this sweep, MongoDB accepted health events as fast as publishers sent them, so almost no request waited. A connection then cost about 79 KiB. MongoDB is behind when it accepts health events more slowly than publishers send them. Each connection then also holds a request that waits for its write. Such a connection costs 165-171 KiB, about 2.1x quiet.
 
@@ -558,7 +558,7 @@ To get a higher ceiling, increase `DATASTORE_MAX_CONNECTIONS` instead of adding 
 
 More replicas also give more throughput. But a replica costs memory, and a larger pool gives the same throughput without that cost.
 
-For comparison, a 50,000-node fleet at 0.3 events/node/minute, the rate that this report uses elsewhere, sends 250 events/s. The shipped default gives 4,925 events/s, so the default is ample for steady state. The default becomes the limit during a burst. When this occurs, the path does not drop health events. It blocks publishers.
+For comparison, a 50,000-node fleet at 0.3 events/node/minute, the rate that this report uses elsewhere, sends 250 events/s. The shipped default gives 4,925 events/s, so the default is ample for steady state. The default becomes the limit during a burst. When this occurs, the path blocks publishers. It loses no health events unless one waits longer than the retry window of the publisher, 5 minutes by default.
 
 platform-connector holds memory for each blocked publisher, so the pool sets the memory and the ceiling. The health events in flight on a replica are its throughput times the time of a write, with the connection count as the maximum.
 
@@ -580,15 +580,15 @@ Size the pool first. Then size the replica count:
 
 | Step | Quantity                                                                        | Basis                                                                                                                                       |
 | ---- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | connections per replica = target throughput x how long a write takes / replicas | the write time that you measure on the cluster that you size, at that throughput and not at rest                                            |
-| 2    | connections per replica `<= M_limit / (a + b)`                                  | 26,000 at a 4Gi limit if the datastore saturates, 56,000 if `W` stays low                                                                   |
-| 3    | `R = ceil(publisher connections / connections per replica)`                     | how many publishers the fleet has                                                                                                           |
-| 4    | leave about 30% per-replica headroom                                            | the PodDisruptionBudget permits one replica down, and the other replicas absorb its connections: 2,265 MB to 2,851 MB per replica, measured |
+| 1    | pool size per replica (`DATASTORE_MAX_CONNECTIONS`) = target throughput x how long a write takes / replicas | the write time that you measure on the cluster that you size, at that throughput and not at rest. The result is the writes in flight, not the publisher connections |
+| 2    | publisher connections per replica `<= M_limit / (a + b)` | 26,000 at a 4Gi limit if the datastore saturates, 56,000 if `W` stays low |
+| 3    | `R = ceil(publisher connections / publisher connections per replica)` | how many publishers the fleet has, and the limit from step 2 |
+| 4    | size for one replica down: each remaining replica holds `R / (R - 1)` times its connections, 1.5x at three replicas | the PodDisruptionBudget permits one replica down, and the other replicas absorb its connections. One measurement went from 2,265 MB to 2,851 MB per replica |
 
 
 ![Replicas required, by memory limit](images/connector-replicas-needed.png)
 
-This example uses three publishers per node, with MongoDB behind. Step 2 then shows that three replicas at 4Gi support about **26,000 nodes**, or 17,000 with one replica down. A 100,000-node fleet needs about 15 GiB per replica: three replicas at 15Gi, or twelve at 4Gi.
+This example uses three publishers per node, with MongoDB behind. Step 2 then shows that three replicas at 4Gi support about **26,000 nodes**, or 17,000 with one replica down. A 100,000-node fleet needs about 15 GiB per replica: three replicas at 15Gi, or twelve at 4Gi. With step 4, the fleet needs three replicas at about 22.5 GiB, or thirteen at 4Gi.
 
 Replicas give throughput and memory capacity, so when you scale for one, the other also changes. Nothing in the chart or the metrics shows this. Replicas are also not a free substitute, for the reason in [Scaling out](#scaling-out). CPU is never the limit in either case: 1.94 cores across three replicas at 100,000 nodes, against a limit of 2 cores for each replica.
 
@@ -1060,7 +1060,7 @@ The differences that matter are structural:
 | Throughput ceiling            | about 200 events/s per node, growing with the fleet                     | about 4,900 events/s for the whole fleet, see [Ingest rate and sizing](#ingest-rate-and-sizing) |
 | What an acknowledgement means | queued in one pod's memory                                              | stored on a majority of the replica set                                                         |
 | MongoDB connections           | 7 per node                                                              | 166 for the whole replica set, measured in A2                                                   |
-| Under overload                | queue grows without bound; acknowledged events are lost if the pod dies | backpressure, publishers block, nothing is lost                                                 |
+| Under overload                | queue grows without bound; acknowledged events are lost if the pod dies | backpressure, publishers block; nothing is lost unless a health event waits longer than the retry window of the publisher, 5 minutes by default |
 
 
 ### Recovery from a full outage
@@ -1075,7 +1075,7 @@ The loss of one secondary has no measurable cost, which is the result that the s
 
 ### Loss, duplication and upgrades
 
-The path loses no health events when it is saturated. The count comes from the datastore, not from the counters of platform-connector. The test offered 20,000 events/s through 20,000 connections against a pool that drains about 4,900 events/s. Then it let the backlog finish:
+Under saturation, the path loses no health events unless one waits longer than the retry window of the publisher, 5 minutes by default. The count comes from the datastore, not from the counters of platform-connector. The test offered 20,000 events/s through 20,000 connections against a pool that drains about 4,900 events/s. Then it let the backlog finish:
 
 
 |                       |           |
@@ -1558,9 +1558,9 @@ Every figure in this report depends on the configuration of the components. Thus
     recommendedAction = "CONTACT_SUPPORT";  message = "Pod failed on an unschedulable node"
 ```
 
-The Pod predicate above is not the predicate in the chart, and the difference sets the per-pod cost. The `PodOnUnschedulableNode` predicate in the chart reads `resource.status.phase`. Thus the CEL-derived transform retains `status.phase` and `spec.nodeName`, and about 175 B per pod stays in the cache. The predicate of the memory grid references `metadata.annotations` as a whole map. The extractor cannot narrow a whole map to individual keys, so the transform retains every annotation. The benchmark pods have **20,039 B of annotations** each.
+The Pod predicate above is a benchmark change to the `PodOnUnschedulableNode` policy, and the difference sets the per-pod cost. Without this change, the `PodOnUnschedulableNode` predicate reads `resource.status.phase`. Thus the CEL-derived transform retains `status.phase` and `spec.nodeName`, and about 175 B per pod stays in the cache. The predicate of the memory grid references `metadata.annotations` as a whole map. The extractor cannot narrow a whole map to individual keys, so the transform retains every annotation. The benchmark pods have **20,039 B of annotations** each.
 
-This is the expensive end of the range, on purpose, so that the pod axis is visible and not lost in noise. It is also why the per-pod figures of the grid are approximately two orders of magnitude above the cost of the policy in the chart. Each row is a restarted process that converged on a fleet with normal KWOK heartbeats, at ~3,000-3,300 lease renewals/s.
+This is the expensive end of the range, on purpose, so that the pod axis is visible and not lost in noise. It is also why the per-pod figures of the grid are approximately two orders of magnitude above the cost of the `status.phase` predicate. Each row is a restarted process that converged on a fleet with normal KWOK heartbeats, at ~3,000-3,300 lease renewals/s.
 
 The Pod policy is the reason that kubernetes-object-monitor holds a Pod cache. Thus it is the largest component at 100,000 nodes with a pod on every node. Its `--resync-period=24h` means that the fleet-wide relist does not occur within a measurement window. Otherwise, the relist dominates the CPU. Its cache sync timeout is 10m.
 

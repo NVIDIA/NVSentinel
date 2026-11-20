@@ -281,9 +281,9 @@ Sometimes you must retry a remediation action, or do it manually. An example is 
 **WARNING:**
 
 - If a node progressed through the `draining` -> `drain-succeeded` -> `remediating` -> `remediation-succeeded` states but NVSentinel did not uncordon it automatically, these actions are safe:
-  - Manually create a new RebootNode CR for the RESTART_VM or RESTART_BM actions. The node is already fully drained.
+  - If the recommended action was RESTART_VM or RESTART_BM, manually create a new RebootNode CR. For these actions, NVSentinel already did a full drain of the node.
   - For COMPONENT_RESET actions, create a new GPUReset CR that targets the same node and GPU pair. The drain already removed all workload pods that were assigned to the GPU that needs the reset.
-- Sometimes the previous failed remediation action was a GPUReset, and you want to remediate the node with a RebootNode CR. In this case, the node must be fully drained. If partial drain is enabled (`partialDrainEnabled: true`), NVSentinel drained only the pods that were assigned to the GPU that needs the reset. Before you create a RebootNode, do a full drain of the node manually. Use the same steps as in 4a for the `drain-failed` state.
+- Sometimes the previous remediation action was a GPUReset, and you want to remediate the node with a RebootNode CR. In this case, the node must be fully drained. If partial drain is enabled (`partialDrainEnabled: true`), NVSentinel drained only the pods that were assigned to the GPU that needs the reset. Before you create a RebootNode, do a full drain of the node manually. Use the same steps as in 4a for the `drain-failed` state.
 - Sometimes you want to remediate a GPU that is different from the GPU in the initial GPUReset CR. In this case, drain all pods that use that GPU. Otherwise, the reset can fail, because processes can still have a handle on the GPU.
 
 To manually trigger a reboot:

@@ -32,12 +32,14 @@ The Helm chart automatically generates Kubernetes RBAC permissions from your pol
 
 ## Configuration
 
-To configure the Kubernetes Object Monitor, define policies in the Helm values:
+To configure the Kubernetes Object Monitor, enable it and define policies in the Helm values:
 
 ```yaml
+global:
+  kubernetesObjectMonitor:
+    enabled: true
+
 kubernetes-object-monitor:
-  enabled: true
-  
   maxConcurrentReconciles: 1
   resyncPeriod: 5m
   
@@ -285,7 +287,7 @@ The `lookup()` function lets you traverse resource relationships to associate he
 
 ### Automatic RBAC
 
-The Helm chart automatically generates the Kubernetes permissions from your policies. You do not manage RBAC manually.
+The Helm chart automatically generates the Kubernetes permissions for the kinds that your policies watch. For a kind that a policy looks up but no policy watches, grant `get`, `list` and `watch` yourself. See [Cached Fields](#cached-fields).
 
 ### State Tracking
 

@@ -109,6 +109,8 @@ event-exporter:
 
 The HTTP/HTTPS URL to which the exporter POSTs CloudEvents.
 
+> **Warning:** The exporter sends the OIDC access token as a Bearer header on every request, also to an `http://` endpoint. Over HTTP, an observer on the network path can read the token and use it again. Use an `https://` endpoint.
+
 #### timeout
 
 The request timeout for HTTP calls to the sink endpoint.
@@ -136,6 +138,8 @@ event-exporter:
 #### tokenUrl
 
 The URL of the OAuth 2.0 token endpoint that gives the access tokens.
+
+> **Warning:** The exporter sends the client ID and the client secret to this URL in a Basic `Authorization` header. Over `http://`, an observer on the network path can read them. Use an `https://` URL.
 
 #### clientId
 
@@ -245,7 +249,7 @@ backfill:
 
 ## Resume Token Storage
 
-The location where the exporter persists its change stream resume token. After a restart, the exporter continues from the last exported event. It does not replay the stream.
+The exporter persists its change stream resume token in the datastore. After a restart, the exporter continues after the last event in the token. The token advances past an event only after the exporter processed that event and all earlier events. For example, a worker can publish a later event before an earlier event completes. If the exporter stops at that time, it publishes the later event again after the restart. Delivery is at least once, so the sink must handle duplicate events.
 
 ```yaml
 event-exporter:
@@ -255,9 +259,11 @@ event-exporter:
       collection: "resumetokens"
 ```
 
-Both fields are required. If one of them is empty, the exporter rejects its configuration at startup. If your datastore uses different names, change these fields. Otherwise, keep the defaults.
+Both fields are required. If one of them is empty, the exporter rejects its configuration at startup. The exporter does not use their values to find the token, so keep the defaults. It stores its token with the tokens of the other modules. On MongoDB, this is the token collection of the datastore, `ResumeTokens` by default. On PostgreSQL, this is the `resume_tokens` table.
 
-The token advances in strict event order, independent of which worker publishes first. Thus, if you increase [Workers](#workers), there is no risk of skipped events after a restart.
+The token advances in strict event order, independent of which worker publishes first. Thus, more [Workers](#workers) do not add a risk of skipped events after a restart.
+
+On MongoDB, a long outage can make the token too old for the oplog. The exporter then deletes the token and starts from the current position, so it can skip events. If this occurs at startup and backfill is enabled, the exporter runs the [backfill](#backfill-configuration) again. The backfill exports the events of the last `maxAge`, up to `maxEvents`, including events that the sink already received. The `change_stream_resume_token_recoveries_total` metric counts these recoveries.
 
 ## Workers
 

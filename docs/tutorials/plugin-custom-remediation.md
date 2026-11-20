@@ -75,11 +75,11 @@ status:
 
 Behavior of the status checker:
 
-- **Condition `True`** → the repair succeeded. NVSentinel marks the equivalent health events as covered.
+- **Condition `True`** → the repair succeeded. NVSentinel marks the equivalent health events that arrived before the CR as covered.
 - **Condition `False`** → the repair failed. NVSentinel drops the group and **creates a new CR to retry**. No "terminal failure" state exists. If a repair is unrecoverable, leave the condition `Unknown` or absent. Do not set it to `True` or `False`. As an alternative, stop requeueing after your own retry budget.
 - **Condition missing or `Unknown`** → the repair is in progress. NVSentinel **does not create** a duplicate CR.
 
-fault-remediation derives an **effective equivalence group** from the matched action. If the action sets `impactedEntityScope`, the effective group also includes the impacted entity, for example `reset-GPU-123`. While a CR in that effective group is in progress or already succeeded, fault-remediation does not create a new CR. A CR in a superseding group has the same effect. fault-remediation does **not** deduplicate every repair on the node.
+fault-remediation derives an **effective equivalence group** from the matched action. If the action sets `impactedEntityScope`, the effective group also includes the impacted entity, for example `reset-GPU-123`. While a CR in that effective group or in a superseding group is in progress, fault-remediation does not create a new CR. After that CR succeeds, fault-remediation creates no new CR for a health event that arrived before the CR. For a health event that arrives later, fault-remediation can create a new CR. fault-remediation does **not** deduplicate every repair on the node.
 
 `supersedingEquivalenceGroups` lets a broader action cover a narrower one. The **subordinate** action lists the group that supersedes it. For example, a node reboot has the same effect as an RMA, so the `hardware-rma` action lists `restart`:
 
@@ -187,7 +187,7 @@ status:
 **Golden rules** (the same as for any NVSentinel plugin):
 
 1. Make Reconcile **idempotent**. If the CR already has `Complete=True`, make Reconcile a no-op.
-2. **Make non-idempotent repairs durably idempotent.** A controller restart can run your repair again before your controller saves `Complete=True`. A retry after a `False` condition, which creates a new CR, can also run your repair again. Guard one-shot side effects with a durable key, such as `spec.healthEventId` or a status phase. Examples of one-shot side effects are the creation of a ticket and a call to a CSP API. With this key, each effect happens **at most once**.
+2. **Make non-idempotent repairs durably idempotent.** Your repair can run again after a controller restart before `Complete=True`, or after a retry for a `False` condition, which creates a new CR. Examples of one-shot side effects are the creation of a ticket and a call to a CSP API. Send a durable key, such as `spec.healthEventId`, in each request that causes one of these effects. The external system must reject a repeated key, or your controller must find the first result by the key before it tries again. A status phase alone cannot prevent a duplicate, because your controller can crash after the effect and before it saves the phase.
 3. Set `Complete=True` only when the repair is **complete**. Until then, requeue. Set `Complete=False` only when you want NVSentinel to retry with a new CR.
 4. One CR for each health event. NVSentinel manages the lifecycle of the CR through the equivalence group.
 
@@ -236,8 +236,11 @@ Controller (standalone Kubebuilder project, any repo):
 - Spec: nodeName (string), action (string), healthEventId (string) — minimal fields from the
   fault-remediation template below.
 - Status: conditions []metav1.Condition with a subresource.
-- Reconciler: idempotent; no-op once Complete=True; run the repair at most once (guard non-idempotent
-  side effects with a durable key such as spec.healthEventId so a restart or retry cannot repeat them);
+- Reconciler: idempotent; no-op once Complete=True; a restart or a retry can run the repair again, so
+  send a durable key such as spec.healthEventId in each request that has a one-shot side effect (a
+  ticket or a CSP API call); the external system must reject a repeated key, or the reconciler must
+  find the first result by that key before it tries again (a status phase alone cannot prevent a
+  duplicate, because the controller can crash after the effect and before it saves the phase);
   patch status with Type="Complete", Status="True" when repaired (or "False" to make NVSentinel retry
   with a new CR) using append-or-update-by-type (meta.SetStatusCondition + Status().Update).
   RBAC: remediationrequests + status; add any API permissions your repair needs.

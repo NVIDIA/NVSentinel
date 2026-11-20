@@ -273,7 +273,7 @@ Two classes of publisher share the per-node Unix socket:
 
 Every first-party monitor presents a credential. This credential is a projected Kubernetes ServiceAccount token, minted for a dedicated audience. Platform Connectors validates it with the TokenReview API. On Kubernetes 1.30+, the API server writes the **node** of the bound pod into the token when it issues the token. TokenReview reports this node back (`authentication.kubernetes.io/node-name`). As a result, the token carries a verified statement of *where its holder runs*, and the holder cannot change it.
 
-The rule for each caller:
+The table gives the rule for each caller under `mode: enforce`, the default. Under `mode: audit`, Platform Connectors records each violation that the table describes and lets the request through.
 
 | Caller presents | Decision |
 |-----------------|----------|

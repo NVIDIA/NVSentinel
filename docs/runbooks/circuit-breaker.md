@@ -14,7 +14,7 @@ This is the canonical reset procedure. The [circuit breaker overview](../circuit
 - Resetting the breaker does not uncordon anything. Uncordon recovered nodes yourself in step 6
 - Reset the breaker only after you investigate and fix the root cause
 
-On a cluster with one or two GPU nodes, the default 50% threshold trips on the first cordon. If that is the cause, reset the breaker as described below. Then disable the breaker, so that the trip does not occur again. See [Small clusters](../circuit-breaker.md#small-clusters).
+On a cluster with one or two GPU nodes, the default 50% threshold trips on the first cordon. If that is the cause, reset the breaker as described below. Then change the breaker configuration, so that a single cordon does not trip the breaker again. On a cluster with one GPU node, disable the breaker. On a cluster with two GPU nodes, set `percentage` to `100` and `maxNodes` to `0`. See [Small clusters](../circuit-breaker.md#small-clusters).
 
 ## Procedure
 

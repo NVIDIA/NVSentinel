@@ -250,7 +250,7 @@ fault-remediation must have an entry for the action name in `maintenance.actions
 
 ## Deduplication Transformer Configuration
 
-Suppresses repeated health events within a burst window, before platform-connectors writes them to the datastore or propagates them to Kubernetes. The deduplicator derives the dedup key from:
+Downgrades repeated unhealthy health events within a burst window to `STORE_AND_ANALYSE`. The downgraded health events still reach the datastore, so deduplication does not reduce the datastore writes. For these health events, platform-connectors creates no node conditions and no Kubernetes Events. The deduplicator derives the dedup key from:
 
 ```text
 (nodeName, checkName, canonical entitiesImpacted, canonical errorCode, processingStrategy, isHealthy)
@@ -285,7 +285,7 @@ Go duration string that controls how often the in-memory tracker removes expired
 
 #### includeChecks
 
-List of `checkName` values that platform-connectors can deduplicate. Keep this list focused on high-volume repeated signal streams, such as `SysLogsXIDError` and `SysLogsSXIDError`. Every other check passes through unchanged.
+List of `checkName` values that platform-connectors can deduplicate. Keep this list focused on high-volume repeated signal streams, such as `SysLogsXIDError` and `SysLogsSXIDError`. If the list has entries, every other check passes through unchanged. If the list is empty, platform-connectors can deduplicate every check.
 
 ### Healthy Event Behavior
 
@@ -317,7 +317,7 @@ Registers `health_events_total{node, agent, check_name, recommended_action, is_f
 
 Every monitor publishes through platform-connectors, so one connector covers `gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`, `kubernetes-object-monitor` and `health-events-analyzer` at the same time.
 
-On a fleet where actionable health events are rare, this metric answers "what needs attention right now" without a query to the datastore. For the label rationale and example queries, see [Prometheus Connector Metrics](../METRICS.md#prometheus-connector-metrics).
+This counter measures the volume of health events over time. It does not show which faults are active, because a health event stays in the count after its fault recovers. On a fleet where actionable health events are rare, an increase of the counter shows new actionable health events without a query to the datastore. To see the last reported fault state of a node, examine its node conditions. For the label rationale and example queries, see [Prometheus Connector Metrics](../METRICS.md#prometheus-connector-metrics).
 
 ## gRPC Sink Connector
 
@@ -354,7 +354,9 @@ If its loop is not finished 10 seconds after the shutdown starts, the connector 
 
 #### tokenPath
 
-Path to a projected Kubernetes ServiceAccount token. If you set it, the connector attaches the token as a Bearer header on every RPC. The receiving server validates the token with the TokenReview API. An empty value disables authentication, which matches the other internal NVSentinel gRPC connections.
+Path to a projected Kubernetes ServiceAccount token. If you set it, the connector attaches the token as a Bearer header on every RPC. The receiving server validates the token with the TokenReview API. An empty value disables authentication.
+
+> **Warning:** The connector does not use TLS. If you set `tokenPath`, the connector sends the token in plaintext on every RPC. An observer on the network path to the target can read the token and use it again. A network policy does not encrypt this traffic. Set `tokenPath` only if you trust the whole network path to the target.
 
 ```yaml
 platformConnector:

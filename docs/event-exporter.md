@@ -23,13 +23,13 @@ The Event Exporter supports these use cases. It streams events to your external 
 The Event Exporter runs as a deployment in the cluster. It does these steps:
 
 1. Watches the datastore for new health events with change streams
-2. On first startup (if enabled), backfills historical events from the past N days
+2. Backfills historical events from the past N days, if backfill is enabled. It does this when it starts without a resume token, for example on the first startup
 3. Transforms health events into the CloudEvents format with custom metadata
 4. Publishes events to the configured HTTP endpoint with OIDC authentication
 5. Tracks progress with resume tokens for reliable delivery
 6. Retries failed publishes with exponential backoff
 
-The exporter keeps at-least-once delivery semantics, because it persists resume tokens. Thus, the exporter loses no events, even if it restarts.
+The exporter persists resume tokens, so delivery is at least once. After a restart, the exporter can publish some events again. On MongoDB, it can also skip events if its resume token becomes too old for the oplog. For more information, see [Resume Token Storage](configuration/event-exporter.md#resume-token-storage).
 
 ## Configuration
 
@@ -86,9 +86,9 @@ event-exporter:
 ### Configuration Options
 
 - **Metadata**: Custom key-value pairs that the exporter includes with every event (the cluster name is required)
-- **Sink Endpoint**: HTTP/HTTPS URL to which the exporter posts CloudEvents
+- **Sink Endpoint**: HTTP/HTTPS URL to which the exporter posts CloudEvents. The exporter sends the OIDC access token with every request, also over HTTP. Thus, use an HTTPS URL.
 - **OIDC Authentication**: OAuth2 client credentials for endpoint authentication
-- **Backfill**: On first startup, optionally exports historical events (disabled after the initial run)
+- **Backfill**: Optionally exports historical events when the exporter starts without a resume token, for example on the first startup
 - **Workers**: Number of concurrent workers that publish events to the sink in parallel. The exporter advances resume tokens in strict order, independent of which worker finishes first. This keeps the at-least-once delivery guarantees. With concurrent publishing, events can arrive at the sink out of order. The default is `10`.
 - **Retry Policy**: Exponential backoff configuration for failed publishes
 
@@ -140,11 +140,11 @@ Uses the industry-standard CloudEvents v1.0 format for broad compatibility with 
 
 ### Historical Backfill
 
-On first deployment, optionally exports up to N days of historical events for complete visibility.
+When the exporter starts without a resume token, for example on the first deployment, it can export up to N days of historical events.
 
 ### Resume Token Tracking
 
-Persists progress in the datastore to ensure at-least-once delivery. The exporter loses no events when it restarts.
+Persists progress in the datastore for at-least-once delivery. On MongoDB, a resume token that becomes too old for the oplog can cause skipped events. For the details, see [Resume Token Storage](configuration/event-exporter.md#resume-token-storage).
 
 ### OIDC Authentication
 

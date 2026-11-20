@@ -36,7 +36,11 @@ The built-in default pattern matches any drain reason with the prefix `[HC]`. Sl
 |---|---|---|---|---|
 | `^\[HC\]` | `SlurmHealthCheck` | `NODE` | `false` | `CONTACT_SUPPORT` |
 
-`isFatal: false` routes the health event to notification and escalation workflows, not to automated `REPLACE_VM` remediation. For Slurm-detected failures that require it, set `isFatal: true` on a pattern. This triggers full automated quarantine, drain, and remediation.
+`isFatal: false` routes the health event to notification and escalation workflows, not to automated remediation. `isFatal: true` alone does not start automated remediation. For Slurm-detected failures that need automated quarantine, drain and remediation, configure all these items:
+
+- Set `isFatal: true` on the pattern.
+- Set `recommendedAction` to an action that has an entry in `fault-remediation.maintenance.actions`, such as `RESTART_VM` or `REPLACE_VM`. The default chart has no entry for `CONTACT_SUPPORT`, the action of the default pattern.
+- Add a fault-quarantine ruleset that matches the health events of this monitor, for example with `event.agent == 'slurm-drain-monitor'`. The default rulesets do not match them. See [Rule Sets](configuration/fault-quarantine.md#rule-sets).
 
 ## Configuration
 
@@ -57,13 +61,15 @@ slurm-drain-monitor:
   reasonDelimiter: "; "  # Split compound drain reasons on this delimiter
 
   patterns:
-    - regex: "\\[HC\\]"
+    - name: slurm-healthcheck
+      regex: "\\[HC\\]"
       checkName: SlurmHealthCheck
       componentClass: NODE
       isFatal: false
       message: "Slurm health check detected a failure"
       recommendedAction: CONTACT_SUPPORT
-    - regex: "\\[HC-FATAL\\]"
+    - name: slurm-healthcheck-fatal
+      regex: "\\[HC-FATAL\\]"
       checkName: SlurmHealthCheckFatal
       componentClass: NODE
       isFatal: true
@@ -85,7 +91,7 @@ Slurm health check scripts sometimes concatenate multiple reasons into a single 
 
 ### Configurable Escalation
 
-`isFatal: false` (default) triggers `CONTACT_SUPPORT` escalation. A human reviews the node before any destructive action occurs. If you want full automated quarantine, workload drain, and maintenance CR creation without manual intervention, set `isFatal: true` on the pattern.
+The default pattern sets `isFatal: false` and `recommendedAction: CONTACT_SUPPORT`. Thus, a human reviews the node before any destructive action occurs. For automated quarantine, workload drain and maintenance CR creation, configure the items in [Default Pattern](#default-pattern). `isFatal: true` alone is not enough.
 
 ### Shadow Mode
 

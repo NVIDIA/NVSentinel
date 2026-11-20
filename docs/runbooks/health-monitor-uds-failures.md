@@ -32,7 +32,8 @@ kubectl logs -n nvsentinel {HEALTH_MONITOR_POD}
 Find these messages in the logs:
 
 - `"code = Unavailable"` → The socket is closed, or platform-connector does not run
-- `"connection refused"` → The socket does not exist
+- `"connection refused"` → The socket file exists, but no process listens on it. Check that platform-connector runs on the node (step 2)
+- `"skipping send"` → The socket file does not exist, so the monitor does not send the health event. Check platform-connector (step 2) and the volume mounts (step 4)
 - `"broken pipe"` → The socket closed during the communication
 
 ### 2. Check Platform Connector on That Node

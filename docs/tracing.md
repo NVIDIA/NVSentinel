@@ -187,7 +187,7 @@ In your tracing UI (Grafana Tempo, Jaeger), you can find traces by:
 ### Example: Why Was a Node Not Remediated?
 
 1. Find the trace for the health event
-2. Check if the health event is still in progress. The node can still be in the draining stage, and thus not remediated yet. Look for an open `node_drainer.drain_session` span
+2. Check if the health event is still in progress. The node can still be in the draining stage, and thus not remediated yet. NVSentinel sends a span to the collector only after the span ends, so the backend does not show an active `node_drainer.drain_session` span. Instead, check the `dgxc.nvidia.com/nvsentinel-state` label of the node. The value `draining` means that the drain is still in progress
 3. Check if fault-remediation has a `fault_remediation.skip_event` span. If it has one, read the `fault_remediation.skip.reason` attribute to understand why fault-remediation skipped the health event
 4. Check if the remediation action itself failed. Look for `janitor.reset_job.failed = true` or `janitor.error.type = "reboot_timeout"` attributes on janitor spans. These attributes show if the GPU reset or reboot failed on the node
 5. Look for error spans in all modules. The health event can fail at any stage if Kubernetes API calls, CSP API calls, or database operations still fail after all retries

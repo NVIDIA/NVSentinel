@@ -85,7 +85,12 @@ To switch modes, do these steps in sequence:
 2. Switch the GPU Operator to `GPUCluster` mode.
 3. Run `helm upgrade` with `global.gpuDraEnabled: true`.
 
-To switch back, do only steps 2 and 3, with `false`. The label stays.
+To switch back, do these steps in sequence:
+
+1. Switch the GPU Operator back to ClusterPolicy mode.
+2. Run `helm upgrade` with `global.gpuDraEnabled: false`.
+
+The namespace label stays.
 
 ## GPU Operator NRI plugin mode
 
@@ -117,6 +122,8 @@ You cannot use `nriPlugin.enabled` together with `global.gpuDraEnabled`. GPUClus
 ## Host-path driver access (host-installed driver)
 
 On NRI-mode clusters with a host-installed driver (GPU Operator `driver.enabled: false`), you can mount the host driver libraries instead of [NRI plugin mode](#gpu-operator-nri-plugin-mode). This method does not work with the GPU Operator driver container. The library directory of that container, `/run/nvidia/driver/usr/lib/<arch>`, also contains the glibc of the container. The collector aborts when that glibc is on `LD_LIBRARY_PATH`.
+
+The host library directory also contains the glibc of the host. The collector image uses glibc 2.35, from Ubuntu 22.04. If the host has a different glibc version, the collector also aborts. Thus, use this method only on hosts with glibc 2.35.
 
 Use the same extra volume pattern as `gpu-health-monitor`. In the Helm values, make these changes:
 

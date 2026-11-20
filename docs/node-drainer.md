@@ -2,9 +2,9 @@
 
 ## Overview
 
-The Node Drainer module is the evacuation coordinator of NVSentinel. When the Fault Quarantine module quarantines nodes because of hardware faults, Node Drainer safely evacuates all running workloads from the affected nodes. Kubernetes then reschedules the workloads on healthy nodes.
+The Node Drainer module is the evacuation coordinator of NVSentinel. When the Fault Quarantine module quarantines nodes because of hardware faults, Node Drainer safely evacuates the eligible workloads from the affected nodes. Kubernetes then reschedules the workloads on healthy nodes. Some pods stay on the node, for example system pods, DaemonSet pods and pods outside your drain configuration.
 
-Node Drainer acts as an evacuation coordinator. Before repairs on a building start, an evacuation makes sure that everyone exits safely and in an orderly manner. In the same way, Node Drainer makes sure that all your important workloads leave the faulty nodes safely before maintenance or repairs occur.
+Node Drainer acts as an evacuation coordinator. Before repairs on a building start, an evacuation makes sure that everyone exits safely and in an orderly manner. In the same way, Node Drainer makes sure that the eligible workloads leave the faulty nodes safely before maintenance or repairs occur.
 
 ### Why Do You Need This?
 
@@ -65,14 +65,15 @@ node-drainer:
 
 Node Drainer supports three eviction modes for different workload types:
 
-**AllowCompletion**: Wait for pods to terminate gracefully
+**AllowCompletion**: Wait until the pods exit by themselves
 
-- Respects the `terminationGracePeriodSeconds` of the pod
-- Best for most workloads
+- Does not evict the pods, and waits with no time limit
+- A pod that does not exit by itself, such as a Deployment or StatefulSet pod, stays on the node, and the drain does not complete
+- Best for Jobs and batch workloads that exit by themselves
 
 **Immediate**: Evict pods immediately without waiting
 
-- Minimal grace period
+- Uses `evictionTimeoutInSeconds` (60 seconds by default) as the grace period
 - Use for stateless workloads
 
 **DeleteAfterTimeout**: Wait for the configured timeout, then force delete
@@ -99,7 +100,7 @@ Node Drainer supports three eviction modes for different workload types:
 
 Configure how Node Drainer evacuates different workloads:
 
-- **AllowCompletion**: Graceful termination for most workloads
+- **AllowCompletion**: No eviction, for Jobs and batch workloads that exit by themselves
 - **Immediate**: Fast eviction for stateless services
 - **DeleteAfterTimeout**: Wait for training jobs to checkpoint, then force delete
 
@@ -136,7 +137,7 @@ For selector syntax, owner kinds, label updates and timeout behavior, see [Pod D
 
 - Uses the Kubernetes Eviction API
 - Respects PodDisruptionBudgets
-- Honors pod termination grace periods
+- Uses `evictionTimeoutInSeconds` as the grace period of each eviction
 - Skips system pods automatically
 
 ### Timeout Handling

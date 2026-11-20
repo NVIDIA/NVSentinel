@@ -28,7 +28,7 @@ The Syslog Health Monitor runs as a DaemonSet on GPU nodes:
 5. Optionally, uses the XID analyzer sidecar to analyze XID errors with custom logic
 6. Sends health events to Platform Connectors through gRPC
 
-The monitor keeps a persistent state across restarts. Thus, it processes each log entry exactly once, even if the pod restarts.
+The monitor keeps a persistent state across restarts. It saves its cursor after it reads all new log entries of a check. If the pod restarts before the save, the monitor reads these log entries again. Thus, it can send a health event again for a log entry. Delivery is at least once.
 
 ## Configuration
 
@@ -100,7 +100,7 @@ Without Janitor, the reset message is not available. Thus, the conditions and th
 
 ### Log Parsing with State Persistence
 
-The monitor parses journald logs for error patterns and keeps the cursor position across restarts. Thus, it processes each log entry exactly once.
+The monitor parses journald logs for error patterns and keeps the cursor position across restarts. After a restart, it can send a health event again for a log entry that it read after the last saved cursor.
 
 ### Embedded NVIDIA XID Catalog
 

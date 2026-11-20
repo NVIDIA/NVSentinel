@@ -14,7 +14,7 @@ At the end of this tutorial, you have:
 
 ## Prerequisites
 
-- `go` 1.27+ and `docker`, to build the check image.
+- `go` and `docker`, to build the check image. For the Go version, see `languages.go` in `.versions.yaml` in the root of the NVSentinel repository.
 - `kubectl` with access to a cluster where:
   - NVSentinel runs (`platform-connectors` at minimum).
   - Preflight is enabled (`global.preflight.enabled: true`).
@@ -362,9 +362,11 @@ kubectl get pod preflight-demo-test -n training -w
 kubectl logs preflight-demo-test -n training -c preflight-demo-gpu-visible
 ```
 
+> **Safety:** In this test, the check sends a fatal health event with the `EXECUTE_REMEDIATION` strategy. A default fault-quarantine rule matches fatal health events whose `agent` starts with `preflight-`. If fault-quarantine is enabled, it cordons the node that runs the test pod. If node-drainer is also enabled, it drains that node with its configured eviction modes. Run this test only in a test cluster, or with fault-quarantine disabled.
+
 To test the fail path, do these steps:
 
-1. In the Helm values, set `MIN_GPU_COUNT` to an unrealistically high value.
+1. In the Helm values, set `MIN_GPU_COUNT` to an unrealistically high value. If `processingStrategy` is `STORE_ONLY`, the failed check exits `0`, and the pod starts. In that case, also add `PROCESSING_STRATEGY` with the value `EXECUTE_REMEDIATION` to the `env` list of the check. The `env` entry overrides `processingStrategy` for this check only.
 2. Upgrade the release.
 3. Delete the pod with the command below.
 4. Create the pod again with the manifest above.

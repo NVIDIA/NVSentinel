@@ -14,7 +14,7 @@ With NVSentinel, detection, quarantine, drain, and remediation occur automatical
 
 ## How it works
 
-NVSentinel is a set of independent modules that coordinate through a shared datastore and the Kubernetes API. No module communicates directly with another.
+NVSentinel is a set of independent modules. Health monitors send health events to platform connectors through gRPC. The downstream modules coordinate through a shared datastore and the Kubernetes API.
 
 **Health monitors** detect faults and send structured health events to the system:
 
@@ -25,12 +25,14 @@ NVSentinel is a set of independent modules that coordinate through a shared data
 
 **Platform connectors** receive health events through gRPC, validate them, persist them to the datastore, and update Kubernetes node conditions.
 
-**Preflight** (optional) uses a mutating webhook that injects GPU diagnostic init containers at pod admission. These containers find bad hardware before the workload starts. Each check publishes its result as a health event through platform connectors. If fault quarantine is enabled and the health event is fatal, a default fault quarantine ruleset cordons the node. Multi-node checks can use **gang discovery** (native Kubernetes gang APIs or PodGroup-style schedulers) and ConfigMap coordination. See [Preflight configuration](./configuration/preflight.md).
+**Preflight** (optional) uses a mutating webhook that injects GPU diagnostic init containers at pod admission. These containers find bad hardware before the workload starts. Each check publishes its result as a health event through platform connectors. If fault quarantine is enabled and the health event is fatal, a default fault quarantine ruleset cordons the node. This occurs only if `preflight.processingStrategy` is `EXECUTE_REMEDIATION` (the default).
+
+Multi-node checks can use **gang discovery** (native Kubernetes gang APIs or PodGroup-style schedulers) and ConfigMap coordination. See [Preflight configuration](./configuration/preflight.md).
 
 **Core modules** watch the datastore or the Kubernetes API, and act independently:
 
 - **Fault quarantine** cordons nodes based on configurable CEL rules, with a circuit breaker that prevents mass quarantines during cluster-wide incidents
-- **Node drainer** gracefully evicts workloads with per-namespace eviction strategies (immediate, allow-completion, or delete-after-timeout)
+- **Node drainer** drains workloads with per-namespace eviction modes (immediate, allow-completion, or delete-after-timeout)
 - **Fault remediation** creates maintenance CRs (GPU reset or node reboot) after the drain completes, and collects diagnostic logs
 - **Janitor** executes the maintenance action through cloud provider APIs or direct node commands
 - **Health events analyzer** identifies patterns across health events and generates recommended actions

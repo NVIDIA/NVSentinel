@@ -7,7 +7,7 @@ Preflight is a mutating admission webhook. It injects GPU diagnostic init contai
 
 - The Helm subchart is off by default. To enable it, set `global.preflight.enabled` (see below).
 - cert-manager (or OpenShift service CA) for the webhook TLS. The rest of the NVSentinel chart has the same requirement.
-- A DCGM endpoint that the injected init containers can reach. This is usually the DCGM / hostengine service of the NVIDIA GPU Operator. To configure the endpoint, set `DCGM_HOSTENGINE_ADDR` on the `preflight-dcgm-diag` init container. If the check cannot reach this endpoint, it reports a fatal health event, and Fault Quarantine cordons the node.
+- A DCGM endpoint that the injected init containers can reach. This is usually the DCGM / hostengine service of the NVIDIA GPU Operator. To configure the endpoint, set `DCGM_HOSTENGINE_ADDR` on the `preflight-dcgm-diag` init container. If the check cannot reach this endpoint, it reports a fatal health event. If Fault Quarantine is enabled and `processingStrategy` is `EXECUTE_REMEDIATION` (the default), a default Fault Quarantine ruleset then cordons the node. If `processingStrategy` is `STORE_ONLY`, NVSentinel only stores the health event.
 - Multi-node / gang checks (for example, `preflight-nccl-allreduce`) need gang coordination and gang discovery for your scheduler (see below). The default gang discovery uses the native Kubernetes gang APIs, which need Kubernetes 1.35 or later. On an earlier cluster, configure a PodGroup-based scheduler or disable gang coordination. See [Single-node and single-GPU clusters](#single-node-and-single-gpu-clusters).
 
 ## Enable preflight

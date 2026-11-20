@@ -29,7 +29,7 @@ NVSentinel integration has five layers:
 5. **Do GPU pods need to run diagnostics before the workload starts?** → Enable **[Preflight](./configuration/preflight.md)**
    - You enable Preflight for each namespace (opt-in). A webhook injects init-container checks (DCGM, optional NCCL)
    - Multi-node jobs use **gang discovery** (native Kubernetes gang APIs or PodGroup-style schedulers, such as Volcano and Run:ai)
-   - The checks publish health events through Platform Connectors. If Fault Quarantine is enabled, a default Fault Quarantine ruleset cordons the node for a fatal health event (see [Data flow](./DATA_FLOW.md#preflight-optional-admission-checks))
+   - The checks publish health events through Platform Connectors. If Fault Quarantine is enabled, a default Fault Quarantine ruleset cordons the node for a fatal health event (see [Data flow](./DATA_FLOW.md#preflight-optional-admission-checks)). This occurs only if `preflight.processingStrategy` is `EXECUTE_REMEDIATION` (the default)
 
 ## Quick Start
 
@@ -106,7 +106,7 @@ For more context, see [DATA_FLOW.md](./DATA_FLOW.md). At a high level, NVSentine
 
 Taints are the primary signal that a node has hardware issues. Configure your external systems to monitor the presence or absence of taints. Use this signal to make scheduling decisions, trigger alerts, or start remediation workflows.
 
-> **Note**: Taints are **optional and disabled by default**. To use taints, uncomment the `taint` section in the Fault Quarantine rulesets. By default, NVSentinel only cordons nodes.
+> **Note**: Taints are **optional**. Most default Fault Quarantine rulesets only cordon the node. To use taints with these rulesets, add a `taint` section, as in [Configuring Taints](#configuring-taints). The default ruleset for the NVCRE Certification Monitor is different. It applies the taint `nvsentinel.dgxc.nvidia.com/nvcre-cert-failed=true:NoSchedule` and does not cordon the node. If your automation checks only `nvidia.com/` taint keys, also check the `nvsentinel.dgxc.nvidia.com/nvcre-cert-failed` key.
 
 ### Taint Structure
 
@@ -151,7 +151,9 @@ You can configure any taint keys and values in your rulesets, based on your need
 
 ### Configuring Taints
 
-You define taints in the Fault Quarantine rulesets. This example shows how to enable taints:
+You define taints in the Fault Quarantine rulesets. This example shows how to enable taints in one ruleset.
+
+> **Warning**: `fault-quarantine.ruleSets` is a list. Helm replaces a list as a whole. A values file that sets only this ruleset removes all the other default rulesets. Copy the complete default list from the chart into your values file. Then edit the ruleset that must apply the taint. See [Adding and Modifying Rule Sets](./configuration/fault-quarantine.md#adding-and-modifying-rule-sets).
 
 ```yaml
 # distros/kubernetes/nvsentinel/charts/fault-quarantine/values.yaml
@@ -166,8 +168,8 @@ ruleSets:
     # Uncomment to enable tainting:
     #taint:
     #  key: "nvidia.com/gpu-xid-error"  # Choose your own key format
-    # value: "true"                    # Or use "fatal", "degraded", etc.
-    # effect: "NoSchedule"
+    #  value: "true"                    # Or use "fatal", "degraded", etc.
+    #  effect: "NoSchedule"
     cordon:
       shouldCordon: true  # Enabled by default
 ```
@@ -177,7 +179,7 @@ ruleSets:
 - Taints are **commented out by default**, so you must enable them
 - You control the taint key format (`nvidia.com/*` or `gpu.health/*` or any custom format)
 - You control the taint values (`true`, `fatal`, `degraded`, or other values)
-- Cordoning is enabled by default. Tainting is opt-in.
+- Cordoning is enabled by default, and tainting is opt-in. The NVCRE Certification Monitor ruleset is the exception.
 
 ### Integration Patterns
 
@@ -664,9 +666,9 @@ maintenance:
 
 ### Completion Detection
 
-Before Fault Remediation creates a new CR, it checks the `completeConditionType` status on the existing CRs:
+Before Fault Remediation creates a new CR, it checks the `completeConditionType` status of the existing CRs in the same or a superseding equivalence group:
 
-- **Status: True** - Maintenance completed successfully. Fault Remediation can create a new CR.
+- **Status: True** - Maintenance completed successfully. Fault Remediation does not create another CR for a health event that arrived before this CR. It marks that health event as remediated. For a health event that arrives later, Fault Remediation can create a new CR.
 - **Status: False** - Maintenance failed. Fault Remediation can create a new CR to retry.
 - **Condition Missing** - Maintenance in progress. Fault Remediation does not create a new CR.
 
@@ -706,7 +708,7 @@ To tell NVSentinel about planned maintenance, create a MaintenanceRequest. NVSen
 
 **Control how Node Drainer evicts workloads from faulty nodes.**
 
-The Node Drainer module gracefully evicts workloads from cordoned nodes. You can customize the eviction behavior for each namespace. This lets you accommodate different workload types and operational requirements.
+The Node Drainer module drains workloads from cordoned nodes. You can customize the eviction behavior for each namespace. This lets you accommodate different workload types and operational requirements.
 
 ### Eviction Modes
 
@@ -715,8 +717,10 @@ NVSentinel supports three eviction modes:
 | Mode                 | Behavior                                | Use Case                                                      |
 |----------------------|-----------------------------------------|---------------------------------------------------------------|
 | `Immediate`          | Evicts the pod immediately, without waiting | Fast failover for stateless workloads                     |
-| `AllowCompletion`    | Waits for the pod to terminate gracefully | Respects terminationGracePeriodSeconds for stateful workloads |
+| `AllowCompletion`    | Does not evict the pod. Waits with no time limit until the pod exits by itself | Jobs and batch workloads that exit by themselves |
 | `DeleteAfterTimeout` | Waits up to the timeout, then force deletes the pod | Long-running jobs that need time to checkpoint      |
+
+> **Warning**: In `AllowCompletion` mode, a pod that does not exit by itself, such as a StatefulSet pod, stays on the faulty node. The drain then does not complete, and Fault Remediation does not create a maintenance CR. To find such a drain, see [AllowCompletion Drain Metric](./configuration/node-drainer.md#allowcompletion-drain-metric).
 
 ### Configuration
 
@@ -754,16 +758,16 @@ userNamespaces:
 ### Eviction Workflow
 
 1. **System Namespace Skip**: Node Drainer never evicts pods in system namespaces (kube-system, nvsentinel, and the other system namespaces)
-2. **Mode Selection**: The namespace match selects the eviction mode (the most specific match wins)
-3. **Graceful Termination**: In `AllowCompletion` mode, Node Drainer respects the `terminationGracePeriodSeconds` of the pod
+2. **Mode Selection**: Node Drainer finds every `userNamespaces` entry that matches the namespace of a pod. If more than one entry matches, the mode with the highest priority applies: `Immediate`, then `DeleteAfterTimeout`, then `AllowCompletion`. The order and the specificity of the entries do not change the result. For example, if the `*` entry has `Immediate` and the `database` entry has `AllowCompletion`, Node Drainer evicts the pods in `database` immediately
+3. **Pod Completion**: In `AllowCompletion` mode, Node Drainer does not evict the pod. It waits until the pod exits by itself
 4. **Timeout Handling**: Node Drainer force deletes stuck or timed-out pods, based on the configuration
-5. **NotReady Detection**: Node Drainer automatically force deletes pods that stay in the NotReady state for longer than the threshold
+5. **NotReady Detection**: In a full drain, Node Drainer skips pods that stay in the NotReady state for longer than `notReadyTimeoutMinutes`. It does not evict them or wait for them
 
 ### Example: Multi-Tier Application
 
 ```yaml
 userNamespaces:
-  # Critical database - wait for graceful shutdown
+  # Database - no eviction; the drain waits until the pods exit by themselves
   - name: "database"
     mode: "AllowCompletion"
   
@@ -793,7 +797,7 @@ When you deploy [Topograph](https://github.com/NVIDIA/topograph) in the cluster,
 
 By default, the `allowedLabels` list of the Metadata Augmentor includes these keys. On clusters where Topograph applied these labels, NVSentinel automatically propagates them into the health event metadata. On clusters without Topograph, the labels are absent, and the Metadata Augmentor skips them. In both cases, no configuration change is necessary.
 
-Downstream consumers of NVSentinel health events can then consider the topological locality. These consumers include Fault Quarantine CEL rules, remediation custom resources, dashboards, and blast-radius analysis. For example, a CEL rule can compare the `accelerator.topograph.run/domain` value across a set of recent health events. The rule can then find whether a fault affects only one NVLink domain or spans multiple domains.
+Downstream consumers of NVSentinel health events can then consider the topological locality. These consumers include Fault Quarantine CEL rules, maintenance CRs, dashboards, and fault-impact analysis. For example, a Fault Quarantine CEL rule can read the `accelerator.topograph.run/domain` value from the metadata of a health event. A CEL rule evaluates one health event at a time. It cannot compare this value across health events. To find whether a fault spans more than one NVLink domain, use a consumer that reads many health events.
 
 The authoritative reference for these labels is [topograph's `docs/reference/node-labels.md`](https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md). It describes the value semantics, the hashing behavior for long identifiers, and the provider matrix.
 

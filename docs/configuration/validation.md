@@ -377,11 +377,13 @@ status:
 
 When fault-quarantine creates a ValidationRequest, it keeps the cordon and every taint that it applied during the quarantine session. After that, fault-quarantine does not track them. When validation passes, lifecycle-manager releases them.
 
-For this reason, list every taint that a fault-quarantine rule-set applies in lifecycle-manager schedulingGate.taints, with remove set to true. If a taint is not in the list, lifecycle-manager never removes it. Test pods also do not tolerate such a taint, unless the provider template tolerates it. For example, the default k8s-job-template.yaml tolerates NoExecute taints.
+For this reason, list every taint that a fault-quarantine rule-set applies in lifecycle-manager schedulingGate.taints. If a taint is not in the list, lifecycle-manager never removes it. Test pods also do not tolerate such a taint, unless the provider template tolerates it. For example, the default k8s-job-template.yaml tolerates NoExecute taints.
 
 Keep the not-under-quarantine readiness criterion. With this criterion, a new quarantine fails the pending validation, and lifecycle-manager does not release the node.
 
 Set remove to true only for taints that fault-quarantine alone applies. The reason is that lifecycle-manager matches on key, value, and effect. As a result, it also removes a matching taint that was on the node before the quarantine. If fault-quarantine creates no ValidationRequest, it removes its taints itself.
+
+If another process also applies the same taint, set remove to false. The taint then stays on the node after validation passes. The other process or an operator must remove it.
 
 ### fault-quarantine.validation.ruleSets
 

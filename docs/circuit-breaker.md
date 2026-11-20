@@ -100,7 +100,7 @@ The table below assumes the default `maxNodes: 0`, which leaves the percentage a
 | 4 | 2nd cordon | 4th cordon |
 | 10 | 5th cordon | 10th cordon |
 
-If `maxNodes` is above `0`, the effective threshold is `min(ceil(gpuNodes × percentage / 100), maxNodes)`, capped at the fleet size. The lower bound wins. Thus, `maxNodes: 1` trips on the first cordon at any percentage, and every row above becomes "1st cordon".
+If `percentage` and `maxNodes` are both above `0`, the effective threshold is `min(ceil(gpuNodes × percentage / 100), maxNodes)`, capped at the fleet size. The lower bound wins. If `percentage` is `0`, the effective threshold is `maxNodes`, capped at the fleet size. Thus, `maxNodes: 1` trips on the first cordon at any percentage, and every row above becomes "1st cordon".
 
 On a one-GPU-node cluster, **no percentage avoids the trip**. One cordoned node is always the whole fleet, and the breaker clamps the threshold to the fleet size. The first cordon trips the breaker. Then the breaker blocks the healthy event, which otherwise uncordons the node.
 
@@ -112,13 +112,14 @@ fault-quarantine:
     enabled: false
 ```
 
-On clusters of two to nine GPU nodes, you can keep the breaker and raise the threshold instead. Then a single fault does not trip it:
+On clusters of two to nine GPU nodes, you can keep the breaker and raise the threshold instead. Set `percentage` to `100` and `maxNodes` to `0`. If you also set `maxCordonedNodes` or `maxCordonedPercentage`, the bound must be at least two nodes. With these values, a single fault does not trip the breaker:
 
 ```yaml
 fault-quarantine:
   circuitBreaker:
     enabled: true
     percentage: 100    # trip only when every GPU node is cordoned
+    maxNodes: 0        # 0 disables this bound
 ```
 
 Keep the breaker enabled on production clusters. It is the only automatic limit on how much of your fleet NVSentinel can remove from service.

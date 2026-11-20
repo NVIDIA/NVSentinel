@@ -39,10 +39,10 @@ Do these steps in sequence:
 
 The analyzer rejects future timestamps and timestamps before the creation of the Node.
 
-To recover all active identities of the configured rule on a verified node:
+To recover all active identities of the configured rule on a verified node, set `verified_at` to your recorded verification time:
 
 ```sh
-verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+verified_at="2026-09-27T14:30:00Z"
 kubectl annotate node worker-1 recovery.nvsentinel.nvidia.com/repeated-xid="$verified_at" --overwrite
 ```
 

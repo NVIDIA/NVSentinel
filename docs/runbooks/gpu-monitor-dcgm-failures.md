@@ -230,7 +230,7 @@ The node can continue to report `Ready`, with every GPU allocatable and no taint
   - Or GPU containers fail to start with `context deadline exceeded` / `StartError` exit 128, while the node itself stays `Ready` with GPUs allocatable.
 - Do **not** use `NotReady`/`unreachable` alone to exclude this failure mode. A node can become `NotReady`/`unreachable` after the GPU Health Monitor has already started and recorded a hang. Before you dismiss this failure mode, verify that the GPU Health Monitor pod ran at that time. Also examine `dcgm_probe_hangs` and `GpuDcgmUnresponsive` for evidence of a hang. Ordinary kubelet death with no GPU Health Monitor activity is a different failure class.
 
-Confirm with a bounded `nvidia-smi` probe. Always use `timeout`, because an unbounded hang can leave another unkillable `D`-state process:
+Confirm with a bounded `nvidia-smi` probe. Always use `timeout`, so that a hung probe does not stay on the node. But `timeout` cannot stop a process that is already in `D` state. In that case, the command hangs, and `nvidia-smi` stays until the kernel wait ends. If the command does not return after 15 seconds, treat the result as a broader GPU/driver hang:
 
 ```bash
 timeout 15 nvidia-smi -L >/dev/null 2>&1; echo $?

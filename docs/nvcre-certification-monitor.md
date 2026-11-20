@@ -4,7 +4,7 @@
 
 The NVCRE Certification Monitor connects [NVIDIA Cluster Readiness Engine (NVCRE)](https://github.com/NVIDIA/cluster-readiness-engine) certification results to the NVSentinel remediation pipeline. NVCRE runs GPU cluster burn-in tests, such as NCCL collectives, training workloads and DCGM diagnostics. It records in `Certification` custom resources the nodes that failed each test category. NVCRE itself never taints, cordons or marks a node. Thus, after a failed certification, the failed nodes stay schedulable.
 
-This monitor reads every `Certification` in the cluster. It turns each failed node into a health event and publishes the health event to Platform Connectors. Then the standard pipeline does the rest: Platform Connectors set a node condition, and Fault Quarantine applies a `NoSchedule` taint. If a later certification run passes the node, or the failing `Certification` is deleted, the monitor publishes a healthy health event. Fault Quarantine then removes the taint.
+This monitor reads every `Certification` in the cluster. It turns each failed node into a health event and publishes the health event to Platform Connectors. Then the standard pipeline does the rest: Platform Connectors set a node condition, and Fault Quarantine applies a `NoSchedule` taint. If a later certification run passes the node, or you delete every `Certification` that failed the node, the monitor publishes a healthy health event. Fault Quarantine then removes the taint.
 
 ### Why Do You Need This?
 
@@ -46,7 +46,7 @@ The tuple `(node, variant, reason)` identifies each failure. `variant` is the te
 ## Recovery Paths
 
 - **A rerun passes the node.** The newer `Succeeded` category proves that `(node, variant)` passed. The monitor drops the failure from the desired set and publishes a healthy health event. You do not need to delete or edit anything.
-- **The failing `Certification` is deleted.** Its tuples leave the desired set. On the next sweep, the monitor publishes healthy health events for them.
+- **The failing `Certification` is deleted.** Its tuples leave the desired set, if no other `Certification` keeps them in that set. On the next sweep, the monitor publishes a healthy health event for each tuple that left the set.
 - **An operator removes a tuple from the node annotation.** The monitor treats this as a deliberate release. It publishes a healthy health event and records the tuple in the `error-recovered` annotation of the CR. Thus, the tuple does not return.
 - **An operator removes the taint by hand.** Fault Quarantine handles the manual untaint. The annotation and the node condition stay as a record until one of the paths above clears them.
 
