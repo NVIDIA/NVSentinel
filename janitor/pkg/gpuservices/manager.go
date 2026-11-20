@@ -22,8 +22,10 @@ import (
 // Manager represents a specific GPU service manager configuration,
 // combining its resolved name with the detailed specification used for teardown.
 type Manager struct {
-	Name string      `mapstructure:"name" json:"name"`
-	Spec ManagerSpec `mapstructure:"spec" json:"spec"`
+	Name string `mapstructure:"name" json:"name"`
+	// Namespace overrides the namespace of a built-in manager. A custom spec sets its namespace in the spec.
+	Namespace string      `mapstructure:"namespace" json:"namespace,omitempty"`
+	Spec      ManagerSpec `mapstructure:"spec" json:"spec"`
 }
 
 // ManagerSpec allows for the inline definition of a custom component and its applications.
@@ -171,6 +173,33 @@ func WithGPUClients(manager Manager) Manager {
 	manager.Spec.Apps = apps
 
 	return manager
+}
+
+// ResolveManager resolves the configured manager with NewManager. When Namespace is set, it uses the built-in
+// manager for the name with its namespace replaced.
+func ResolveManager(config Manager) (Manager, error) {
+	if config.Namespace == "" {
+		return NewManager(config.Name, config.Spec)
+	}
+
+	if config.Name == "" {
+		return Manager{}, fmt.Errorf("GPU services manager Namespace requires a manager Name")
+	}
+
+	if config.Spec.Namespace != "" || len(config.Spec.Apps) > 0 {
+		return Manager{}, fmt.Errorf("GPU services manager Namespace applies only to a built-in manager; " +
+			"set the namespace of a custom spec in the spec")
+	}
+
+	manager, err := NewManager(config.Name, ManagerSpec{})
+	if err != nil {
+		return Manager{}, err
+	}
+
+	manager.Namespace = config.Namespace
+	manager.Spec.Namespace = config.Namespace
+
+	return manager, nil
 }
 
 // NewManager constructs and resolves a Manager.
