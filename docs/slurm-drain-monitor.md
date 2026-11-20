@@ -2,47 +2,47 @@
 
 ## Overview
 
-The Slurm Drain Monitor bridges the Slurm workload manager and NVSentinel. It watches slurmd worker pods for drain reason labels, matches those reasons against configurable regex patterns, and converts matching drains into NVSentinel health events that enter the standard quarantine and notification pipeline.
+The Slurm Drain Monitor connects the Slurm workload manager and NVSentinel. It watches slurmd worker pods for drain reasons. It matches these reasons against configurable regex patterns. It then converts the matching drains into NVSentinel health events, which enter the standard quarantine and notification pipeline.
 
-Think of it as a translator — cluster operators already drain Slurm nodes with structured reason strings from their own health check scripts; the monitor reads those strings and converts them into the health event vocabulary that NVSentinel understands, without requiring a separate health monitor deployment.
+The monitor operates as a translator. Cluster operators already drain Slurm nodes with structured reason strings from their own health check scripts. The monitor reads those strings and converts them into the health event vocabulary that NVSentinel understands. A separate health monitor deployment is not necessary.
 
 ### Why Do You Need This?
 
-Slurm operators run custom health check scripts that drain nodes with structured reason prefixes, but that information stays inside Slurm unless something bridges it out:
+Slurm operators run custom health check scripts that drain nodes with structured reason prefixes. But this information stays inside Slurm, unless a bridge exports it:
 
-- **Visibility gap**: Slurm drain events are invisible to Kubernetes and to NVSentinel's notification and audit systems unless explicitly surfaced
+- **Visibility gap**: Kubernetes and the NVSentinel notification and audit systems cannot see Slurm drain events, unless something explicitly exposes them
 - **Duplicate tooling**: Without a bridge, operators must separately configure Slurm alerting and NVSentinel alerting for the same hardware failure
-- **Manual triage overhead**: Drained nodes accumulate without automated quarantine or escalation, requiring operators to manually check Slurm state and decide on follow-up actions
-- **Inconsistent workflows**: Health check scripts vary across clusters; a pattern-based bridge lets operators standardize response workflows without modifying their scripts
+- **Manual triage overhead**: Drained nodes accumulate without automated quarantine or escalation. Operators must then manually check the Slurm state and decide on follow-up actions
+- **Inconsistent workflows**: Health check scripts vary across clusters. A pattern-based bridge lets operators standardize response workflows without changes to their scripts
 
 ## How It Works
 
 The Slurm Drain Monitor runs as a Deployment (controller) in the cluster:
 
-1. **Watches slurmd pods** matching a configurable label selector (default: `app.kubernetes.io/name=slurmd,app.kubernetes.io/component=worker`) in a configurable namespace (default: `slurm`)
-2. **Extracts the drain reason** from pod labels set by the Slurm health check scripts when a node is drained
-3. **Splits compound reasons** using a configurable delimiter, then evaluates each segment in order
-4. **Matches against patterns** — each pattern is a regex mapped to a `checkName`, `componentClass`, `isFatal` flag, `message`, and `recommendedAction`; all patterns are evaluated independently
-5. **Emits a health event for every matching pattern**; each event enters the standard NVSentinel pipeline and is subject to Fault Quarantine, Node Drainer, and Fault Remediation processing
-6. **Applies the configured processing strategy** — `EXECUTE_REMEDIATION` for live operation or `STORE_ONLY` for shadow-mode observation
+1. **Watches slurmd pods** that match a configurable label selector (default: `app.kubernetes.io/name=slurmd,app.kubernetes.io/component=worker`) in a configurable namespace (default: `slurm`)
+2. **Extracts the drain reason** from the message of the `SlurmNodeStateDrain` pod condition, which slurm-operator sets when the Slurm node is in the DRAIN state
+3. **Splits compound reasons** with a configurable delimiter, and then evaluates each segment in order
+4. **Matches against patterns**: each pattern is a regex that maps to a `checkName`, `componentClass`, `isFatal` flag, `message`, and `recommendedAction`. The monitor evaluates all patterns independently
+5. **Emits a health event for every matching pattern**. Each health event enters the standard NVSentinel pipeline, where Fault Quarantine, Node Drainer, and Fault Remediation process it
+6. **Applies the configured processing strategy**: `EXECUTE_REMEDIATION` for live operation or `STORE_ONLY` for shadow-mode observation
 
-If no pattern matches the drain reason, no event is emitted and the pod is ignored.
+If no pattern matches the drain reason, the monitor emits no health event and ignores the pod.
 
 ### Default Pattern
 
-The built-in default pattern matches any drain reason prefixed with `[HC]`, which is the conventional prefix used by Slurm health check scripts:
+The built-in default pattern matches any drain reason with the prefix `[HC]`. Slurm health check scripts conventionally use this prefix:
 
 | Pattern | checkName | componentClass | isFatal | recommendedAction |
 |---|---|---|---|---|
-| `\[HC\]` | `SlurmHealthCheck` | `NODE` | `false` | `CONTACT_SUPPORT` |
+| `^\[HC\]` | `SlurmHealthCheck` | `NODE` | `false` | `CONTACT_SUPPORT` |
 
-`isFatal: false` routes the event to notification and escalation workflows rather than automated `REPLACE_VM` remediation. Set `isFatal: true` on a pattern to trigger full automated quarantine, drain, and remediation for Slurm-detected failures that warrant it.
+`isFatal: false` routes the health event to notification and escalation workflows, not to automated `REPLACE_VM` remediation. For Slurm-detected failures that require it, set `isFatal: true` on a pattern. This triggers full automated quarantine, drain, and remediation.
 
 ## Configuration
 
-See [Slurm Drain Monitor configuration](configuration/slurm-drain-monitor.md) for the full Helm reference, including how to define custom patterns and configure the pod selector.
+For the full Helm reference, see [Slurm Drain Monitor configuration](configuration/slurm-drain-monitor.md). It includes how to define custom patterns and configure the pod selector.
 
-Enable the module and configure drain reason patterns through Helm values:
+Use Helm values to enable the module and to configure drain reason patterns:
 
 ```yaml
 global:
@@ -71,21 +71,26 @@ slurm-drain-monitor:
       recommendedAction: REPLACE_VM
 ```
 
-All patterns are evaluated independently against each drain reason segment; every matching pattern emits a separate health event. Unmatched drain reasons are silently skipped.
+The monitor evaluates all patterns independently against each drain reason segment. Every matching pattern emits a separate health event. The monitor silently skips drain reasons that do not match.
 
 ## Key Features
 
 ### Pattern-Based Matching
-Regex patterns give operators precise control over which drain reasons generate NVSentinel events and which are ignored. Multiple patterns with different `isFatal` values and `recommendedAction` settings let a single deployment handle a range of health check severities.
+
+Regex patterns give operators precise control over the drain reasons that generate NVSentinel health events and the drain reasons that the monitor ignores. Multiple patterns with different `isFatal` values and `recommendedAction` settings let a single deployment handle a range of health check severities.
 
 ### Compound Reason Splitting
-Slurm health check scripts sometimes concatenate multiple reasons into a single drain string. The configurable delimiter splits compound reasons so each segment is evaluated independently against the pattern list.
+
+Slurm health check scripts sometimes concatenate multiple reasons into a single drain string. The configurable delimiter splits compound reasons. Thus, the monitor evaluates each segment independently against the pattern list.
 
 ### Configurable Escalation
-`isFatal: false` (default) triggers `CONTACT_SUPPORT` escalation — a human reviews the node before any destructive action is taken. Set `isFatal: true` on patterns where you want full automated quarantine, workload drain, and maintenance request creation without manual intervention.
+
+`isFatal: false` (default) triggers `CONTACT_SUPPORT` escalation. A human reviews the node before any destructive action occurs. If you want full automated quarantine, workload drain, and maintenance CR creation without manual intervention, set `isFatal: true` on the pattern.
 
 ### Shadow Mode
-Set `processingStrategy: STORE_ONLY` to emit and store health events without triggering quarantine or remediation actions. Use this to validate pattern coverage against real drain reasons before enabling live operation.
+
+To emit and store health events without quarantine or remediation actions, set `processingStrategy: STORE_ONLY`. Use this mode to validate pattern coverage against real drain reasons before you enable live operation.
 
 ### Pipeline Integration
-Health events emitted by the Slurm Drain Monitor carry the configured `checkName` and flow through the standard NVSentinel pipeline. Fault Quarantine CEL rules, Node Drainer configuration, and Fault Remediation maintenance templates apply to them in exactly the same way as events from GPU Health Monitor or Syslog Health Monitor.
+
+The health events that the Slurm Drain Monitor emits carry the configured `checkName`. They follow the standard NVSentinel pipeline. Fault Quarantine CEL rules, Node Drainer configuration, and Fault Remediation maintenance templates apply to them. They apply in exactly the same way as to health events from the GPU Health Monitor or the Syslog Health Monitor.

@@ -2,13 +2,13 @@
 
 ## Overview
 
-The Event Exporter module exports health events from NVSentinel to external systems using CloudEvents format over HTTP. This document covers all Helm configuration options for system administrators.
+The Event Exporter module exports health events from NVSentinel to external systems. It uses the CloudEvents format over HTTP. This document describes the main Helm configuration options for system administrators.
 
 ## Configuration Reference
 
 ### Module Enable/Disable
 
-Controls whether the event-exporter module is deployed in the cluster.
+This setting enables or disables the deployment of the Event Exporter in the cluster.
 
 ```yaml
 global:
@@ -16,11 +16,11 @@ global:
     enabled: true
 ```
 
-> Note: This module depends on the datastore being enabled. Therefore, ensure the datastore is also enabled.
+> Note: This module works only with an enabled datastore. Thus, also enable the datastore.
 
 ### Logging
 
-Sets the verbosity level for event-exporter logs.
+Sets the verbosity level of the Event Exporter logs.
 
 ```yaml
 event-exporter:
@@ -29,7 +29,7 @@ event-exporter:
 
 ### Resources
 
-Defines CPU and memory resource requests and limits for the event-exporter pod.
+Defines the CPU and memory resource requests and limits for the Event Exporter pod.
 
 ```yaml
 event-exporter:
@@ -44,14 +44,14 @@ event-exporter:
 
 ### OIDC Secret
 
-Name of the Kubernetes secret containing OIDC client secret for authentication.
+The name of the Kubernetes secret that contains the OIDC client secret for authentication.
 
 ```yaml
 event-exporter:
   oidcSecretName: "event-exporter-oidc-secret"
 ```
 
-The secret must contain a key named `oidc-client-secret` with the client secret value. Create the secret before deploying:
+The secret must contain a key named `oidc-client-secret` with the client secret value. Before you deploy, create the secret:
 
 ```bash
 kubectl create secret generic event-exporter-oidc-secret \
@@ -61,7 +61,7 @@ kubectl create secret generic event-exporter-oidc-secret \
 
 ## Metadata Configuration
 
-Custom metadata fields included in all exported CloudEvents.
+Custom metadata fields that the exporter includes in all exported CloudEvents.
 
 ```yaml
 event-exporter:
@@ -71,7 +71,7 @@ event-exporter:
       environment: "production"
 ```
 
-Metadata fields are included in the CloudEvent `data.metadata` object. The `cluster` field is required and used to generate the CloudEvent `source` field.
+The exporter puts the metadata fields in the CloudEvent `data.metadata` object. The `cluster` field is required. The exporter uses it to generate the CloudEvent `source` field.
 
 ### Custom Metadata Fields
 
@@ -79,15 +79,16 @@ Add any additional metadata fields:
 
 ```yaml
 event-exporter:
-  metadata:
-    cluster: "prod-us-west-2"
-    environment: "production"
-    region: "us-west-2"
-    datacenter: "dc01"
-    tenant: "acme-corp"
+  exporter:
+    metadata:
+      cluster: "prod-us-west-2"
+      environment: "production"
+      region: "us-west-2"
+      datacenter: "dc01"
+      tenant: "acme-corp"
 ```
 
-All fields are included in exported events and can be used for filtering, routing, or categorization in downstream systems.
+The exporter includes all fields in exported events. Downstream systems can use them for filtering, routing, or categorization.
 
 ## Sink Configuration
 
@@ -105,17 +106,20 @@ event-exporter:
 ### Parameters
 
 #### endpoint
-HTTP/HTTPS URL where CloudEvents will be POSTed.
+
+The HTTP/HTTPS URL to which the exporter POSTs CloudEvents.
 
 #### timeout
-Request timeout for HTTP calls to the sink endpoint.
+
+The request timeout for HTTP calls to the sink endpoint.
 
 #### insecureSkipVerify
-Skip TLS certificate verification. Set to `true` only for testing with self-signed certificates.
+
+Skips the TLS certificate verification. Set it to `true` only for tests with self-signed certificates.
 
 ## OIDC Authentication
 
-Configuration for OAuth 2.0 Client Credentials flow authentication.
+The configuration for authentication with the OAuth 2.0 Client Credentials flow.
 
 ```yaml
 event-exporter:
@@ -130,29 +134,33 @@ event-exporter:
 ### Parameters
 
 #### tokenUrl
-OAuth 2.0 token endpoint URL for obtaining access tokens.
+
+The URL of the OAuth 2.0 token endpoint that gives the access tokens.
 
 #### clientId
-OAuth 2.0 client identifier.
+
+The OAuth 2.0 client identifier.
 
 #### scope
-OAuth 2.0 scope requested for access token.
+
+The OAuth 2.0 scope that the exporter requests for the access token.
 
 #### insecureSkipVerify
-Skip TLS certificate verification for token endpoint. Set to `true` only for testing.
+
+Skips the TLS certificate verification for the token endpoint. Set it to `true` only for tests.
 
 ### Authentication Flow
 
-The event exporter uses OAuth 2.0 Client Credentials grant:
+The Event Exporter uses the OAuth 2.0 Client Credentials grant:
 
-1. Requests access token from `tokenUrl` using `clientId` and client secret
-2. Caches the token until expiration
-3. Includes token in `Authorization: Bearer {token}` header for event POSTs
+1. Requests an access token from `tokenUrl` with `clientId` and the client secret
+2. Caches the token until it expires
+3. Includes the token in the `Authorization: Bearer {token}` header of event POSTs
 4. Automatically refreshes expired tokens
 
 ## HTTP Proxy
 
-Sink and OIDC token requests honor the standard `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` environment variables. Set them on the event-exporter container with `extraEnv`:
+Sink and OIDC token requests use the standard `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` environment variables. To set them on the Event Exporter container, use `extraEnv`:
 
 ```yaml
 event-exporter:
@@ -163,13 +171,13 @@ event-exporter:
       value: ".svc,.cluster.local"
 ```
 
-`extraEnv` accepts any Kubernetes `EnvVar` entries, including `valueFrom` references to a Secret when the proxy URL contains credentials. It defaults to an empty list.
+`extraEnv` accepts any Kubernetes `EnvVar` entries. These include `valueFrom` references to a Secret, for a proxy URL that contains credentials. The default is an empty list.
 
 Datastore connections (MongoDB or PostgreSQL) do not use these variables.
 
 ## Backfill Configuration
 
-Controls whether historical events are exported when the exporter starts.
+Controls whether the exporter exports historical events when it starts.
 
 ```yaml
 event-exporter:
@@ -185,19 +193,24 @@ event-exporter:
 ### Parameters
 
 #### enabled
-Enable backfilling of historical events from the datastore.
+
+Enables the backfill of historical events from the datastore.
 
 #### maxAge
-Maximum age of events to backfill (e.g., "720h" = 30 days).
+
+The maximum age of events to backfill (for example, "720h" = 30 days).
 
 #### maxEvents
-Maximum number of historical events to process during backfill.
+
+The maximum number of historical events to process during backfill.
 
 #### batchSize
-Number of events to process in each batch during backfill.
+
+The number of events to process in each batch during backfill.
 
 #### rateLimit
-Maximum events per second to export during backfill to avoid overwhelming the sink.
+
+The maximum number of events per second to export during backfill. This limit prevents an overload of the sink.
 
 ### Backfill Examples
 
@@ -232,7 +245,7 @@ backfill:
 
 ## Resume Token Storage
 
-Where the exporter persists its change stream resume token, so it continues from the last exported event after a restart instead of replaying the stream.
+The location where the exporter persists its change stream resume token. After a restart, the exporter continues from the last exported event. It does not replay the stream.
 
 ```yaml
 event-exporter:
@@ -242,13 +255,13 @@ event-exporter:
       collection: "resumetokens"
 ```
 
-Both fields are required: the exporter rejects its configuration at startup when either is empty. Change them only when your datastore uses different names.
+Both fields are required. If one of them is empty, the exporter rejects its configuration at startup. If your datastore uses different names, change these fields. Otherwise, keep the defaults.
 
-The token advances in strict event order regardless of which worker publishes first, so raising [Workers](#workers) does not risk skipping events after a restart.
+The token advances in strict event order, independent of which worker publishes first. Thus, if you increase [Workers](#workers), there is no risk of skipped events after a restart.
 
 ## Workers
 
-Number of concurrent goroutines that process and publish events to the sink in parallel.
+The number of concurrent workers that process events and publish them to the sink in parallel.
 
 ```yaml
 event-exporter:
@@ -256,13 +269,15 @@ event-exporter:
     workers: 10
 ```
 
-Each worker independently picks events from the dispatch queue, processes them (unmarshal, transform, publish), and reports the result. A sequence tracker ensures resume tokens advance in strict order regardless of which worker finishes first, so increasing workers scales throughput while preserving at-least-once delivery guarantees. Note that concurrent publishing means events may arrive at the sink out of order.
+Each worker takes events independently, processes them (unmarshal, transform, publish), and reports the result. The exporter advances resume tokens in strict order, independent of which worker finishes first. Thus, more workers increase throughput and keep the at-least-once delivery guarantees. With concurrent publishing, events can arrive at the sink out of order.
 
 The default of `10` handles clusters up to ~3,300 nodes at typical event rates.
 
 ### Scale-Up Guide
 
-**Event production rate**: ~10 events/sec per 1,000 nodes (~36,000 events/hour) **Per-worker throughput**: ~3.3 events/sec (at 300ms publish latency)
+**Event production rate**: ~10 events/sec per 1,000 nodes (~36,000 events/hour)
+
+**Per-worker throughput**: ~3.3 events/sec (at 300ms publish latency)
 
 | Workers | Throughput (events/sec) | Max Nodes Supported |
 |---------|-------------------------|---------------------|
@@ -274,11 +289,11 @@ The default of `10` handles clusters up to ~3,300 nodes at typical event rates.
 | 15      | 49.5                    | ~5,000              |
 | 20      | 66                      | ~6,600              |
 
-If your publish latency is lower (e.g., 100ms for a co-located endpoint), each worker handles proportionally more events — divide the latency ratio to estimate your actual throughput.
+If your publish latency is lower (for example, 100ms for a co-located endpoint), each worker handles proportionally more events. To estimate the throughput of one worker, multiply 3.3 events/sec by 300ms divided by your publish latency.
 
 ## Event Filter
 
-Selects which events reach the sink. An empty expression exports everything. This is the default.
+Selects which events reach the sink. An empty expression exports all events. This is the default.
 
 ```yaml
 event-exporter:
@@ -290,17 +305,18 @@ event-exporter:
 ### Parameters
 
 #### expression
-CEL over the health event. Must evaluate to a boolean; an event whose expression is false is not published.
+
+A CEL expression over the health event. It must evaluate to a boolean. If the expression is false for an event, the exporter does not publish that event.
 
 ### When to use it
 
-Use it when you want to drop events before they reach the sink. This is common when the sink sends out notifications rather than archiving everything, since most events recommend no action and are not worth notifying on.
+If you want to drop events before they reach the sink, use the filter. This is common when the sink sends notifications and does not archive all events. Most events recommend no action, so a notification about them is not useful.
 
-Exporting everything to a data lake and filtering at the destination is the default.
+By default, the exporter exports all events. For a data lake, filter the events at the destination.
 
 ### Available fields
 
-The expression uses the same vocabulary as the platform connector's [override transformer](platform-connectors.md#override-transformer-configuration), so an expression learned for one works in the other:
+The expression uses the same vocabulary as the [override transformer](platform-connectors.md#override-transformer-configuration) of the platform connector. Thus, an expression that you write for one also works in the other:
 
 | Field | Type |
 | --- | --- |
@@ -311,12 +327,12 @@ The expression uses the same vocabulary as the platform connector's [override tr
 | `event.isFatal` | bool |
 | `event.isHealthy` | bool |
 | `event.recommendedAction` | string, the enum name such as `NONE` or `CONTACT_SUPPORT` |
-| `event.customRecommendedAction` | string, the custom action name as sent. Check `event.recommendedAction == 'CUSTOM'` as well, because an event with a built-in action can also carry a name |
+| `event.customRecommendedAction` | string, the custom action name as sent. Also check `event.recommendedAction == 'CUSTOM'`, because an event with a built-in action can also have a name |
 | `event.nodeName` | string |
 | `event.metadata` | map of string to string |
 | `event.message` | string |
 
-> **`errorCode` is a list, not a string.** A health event can carry several codes, so match with membership: `'45' in event.errorCode`, not `event.errorCode == '45'`. The latter is a type error, not a false match.
+> **`errorCode` is a list, not a string.** A health event can have several codes. Thus, use a membership match: `'45' in event.errorCode`, not `event.errorCode == '45'`. The second form causes a type error, not a false match.
 
 ### Examples
 
@@ -336,21 +352,23 @@ expression: "event.checkName != 'GpuPowerWatch'"
 
 ### Operational notes
 
-**Validated at startup.** The expression is compiled during config validation, so a syntax error or a non-boolean expression stops the exporter from starting rather than failing per event.
+**Validated at startup.** The exporter compiles the expression during config validation. Thus, if the expression has a syntax error or is not boolean, the exporter does not start. The error does not occur later for each event.
 
-> **Write a comparison, not a bare field.** `event` is bound as a dynamically typed map, so a bare read is untyped and rejected, *including* a semantically boolean one. Use `event.isFatal == true`, not `event.isFatal`. This is stricter than strictly necessary for the boolean fields, and it is the trade that lets `event.agent` be caught at startup instead of on the first event. The error message names the working form.
+> **Write a comparison, not a bare field.** The exporter binds `event` as a dynamically typed map. Thus, a bare read has no type, and the exporter rejects it, *including* a semantically boolean one. Use `event.isFatal == true`, not `event.isFatal`.
+>
+> For the boolean fields, this rule is stricter than necessary. But it lets the exporter catch `event.agent` at startup instead of on the first event. The error message names the working form.
 
-**It fails open.** An evaluation error exports the event and increments `health_events_exporter_filter_errors_total`. Dropping events because of a filter bug is silent data loss, whereas exporting an extra event is noise the sink already tolerates. Alert on that counter being non-zero.
+**It fails open.** If an evaluation error occurs, the exporter exports the event and increments `health_events_exporter_filter_errors_total`. A drop of events because of a filter bug is silent data loss. An extra exported event is only noise, and the sink already tolerates noise. Create an alert for when that counter is not zero.
 
-**Filtered events still advance the resume token.** A filtered event is completed rather than skipped, so the stream makes progress. This matters: were it skipped, one filtered event at the head of the stream would stall the token and a restart would redeliver everything after it, which with a filter dropping 99% of events would mean never making progress.
+**Filtered events still advance the resume token.** The exporter completes a filtered event and does not skip it, so the stream makes progress. This is important. A skipped event at the head of the stream stops the resume token, and each restart then delivers all later events again. With a filter that drops 99% of events, skipped events can stop all progress of the stream. The exporter completes filtered events, so this problem does not occur.
 
 **It applies to backfill too**, so a backfill run exports the same subset as the live stream.
 
-`health_events_exporter_events_filtered_total` counts events the filter dropped.
+`health_events_exporter_events_filtered_total` counts the events that the filter dropped.
 
 ## Failure Handling
 
-Configures retry behavior for failed export attempts.
+Configures the retry behavior for failed export attempts.
 
 ```yaml
 event-exporter:
@@ -365,16 +383,20 @@ event-exporter:
 ### Parameters
 
 #### maxRetries
-Maximum number of retry attempts for failed exports before giving up.
+
+The maximum number of retry attempts for a failed export. After this number, the exporter stops the retries.
 
 #### initialBackoff
-Initial delay before first retry attempt.
+
+The initial delay before the first retry attempt.
 
 #### maxBackoff
-Maximum delay between retry attempts (caps exponential backoff).
+
+The maximum delay between retry attempts. This value limits the exponential backoff.
 
 #### backoffMultiplier
-Multiplier for exponential backoff calculation.
+
+The multiplier for the exponential backoff calculation.
 
 ### Retry Examples
 
@@ -404,16 +426,16 @@ The external event sink must:
 
 1. Accept `POST` requests at the configured endpoint
 2. Accept `Content-Type: application/cloudevents+json` header
-3. Validate `Authorization: Bearer {token}` header (verify token authenticity and validity using your auth provider — the example shows the expected header format only)
+3. Validate the `Authorization: Bearer {token}` header. Verify the token authenticity and validity with your auth provider (the example shows only the expected header format)
 4. Return HTTP 2xx status codes for successful ingestion
 5. Return HTTP 4xx/5xx status codes for failures
 6. Handle CloudEvents 1.0 JSON format
 
 ### Example Sink Implementation
 
-> **Note**: The following is illustrative pseudocode showing request structure handling. The `# Verify Bearer token` section only checks the header format — replace it with actual token signature verification and validation using your authentication provider (e.g. JWT verification, OAuth introspection, or a shared-secret HMAC check).
+> **Note**: The code below is illustrative pseudocode that shows how to handle the request structure. The `# Verify Bearer token` section checks only the header format. Replace it with real token signature verification and validation with your authentication provider. For example, use JWT verification, OAuth introspection, or a shared-secret HMAC check.
 
-A minimal sink endpoint should:
+This example shows the steps of a minimal sink endpoint:
 
 ```python
 @app.route('/api/v1/events', methods=['POST'])

@@ -2,23 +2,24 @@
 
 ## Overview
 
-NVSentinel supports PostgreSQL as an alternative datastore to MongoDB. The PostgreSQL provider offers similar functionality with a relational database backend, providing flexibility in deployment options.
+NVSentinel supports PostgreSQL as an alternative datastore to MongoDB. The PostgreSQL provider gives similar functionality with a relational database backend. Thus, you have more options when you deploy NVSentinel.
 
 ## Features
 
-- **Full feature parity** with MongoDB provider
+- **Health event storage and change streams**, as with the MongoDB provider. The metrics `change_stream_resume_token_recoveries_total` and `change_stream_reopens_total` exist only for MongoDB. For the other differences, refer to [Comparison: PostgreSQL and MongoDB](#comparison-postgresql-and-mongodb).
 - **TLS/SSL support** with client certificate authentication
-- **Change stream emulation** using triggers and polling
+- **Change stream emulation** with triggers and polling
 - **JSONB storage** for flexible document-like data structures
 - **Automatic schema management** with tables, indexes, and triggers
-- **Production-ready** with connection pooling and error handling
+- **Connection pooling and error handling** for production use
 
 ## When to Use PostgreSQL
 
 Choose PostgreSQL if you:
+
 - Already have PostgreSQL infrastructure in your organization
 - Prefer relational databases for operational reasons
-- Need to leverage existing PostgreSQL expertise
+- Need to use existing PostgreSQL expertise
 - Want to use PostgreSQL-specific features or tools
 - Have compliance requirements that favor PostgreSQL
 
@@ -26,18 +27,18 @@ Choose PostgreSQL if you:
 
 ### Database Schema
 
-The PostgreSQL provider uses the following tables:
+The PostgreSQL provider uses these tables:
 
 1. **health_events** - Stores GPU and system health events
 2. **maintenance_events** - Stores CSP maintenance events
 3. **datastore_changelog** - Tracks changes for change stream emulation
 4. **resume_tokens** - Stores resume tokens for change stream clients
 
-Each table uses JSONB columns to store document data while extracting key fields for indexing.
+Each table stores the document data in JSONB columns. The provider also extracts key fields from the document for indexing.
 
 ### Change Stream Emulation
 
-PostgreSQL doesn't have native change streams like MongoDB. The provider emulates this using:
+PostgreSQL does not have native change streams like MongoDB. The provider emulates change streams with these items:
 
 - **Triggers** on tables to capture INSERT/UPDATE/DELETE operations
 - **Changelog table** to store change events
@@ -46,49 +47,90 @@ PostgreSQL doesn't have native change streams like MongoDB. The provider emulate
 
 ### Durable Watcher Start Position
 
-Every error-returning PostgreSQL watcher constructor loads or creates its saved position before it returns. This rule applies with or without changelog retention.
+When a component creates its PostgreSQL watcher, the watcher loads its saved position from the `resume_tokens` table. If no row exists for the component, the watcher creates the row. The watcher completes this step before it reads changes.
 
-For a missing `resume_tokens` row, the constructor saves `{timestamp, eventID}` with eventID `0`. The timestamp is the earlier of database `clock_timestamp()` minus five seconds and the oldest other client session's transaction start in the current database. The same insert inspects activity first and then samples the clock, on the reserved connection. A writer open during the inspection is bounded by its transaction start. A writer that starts between the inspection and the clock sample has a `changed_at` after the inspection, and the five-second margin covers it, because it only has to exceed this one statement's duration. An idle or long transaction moves the start earlier and can increase replay. The watcher reads back the stored pair and uses it as its read position. Concurrent constructors for the same client use the winning row. Existing rows remain unchanged.
+For a new row, the watcher saves a `{timestamp, eventID}` pair with eventID `0`. The timestamp is the earlier of these two times:
 
-The insert inspects `client backend` sessions in the current database, excluding its own session. Background processes, including autovacuum and parallel workers, do not affect the start boundary. PostgreSQL hides `backend_type` for sessions whose statistics the consumer cannot read, but still shows their user (`usesysid`). A hidden session with a user may be a client, so it triggers the full-replay fallback. Background processes show no user and are ignored. A client that is still connecting has no transaction yet and is also ignored.
+- The database `clock_timestamp()` minus five seconds
+- The oldest transaction start of the other client sessions in the current database
 
-Hidden client activity or disabled client activity tracking prevents a reliable transaction-start bound. Either condition selects the Unix epoch, `1970-01-01T00:00:00+00:00`, which precedes every changelog row and parses in every session time zone. A database that allows prepared transactions (`max_prepared_transactions` above `0`) also selects this boundary. A prepared transaction leaves its session, PostgreSQL exposes only its PREPARE time, and it can commit at any moment, so no observation can bound it.
+Thus, the watcher reads all changes of the transactions that were open when it saved the position. The five-second margin also covers a transaction that starts while the watcher saves the position. If another client has an idle or long transaction, the start position is earlier, and the watcher can replay more changes.
 
-For a new consumer, this fallback replays the whole available changelog. Only changelog retention would bound that replay; NVSentinel does not implement changelog retention. The watcher logs one warning after loading the saved boundary. The warning names the consumer, lists the possible causes and links to this section. Existing tokens remain unchanged.
+The watcher then reads the saved row and uses that pair as its read position. If two watchers with the same client name start at the same time, both use the row that the first watcher saved. At start, the watcher does not change a row that exists.
 
-The standard chart uses one shared PostgreSQL role for all datastore writers and consumers. PostgreSQL defaults `max_prepared_transactions` to `0`, which disables prepared transactions. With activity tracking enabled, the standard chart normally never triggers this fallback. Custom roles, disabled tracking or enabled prepared transactions can trigger it.
+To find the oldest transaction, the watcher examines the `client backend` sessions in the current database, except its own session. Background processes, such as autovacuum and parallel workers, do not change the start position.
 
-Use the same role for all writers, or ask the database operator to grant the consumer role `pg_read_all_stats`. Enable client activity tracking. If no client uses two-phase commit, keep `max_prepared_transactions` at `0`. These steps prevent future fallback choices; they do not replace an existing saved replay boundary. No privilege is granted automatically. The PostgreSQL documentation describes the statistics views, the `pg_prepared_xacts` view and the `max_prepared_transactions` setting.
+If the role of the consumer cannot read the statistics of a session, PostgreSQL hides the `backend_type` of that session. PostgreSQL still shows the user of that session (`usesysid`). A hidden session with a user can be a client, so it causes the full-replay fallback. Background processes show no user, so the watcher ignores them. A client that has not completed its connection has no transaction yet, so the watcher also ignores it.
 
-A restart before the first acknowledgment resumes from that saved pair. A consumer that rarely acknowledges keeps its first start pair until an acknowledgment advances it. For example, fault-remediation can stay quiet on a healthy cluster. Each restart reads the changelog again from that pair. This adds replay cost without losing events.
+In these conditions, the transaction start times do not give a reliable bound:
 
-Load errors prevent construction, polling and delivery. A malformed token is logged and kept, and the watcher replays the changelog from the beginning, so a corrupt row cannot fail every restart. Legacy timestamp lookups retry database errors until success or context cancellation. A missing legacy changelog row resumes from the earliest later `changed_at` with eventID `0`; existing tokens are never replaced.
+- PostgreSQL hides client activity from the consumer.
+- Client activity tracking is disabled.
+- The database allows prepared transactions (`max_prepared_transactions` is above `0`).
 
-A reset is different from a first start. Reset-on-start and a circuit-breaker `CREATE` transition ask to skip events that accumulated before the reset, so they replace the token with the current database clock, with no margin, instead of deleting it. Construction then finds that row and starts exactly at the head. Deleting the row by hand still gives the first-start behavior with its five-second margin. The watcher factory and datastore paths run the configured reset before initialization. The database-client path initializes after any reset performed by its caller, including `ClientFactory`. The shared reset helper skips `event-exporter`.
+In each of these conditions, the watcher uses the full-replay fallback. It saves the Unix epoch, `1970-01-01T00:00:00+00:00`, as the timestamp. This time is earlier than every changelog row. A prepared transaction leaves its session, and PostgreSQL shows only its PREPARE time. The transaction can also commit at any moment. Thus, no observation can give a bound for it.
 
-`Start(ctx)` uses the prepared pair and writes no checkpoint. The low-level `NewPostgreSQLChangeStreamWatcher` cannot return initialization errors, so `Start` initializes such a watcher itself. If that fails, `Start` logs the error and launches no readers.
+For a new consumer, the full-replay fallback replays the whole available changelog. Only changelog retention can limit this replay, and NVSentinel does not implement changelog retention. When the watcher loads a saved position at the Unix epoch, it logs one warning: `PostgreSQL watcher starts with full changelog replay`. The warning gives the name of the consumer, the possible causes and a link to this section. The fallback does not change existing tokens.
 
-Initial persistence is not evidence that the consumer is caught up, so lag stays unknown until a poll records progress or an empty batch. An initial row with eventID `0` uses the same `last_updated` stale-token threshold as any other checkpoint.
+The standard chart uses one PostgreSQL role for all datastore writers and consumers. By default, PostgreSQL sets `max_prepared_transactions` to `0`, which disables prepared transactions. With activity tracking enabled, the standard chart normally does not cause the full-replay fallback. Custom roles, disabled tracking or enabled prepared transactions can cause it.
 
-### Recovery and Retention Rollout
+To prevent the full-replay fallback:
 
-Disable changelog cleanup before removing an active client's token. Use reset-on-start where supported, or delete that client's `resume_tokens` row. Restart the consumer and verify its saved start pair. That pair can precede the database clock when another client transaction was open, or be the Unix epoch when activity is hidden or prepared transactions are enabled. This recovery can skip events between the old position and the new start pair. The database-client path requires manual deletion unless its caller provides reset handling.
+- Use the same role for all client sessions in the database, including all writers and consumers. Alternatively, ask the database administrator to grant `pg_read_all_stats` to the role of the consumer.
+- Enable client activity tracking.
+- If no client uses two-phase commit, keep `max_prepared_transactions` at `0`.
 
-Keep cleanup disabled until every store-owning component supports initial persistence and verified, acknowledgment-safe checkpoints. Verify that every active watcher has a saved position before enabling cleanup. A nonempty token table cannot prove rollout completeness. Disable cleanup before downgrading a reader.
+These steps prevent the fallback only for start positions that watchers create later. They do not replace a start position at the Unix epoch that a watcher saved before. NVSentinel does not grant a privilege automatically. For the statistics views, the `pg_prepared_xacts` view and the `max_prepared_transactions` setting, refer to the PostgreSQL documentation.
+
+If a consumer restarts before its first acknowledgment, it resumes from the saved start position. A consumer that rarely acknowledges events keeps its first start position until an acknowledgment moves it forward. For example, on a healthy cluster, fault-remediation can have no events to acknowledge for a long time. Each restart then reads the changelog again from that position. This replay adds cost, but the consumer does not lose events.
+
+If the watcher cannot load its saved position, the component cannot create the watcher. Thus, the component does not poll the changelog or deliver events.
+
+At start, if the saved token is malformed, the watcher logs an error and does not change the row. The error message is `Resume token is malformed; replaying the changelog from the beginning`. The watcher then replays the changelog from the beginning. Thus, a corrupt row does not make every restart fail.
+
+If a saved token has an eventID but no timestamp, the watcher gets the `changed_at` time of that changelog row. If this lookup gets a database error, the watcher tries again until the lookup succeeds or the component stops. If the changelog row does not exist, the watcher resumes from the earliest `changed_at` of the later rows, with eventID `0`. At start, the watcher does not save the converted position to the row.
+
+A reset is different from a first start. These two operations reset the position of a consumer:
+
+- The `CREATE` mode of the resume-control ConfigMap. Refer to [Change Stream Resume Tokens](./configuration/README.md#change-stream-resume-tokens).
+- The circuit breaker `CREATE` cursor. Refer to [Resetting the Circuit Breaker](./circuit-breaker.md#resetting-the-circuit-breaker).
+
+Both operations skip the events that accumulated before the reset. Thus, they replace the token with the current database clock, with no margin, and they do not delete it. The watcher then finds that row and starts exactly at the head of the changelog. If you delete the row by hand, the watcher does a first start, with the five-second margin. Each component does the configured reset before its watcher loads its position. The resume-control ConfigMap does not reset `event-exporter`.
+
+When the watcher starts to read, it uses the saved position. It does not save a new position at that time.
+
+A saved start position does not show that the consumer has read all changes. Thus, the lag of the consumer stays unknown until a poll reads an event or gets an empty batch. Until then, `change_stream_lag_known` is `0` for the consumer.
+
+### Watcher Position Recovery
+
+To reset the position of a consumer, do these steps:
+
+1. Scale the Deployment of the consumer to zero replicas. Wait until no pod of the consumer runs.
+2. Reset the token of the consumer with one of these methods:
+   - For fault-quarantine, node-drainer, fault-remediation and health-events-analyzer, set the key of the consumer to `CREATE` in the resume-control ConfigMap. Refer to [Change Stream Resume Tokens](./configuration/README.md#change-stream-resume-tokens).
+   - For any consumer, including `event-exporter`, delete the row of the consumer from the `resume_tokens` table.
+3. Scale the Deployment back to its earlier number of replicas.
+4. Verify the saved start position of the consumer in the `resume_tokens` table.
+
+While the consumer runs, do not delete its row. A running consumer saves its old position again when it acknowledges an event. Some consumers, for example health-events-analyzer, also save their position when they stop. Then the consumer resumes from its old position.
+
+With the `CREATE` mode, the new start position is the database clock. After you delete the row, the new start position can be earlier than the database clock if another client transaction was open. It can also be the Unix epoch if client activity is hidden or prepared transactions are enabled. This recovery can skip the events between the old position and the new start position.
 
 ### Delivery Acknowledgments
 
-`MarkProcessed(token)` acknowledges the earliest tracked pending delivery with that token and every delivery before it. Resolve that entire delivery prefix before acknowledging. Concurrent consumers must use a contiguous completion watermark.
+A consumer acknowledges an event after it processes the event. This acknowledgment also covers all events that the watcher delivered to the consumer before that event. The saved position always stays before the earliest delivered event that the consumer has not acknowledged. Thus, after a restart, the consumer gets every unacknowledged event again, and it can also get some processed events again.
 
-The provider tracks matching deliveries before enqueueing them. Buffered events count as pending. It saves the read cursor only when no deliveries remain pending. Otherwise, it saves the smaller of the cursor and the position strictly before every pending delivery in `(changed_at, id)` order. Before handing out a late NOTIFY row behind the persisted checkpoint, the provider saves the rewound position. A failed rewind leaves the row undelivered and its notification ID available for the next catch-up pass. The fetch loop logs the failure and retries the pass. Rewind saves and acknowledgment saves use the same lock. A late NOTIFY row can move the saved position backward. A restart can therefore replay acknowledged events as well as pending events.
+A change can become visible after the watcher reads newer changes, for example when its transaction runs for a long time. If a notification announces such a change behind the saved position, the watcher first moves the saved position back to before the change. Then it delivers the change. If this save fails, the watcher does not deliver the change yet. It logs `Failed to persist checkpoint rewind; delivery will be retried` and tries again. Thus, after a restart, a consumer can receive events that it acknowledged before.
 
-Empty, unknown, evicted-only, and already acknowledged tokens certify no outstanding deliveries. Acknowledgments never advance the read cursor past unread rows. For an empty token, the provider marks the changelog rows up to the read cursor as processed. For other tokens, it runs the cumulative `processed = TRUE WHERE id <= token` update. This flag does not prove that all consumers acknowledged a row.
+An acknowledgment also updates the changelog. The provider sets `processed` to `TRUE` on the rows of the same table, up to the ID of the event. This column does not show that all consumers acknowledged a row. The provider does not delete rows from the `datastore_changelog` table.
 
-The provider tracks at most 4,096 individual pending deliveries per watcher. The Helm value `health-events-analyzer.maxInFlight` sets the partitioned processor limit and defaults to `1000`. The watcher and adapter channels each buffer 100 events. The adapter can hold one additional event, and the watcher can register one event before its send blocks. Thus, `maxInFlight + 202` deliveries can await acknowledgment. Values up to `3894` fit within the 4,096-entry window; `3895` or higher can exceed it. Acknowledgments can then fall outside the tracked window. The saved position stays at the eviction floor until a tracked cumulative acknowledgment clears the evicted backlog. No events are skipped; a restart can replay them. At the limit, it evicts the oldest tracked entry and retains a floor. The floor stores the minimum position and maximum delivery sequence across evicted entries. Checkpoints stay strictly before that floor until an acknowledgment matches a tracked delivery after all evicted entries. That cumulative acknowledgment clears the floor. Eviction bounds memory without blocking delivery, including when a consumer drops failed events. The watcher logs once per saturation episode; clearing the floor ends that episode.
+Each watcher tracks at most 4,096 delivered events that wait for acknowledgment. For health-events-analyzer, up to `maxInFlight + 202` events can wait. The Helm value `health-events-analyzer.maxInFlight` sets the maximum number of events that the analyzer has in flight without an acknowledgment, before it applies backpressure. Its default is `1000`. Values up to `3894` fit within the limit. Values of `3895` or higher can exceed it.
 
-Abandoned sends remain pending because the read cursor already includes those rows. A final watermark flush after cancellation or Close must preserve their replay on restart.
+When a watcher reaches this limit, it logs `Pending delivery limit reached; retaining evicted positions in checkpoint floor`. The watcher continues to deliver events, and its memory use does not increase. But it stops tracking the oldest events, and the saved position stays before them. The saved position moves forward again when the consumer acknowledges an event that the watcher delivered after all of them. The watcher skips no events, but a restart can replay more events. The watcher logs the message one time for each such period.
 
-Checkpoint write failures return to the caller. The provider does not delete rows from the `datastore_changelog` table.
+If a consumer stops before the watcher delivers an event to it, the consumer receives that event after a restart.
+
+If the watcher cannot save the position when a consumer acknowledges an event, the acknowledgment fails, and the consumer gets the error. Then a restart can replay events that the consumer already processed.
 
 ## Configuration
 
@@ -96,7 +138,7 @@ Checkpoint write failures return to the caller. The provider does not delete row
 
 #### Using values-postgresql.yaml
 
-Deploy NVSentinel with PostgreSQL using the provided values file:
+Use the provided values file to deploy NVSentinel with PostgreSQL:
 
 ```bash
 helm install nvsentinel ./distros/kubernetes/nvsentinel \
@@ -137,7 +179,7 @@ postgresql:
 
 ### TLS/SSL Configuration
 
-PostgreSQL requires TLS for secure connections. The Helm chart automatically configures:
+PostgreSQL requires TLS for secure connections. The Helm chart configures these items automatically:
 
 1. **cert-manager resources** for certificate generation
 2. **Client certificates** for application authentication
@@ -147,9 +189,9 @@ PostgreSQL requires TLS for secure connections. The Helm chart automatically con
 #### SSL Modes
 
 - `disable` - No SSL (not recommended for production)
-- `require` - SSL required but no certificate verification
-- `verify-ca` - Verify server certificate against CA
-- `verify-full` - Full verification including hostname (recommended)
+- `require` - SSL required, but no certificate verification
+- `verify-ca` - Verification of the server certificate against the CA
+- `verify-full` - Full verification, including the hostname (recommended)
 
 ### Environment Variables
 
@@ -168,46 +210,11 @@ The provider recognizes these environment variables:
 
 The provider also accepts `MONGODB_CLIENT_CERT_MOUNT_PATH` as the certificate directory path.
 
-## Development with Tilt
-
-### Using PostgreSQL in Tilt
-
-Set the environment variable before running Tilt:
-
-```bash
-export USE_POSTGRESQL=1
-tilt up
-```
-
-This will:
-- Load `values-tilt-postgresql.yaml` automatically
-- Deploy PostgreSQL instead of MongoDB
-- Generate PostgreSQL certificates via cert-manager
-- Configure all services to use PostgreSQL
-
-### Switching Back to MongoDB
-
-Simply unset the variable and restart:
-
-```bash
-unset USE_POSTGRESQL
-tilt down
-tilt up
-```
-
-### Development Values
-
-The `values-tilt-postgresql.yaml` file includes:
-- Single-replica PostgreSQL for faster startup
-- Development password (`nvsentinel-dev`)
-- Auto-initialized schema with tables and triggers
-- Control plane node selector for PostgreSQL pod
-
 ## Migration Guide
 
 ### From MongoDB to PostgreSQL
 
-1. **Export data from MongoDB** (if preserving data):
+1. **Export data from MongoDB** (if you want to keep the data):
    ```bash
    # Export collections to JSON
    mongoexport --uri="mongodb://..." --db=nvsentinel --collection=health_events --out=health_events.json
@@ -229,7 +236,7 @@ The `values-tilt-postgresql.yaml` file includes:
 
 ### Testing the Migration
 
-Verify PostgreSQL deployment:
+Verify the PostgreSQL deployment:
 
 ```bash
 # Check PostgreSQL is running
@@ -246,14 +253,15 @@ kubectl logs -n nvsentinel deployment/fault-quarantine | grep -i postgres
 
 ### Automatic Initialization
 
-When a module starts, it runs schema setup statements that:
-- Create tables if they don't exist
+When a component starts, it runs schema setup statements that:
+
+- Create tables if they do not exist
 - Create indexes for query performance
-- Set up triggers for change tracking
+- Create triggers for change tracking
 
 ### Manual Schema Updates
 
-If you need to modify the schema:
+To change the schema, do these steps:
 
 1. Connect to PostgreSQL:
    ```bash
@@ -268,24 +276,25 @@ If you need to modify the schema:
 
 ### Schema Reference
 
-See [postgresql-schema.sql](./postgresql-schema.sql) for the complete schema definition.
+For the complete schema definition, refer to [postgresql-schema.sql](./postgresql-schema.sql).
 
 ## Performance Tuning
 
 ### Connection Pooling
 
-The provider uses Go's `database/sql` package with connection pooling:
+The provider uses a connection pool with these defaults:
 
 ```go
-// Default settings (can be tuned via environment variables)
+// Defaults. Only MaxOpenConns can be tuned, with DATASTORE_MAX_CONNECTIONS.
 MaxOpenConns: 25
-MaxIdleConns: 25
-ConnMaxLifetime: 5 minutes
+MaxIdleConns: 10
+ConnMaxLifetime: 1 hour
 ```
 
 ### Indexing Strategy
 
 Key indexes for performance:
+
 - `node_name` - Queries by node
 - `status` - Status filtering
 - `created_at` / `event_timestamp` - Time-based queries
@@ -297,11 +306,12 @@ Key indexes for performance:
 
 The change stream poll reads the changelog rows of one table after its resume position, in `(changed_at, id)` order. The `idx_changelog_resume_all` index serves this query. Without it, each poll reads and sorts all changelog rows of the table.
 
-Fault Quarantine, Node Drainer, Fault Remediation and the Health Events Analyzer create the index at start if it is missing. They build it with `CREATE INDEX CONCURRENTLY`, so changelog writes continue during the build. The components build it one at a time, under the setup lock.
+At start, fault-quarantine, node-drainer, fault-remediation and health-events-analyzer create the index if it is missing. They build it with `CREATE INDEX CONCURRENTLY`, so changelog writes continue during the build. Each component holds the setup lock during the build, so the components build the index one at a time.
 
 ### Query Optimization
 
-The provider extracts frequently-queried fields from JSONB:
+The provider extracts frequently-queried fields from JSONB. This has these effects:
+
 - Reduces JSONB query overhead
 - Enables efficient B-tree index usage
 - Maintains flexibility for additional JSONB fields
@@ -313,8 +323,9 @@ The provider extracts frequently-queried fields from JSONB:
 **Problem**: "connection refused" or "no route to host"
 
 **Solutions**:
-- Verify PostgreSQL service is running: `kubectl get svc nvsentinel-postgresql -n nvsentinel`
-- Check network policies aren't blocking access
+
+- Verify that the PostgreSQL service runs: `kubectl get svc nvsentinel-postgresql -n nvsentinel`
+- Check that no network policy blocks access
 - Verify DNS resolution: `nslookup nvsentinel-postgresql.nvsentinel.svc.cluster.local`
 
 ### Certificate Issues
@@ -322,55 +333,60 @@ The provider extracts frequently-queried fields from JSONB:
 **Problem**: "certificate verify failed" or permission denied
 
 **Solutions**:
-- Check cert-manager created certificates: `kubectl get certificate -n nvsentinel`
-- Verify certificate secret exists: `kubectl get secret postgresql-client-cert -n nvsentinel`
-- Check initContainer logs: `kubectl logs -n nvsentinel deployment/fault-quarantine -c fix-cert-permissions`
-- Ensure certificate permissions are correct (key: 600, cert/ca: 644)
+
+- Check that cert-manager created the certificates: `kubectl get certificate -n nvsentinel`
+- Verify that the certificate secret exists: `kubectl get secret postgresql-client-cert -n nvsentinel`
+- Examine the initContainer logs: `kubectl logs -n nvsentinel deployment/fault-quarantine -c fix-cert-permissions`
+- Verify that the certificate permissions are correct (key: 600, cert/ca: 644)
 
 ### SSL Mode Issues
 
 **Problem**: "SSL required" or "SSL not supported"
 
 **Solutions**:
-- Verify `sslmode` is set correctly in values
-- Check PostgreSQL server has TLS enabled
-- Verify server certificate is valid
+
+- Verify that `sslmode` has the correct value in your values file
+- Check that the PostgreSQL server has TLS enabled
+- Verify that the server certificate is valid
 
 ### Change Stream Not Working
 
-**Problem**: Services not receiving updates
+**Problem**: Services do not receive updates
 
 **Solutions**:
-- Check triggers are created: Connect to DB and run `\d health_events` to see triggers
-- Verify changelog table has entries: `SELECT COUNT(*) FROM datastore_changelog;`
-- Check resume tokens are being updated: `SELECT * FROM resume_tokens;`
-- Review component logs for polling errors
+
+- Check that the triggers exist. Connect to the database and run `\d health_events` to show the triggers.
+- Verify that the changelog table has entries: `SELECT COUNT(*) FROM datastore_changelog;`
+- Check that the components update the resume tokens: `SELECT * FROM resume_tokens;`
+- Examine the component logs for polling errors
 
 ### Performance Issues
 
 **Problem**: Slow queries or high CPU
 
 **Solutions**:
-- Check indexes exist: `\d health_events` in psql
-- Analyze slow queries: Enable PostgreSQL slow query log
-- Increase connection pool size if needed
-- Consider vacuuming: `VACUUM ANALYZE health_events;`
+
+- Check that the indexes exist: run `\d health_events` in psql
+- To analyze slow queries, enable the PostgreSQL slow query log
+- If necessary, increase the connection pool size
+- You can also vacuum the table: `VACUUM ANALYZE health_events;`
 
 ## Monitoring
 
 ### Metrics
 
 Monitor these PostgreSQL metrics:
+
 - Connection pool utilization
 - Query latency (P50, P95, P99)
 - Transaction rate
 - Table sizes and growth
 - Index hit ratio
-- Replication lag (if using replicas)
+- Replication lag (if you use replicas)
 
 ### Health Checks
 
-Verify datastore health:
+Verify the health of the datastore:
 
 ```bash
 # Check PostgreSQL pod health
@@ -407,7 +423,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO nvsentine
 
 - Use NetworkPolicies to restrict access
 - Enable TLS for all connections
-- Use private networks when possible
+- If possible, use private networks
 - Rotate certificates regularly
 
 ## Backup and Recovery
@@ -446,19 +462,19 @@ kubectl exec -i nvsentinel-postgresql-0 -n nvsentinel -- \
   psql -U postgres nvsentinel < backup.sql
 ```
 
-## Comparison: PostgreSQL vs MongoDB
+## Comparison: PostgreSQL and MongoDB
 
 | Feature | PostgreSQL | MongoDB |
 |---------|-----------|----------|
 | **Data Model** | Relational with JSONB | Document-oriented |
-| **Change Streams** | Emulated via triggers | Native |
+| **Change Streams** | Emulated with triggers | Native |
 | **Transactions** | Full ACID | Multi-document ACID |
 | **Query Language** | SQL | MQL |
 | **Indexing** | B-tree, GiST, GIN | B-tree, Geospatial |
 | **Scalability** | Vertical + read replicas | Horizontal sharding |
 | **Maturity** | Very mature (30+ years) | Mature (15+ years) |
 | **Ops Complexity** | Well-known, standard | Specialized knowledge |
-| **Change Stream Latency** | ~1s (polling) | &lt;100ms (native) |
+| **Change Stream Latency** | Near real time (LISTEN/NOTIFY, with fallback polling) | &lt;100ms (native) |
 
 ## References
 
@@ -466,7 +482,8 @@ kubectl exec -i nvsentinel-postgresql-0 -n nvsentinel -- \
 
 ## Support
 
-For issues or questions:
-1. Check this documentation and troubleshooting section
-2. Review logs: `kubectl logs -n nvsentinel {pod-name}`
+For issues or questions, do these steps:
+
+1. Read this page and its troubleshooting section
+2. Examine the logs: `kubectl logs -n nvsentinel {pod-name}`
 3. File an issue: https://github.com/nvidia/nvsentinel/issues

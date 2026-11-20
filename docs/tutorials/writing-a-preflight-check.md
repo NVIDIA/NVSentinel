@@ -1,40 +1,40 @@
 # Tutorial: Writing a Preflight Check
 
-This tutorial walks you through building **`preflight-demo-gpu-visible`** — a preflight check that runs `nvidia-smi -L`, requires at least `MIN_GPU_COUNT` GPUs, reports via gRPC, and exits — from an empty Go module to a container image registered in the preflight webhook and verified on a GPU pod.
+This tutorial shows you how to build **`preflight-demo-gpu-visible`**. This preflight check runs `nvidia-smi -L`, requires at least `MIN_GPU_COUNT` GPUs, reports through gRPC, and exits. You start with an empty Go module. You finish with a container image that you registered in the preflight webhook and verified on a GPU pod.
 
-By the end you will have:
+At the end of this tutorial, you have:
 
-- A working init-container check that validates GPUs are visible before the workload starts.
-- A container image for it, registered in the preflight Helm chart.
-- Verification that a failing check blocks pod startup and emits a health event.
+- A working init-container check that validates that the GPUs are visible before the workload starts.
+- A container image for the check, registered in the preflight Helm chart.
+- Verification that a failing check blocks the pod startup and emits a health event.
 
-> **Who is this for?** Teams **already running NVSentinel preflight** who want to add a custom diagnostic (or ship a third-party image) without changing the webhook code.
+> **Who is this for?** Teams that **already run NVSentinel preflight** and want to add a custom diagnostic (or ship a third-party image) without a change to the webhook code.
 
-> **Just want the AI to do it?** Jump to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
+> **Do you want an AI coding agent to do the work?** Go to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
 
 ## Prerequisites
 
-- `go` 1.27+ and `docker` — build the check image.
+- `go` 1.27+ and `docker`, to build the check image.
 - `kubectl` with access to a cluster where:
-  - NVSentinel is running (`platform-connectors` at minimum).
+  - NVSentinel runs (`platform-connectors` at minimum).
   - Preflight is enabled (`global.preflight.enabled: true`).
-  - At least one namespace is labeled `nvsentinel.nvidia.com/preflight=enabled`.
+  - At least one namespace has the label `nvsentinel.nvidia.com/preflight=enabled`.
   - You can schedule a GPU pod (device plugin or DRA).
 
-See [Preflight overview](../preflight.md) and [Preflight configuration](../configuration/preflight.md) for how preflight works. `DEVELOPMENT.md` in the NVSentinel repository root covers local dev cluster setup.
+For information about how preflight works, see [Preflight overview](../preflight.md) and [Preflight configuration](../configuration/preflight.md). For the setup of a local development cluster, see `DEVELOPMENT.md` in the root of the NVSentinel repository.
 
 ---
 
 ## 1. Scaffold the module
 
-Create a standalone Go module (it can live in any repository; you only need the image URI at deploy time):
+Create a standalone Go module. The module can be in any repository, because you need only the image URI at deploy time:
 
 ```bash
 mkdir demo-preflight-check && cd demo-preflight-check
 go mod init github.com/nvidia/demo-preflight-check
 ```
 
-Add the NVSentinel protobuf module (not published as tagged releases — pin a commit):
+Add the NVSentinel protobuf module. This module has no tagged releases, so pin a commit:
 
 ```bash
 export GOTOOLCHAIN=auto
@@ -45,7 +45,7 @@ go get github.com/nvidia/nvsentinel/data-models@a3fb47d4
 
 ## 2. Write the check
 
-Create `main.go`. Structure: parse env → run diagnostic → send health event → exit.
+Create `main.go`. The program parses the environment, runs the diagnostic, sends a health event, and exits.
 
 ```go
 package main
@@ -237,14 +237,14 @@ func requireEnv(key string) (string, error) {
 }
 ```
 
-Tidy and build (on a machine without `nvidia-smi`, `go build` still succeeds — the binary only shells out at runtime):
+Tidy the module. Then build it. On a machine without `nvidia-smi`, `go build` still succeeds, because the binary starts it only at runtime:
 
 ```bash
 go mod tidy
 go build ./...
 ```
 
-For production code, copy the retry/backoff reporter from `preflight-checks/nccl-loopback/pkg/health/reporter.go` instead of the inline `sendEvent` above.
+For production code, copy the reporter with retry and backoff from `preflight-checks/nccl-loopback/pkg/health/reporter.go`. Use it instead of the inline `sendEvent` above.
 
 ---
 
@@ -263,15 +263,13 @@ COPY --from=builder /src/demo-preflight-check /demo-preflight-check
 ENTRYPOINT ["/demo-preflight-check"]
 ```
 
-Build and push to a registry your cluster can pull from. Example using NGC (`nvcr.io`):
+Build the image. Then push it to a registry that your cluster can pull from. This example uses the placeholder registry `registry.example.com`. Replace it with your own registry in every command and value on this page:
 
 ```bash
-docker login nvcr.io
-# Username: $oauthtoken
-# Password: <your NGC API key>
+docker login registry.example.com
 
-docker build . -t nvcr.io/nv-ngc-devops/preflight-demo-gpu-visible:dev
-docker push nvcr.io/nv-ngc-devops/preflight-demo-gpu-visible:dev
+docker build . -t registry.example.com/preflight-demo-gpu-visible:dev
+docker push registry.example.com/preflight-demo-gpu-visible:dev
 ```
 
 ---
@@ -279,13 +277,14 @@ docker push nvcr.io/nv-ngc-devops/preflight-demo-gpu-visible:dev
 ## 4. Register and deploy
 
 Add your check to `distros/kubernetes/nvsentinel/charts/preflight/values.yaml`:
+
 ```yaml
 initContainers:
   # ... existing checks ...
   - name: preflight-demo-gpu-visible
     defaultEnabled: false   # opt-in via annotation while testing
     image:
-      repository: nvcr.io/nv-ngc-devops/preflight-demo-gpu-visible
+      repository: registry.example.com/preflight-demo-gpu-visible
       tag: "dev"
     env:
       - name: MIN_GPU_COUNT
@@ -303,10 +302,10 @@ helm upgrade nvsentinel ./distros/kubernetes/nvsentinel \
   --reuse-values \
   -f your-overrides.yaml
 
-kubectl rollout status deploy/preflight-injector -n nvsentinel
+kubectl rollout status deploy/preflight -n nvsentinel
 ```
 
-Because `defaultEnabled: false`, pods must select this check via annotation:
+Because the check has `defaultEnabled: false`, a pod must select it with an annotation:
 
 ```yaml
 nvsentinel.nvidia.com/preflight-checks: "preflight-demo-gpu-visible"
@@ -318,7 +317,7 @@ nvsentinel.nvidia.com/preflight-checks: "preflight-demo-gpu-visible"
 
 ### Manual container smoke test
 
-On a GPU node where platform-connectors is running (or `docker run --gpus all` on that host):
+On a GPU node where platform-connectors runs, start the container with `docker run --gpus all`:
 
 ```bash
 docker run --rm --gpus all \
@@ -327,13 +326,13 @@ docker run --rm --gpus all \
   -e PLATFORM_CONNECTOR_SOCKET=unix:///var/run/nvsentinel.sock \
   -e PROCESSING_STRATEGY=STORE_ONLY \
   -e MIN_GPU_COUNT=1 \
-  nvcr.io/nv-ngc-devops/preflight-demo-gpu-visible:dev
+  registry.example.com/preflight-demo-gpu-visible:dev
 echo "exit code: $?"
 ```
 
 ### Verify on a GPU pod
 
-Label the namespace so the preflight webhook injects init containers:
+Label the namespace, so that the preflight webhook injects init containers:
 
 ```bash
 kubectl label namespace training nvsentinel.nvidia.com/preflight=enabled --overwrite
@@ -363,26 +362,26 @@ kubectl get pod preflight-demo-test -n training -w
 kubectl logs preflight-demo-test -n training -c preflight-demo-gpu-visible
 ```
 
-To test the fail path, set `MIN_GPU_COUNT` unreasonably high in Helm, upgrade, and recreate the pod. The pod should stay `Init:Error`.
+To test the fail path, do these steps:
+
+1. In the Helm values, set `MIN_GPU_COUNT` to an unrealistically high value.
+2. Upgrade the release.
+3. Delete the pod with the command below.
+4. Create the pod again with the manifest above.
+
+The command for step 3 is:
 
 ```bash
 kubectl delete pod preflight-demo-test -n training
 ```
 
-### E2E (in-repo checks only)
-
-If you contributed the check under `preflight-checks/` in the NVSentinel repo (build context and Makefile differ — see the "Creating a New Preflight Check" section of `DEVELOPMENT.md` in the repository root):
-
-```bash
-make -C preflight-checks/{your-check} lint-test
-cd tests && go test -tags=amd64_group -run TestPreflightEndToEnd -v ./...
-```
+After step 4, the pod stays in `Init:Error`.
 
 ---
 
 ## Appendix: One-shot AI prompt
 
-Paste this to an AI coding agent. It is **self-contained**: the check is a standalone Go module and container image that can live in **any repository** (it does not need to be inside the NVSentinel repo).
+Paste this prompt into an AI coding agent. The prompt is **self-contained**. The check is a standalone Go module and container image that can be in **any repository**. It does not have to be in the NVSentinel repository.
 
 ```text
 Create a new NVSentinel preflight check named "preflight-demo-gpu-visible" that validates GPU
@@ -417,17 +416,17 @@ Implementation:
 - Multi-stage Dockerfile (build context = demo-preflight-check directory):
   builder public.ecr.aws/docker/library/golang:1.27.3-trixie, runtime
   nvcr.io/nvidia/cuda:12.8.1-base-ubuntu24.04 (needs nvidia-smi), ENTRYPOINT the built binary.
-- Build/push example (NGC):
-    docker login nvcr.io   # Username: $oauthtoken, Password: <NGC API key>
-    docker build . -t nvcr.io/nv-ngc-devops/preflight-demo-gpu-visible:dev
-    docker push nvcr.io/nv-ngc-devops/preflight-demo-gpu-visible:dev
+- Build/push example (replace registry.example.com with your own registry):
+    docker login registry.example.com
+    docker build . -t registry.example.com/preflight-demo-gpu-visible:dev
+    docker push registry.example.com/preflight-demo-gpu-visible:dev
 - Helm registration snippet for distros/kubernetes/nvsentinel/charts/preflight/values.yaml under
   initContainers: name preflight-demo-gpu-visible, defaultEnabled: false, image.repository
-  nvcr.io/nv-ngc-devops/preflight-demo-gpu-visible, image.tag dev, env MIN_GPU_COUNT=1,
+  registry.example.com/preflight-demo-gpu-visible, image.tag dev, env MIN_GPU_COUNT=1,
   volumeMounts nvsentinel-socket -> /var/run. Upgrade:
     helm upgrade nvsentinel ./distros/kubernetes/nvsentinel \
       --namespace nvsentinel --reuse-values -f your-overrides.yaml
-    kubectl rollout status deploy/preflight-injector -n nvsentinel
+    kubectl rollout status deploy/preflight -n nvsentinel
 - Verification manifest: GPU Pod in a preflight-enabled namespace (e.g. training) with annotation
   nvsentinel.nvidia.com/preflight-checks: "preflight-demo-gpu-visible", nvidia.com/gpu: "1",
   then kubectl logs on init container preflight-demo-gpu-visible.

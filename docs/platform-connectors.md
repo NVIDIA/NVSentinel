@@ -2,43 +2,43 @@
 
 ## Overview
 
-Platform Connectors is the central hub that receives health events from all health monitors and distributes them to the appropriate destinations. It acts as a translator and router, ensuring health events are persisted to the datastore and reflected in Kubernetes node status.
+Platform Connectors is the central hub that receives health events from all health monitors and sends them to the correct destinations. It works as a translator and a router. It persists the health events to the datastore and shows them in the Kubernetes node status.
 
-Think of it as a post office - it receives messages (health events) from various senders (health monitors) and routes them to the right destinations (datastore, Kubernetes API).
+Platform Connectors works like a post office. It receives messages (health events) from different senders (health monitors). It routes the messages to the correct destinations (the datastore and the Kubernetes API).
 
 ### Why Do You Need This?
 
-Platform Connectors provides the glue that connects monitoring to action:
+Platform Connectors connects monitoring to action:
 
-- **Centralized ingestion**: Single endpoint for all health events
-- **Data persistence**: Stores events in the datastore for the remediation pipeline
-- **Kubernetes integration**: Updates node conditions and events based on health status
-- **Metadata enrichment**: Optionally augments events with node metadata (cloud provider info, labels, etc.)
-- **Burst deduplication**: Marks repeated health events with the same fault identity as `STORE_AND_ANALYSE` before downstream fan-out
+- **Centralized ingestion**: One endpoint for all health events
+- **Data persistence**: Stores health events in the datastore for the remediation pipeline
+- **Kubernetes integration**: Updates node conditions and Kubernetes events based on the health status
+- **Metadata enrichment**: Optionally adds node metadata to health events (for example, cloud provider information and labels)
+- **Burst deduplication**: Marks repeated health events with the same fault identity as `STORE_AND_ANALYSE` before the downstream fan-out
 - **Decoupling**: Keeps health monitors independent from platform-specific implementations
 
-Without Platform Connectors, health monitors would need to directly integrate with each platform's storage and APIs, creating tight coupling and complexity.
+Without Platform Connectors, each health monitor must integrate directly with the storage and the APIs of each platform. This causes tight coupling and complexity.
 
 ## How It Works
 
-Platform Connectors typically runs as a DaemonSet in the cluster:
+Platform Connectors usually runs as a DaemonSet in the cluster. It works as follows:
 
-1. Exposes gRPC service for health monitors to send events
-2. Receives health events via gRPC (`HealthEventOccurredV1` API)
-3. Processes events through the transformer pipeline:
-   - **Metadata Augmentor**: Augments events with node metadata (cloud provider, labels, topology)
-   - **Override Transformer**: Applies CEL-based rules to modify event properties
+1. Exposes a gRPC service that health monitors use to send health events
+2. Receives health events through gRPC (the `HealthEventOccurredV1` API)
+3. Processes the health events through the transformer pipeline:
+   - **Metadata Augmentor**: Adds node metadata to health events (cloud provider, labels, topology)
+   - **Override Transformer**: Applies CEL-based rules to change the properties of health events
 4. Runs deduplication as a transformer:
-   - **Deduplicator**: Marks repeated events with the same node, check, impacted entities, error code, and health state as `STORE_AND_ANALYSE`
-5. Queues events in ring buffers for parallel processing
-6. Processes events through multiple connectors:
-   - **Store Connector**: Persists events to the datastore
+   - **Deduplicator**: Marks repeated health events with the same node, check, impacted entities, error code, and health state as `STORE_AND_ANALYSE`
+5. Queues the health events in ring buffers for parallel processing
+6. Processes the health events through multiple connectors:
+   - **Store Connector**: Persists health events to the datastore
    - **Kubernetes Connector**: Updates node conditions and Kubernetes events
-7. Each connector processes events independently for resilience
+7. Each connector processes the health events independently, for resilience
 
-The event processing pipeline runs transformers in order, allowing each transformer to build on previous enrichments. The ring buffer architecture ensures events are processed reliably even under high load, with retry logic for transient failures.
+The event processing pipeline runs the transformers in order, so each transformer can build on the enrichments of the transformers before it. The ring buffer architecture makes sure that Platform Connectors processes health events reliably, even under high load. It has retry logic for transient failures.
 
-The same binary can also run as a central Deployment, the deployment platform connector. Monitors set to `publishTo: deployment` publish to it directly over TLS, with a bearer token. It runs the pipeline and both connectors inside each request. It acknowledges a batch only after it stores the batch. See [Deployment Platform Connector](configuration/platform-connectors.md#deployment-platform-connector).
+The same binary can also run as a central Deployment, the deployment platform connector. A monitor with `publishTo: deployment` publishes directly to it over TLS, with a bearer token. The deployment platform connector runs the pipeline and both connectors inside each request. It acknowledges a batch only after it stores the batch. See [Deployment Platform Connector](configuration/platform-connectors.md#deployment-platform-connector).
 
 ## Configuration
 
@@ -90,25 +90,26 @@ platformConnector:
 
 ### Configuration Options
 
-- **Pipeline**: Configure transformer execution order and enable/disable individual transformers
-- **Deduplication**: Configure repeated event downgrading before datastore/Kubernetes fan-out
+- **Pipeline**: Configure the execution order of the transformers, and enable or disable each transformer
+- **Deduplication**: Configure how Platform Connectors downgrades repeated health events before the fan-out to the datastore and Kubernetes
 - **Transformers**: Transformer-specific configurations (MetadataAugmentor, OverrideTransformer)
 - **Metadata Augmentor**: Configure node metadata enrichment, cache settings, and allowed labels
-- **Override Transformer**: Define CEL-based rules to modify event properties
+- **Override Transformer**: Define CEL-based rules that change the properties of health events
 - **Kubernetes API Rate Limits**: Configure QPS and burst for Kubernetes API calls
 
-For complete configuration reference, see [Platform Connectors Configuration](configuration/platform-connectors.md).
+For the complete configuration reference, see [Platform Connectors Configuration](configuration/platform-connectors.md).
 
 ### Kubernetes Authentication Modes
 
 Platform Connectors supports two Kubernetes authentication modes:
 
-- **In-cluster (default)**: Uses the pod ServiceAccount via `InClusterConfig()`
-- **Out-of-cluster**: Uses an explicit kubeconfig file via `--kubeconfig=/path/to/kubeconfig`
+- **In-cluster (default)**: Uses the pod ServiceAccount through `InClusterConfig()`
+- **Out-of-cluster**: Uses an explicit kubeconfig file, set with `--kubeconfig=/path/to/kubeconfig`
 
-The `--kubeconfig` flag is intended for host-managed deployments, such as running `platform-connectors` under `systemd` alongside the other runtime components. When set, both the Kubernetes connector and `MetadataAugmentor` use that kubeconfig.
+The `--kubeconfig` flag is for host-managed deployments. For example, you can run `platform-connectors` under `systemd` together with the other runtime components. If you set the flag, both the Kubernetes connector and `MetadataAugmentor` use that kubeconfig.
 
 Example host-managed invocation:
+
 ```bash
 platform-connectors --socket=/var/run/nvsentinel.sock --config=/etc/config/config.json --kubeconfig=/var/lib/kubelet/kubeconfig
 ```
@@ -116,96 +117,110 @@ platform-connectors --socket=/var/run/nvsentinel.sock --config=/etc/config/confi
 ## What It Does
 
 ### Health Event Ingestion
-Receives health events from all monitors via gRPC:
-- GPU Health Monitor (DCGM-based checks)
-- Syslog Health Monitor (log-based checks)
-- CSP Health Monitor (cloud provider events)
-- Kubernetes Object Monitor (resource-based checks)
+
+Platform Connectors receives health events from all health monitors through gRPC:
+
+- gpu-health-monitor (DCGM-based checks)
+- syslog-health-monitor (log-based checks)
+- csp-health-monitor (cloud provider events)
+- kubernetes-object-monitor (resource-based checks)
 - Any custom health monitors
 
 ### Event Transformation
-Processes events through configurable transformer pipeline:
-- **Metadata Augmentor**: Adds cloud provider IDs, topology labels, custom node labels
-- **Override Transformer**: Applies CEL-based rules to modify event severity and recommendations
-- **Extensible**: Support for custom transformers via factory pattern
-- Transformers execute in configured order with non-blocking error handling
+
+Platform Connectors processes health events through a configurable transformer pipeline:
+
+- **Metadata Augmentor**: Adds cloud provider IDs, topology labels and custom node labels
+- **Override Transformer**: Applies CEL-based rules to change the severity and the recommended actions of health events
+- **Extensible**: Supports custom transformers through a factory pattern
+- Transformers run in the configured order, with non-blocking error handling
 
 ### Event Deduplication
-Marks repeated events for configured checks as `STORE_AND_ANALYSE` within a configurable burst window before they are sent to connectors. The key uses `nodeName`, `checkName`, sorted `entitiesImpacted`, sorted `errorCode`, `processingStrategy`, and `isHealthy`; message-only variations do not create distinct faults.
 
-`STORE_AND_ANALYSE` (not `STORE_ONLY`) is used intentionally: deduplicated events are still ingested by the Health Events Analyzer for rule evaluation, so repeated occurrences can collectively trigger a correlation rule that emits a new `EXECUTE_REMEDIATION` synthetic event. `STORE_ONLY` would suppress them from HEA entirely.
+Platform Connectors marks repeated health events for the configured checks as `STORE_AND_ANALYSE` within a configurable burst window. It does this before it sends the health events to the connectors. The deduplication key uses `nodeName`, `checkName`, sorted `entitiesImpacted`, sorted `errorCode`, `processingStrategy`, and `isHealthy`. Health events that differ only in their message do not create distinct faults.
+
+The deduplicator uses `STORE_AND_ANALYSE`, not `STORE_ONLY`, on purpose. With `STORE_AND_ANALYSE`, health-events-analyzer still ingests the deduplicated health events for rule evaluation. As a result, repeated occurrences can together trigger a correlation rule that emits a new `EXECUTE_REMEDIATION` derived health event. With `STORE_ONLY`, health-events-analyzer does not get these health events at all.
 
 ### Data Persistence
-Stores health events in the datastore:
-- Atomic insertion with proper timestamps
-- Preserves all event metadata and transformations
+
+Platform Connectors stores health events in the datastore:
+
+- Atomic insertion with correct timestamps
+- Keeps all metadata and transformations of the health event
 - Triggers change streams for downstream modules
 
 ### Kubernetes Integration
-Updates cluster state based on health events:
+
+Platform Connectors updates the cluster state based on health events:
+
 - **Node Conditions**: Updates node conditions for fatal failures
-- **Node Events**: Creates Kubernetes events for non-fatal issues
+- **Node Events**: Creates Kubernetes events for non-fatal problems
 - Event correlation and deduplication
 
 #### What the condition timestamps mean
 
-A condition that does not yet exist is always created. An existing one is rewritten only when its status, reason or message changes. Both timestamps are taken from the health event being processed rather than from the time of the write, and they move on different triggers:
+If a condition does not exist, Platform Connectors always creates it. Platform Connectors rewrites an existing condition only when its status, reason or message changes. Both timestamps come from the health event that Platform Connectors processes, not from the time of the write. Different triggers move the two timestamps:
 
 | Field | What it means |
 |---|---|
-| `status` | the state reported by the most recent health event that wrote this condition — not proof that the fault is present or absent *now* |
-| `lastTransitionTime` | set when the condition is created, and again whenever `status` changes |
-| `lastHeartbeatTime` | the timestamp of the health event that most recently wrote the condition; not a liveness signal despite the name |
+| `status` | the state that the most recent health event reported when it wrote this condition. It is not proof that the fault is present or absent *at the current time* |
+| `lastTransitionTime` | set when Platform Connectors creates the condition, and again each time `status` changes |
+| `lastHeartbeatTime` | the timestamp of the health event that wrote the condition most recently. Despite its name, it is not a liveness signal |
 
-A reason- or message-only change therefore moves `lastHeartbeatTime` without moving `lastTransitionTime`, so the two can differ. A check that reports healthy and stays healthy writes its condition once and neither timestamp moves again — including across a node reboot and a restart of every NVSentinel pod.
+A change of only the reason or the message therefore moves `lastHeartbeatTime` but not `lastTransitionTime`, and the two timestamps can differ. A check that reports healthy and stays healthy writes its condition one time. After that, neither timestamp moves again, even across a node reboot and a restart of every NVSentinel pod.
 
-One exception: an event that arrives with no `generatedTimestamp` is stamped with its arrival time before anything else sees it, and a `HealthEvent has nil GeneratedTimestamp` warning is logged. The condition timestamps then carry that arrival time, which is close to the write time rather than to the moment the check observed anything. A monitor that omits the field will therefore produce condition timestamps that look like write times without being them.
+There is one exception. If a health event arrives with no `generatedTimestamp`, Platform Connectors stamps it with its arrival time before any other step sees it. Platform Connectors also logs a `HealthEvent has nil GeneratedTimestamp` warning. The condition timestamps then carry that arrival time. This time is close to the write time, not to the time when the check observed something. As a result, if a monitor omits the field, its condition timestamps look like write times, but they are not write times.
 
-So a node condition answers *what was last reported*, never *whether the check is still running*, and its age is not evidence either way. This matches how Kubernetes treats `lastHeartbeatTime` generally — node liveness moved to the `Lease` API, and `kubelet` posts node status only every `nodeStatusReportFrequency` (5m by default) when nothing has changed — but it does mean the Node object carries no freshness for these conditions.
+Because of this, a node condition tells you *what was last reported*. It never tells you *whether the check still runs*, and its age is not evidence in either direction. This matches how Kubernetes treats `lastHeartbeatTime` in general. Kubernetes uses the `Lease` API for node liveness. When nothing changes, `kubelet` posts the node status only every `nodeStatusReportFrequency` (5m by default). But this behavior means that the Node object carries no freshness for these conditions.
 
 #### Checking that a check is still running
 
-Use the metrics rather than the Node object. None of these proves a component is currently doing useful work; each is a staleness signal, and what they are measuring is worth knowing before alerting on them:
+Use the metrics, not the Node object. No metric in this table proves that a component does useful work at this time. Each metric is a staleness signal. Before you alert on these metrics, learn what each one measures:
 
 | Metric | What it actually reports |
 |---|---|
-| `up{namespace="nvsentinel", container="gpu-health-monitor"}` | the pod is being scraped and its metrics endpoint answers. The same applies to the other monitors; the exact labels depend on your scrape configuration |
-| `change_stream_lag_seconds{client="..."}` | seconds since the consumer last had evidence it was caught up — **an empty batch counts as that evidence**, so a rising value means the loop is stuck or genuinely behind, while a low value means the loop ran recently and found nothing to do |
-| `change_stream_lag_known` | only that lag can be computed yet. Before the first empty batch or event read, `change_stream_lag_seconds` is absent rather than zero, so a threshold rule alone cannot catch a consumer that never completed a first read |
-| `datastore_connected` | PostgreSQL watcher readiness: `1` while LISTEN is connected and subscribed, or after polling succeeds, unless a database read has failed; after a failed read it stays `0` until another read succeeds. An active subscription can report ready before its first poll finishes and while a multi-batch catch-up is still draining. Readiness does not mean catch-up is complete or guarantee replay of rows whose notifications were missed before subscription. Poll batches are read in `(changed_at, id)` order, and the cursor advances only after channel delivery or filter consumption. `BIGSERIAL` IDs and `changed_at DEFAULT NOW()` are assigned before a transaction commits, so a long-running transaction can become visible after a poll has advanced past its sort position. A later catch-up cannot find that row from the forward cursor; if its NOTIFY was missed while disconnected, the row can be skipped. If LISTEN is active, its NOTIFY can fetch the row by ID and deliver it after newer rows, so global commit order is not guaranteed. A TRIPPED Fault Quarantine breaker halts event dequeuing independently, so this metric can remain `1` while the component is deliberately stopped. Other watchers remain ready once registered unless they expose readiness state. This does not measure event-processing progress |
+| `up{namespace="nvsentinel", container="gpu-health-monitor"}` | Prometheus scrapes the pod, and the metrics endpoint of the pod answers. The same applies to the other monitors. The exact labels depend on your scrape configuration |
+| `change_stream_lag_seconds{client="..."}` | the seconds since the consumer last had evidence that it was up to date. **An empty batch counts as that evidence.** Thus a rising value means that the loop is stuck or that it truly lags. A low value means that the loop ran recently and found nothing to do |
+| `change_stream_lag_known` | only that the lag can be calculated at this point. Before the first empty batch or event read, `change_stream_lag_seconds` is absent, not zero. Thus a threshold rule alone cannot catch a consumer that never completed a first read |
+| `datastore_connected` | PostgreSQL watcher readiness. The value is `1` while LISTEN is connected and subscribed, or after polling succeeds, unless a database read failed. After a failed read, it stays `0` until another read succeeds. With an active subscription, the watcher can report ready before its first poll finishes. It can also report ready while a catch-up of more than one batch continues. Readiness does not mean that the catch-up is complete. It also does not guarantee the replay of rows whose notifications the watcher missed before it subscribed. The watcher reads poll batches in `(changed_at, id)` order. The cursor advances only after the watcher delivers a row to the channel, or after the filter consumes the row. PostgreSQL assigns `BIGSERIAL` IDs and `changed_at DEFAULT NOW()` before a transaction commits, so a long-running transaction can become visible after a poll advanced past its sort position. A later catch-up cannot find that row from the forward cursor. If the watcher missed the NOTIFY of that row while it was disconnected, the watcher can skip the row. If LISTEN is active, the NOTIFY of the row can fetch it by ID and deliver it after newer rows. As a result, the watcher does not guarantee the global commit order. A TRIPPED fault-quarantine breaker stops event dequeuing independently, so this metric can stay `1` while the breaker stops the component on purpose. Other watchers stay ready after they register, unless they expose a readiness state. This metric does not measure the progress of event processing |
 
-See [METRICS.md](METRICS.md) for the full set. A component that has silently stopped keeps its pod `Running`, answers `/healthz`, never restarts, and leaves its node conditions exactly as they were, so these metrics — read together, and with their limits above in mind — are what distinguishes it from a component with nothing to report.
+For the full set, see [METRICS.md](METRICS.md). A component that stopped silently keeps its pod `Running`, answers `/healthz` and never restarts. It also leaves its node conditions exactly as they were. Thus these metrics, read together and with attention to their limits, show the difference between a stopped component and a component with nothing to report.
 
 ## Event Processing Pipeline
 
-The event processing pipeline processes health events before they reach storage or Kubernetes. Transformers run in a configurable order, with each transformer able to modify events based on the enrichments from previous transformers.
+The event processing pipeline processes health events before they reach the datastore or Kubernetes. Transformers run in a configurable order. Each transformer can change health events based on the enrichments from the transformers before it.
 
 ### Available Transformers
 
 #### Metadata Augmentor
-Enriches health events with node information from Kubernetes:
+
+Adds node information from Kubernetes to health events:
+
 - Cloud provider ID (AWS, GCP, Azure, OCI)
 - Node labels (topology, instance type, custom labels)
 - Caches metadata to minimize Kubernetes API calls
 
 #### Override Transformer
-Applies CEL-based rules to modify health event properties:
-- **isFatal**: Change whether an error is considered fatal
-- **isHealthy**: Override health status
-- **recommendedAction**: Modify the recommended remediation action
+
+Applies CEL-based rules to change the properties of health events:
+
+- **isFatal**: Change whether NVSentinel treats an error as fatal
+- **isHealthy**: Override the health status
+- **recommendedAction**: Change the recommended remediation action
 
 Use cases:
+
 - Suppress known non-critical errors in your environment
 - Change recommended actions during maintenance windows
 - Apply different policies based on node labels
 
 ### Transformer Configuration
 
-Transformers are configured through Helm values with these sections:
+Helm values configure the transformers in these sections:
 
 1. **pipeline** - defines which transformers run and in what order
 2. **transformers** - contains transformer-specific configurations
-3. **dedup** - configures the deduplication transformer appended by the chart
+3. **dedup** - configures the deduplication transformer that the chart appends
 
 ```yaml
 platformConnector:
@@ -237,82 +252,110 @@ platformConnector:
 
 ### Error Handling
 
-Transformer failures log warnings but don't block event processing. If a transformer fails, the event still reaches storage and Kubernetes with whatever transformations were successfully applied. This ensures system resilience - monitoring continues even if enrichment features fail.
+Platform Connectors logs a warning for a transformer failure, but the failure does not block event processing. If a transformer fails, the health event still reaches the datastore and Kubernetes, with all transformations that succeeded. This keeps the system resilient: monitoring continues even if enrichment features fail.
 
 ## Key Features
 
 ### gRPC API
-Standard gRPC interface for health monitors to report events - protocol buffer-based for efficiency and type safety.
+
+Platform Connectors exposes a standard gRPC interface that health monitors use to report health events. It uses protocol buffers for efficiency and type safety.
 
 ### Health Event Node Binding
 
-Every health event names the node it concerns, and nothing downstream re-derives that name: fault-quarantine cordons `nodeName` verbatim and fault-remediation stamps it onto the `RebootNode` CR. A publisher that names the wrong node has that carried straight through to a cordon, drain or reboot of that node, so platform-connector is the one place the claim can be checked against the publisher making it.
+Every health event names the node that it concerns. No downstream component derives that name again: fault-quarantine cordons the `nodeName` verbatim, and fault-remediation writes it onto the `RebootNode` CR. If a publisher names the wrong node, this mistake goes straight through to a cordon, a drain or a reboot of that node. For this reason, Platform Connectors is the one place that can check the claim against the publisher that makes it.
 
 Two classes of publisher share the per-node Unix socket:
 
 | Class | Components | Names other nodes? |
 |-------|------------|--------------------|
-| Node-local | gpu, syslog, nic, preflight checks, custom monitors | No — always their own node |
+| Node-local | gpu-health-monitor, syslog-health-monitor, nic-health-monitor, preflight checks, custom monitors | No. Always their own node |
 | Cluster-scoped | csp-health-monitor, kubernetes-object-monitor, nvcre-certification-monitor, slurm-drain-monitor, health-events-analyzer, lifecycle-manager (MaintenanceRequest controller) | Yes, by design |
 
-Every first-party monitor presents a credential: a projected Kubernetes ServiceAccount token minted for a dedicated audience, validated with the TokenReview API. On Kubernetes 1.30+ the API server writes the bound pod's **node** into the token at issuance and reports it back from TokenReview (`authentication.kubernetes.io/node-name`), so the token carries a verified statement of *where its holder runs* that the holder cannot alter.
+Every first-party monitor presents a credential. This credential is a projected Kubernetes ServiceAccount token, minted for a dedicated audience. Platform Connectors validates it with the TokenReview API. On Kubernetes 1.30+, the API server writes the **node** of the bound pod into the token when it issues the token. TokenReview reports this node back (`authentication.kubernetes.io/node-name`). As a result, the token carries a verified statement of *where its holder runs*, and the holder cannot change it.
 
-The rule, per caller:
+The rule for each caller:
 
 | Caller presents | Decision |
 |-----------------|----------|
-| Valid token whose node claim names a **different** node | Rejected with `PermissionDenied` (`node_claim_mismatch`), for **every** caller including allowlisted ones. A mismatch means the credential is being presented somewhere other than where it was issued. Cross-node reach is permission to *name* other nodes, not to *present the credential from* other nodes. |
-| Valid token, ServiceAccount on the allowlist, claim matches | Supplied node names accepted as sent. The token must additionally be bound to a running pod on a scheduled node — both a pod UID and a node claim. A token minted with `kubectl create token` (no `--bound-object-ref`) has neither and is refused outright, for own-node events too. |
-| Valid token, any other ServiceAccount, claim matches | Scoped to the connector's own node. A blank `nodeName` is filled in; a *different* one is rejected (`node_mismatch`). |
-| No token, or a token without a node claim | Scoped to the connector's own node, exactly as a tokenless caller would be. Reaching the socket already granted that much. Exception: the connector rejects a token without a node claim from an allowlisted ServiceAccount (`cross_node_claim_absent`, or `unbound_cross_node_token` if the token has no pod binding). |
+| Valid token whose node claim names a **different** node | Platform Connectors rejects the request with `PermissionDenied` (`node_claim_mismatch`), for **every** caller, including allowlisted callers. A mismatch means that the caller presents the credential on a node other than the node for which the API server issued it. Cross-node reach is permission to *name* other nodes, not to *present the credential from* other nodes. |
+| Valid token, ServiceAccount on the allowlist, claim matches | Platform Connectors accepts the supplied node names as sent. The token must also be bound to a running pod on a scheduled node, with both a pod UID and a node claim. A token minted with `kubectl create token` (no `--bound-object-ref`) has neither. Platform Connectors refuses this token outright, also for own-node events. |
+| Valid token, any other ServiceAccount, claim matches | Platform Connectors scopes the caller to the node where Platform Connectors runs. It writes this node name into a blank `nodeName`. It rejects a *different* node name (`node_mismatch`). |
+| No token, or a token without a node claim | Platform Connectors scopes the caller to the node where Platform Connectors runs, the same as a tokenless caller. A caller that can reach the socket already has this scope. Exception: Platform Connectors rejects a token without a node claim from an allowlisted ServiceAccount (`cross_node_claim_absent`, or `unbound_cross_node_token` if the token has no pod binding). |
 
-Rejecting rather than rewriting is deliberate: silently redirecting an event about node B onto node A would turn a misdirected event into a real outage on the wrong node, and would hide the misconfiguration that produced it.
+Platform Connectors rejects a violating event and does not rewrite it. This is deliberate. A silent redirect of an event about node B onto node A turns a misdirected event into a real outage on the wrong node. It also hides the misconfiguration that caused the event.
 
-**Missing node claims.** Below Kubernetes 1.30, or with the pod-node-info feature disabled, tokens carry no node claim. A node-local caller presenting such a token authenticates normally and is pinned to the connector's own node — the same scope it would get with no token at all — so node-local monitors keep working with no change. Every such case is counted in `platform_connector_auth_node_claim_total{result="absent"}`.
+**Missing node claims.** Below Kubernetes 1.30, or with the pod-node-info feature disabled, tokens carry no node claim. A node-local caller that presents such a token authenticates normally. Platform Connectors pins the caller to the node where Platform Connectors runs, which is the same scope that the caller gets with no token. As a result, node-local monitors continue to work with no change. Platform Connectors counts each such case in `platform_connector_auth_node_claim_total{result="absent"}`.
 
-There is no setting to reject claimless tokens: an allowlisted caller already requires one (`cross_node_claim_absent`), and refusing them for node-local callers would gain nothing, since reaching the socket already grants that scope. NVSentinel requires Kubernetes 1.34 and pod-node info has been GA since 1.32, so in practice every scheduled pod's token carries a claim.
+No setting rejects claimless tokens. An allowlisted caller already requires a claim (`cross_node_claim_absent`). For node-local callers, a refusal gains nothing, because a caller that reaches the socket already has that scope. NVSentinel requires Kubernetes 1.34, and pod-node info is GA in Kubernetes 1.32 and later. In practice, the token of every scheduled pod therefore carries a claim.
 
-For **preflight checks** this works without any allowlisting: the check container is injected into the customer's pod and presents a token minted against the customer's own ServiceAccount — whatever it is — and only the token's node claim is enforced. The whole batch is validated before any of it is forwarded, so a batch is either accepted in full or rejected in full.
+For **preflight checks**, this works without any allowlisting. The preflight webhook injects the check container into the customer's pod. The check container presents a token minted against the customer's own ServiceAccount, whatever that ServiceAccount is. Platform Connectors enforces only the node claim of the token.
 
-Availability is preserved three ways. Verified tokens are **cached for a flat two minutes**, for every caller rather than only elevated ones, so a steady-state publisher costs one TokenReview per token per two minutes instead of one per batch. The TTL is deliberately not the token's own expiry: TokenReview is the only check that notices the bound pod being deleted, so this window is how long a deleted pod's token keeps working, and honouring `exp` would stretch that to the whole token lifetime — an hour by default. The accepted trade is that an authenticated caller stays accepted for up to two minutes after its token expires or its pod is deleted. An unreachable API server is **retried inside the call** with exponential backoff for a few seconds before anything is surfaced. Past that the connector **fails closed** with `Unavailable` by default, which every publisher treats as retryable. `global.platformConnectorAuth.failOpenOnUnavailable: true` changes this: the caller falls back to a degraded node-local scope instead of being rejected — an outage says nothing about the caller's credential — with a blank or matching node name accepted and stamped as usual in either `mode`. An event naming a different node is where `mode` matters: under `mode: enforce` (the default) it is kept retryable rather than silently accepted or counted as a mismatch; under `mode: audit` that same outcome is recorded and then let through like any other audited violation, so the event is forwarded as-is. See [Authentication Configuration](configuration/authentication.md) for the detail. Tokenless callers never trigger a TokenReview at all, so custom monitors keep working with no API-server dependency whatsoever.
+Platform Connectors validates the whole batch before it forwards any part of it, so it accepts a batch in full or rejects it in full.
+
+Platform Connectors keeps its availability in three ways: a cache of verified tokens, retries inside the call, and no TokenReview for a tokenless caller. It **caches verified tokens for a flat two minutes**, for every caller and not only for elevated callers. As a result, a steady-state publisher costs one TokenReview per token every two minutes, not one per batch. The cache TTL is deliberately not the expiry of the token. TokenReview is the only check that notices the deletion of the bound pod. Thus this window is how long the token of a deleted pod continues to work.
+
+A cache TTL equal to `exp` makes this window the whole token lifetime, which is one hour by default. The accepted trade-off is that an authenticated caller stays accepted for up to two minutes after its token expires or its pod is deleted.
+
+If the API server is unreachable, Platform Connectors **retries inside the call** with exponential backoff for a few seconds before it reports anything. After that time, Platform Connectors **fails closed** with `Unavailable` by default. Every publisher treats `Unavailable` as retryable.
+
+`global.platformConnectorAuth.failOpenOnUnavailable: true` changes this behavior. The caller then gets a degraded node-local scope, and Platform Connectors does not reject it. An outage says nothing about the credential of the caller. In either `mode`, Platform Connectors accepts and stamps a blank or matching node name as usual.
+
+With a degraded scope, the `mode` matters for an event that names a different node. Under `mode: enforce` (the default), Platform Connectors keeps the event retryable. It does not silently accept the event or count it as a mismatch. Under `mode: audit`, Platform Connectors records that same outcome and then lets the event through, like any other audited violation. As a result, it forwards the event as-is. For the detail, see [Authentication Configuration](configuration/authentication.md).
+
+A tokenless caller never causes a TokenReview, so custom monitors continue to work with no dependency on the API server.
 
 #### Configuration
 
-All settings live under `global.platformConnectorAuth` so the server-side allowlist and the publishers' projected tokens cannot drift apart:
+All settings are under `global.platformConnectorAuth`, so the server-side allowlist and the projected tokens of the publishers stay consistent:
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `enabled` | `true` | Master switch, and a real boolean — a `null` or non-boolean value, such as a quoted `"false"`, fails the render. The connector fails to start if the ConfigMap omits it. Disabling lets any caller name any node; not supported in production. |
-| `audience` | `platform-connector.nvsentinel.nvidia.com` | Audience the projected tokens are minted for and TokenReview must echo back. |
-| `tokenExpirationSeconds` | `3600` | Token lifetime. Must be a whole number in `600 <= x <= 2^32`; Kubernetes rejects anything else. |
+| `enabled` | `true` | Master switch, and a real boolean. A `null` or non-boolean value, such as a quoted `"false"`, fails the render. Platform Connectors does not start if the ConfigMap omits it. If you disable it, any caller can name any node. NVSentinel does not support this configuration in production. |
+| `audience` | `platform-connector.nvsentinel.nvidia.com` | The audience for which the projected tokens are minted. TokenReview must echo it back. |
+| `tokenExpirationSeconds` | `3600` | Token lifetime. It must be a whole number in `600 <= x <= 2^32`. Kubernetes rejects any other value. |
 | `tokenMountPath` | `/var/run/secrets/nvsentinel/platform-connector` | Where publishers mount the token. |
-| `crossNodeServiceAccounts` | `[]` | **Additional** fully-qualified usernames allowed to name other nodes. The bundled monitors are derived from the release namespace for whichever are enabled — do not list them here. |
-| `mode` | `enforce` | `enforce` rejects a violating request. `audit` validates every request and still increments `platform_connector_auth_violations_total` by reason, but lets the request through instead of rejecting it — use it to roll node-binding out against real traffic, confirm the violation counters stay at zero, then switch to `enforce` with evidence. One exception applies in both modes: an event with no node name from a caller resolved to verified cross-node scope is always rejected, since nothing downstream can handle it — a caller that fell back to a degraded scope under `failOpenOnUnavailable` was never verified as cross-node, so this does not apply to it. |
-| `failOpenOnUnavailable` | `false` | Must be a real YAML boolean; a quoted `"false"` is refused rather than read as false. When `true`, a validator that never reached a verdict (the API server was unreachable, or the call timed out) falls back to a degraded node-local scope instead of rejecting the request, since an outage says nothing about the caller's credential. Under `mode: enforce` a rejected credential (an invalid or malformed token) is always rejected regardless of this setting; under `mode: audit` it is recorded and let through like any other violation instead. |
+| `crossNodeServiceAccounts` | `[]` | **Additional** fully-qualified usernames that can name other nodes. The chart derives the usernames of the enabled bundled monitors from the release namespace. Do not list them here. |
+| `mode` | `enforce` | `enforce` rejects a violating request. `audit` validates every request and still increments `platform_connector_auth_violations_total` by reason, but lets the request through. Use `audit` to roll out node binding against real traffic. Confirm that the violation counters stay at zero. Then switch to `enforce` with evidence. One exception applies in both modes. Platform Connectors always rejects an event with no node name from a caller with verified cross-node scope, because no downstream component can handle it. This exception does not apply to a caller with a degraded scope under `failOpenOnUnavailable`. Platform Connectors never verified that caller as cross-node. |
+| `failOpenOnUnavailable` | `false` | Must be a real YAML boolean. The chart fails the render for a quoted `"false"`. It does not read it as false. If `true` and the validator reaches no verdict (the API server is unreachable, or the call times out), the caller gets a degraded node-local scope. Platform Connectors then does not reject the request, because an outage says nothing about the credential of the caller. Under `mode: enforce`, a rejected credential (an invalid or malformed token) always causes a rejection, whatever the value of this setting. Under `mode: audit`, Platform Connectors records it and lets it through, like any other violation. |
 
-There is no `requireNodeClaim`: whether a claim is checked is not configurable, only what happens after a violation is found (`mode`) and how an unavailable validator is treated (`failOpenOnUnavailable`). See [Authentication Configuration](configuration/authentication.md) for the full detail on both, including how a degraded scope treats a blank vs. a differently-named node.
+There is no `requireNodeClaim` setting. You cannot configure whether Platform Connectors checks a claim. You can configure only what happens after Platform Connectors finds a violation (`mode`), and how it treats an unavailable validator (`failOpenOnUnavailable`). For the full detail on both, see [Authentication Configuration](configuration/authentication.md). That page also tells how a degraded scope treats a blank node name and a different node name.
 
-A **custom cluster-scoped monitor** needs three things: a projected token volume with the configured audience, its token path passed to the client dial, and its fully-qualified username added to `crossNodeServiceAccounts` — in any namespace; there is one list and it always takes the complete `system:serviceaccount:<namespace>:<name>` form. A custom *node-local* monitor needs no changes: it already reports its own node.
+A **custom cluster-scoped monitor** needs three things:
 
-At the ConfigMap level (relevant only when bypassing the chart): a config that omits `enableNodeBindingAuth` entirely **fails startup** — there is no default. A value that is neither `true` nor `false` fails startup as well.
+- a projected token volume with the configured audience
+- its token path, passed to the client dial
+- its fully-qualified username in `crossNodeServiceAccounts`
+
+The monitor can be in any namespace. There is one list, and it always takes the complete `system:serviceaccount:<namespace>:<name>` form. A custom *node-local* monitor needs no changes, because it already reports its own node.
+
+At the ConfigMap level (this applies only if you do not use the chart), a config that omits `enableNodeBindingAuth` **fails startup**. There is no default. A value that is neither `true` nor `false` also fails startup.
 
 #### Where to run the cluster-scoped monitors
 
-The six cluster-scoped publishers — `csp-health-monitor`, `kubernetes-object-monitor`, `nvcre-certification-monitor`, `slurm-drain-monitor`, `health-events-analyzer` and the MaintenanceRequest controller of `lifecycle-manager` — are the only bundled identities allowed to name a node other than their own, and all six ship **disabled by default** (`global.<monitor>.enabled: false`; for `lifecycle-manager`, both `global.lifecycleManager.enabled` and `lifecycle-manager.controllers.maintenanceRequest.enabled` are `false`). Their usernames are derived from the release namespace for whichever are enabled, so enabling one is what grants it cross-node reach — a deliberate act, because it lets that ServiceAccount have any node in the cluster cordoned, drained and rebooted.
+There are six cluster-scoped publishers:
 
-Run them on nodes that do not also run user workloads — a system or control plane node pool rather than a GPU node serving tenants. The reason is the credential, not the code: their pods hold a projected token that platform-connector accepts for any node name, and that token file is readable by every container in the pod. Keeping those pods away from tenant workloads keeps the one credential with cluster-wide reach off the machines where untrusted code runs.
+- `csp-health-monitor`
+- `kubernetes-object-monitor`
+- `nvcre-certification-monitor`
+- `slurm-drain-monitor`
+- `health-events-analyzer`
+- the MaintenanceRequest controller of `lifecycle-manager`
 
-Express it with `nodeSelector`, `affinity` or tolerations for a tainted system pool, whichever your cluster already uses. Node-local monitors (gpu, syslog, nic, preflight checks) need no such placement: their tokens attest the node they run on and grant nothing beyond it, which is why they are safe to run everywhere.
+They are the only bundled identities that can name a node other than their own. All six ship **disabled by default** (`global.<monitor>.enabled: false`). For `lifecycle-manager`, both `global.lifecycleManager.enabled` and `lifecycle-manager.controllers.maintenanceRequest.enabled` are `false`. The chart derives the usernames of the enabled publishers from the release namespace. As a result, when you enable a publisher, you give it cross-node reach. This is a deliberate act, because that ServiceAccount can then have any node in the cluster cordoned, drained and rebooted.
+
+Run them on nodes that do not also run tenant workloads. Use a system or control plane node pool, not a GPU node that serves tenants. The reason is the credential, not the code. Their pods hold a projected token that Platform Connectors accepts for any node name. Every container in the pod can read that token file. If you keep those pods away from tenant workloads, the one credential with cluster-wide reach stays off the machines where untrusted code runs.
+
+To set this placement, use `nodeSelector`, `affinity` or tolerations for a tainted system pool, whichever your cluster already uses. Node-local monitors (gpu-health-monitor, syslog-health-monitor, nic-health-monitor and preflight checks) need no such placement. Their tokens attest the node that they run on and grant nothing more, so they are safe to run on all nodes.
 
 #### Enabling node binding on a live cluster
 
-platform-connector and the publishers are subcharts of one release, so a single `helm upgrade` moves them together and you cannot sequence one before the other. What you can control is *when enforcement starts*.
+Platform Connectors and the publishers are subcharts of one release. As a result, one `helm upgrade` moves them together, and you cannot upgrade one before the other. You can control *when enforcement starts*.
 
-When you set `global.platformConnectorAuth.enabled` to `true` on a running release, the pods restart on their own schedule. Thus there is a window in which a connector that has already restarted (and is enforcing) sees a publisher pod that has not yet been replaced and is therefore still sending no token.
+When you set `global.platformConnectorAuth.enabled` to `true` on a running release, the pods restart on their own schedule. As a result, there is a window in which a restarted Platform Connectors pod enforces node binding. In that window, it can see an old publisher pod that still sends no token.
 
-That exposure is narrow. A tokenless publisher is not rejected outright — it is pinned to its own node, so node-local publishers are unaffected either way. Only a *cluster-scoped* publisher is affected, and only for the seconds between the connector restarting and its own pod being replaced: its cross-node events are rejected with `node_mismatch` for that window, and its next attempt succeeds.
+That exposure is narrow. Platform Connectors does not reject a tokenless publisher outright. It pins the publisher to the publisher's own node, so there is no effect on node-local publishers in either case. The exposure affects only a *cluster-scoped* publisher, and only for the seconds between the restart of Platform Connectors and the replacement of the publisher pod. In that window, Platform Connectors rejects the cross-node events of the publisher with `node_mismatch`. The next attempt of the publisher succeeds.
 
-To avoid rejections during the rollout, set `global.platformConnectorAuth.mode` to `audit` first. Switch to `enforce` when the violation counters stay at zero. See [`mode`](configuration/authentication.md#mode).
+To prevent rejections during the rollout, set `global.platformConnectorAuth.mode` to `audit` first. When the violation counters stay at zero, switch to `enforce`. See [`mode`](configuration/authentication.md#mode).
 
 Watch the rollout with:
 
@@ -325,25 +368,33 @@ Related metrics:
 | Metric | Labels | Meaning |
 |--------|--------|---------|
 | `platform_connector_auth_decisions_total` | `decision` | Batches by granted scope (`node_local`, `cross_node`) |
-| `platform_connector_auth_violations_total` | `reason` | Batches that violated the node-binding rule. Rejected under `mode: enforce`; recorded but let through under `mode: audit`, except `missing_node_name` from a caller resolved to verified cross-node scope, which is always rejected. |
+| `platform_connector_auth_violations_total` | `reason` | Batches that violated the node-binding rule. Under `mode: enforce`, Platform Connectors rejects them. Under `mode: audit`, it records them but lets them through. Exception: Platform Connectors always rejects a `missing_node_name` violation from a caller with verified cross-node scope. |
 | `platform_connector_auth_node_claim_total` | `result` | Whether the token carried a node claim (`verified`, `absent`) |
 
-Not every `reason` means a caller was rejected. `validator_unavailable`, `validator_timeout` and `validator_error` mean no verdict could be reached — an unreachable API server increments them for every in-flight request. Exclude them when alerting on suspected credential abuse, or a control-plane blip reads as an attack. `validator_error` also counts a permanent TokenReview failure, such as a missing `create` permission on `tokenreviews`. Under `mode: enforce` it always rejects the request. See [METRICS.md](METRICS.md) for the full list.
+A `reason` does not always mean that Platform Connectors rejected a caller. `validator_unavailable`, `validator_timeout` and `validator_error` mean that the validator reached no verdict. An unreachable API server increments them for every in-flight request. If you alert on suspected credential abuse, exclude these reasons. Otherwise, a short control-plane problem looks like an attack.
+
+`validator_error` also counts a permanent TokenReview failure, such as a missing `create` permission on `tokenreviews`. Under `mode: enforce`, a `validator_error` always causes a rejection of the request. For the full list, see [METRICS.md](METRICS.md).
 
 ### Ring Buffer Architecture
-Parallel event processing with independent queues:
+
+Parallel processing of health events, with independent queues:
+
 - Store connector queue for datastore writes
 - Kubernetes connector queue for API updates
-- Failure in one connector doesn't block the other
+- A failure in one connector does not block the other
 
 ### Metadata Caching
-Caches node metadata to reduce Kubernetes API load:
+
+Caches node metadata to reduce the load on the Kubernetes API:
+
 - Configurable cache size and TTL
 - Automatic cache invalidation
-- Reduces latency for event processing
+- Reduces the latency of event processing
 
 ### Resilient Processing
+
 Built-in retry and error handling:
-- Transient failures don't lose events
-- Backpressure handling via ring buffers
+
+- Platform Connectors does not lose health events on transient failures
+- Backpressure handling through ring buffers
 - Detailed metrics for monitoring

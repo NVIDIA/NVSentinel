@@ -2,11 +2,11 @@
 
 ## Overview
 
-The CSP Health Monitor detects cloud provider maintenance events and triggers automated node quarantine workflows. This document covers all Helm configuration options.
+The CSP Health Monitor detects maintenance events of the cloud provider and starts automated quarantine workflows for the nodes. This document describes the main Helm configuration options.
 
 ## Module Enable/Disable
 
-Controls whether the csp-health-monitor module is deployed in the cluster.
+This setting enables or disables the deployment of the CSP Health Monitor in the cluster.
 
 ```yaml
 global:
@@ -16,7 +16,7 @@ global:
 
 ## Cloud Provider Selection
 
-The `cspName` field determines which cloud provider to monitor. Only one provider can be active at a time.
+The `cspName` field selects the cloud provider to monitor. Only one provider can be active at a time.
 
 ```yaml
 csp-health-monitor:
@@ -25,7 +25,7 @@ csp-health-monitor:
 
 ## Global Settings
 
-Settings that apply regardless of cloud provider.
+These settings apply to all cloud providers.
 
 ```yaml
 csp-health-monitor:
@@ -77,16 +77,20 @@ csp-health-monitor:
 ### GCP Parameters
 
 #### targetProjectId
-GCP project ID where the GKE cluster is running. The monitor queries Cloud Logging in this project.
+
+The ID of the GCP project where the GKE cluster runs. The monitor queries Cloud Logging in this project.
 
 #### gcpServiceAccountName
-Name of the GCP Service Account (without the `@project.iam.gserviceaccount.com` suffix). Used to generate the Workload Identity annotation on the Kubernetes ServiceAccount.
+
+The name of the GCP Service Account, without the `@project.iam.gserviceaccount.com` suffix. The chart uses this name to generate the Workload Identity annotation on the Kubernetes ServiceAccount.
 
 #### apiPollingIntervalSeconds
-How frequently the monitor polls the Cloud Logging API for new maintenance events. Lower values provide faster detection but increase API usage.
+
+How often the monitor polls the Cloud Logging API for new maintenance events. A lower value gives faster detection, but it increases the API usage.
 
 #### logFilter
-Cloud Logging filter expression to select maintenance events. Common filters:
+
+The Cloud Logging filter expression that selects maintenance events. Common filters:
 
 ```python
 # Standard GCE instance maintenance
@@ -149,20 +153,24 @@ csp-health-monitor:
 ### AWS Parameters
 
 #### accountId
-AWS account ID (12-digit number) where the EKS cluster is running. Used to construct the IAM role ARN annotation.
+
+The ID of the AWS account (a 12-digit number) where the EKS cluster runs. The chart uses it to build the IAM role ARN annotation.
 
 #### region
-AWS region where the EKS cluster is deployed. The monitor queries the AWS Health API in this region.
+
+The AWS region of the EKS cluster. The monitor queries the AWS Health API in this region.
 
 #### pollingIntervalSeconds
-How frequently the monitor polls the AWS Health API for maintenance events. Lower values provide faster detection but increase API usage.
+
+How often the monitor polls the AWS Health API for maintenance events. A lower value gives faster detection, but it increases the API usage.
 
 #### iamRoleName
-Custom IAM role name for IRSA (IAM Roles for Service Accounts). When set, the ServiceAccount annotation uses this role name directly instead of constructing one from `clusterName`.
 
-If left empty (default), the role name is generated as `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`.
+A custom IAM role name for IRSA (IAM Roles for Service Accounts). If you set it, the ServiceAccount annotation uses this role name directly. The chart then does not build a role name from `clusterName`.
 
-> **Important (EKS)**: AWS IAM role names have a maximum of 64 characters. The default suffix `-nvsentinel-health-monitor-assume-role-policy` is 45 characters, leaving only **19 characters** for the cluster name. If your EKS cluster name exceeds 19 characters, you **must** set `iamRoleName` to a custom value.
+If the value is empty (the default), the chart generates the role name `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`.
+
+> **Important (EKS)**: If your EKS cluster name has more than 19 characters, you **must** set `iamRoleName` to a custom value. An AWS IAM role name has a maximum of 64 characters. The default suffix `-nvsentinel-health-monitor-assume-role-policy` has 45 characters, so the cluster name can have only **19 characters**.
 
 ### Complete AWS Example
 
@@ -190,7 +198,7 @@ csp-health-monitor:
 
 ### AWS Example with Custom IAM Role Name
 
-For clusters with long names (>19 characters), set `iamRoleName` explicitly:
+If the cluster name is long (more than 19 characters), set `iamRoleName` explicitly:
 
 ```yaml
 csp-health-monitor:
@@ -208,7 +216,7 @@ csp-health-monitor:
 
 ## Lambda Configuration
 
-Polls the Lambda maintenance-events API and raises a health event for each event affecting a node in this cluster. Nodes are matched by the instance UUID in the event's `entity_lrns`, so they must carry `spec.providerID` in the form `lambda://<instanceID>`.
+The monitor polls the Lambda maintenance-events API. It creates a health event for each maintenance event that affects a node in this cluster. The monitor matches a maintenance event to a node by the instance UUID in the `entity_lrns` field of the maintenance event. Thus, each node must have `spec.providerID` in the form `lambda://<instanceID>`.
 
 ### Static API Key Example
 
@@ -230,26 +238,30 @@ csp-health-monitor:
 ```
 
 ### apiEndpoint
-Base URL of the Lambda API. Defaults to the production endpoint, so the happy path needs no override.
+
+The base URL of the Lambda API. The default is the production endpoint, so a normal installation does not need to change it.
 
 ### workspaceId
-Optional. Scopes the maintenance-events query to one workspace, in dashed or undashed UUID form. Leave it empty to use the default workspace for the credential.
 
-Set it whenever that default is not the workspace running this cluster. Getting it wrong is quiet: the API answers `200` with an empty list rather than an error, so the monitor looks healthy while never seeing a maintenance event for these nodes. A value that is not a UUID fails at startup rather than returning `400` on every poll.
+Optional. This value limits the maintenance-events query to one workspace. Use a UUID, with or without dashes. To use the default workspace of the credential, leave it empty.
 
-This matters more with workload identity, where the credential belongs to a service identity whose role is assigned at workspace scope — its default workspace is unlikely to be the cluster's.
+If the default workspace is not the workspace that runs this cluster, set this value. A wrong workspace does not cause an error. The API returns `200` with an empty list. The monitor then looks healthy, but it never sees a maintenance event for these nodes. A value that is not a UUID causes a failure at startup, not a `400` response on every poll.
+
+This is more important with workload identity. With workload identity, the credential belongs to a service identity that has its role at workspace scope. The default workspace of that identity is probably not the workspace of the cluster.
 
 ### pollingIntervalSeconds
-How often the maintenance-events API is polled. Minimum 30.
+
+How often the monitor polls the maintenance-events API. The minimum is 30.
 
 ### lambdaApiKeySecret
-Secret holding the Lambda API key, injected as `LAMBDA_API_KEY`. `name` is required when `cspName` is `lambda`, unless `lambdaWorkloadIdentity.identityLRN` is set; the install fails without one of the two. The same Secret can be shared with the Janitor Provider, which reads the key the same way. The key needs permission to read maintenance events in the target workspace.
+
+The Secret that holds the Lambda API key. The chart injects the key into the pod as `LAMBDA_API_KEY`. If `cspName` is `lambda` and you do not set `lambdaWorkloadIdentity.identityLRN`, you must set `name`. If you set neither of the two, the install fails. You can use the same Secret for the Janitor Provider, which reads the key in the same way. The key must have permission to read maintenance events in the target workspace.
 
 ### lambdaWorkloadIdentity.identityLRN
 
-The service identity to assume, in the form `lrn:iam:identity:<id>`. Preferred over a static key: no Lambda credential is stored in the cluster, and the token is short-lived and rotated automatically.
+The service identity that the monitor assumes, in the form `lrn:iam:identity:<id>`. If possible, use this method instead of a static key. With this method, the cluster stores no Lambda credential, and the token is short-lived and rotates automatically.
 
-Setting it annotates the csp-health-monitor ServiceAccount with `lambda.ai/identity-lrn`. The pod is then given a short-lived Kubernetes token, which the monitor exchanges for a Lambda API key and refreshes before it expires — so no Lambda credential is stored in the cluster.
+If you set this value, the chart annotates the ServiceAccount of the CSP Health Monitor with `lambda.ai/identity-lrn`. The pod then gets a short-lived Kubernetes token. The monitor exchanges this token for a Lambda API key, and it refreshes the key before the key expires. Thus, the cluster stores no Lambda credential.
 
 ```yaml
 csp-health-monitor:
@@ -264,9 +276,13 @@ csp-health-monitor:
       workspaceId: "c4d291f47f9d436fa39f58493ce3b50d"
 ```
 
-When set, `lambdaApiKeySecret` is not required and no `LAMBDA_API_KEY` is placed in the pod. If both are configured, workload identity wins and the static key is ignored; the monitor logs which one it selected at startup (`authMode`).
+If you set the identity LRN, you do not have to set `lambdaApiKeySecret`, and the chart does not put `LAMBDA_API_KEY` in the pod. If you configure both, workload identity has priority, and NVSentinel does not use the static key. At startup, the monitor logs the method that it selected (`authMode`).
 
-On the Lambda side, the identity must exist, hold permission to read maintenance events in the workspace named by `workspaceId`, and trust this cluster's ServiceAccount.
+In Lambda, the identity must meet these conditions:
+
+- It exists.
+- It has permission to read maintenance events in the workspace that `workspaceId` names.
+- It trusts the ServiceAccount of this cluster.
 
 ```bash
 (
@@ -287,7 +303,7 @@ On the Lambda side, the identity must exist, hold permission to read maintenance
 
 #### Setting up the identity
 
-Run once per cluster, with an admin API key. `$WS` is the workspace the cluster's instances belong to — the same one you set as `workspaceId` above.
+Run this script one time for each cluster, with an admin API key. `$WS` is the workspace that contains the instances of the cluster. It is the same workspace that you set as `workspaceId` above.
 
 ```bash
 # Stop at the first failed call: a half-applied setup prints an identityLRN
@@ -347,17 +363,17 @@ lambda_curl "https://cloud.lambda.ai/api/v1/oidc-providers" \
 echo "identityLRN: lrn:iam:identity:$SID"
 ```
 
-The printed LRN is what goes in the chart value above.
+Use the printed LRN as the Helm value above.
 
 | Built-in role | Grants | Needed for |
 | --- | --- | --- |
 | `maintenance-api-reader` | `support:maintenance-event:read` | Polling the maintenance-events API |
 
-The role is workspace-scoped, so the identity only sees events for `$WS` — which is why `workspaceId` should name that same workspace.
+The role has workspace scope, so the identity sees only the maintenance events of `$WS`. For this reason, set `workspaceId` to the same workspace.
 
 #### Verifying
 
-The identity is attached when the pod is created, so it only appears on pods created *after* the annotation lands. Restart the deployment if you added it to a running install.
+A pod gets the identity only when Kubernetes creates the pod. Thus, only pods that Kubernetes creates *after* the annotation exists have the identity. If you added the annotation to a running installation, restart the deployment.
 
 ```bash
 (
@@ -382,13 +398,15 @@ The identity is attached when the pod is created, so it only appears on pods cre
 )
 ```
 
-Expect `authMode=workload-identity`. If it says `api-key`, the pod never received an identity — check that the annotation is on the ServiceAccount and that the pod was created after it landed.
+The expected output is `authMode=workload-identity`. If the output shows `api-key`, the pod did not receive an identity. In this case, verify that the annotation is on the ServiceAccount. Then verify that Kubernetes created the pod after you added the annotation.
 
-Failures in the exchange itself surface on the first poll, not at startup, because the token is minted lazily. When the exchange endpoint rejects the token it returns `401` with no detail by design, so an unauthenticated caller cannot probe for which identities exist; that means a missing trust, a wrong identity LRN and a disabled account all look identical from the client. Check the trust and the identity LRN first.
+A failure of the token exchange shows on the first poll, not at startup. The reason is that the monitor gets the Lambda API key only when it first needs the key. If the exchange endpoint rejects the token, it returns `401` with no details. This behavior is intentional: an unauthenticated caller cannot use it to find which identities exist. Thus, a missing trust, a wrong identity LRN and a disabled account all give the same result on the client. Examine the trust and the identity LRN first.
 
 ## Akamai Configuration
 
-Polls the Akamai Cloud account maintenance API (`GET /account/maintenance`) and raises a health event for each event affecting a node in this cluster. The account lists maintenance for every instance in it, so events are matched to nodes by the Linode instance ID in the event's `entity`, and events for instances that are not nodes of this cluster are ignored. Nodes must carry `spec.providerID` in the form `linode://<instanceID>`, which the Linode cloud controller manager sets on LKE nodes.
+The monitor polls the Akamai Cloud account maintenance API (`GET /account/maintenance`). It creates a health event for each maintenance event that affects a node in this cluster. The account lists the maintenance for all of its instances. Thus, the monitor matches a maintenance event to a node by the Linode instance ID in the `entity` field of the maintenance event. The monitor ignores maintenance events for instances that are not nodes of this cluster.
+
+Each node must have `spec.providerID` in the form `linode://<instanceID>`. The Linode cloud controller manager applies this value to LKE nodes.
 
 ```yaml
 global:
@@ -410,42 +428,62 @@ csp-health-monitor:
 ```
 
 ### Which maintenance events quarantine a node
-Every maintenance type the API reports (`reboot`, `cold_migration`, `live_migration`, `migrate` and `power_off_on`) quarantines the node. A GPU workload cannot live-migrate, so `live_migration` is not treated as harmless. The type and the maintenance policy are kept in the event metadata for reference.
 
-Events whose `description` is `emergency` are quarantined on the next poll, without waiting for the trigger window. All others are quarantined ahead of the event's `when` time, within `triggerQuarantineWorkflowTimeLimitMinutes`. Notice varies by policy, from a few hours for a live migration to seven days for a power off and on, so size that window to the notice you need to drain a node.
+Each maintenance type that the API reports (`reboot`, `cold_migration`, `live_migration`, `migrate` and `power_off_on`) quarantines the node. A GPU workload cannot do a live migration, so the monitor does not treat `live_migration` as harmless. The monitor keeps the type and the maintenance policy in the metadata of the maintenance event, for reference.
 
-The API does not report an event's last-updated time, so the monitor compares a fingerprint of the status, type and schedule instead, and writes an event again only when one of them changes. A cancellation or a reschedule therefore still takes effect.
+If the `description` of a maintenance event is `emergency`, NVSentinel quarantines the node on the next poll. It does not wait for the trigger window. For all other maintenance events, NVSentinel quarantines the node before the `when` time of the maintenance event, within `triggerQuarantineWorkflowTimeLimitMinutes`. The notice period changes with the policy, from a few hours for a live migration to seven days for a power off and on. Set the size of that window to the notice that you need to drain a node.
+
+The API does not report the last-updated time of a maintenance event. Instead, the monitor compares a fingerprint of the status, the type and the schedule. The monitor writes a maintenance event again only when one of these values changes. Thus, a cancellation or a reschedule still takes effect.
 
 ### Cancelled maintenance
-The monitor does not rely on the API to return a `canceled` status. It treats a `pending` or `scheduled` maintenance of this cluster that is no longer listed in two consecutive polls as cancelled, and releases the node through a `CANCELLED` event. The monitor uses the event it stored earlier as the record of why the node was quarantined. A poll that fails never counts as an absence. A list that has fewer entries than the total the API reports is an error, so it never counts as an absence either. A maintenance that is `started`, `in-progress` or `completed` is never released this way. The event carries the check name `CSPMaintenance`, so only the maintenance fault is cleared and any other fault on the node keeps it quarantined. Two rules keep the monitor from releasing a node too early. First, if the whole list is empty, the monitor waits for 10 consecutive polls, because a lasting empty list is more likely a fault on the way to the API than a cancellation of every maintenance. Second, the monitor does not release a node while another stored `pending`, `scheduled`, `started` or `in-progress` event of this cluster is on the same node, because the healthy event clears the maintenance check of the node and not one event. An event for an instance that is still listed but is no longer a node of this cluster is not cancelled. It stays stored until the API stops listing it. Without a datastore the monitor cannot detect a cancellation and logs one warning.
+
+The monitor does not rely on the API to return a `canceled` status. If the API does not list a `pending` or `scheduled` maintenance of this cluster in two consecutive polls, the monitor treats the maintenance as cancelled. The monitor then releases the node through a `CANCELLED` event. The monitor uses the maintenance event that it stored earlier as the record of why NVSentinel quarantined the node.
+
+A poll that fails never counts as an absence. A list that has fewer entries than the total that the API reports is an error, so it never counts as an absence either. The monitor never releases a maintenance that is `started`, `in-progress` or `completed` in this way. The healthy event that releases the node has the check name `CSPMaintenance`. Thus, it clears only the maintenance fault, and any other fault on the node keeps the node quarantined.
+
+Two rules prevent an early release of a node:
+
+1. If the whole list is empty, the monitor waits for 10 consecutive polls. The reason is that a lasting empty list is more likely a fault between the monitor and the API than a cancellation of every maintenance.
+2. The monitor does not release a node while another stored `pending`, `scheduled`, `started` or `in-progress` event of this cluster is on the same node. The reason is that the healthy event clears the maintenance check for the whole node, not for one maintenance event.
+
+The monitor does not cancel a maintenance event that the API still lists. This is also true if the instance is no longer a node of this cluster. The maintenance event stays in the datastore until the API stops listing it. Without a datastore, the monitor cannot detect a cancellation, and it logs one warning.
 
 ### apiEndpoint
-Optional. Base URL of the Akamai Cloud API, version included. Defaults to `https://api.linode.com/v4`, so the happy path needs no override. Must be https, and must not carry userinfo, a query string, or a fragment. The host must be `api.linode.com` and the path must be `/v4`, so any other host or path fails at startup rather than on the first poll.
+
+Optional. The base URL of the Akamai Cloud API, with the version. The default is `https://api.linode.com/v4`, so a normal installation does not need to change it.
+
+The URL must use https. It must not contain userinfo, a query string or a fragment. The host must be `api.linode.com`, and the path must be `/v4`. Any other host or path causes a failure at startup, not on the first poll.
 
 ### pollingIntervalSeconds
-How often the maintenance API is polled. Minimum 30.
+
+How often the monitor polls the maintenance API. The minimum is 30.
 
 ### akamaiApiTokenSecret
-Secret holding the Akamai Cloud API token, injected as `LINODE_TOKEN`, the variable the Linode CLI and SDKs read. `name` is required when `cspName` is `akamai`; the install fails without it. Create the Secret in the release namespace before the install, because the pod cannot start without it. `key` defaults to `LINODE_TOKEN`. The monitor only lists maintenance events, so give it a read-only token with the `account:read_only` scope. A restricted identity that Akamai limits by permission needs the `list_maintenances` permission. The legacy `read_only` grant also authorizes the endpoint, so a read-only token needs no extra role. Do not share the Janitor Provider's token, which can reboot and delete instances. The pod reads the token from its environment when it starts, so after you rotate the Secret, restart the monitor pods, for example with `kubectl rollout restart deployment/csp-health-monitor -n nvsentinel`.
+
+The Secret that holds the Akamai Cloud API token. The chart injects the token as `LINODE_TOKEN`, which is the variable that the Linode CLI and SDKs read. If `cspName` is `akamai`, you must set `name`. Without it, the install fails. Before the install, create the Secret in the release namespace, because the pod cannot start without it. `key` defaults to `LINODE_TOKEN`.
+
+The monitor only lists maintenance events. Thus, give it a read-only token with the `account:read_only` scope. A restricted identity that Akamai limits by permission must have the `list_maintenances` permission. The legacy `read_only` grant also gives access to the endpoint, so a read-only token does not need an additional role. Do not share the token of the Janitor Provider with the monitor, because that token can reboot and delete instances.
+
+The pod reads the token from its environment when it starts. Thus, after you rotate the Secret, restart the monitor pods. For example, use `kubectl rollout restart deployment/csp-health-monitor -n nvsentinel`.
 
 ## CSP-Specific IAM Requirements
 
-Each cloud provider handles IAM identity for the CSP Health Monitor differently:
+Each cloud provider uses a different method for the IAM identity of the CSP Health Monitor:
 
 | Provider | IAM Identity Configuration | Naming Flexibility |
 |----------|---------------------------|-------------------|
-| **GCP**  | `gcp.gcpServiceAccountName` — User provides any GCP Service Account name. The ServiceAccount annotation is built as `{SA_NAME}@{PROJECT}.iam.gserviceaccount.com`. | Fully flexible. No naming convention enforced. |
-| **AWS (EKS)** | `aws.iamRoleName` (optional) — User provides a custom IAM role name. If omitted, the role name defaults to `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`. | Flexible when `iamRoleName` is set. The default convention imposes a **19-character cluster name limit** (AWS IAM role names max 64 chars, default suffix is 45 chars). |
-| **Lambda** | Either a static API key in `lambdaApiKeySecret`, or `lambdaWorkloadIdentity.identityLRN` — the ServiceAccount is annotated with `lambda.ai/identity-lrn` and the pod receives a short-lived token instead of a stored key. | Fully flexible. The identity is named by LRN, so no naming convention is enforced. |
-| **Akamai** | A static API token in `akamaiApiTokenSecret`, injected as `LINODE_TOKEN`. There is no workload identity, so the token is stored in the cluster. | Not applicable. Use a read-only token. |
+| **GCP**  | `gcp.gcpServiceAccountName` — you supply any GCP Service Account name. The chart builds the ServiceAccount annotation as `{SA_NAME}@{PROJECT}.iam.gserviceaccount.com`. | Fully flexible. NVSentinel enforces no naming convention. |
+| **AWS (EKS)** | `aws.iamRoleName` (optional) — you supply a custom IAM role name. If you omit it, the role name defaults to `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`. | Flexible if you set `iamRoleName`. The default convention gives a **19-character cluster name limit**. An AWS IAM role name has a maximum of 64 characters, and the default suffix has 45 characters. |
+| **Lambda** | A static API key in `lambdaApiKeySecret`, or `lambdaWorkloadIdentity.identityLRN`. With the identity LRN, the chart annotates the ServiceAccount with `lambda.ai/identity-lrn`. The pod then gets a short-lived token instead of a stored key. | Fully flexible. An LRN names the identity, so NVSentinel enforces no naming convention. |
+| **Akamai** | A static API token in `akamaiApiTokenSecret`, injected as `LINODE_TOKEN`. There is no workload identity, so the cluster stores the token. | Not applicable. Use a read-only token. |
 
-> **Recommendation for EKS users**: If your cluster name is longer than 19 characters, always set `aws.iamRoleName` explicitly and create the corresponding IAM role with that name. See [IAM Setup](../csp-health-monitor-iam.md) for detailed instructions.
+> **Recommendation for EKS**: If your cluster name has more than 19 characters, always set `aws.iamRoleName` explicitly. Then create the IAM role with that name. For detailed instructions, see [IAM Setup](../csp-health-monitor-iam.md).
 
 ## Advanced Configuration
 
 ### Out-of-Cluster Monitoring
 
-For monitoring a tenant cluster from a separate management cluster:
+To monitor a tenant cluster from a separate management cluster, use this configuration:
 
 ```yaml
 csp-health-monitor:
@@ -454,11 +492,11 @@ csp-health-monitor:
     kubeconfigPath: "/etc/kubeconfig/tenant-cluster.yaml"
 ```
 
-When `kubeconfigPath` is set, the monitor uses the specified kubeconfig to connect to the tenant cluster's Kubernetes API for node mapping. If empty, uses in-cluster config.
+If you set `kubeconfigPath`, the monitor uses this kubeconfig to connect to the Kubernetes API of the tenant cluster for node mapping. If the value is empty, the monitor uses the in-cluster configuration.
 
 ### Resources
 
-Configure resource requests and limits for the main container and sidecar.
+Configure the resource requests and limits for the main container and the sidecar.
 
 ```yaml
 csp-health-monitor:
@@ -484,7 +522,7 @@ csp-health-monitor:
 
 ### Scheduling
 
-Configure pod placement using node selectors, tolerations, and affinity rules.
+Configure the pod placement with node selectors, tolerations, and affinity rules.
 
 ```yaml
 csp-health-monitor:

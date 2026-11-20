@@ -2,24 +2,25 @@
 
 ## Overview
 
-This runbook handles nodes that have been cordoned in the cluster. Cordoned nodes indicate detected hardware issues that require investigation and remediation.
+This runbook is for nodes that are cordoned in the cluster. A cordoned node shows a detected hardware issue that needs investigation and remediation.
 
 **Key points:**
+
 - Nodes progress through states: quarantined → draining → drain-succeeded → remediating → remediation-succeeded
-- Terminal failure states require manual intervention
-- Each cordoned node must be individually triaged based on its state
+- Terminal failure states need manual intervention
+- Triage each cordoned node individually, based on its state
 
 ## Procedure
 
 ### 1. Identify Cordoned Nodes
 
-Find nodes cordoned by NVSentinel:
+Find the nodes that NVSentinel cordoned:
 
 ```bash
 kubectl get nodes --field-selector spec.unschedulable=true -o jsonpath='{range .items[?(@.metadata.annotations.quarantineHealthEvent)]}{.metadata.name}{"\n"}{end}'
 ```
 
-**If no nodes are returned:** The cordoning was done by another system. Do not use this runbook.
+**If the command returns no nodes:** Another system cordoned the nodes. Do not use this runbook.
 
 ### 2. Save Health Event for Each Cordoned Node
 
@@ -30,7 +31,8 @@ kubectl get node $NODE_NAME -o jsonpath='{.metadata.annotations.quarantineHealth
 cat /tmp/$NODE_NAME-health-event.json
 ```
 
-This shows:
+The file shows:
+
 - `errorCode` - The problem with the node
 - `recommendedAction` - How to remediate
 - Other diagnostic information
@@ -44,20 +46,21 @@ kubectl get node $NODE_NAME -L dgxc.nvidia.com/nvsentinel-state
 ```
 
 Possible states:
+
 - `quarantined` - Fault detected, waiting for drain to start
-- `draining` - Node is being drained
+- `draining` - Drain in progress
 - `drain-succeeded` - Drain completed, waiting for remediation
 - `drain-failed` - **TERMINAL STATE** - Drain failed
 - `remediating` - CR creation in progress (transitions quickly)
-- `remediation-succeeded` - CR created, remediation may be in progress
+- `remediation-succeeded` - CR created, remediation possibly in progress
 - `remediation-failed` - **TERMINAL STATE** - Unsupported action or CR creation failed
-- *(no label)* - Should not be cordoned
+- *(no label)* - Not expected to be cordoned
 
-Proceed to the appropriate section based on the state.
+Go to the applicable section, based on the state.
 
 ### 4a. If State is `drain-failed` (Terminal State)
 
-Drain failed and no remediation will be attempted. Check for stuck pods:
+The drain failed, and NVSentinel does not attempt a remediation. Examine the node for stuck pods:
 
 ```bash
 kubectl get pods --all-namespaces --field-selector spec.nodeName=$NODE_NAME -o wide
@@ -65,17 +68,19 @@ kubectl get pods --all-namespaces --field-selector spec.nodeName=$NODE_NAME -o w
 
 **If pods are stuck:**
 
-Check for PodDisruptionBudgets blocking eviction:
+Find PodDisruptionBudgets that block eviction:
+
 ```bash
 kubectl get pdb --all-namespaces
 ```
 
-Force delete stuck pods:
+Force delete the stuck pods:
+
 ```bash
 kubectl delete po $POD_NAME -n $NAMESPACE --force --grace-period=0
 ```
 
-**After pods are cleared, manually remediate:**
+**After you clear the pods, remediate the node manually:**
 
 Check the recommended action from the health event:
 
@@ -83,50 +88,52 @@ Check the recommended action from the health event:
 jq '.recommendedAction' /tmp/$NODE_NAME-health-event.json
 ```
 
-Follow the remediation action manually (reboot via CSP console, contact support, etc.).
+Follow the remediation action manually (reboot through the CSP console, contact support, or other actions).
 
-Monitor if the health check starts passing. If it does, the node should be automatically uncordoned. If the health check doesn't pass, investigate with your organization's support team.
+Monitor the health check to see if it starts to pass. If all health checks of the node pass, NVSentinel uncordons the node automatically. If the health check does not pass, investigate with your organization's support team.
 
 ### 4b. If State is `remediation-failed` (Terminal State)
 
-This means either the recommended action is unsupported or CR creation failed.
+This state means that the recommended action is not supported, or that the CR creation failed.
 
-Check fault-remediation logs:
+Check the fault-remediation logs:
 
 ```bash
 kubectl logs -n nvsentinel deployment/fault-remediation --tail=200
 ```
 
-**If action is unsupported:**
+**If the action is not supported:**
 
-The recommended action cannot be automated. Manually remediate based on the recommended action from the saved health event.
+NVSentinel cannot automate the recommended action. Remediate the node manually, based on the recommended action from the saved health event.
 
-Monitor if the health check starts passing. If it does, the node should be automatically uncordoned. If the health check doesn't pass, investigate with your organization's support team.
+Monitor the health check to see if it starts to pass. If all health checks of the node pass, NVSentinel uncordons the node automatically. If the health check does not pass, investigate with your organization's support team.
 
 **If CR creation failed:**
 
-Investigate why CR creation failed from the logs. Common causes:
+Use the logs to find why the CR creation failed. Common causes:
+
 - API server issues
 - Invalid CR template
 
-After resolving the issue, manually remediate the node.
+After you resolve the issue, remediate the node manually.
 
-Monitor if the health check starts passing. If it does, the node should be automatically uncordoned. If the health check doesn't pass, investigate with your organization's support team.
+Monitor the health check to see if it starts to pass. If all health checks of the node pass, NVSentinel uncordons the node automatically. If the health check does not pass, investigate with your organization's support team.
 
 ### 4c. If State is `quarantined`, `draining`, `drain-succeeded`, or `remediating`
 
-Node is in an active remediation flow. Wait for the process to complete.
+The node is in an active remediation flow. Wait for the process to complete.
 
-Monitor state changes:
+Monitor the state changes:
+
 ```bash
 kubectl get node $NODE_NAME -L dgxc.nvidia.com/nvsentinel-state -w
 ```
 
 ### 4d. If State is `remediation-succeeded`
 
-This means the CR was created successfully. However, the actual remediation operation (e.g. reboot or reset) may still be in progress or may have failed.
+This state means that fault-remediation created the CR successfully. However, the actual remediation operation (for example, reboot or reset) is possibly still in progress. It is also possible that the operation failed.
 
-Check if the remediation CR exists and its status:
+Check if the maintenance CR exists, and check its status:
 
 ```bash
 kubectl get node $NODE_NAME -o jsonpath='{.metadata.annotations.latestFaultRemediationState}' | jq > /tmp/$NODE_NAME-remediation-state.json
@@ -135,30 +142,35 @@ cat /tmp/$NODE_NAME-remediation-state.json
 ```
 
 For COMPONENT_RESET actions:
+
 ```bash
 kubectl get gpureset {CR_NAME} -o yaml
 ```
 
 For RESTART_VM and RESTART_BM actions:
+
 ```bash
 kubectl get rebootnode {CR_NAME} -o yaml
 ```
 
 **If CR shows successful completion:**
 
-The node should automatically uncordon once health checks pass. Monitor:
+When the health checks pass, NVSentinel uncordons the node automatically. Monitor the nodes:
+
 ```bash
 kubectl get nodes -L dgxc.nvidia.com/nvsentinel-state -w
 ```
 
-**If node remains cordoned after 10 minutes:**
+**If the node stays cordoned after 10 minutes:**
 
-Check fault-quarantine logs to determine why:
+To find the cause, examine the fault-quarantine logs:
+
 ```bash
 kubectl logs -n nvsentinel deployment/fault-quarantine
 ```
 
-If health checks are passing but node remains cordoned, manually uncordon:
+If the health checks pass but the node stays cordoned, uncordon the node manually:
+
 ```bash
 kubectl uncordon $NODE_NAME
 ```
@@ -167,14 +179,19 @@ kubectl uncordon $NODE_NAME
 
 **GPUReset:**
 
-When processing a GPUReset request, Janitor executes the following steps exposed through status conditions:
-- Ready: check that there are no in-progress GPUReset CRs executing against the same node.
-- ServicesTornDown: remove gpu-operator services including the nvidia-device-plugin-daemonset, nvidia-dcgm, and nvidia-dcgm-exporter.
-- ResetJobCreated: create a privileged job against the given node with the GPU needing reset.
-- ResetJobCompleted: wait for the pod from the privileged job to disable persistence mode, reset the target GPU using nvidia-smi, re-enable persistence mode, and write a syslog event indicating the GPU has been reset. 
-- ServicesRestored: restore gpu-operator services including the nvidia-device-plugin-daemonset, nvidia-dcgm, and nvidia-dcgm-exporter.
-- Complete: complete reconciling of the GPUReset CR.
-- Succeeded: the outcome of the GPUReset. The status is `True` when the reset was successful, and `False` with the failure reason when the reset failed. The condition is absent while the GPUReset is in progress.
+When Janitor processes a GPUReset request, it does these steps. It shows each step as a status condition:
+
+- Ready: check that no other GPUReset CR is in progress on the same node.
+- ServicesTornDown: remove gpu-operator services, including the nvidia-device-plugin-daemonset, nvidia-dcgm, and nvidia-dcgm-exporter.
+- ResetJobCreated: create a privileged job for the given node and the GPU that needs the reset.
+- ResetJobCompleted: wait for the pod from the privileged job to do these actions:
+  - disable persistence mode
+  - reset the target GPU with nvidia-smi
+  - enable persistence mode again
+  - write a syslog event that shows that the GPU was reset
+- ServicesRestored: restore gpu-operator services, including the nvidia-device-plugin-daemonset, nvidia-dcgm, and nvidia-dcgm-exporter.
+- Complete: finish the reconciliation of the GPUReset CR.
+- Succeeded: the outcome of the GPUReset. The status is `True` when the reset succeeded. It is `False`, with the failure reason, when the reset failed. The condition is absent while the GPUReset is in progress.
 
 ```bash
 status:
@@ -223,18 +240,20 @@ status:
   startTime: "2026-03-03T22:53:04Z"
 ```
 
-Check Janitor controller-manager logs for why the ServicesTornDown, ResetJobCreated, or ServicesRestored steps failed during processing of a GPUReset. If the ResetJobCompleted step fails, check the logs for the reset pod:
+A ServicesTornDown, ResetJobCreated, or ServicesRestored step can fail during the processing of a GPUReset. To find the cause, examine the Janitor controller-manager logs. If the ResetJobCompleted step fails, examine the logs of the reset pod:
+
 ```bash
 kubectl get pods -n {JANITOR_NAMESPACE} | grep {CR_NAME}
  
 kubectl logs {RESET_POD_NAME} -n {JANITOR_NAMESPACE}
 ```
 
-**RebootNode:** 
+**RebootNode:**
 
-When processing a RebootNode request, Janitor executes the following steps exposed through status conditions:
-- SignalSent: issue a reboot request against the node for the given CSP.
-- NodeReady: wait for the node to return to a Ready status after a reboot is triggered.
+When Janitor processes a RebootNode request, it does these steps. It shows each step as a status condition:
+
+- SignalSent: send a reboot request for the node through the given CSP.
+- NodeReady: wait for the node to return to a Ready status after the reboot starts.
 
 ```bash
 status:
@@ -252,18 +271,23 @@ status:
     type: NodeReady
   startTime: "2026-03-02T22:48:01Z"
 ```
-Check Janitor controller-manager logs for why the SignalSent or NodeReady steps failed during processing of a RebootNode.
+
+If the SignalSent or NodeReady step fails for a RebootNode, examine the Janitor controller-manager logs to find the cause.
 
 ### 5. Manual remediations
 
-If a remediation action needs to be retried or executed manually (for example if the given health event published a CONTACT_SUPPORT recommended action), it might be required to manually create a RebootNode or GPUReset CR outside of NVSentinel.
+Sometimes you must retry a remediation action, or do it manually. An example is a health event with a CONTACT_SUPPORT recommended action. In this case, it can be necessary to create a RebootNode or GPUReset CR manually, outside of NVSentinel.
 
 **WARNING:**
-- If a node progressed through the `draining` -> `drain-succeeded` -> `remediating` -> `remediation-succeeded` states but was not automatically uncordoned, it is safe to manually create a new RebootNode CR for the RESTART_VM or RESTART_BM actions because the node was already fully drained. Similarly, it is safe to create a new GPUReset CR, targeting the same node and GPU pair, for COMPONENT_RESET actions because the GPU needing reset was drained of any workload pods assigned to that GPU.  
-- If an operator wants to remediate the given node with a RebootNode CR and the previous remediation action which failed was a GPUReset, the operator will need to ensure that the node is fully drained because NVSentinel would have only partially drained the node for pods which were assigned to the individual GPU needing reset. Follow the same steps outlined in 4a for handling the `drain-failed` state to manually execute a full drain against the node prior to creating a RebootNode.
-- If an operator wants to remediate a different GPU compared to what was targeted in the initial GPUReset CR, the operator will need to ensure that all pods leveraging the given GPU are drained or else the reset can fail because processes could still have a handle on the GPU.
+
+- If a node progressed through the `draining` -> `drain-succeeded` -> `remediating` -> `remediation-succeeded` states but NVSentinel did not uncordon it automatically, these actions are safe:
+  - Manually create a new RebootNode CR for the RESTART_VM or RESTART_BM actions. The node is already fully drained.
+  - For COMPONENT_RESET actions, create a new GPUReset CR that targets the same node and GPU pair. The drain already removed all workload pods that were assigned to the GPU that needs the reset.
+- Sometimes the previous failed remediation action was a GPUReset, and you want to remediate the node with a RebootNode CR. In this case, the node must be fully drained. If partial drain is enabled (`partialDrainEnabled: true`), NVSentinel drained only the pods that were assigned to the GPU that needs the reset. Before you create a RebootNode, do a full drain of the node manually. Use the same steps as in 4a for the `drain-failed` state.
+- Sometimes you want to remediate a GPU that is different from the GPU in the initial GPUReset CR. In this case, drain all pods that use that GPU. Otherwise, the reset can fail, because processes can still have a handle on the GPU.
 
 To manually trigger a reboot:
+
 ```bash
 NODE={NODE_NAME} && cat <<EOF | kubectl apply -f -
 apiVersion: janitor.dgxc.nvidia.com/v1alpha1
@@ -277,6 +301,7 @@ EOF
 ```
 
 To manually trigger a GPU reset:
+
 ```bash
 NODE={NODE_NAME} && GPU_UUID={GPU_UUID} && cat <<EOF | kubectl apply -f -
 apiVersion: janitor.dgxc.nvidia.com/v1alpha1
@@ -291,11 +316,11 @@ spec:
 EOF
 ```
 
-After creating the maintenance CR, monitor if the health check starts passing. If it does, the node should be automatically uncordoned. If the health check doesn't pass, investigate with your organization's support team.
+After you create the maintenance CR, monitor the health check to see if it starts to pass. If all health checks of the node pass, NVSentinel uncordons the node automatically. If the health check does not pass, investigate with your organization's support team.
 
 ### 6. Handling False Positives
 
-If you believe the health event is a false positive, review the details saved earlier:
+If you think that the health event is a false positive, review the details that you saved earlier:
 
 ```bash
 cat /tmp/$NODE_NAME-health-event.json
@@ -315,7 +340,7 @@ Report the issue to your organization's support team for investigation.
 
 ### 7. Verify Node Recovery
 
-After remediation, monitor node status:
+After remediation, monitor the node status:
 
 ```bash
 # Watch nodes

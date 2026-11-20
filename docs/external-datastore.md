@@ -1,43 +1,43 @@
 # External Datastore Support for NVSentinel
 
-> This document describes the per-CSP configuration for connecting NVSentinel to externally managed database services.
+> This page describes the configuration for each CSP to connect NVSentinel to externally managed database services.
 
 ---
 
 ## Overview
 
-When the datastore is enabled, NVSentinel deploys its own MongoDB database inside the same Kubernetes cluster it monitors. This works well for general deployments, but creates an overhead problem for lean GPU clusters that are focused purely on compute workloads.
+When the datastore is enabled, NVSentinel deploys its own MongoDB database in the Kubernetes cluster that it monitors. This works well for general deployments. But it adds overhead to lean GPU clusters that run only compute workloads.
 
-NVSentinel can connect to an **externally managed database** — such as a hosted MongoDB or PostgreSQL service from a cloud provider — instead of running one inside the monitored cluster.
+NVSentinel can connect to an **externally managed database** instead of a database in the monitored cluster. An example is a hosted MongoDB or PostgreSQL service from a cloud provider.
 
 ### Common Requirements
 
-To connect to an external DB, supply these values:
+To connect to an external database, supply these values:
 
 | Field | Purpose | Example |
 |---|---|---|
-| Full connection URI | Connect to external DB (credentials embedded in the string your provider shows) | Obtain from the provider console; store only in a Kubernetes Secret, not in git |
+| Full connection URI | Connect to the external database (the string that your provider shows includes the credentials) | Get it from the provider console. Store it only in a Kubernetes Secret, not in git |
 | TLS enabled/disabled | Whether to use TLS | `true` / `false` |
-| CA cert secret name | Kubernetes Secret with CA cert — required only when the service uses a private CA (e.g. AWS DocumentDB). Leave empty for services that use a public CA (MongoDB Atlas, Azure DocumentDB). | `docdb-ca` |
+| CA cert secret name | Kubernetes Secret with the CA certificate. Required only if the service uses a private CA, for example AWS DocumentDB. Leave empty for services that use a public CA (MongoDB Atlas, Azure DocumentDB). | `docdb-ca` |
 
 ### Expected Behavior
 
 | Scenario | `mongodbStore.enabled` | External MongoDB URI | Result |
 |---|---|---|---|
-| Internal MongoDB | `true` | N/A | Deploy Bitnami/Percona MongoDB in-cluster |
-| External MongoDB | `false` | Secret `MONGODB_URI` + `credentialsFromSecret.name` | Connect to external MongoDB — nothing deployed in-cluster |
-| External PostgreSQL | `false` | Per PostgreSQL values (e.g. connection / optional `uri`) | Connect to external PostgreSQL — nothing deployed in-cluster |
-| Neither | `false` | No | No DB configured — services will have no connection |
+| Internal MongoDB | `true` | N/A | Deploys Bitnami/Percona MongoDB in-cluster |
+| External MongoDB | `false` | Secret `MONGODB_URI` + `credentialsFromSecret.name` | Connects to the external MongoDB. Nothing is deployed in-cluster |
+| External PostgreSQL | `false` | As set in the PostgreSQL values (for example, connection or the optional `uri`) | Connects to the external PostgreSQL. Nothing is deployed in-cluster |
+| Neither | `false` | No | No database is configured. Services have no connection |
 
 ---
 
 ## `MONGODB_URI` only from a Kubernetes Secret (external MongoDB)
 
-For **external** managed MongoDB (`global.mongodbStore.enabled: false` and `global.datastore.provider: mongodb`), the full URI is **not** written to the datastore ConfigMap. You must create an existing Secret whose **data key** is exactly `MONGODB_URI` and set `global.datastore.credentialsFromSecret.name`. Helm fails if that name is missing, or if `global.datastore.uri` is set for this mode.
+For **external** managed MongoDB (`global.mongodbStore.enabled: false` and `global.datastore.provider: mongodb`), the chart does **not** write the full URI to the datastore ConfigMap. You must create the Secret yourself. Its **data key** must be exactly `MONGODB_URI`. Then set `global.datastore.credentialsFromSecret.name` to the name of that Secret. Helm fails if that name is missing, or if `global.datastore.uri` is set for this mode.
 
-**In-cluster MongoDB** (for example Tilt / `global.mongodbStore.enabled: true`): when no `credentialsFromSecret` is set, the chart builds a credential-free `MONGODB_URI` in the ConfigMap from `global.datastore.connection` (host, port, `extraParams`). You can still set `credentialsFromSecret` to override with a Secret.
+**In-cluster MongoDB** (`global.mongodbStore.enabled: true`): if no `credentialsFromSecret` is set, the chart builds a credential-free `MONGODB_URI` in the ConfigMap. It builds the URI from `global.datastore.connection` (host, port, `extraParams`). You can also set `credentialsFromSecret` to override this URI with a Secret.
 
-1. Create the Secret. Set `MONGODB_URI` in your shell to the full string from your provider (for example MongoDB Atlas **Connect → Drivers**), or put that single line in a local file that is never committed:
+1. Create the Secret. Set `MONGODB_URI` in your shell to the full string from your provider, for example from MongoDB Atlas **Connect → Drivers**. Then run this command:
 
    ```bash
    kubectl create secret generic nvsentinel-datastore-mongodb-uri \
@@ -45,9 +45,9 @@ For **external** managed MongoDB (`global.mongodbStore.enabled: false` and `glob
      --namespace nvsentinel
    ```
 
-   Alternatively: `--from-file=MONGODB_URI=./mongodb-uri.txt` (one line; keep the file out of version control).
+   To use a file instead, use `--from-file=MONGODB_URI=./mongodb-uri.txt`. The file must contain one line. Keep the file out of version control.
 
-2. Reference it in values:
+2. Refer to the Secret in your values:
 
    ```yaml
    global:
@@ -58,7 +58,7 @@ For **external** managed MongoDB (`global.mongodbStore.enabled: false` and `glob
        # ... tls, connection, auth as usual ...
    ```
 
-DB-consuming workloads use `envFrom.secretRef` when `credentialsFromSecret.name` is set; otherwise they read `MONGODB_URI` from the ConfigMap. The embedded `datastore.yaml` does not include a MongoDB `uri` field from Helm values in either mode.
+If `credentialsFromSecret.name` is set, the workloads that use the database read the Secret with `envFrom.secretRef`. Otherwise, they read `MONGODB_URI` from the ConfigMap. In both modes, the embedded `datastore.yaml` does not include a MongoDB `uri` field from the Helm values.
 
 ---
 
@@ -66,31 +66,33 @@ DB-consuming workloads use `envFrom.secretRef` when `credentialsFromSecret.name`
 
 ### Connection URI format reference (Secret `MONGODB_URI` value)
 
-Use the **exact connection string** your provider shows in its console as the **literal value** of key `MONGODB_URI` in the Kubernetes Secret (never as `global.datastore.uri` for MongoDB). Do not paste real credentials into docs or source control.
+Set the key `MONGODB_URI` in the Kubernetes Secret to the **exact connection string** from your provider console. Use it as the **literal value**. For MongoDB, never set it as `global.datastore.uri`. Do not paste real credentials into docs or source control.
 
-- **MongoDB Atlas:** `mongodb+srv` SRV string from **Connect → Drivers**; include the database path (for example `/HealthEventsDatabase`) and query options your deployment needs (for example `retryWrites=false`).
-- **AWS DocumentDB:** `mongodb` URL to the cluster endpoint with TLS and replica-set query parameters per the AWS DocumentDB connection documentation.
-- **Azure DocumentDB vCore:** `mongodb+srv` string from **Settings → Connection Strings** (primary); includes host under `mongocluster.cosmos.azure.com` and the TLS/auth query parameters the portal provides.
+- **MongoDB Atlas:** The `mongodb+srv` SRV string from **Connect → Drivers**. Include the database path (for example `/HealthEventsDatabase`) and the query options that your deployment needs (for example `retryWrites=false`).
+- **AWS DocumentDB:** A `mongodb` URL to the cluster endpoint, with the TLS and replica-set query parameters that the AWS DocumentDB connection documentation gives.
+- **Azure DocumentDB vCore:** The primary `mongodb+srv` string from **Settings → Connection Strings**. It includes a host under `mongocluster.cosmos.azure.com` and the TLS and auth query parameters that the portal provides.
 
 ### Database and Collection Setup (Automatic)
 
-You do **not** need to manually create the `HealthEventsDatabase` database or any collections in any of the CSPs below. On `helm install`, and on every upgrade that changes the Job name, NVSentinel automatically runs the `<release>-external-mongodb-setup-<collectionExpirySeconds>-<hash>` Job (`-l app.kubernetes.io/name=external-mongodb-setup`) which:
+You do **not** have to create the `HealthEventsDatabase` database or any collections manually, for any of the CSPs below. On `helm install`, and on every upgrade that changes the Job name, NVSentinel automatically runs the `<release>-external-mongodb-setup-<collectionExpirySeconds>-<hash>` Job (`-l app.kubernetes.io/name=external-mongodb-setup`). This Job does these steps:
 
 - Creates the `HealthEventsDatabase` database (MongoDB creates it lazily on first write)
-- Creates the `HealthEvents`, `ResumeTokens`, and `MaintenanceEvents` collections if they don't exist
-- Creates TTL indexes from `mongodb-store.collectionExpirySeconds` (default 2592000). A TTL change recreates the setup Job and collMod's existing indexes.
-- Creates the query indexes and the unique idempotency index of the deployment platform connector (`healthevent_idempotency_key_unique`). The replicas of the deployment platform connector become ready only when this index exists. Documents that share an idempotency key block this index. The Job then prints an error with a query that lists the shared keys, and runs the rest of the setup. Remove the extra documents, then run the Job again.
+- Creates the `HealthEvents`, `ResumeTokens`, and `MaintenanceEvents` collections if they do not exist
+- Creates TTL indexes from `mongodb-store.collectionExpirySeconds` (default 2592000). A TTL change recreates the setup Job. The Job then updates the existing indexes with collMod.
+- Creates the query indexes and the unique idempotency index of the deployment platform connector (`healthevent_idempotency_key_unique`). The replicas of the deployment platform connector become ready only when this index exists. Documents that share an idempotency key block this index. The Job then prints an error with a query that lists the shared keys, and runs the rest of the setup. Remove the extra documents. Then run the Job again.
 
-The Job is a plain release resource, not a Helm hook. It runs on install. An upgrade runs it again only when the Job name changes. The name changes with the TTL, the setup script, and the datastore, pull-secret and placement settings. Kubernetes deletes a finished Job after 24 hours, so the next upgrade after that also runs it again. Helm does not wait for the Job and does not fail when the Job fails. Check the Job yourself:
+The Job is a plain release resource, not a Helm hook. It runs on install. An upgrade runs it again only when the Job name changes. The name changes with the TTL, the setup script, and the datastore, pull-secret and placement settings. Kubernetes deletes a finished Job after 24 hours, so the next upgrade after that also runs it again.
+
+Helm does not wait for the Job and does not fail when the Job fails. Check the Job yourself:
 
 ```bash
 kubectl get job -n nvsentinel -l app.kubernetes.io/component=mongodb-init
 kubectl logs -n nvsentinel -l app.kubernetes.io/component=mongodb-init
 ```
 
-The Job completes even when documents share an idempotency key; the log shows that error. To run the Job again, delete it and upgrade.
+The Job completes even if documents share an idempotency key. The log shows that error. To run the Job again, delete it. Then upgrade the release.
 
-All you need is a cluster endpoint and a database user with read/write access.
+You need only a cluster endpoint and a database user with read/write access.
 
 ---
 
@@ -102,23 +104,24 @@ All you need is a cluster endpoint and a database user with read/write access.
 
 #### Step 1 — Obtain a DocumentDB Cluster
 
-**Choose one of the two options below** depending on whether you are creating a new cluster or connecting to one that already exists.
+**Choose one of the two options below.** Use Option A to create a new cluster. Use Option B to connect to a cluster that already exists.
 
 ---
 
 ##### Option A — Create a New Cluster
 
-In the AWS Console, navigate to **Amazon DocumentDB → Clusters → Create** with these settings:
+In the AWS Console, go to **Amazon DocumentDB → Clusters → Create**. Use these settings:
 
 - **Engine version:** 5.0.0 (minimum; supports change streams)
 - **Cluster type:** Instance-based cluster
 - **Authentication:** Username/password (SCRAM)
 - **VPC:** Same VPC as your EKS cluster (or VPC-peered)
-- **Subnet group:** Create a subnet group covering your private subnets
-- **Security group:** Create a new security group — allow TCP port `27017` inbound from your EKS node CIDR ranges (see [Networking](#networking-and-security-groups) below)
+- **Subnet group:** Create a subnet group that covers your private subnets
+- **Security group:** Create a new security group. Allow inbound TCP port `27017` from your EKS node CIDR ranges. Refer to [Networking](#networking-and-security-groups) below.
 
-After creation, note the **Cluster endpoint** (read/write):
-```
+After creation, write down the **Cluster endpoint** (read/write):
+
+```text
 {cluster-id}.cluster-{suffix}.{region}.docdb.amazonaws.com
 ```
 
@@ -126,57 +129,57 @@ After creation, note the **Cluster endpoint** (read/write):
 
 ##### Option B — Use an Existing Cluster
 
-Verify the following before proceeding:
+Before you continue, verify these items:
 
 1. **Engine version** — must be `5.0.0` or higher (change streams require this).
 2. **Change streams** — must be explicitly enabled (see Step 2 below).
-3. **Network access** — EKS node CIDR ranges must be allowed on TCP port `27017` in the cluster's security group.
-4. **VPC** — cluster must be in the same VPC as your EKS cluster, or reachable via VPC peering / Transit Gateway.
+3. **Network access** — the security group of the cluster must allow the EKS node CIDR ranges on TCP port `27017`.
+4. **VPC** — the cluster must be in the same VPC as your EKS cluster, or reachable through VPC peering or Transit Gateway.
 5. **Credentials** — have a username and password ready for NVSentinel.
 
 ---
 
 #### Step 2 — Enable Change Streams
 
-DocumentDB does **not** enable change streams by default. You must explicitly enable them.
+DocumentDB does **not** enable change streams by default. You must enable them explicitly.
 
 **2a. Create or update a cluster parameter group:**
 
-In **Amazon DocumentDB → Parameter groups**, create a custom parameter group (or modify an existing one) and set:
+In **Amazon DocumentDB → Parameter groups**, create a custom parameter group or change an existing one. Set this parameter:
 
-```
+```text
 change_stream_log_retention_duration = 10800   # seconds (3 hours minimum recommended)
 ```
 
-Apply the parameter group to your cluster and reboot.
+Apply the parameter group to your cluster. Then reboot the cluster.
 
-**2b. Enable change streams on the database via `mongosh`:**
+**2b. Enable change streams on the database with `mongosh`:**
 
-From a pod with network access to DocumentDB (e.g. a debug pod in your EKS cluster):
+Run this command from a pod with network access to DocumentDB, for example a debug pod in your EKS cluster:
 
 ```bash
 mongosh "$DOCUMENTDB_ADMIN_URI" \
   --eval 'db.adminCommand({ modifyChangeStreams: 1, database: "HealthEventsDatabase", collection: "", enable: true })'
 ```
 
-Set `DOCUMENTDB_ADMIN_URI` to an admin connection URL from the AWS console for your cluster. Do not store that value in this repository.
+Set `DOCUMENTDB_ADMIN_URI` to an admin connection URL from the AWS console for your cluster. Do not store that value in source control.
 
-Without this, `health-events-analyzer` and `fault-quarantine` will fail to start their change stream watchers.
+Without this step, the modules that read the change stream cannot start their change stream watchers: fault-quarantine, node-drainer, fault-remediation, health-events-analyzer and event-exporter.
 
 ---
 
 #### Step 3 — Configure DNS Resolution from EKS
 
-DocumentDB cluster endpoints use private DNS names (e.g. `nvsentinel-test-1.cluster-c9g8sagiqhcr.us-east-1.docdb.amazonaws.com`) that resolve within AWS VPC. EKS pods must be able to resolve these names.
+DocumentDB cluster endpoints use private DNS names that resolve within the AWS VPC. The names have the form `{cluster-id}.cluster-{suffix}.{region}.docdb.amazonaws.com`. EKS pods must be able to resolve these names.
 
 **Create an AWS Route 53 Private Hosted Zone:**
 
 1. Go to **Route 53 → Hosted zones → Create hosted zone**.
-2. Set the **Domain name** to match the DocumentDB endpoint suffix (e.g. `cluster-c9g8sagiqhcr.us-east-1.docdb.amazonaws.com`).
-3. Set **Type** to **Private hosted zone** and associate it with your EKS VPC.
-4. Create an **A record** pointing the cluster endpoint hostname to the DocumentDB cluster's private IP address.
+2. Set the **Domain name** to match the DocumentDB endpoint suffix, in the form `cluster-{suffix}.{region}.docdb.amazonaws.com`.
+3. Set **Type** to **Private hosted zone**. Associate the zone with your EKS VPC.
+4. Create an **A record** that points the cluster endpoint hostname to the private IP of the DocumentDB cluster.
 
-> The private IP of the DocumentDB cluster can be found via `nslookup` from any EC2 instance in the VPC, or via the AWS Console under the cluster's instance details.
+> To find the private IP of the DocumentDB cluster, run `nslookup` from any EC2 instance in the VPC. You can also find it in the AWS Console, in the instance details of the cluster.
 
 **Verify from an EKS pod:**
 
@@ -185,13 +188,13 @@ kubectl run -it --rm dns-test --image=busybox --restart=Never -- \
   nslookup {cluster-endpoint}
 ```
 
-Expected output: a valid IP address. `NXDOMAIN` means the Route 53 hosted zone or A record is incorrect.
+Expected output: a valid IP address. `NXDOMAIN` means that the Route 53 hosted zone or the A record is incorrect.
 
 ---
 
 #### Step 4 — Create CA Certificate Secret
 
-DocumentDB uses a private Amazon RDS CA that is not trusted by default Go TLS. You must mount it into NVSentinel pods.
+DocumentDB uses a private Amazon RDS CA. Go TLS does not trust this CA by default. Thus, you must mount it into the NVSentinel pods.
 
 **Download the AWS RDS CA bundle:**
 
@@ -207,13 +210,13 @@ kubectl create secret generic docdb-ca \
   --namespace nvsentinel
 ```
 
-The key **must** be named `ca.crt` — this is what the Helm chart volume mounts reference.
+The key **must** have the name `ca.crt`. The volume mounts of the Helm chart refer to this key.
 
 ---
 
 #### Step 5 — Helm Values Configuration
 
-Create a values override file (e.g. `values-aws-docdb.yaml`) with your connection details. Put the full connection string (with password) in a Kubernetes Secret with data key `MONGODB_URI` (see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb)) and set `credentialsFromSecret.name`.
+Create a values override file with your connection details, for example `values-aws-docdb.yaml`. Put the full connection string (with password) in a Kubernetes Secret with the data key `MONGODB_URI`. Then set `credentialsFromSecret.name`. Refer to [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
 
 Example values:
 
@@ -241,23 +244,23 @@ global:
 
 #### Networking and Security Groups
 
-EKS pods can have IPs from **multiple CIDR ranges** depending on the CNI configuration — not just the primary VPC CIDR.
+EKS pods can have IPs from **multiple CIDR ranges**, not only from the primary VPC CIDR. This depends on the CNI configuration.
 
-In the DocumentDB cluster's security group, add an inbound rule for **each** CIDR range your pods use:
+In the security group of the DocumentDB cluster, add an inbound rule for **each** CIDR range that your pods use:
 
-```
+```text
 Type:     Custom TCP
 Port:     27017
 Source:   10.0.0.0/16    # primary VPC CIDR
 ```
 
-```
+```text
 Type:     Custom TCP
 Port:     27017
 Source:   100.65.0.0/16  # secondary pod CIDR (if using custom networking)
 ```
 
-> If some pods connect successfully but others get `dial tcp: i/o timeout`, check the pod IPs — pods with IPs outside the allowed CIDR range will be blocked by the security group.
+> If some pods connect successfully but others get `dial tcp: i/o timeout`, examine the pod IPs. The security group blocks pods with IPs outside the allowed CIDR range.
 
 To find the pod CIDRs in use:
 
@@ -291,40 +294,40 @@ Always create the **"Azure DocumentDB (with MongoDB compatibility)"** resource, 
 
 #### Step 1 — Obtain a DocumentDB Cluster
 
-**Choose one of the two options below** depending on whether you are creating a new cluster or connecting to one that already exists.
+**Choose one of the two options below.** Use Option A to create a new cluster. Use Option B to connect to a cluster that already exists.
 
 ---
 
 ##### Option A — Create a New Cluster
 
-In Azure Portal, create a new **"Azure DocumentDB (with MongoDB compatibility)"** resource (vCore tier, MongoDB 8.0, SCRAM auth). Match the region to your AKS cluster.
+In the Azure Portal, create a new **"Azure DocumentDB (with MongoDB compatibility)"** resource (vCore tier, MongoDB 8.0, SCRAM auth). Match the region to your AKS cluster.
 
 ---
 
 ##### Option B — Use an Existing Cluster
 
-Verify the following before proceeding:
+Before you continue, verify these items:
 
-1. **Service type** — confirm the resource is **Azure DocumentDB vCore** (not RU/Serverless). Change Streams are only supported on vCore.
+1. **Service type** — confirm that the resource is **Azure DocumentDB vCore** (not RU/Serverless). Only vCore supports Change Streams.
 2. **MongoDB version** — must be **5.0 or higher** (8.0 recommended).
-3. **Network access** — AKS outbound IPs must be allowed in **Settings → Networking** to reach port `27017`.
+3. **Network access** — **Settings → Networking** must allow the AKS outbound IPs to reach port `27017`.
 4. **Credentials** — have an admin username and password ready for NVSentinel.
 
 ---
 
 ##### Connection String (both options)
 
-Go to **Settings → Connection Strings** and copy the **Primary Connection String** into your Kubernetes Secret only (see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb)).
+Go to **Settings → Connection Strings**. Copy the **Primary Connection String** into your Kubernetes Secret only. Refer to [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
 
-If you assemble the URI yourself, percent-encode reserved characters in the database user’s password: `#` → `%23`, `@` → `%40`, `%` → `%25`
+If you assemble the URI yourself, percent-encode the reserved characters in the password of the database user: `#` → `%23`, `@` → `%40`, `%` → `%25`
 
-> If special characters are not encoded, `platform-connectors` will fail with `MongoParseError: Password contains unescaped characters` on startup.
+> If you do not encode special characters, `platform-connectors` fails at startup with `MongoParseError: Password contains unescaped characters`.
 
 ---
 
 #### Step 2 — Helm Values Configuration
 
-Create a values override file (e.g. `values-cosmosdb-test.yaml`) with your connection details. Put the connection string in a Secret (`MONGODB_URI` key) and set `credentialsFromSecret.name` — see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
+Create a values override file with your connection details, for example `values-cosmosdb-test.yaml`. Put the connection string in a Secret (`MONGODB_URI` key). Then set `credentialsFromSecret.name`. Refer to [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
 
 ```yaml
 global:
@@ -354,7 +357,7 @@ global:
 
 #### Why MongoDB Atlas on GCP?
 
-GCP does not offer a native first-party MongoDB-compatible managed service the way AWS offers DocumentDB or Azure offers Cosmos DB. The only production-grade options on GCP are:
+AWS offers DocumentDB and Azure offers Cosmos DB. GCP does not offer an equivalent native first-party MongoDB-compatible managed service. The only production-grade options on GCP are:
 
 | Option | Change Streams | VPC Peering | Notes |
 |---|---|---|---|
@@ -363,13 +366,13 @@ GCP does not offer a native first-party MongoDB-compatible managed service the w
 | Self-hosted MongoDB on GCE | Yes | Yes | Not managed; operator burden |
 | Cloud SQL | No | Yes | PostgreSQL only; no MongoDB API |
 
-MongoDB Atlas is the recommended solution. Atlas uses the standard MongoDB driver protocol so all aggregation features work natively — no compatibility workarounds needed.
+MongoDB Atlas is the recommended solution. Atlas uses the standard MongoDB driver protocol, so all aggregation features work natively. No compatibility workarounds are necessary.
 
 ---
 
 #### Step 1 — Obtain a MongoDB Atlas Cluster
 
-**Choose one of the two options below** depending on whether you are creating a new cluster or connecting to one that already exists.
+**Choose one of the two options below.** Use Option A to create a new cluster. Use Option B to connect to a cluster that already exists.
 
 ---
 
@@ -377,18 +380,18 @@ MongoDB Atlas is the recommended solution. Atlas uses the standard MongoDB drive
 
 1. Go to cloud.mongodb.com → **Create a deployment**
 2. Choose **M0 (Free)** for testing or **M10+** for production
-3. Select **GCP** as the provider and choose the region closest to your GKE cluster (e.g. `us-central1`)
-4. Name the cluster and click **Create**
-5. When prompted to create a database user, configure SCRAM-SHA-256 auth in the Atlas UI
-6. Copy the full connection string from **Connect → Drivers** and supply it only via the Kubernetes Secret (`MONGODB_URI`); do not commit it to git
+3. Select **GCP** as the provider. Choose the region closest to your GKE cluster (for example, `us-central1`)
+4. Name the cluster. Then click **Create**
+5. When the Atlas UI prompts you to create a database user, configure SCRAM-SHA-256 auth
+6. Copy the full connection string from **Connect → Drivers**. Supply it only through the Kubernetes Secret (`MONGODB_URI`). Do not commit it to git
 
 ---
 
 ##### Option B — Use an Existing Cluster
 
-Verify the following before proceeding:
+Before you continue, verify these items:
 
-1. **Change streams** — Atlas supports change streams on all tiers (M0 and above). No extra configuration needed.
+1. **Change streams** — Atlas supports change streams on all tiers (M0 and above). No extra configuration is necessary.
 2. **Network access** — GKE node/pod IPs must be in the Atlas IP Access List (see Step 2).
 3. **Credentials** — have a database user with SCRAM-SHA-256 auth credentials ready.
 
@@ -414,9 +417,9 @@ kubectl get nodes -o wide
 
 #### Step 3 — Helm Values Configuration
 
-No CA certificate secret is needed — Atlas uses DigiCert public CA which is trusted by the Go TLS runtime by default.
+You do not need a CA certificate secret. Atlas uses the DigiCert public CA, which the Go TLS runtime trusts by default.
 
-Store the Atlas connection string in a Kubernetes Secret (`MONGODB_URI` key) and set `credentialsFromSecret.name` — see [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
+Store the Atlas connection string in a Kubernetes Secret (`MONGODB_URI` key). Then set `credentialsFromSecret.name`. Refer to [`MONGODB_URI` only from a Kubernetes Secret](#mongodb_uri-only-from-a-kubernetes-secret-external-mongodb).
 
 Create a values override file `values-atlas-gcp.yaml`:
 
@@ -438,13 +441,13 @@ global:
       caSecretName: ""   # Atlas uses public DigiCert CA — no custom CA cert required
 ```
 
-> Percent-encode password characters in the Secret value if needed: `#` → `%23`, `@` → `%40`, `%` → `%25`
+> If necessary, percent-encode the password characters in the Secret value: `#` → `%23`, `@` → `%40`, `%` → `%25`
 
 ---
 
 ### OCI
 
-**Status:** This guide has no configuration steps for OCI. No viable managed MongoDB service is available on OCI.
+**Status:** This page has no configuration steps for OCI. No viable managed MongoDB service is available on OCI.
 
 ---
 

@@ -2,40 +2,41 @@
 
 ## Overview
 
-The Labeler enables NVSentinel to self-configure based on the GPU infrastructure in your cluster. It automatically detects what DCGM version, driver, and container runtime are running on each node, then applies labels that allow NVSentinel components to adapt their behavior automatically.
+The Labeler lets NVSentinel configure itself for the GPU infrastructure in your cluster. It automatically detects the DCGM version, the driver and the container runtime on each node. Then it applies labels that let NVSentinel components adapt their behavior automatically.
 
-Think of it as auto-configuration for NVSentinel - it detects your environment and configures the system accordingly, so you don't need separate configurations for each cluster.
+The Labeler works as auto-configuration for NVSentinel. It detects your environment and configures the system to match. Thus, you do not need a separate configuration for each cluster.
 
 ### Why Do You Need This?
 
 Different clusters have different GPU software configurations:
 
-- **DCGM versions**: Clusters may run DCGM 3.x or 4.x with different APIs
-- **Container runtimes**: Some clusters use Kata Containers with different log access patterns
-- **Driver variations**: Different driver installation methods across environments
+- **DCGM versions**: Clusters can run DCGM 3.x or 4.x, which have different APIs.
+- **Container runtimes**: Some clusters use Kata Containers, which have different log access patterns.
+- **Driver variations**: Environments use different driver installation methods.
 
-The Labeler enables NVSentinel to automatically adapt:
+The Labeler lets NVSentinel adapt automatically:
 
-- **No per-cluster configuration**: Deploy the same Helm chart everywhere
-- **Automatic component selection**: Health monitors automatically use the right DCGM API version
-- **Runtime adaptation**: Components adjust behavior for Kata Containers vs standard runtime
-- **Self-healing**: Labels update automatically when infrastructure changes
+- **No per-cluster configuration**: Deploy the same Helm chart everywhere.
+- **Automatic component selection**: Health monitors automatically use the correct DCGM API version.
+- **Runtime adaptation**: Components use different behavior for Kata Containers and for the standard runtime.
+- **Self-healing**: The Labeler updates labels automatically when the infrastructure changes.
 
-Without the Labeler, you'd need to manually configure NVSentinel components differently for each cluster based on what GPU software is installed.
+Without the Labeler, you must configure NVSentinel components manually and differently for each cluster, based on the installed GPU software.
 
 ## How It Works
 
 The Labeler runs as a deployment in the cluster:
 
-1. Watches DCGM and NVIDIA driver pods using Kubernetes informers
-2. When pods start on a node, examines container images to extract versions
-3. Updates node labels with detected versions
-4. Watches node labels to detect Kata Container runtime
-5. Optionally evaluates configured device-count classes and labels current/expected GPU or NIC counts
-6. NVSentinel components read these labels and configure themselves accordingly
-7. Continuously keeps labels synchronized as infrastructure changes
+1. Watches DCGM and NVIDIA driver pods with Kubernetes informers.
+2. When pods start on a node, examines the container images to get the versions.
+3. Updates node labels with the detected versions.
+4. Watches node labels to detect the Kata Container runtime.
+5. Optionally evaluates the configured device-count classes, and labels the current and expected GPU or NIC counts.
+6. NVSentinel components read these labels and configure themselves accordingly.
+7. Keeps the labels synchronized continuously as the infrastructure changes.
 
 For example:
+
 - GPU Health Monitor uses the DCGM version label to select the correct DCGM API version
 - Syslog Health Monitor uses the Kata label to adjust log collection methods
 - Components automatically adapt without manual reconfiguration
@@ -45,9 +46,11 @@ For example:
 Configure the Labeler through Helm values:
 
 ```yaml
+global:
+  labeler:
+    enabled: true
+
 labeler:
-  enabled: true
-  
   logLevel: info
   
   # Optional: Override the default Kata Containers detection label
@@ -55,51 +58,69 @@ labeler:
 
   # Optional: Enable current/expected device-count labels
   expectedDeviceCounts:
-    enabled: false
+    enabled: true
 ```
 
 ### Configuration Options
 
-- **Log Level**: Control logging verbosity (info, debug, warn, error)
-- **Kata Label Override**: Specify additional node label to check for Kata Container detection
-- **Expected Device Counts**: Configure device-count classes that derive current and expected count labels from node labels or DRA ResourceSlices
+- **Log Level**: Control the logging verbosity (info, debug, warn or error).
+- **Kata Label Override**: Specify an additional node label to check for Kata Container detection.
+- **Expected Device Counts**: Configure device-count classes. These classes get the current and expected count labels from node labels or DRA ResourceSlices.
 
 ## Labels Applied
 
 The Labeler applies these labels to nodes:
 
 ### DCGM Version
-**Label**: `nvsentinel.dgxc.nvidia.com/dcgm.version` **Values**: `3.x`, `4.x`, or empty if not detected
 
-Indicates which major version of DCGM is running on the node.
+**Label**: `nvsentinel.dgxc.nvidia.com/dcgm.version`
+
+**Values**: `3.x`, `4.x`, or empty if not detected
+
+This label shows the major version of DCGM that runs on the node.
 
 ### Driver Installed
-**Label**: `nvsentinel.dgxc.nvidia.com/driver.installed` **Values**: `true` or `false`
 
-Indicates whether the NVIDIA driver is installed on the node. The Labeler detects drivers by watching for:
+**Label**: `nvsentinel.dgxc.nvidia.com/driver.installed`
+
+**Values**: `true` or `false`
+
+This label shows whether the NVIDIA driver is installed on the node. To detect drivers, the Labeler watches for these pods:
+
 - `nvidia-driver-daemonset` pods (GPU Operator managed)
 - `nvidia-driver-installer` pods in `kube-system` (GKE managed)
 
-In GKE clusters with pre-installed drivers, the `nvidia-driver-daemonset` is not deployed. Instead, Google manages driver installation through `nvidia-driver-installer` DaemonSet pods. The Labeler watches these pods to detect driver installation in GKE environments with pre-installed drivers.
+In GKE clusters with pre-installed drivers, there is no `nvidia-driver-daemonset`. Instead, Google manages driver installation through `nvidia-driver-installer` DaemonSet pods. The Labeler watches these pods to detect driver installation in GKE environments with pre-installed drivers.
 
-**Note**: For environments with pre-installed drivers where no driver pods exist at all (e.g., custom machine images with pre-baked drivers, or cloud node images that ship the driver), enable the `assumeDriverInstalled` Helm value:
+**Note**: Some environments have pre-installed drivers and no driver pods. Examples are custom machine images with pre-baked drivers, and cloud node images that include the driver. For these environments, enable the `assumeDriverInstalled` Helm value:
 
 ```yaml
 labeler:
   assumeDriverInstalled: true
 ```
 
-With this setting the Labeler sets `driver.installed=true` on every GPU node (`nvidia.com/gpu.present=true`) it manages, skips driver pod detection, and automatically covers nodes added later. Nodes opted out with `nvsentinel.dgxc.nvidia.com/managed=false` — for example during external remediation — are excluded.
+With this setting, the Labeler sets `driver.installed=true` on every GPU node (`nvidia.com/gpu.present=true`) that it manages. It skips driver pod detection, and it automatically covers nodes that you add later. It excludes nodes that have the opt-out label `nvsentinel.dgxc.nvidia.com/managed=false`. For example, a node has this label during external remediation.
 
-Do not apply the label manually with `kubectl label`. Instead, enable `assumeDriverInstalled`; without it, the Labeler computes an empty desired value for a node with no driver pod and silently removes a manually applied `driver.installed` label as stale on its next relevant reconciliation — for example, any Labeler restart, a driver or DCGM pod readiness change on the node, or a change to the node labels the Labeler watches — so a manual label cannot be relied on to persist.
+Do not apply the label manually with `kubectl label`. Instead, enable `assumeDriverInstalled`. Without this setting, the Labeler computes an empty desired value for a node with no driver pod. Then, on its next relevant reconciliation, it silently removes a manually applied `driver.installed` label as stale. For example, these events start a relevant reconciliation:
+
+- any restart of the Labeler
+- a readiness change of a driver or DCGM pod on the node
+- a change to the node labels that the Labeler watches
+
+Thus, you cannot rely on a manual label to persist.
 
 ### Kata Enabled
-**Label**: `nvsentinel.dgxc.nvidia.com/kata.enabled` **Values**: `true` or `false`
 
-Indicates whether the node is running Kata Containers runtime (detected from node labels).
+**Label**: `nvsentinel.dgxc.nvidia.com/kata.enabled`
+
+**Values**: `true` or `false`
+
+This label shows whether the node runs the Kata Containers runtime. The Labeler detects the runtime from node labels.
 
 ### Expected Device Counts
+
 **Labels**:
+
 - `nvsentinel.dgxc.nvidia.com/gpu.count.current`
 - `nvsentinel.dgxc.nvidia.com/gpu.count.expected`
 - `nvsentinel.dgxc.nvidia.com/nic.count.current`
@@ -107,26 +128,32 @@ Indicates whether the node is running Kata Containers runtime (detected from nod
 
 **Values**: non-negative integer strings
 
-When enabled, the labeler evaluates configured CEL expressions against the node and associated DRA ResourceSlices. Current labels reflect the observed count. Expected labels come from an override or the maximum learned count among nodes in the same grouping partition.
+When this feature is enabled, the Labeler evaluates the configured CEL expressions against the node and the associated DRA ResourceSlices. The current labels show the observed count. The expected labels come from an override, or from the maximum learned count among nodes in the same grouping partition.
 
-The default GPU class works in both GPU Operator modes without extra configuration. In GPUCluster (DRA) mode, the labeler counts the GPU devices in the `gpu.nvidia.com` ResourceSlices. In ClusterPolicy mode, it reads the GFD `nvidia.com/gpu.count` label while the NVIDIA device plugin advertises GPUs, so a label left from an earlier mode is not counted in GPUCluster mode. In DRA mode, the labeler also groups nodes by their GPU models, which it reads from the ResourceSlices. The [labeler configuration reference](configuration/labeler.md#expected-device-counts) describes these sources.
+The default GPU class works in both GPU Operator modes without extra configuration. In GPUCluster (DRA) mode, the Labeler counts the GPU devices in the `gpu.nvidia.com` ResourceSlices. In ClusterPolicy mode, the Labeler reads the GFD `nvidia.com/gpu.count` label only while the NVIDIA device plugin advertises GPUs. Thus, in GPUCluster mode, the Labeler does not count a label that remains from ClusterPolicy mode. In DRA mode, the Labeler also groups nodes by their GPU models, which it reads from the ResourceSlices. The [Labeler configuration reference](configuration/labeler.md#expected-device-counts) describes these sources.
 
 ## Key Features
 
 ### Self-Configuration
-Enables NVSentinel components to automatically adapt to different cluster environments without manual per-cluster configuration.
+
+The Labeler lets NVSentinel components adapt automatically to different cluster environments, without a manual configuration for each cluster.
 
 ### Automatic Version Detection
-Examines container images of DCGM and driver pods to extract version information - no manual configuration needed.
+
+The Labeler examines the container images of DCGM and driver pods to get the version information. No manual configuration is necessary.
 
 ### Informer-Based Architecture
-Uses Kubernetes informers for efficient, real-time monitoring of pod and node changes without polling.
+
+The Labeler uses Kubernetes informers to monitor pod and node changes efficiently and in real time, without polling.
 
 ### Kata Container Detection
-Detects and labels nodes using Kata Containers runtime by checking node labels (default: `katacontainers.io/kata-runtime`).
+
+The Labeler detects and labels nodes that use the Kata Containers runtime. It checks node labels for this detection (default: `katacontainers.io/kata-runtime`).
 
 ### Dynamic Updates
-Continuously updates labels as infrastructure changes - handles upgrades, pod moves, and runtime changes automatically.
+
+The Labeler updates labels continuously as the infrastructure changes. It handles upgrades, pod moves and runtime changes automatically.
 
 ### DCGM Bootstrap Gating
-When `requireDCGMReadyForBootstrap` is enabled, the `nvsentinel.dgxc.nvidia.com/dcgm.version` label is only set after the DCGM pod is ready during the initial bootstrapping of a node. Once the DCGM pod is ready, the annotation `nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed` is written to the node which allows the label to be set regardless of DCGM pod readiness.
+
+When `requireDCGMReadyForBootstrap` is enabled, the Labeler sets the `nvsentinel.dgxc.nvidia.com/dcgm.version` label only after the DCGM pod is ready. This rule applies during the initial bootstrapping of a node. When the DCGM pod is ready, the Labeler writes the annotation `nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed` to the node. After that, the Labeler sets the label regardless of DCGM pod readiness.

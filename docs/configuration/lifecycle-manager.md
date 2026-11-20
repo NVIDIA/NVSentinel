@@ -2,12 +2,12 @@
 
 ## Overview
 
-The Lifecycle Manager hosts the controllers that manage a node's transitions in and out of service. It runs two independent controllers, each with its own feature gate:
+lifecycle-manager hosts the controllers that manage the transitions of a node into and out of service. It runs two independent controllers, and each controller has its own feature gate:
 
-- **ValidationRequest controller** — runs validation tests against a node and keeps it gated until the tests pass. It is enabled by default.
-- **MaintenanceRequest controller** — prepares a node for upcoming maintenance, then releases it when the request is deleted. It is disabled by default.
+- **ValidationRequest controller** — runs validation tests against a node, and keeps the node gated until the tests pass. It is enabled by default.
+- **MaintenanceRequest controller** — prepares a node for upcoming maintenance. It releases the node after the deletion of the request. It is disabled by default.
 
-The two are unrelated at runtime. Enabling one does not require the other.
+The two controllers are independent at runtime. You can enable one without the other.
 
 ## Module Enable/Disable
 
@@ -19,7 +19,7 @@ global:
 
 ## Logging
 
-Sets the verbosity level for lifecycle-manager logs.
+This value sets the verbosity level of the lifecycle-manager logs.
 
 ```yaml
 lifecycle-manager:
@@ -30,7 +30,7 @@ lifecycle-manager:
 
 ## MaintenanceRequest Controller
 
-A `MaintenanceRequest` is a cluster-scoped resource carrying a health event. Creating one publishes that event into the NVSentinel pipeline so the node is prepared; deleting one publishes the matching clearing event so the node is released. **Presence means active, absence means cleared** — deleting the resource is the instruction, not merely cleanup.
+A `MaintenanceRequest` is a cluster-scoped resource that carries a health event. When you create one, the controller publishes that health event into the NVSentinel pipeline, and NVSentinel prepares the node. When you delete one, the controller publishes the matching clearing event, and NVSentinel releases the node. **Presence means active, absence means cleared.** The deletion of the resource is the instruction, not only a cleanup.
 
 ### Enabling
 
@@ -43,36 +43,36 @@ lifecycle-manager:
 
 The controller is disabled by default.
 
-Turning this on changes more than the reconciler. It also:
+This setting does more than enable the reconciler. It also:
 
 - registers the mutating and validating webhooks for `MaintenanceRequest`
 - grants RBAC for the resource, its status and its finalizers
 - mounts the platform-connector socket into the pod
-- projects a ServiceAccount token into the pod, when authentication is enabled
-- adds this ServiceAccount to platform-connector's cross-node allowlist
+- projects a ServiceAccount token into the pod, if authentication is enabled
+- adds this ServiceAccount to the cross-node allowlist of platform-connector
 
-While the gate is off, the validating webhook rejects any `MaintenanceRequest` at admission rather than letting it be created and silently ignored.
+While the gate is off, the validating webhook rejects any `MaintenanceRequest` at admission. As a result, you cannot create a request that the controller then ignores silently.
 
-> **Operational note:** the allowlist lives in platform-connector's ConfigMap, and that ConfigMap's checksum is stamped on the DaemonSet pod template. Enabling this controller therefore rolls platform-connector across every node. This is true of enabling any cross-node publisher, not specific to this one, but it is worth scheduling deliberately.
+> **Operational note:** the allowlist is in the ConfigMap of platform-connector. The chart writes the checksum of that ConfigMap on the DaemonSet pod template. As a result, when you enable this controller, platform-connector gets a rolling update on every node. The same is true when you enable any cross-node publisher, not only this one. Schedule this change deliberately.
 
-By default the controller publishes through the socket. With `lifecycle-manager.publishTo: deployment`, it publishes to the [deployment platform connector](./platform-connectors.md#deployment-platform-connector) instead. The chart then sets the `HEALTH_PUBLISH_*` environment variables on the pod. The controller presents the same projected token as on the socket path. The socket mount stays in the pod, but the controller does not use it.
+By default, the controller publishes through the socket. With `lifecycle-manager.publishTo: deployment`, it publishes to the [deployment platform connector](./platform-connectors.md#deployment-platform-connector) instead. The chart then sets the `HEALTH_PUBLISH_*` environment variables on the pod. The controller presents the same projected token as on the socket path. The socket mount stays in the pod, but the controller does not use it.
 
 ### Authentication
 
-This is the part most easily missed. A `MaintenanceRequest` may name **any** node, but lifecycle-manager is a Deployment running on one node. platform-connector pins a publisher to its own node unless that publisher is on the cross-node allowlist and presents a valid token, so both halves are required:
+This part is the easiest to miss. A `MaintenanceRequest` can name **any** node, but lifecycle-manager is a Deployment that runs on one node. Also, platform-connector pins a publisher to its own node, unless the publisher is on the cross-node allowlist and presents a valid token. For this reason, both of these items are necessary:
 
-- the pod is given a projected ServiceAccount token, minted for `global.platformConnectorAuth.audience`, and passed to the process with `--platform-connector-token-path`
+- the pod gets a projected ServiceAccount token, minted for `global.platformConnectorAuth.audience`, and the process gets the token through `--platform-connector-token-path`
 - the umbrella chart adds `system:serviceaccount:<namespace>:lifecycle-manager` to `AuthCrossNodeServiceAccounts`
 
-Both are derived from the feature gate above, so there is nothing extra to configure. Do **not** add lifecycle-manager to `global.platformConnectorAuth.crossNodeServiceAccounts` by hand; that list is for publishers this chart does not ship, and a hand-written entry with the wrong namespace renders cleanly and then has every event rejected at runtime.
+The chart derives both items from the feature gate above, so you do not configure anything more. Do **not** add lifecycle-manager to `global.platformConnectorAuth.crossNodeServiceAccounts` manually. That list is for publishers that this chart does not ship. A manual entry with the wrong namespace renders without errors, but then platform-connector rejects every event at runtime.
 
-With `global.platformConnectorAuth.enabled: false`, no token is projected and no allowlist entry is added, which matches the unauthenticated behaviour of every other publisher.
+With `global.platformConnectorAuth.enabled: false`, the chart projects no token and adds no allowlist entry. This matches the unauthenticated behaviour of every other publisher.
 
-See [Authentication](./authentication.md) for the full node-binding model, and the `platform_connector_auth_violations_total` metric to watch if events are being rejected.
+For the full node-binding model, see [Authentication](./authentication.md). If platform-connector rejects events, watch the `platform_connector_auth_violations_total` metric.
 
 ### Quarantine Rule
 
-Publishing the event is only half of the outcome. Whether the node is actually cordoned depends on fault-quarantine having a ruleset that matches the event. The bundled `MaintenanceRequest ruleset` in the fault-quarantine chart matches on the `maintenanceRequestName` metadata key, which the mutating webhook stamps on every event this controller publishes. Removing or narrowing that ruleset leaves MaintenanceRequests accepted but inert: the resource is created, its condition goes green, and the node is never cordoned.
+The publication of the health event is only half of the result. If no fault-quarantine ruleset matches the health event, fault-quarantine does not cordon the node. The bundled `MaintenanceRequest ruleset` in the fault-quarantine chart matches on the `maintenanceRequestName` metadata key. The mutating webhook puts this key on every health event that this controller publishes. If you remove or narrow that ruleset, the API server still accepts MaintenanceRequests, but they have no effect. The resource exists and its condition reports success, but fault-quarantine never cordons the node.
 
 ### Example
 
@@ -94,29 +94,29 @@ spec:
     message: "Host maintenance scheduled by the cloud provider"
 ```
 
-The webhook changes `agent` to `lifecycle-manager` before it stores the object. It preserves `csp-maintenance-integration` in `healthEvent.metadata.maintenanceRequestRequesterAgent`.
+The webhook changes `agent` to `lifecycle-manager` before it stores the object. It keeps `csp-maintenance-integration` in `healthEvent.metadata.maintenanceRequestRequesterAgent`.
 
 ### Validation Rules
 
 The validating webhook rejects a request that:
 
 - omits `spec.healthEvent` or `spec.healthEvent.nodeName`
-- sets `isHealthy: true`, since an MR describes work starting, not a recovery
+- sets `isHealthy: true`, because an MR describes the start of work, not a recovery
 - leaves `version` at zero
 - names a node that does not exist
 - sets `startTime` in the past
 - names a node that already has an open MR
 - changes any stored field of `healthEvent` after creation
 
-The mutating webhook fills in `id` and `generatedTimestamp` if absent. It sets the publishing agent to `lifecycle-manager`, preserves the supplied agent in `maintenanceRequestRequesterAgent`, and always sets the `maintenanceRequestName` metadata key.
+If `id` and `generatedTimestamp` are absent, the mutating webhook sets them. It sets the publishing agent to `lifecycle-manager`, and it keeps the supplied agent in `maintenanceRequestRequesterAgent`. It always sets the `maintenanceRequestName` metadata key.
 
 ### Status and Deletion
 
-The controller sets a `HealthEventEmitted` condition once the opening event has been accepted by platform-connector, and takes a finalizer on the resource. On deletion it publishes the clearing event, releases its leases, and only then drops the finalizer — so a failed clearing publish leaves the object in `Terminating` and retries, rather than losing the clear and leaving the node cordoned indefinitely.
+When platform-connector accepts the opening event, the controller sets a `HealthEventEmitted` condition. It also adds a finalizer to the resource. On deletion, the controller publishes the clearing event and releases its leases. It removes the finalizer only after these steps. As a result, if the clearing publish fails, the object stays in `Terminating`, and the controller retries. The controller does not lose the clearing event, and the node does not stay cordoned indefinitely.
 
 The controller uses two Lease objects in the lifecycle-manager namespace:
 
-- **Claim** (`mr-claim.<node-name>`): the MR takes it before the opening event and holds it until deletion, so a node has at most one open MR. If a second MR for the node passes the webhook, the controller sets `HealthEventEmitted=False` with reason `Rejected` and does not retry it. If the node name is too long for a Lease name, the end of the name is replaced with a short hash.
-- **Janitor node lock** (`<node-name>`): the lock that janitor operations such as RebootNode share. The MR holds it only while it publishes the opening event, so the event does not start maintenance while a janitor operation runs. If the lock is held, the controller sets reason `Blocked` and retries every 30 seconds. The MR releases the lock right after it publishes, so the janitor operation that its event starts can take the lock.
+- **Claim** (`mr-claim.<node-name>`): the MR takes it before the opening event and holds it until deletion, so a node has at most one open MR. If a second MR for the node passes the webhook, the controller sets `HealthEventEmitted=False` with reason `Rejected`. It does not retry this MR. If the node name is too long for a Lease name, the controller replaces the end of the name with a short hash.
+- **Janitor node lock** (`<node-name>`): the lock that janitor operations, such as RebootNode, share. The MR holds it only while it publishes the opening event, so the event does not start maintenance while a janitor operation runs. If another holder has the lock, the controller sets reason `Blocked` and retries every 30 seconds. The MR releases the lock immediately after it publishes, so the janitor operation that its event starts can take the lock.
 
-If the clearing event can never be delivered, the resource stays in `Terminating`. Removing the finalizer by hand is the escape hatch, at the cost of the node staying cordoned until an operator clears it.
+If the controller can never deliver the clearing event, the resource stays in `Terminating`. As a last resort, remove the finalizer manually. But then the node stays cordoned until an operator clears it.

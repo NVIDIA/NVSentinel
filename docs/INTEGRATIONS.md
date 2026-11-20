@@ -1,41 +1,41 @@
 # NVSentinel Integration Guide
 
-NVSentinel detects GPU and hardware failures and exposes them using standard Kubernetes primitives. This document provides a high level overview of how to integrate with NVSentinel for scheduling, monitoring, and remediation purposes. 
+NVSentinel detects GPU and hardware faults and exposes them through standard Kubernetes primitives. This document gives a high-level overview of how to integrate with NVSentinel for scheduling, monitoring, and remediation.
 
 ## Integration Model
 
-Think of NVSentinel integration in five layers:
+NVSentinel integration has five layers:
 
 1. **Is a node bad?** → Check **[Taints](#1-is-a-node-bad-check-taints)**
    - Taints mark nodes with hardware issues
    - Use taints for scheduling decisions and filtering
-   - React to taint presence/absence in automation
+   - In automation, react to the presence or absence of a taint
 
 2. **Why is a node bad?** → Check **[Node Conditions](#2-why-is-a-node-bad-check-node-conditions)**
-   - Conditions provide detailed diagnostic information
-   - Use conditions for monitoring, alerting, and dashboards
-   - Each condition explains what hardware component failed
+   - Node conditions give detailed diagnostic information
+   - Use node conditions for monitoring, alerting, and dashboards
+   - Each node condition explains which hardware component failed
 
 3. **Can I use my own remediation?** → Provide a **[Custom Resource](#3-can-i-use-my-own-remediation-provide-a-custom-resource)**
-   - NVSentinel triggers external systems via CRs
+   - NVSentinel triggers external systems through CRs
    - Integrate with cloud APIs, DCIM, or custom controllers
-   - You retain full control over how nodes are repaired
+   - You keep full control of how your systems repair the nodes
 
 4. **How do I customize drain behavior?** → Configure **[per-namespace eviction modes](#4-how-do-i-customize-drain-behavior-configure-eviction-modes)**
-   - Control how workloads are evicted from failing nodes
-   - Define different policies for stateless vs stateful workloads
-   - Set timeouts and grace periods per namespace
+   - Control how Node Drainer evicts workloads from faulty nodes
+   - Define different policies for stateless and stateful workloads
+   - Set timeouts and grace periods for each namespace
 
-5. **Should GPU pods run diagnostics before the workload starts?** → Enable **[Preflight](./configuration/preflight.md)**
-   - Opt-in per namespace; webhook injects init-container checks (DCGM, optional NCCL)
-   - Multi-node jobs use **gang discovery** (native Kubernetes gang APIs or PodGroup-style schedulers like Volcano and Run:ai)
-   - Separate from the MongoDB health-event pipeline (see [Data flow](./DATA_FLOW.md#preflight-optional-admission-checks))
+5. **Do GPU pods need to run diagnostics before the workload starts?** → Enable **[Preflight](./configuration/preflight.md)**
+   - You enable Preflight for each namespace (opt-in). A webhook injects init-container checks (DCGM, optional NCCL)
+   - Multi-node jobs use **gang discovery** (native Kubernetes gang APIs or PodGroup-style schedulers, such as Volcano and Run:ai)
+   - The checks publish health events through Platform Connectors. If Fault Quarantine is enabled, a default Fault Quarantine ruleset cordons the node for a fatal health event (see [Data flow](./DATA_FLOW.md#preflight-optional-admission-checks))
 
 ## Quick Start
 
 **For Scheduling Decisions:**
 
-Find nodes with NVSentinel taints (if configured):
+If you configured NVSentinel taints, find the nodes that have them:
 
 ```shell
 kubectl get nodes -o json | jq '.items[] 
@@ -46,7 +46,7 @@ kubectl get nodes -o json | jq '.items[]
 
 **For Monitoring:**
 
-Get detailed failure information:
+Get the detailed fault information:
 
 ```shell
 kubectl get nodes -o json | jq '.items[].status.conditions[] 
@@ -66,15 +66,15 @@ tolerations:
 
 ## Architecture
 
-The [DATA_FLOW.md](./DATA_FLOW.md) provides more context on this, at the higher level though, NVSentinel detects hardware failures and applies graduated responses via:
+For more context, see [DATA_FLOW.md](./DATA_FLOW.md). At a high level, NVSentinel detects hardware faults and applies graduated responses in these stages:
 
-1. **Detection**: Health monitors check GPU, system logs, and cloud maintenance events
-2. **Classification**: Platform connectors validate and set node conditions
-3. **Quarantine**: Fault quarantine evaluates rules and applies taints/cordons
-4. **Evacuation**: Node drainer evicts workloads per configured policies
-5. **Remediation**: Fault remediation triggers external systems via CRs
+1. **Detection**: Health monitors check the GPUs, the system logs, and the cloud maintenance events
+2. **Classification**: Platform Connectors validate the health events and set node conditions
+3. **Quarantine**: Fault Quarantine evaluates rules, then applies taints and cordons
+4. **Evacuation**: Node Drainer evicts workloads according to the configured policies
+5. **Remediation**: Fault Remediation triggers external systems through CRs
 
-```
+```text
 ┌─────────────────────┐
 │  Health Monitors    │ GPU, Syslog, CSP health detection
 └──────────┬──────────┘
@@ -104,23 +104,25 @@ The [DATA_FLOW.md](./DATA_FLOW.md) provides more context on this, at the higher 
 
 **Use taints for all scheduling and automation decisions.**
 
-Taints are the primary signal that a node has hardware issues. External systems should watch for taint presence/absence to make scheduling decisions, trigger alerts, or initiate remediation workflows.
+Taints are the primary signal that a node has hardware issues. Configure your external systems to monitor the presence or absence of taints. Use this signal to make scheduling decisions, trigger alerts, or start remediation workflows.
 
-> **Note**: Taints are **optional and disabled by default**. You must configure them in fault-quarantine rulesets by uncommenting the `taint` section. NVSentinel only cordons nodes by default.
+> **Note**: Taints are **optional and disabled by default**. To use taints, uncomment the `taint` section in the Fault Quarantine rulesets. By default, NVSentinel only cordons nodes.
 
 ### Taint Structure
 
-**Format:** User-configurable via rulesets. Common patterns:
+**Format:** You configure the format in the rulesets. Common patterns:
 
 **Option 1: Component-specific (recommended)**
-```
+
+```text
 nvidia.com/gpu-xid-error
 nvidia.com/gpu-nvlink-error
 nvidia.com/syslog-xid-error
 ```
 
 **Option 2: Hierarchical**
-```
+
+```text
 gpu.health/memory-error
 nvlink.health/link-down
 nvswitch.health/fatal-error
@@ -128,7 +130,7 @@ nvswitch.health/fatal-error
 
 ### Default Taint Examples
 
-NVSentinel's test suite demonstrates these taint configurations:
+The NVSentinel test suite shows these taint configurations:
 
 | Taint Key                       | Value  | Effect       | Use Case                    |
 |---------------------------------|--------|--------------|-----------------------------|
@@ -137,23 +139,23 @@ NVSentinel's test suite demonstrates these taint configurations:
 | `nvidia.com/syslog-xid-error`   | `true` | `NoSchedule` | Syslog-detected XID errors  |
 | `nvidia.com/gpu-error`          | `true` | `NoSchedule` | Generic GPU hardware errors |
 
-You can configure any taint keys/values in your rulesets based on your needs.
+You can configure any taint keys and values in your rulesets, based on your needs.
 
 ### Taint Effect Guidelines
 
 | Effect              | Use Case                         | Impact                                                     |
 |---------------------|----------------------------------|------------------------------------------------------------|
-| `NoSchedule`        | Fatal errors requiring remediation | New pods without toleration won't be scheduled           |
-| `PreferNoSchedule`  | Degraded state or warnings       | Scheduler tries to avoid but will schedule if necessary    |
-| `NoExecute`         | Immediate evacuation needed      | Existing pods without toleration are evicted (rarely used) |
+| `NoSchedule`        | Fatal errors that require remediation | The scheduler does not schedule new pods without a toleration |
+| `PreferNoSchedule`  | Degraded state or warnings       | The scheduler tries to avoid the node, but schedules pods on it if necessary |
+| `NoExecute`         | Immediate evacuation needed      | Kubernetes evicts the existing pods without a toleration (rarely used) |
 
 ### Configuring Taints
 
-Taints are defined in Fault Quarantine rulesets. Here's an example showing how to enable taints:
+You define taints in the Fault Quarantine rulesets. This example shows how to enable taints:
 
 ```yaml
 # distros/kubernetes/nvsentinel/charts/fault-quarantine/values.yaml
-rulesets:
+ruleSets:
   - version: "1"
     name: "GPU XID Critical Errors"
     priority: 100
@@ -171,14 +173,16 @@ rulesets:
 ```
 
 **Key Points:**
-- Taints are **commented out by default** - you must enable them
+
+- Taints are **commented out by default**, so you must enable them
 - You control the taint key format (`nvidia.com/*` or `gpu.health/*` or any custom format)
-- You control the taint values (`true`, `fatal`, `degraded`, etc.)
-- Cordoning is enabled by default; tainting is opt-in
+- You control the taint values (`true`, `fatal`, `degraded`, or other values)
+- Cordoning is enabled by default. Tainting is opt-in.
 
 ### Integration Patterns
 
-**Check if node has any NVIDIA-related taints:**
+**Check if a node has any NVIDIA-related taints:**
+
 ```shell
 kubectl get nodes -o json | jq '.items[] 
   | select(.spec.taints[]? 
@@ -186,7 +190,8 @@ kubectl get nodes -o json | jq '.items[]
   | .metadata.name'
 ```
 
-**Check for specific error type:**
+**Check for a specific error type:**
+
 ```shell
 kubectl get nodes -o json | jq '.items[] 
   | select(.spec.taints[]? 
@@ -233,11 +238,11 @@ informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 
 **Use node conditions for monitoring, alerting, and detailed diagnostics.**
 
-While taints tell you "this node is bad", conditions tell you *why* it's bad. Use conditions for dashboards, alerts, and troubleshooting.
+Taints tell you "this node is bad". Node conditions tell you *why* the node is bad. Use node conditions for dashboards, alerts, and troubleshooting.
 
 ### Monitoring with kube-state-metrics
 
-**Prerequisites:** Install [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics) to expose node conditions as Prometheus metrics. NVSentinel sets node conditions via the Kubernetes API, but kube-state-metrics is required to convert these into metrics.
+**Prerequisites:** Install [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics) to expose node conditions as Prometheus metrics. NVSentinel sets node conditions through the Kubernetes API. You must have kube-state-metrics to convert these node conditions into metrics.
 
 **Available Metrics:**
 
@@ -275,51 +280,56 @@ kube_node_status_condition{condition=~"Gpu.*|SysLogs.*",status="true"}
 kube_node_status_condition{condition=~"Gpu.*|SysLogs.*",status="true"}
 ```
 
-> **Note:** NVSentinel also exposes its own Prometheus metrics for internal operations. See [METRICS.md](METRICS.md) for the complete list of NVSentinel-native metrics.
+> **Note:** NVSentinel also exposes its own Prometheus metrics for its internal operations. For the complete list of NVSentinel-native metrics, see [METRICS.md](METRICS.md).
 
 ### Condition Structure
 
-Platform Connectors set NodeConditions based on health monitor checks. Each condition explains what hardware component failed.
+Platform Connectors set node conditions based on the checks of the health monitors. Each node condition explains which hardware component failed.
 
-**Naming:** PascalCase, directly from health monitor check names  
+**Naming:** PascalCase, directly from the check names of the health monitors  
 **Examples:** `GpuMemWatch`, `GpuThermalWatch`, `SysLogsXIDError`
 
-### Condition vs Event Behavior
+### Condition and Event Behavior
 
 NVSentinel uses different Kubernetes primitives based on error severity:
 
 | Error Type                      | Condition Set          | Event Created? | Use Case                                         |
 |---------------------------------|------------------------|----------------|--------------------------------------------------|
-| **Fatal** (`isFatal=true`)      | ✅ Yes (`status=True`)  | ❌ No          | Critical errors requiring quarantine/remediation |
+| **Fatal** (`isFatal=true`)      | ✅ Yes (`status=True`)  | ❌ No          | Critical errors that require quarantine or remediation |
 | **Non-Fatal** (`isFatal=false`) | ❌ No                   | ✅ Yes         | Warnings, transient issues, informational        |
 | **Healthy** (`isHealthy=true`)  | ✅ Yes (`status=False`) | ❌ No          | Health recovery, condition cleared               |
 
 **Why this design?**
-- **Conditions** are durable state - used for errors that require action (cordon, drain, remediation)
-- **Events** are transient notifications - used for warnings and non-critical issues that don't require node isolation
+
+- **Conditions** are durable state. NVSentinel uses them for errors that require action (cordon, drain, remediation).
+- **Events** are transient notifications. NVSentinel uses them for warnings and non-critical issues that do not require node isolation.
 
 ### Using Events for Non-Fatal Errors
 
-Non-fatal errors (like thermal throttling warnings or transient issues) create Kubernetes Events instead of node conditions. This prevents alert fatigue while still providing visibility.
+Non-fatal errors (such as thermal throttling warnings or transient issues) create Kubernetes Events instead of node conditions. This prevents alert fatigue, and you still have visibility of these errors.
 
 **View recent events for a node:**
+
 ```shell
 kubectl get events --field-selector involvedObject.kind=Node,involvedObject.name=gpu-node-01 \
   --sort-by='.lastTimestamp'
 ```
 
 **Filter for GPU-related events:**
+
 ```shell
 kubectl get events --all-namespaces \
   -o json | jq '.items[] | select(.type | startswith("Gpu") or startswith("SysLogs"))'
 ```
 
 **Watch for real-time events:**
+
 ```shell
 kubectl get events --watch --field-selector involvedObject.kind=Node
 ```
 
 **Example non-fatal event:**
+
 ```yaml
 apiVersion: v1
 kind: Event
@@ -361,7 +371,7 @@ eventInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 
 | Status    | Meaning                           |
 |-----------|-----------------------------------|
-| `True`    | Error/fault detected              |
+| `True`    | Error or fault detected           |
 | `False`   | Component healthy                 |
 | `Unknown` | Health state cannot be determined |
 
@@ -369,7 +379,7 @@ eventInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 
 Messages include error codes and recommended actions:
 
-```
+```text
 [ErrorCode1, ErrorCode2] Human-readable description - RecommendedAction: ACTION_NAME
 ```
 
@@ -408,15 +418,15 @@ conditions:
 
 #### NVSwitch Conditions
 
-- `NVSwitchFatalError` - Fatal NVSwitch hardware error
+- `GpuNvswitchFatalWatch` - Fatal NVSwitch hardware error
 - `NVSwitchDown` - NVSwitch unavailable
 - `NVSwitchNonFatalError` - Non-fatal NVSwitch errors (warnings)
 
 #### System Conditions
 
-- `DCGMError` - DCGM daemon or API failures
+- `GpuDcgmConnectivityFailure` - DCGM daemon or API failures
 - `CSPMaintenance` - Cloud provider scheduled maintenance
-- `SyslogError` - System log analysis detected issues
+- `SyslogError` - Issues that the system log analysis detected
 
 ### Integration Patterns
 
@@ -466,11 +476,11 @@ informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 
 **NVSentinel triggers external systems by creating Kubernetes Custom Resources.**
 
-After detecting and draining a failing node, NVSentinel creates a CR that your controller watches. This gives you full control over remediation - integrate with cloud APIs, DCIM systems, or custom workflows.
+After NVSentinel detects a faulty node and drains it, NVSentinel creates a CR that your controller watches. This gives you full control of the remediation. You can integrate with cloud APIs, DCIM systems, or custom workflows.
 
 ### Integration Architecture
 
-```
+```text
 ┌────────────────────┐
 │ Fault Remediation  │ Watches drained nodes
 │     Module         │
@@ -492,66 +502,95 @@ After detecting and draining a failing node, NVSentinel creates a CR that your c
 
 ### Configuration
 
-Configure the maintenance CR template and behavior:
+Configure the maintenance CR templates and behavior. This excerpt of the chart shows two of the four default actions:
 
 ```yaml
 # distros/kubernetes/nvsentinel/charts/fault-remediation/values.yaml
 maintenance:
-  # API group of your maintenance CRD
-  apiGroup: "janitor.dgxc.nvidia.com"
-  version: "v1alpha1"
-  kind: "RebootNode"
-  
-  # Completion condition to check before creating new CRs
-  # Prevents duplicate remediation requests for the same node
-  completeConditionType: "NodeReady"
-  
-  # Namespace where maintenance CRs will be created
-  namespace: "nvsentinel"
-  
-  # Resource names for RBAC permissions
-  resourceNames:
-    - "rebootnodes"
-    - "terminatenodes"
-  
-  # Go template for generating maintenance CRs
-  # Available variables: .ApiGroup, .Version, .RecommendedAction, .NodeName, .HealthEventID
-  template: |
-    apiVersion: {{ .ApiGroup }}/{{ .Version }}
-    kind: {{ if eq .RecommendedAction 2 }}RebootNode{{ else }}TerminateNode{{ end }}
-    metadata:
-      name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
-      namespace: {{ .Namespace }}
-    spec:
-      nodeName: {{ .NodeName }}
-      reason: "Health event {{ .HealthEventID }}"
-      force: false
+  # Per-action remediation definitions
+  # Key is the RecommendedAction string (e.g., "COMPONENT_RESET", "RESTART_BM")
+  actions:
+    COMPONENT_RESET:
+      apiGroup: "janitor.dgxc.nvidia.com"
+      version: "v1alpha1"
+      kind: "RebootNode"
+      scope: "Cluster"
+      completeConditionType: "NodeReady"
+      templateFileName: "nvidia-reboot.yaml"
+      equivalenceGroup: "restart"
 
-# Retry configuration for CR creation
+    # REPLACE_VM is used when the VM needs to be terminated and replaced.
+    REPLACE_VM:
+      apiGroup: "janitor.dgxc.nvidia.com"
+      version: "v1alpha1"
+      kind: "TerminateNode"
+      scope: "Cluster"
+      completeConditionType: "NodeTerminated"
+      templateFileName: "terminate-node.yaml"
+      equivalenceGroup: "terminate"
+
+  # Template content for each remediation action
+  # Key matches the templateFileName name from actions above
+  templates:
+    "nvidia-reboot.yaml": |
+      apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+      kind: RebootNode
+      metadata:
+        name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+        labels:
+          app.kubernetes.io/managed-by: nvsentinel
+        annotations:
+          nvsentinel.nvidia.com/trace-id: "{{ .TraceID }}"
+          nvsentinel.nvidia.com/span-id: "{{ .SpanID }}"
+          # TTL-based auto-cleanup by janitor after completion.
+          # See docs/designs/037-janitor-cr-ttl-cleanup.md.
+          nvsentinel.nvidia.com/ttl: "336h"
+      spec:
+        nodeName: {{ .HealthEvent.NodeName }}
+        force: false
+    "terminate-node.yaml": |
+      apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+      kind: TerminateNode
+      metadata:
+        name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+        labels:
+          app.kubernetes.io/managed-by: nvsentinel
+        annotations:
+          nvsentinel.nvidia.com/trace-id: "{{ .TraceID }}"
+          nvsentinel.nvidia.com/span-id: "{{ .SpanID }}"
+          nvsentinel.nvidia.com/ttl: "336h"
+      spec:
+        nodeName: {{ .HealthEvent.NodeName }}
+        force: false
+
+# Retry configuration for maintenance resource updates
+# Used when updating annotations on nodes after creating maintenance resources
 updateRetry:
+  # Maximum number of retry attempts if the update fails (due to conflicts, network issues, etc.)
   maxRetries: 5
+  # Delay in seconds between retry attempts (uses exponential backoff)
   retryDelaySeconds: 10
 ```
 
 ### Custom Resource Template
 
-The template uses Go template syntax with these variables:
+The templates use Go template syntax. They can use `.HealthEvent` (the full health event), `.TraceID` and `.SpanID` (the trace context), and these variables:
 
 | Variable             | Type    | Description                                  |
 |----------------------|---------|----------------------------------------------|
-| `.ApiGroup`          | string  | API group from `maintenance.apiGroup`        |
-| `.Version`           | string  | API version from `maintenance.version`       |
-| `.Kind`              | string  | Resource kind from `maintenance.kind`        |
-| `.RecommendedAction` | int     | Numeric action code (2=reboot, 15=terminate) |
-| `.NodeName`          | string  | Name of the node requiring remediation       |
+| `.ApiGroup`          | string  | API group from the matching `maintenance.actions` entry |
+| `.Version`           | string  | API version from the matching `maintenance.actions` entry |
+| `.Kind`              | string  | Resource kind from the matching `maintenance.actions` entry |
+| `.RecommendedAction` | int     | Numeric action code, for example `2` (`COMPONENT_RESET`) or `15` (`RESTART_VM`) |
+| `.NodeName`          | string  | Name of the node that requires remediation   |
 | `.HealthEventID`     | string  | Unique ID of the triggering health event     |
-| `.Namespace`         | string  | Namespace from `maintenance.namespace`       |
+| `.Namespace`         | string  | Namespace from the matching `maintenance.actions` entry |
 
 ### RecommendedAction Codes
 
 | Code | Action            | Typical Use Case              |
 |------|-------------------|-------------------------------|
-| `2`  | `COMPONENT_RESET` | GPU/driver reset, reboot node |
+| `2`  | `COMPONENT_RESET` | GPU or driver reset, node reboot |
 | `5`  | `CONTACT_SUPPORT` | Manual intervention needed    |
 | `15` | `RESTART_VM`      | Reboot VM instance            |
 | `24` | `RESTART_BM`      | Reboot bare metal node        |
@@ -561,7 +600,7 @@ The template uses Go template syntax with these variables:
 
 #### Example 1: Janitor Controller Integration
 
-Janitor controller watches for `RebootNode` and `TerminateNode` CRs:
+The Janitor controller watches for `RebootNode` and `TerminateNode` CRs:
 
 ```yaml
 apiVersion: janitor.dgxc.nvidia.com/v1alpha1
@@ -625,11 +664,11 @@ maintenance:
 
 ### Completion Detection
 
-Fault Remediation checks the `completeConditionType` status on existing CRs before creating new ones:
+Before Fault Remediation creates a new CR, it checks the `completeConditionType` status on the existing CRs:
 
-- **Status: True** - Maintenance completed successfully, new CR can be created
-- **Status: False** - Maintenance failed, new CR can be created for retry
-- **Condition Missing** - Maintenance in progress, skip CR creation
+- **Status: True** - Maintenance completed successfully. Fault Remediation can create a new CR.
+- **Status: False** - Maintenance failed. Fault Remediation can create a new CR to retry.
+- **Condition Missing** - Maintenance in progress. Fault Remediation does not create a new CR.
 
 This prevents duplicate remediation requests for nodes with ongoing maintenance.
 
@@ -643,19 +682,21 @@ This prevents duplicate remediation requests for nodes with ongoing maintenance.
    ```
 
 2. **Monitor CR Creation**:
+
    ```shell
    # Watch for maintenance CRs
    kubectl get rebootnodes -n nvsentinel -w
    ```
 
 3. **Check Fault Remediation Logs**:
+
    ```shell
    kubectl logs -n nvsentinel deployment/fault-remediation -f
    ```
 
 ### External Remediation and Planned Maintenance
 
-For a repair that NVSentinel cannot do itself, fault-remediation can create an ExternalRemediationRequest. NVSentinel then stops managing the node. NVSentinel manages the node again when the external system reports that the repair is complete, or when someone deletes the ExternalRemediationRequest. See [Integrating External Remediation](./tutorials/integrating-external-remediation.md).
+For a repair that NVSentinel cannot do itself, Fault Remediation can create an ExternalRemediationRequest. NVSentinel then stops managing the node. NVSentinel manages the node again when the external system reports that the repair is complete, or when someone deletes the ExternalRemediationRequest. See [Integrating External Remediation](./tutorials/integrating-external-remediation.md).
 
 To tell NVSentinel about planned maintenance, create a MaintenanceRequest. NVSentinel then cordons and drains the node. See [Requesting Node Maintenance](./tutorials/requesting-node-maintenance.md).
 
@@ -663,9 +704,9 @@ To tell NVSentinel about planned maintenance, create a MaintenanceRequest. NVSen
 
 ## 4. How Do I Customize Drain Behavior? Configure Eviction Modes
 
-**Control how workloads are evicted from failing nodes.**
+**Control how Node Drainer evicts workloads from faulty nodes.**
 
-The Node Drainer module handles graceful workload eviction from cordoned nodes. Eviction behavior can be customized per namespace to accommodate different workload types and operational requirements.
+The Node Drainer module gracefully evicts workloads from cordoned nodes. You can customize the eviction behavior for each namespace. This lets you accommodate different workload types and operational requirements.
 
 ### Eviction Modes
 
@@ -673,9 +714,9 @@ NVSentinel supports three eviction modes:
 
 | Mode                 | Behavior                                | Use Case                                                      |
 |----------------------|-----------------------------------------|---------------------------------------------------------------|
-| `Immediate`          | Pod evicted immediately without waiting | Fast failover for stateless workloads                         |
-| `AllowCompletion`    | Wait for pod to gracefully terminate    | Respects terminationGracePeriodSeconds for stateful workloads |
-| `DeleteAfterTimeout` | Wait up to timeout, then force delete   | Long-running jobs that need time to checkpoint                |
+| `Immediate`          | Evicts the pod immediately, without waiting | Fast failover for stateless workloads                     |
+| `AllowCompletion`    | Waits for the pod to terminate gracefully | Respects terminationGracePeriodSeconds for stateful workloads |
+| `DeleteAfterTimeout` | Waits up to the timeout, then force deletes the pod | Long-running jobs that need time to checkpoint      |
 
 ### Configuration
 
@@ -712,11 +753,11 @@ userNamespaces:
 
 ### Eviction Workflow
 
-1. **System Namespace Skip**: Pods in system namespaces (kube-system, nvsentinel, etc.) are never evicted
-2. **Mode Selection**: Eviction mode determined by namespace match (most specific wins)
-3. **Graceful Termination**: Respects pod's `terminationGracePeriodSeconds` for `AllowCompletion` mode
-4. **Timeout Handling**: Force deletes stuck or timed-out pods based on configuration
-5. **NotReady Detection**: Automatically force deletes pods stuck in NotReady state beyond threshold
+1. **System Namespace Skip**: Node Drainer never evicts pods in system namespaces (kube-system, nvsentinel, and the other system namespaces)
+2. **Mode Selection**: The namespace match selects the eviction mode (the most specific match wins)
+3. **Graceful Termination**: In `AllowCompletion` mode, Node Drainer respects the `terminationGracePeriodSeconds` of the pod
+4. **Timeout Handling**: Node Drainer force deletes stuck or timed-out pods, based on the configuration
+5. **NotReady Detection**: Node Drainer automatically force deletes pods that stay in the NotReady state for longer than the threshold
 
 ### Example: Multi-Tier Application
 
@@ -743,22 +784,22 @@ userNamespaces:
 
 ## Topology Awareness (Topograph)
 
-When [Topograph](https://github.com/NVIDIA/topograph) is deployed in the cluster, it applies four node labels describing the physical network topology:
+When you deploy [Topograph](https://github.com/NVIDIA/topograph) in the cluster, it applies four node labels that describe the physical network topology:
 
 - `accelerator.topograph.run/domain` — NVLink domain (clique) ID
 - `fabric.topograph.run/tier-0` — leaf switch identifier
 - `fabric.topograph.run/tier-1` — spine switch identifier
 - `fabric.topograph.run/tier-2` — core switch identifier
 
-These keys are included by default in the Metadata Augmentor's `allowedLabels`, so NVSentinel automatically propagates them into health event metadata on clusters where Topograph has applied them. On clusters without Topograph, the labels are absent and the Metadata Augmentor simply skips them — no configuration change is required either way.
+By default, the `allowedLabels` list of the Metadata Augmentor includes these keys. On clusters where Topograph applied these labels, NVSentinel automatically propagates them into the health event metadata. On clusters without Topograph, the labels are absent, and the Metadata Augmentor skips them. In both cases, no configuration change is necessary.
 
-Downstream consumers of NVSentinel events (fault-quarantine CEL rules, remediation custom resources, dashboards, blast-radius analysis) can then reason about topological locality. For example, a CEL rule can compare the `accelerator.topograph.run/domain` value across a set of recent events to determine whether a fault is isolated to a single NVLink domain or spans multiple.
+Downstream consumers of NVSentinel health events can then consider the topological locality. These consumers include Fault Quarantine CEL rules, remediation custom resources, dashboards, and blast-radius analysis. For example, a CEL rule can compare the `accelerator.topograph.run/domain` value across a set of recent health events. The rule can then find whether a fault affects only one NVLink domain or spans multiple domains.
 
-The authoritative reference for these labels — value semantics, hashing behavior for long identifiers, and provider matrix — is [topograph's `docs/reference/node-labels.md`](https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md).
+The authoritative reference for these labels is [topograph's `docs/reference/node-labels.md`](https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md). It describes the value semantics, the hashing behavior for long identifiers, and the provider matrix.
 
 ## Error Code Mapping Reference
 
-NVSentinel maps DCGM error codes to recommended actions using a canonical CSV file.
+NVSentinel uses a canonical CSV file to map DCGM error codes to recommended actions.
 
 **Mapping File:** `distros/kubernetes/nvsentinel/charts/gpu-health-monitor/files/dcgmerrorsmapping.csv`
 
@@ -766,9 +807,9 @@ NVSentinel maps DCGM error codes to recommended actions using a canonical CSV fi
 
 | Action            | Meaning                         | Typical Resolution                          |
 |-------------------|---------------------------------|---------------------------------------------|
-| `RESTART_VM`      | Software-recoverable error      | Node reboot via janitor                     |
-| `COMPONENT_RESET` | Hardware reset required         | GPU/driver reset                            |
-| `CONTACT_SUPPORT` | Manual intervention needed      | Create support ticket, manual investigation |
+| `RESTART_VM`      | Software-recoverable error      | Node reboot through Janitor                 |
+| `COMPONENT_RESET` | Hardware reset required         | GPU or driver reset                         |
+| `CONTACT_SUPPORT` | Manual intervention needed      | Create a support ticket, manual investigation |
 | `NONE`            | Health check informational      | No action required                          |
 
 ### Example Mappings
@@ -780,11 +821,11 @@ NVSentinel maps DCGM error codes to recommended actions using a canonical CSV fi
 | `DCGM_FR_PENDING_PAGE_RETIREMENTS`  | `COMPONENT_RESET`  | `GpuMemoryError`       |
 | `DCGM_FR_UNCORRECTABLE_ROW_REMAP`   | `COMPONENT_RESET`  | `GpuMemoryError`       |
 | `DCGM_FR_NVLINK_DOWN`               | `RESTART_VM`       | `NVLinkDown`           |
-| `DCGM_FR_NVSWITCH_FATAL_ERROR`      | `CONTACT_SUPPORT`  | `NVSwitchFatalError`   |
+| `DCGM_FR_NVSWITCH_FATAL_ERROR`      | `CONTACT_SUPPORT`  | `GpuNvswitchFatalWatch` |
 | `DCGM_FR_CLOCK_THROTTLE_THERMAL`    | `NONE`             | `GpuThermalWatch`      |
 | `DCGM_FR_SXID_ERROR`                | `RESTART_VM`       | `GpuXidError`          |
 
-Full mapping contains 121 error codes. See CSV file for complete reference.
+The full mapping contains 138 error codes. For the complete reference, see the CSV file.
 
 ## Node Status Examples
 
@@ -869,7 +910,7 @@ status:
 
 | Module                  | Responsibility                            | What It Sets           |
 |-------------------------|-------------------------------------------|------------------------|
-| **Platform Connectors** | Process health events, update node status | NodeConditions         |
+| **Platform Connectors** | Process health events, update node status | Node conditions        |
 | **Fault Quarantine**    | Apply operational policies                | Taints, cordon status  |
 | **Node Drainer**        | Evict workloads                           | Drain nodes            |
 | **Fault Remediation**   | Trigger maintenance                       | Create maintenance CRs |
@@ -882,9 +923,9 @@ status:
 
 ## Related Documentation
 
-- [Data Flow Documentation](./DATA_FLOW.md) - End-to-end event flow
+- [Data Flow Documentation](./DATA_FLOW.md) - End-to-end flow of health events
 - Helm Chart Configuration (`distros/kubernetes/README.md` in the NVSentinel repository) - Deployment configuration
 
 ## API Stability
 
-This document describes the API contract for NVSentinel node health signaling. Changes to condition types, taint keys, or label keys require review and follow the deprecation policy.
+This document describes the API contract for NVSentinel node health signaling. Each change to condition types, taint keys, or label keys requires a review and follows the deprecation policy.

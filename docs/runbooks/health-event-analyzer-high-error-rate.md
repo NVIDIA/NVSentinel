@@ -7,22 +7,24 @@
 **Metric:** High ratio of `health_event_analyzer_event_processing_errors` to `health_event_analyzer_events_received_total`
 
 **Common Causes:**
-1. Malformed MongoDB aggregation queries in the health-events-analyzer configuration
+
+1. Malformed MongoDB aggregation queries in the Health Events Analyzer configuration
 2. MongoDB connection errors (network issues, service unavailable, authentication failures)
 
 ## Overview
 
-The Health Events Analyzer (HEA) processes health events from MongoDB and applies rules defined in the `health-events-analyzer-config` ConfigMap. These rules contain MongoDB aggregation pipeline queries. Errors can occur due to:
+The Health Events Analyzer (HEA) processes health events from MongoDB. It applies the rules that the `health-events-analyzer-config` ConfigMap defines. These rules contain MongoDB aggregation pipeline queries. Errors can occur because of:
+
 - Syntax errors in the aggregation pipeline queries
-- Typos in field names (e.g., `generatedtimestap` instead of `generatedtimestamp`)
-- Invalid MongoDB operators (e.g., `$notequal` instead of `$ne`)
+- Typos in field names (for example, `generatedtimestap` instead of `generatedtimestamp`)
+- Invalid MongoDB operators (for example, `$notequal` instead of `$ne`)
 - MongoDB connectivity issues
 
 ## Diagnosis Steps
 
 ### Issue 1: Malformed Database Queries in Configuration
 
-The Health Events Analyzer executes rules defined in the configuration file. These rules contain queries written in MongoDB aggregation pipeline syntax. Typos or syntax errors will cause processing failures every time a rule is evaluated for processing an event.
+The Health Events Analyzer runs the rules that the configuration file defines. These rules contain queries in MongoDB aggregation pipeline syntax. A typo or a syntax error causes a processing failure each time the analyzer evaluates the rule to process an event.
 
 **Diagnosis:**
 
@@ -58,11 +60,11 @@ kubectl -n nvsentinel logs deployment/health-events-analyzer -f | \
 
 ### Issue 2: MongoDB Connection Error
 
-The Health Events Analyzer establishes a connection to MongoDB to listen for inserted events and to publish new health events. Connection errors prevent event processing and increase health_event_analyzer_event_processing_errors metric for `execute_pipeline_error` error type.
+The Health Events Analyzer connects to MongoDB to listen for inserted health events and to run the rule queries. It publishes new health events to platform-connectors over gRPC, the same as any other health monitor. Connection errors stop event processing. They also increase the `health_event_analyzer_event_processing_errors` metric for the `execute_pipeline_error` error type.
 
-Follow the [MongoDB Connection Error runbook](mongodb-connection-error.md) to diagnose and resolve MongoDB connection issues.
+To diagnose and correct MongoDB connection issues, follow the [MongoDB Connection Error runbook](mongodb-connection-error.md).
 
-If MongoDB pods are in a healthy state, check for connectivity errors in the health-events-analyzer pod:
+If the MongoDB pods are healthy, examine the Health Events Analyzer pod for connectivity errors:
 
 ```bash
 # Check for connection errors in HEA logs

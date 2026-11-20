@@ -2,51 +2,53 @@
 
 ## Overview
 
-Preflight validates GPU health **before** your workload starts. It is a mutating admission webhook that injects diagnostic init containers into GPU pods, catching hardware and interconnect failures at pod creation time rather than mid-training.
+Preflight validates GPU health **before** your workload starts. It is a mutating admission webhook that injects diagnostic init containers into GPU pods. The init containers find hardware and interconnect failures at pod creation time, not in the middle of training.
 
-Think of it as a pre-flight checklist for an aircraft — you want to know the engines work before takeoff, not after.
+Preflight is similar to the pre-flight checklist of an aircraft. A pilot confirms that the engines operate before takeoff, not after.
 
 ### Why Do You Need This?
 
-NVSentinel's health monitors (GPU, syslog, CSP) continuously detect failures at runtime and trigger quarantine. Preflight complements them by adding a **point-in-time gate** at pod creation:
+The NVSentinel health monitors (GPU, syslog, CSP) detect failures continuously at runtime and trigger quarantine. Preflight complements them with a **point-in-time gate** at pod creation:
 
-- **Timing gap**: A GPU can degrade between the last health-monitor poll and job startup. Preflight closes that window with an on-demand check right before the workload runs
-- **Interconnect coverage**: Runtime monitors focus on individual GPU health. Preflight's NCCL checks validate the actual communication path — NVLink, PCIe, InfiniBand, EFA — that a distributed job will use
-- **Fast failure**: Without preflight, a bad interconnect is typically discovered minutes into training when NCCL operations hang or bandwidth drops. Preflight fails the pod in seconds, before any compute is wasted
-- **Multi-node validation**: Single-node monitors can't verify cross-node fabric health. The gang-aware `nccl-allreduce` check exercises the real multi-node path end-to-end
+- **Timing gap**: A GPU can degrade between the last poll of a health monitor and the start of the job. Preflight removes this gap with an on-demand check immediately before the workload runs
+- **Interconnect coverage**: Runtime monitors examine the health of individual GPUs. The preflight NCCL checks validate the real communication links that a distributed job uses, such as NVLink, PCIe, InfiniBand and EFA
+- **Fast failure**: Without preflight, a bad interconnect usually becomes visible some minutes after training starts, when NCCL operations hang or the bandwidth drops. Preflight fails the pod in seconds, before the job wastes compute resources
+- **Multi-node validation**: Single-node monitors cannot verify the health of the cross-node fabric. The gang-aware `nccl-allreduce` check tests the real multi-node path from end to end
 
-If a preflight check fails, the pod stays in `Init:Error` and a health event enters the standard NVSentinel pipeline. Fatal events — the hardware and interconnect findings — take the node through quarantine and remediation, the same workflow the runtime monitors use. Coordination and configuration failures are reported as non-fatal, so they block the pod without cordoning the node.
+If a preflight check fails, the pod stays in `Init:Error`. Unless the check fails before it can report, it also sends a health event into the standard NVSentinel pipeline. For `preflight-nccl-allreduce`, only the rank-0 pod reports the result of the benchmark.
+
+The fatal health events are the hardware and interconnect findings, and an unreachable DCGM hostengine. They send the node through quarantine and remediation, the same workflow that the runtime monitors use. As a result, if the `DCGM_HOSTENGINE_ADDR` value is wrong, NVSentinel cordons the node. If a check reports any other coordination or configuration failure, it marks the failure as non-fatal. These failures block the pod, but NVSentinel does not cordon the node.
 
 ## How It Works
 
 Preflight runs as a Deployment with a mutating admission webhook:
 
 1. **Namespace opt-in**: Label namespaces with `nvsentinel.nvidia.com/preflight=enabled`
-2. **Pod admission**: When a GPU pod is created in a labeled namespace, the webhook intercepts the request. Optionally, an `objectSelector` can further restrict which pods are intercepted based on pod labels
-3. **Init container injection**: The webhook injects diagnostic init containers into the pod spec (appended after existing init containers by default; set `initContainerPlacement: prepend` to insert before)
-4. **Checks run**: Init containers execute sequentially before the main workload starts
-5. **Health reporting**: Each check reports results as health events via the Platform Connector (gRPC over the node-local Unix domain socket, or directly to the deployment platform connector when `preflight.publishTo` is `deployment`)
-6. **Pass/fail**: If all checks pass (exit code 0), the main containers start normally. If any check fails, the pod stays in `Init:Error`, and a fatal health event triggers quarantine. See [exit codes](./configuration/preflight.md#1-check-the-exit-code) for what each code means per check
+2. **Pod admission**: The webhook intercepts each request that creates a GPU pod in a labeled namespace. An optional `objectSelector` can also limit the intercepted pods by their pod labels
+3. **Init container injection**: The webhook injects diagnostic init containers into the pod spec. By default, it adds them after the existing init containers. To add them before the existing init containers, set `initContainerPlacement: prepend`
+4. **Checks run**: The init containers run in sequence before the main workload starts
+5. **Health reporting**: Each check reports its results as health events to the platform connector. If `preflight.publishTo` is `deployment`, the check sends them directly to the deployment platform connector. Otherwise, it uses gRPC over the node-local Unix domain socket
+6. **Pass/fail**: If all checks pass (exit code 0), the main containers start normally. If any check fails, the pod stays in `Init:Error`. If the failed check sends a fatal health event, that health event triggers quarantine. For the meaning of each exit code of each check, see [exit codes](./configuration/preflight.md#1-check-the-exit-code)
 
 ### Available Checks
 
 | Check | Scope | What it validates | Approximate duration |
 |-------|-------|-------------------|---------------------|
-| `preflight-dcgm-diag` | Single node | GPU hardware health via DCGM diagnostics (ECC, PCIe, thermal, stress) | 30s–15min depending on diag level |
-| `preflight-nccl-loopback` | Single node | Intra-node GPU-to-GPU interconnect (NVLink or PCIe) via NCCL all-reduce | ~5s |
+| `preflight-dcgm-diag` | Single node | GPU hardware health with DCGM diagnostics (ECC, PCIe, thermal, stress) | 30s–15min, depending on the diagnostic level |
+| `preflight-nccl-loopback` | Single node | Intra-node GPU-to-GPU interconnect (NVLink or PCIe) with NCCL all-reduce | ~5s |
 | `preflight-nccl-allreduce` | Multi-node (gang) | Cross-node GPU communication over the cluster fabric (InfiniBand, EFA, TCPXO) | ~30s + gang wait time |
 
-All checks are optional — configure which ones to inject via `initContainers` in the Helm values.
+All checks are optional. To select the checks that the webhook injects, configure `initContainers` in the Helm values.
 
 ### Gang Coordination (Multi-Node Checks)
 
-The `preflight-nccl-allreduce` check requires coordination across all nodes in a scheduling gang. Preflight handles this through:
+The `preflight-nccl-allreduce` check requires coordination across all nodes in a scheduling gang. Preflight uses these mechanisms for the coordination:
 
-1. **Gang discovery** — identifies which pods belong to the same group using scheduler annotations/labels (Volcano, Run:ai/OSMO) or native Kubernetes APIs (`workloadRef` in 1.35, `schedulingGroup` in 1.36 and later)
-2. **ConfigMap-based coordination** — the gang controller writes peer information (IPs, ranks) into a ConfigMap that init containers poll until all members are registered
-3. **PyTorch distributed bootstrap** — once all peers are known, the check uses `torchrun` to execute a multi-node NCCL all-reduce benchmark
+1. **Gang discovery** — finds the pods that belong to the same group. It uses scheduler annotations or labels (Volcano, Run:ai/OSMO), or native Kubernetes APIs (`workloadRef` in 1.35, `schedulingGroup` in 1.36 and later)
+2. **ConfigMap-based coordination** — the gang controller writes peer information (IPs, ranks) into a ConfigMap. The init containers poll this ConfigMap until it lists all members
+3. **PyTorch distributed bootstrap** — when the check knows all peers, it uses `torchrun` to run a multi-node NCCL all-reduce benchmark
 
-Gang coordination requires a gang-aware scheduler and `gangCoordination.enabled: true` (default). The native path needs Kubernetes 1.35 or later; on an earlier cluster, configure a PodGroup-based scheduler or turn gang coordination off. For a single node, a single GPU, or a cluster with no gang-aware scheduler, see [Single-node and single-GPU clusters](./configuration/preflight.md#single-node-and-single-gpu-clusters).
+Gang coordination requires a gang-aware scheduler and `gangCoordination.enabled: true` (the default). The native path needs Kubernetes 1.35 or later. On an earlier cluster, configure a PodGroup-based scheduler or disable gang coordination. For a single node, a single GPU, or a cluster without a gang-aware scheduler, see [Single-node and single-GPU clusters](./configuration/preflight.md#single-node-and-single-gpu-clusters).
 
 ## Configuration
 
@@ -62,16 +64,16 @@ Key configuration areas:
 
 | Area | Description |
 |------|-------------|
-| `preflight.initContainers` | Which checks to inject, their images, env vars, and resource limits. DCGM config (`DCGM_HOSTENGINE_ADDR`, `DCGM_DIAG_LEVEL`) is defined as env vars on the `preflight-dcgm-diag` container |
-| `preflight.gangDiscovery` | Scheduler-specific gang identification (Volcano, Run:ai, native K8s) |
-| `preflight.gangCoordination` | Multi-node coordination timeouts, NCCL topology, extra mounts |
-| `preflight.webhook` | TLS, failure policy, cert provider |
-| `preflight.namespaceSelector` | Which namespaces the webhook applies to |
-| `preflight.objectSelector` | Which pods the webhook applies to (label-based filtering within selected namespaces) |
+| `preflight.initContainers` | The checks to inject, with their images, environment variables and resource limits. The `preflight-dcgm-diag` container holds the DCGM configuration (`DCGM_HOSTENGINE_ADDR`, `DCGM_DIAG_LEVEL`) as environment variables |
+| `preflight.gangDiscovery` | Gang identification for each scheduler (Volcano, Run:ai, native Kubernetes) |
+| `preflight.gangCoordination` | Timeouts for multi-node coordination, NCCL topology, extra mounts |
+| `preflight.webhook` | TLS, failure policy, certificate provider |
+| `preflight.namespaceSelector` | The namespaces that the webhook applies to |
+| `preflight.objectSelector` | The pods that the webhook applies to (filter by label in the selected namespaces) |
 
-For detailed configuration including per-check env vars, fabric-specific NCCL setup, and gang discovery examples, see [Preflight configuration](./configuration/preflight.md).
+For the full configuration, see [Preflight configuration](./configuration/preflight.md). It includes the environment variables of each check, the NCCL configuration for each fabric, and examples of gang discovery.
 
 ## Related Documentation
 
-- [Preflight configuration guide](./configuration/preflight.md) — full Helm values reference
-- [GPU Health Monitor](./gpu-health-monitor.md) — continuous runtime GPU monitoring (complementary to preflight)
+- [Preflight configuration guide](./configuration/preflight.md) — full reference of the Helm values
+- [GPU Health Monitor](./gpu-health-monitor.md) — continuous GPU monitoring at runtime (it complements preflight)

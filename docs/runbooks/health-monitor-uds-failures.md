@@ -2,19 +2,20 @@
 
 ## Overview
 
-Health monitors (GPU, NVSwitch, syslog, CSP) publish events via gRPC over Unix Domain Socket (UDS) to platform-connector. Communication failures block all health event reporting.
+Health monitors (GPU, NVSwitch, syslog, CSP) publish health events to platform-connector through gRPC over a Unix Domain Socket (UDS). Communication failures block all health event reporting.
 
 **Key points:**
+
 - Platform-connector runs as a DaemonSet (one pod per node)
 - Each node has its own UDS socket (`/var/run/nvsentinel.sock`)
 - Both platform-connector and health monitors must mount `/var/run/nvsentinel` from hostPath
-- Platform-connector requires MongoDB connection during startup
+- Platform-connector requires a MongoDB connection during startup
 
 ## Symptoms
 
-- Metric `health_events_insertion_to_uds_error` or `trigger_uds_send_errors_total` increasing
+- Metric `health_events_insertion_to_uds_error` or `trigger_uds_send_errors_total` increases
 - Health monitor logs show gRPC errors (code 14: Unavailable)
-- No health events in MongoDB despite monitors running
+- No health events in MongoDB, although the monitors run
 
 ## Procedure
 
@@ -28,10 +29,11 @@ kubectl get pods -n nvsentinel -l app.kubernetes.io/name=gpu-health-monitor -o w
 kubectl logs -n nvsentinel {HEALTH_MONITOR_POD}
 ```
 
-Look for:
-- `"code = Unavailable"` → Socket closed or platform-connector not running
-- `"connection refused"` → Socket doesn't exist
-- `"broken pipe"` → Socket was closed mid-communication
+Find these messages in the logs:
+
+- `"code = Unavailable"` → The socket is closed, or platform-connector does not run
+- `"connection refused"` → The socket does not exist
+- `"broken pipe"` → The socket closed during the communication
 
 ### 2. Check Platform Connector on That Node
 
@@ -43,14 +45,15 @@ kubectl get pods -n nvsentinel -l app.kubernetes.io/name=nvsentinel -o wide | gr
 kubectl logs -n nvsentinel {PLATFORM_CONNECTOR_POD}
 ```
 
-Look for errors:
+Find these errors in the logs:
+
 - `"failed to initialize database store connector"` → MongoDB connection failed
-- `"failed to create database client"` → MongoDB authentication or network issue
-- `"failed to listen on unix socket"` → Volume mount issue
+- `"failed to create database client"` → MongoDB authentication or network problem
+- `"failed to listen on unix socket"` → Volume mount problem
 
 ### 3. Verify MongoDB Connectivity
 
-Platform-connector requires MongoDB connection during startup. If MongoDB is unavailable, platform-connector will fail to start.
+Platform-connector requires a MongoDB connection during startup. If MongoDB is unavailable, platform-connector does not start.
 
 ```bash
 # Check MongoDB pods are running
@@ -69,14 +72,14 @@ kubectl get job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 # Should show COMPLETIONS: 1/1
 ```
 
-If the MongoDB job needs to be rerun:
+If the MongoDB job must run again:
 
 ```bash
 # Delete by label (name is create-mongodb-database-<seconds>-<hash>), then re-sync / helm upgrade
 kubectl delete job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 ```
 
-Platform-connector connects to MongoDB on port 27017 with TLS. Check network policies:
+Platform-connector connects to MongoDB on port 27017 with TLS. Check the network policies:
 
 ```bash
 kubectl get networkpolicies -n nvsentinel -o yaml
@@ -92,7 +95,7 @@ kubectl get daemonset platform-connectors -n nvsentinel -o yaml | grep -A 3 "/va
 kubectl get daemonset gpu-health-monitor -n nvsentinel -o yaml | grep -A 3 "/var/run/nvsentinel"
 ```
 
-Both should be mounted from hostPath at `/var/run/nvsentinel`.
+Both mounts must come from hostPath at `/var/run/nvsentinel`.
 
 ### 5. Verify Resolution
 

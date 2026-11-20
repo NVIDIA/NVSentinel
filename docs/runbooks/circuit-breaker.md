@@ -2,18 +2,19 @@
 
 ## Overview
 
-This runbook guides you through investigating and resetting a tripped circuit breaker. The circuit breaker automatically trips when too many nodes are cordoned within a short time window, blocking new remediation actions until manually reset.
+This runbook shows how to investigate and reset a tripped circuit breaker. The circuit breaker automatically trips when NVSentinel cordons too many nodes within a short time window. Then it blocks new remediation actions until someone resets it manually.
 
-This is the canonical reset procedure. The [circuit breaker overview](../circuit-breaker.md) explains the concepts and defers to the steps here.
+This is the canonical reset procedure. The [circuit breaker overview](../circuit-breaker.md) explains the concepts, and refers you to the steps here.
 
 **Key points:**
-- Circuit breaker does NOT auto-reset - requires manual intervention
-- In-progress remediation continues, but no new actions are taken
-- Processing halts for **all** health events, healthy ones included, so recovered nodes are not uncordoned automatically while tripped
-- Resetting the breaker does not uncordon anything; uncordon recovered nodes yourself in step 6
-- Only reset after investigating and fixing the root cause
 
-On a cluster with one or two GPU nodes the default 50% threshold trips on the first cordon. If that is why you are here, reset as below, then disable the breaker so it does not recur — see [Small clusters](../circuit-breaker.md#small-clusters).
+- The circuit breaker does NOT reset automatically. It needs manual intervention
+- Remediation in progress continues, but NVSentinel takes no new actions
+- Processing halts for **all** health events, including healthy ones. Thus, while the breaker is tripped, fault quarantine does not uncordon recovered nodes automatically
+- Resetting the breaker does not uncordon anything. Uncordon recovered nodes yourself in step 6
+- Reset the breaker only after you investigate and fix the root cause
+
+On a cluster with one or two GPU nodes, the default 50% threshold trips on the first cordon. If that is the cause, reset the breaker as described below. Then disable the breaker, so that the trip does not occur again. See [Small clusters](../circuit-breaker.md#small-clusters).
 
 ## Procedure
 
@@ -22,6 +23,7 @@ On a cluster with one or two GPU nodes the default 50% threshold trips on the fi
 ```bash
 kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}'
 ```
+
 - `TRIPPED` = protection mode active
 - `CLOSED` = normal operation
 
@@ -43,11 +45,13 @@ Check each cordoned node:
 kubectl describe node {NODE_NAME}
 ```
 
-Look at **Conditions** and **Events** sections for hardware failures.
+Examine the **Conditions** and **Events** sections for hardware failures.
 
 ### 4. Analyze the Pattern
 
-**Same error on all nodes?** → Configuration issue or infrastructure problem **Specific node group affected?** → Likely a deployment issue or a rack level infrastructure problem **Issues resolved?** → Temporary infrastructure problem
+- **Same error on all nodes?** → Configuration issue or infrastructure problem
+- **Specific node group affected?** → Likely a deployment issue or a rack level infrastructure problem
+- **Issues resolved?** → Temporary infrastructure problem
 
 ### 5. Check for Flapping Health Checks
 
@@ -61,13 +65,16 @@ changes(kube_node_status_condition{condition=~"Gpu.*|SysLogs.*", status="true"}[
 kube_node_status_condition{condition=~"Gpu.*|SysLogs.*", status="true"} == 1
 ```
 
-If health checks are flapping, this typically indicates an infrastructure issue that is auto-resolving (network blips, storage latency, etc.). This requires deeper investigation of the underlying infrastructure.
+If health checks flap, this typically shows an infrastructure issue that resolves itself (short network outages, storage latency and other transient issues). Such an issue needs a deeper investigation of the underlying infrastructure.
 
 ### 6. Uncordon Affected Nodes
 
-Uncordon the nodes that are now healthy. This step is manual because a tripped breaker stops fault quarantine from processing the healthy events that would normally uncordon them, and resetting the breaker in step 7 does not retroactively uncordon anything.
+Uncordon the nodes that are healthy again. This step is manual for two reasons:
 
-Find nodes whose condition has cleared but which are still cordoned:
+- A tripped breaker stops fault quarantine from processing the healthy events that normally uncordon the nodes.
+- Resetting the breaker in step 7 does not retroactively uncordon anything.
+
+Find the nodes whose condition cleared, but that are still cordoned:
 
 ```bash
 kubectl get nodes | grep SchedulingDisabled
@@ -83,7 +90,7 @@ else
 fi
 ```
 
-Do not uncordon a node while any `Gpu` or `SysLog` condition is still `True`. Matching the condition name alone is not enough — a present condition can be either state, and uncordoning a node whose fault is still active puts workloads straight back onto broken hardware.
+Do not uncordon a node while any `Gpu` or `SysLog` condition is still `True`. A match on the condition name alone is not enough, because a present condition can be in either state. If you uncordon a node whose fault is still active, the scheduler immediately puts workloads onto broken hardware again.
 
 Then uncordon each one:
 
@@ -93,13 +100,13 @@ kubectl uncordon {NODE_NAME}
 
 ### 7. Reset Circuit Breaker
 
-⚠️ **Only reset after fixing the root cause**
+⚠️ **Reset the breaker only after you fix the root cause**
 
 Choose the appropriate reset mode based on your situation:
 
 #### Option A: Skip accumulated events (recommended after long outages)
 
-Use `cursor: CREATE` to discard events that accumulated while the circuit breaker was tripped. This prevents immediate re-tripping from stale events.
+To discard the health events that accumulated while the circuit breaker was tripped, use `cursor: CREATE`. This prevents an immediate new trip from stale health events.
 
 ```bash
 kubectl patch cm circuit-breaker -n nvsentinel \
@@ -110,7 +117,7 @@ kubectl rollout status deploy fault-quarantine -n nvsentinel
 
 #### Option B: Process accumulated events
 
-Use `cursor: RESUME` (or omit cursor) to process all events that occurred while tripped. Only use this if you're confident the accumulated events won't cause immediate re-tripping.
+To process all health events that occurred while the breaker was tripped, use `cursor: RESUME` (or omit cursor). Use this option only if you are confident that the accumulated health events cannot cause an immediate new trip.
 
 ```bash
 kubectl patch cm circuit-breaker -n nvsentinel \
@@ -119,7 +126,7 @@ kubectl rollout restart deploy fault-quarantine -n nvsentinel
 kubectl rollout status deploy fault-quarantine -n nvsentinel
 ```
 
-> **Note:** The cursor automatically resets to `RESUME` after startup, so you don't need to change it back manually.
+> **Note:** The cursor automatically resets to `RESUME` after startup. You do not need to change it back manually.
 
 ### 8. Verify Normal Operation
 
@@ -133,4 +140,4 @@ kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}'
 kubectl get nodes -w
 ```
 
-> **Note:** `-1` is the unknown value of the `fault_quarantine_event_backlog_count` gauge. After the step-7 restart there may be nothing left to count (a `CREATE` cursor skipped the backlog), and on PostgreSQL the watcher does not support counting at all, so the gauge stays `-1` there.
+> **Note:** If you also watch the `fault_quarantine_event_backlog_count` gauge, its value can be `-1`, which means unknown. After the step-7 restart, it is possible that nothing is left to count (a `CREATE` cursor skipped the backlog). On PostgreSQL, the watcher does not support counting at all, so the gauge stays `-1` there.

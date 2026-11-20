@@ -2,7 +2,7 @@
 
 ## Overview
 
-The CSP Health Monitor requires IAM permissions to monitor cloud provider maintenance events. This document provides the setup commands for GCP and AWS.
+The CSP Health Monitor must have IAM permissions to monitor the maintenance events of the cloud provider. This document gives the setup commands for GCP and AWS.
 
 ## Google Cloud Platform (GCP)
 
@@ -12,10 +12,11 @@ The CSP Health Monitor requires IAM permissions to monitor cloud provider mainte
 
 ### Setup Commands
 
-Replace the following placeholders in the commands below:
-- `{GCP_SA_NAME}` — GCP Service Account name (e.g., `csp-health-monitor`)
+In the commands below, replace these placeholders:
+
+- `{GCP_SA_NAME}` — GCP Service Account name (for example, `csp-health-monitor`)
 - `{TARGET_PROJECT_ID}` — GCP project ID where the cluster runs
-- `{GKE_PROJECT_ID}` — GCP project ID where GKE cluster is deployed
+- `{GKE_PROJECT_ID}` — GCP project ID where you deployed the GKE cluster
 - `{NAMESPACE}` — Kubernetes namespace (default: `nvsentinel`)
 
 ```bash
@@ -61,17 +62,18 @@ csp-health-monitor:
 
 ### Required IAM Permissions
 
-- `health:DescribeEvents` - Query AWS Health API for maintenance events
-- `health:DescribeAffectedEntities` - Get affected EC2 instance IDs
+- `health:DescribeEvents` - Query the AWS Health API for maintenance events
+- `health:DescribeAffectedEntities` - Get the IDs of the affected EC2 instances
 - `health:DescribeEventDetails` - Get event details and recommended actions
 
 ### Setup Commands
 
-Replace the following placeholders in the commands below:
+In the commands below, replace these placeholders:
+
 - `{CLUSTER_NAME}` — EKS cluster name
 - `{NAMESPACE}` — Kubernetes namespace (default: `nvsentinel`)
-- `{ACCOUNT_ID}` — AWS account ID (12-digit number); obtained from the `aws sts get-caller-identity` command in the script
-- `{AWS_REGION}` — AWS region where the EKS cluster runs (e.g. `us-east-1`)
+- `{ACCOUNT_ID}` — AWS account ID (12-digit number). The script gets it from the `aws sts get-caller-identity` command.
+- `{AWS_REGION}` — AWS region where the EKS cluster runs (for example, `us-east-1`)
 
 ```bash
 # 1. Create IAM policy
@@ -144,7 +146,9 @@ csp-health-monitor:
       # iamRoleName: "my-custom-nvsentinel-role"
 ```
 
-> **Important (EKS)**: By default, the IAM role name is constructed as `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`. AWS IAM role names have a **64-character limit**, and the default suffix is 45 characters, leaving only **19 characters** for the cluster name. If your cluster name exceeds 19 characters, set `aws.iamRoleName` to a custom role name and create the IAM role with that name instead:
+> **Important (EKS)**: If your cluster name has more than 19 characters, use a custom IAM role name. By default, the chart builds the IAM role name as `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`. An AWS IAM role name has a **64-character limit**, and the default suffix has 45 characters. Thus, the cluster name can have only **19 characters**.
+>
+> To use a custom role name, create the IAM role with that name instead:
 >
 > ```bash
 > aws iam create-role \
@@ -152,7 +156,8 @@ csp-health-monitor:
 >     --assume-role-policy-document file://trust-policy.json
 > ```
 >
-> Then in Helm values:
+> Then set `aws.iamRoleName` to the custom role name in the Helm values:
+>
 > ```yaml
 > aws:
 >   iamRoleName: "my-custom-nvsentinel-role"
@@ -160,5 +165,5 @@ csp-health-monitor:
 
 ## Additional Resources
 
-- **Configuration Guide**: See [docs/configuration/csp-health-monitor.md](./configuration/csp-health-monitor.md) for detailed Helm configuration options
-- **Troubleshooting**: See [docs/runbooks/csp-health-monitor-iam.md](./runbooks/csp-health-monitor-iam.md) for common issues and solutions
+- **Configuration Guide**: For detailed Helm configuration options, see [CSP Health Monitor Configuration](./configuration/csp-health-monitor.md).
+- **Troubleshooting**: For common issues and solutions, see [Runbook: CSP Health Monitor IAM Troubleshooting](./runbooks/csp-health-monitor-iam.md).

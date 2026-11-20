@@ -1,6 +1,6 @@
 # NVSentinel Data Flow Documentation
 
-This document illustrates how data flows through the NVSentinel system, from detection through remediation.
+This document shows how data flows through NVSentinel, from detection to remediation.
 
 ## Table of Contents
 
@@ -17,14 +17,16 @@ This document illustrates how data flows through the NVSentinel system, from det
 
 NVSentinel uses a **publish-subscribe** pattern through MongoDB change streams:
 
-1. **Health Monitors** detect issues and publish `HealthEvent` messages via gRPC
-2. **Platform Connectors** persist events to MongoDB and update Kubernetes
+1. **Health Monitors** detect issues and publish `HealthEvent` messages through gRPC
+2. **Platform Connectors** persist health events to MongoDB and update Kubernetes
 3. **Core Modules** subscribe to MongoDB change streams and react independently
 4. **Kubernetes API** is the final actuator for all remediation actions
 
 ### Preflight (optional admission checks)
 
-**Preflight** does not publish events through MongoDB or platform connectors. A **mutating admission webhook** injects init containers into GPU pods in labeled namespaces. Each check sends its result as a health event to the platform connector. By default it uses the node-local Unix domain socket (`PLATFORM_CONNECTOR_SOCKET`). When `preflight.publishTo` is `deployment`, it sends the event directly to the deployment platform connector. The event then follows the normal ingestion path. This is separate from the change-stream pipeline above because the checks publish only at pod start. Multi-node checks use **gang discovery** and ConfigMap coordination ([configuration](./configuration/preflight.md)).
+A **mutating admission webhook** injects the **Preflight** checks as init containers into GPU pods in labeled namespaces. Each check sends its result as a health event to Platform Connectors. By default, the check uses the node-local Unix domain socket (`PLATFORM_CONNECTOR_SOCKET`).
+
+When `preflight.publishTo` is `deployment`, the check sends the health event directly to the deployment platform connector. The health event then follows the normal ingestion path. Preflight checks publish only at pod start. If Fault Quarantine is enabled and a Preflight health event is fatal, a default Fault Quarantine ruleset cordons the node. Multi-node checks use **gang discovery** and ConfigMap coordination ([configuration](./configuration/preflight.md)).
 
 ```mermaid
 graph TB
@@ -74,7 +76,7 @@ graph TB
 
 ## Core Data Structure: HealthEvent
 
-All data flowing through NVSentinel is based on the `HealthEvent` protobuf message:
+The `HealthEvent` protobuf message is the basis of all data that flows through NVSentinel:
 
 ### HealthEvent Message Structure
 
@@ -165,16 +167,19 @@ message Entity {
 ### 1. GPU Health Monitor
 
 **What it captures:**
+
 - GPU temperature and power
 - ECC errors (single-bit, double-bit)
 - GPU throttling events
 
 **What it emits:**
-- `HealthEvent` via gRPC to Platform Connectors
+
+- `HealthEvent` through gRPC to Platform Connectors
 - Metrics to Prometheus (separate path)
 
 **Example flow:**
-```
+
+```text
 DCGM reports ECC error on GPU 0
   ↓
 Monitor creates HealthEvent:
@@ -191,15 +196,18 @@ Sends via gRPC: HealthEventOccurredV1(HealthEvents)
 ### 2. Syslog Health Monitor
 
 **What it captures:**
+
 - XID errors (GPU hardware faults)
-- SXID errors (GPU software errors)
+- SXID errors (NVSwitch errors)
 - GPU fell off the bus events
 
 **What it emits:**
-- `HealthEvent` via gRPC to Platform Connectors
+
+- `HealthEvent` through gRPC to Platform Connectors
 
 **Example flow:**
-```
+
+```text
 journalctl shows XID 48 error
   ↓
 Monitor creates HealthEvent:
@@ -216,15 +224,18 @@ Sends via gRPC
 ### 3. CSP Health Monitor
 
 **What it captures:**
+
 - Cloud provider maintenance schedules (GCP, AWS, OCI, Akamai)
 - Upcoming VM migrations
 - Hardware replacement notices
 
 **What it emits:**
-- `HealthEvent` via gRPC to Platform Connectors
+
+- `HealthEvent` through gRPC to Platform Connectors
 
 **Example flow:**
-```
+
+```text
 GCP API reports scheduled maintenance
   ↓
 Monitor creates HealthEvent:
@@ -241,22 +252,26 @@ Sends via gRPC
 ### 4. Platform Connectors
 
 **What it receives:**
-- `HealthEvents` message via gRPC (array of HealthEvent)
+
+- `HealthEvents` message through gRPC (array of HealthEvent)
 - gRPC method: `HealthEventOccurredV1(HealthEvents) returns (Empty)`
 
 **What it does:**
-1. Validates the event (schema, required fields)
-2. Inserts event into MongoDB `HealthEvents` collection
-3. Updates Kubernetes node condition (if applicable)
-4. Updates Kubernetes node events (if applicable)
+
+1. Validates the health event (schema, required fields)
+2. Inserts the health event into the MongoDB `HealthEvents` collection
+3. If applicable, updates the Kubernetes node condition
+4. If applicable, updates the Kubernetes node events
 
 **What it emits:**
-- MongoDB document (HealthEvent serialized)
-- Kubernetes Node condition update (for fatal failures)
+
+- MongoDB document (serialized HealthEvent)
+- Kubernetes Node condition update (for fatal faults)
 - Kubernetes Node events (for non-fatal issues)
 - Metrics to Prometheus
 
 **Data transformation:**
+
 ```go
 gRPC HealthEvents
   ↓
@@ -301,10 +316,12 @@ Else:
 ### 5. Fault Quarantine Module
 
 **What it receives:**
+
 - MongoDB change stream events
 - Watches for: new HealthEvents with `isFatal: true` or specific error codes
 
 **Decision logic:**
+
 ```go
 // Evaluate CEL-based policy first
 policy := getCELPolicy(event.NodeName)
@@ -324,19 +341,22 @@ if event.IsFatal || event.RecommendedAction == REPLACE_VM {
 ```
 
 **CEL Policy Evaluation:**
+
 - Uses Common Expression Language (CEL) for flexible policy definitions
-- Policies can be defined per-node via annotations or cluster-wide via ConfigMap
-- CEL expressions can evaluate any HealthEvent field (errorCode, componentClass, metadata, etc.)
+- You can define policies for the whole cluster through a ConfigMap
+- CEL expressions can evaluate any HealthEvent field (errorCode, componentClass, metadata, and the other fields)
 - Example policy: `event.errorCode.contains("XID-48") || (event.componentClass == "GPU" && event.isFatal)`
 
 **What it emits:**
+
 - Kubernetes API call: `PATCH /api/v1/nodes/{nodeName}`
   - Sets `spec.unschedulable = true` (cordon)
-  - Optionally sets taints based on configuration
-- MongoDB update: Sets event `status = "QUARANTINED"`
-- Node annotation with quarantine reason
+  - Optionally sets taints, based on the configuration
+- MongoDB update: Sets the event `status = "QUARANTINED"`
+- Node annotation with the quarantine reason
 
 **Example API payload:**
+
 ```json
 PATCH /api/v1/nodes/gpu-node-42
 {
@@ -363,10 +383,12 @@ PATCH /api/v1/nodes/gpu-node-42
 ### 6. Node Drainer Module
 
 **What it receives:**
+
 - MongoDB change stream events
-- Watches for: nodes cordoned by Quarantine Module
+- Watches for: nodes that the Fault Quarantine Module cordoned
 
 **Decision logic:**
+
 ```go
 if node.IsQuarantined && !event.DrainOverrides.Skip {
   drain node pods gracefully
@@ -374,12 +396,14 @@ if node.IsQuarantined && !event.DrainOverrides.Skip {
 ```
 
 **What it emits:**
+
 - Kubernetes API calls:
-  - `GET /api/v1/pods` (list pods on node)
+  - `GET /api/v1/pods` (list the pods on the node)
   - `DELETE /api/v1/namespaces/{ns}/pods/{pod}` (evict each pod)
-- MongoDB update: Sets event `status = "DRAINED"`
+- MongoDB update: Sets the event `status = "DRAINED"`
 
 **Eviction payload:**
+
 ```json
 POST /api/v1/namespaces/default/pods/training-job-xyz/eviction
 {
@@ -398,10 +422,12 @@ POST /api/v1/namespaces/default/pods/training-job-xyz/eviction
 ### 7. Fault Remediation Module
 
 **What it receives:**
+
 - MongoDB change stream events
-- Watches for: events with specific RecommendedActions
+- Watches for: health events with specific RecommendedActions
 
 **Decision logic:**
+
 ```go
 if event.RecommendedAction == REPLACE_VM {
   create break-fix ticket CRD
@@ -409,7 +435,9 @@ if event.RecommendedAction == REPLACE_VM {
 ```
 
 **What it emits:**
-- Kubernetes Custom Resource (CRD):
+
+- Kubernetes custom resource (maintenance CR):
+
 ```yaml
 apiVersion: janitor.dgxc.nvidia.com/v1alpha1
 kind: RebootNode
@@ -419,20 +447,23 @@ spec:
   nodeName: gpu-node-42
 ```
 
-**Note:** The CRD is consumed by an external operator (e.g., Janitor) that handles the actual maintenance workflow.
+**Note:** An external operator, for example Janitor, consumes the maintenance CR and handles the actual maintenance workflow.
 
 ### 8. Health Events Analyzer
 
 **What it receives:**
-- MongoDB change stream events (all events)
+
+- MongoDB change stream events (all health events)
 
 **What it does:**
+
 - Pattern detection (recurring errors)
-- Trend analysis (error frequency increasing)
-- Correlation (multiple failures on same rack)
+- Trend analysis (increasing error frequency)
+- Correlation (multiple faults on the same rack)
 
 **What it emits:**
-- New HealthEvents (for correlated/aggregated issues)
+
+- New HealthEvents (for correlated or aggregated issues)
 - Aggregated metrics to Prometheus
 - Alert annotations to HealthEvents
 - Dashboard data
@@ -522,6 +553,7 @@ sequenceDiagram
 ### gRPC to MongoDB
 
 **Input (gRPC):**
+
 ```protobuf
 HealthEvents {
   version: 1
@@ -537,6 +569,7 @@ HealthEvents {
 ```
 
 **Output (MongoDB):**
+
 ```json
 {
   "_id": ObjectId("6720abc123def456789"),
@@ -563,6 +596,7 @@ HealthEvents {
 ### MongoDB Change Stream to Module
 
 **Change Stream Event:**
+
 ```json
 {
   "_id": {"_data": "..."},
@@ -585,13 +619,15 @@ HealthEvents {
 ```
 
 **Module receives:**
-- Deserializes `fullDocument` into `HealthEvent` struct
-- Evaluates based on module-specific logic
-- Takes action via Kubernetes API
+
+- Deserializes `fullDocument` into a `HealthEvent` struct
+- Evaluates the health event with the logic of the module
+- Takes action through the Kubernetes API
 
 ### HealthEvent to Kubernetes Node Condition
 
 **HealthEvent:**
+
 ```json
 {
   "checkName": "XID_ERROR_48",
@@ -601,6 +637,7 @@ HealthEvents {
 ```
 
 **Kubernetes Node Condition:**
+
 ```yaml
 conditions:
 - type: GPUHealthy
@@ -613,6 +650,7 @@ conditions:
 ### HealthEvent to Kubernetes CRD
 
 **HealthEvent:**
+
 ```json
 {
   "nodeName": "gpu-node-42",
@@ -621,7 +659,8 @@ conditions:
 }
 ```
 
-**RebootNode CRD:**
+**RebootNode CR:**
+
 ```yaml
 apiVersion: janitor.dgxc.nvidia.com/v1alpha1
 kind: RebootNode
@@ -645,13 +684,14 @@ spec:
 | MongoDB | ChangeStream (BSON) | MongoDB change stream | All modules | Subscribe to events |
 | Fault Quarantine | Node (JSON) | Kubernetes API | K8s Nodes | Cordon node |
 | Node Drainer | Pod Eviction (JSON) | Kubernetes API | K8s Pods | Evict pods |
-| Fault Remediation | CRD (YAML) | Kubernetes API | K8s CRDs | Create repair request |
+| Fault Remediation | Maintenance CR (YAML) | Kubernetes API | K8s custom resources | Create repair request |
 
 ---
 
 ## Connection Methods
 
 ### gRPC Connections
+
 - **Protocol**: HTTP/2 + Protocol Buffers
 - **Service Definition**: `PlatformConnector.HealthEventOccurredV1`
 - **Client**: Health Monitors (GPU, Syslog, CSP)
@@ -660,6 +700,7 @@ spec:
 - **TLS**: Optional (cert-manager integration)
 
 ### MongoDB Connections
+
 - **Write Path**: Platform Connectors → MongoDB (insert)
 - **Read Path**: All core modules ← MongoDB (change streams)
 - **Connection String**: `mongodb://mongodb-headless.{namespace}.svc.{clusterDomain}:27017/?replicaSet=rs0&tls=true` for the default in-cluster MongoDB (the Percona backend uses the host `mongodb-rs0`)
@@ -668,6 +709,7 @@ spec:
 - **Indexes**: a TTL index on `createdAt`, and compound indexes on `healthevent` fields such as `nodename`, `agent` and `checkname`
 
 ### Kubernetes API Connections
+
 - **Authentication**: ServiceAccount tokens
 - **Authorization**: RBAC (Roles/ClusterRoles)
 - **API Groups**: `v1` (core), `policy/v1` (eviction), custom CRDs
@@ -677,9 +719,9 @@ spec:
 
 ## Key Insights
 
-1. **Decoupled Architecture**: Monitors don't know about modules, modules don't know about monitors
-2. **Single Data Model**: HealthEvent is the universal language
+1. **Decoupled Architecture**: Monitors do not know about modules, and modules do not know about monitors
+2. **Single Data Model**: HealthEvent is the common data format of all components
 3. **Event Sourcing**: MongoDB change streams enable reactive processing
-4. **Kubernetes-Native**: Final actions all go through K8s API (auditability)
-5. **Idempotent Operations**: Modules can re-process events safely
-6. **Metadata Rich**: HealthEvent metadata field allows extensibility without schema changes
+4. **Kubernetes-Native**: All final actions use the K8s API (auditability)
+5. **Idempotent Operations**: Modules can safely re-process health events
+6. **Metadata Rich**: The metadata field of HealthEvent allows extensibility without schema changes

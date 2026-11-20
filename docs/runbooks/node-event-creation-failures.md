@@ -2,18 +2,19 @@
 
 ## Overview
 
-Node events provide visibility into non-fatal hardware problems. When creation fails, warning signs are hidden from operators.
+Node events show non-fatal hardware problems. If the creation of a node event fails, operators do not see the warning signs.
 
 **Key points:**
-- Node events are for non-fatal health issues (warnings)
-- Failures typically indicate API server issues
-- An Event is named `<node>.<hash of the fault>`. A repeat of the fault refreshes the Event and raises its count. It does not create a new Event.
+
+- Node events are for non-fatal health problems (warnings)
+- Failures usually indicate API server problems
+- platform-connectors names each Event `<node>.<hash of the fault>`. A repeat of the fault refreshes the Event and raises its count. It does not create a new Event.
 
 ## Symptoms
 
-- Metric `k8s_platform_connector_node_event_operations_total{operation="create", status="failed"}` is increasing
-- With the deployment platform connector: metric `platform_connector_best_effort_failures_total{connector="kubernetes"}` is increasing. The batch is stored, but a node condition or Event write failed (`reason="failed"`) or timed out (`reason="timeout"`).
-- Health events in MongoDB but not visible in `kubectl describe node`
+- Metric `k8s_platform_connector_node_event_operations_total{operation="create", status="failed"}` increases
+- With the deployment platform connector: metric `platform_connector_best_effort_failures_total{connector="kubernetes"}` increases. The deployment platform connector stored the batch, but a node condition or Event write failed (`reason="failed"`) or timed out (`reason="timeout"`).
+- Health events are in MongoDB, but do not show in `kubectl describe node`
 
 ## Procedure
 
@@ -26,11 +27,12 @@ kubectl logs -n nvsentinel daemonset/platform-connectors
 kubectl logs -n nvsentinel deployment/platform-connector-deployment
 ```
 
-Look for error codes:
+Find these error codes in the logs:
+
 - **429** → API server throttling
 - **403** → RBAC permission denied
 - **Connection refused/timeout** → API server unreachable
-- **409** → Conflict (should auto-resolve with retries)
+- **409** → Conflict (normally, the retries resolve it automatically)
 
 ### 2. Verify API Server is Reachable
 
@@ -44,7 +46,7 @@ kubectl get pods -n nvsentinel -l app.kubernetes.io/name=nvsentinel
 kubectl get pods -n nvsentinel -l app.kubernetes.io/name=platform-connector-deployment
 ```
 
-If pods are in `CrashLoopBackOff` or `Error`, API connectivity may be broken.
+If the pods are in `CrashLoopBackOff` or `Error`, the API connectivity can be broken.
 
 ### 3. Verify RBAC Permissions
 
@@ -54,7 +56,7 @@ kubectl auth can-i create events --as=system:serviceaccount:nvsentinel:platform-
 kubectl auth can-i create events --as=system:serviceaccount:nvsentinel:platform-connector-deployment -n default
 ```
 
-Should return `yes`. If `no`, check the ClusterRole:
+The command for your platform connector role must return `yes`. If it returns `no`, check the ClusterRole:
 
 ```bash
 kubectl get clusterrole platform-connectors -o yaml | grep -A 3 "resources: events"
@@ -62,7 +64,7 @@ kubectl get clusterrole platform-connectors -o yaml | grep -A 3 "resources: even
 kubectl get clusterrole platform-connector-deployment -o yaml
 ```
 
-Should include `create`, `update`, `list` verbs for `events` resource.
+For the node-local platform connector, the ClusterRole must include the `create`, `get` and `update` verbs for the `events` resource. The chart also grants `list`.
 
 The `platform-connector-deployment` ClusterRole needs only `create`, `get` and `update` for `events`.
 

@@ -1,35 +1,43 @@
 # Monitoring Critical Operators (DaemonSet Pods in gpu-operator & network-operator Namespace)
 
 ## Overview
-For an NVIDIA GPU cluster to function correctly, critical infrastructure components under **gpu-operator** and **network-operator** namespaces must be healthy. If these operators fail, the underlying hardware cannot be utilized effectively.
 
-NVSentinel provides a built-in mechanism to monitor these operators and report health events when their pods are not running correctly.
+For an NVIDIA GPU cluster to operate correctly, the critical infrastructure components in the **gpu-operator** and **network-operator** namespaces must be healthy. If these operators fail, the cluster cannot use the underlying hardware effectively.
+
+NVSentinel has a built-in mechanism that monitors these operators and reports health events when their pods do not run correctly.
 
 ## Configuration
-To monitor the GPU and Network operators, you must enable the `kubernetes-object-monitor` component and define the monitoring policies in your NVSentinel `values.yaml`.
 
-These policies monitor **DaemonSet pods** in the `gpu-operator` and `network-operator` namespaces. A health event is generated if a DaemonSet pod:
-- Has been assigned to a node, AND
+To monitor the GPU and Network operators, enable the `kubernetes-object-monitor` component in your NVSentinel `values.yaml`. Then define the monitoring policies in the same file.
+
+These policies monitor **DaemonSet pods** in the `gpu-operator` and `network-operator` namespaces. The kubernetes-object-monitor generates a health event if a DaemonSet pod:
+
+- Is assigned to a node, AND
+- Has a `status.startTime` that is older than the configured threshold (`30m` in the example policies), AND
 - Is unhealthy: either **not** in `Running`/`Succeeded` state, OR has a container in `CrashLoopBackOff`
 
-The policy detects pods that are genuinely stuck in any non-progressing state such as:
+The policy detects pods that stay stuck in any non-progressing state, for example:
+
 - Stuck in init container execution (pod phase is `Pending`)
-- `Pending` due to resource constraints
-- `CrashLoopBackOff` in main containers (pod phase is `Running` but container is crashing)
+- `Pending` because of resource constraints
+- `CrashLoopBackOff` in main containers (pod phase is `Running`, but the container crashes)
 - `CrashLoopBackOff` in init containers (pod phase is `Pending`)
 - `ImagePullBackOff` errors
-- Any other state preventing the pod from becoming healthy
+- Any other state that prevents the pod from becoming healthy
 
 ### Pod Health Tracking (DaemonSet Only)
-The policies track individual pods owned by daemonsets by name. When a pod's health state changes:
-- **Pod becomes unhealthy** → Node is cordoned
-- **Pod becomes healthy** → Node is uncordoned
-- **Pod is deleted** → Node is uncordoned (if a replacement pod comes up unhealthy, it will re-cordon the node)
+
+The policies track each pod that a DaemonSet owns, by the name of the pod. When the health state of a pod changes:
+
+- **Pod becomes unhealthy** → NVSentinel cordons the node
+- **Pod becomes healthy** → NVSentinel uncordons the node
+- **Pod is deleted** → NVSentinel uncordons the node (if a replacement pod starts and is unhealthy, NVSentinel cordons the node again)
 
 This approach ensures that:
+
 - Healthy pods always result in uncordoned nodes
-- Multiple unhealthy pods on the same node are tracked independently
-- Each pod must become healthy (or be deleted) for the node to be uncordoned
+- The policies track multiple unhealthy pods on the same node independently
+- Each pod must become healthy (or be deleted) before NVSentinel uncordons the node
 
 Add the following configuration to your `values.yaml`:
 
@@ -135,10 +143,10 @@ The policy triggers when **all** of the following conditions are true:
 | Namespace       | Pod is in `gpu-operator` or `network-operator` namespace               |
 | DaemonSet owned | Pod has a DaemonSet owner reference                                    |
 | Node assigned   | Pod has `spec.nodeName` set (scheduled to a node)                      |
-| Time threshold  | Pod has been running for more than the configured threshold            |
+| Time threshold  | Time since `status.startTime` is more than the configured threshold    |
 | Unhealthy       | Pod phase is NOT `Running`/`Succeeded` OR container in CrashLoopBackOff |
 
-> **Note:** Only DaemonSet pods are monitored. Pods owned by ReplicaSets, Deployments, Jobs, or standalone pods are not monitored by these policies. This is because DaemonSet pods are the critical infrastructure components that affect GPU node health.
+> **Note:** These policies monitor only DaemonSet pods. They do not monitor pods that ReplicaSets, Deployments or Jobs own, or standalone pods. The reason is that DaemonSet pods are the critical infrastructure components that affect GPU node health.
 
 ### What This Catches
 
@@ -154,61 +162,66 @@ The policy triggers when **all** of the following conditions are true:
 | Healthy pod                            | `Running`   | No (healthy)                  |
 | Completed job                          | `Succeeded` | No (completed)                |
 
-
 ## Pod Tracking Behavior
 
-The kubernetes-object-monitor tracks each pod individually by name. This simple approach provides clear and predictable behavior:
+The kubernetes-object-monitor tracks each pod individually, by its name. This simple approach gives clear and predictable behavior:
 
 ### Scenario: Pod Becomes Unhealthy
 
-1. **Pod enters unhealthy state** (e.g., init container stuck, CrashLoopBackOff) → Node is cordoned after threshold
-2. **Pod becomes healthy** (Running with all containers ready) → Node is uncordoned
+1. **Pod enters unhealthy state** (for example, init container stuck, CrashLoopBackOff) → NVSentinel cordons the node after the threshold
+2. **Pod becomes healthy** (Running with all containers ready) → NVSentinel uncordons the node
 
 ### Scenario: Main Container CrashLoopBackOff
 
-1. **Container crashes repeatedly** → Pod phase stays `Running`, but container enters `CrashLoopBackOff`
-2. **Policy detects via containerStatuses check** → Node is cordoned
-3. **Container is fixed and becomes healthy** → Node is uncordoned
+1. **Container crashes repeatedly** → Pod phase stays `Running`, but the container enters `CrashLoopBackOff`
+2. **Policy detects it through the containerStatuses check** → NVSentinel cordons the node
+3. **Container is fixed and becomes healthy** → NVSentinel uncordons the node
 
 ### Scenario: Pod Deletion
 
-1. **Pod fails** → Node is cordoned
-2. **Admin deletes the pod** → Node is **uncordoned**
-3. **Replacement pod is created** → If unhealthy, node is re-cordoned after threshold
+1. **Pod fails** → NVSentinel cordons the node
+2. **Admin deletes the pod** → NVSentinel **uncordons** the node
+3. **Replacement pod is created** → If the replacement pod is unhealthy, NVSentinel cordons the node again after the threshold
 
 ### Scenario: Multiple Unhealthy Pods
 
-1. **Pod A fails** → Node is cordoned
-2. **Pod B also fails** → Both tracked in annotation
-3. **Pod A becomes healthy** → Node **stays cordoned** (Pod B still unhealthy)
-4. **Pod B becomes healthy** → Node is uncordoned
+1. **Pod A fails** → NVSentinel cordons the node
+2. **Pod B also fails** → The annotation tracks both pods
+3. **Pod A becomes healthy** → The node **stays cordoned** (Pod B is still unhealthy)
+4. **Pod B becomes healthy** → NVSentinel uncordons the node
 
 ### State Key Format
 
 The monitor uses a simple state key format: `policyName/namespace/podName`
 
-This ensures each pod is tracked independently, and the node is only uncordoned when all tracked pods are healthy or deleted.
+With this format, the monitor tracks each pod independently. NVSentinel uncordons the node only when all tracked pods are healthy or deleted.
 
 ## Configuration Options
 
 ### Adjusting the Time Threshold
-You can adjust the `30m` (30 minutes) threshold based on your environment:
-- `duration('10m')` - 10 minutes (more aggressive, may cause false positives for slow image pulls)
-- `duration('1h')` - 1 hour (more lenient, delays detection of stuck pods)
 
-Choose a value that exceeds your longest expected pod initialization time.
+You can adjust the `30m` (30 minutes) threshold for your environment:
+
+- `duration('10m')` - 10 minutes (more aggressive; can cause false positives for slow image pulls)
+- `duration('1h')` - 1 hour (more lenient; delays the detection of stuck pods)
+
+Choose a value that is longer than the longest pod initialization time that you expect.
 
 ### How the Time Check Works
-The `now - timestamp(resource.status.startTime) > duration('30m')` expression:
+
+The `now - timestamp(resource.status.startTime) > duration('30m')` expression has these parts:
+
 - `now` - Current timestamp (provided by the CEL environment)
-- `timestamp(resource.status.startTime)` - When the pod was created
+- `timestamp(resource.status.startTime)` - When the kubelet acknowledged the pod on its node (before the kubelet pulls the container images)
 - `duration('30m')` - The threshold duration (30 minutes)
 
 ### Resync Period
-The `resyncPeriod` controls how often the monitor re-evaluates all resources:
+
+The `resyncPeriod` controls how often the monitor evaluates all resources again:
+
 - Default: `5m` (5 minutes)
-- For faster detection, reduce to `1m` or `30s`
-- Trade-off: Lower values increase API server load
+- For faster detection, decrease it to `1m` or `30s`
+- Trade-off: Lower values increase the API server load
 
 ```yaml
 kubernetes-object-monitor:
@@ -218,15 +231,18 @@ kubernetes-object-monitor:
 ## Troubleshooting
 
 ### Investigating Health Events
-If you receive these events, investigate the pod status:
+
+If you receive these health events, examine the status of the pod:
 
 1.  **Check pod status and events:**
+
     ```bash
     kubectl get pods -n gpu-operator -o wide
     kubectl describe pod {pod-name} -n gpu-operator
     ```
 
-2.  **Check container logs (if containers have started):**
+2.  **If the containers started, check the container logs:**
+
     ```bash
     kubectl logs -n gpu-operator {pod-name}
     # For init containers:
@@ -234,12 +250,14 @@ If you receive these events, investigate the pod status:
     ```
 
 3.  **Common issues to look for:**
-    - `ImagePullBackOff` - Check image name and registry credentials
-    - `CrashLoopBackOff` - Check container logs for crash reason
-    - `Pending` - Check node resources and scheduling constraints
-    - Init container stuck - Check init container logs
+
+    - `ImagePullBackOff` - Check the image name and the registry credentials
+    - `CrashLoopBackOff` - Check the container logs for the crash reason
+    - `Pending` - Check the node resources and the scheduling constraints
+    - Init container stuck - Check the init container logs
 
 4.  **Verify node health:**
+
     ```bash
     kubectl get node {node-name}
     kubectl describe node {node-name}
@@ -247,30 +265,34 @@ If you receive these events, investigate the pod status:
 
 ### Common Issues
 
-
 #### Problem: Pods are not being monitored (no health events)
 
 1. **Check if the pod matches the policy predicate:**
+
    ```bash
    kubectl get pod {pod-name} -n {namespace} -o yaml
    ```
-   Verify the pod is in the correct namespace and meets all predicate conditions.
 
-2. **Check kubernetes-object-monitor logs:**
+   Verify that the pod is in the correct namespace and that it meets all predicate conditions.
+
+2. **Check the kubernetes-object-monitor logs:**
+
    ```bash
    kubectl logs -n nvsentinel deployment/kubernetes-object-monitor
    ```
 
-3. **Verify the policy is enabled in your configuration.**
+3. **Verify that the policy is enabled in your configuration.**
 
 #### Problem: Node stays cordoned after pod is healthy
 
 1. **Check if the DaemonSet still targets the node:**
+
    ```bash
    kubectl get ds {daemonset-name} -n {namespace} -o yaml | grep -A 10 nodeSelector
    ```
 
 2. **Check the policy match annotation on the node:**
+
    ```bash
    kubectl get node {node-name} -o jsonpath='{.metadata.annotations.nvsentinel\.dgxc\.nvidia\.com/policy-matches}'
    ```

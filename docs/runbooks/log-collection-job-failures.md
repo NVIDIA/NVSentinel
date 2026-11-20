@@ -5,7 +5,7 @@
 - Prometheus alert: `HighLogCollectionFailureRate`
 - Failed log collector jobs visible in Kubernetes
 - Missing diagnostic logs for faulted nodes
-- Metric `fault_remediation_log_collector_jobs_total{status="failure"}` increasing
+- Metric `fault_remediation_log_collector_jobs_total{status="failure"}` increases
 
 ## Diagnosis Steps
 
@@ -58,13 +58,15 @@ kubectl get pods -n nvsentinel -l app.kubernetes.io/name=incluster-file-server
 ### Issue 1: NVIDIA Driver Pod Not Found
 
 **Error in logs**:
+
 ```text
 [ERROR] NVIDIA driver pod not found on node worker-01 in namespace gpu-operator
 ```
 
-**Cause**: GPU operator not deployed or driver pod not running on the node
+**Cause**: The GPU operator is not deployed, or the driver pod does not run on the node
 
 **Solution**:
+
 ```bash
 # Check GPU operator pods
 kubectl get pods -n gpu-operator
@@ -83,31 +85,35 @@ kubectl describe node $NODE_NAME | grep nvidia.com/gpu
 ### Issue 2: Timeout Errors
 
 **Error in logs**:
+
 ```text
 [ERROR] Collection operation timed out
 ```
 
-**Cause**: Log collection taking longer than configured timeout
+**Cause**: Log collection takes longer than the configured timeout
 
 **Solution**:
+
 ```bash
 # Increase timeout in Helm values
 # distros/kubernetes/nvsentinel/charts/fault-remediation/values.yaml
 logCollector:
-  collectionTimeout: 1800  # Increase to 30 minutes
+  timeout: "30m"  # Increase to 30 minutes
 ```
 
 ### Issue 3: Upload Failures
 
 **Error in logs**:
+
 ```text
 [UPLOAD_FAILED] Failed to upload nvidia-bug-report
 curl: (7) Failed to connect to nvsentinel-incluster-file-server
 ```
 
-**Cause**: File server not accessible or not running
+**Cause**: The file server is not accessible, or it does not run
 
 **Solution**:
+
 ```bash
 # Check file server status
 kubectl get pods -n nvsentinel -l app.kubernetes.io/name=incluster-file-server
@@ -125,6 +131,7 @@ kubectl run -n nvsentinel test-connectivity --rm -it --image=curlimages/curl --r
 ### Issue 4: Permission Errors
 
 **Error in logs**:
+
 ```text
 [ERROR] Permission denied accessing /host/home/kubernetes/bin/nvidia
 ```
@@ -132,6 +139,7 @@ kubectl run -n nvsentinel test-connectivity --rm -it --image=curlimages/curl --r
 **Cause**: Insufficient privileges or security context issues
 
 **Solution**:
+
 ```bash
 # Verify job has privileged security context
 kubectl get job -n nvsentinel $FAILED_JOB -o yaml | grep -A 5 securityContext
@@ -149,13 +157,15 @@ kubectl get ns nvsentinel -o yaml | grep -A 5 pod-security
 ### Issue 5: Disk Space Issues on File Server
 
 **Error in logs**:
+
 ```text
 [UPLOAD_FAILED] Failed to upload: 507 Insufficient Storage
 ```
 
-**Cause**: File server persistent volume is full
+**Cause**: The persistent volume of the file server is full
 
 **Solution**:
+
 ```bash
 # Check file server disk usage
 FILE_SERVER_POD=$(kubectl get pods -n nvsentinel -l app.kubernetes.io/name=incluster-file-server -o jsonpath='{.items[0].metadata.name}')
@@ -168,7 +178,7 @@ kubectl get pvc -n nvsentinel
 kubectl exec -n nvsentinel $FILE_SERVER_POD -- find /usr/share/nginx/html -type f -mtime +7 -delete
 
 # Option 2: Reduce retention period
-# Edit Helm values: inclusterFileServer.logCleanup.retentionDays
+# Edit Helm values: incluster-file-server.logCleanup.retentionDays
 
 # Option 3: Increase PVC size (if supported by storage class)
 kubectl patch pvc -n nvsentinel nvsentinel-incluster-file-server-data -p '{"spec":{"resources":{"requests":{"storage":"100Gi"}}}}'
@@ -176,15 +186,17 @@ kubectl patch pvc -n nvsentinel nvsentinel-incluster-file-server-data -p '{"spec
 
 ## Resolution Steps
 
-1. **Identify and fix the root cause** using diagnosis steps above
-2. **Manually retry failed collection** (if needed):
+1. **Identify and fix the root cause** with the diagnosis steps above
+2. If necessary, **manually retry the failed collection**:
+
    ```bash
    # Create a new log collection job for the node
    kubectl create job -n nvsentinel manual-log-collect-$NODE_NAME \
      --from=job/$FAILED_JOB
    ```
 
-3. **Verify fix**:
+3. **Verify the fix**:
+
    ```bash
    # Monitor the new job
    kubectl get jobs -n nvsentinel -l app=log-collector -w
@@ -194,7 +206,8 @@ kubectl patch pvc -n nvsentinel nvsentinel-incluster-file-server-data -p '{"spec
    kubectl logs -n nvsentinel $NEW_JOB_POD -f
    ```
 
-4. **Verify logs are uploaded**:
+4. **Verify that the job uploaded the logs**:
+
    ```bash
    # Port-forward to file server
    kubectl port-forward -n nvsentinel svc/nvsentinel-incluster-file-server 8080:80
