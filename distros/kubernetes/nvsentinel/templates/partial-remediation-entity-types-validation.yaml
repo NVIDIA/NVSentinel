@@ -21,6 +21,9 @@
 {{- end }}
 {{- $actionOwner := dict }}
 {{- range $name := keys $types | sortAlpha }}
+{{- if eq $name "" }}
+{{- fail "global.partialRemediationEntityTypes has an entity type with an empty name" }}
+{{- end }}
 {{- $path := printf "global.partialRemediationEntityTypes.%s" $name }}
 {{- $entityType := index $types $name | default dict }}
 {{- if not $entityType.devices }}
@@ -38,8 +41,16 @@
 {{- if and $isDRA (not (and $device.driver $device.deviceClasses $device.entityValueAttribute)) }}
 {{- fail (printf "%s.devices[%d] is a DRA entry, so it needs driver, deviceClasses and entityValueAttribute." $path $i) }}
 {{- end }}
+{{- range $field := list "resourceNames" "deviceClasses" }}
+{{- if has "" (index $device $field | default list) }}
+{{- fail (printf "%s.devices[%d].%s has an empty name." $path $i $field) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- range $action := $entityType.scopedActions | default list }}
+{{- if eq $action "" }}
+{{- fail (printf "%s.scopedActions has an empty action. An empty list turns partial drains off for the entity type." $path) }}
+{{- end }}
 {{- if and (hasKey $actionOwner $action) (ne (index $actionOwner $action) $name) }}
 {{- fail (printf "Action %s is in the scopedActions of both %s and %s. An action can be scoped to only one entity type." $action (index $actionOwner $action) $name) }}
 {{- end }}

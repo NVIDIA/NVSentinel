@@ -131,25 +131,11 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	nodeName := healthEvent.HealthEvent.NodeName
 	statusStr := healthEvent.HealthEventStatus.NodeQuarantined
 
+	// The event has no entity for its scoped action. Return the error so the queue retries the event with
+	// backoff: a fix to scopedActions lets the drain continue. A terminal Failed status would end the drain.
 	partialDrainEntity, err := e.eventDrainScope(healthEvent)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to check if node should be partially drained",
-			"node", nodeName,
-			"error", err)
-
-		_, span := tracing.StartSpan(ctx, "node_drainer.evaluate_event")
-		defer span.End()
-
-		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("node_drainer.error.type", "partial_drain_check_failed"),
-			attribute.String("node_drainer.error.message", err.Error()),
-		)
-
-		return &DrainActionResult{
-			Action: ActionUpdateStatus,
-			Status: model.StatusFailed,
-		}, nil
+		return nil, fmt.Errorf("failed to find the partial drain entity for node %s: %w", nodeName, err)
 	}
 
 	result := e.handleAlreadyQuarantined(ctx, statusStr, healthEvent, partialDrainEntity, healthEventStore)

@@ -565,6 +565,43 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 		require.NoError(t, err)
 	}
 
+	// Allocated claims: the allocation, not the requested DeviceClasses, decides which driver the pod uses.
+	for claimName, alloc := range map[string]struct {
+		requests []resourcev1.DeviceRequest
+		result   resourcev1.DeviceRequestAllocationResult
+	}{
+		"fallback-nic-allocated": {
+			requests: []resourcev1.DeviceRequest{{Name: "device", FirstAvailable: []resourcev1.DeviceSubRequest{
+				{Name: "nic", DeviceClassName: "nic.example.com", AllocationMode: resourcev1.DeviceAllocationModeExactCount, Count: 1},
+				{Name: "gpu", DeviceClassName: "gpu.nvidia.com", AllocationMode: resourcev1.DeviceAllocationModeExactCount, Count: 1},
+			}}},
+			result: resourcev1.DeviceRequestAllocationResult{
+				Request: "device/nic", Driver: "nic.example.com", Pool: "node-0", Device: "nic-0",
+			},
+		},
+		"gpu-allocated": {
+			requests: []resourcev1.DeviceRequest{{
+				Name:    "device",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.nvidia.com"},
+			}},
+			result: resourcev1.DeviceRequestAllocationResult{
+				Request: "device", Driver: "gpu.nvidia.com", Pool: "node-0", Device: "gpu-0",
+			},
+		},
+	} {
+		claim, err := client.ResourceV1().ResourceClaims(namespace).Create(ctx, &resourcev1.ResourceClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName},
+			Spec:       resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: alloc.requests}},
+		}, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		claim.Status.Allocation = &resourcev1.AllocationResult{
+			Devices: resourcev1.DeviceAllocationResult{Results: []resourcev1.DeviceRequestAllocationResult{alloc.result}},
+		}
+		_, err = client.ResourceV1().ResourceClaims(namespace).UpdateStatus(ctx, claim, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}
+
 	const (
 		missingAnnotation = "is requesting devices but is missing device annotation; " +
 			"partial drains need the metadata-collector pod device mapper (podMapper.enabled)"
@@ -632,6 +669,21 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			annotation:      `{"devices":{"nvidia.com/gpu":["GPU-0"]}}`,
 			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimName: new("gpu-claim")},
 			wantPartialErr:  "is requesting DeviceClass gpu.nvidia.com of DRA driver gpu.nvidia.com but its device annotation has no entry for it",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose claim was allocated a non-GPU alternative is drained",
+			annotation:      `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`,
+			gpuLimit:        true,
+			claim:           v1.PodResourceClaim{Name: "fallback", ResourceClaimName: new("fallback-nic-allocated")},
+			wantPartialPods: 1,
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose allocated GPU claim has no annotation entry fails partial drain",
+			annotation:      `{"devices":{"nvidia.com/gpu":["GPU-0"]}}`,
+			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimName: new("gpu-allocated")},
+			wantPartialErr:  "is requesting a device of DRA driver gpu.nvidia.com but its device annotation has no entry for it",
 			wantGPUOnlyPods: 1,
 		},
 		{

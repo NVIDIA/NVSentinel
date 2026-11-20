@@ -584,8 +584,8 @@ func (i *Informers) checkAnnotationRecordsRequests(ctx context.Context, pod *v1.
 
 // unrecordedRequest describes the first device of the entity type that the pod requests and the device
 // annotation has no entry for, or returns "" when the annotation records every request. Resource names come
-// from container limits. DRA requests come from the DeviceClasses of the pod's claims, and match the annotation
-// through the driver of the same entry.
+// from container limits. DRA requests come from the drivers of the pod's claims (see claimDrivers), which are the
+// names the annotation uses.
 func (i *Informers) unrecordedRequest(ctx context.Context, pod *v1.Pod,
 	entityType model.PartialRemediationEntityType, deviceAnnotation model.DeviceAnnotation) (string, error) {
 	for _, resourceName := range entityType.ResourceNames() {
@@ -599,15 +599,14 @@ func (i *Informers) unrecordedRequest(ctx context.Context, pod *v1.Pod,
 		return "", nil
 	}
 
-	deviceClasses, err := i.claimedDeviceClasses(ctx, pod)
+	claimed, err := i.claimedDrivers(ctx, pod, entityType)
 	if err != nil {
 		return "", err
 	}
 
-	for _, deviceClass := range deviceClasses {
-		driver, ok := entityType.DriverForDeviceClass(deviceClass)
-		if ok && !hasAnnotationEntry(deviceAnnotation, driver) {
-			return fmt.Sprintf("DeviceClass %s of DRA driver %s", deviceClass, driver), nil
+	for _, device := range claimed {
+		if !hasAnnotationEntry(deviceAnnotation, device.driver) {
+			return device.description, nil
 		}
 	}
 
@@ -656,13 +655,13 @@ func (i *Informers) isPodClaimingDeviceClass(ctx context.Context, pod *v1.Pod,
 	}
 
 	for _, podClaim := range pod.Spec.ResourceClaims {
-		claimSpec, err := i.getPodResourceClaimSpec(ctx, pod, podClaim)
+		claim, err := i.getPodResourceClaim(ctx, pod, podClaim)
 		if err != nil {
 			return false, fmt.Errorf("failed to resolve claim %s of pod %s/%s: %w",
 				podClaim.Name, pod.Namespace, pod.Name, err)
 		}
 
-		if claimSpec != nil && isClaimRequestingDeviceClass(claimSpec, deviceClassNames) {
+		if claim != nil && isClaimRequestingDeviceClass(&claim.Spec, deviceClassNames) {
 			return true, nil
 		}
 	}
@@ -670,30 +669,70 @@ func (i *Informers) isPodClaimingDeviceClass(ctx context.Context, pod *v1.Pod,
 	return false, nil
 }
 
-// claimedDeviceClasses returns the DeviceClasses that the DRA claims of the pod request.
-func (i *Informers) claimedDeviceClasses(ctx context.Context, pod *v1.Pod) ([]string, error) {
-	var deviceClasses []string
+// claimedDriver is a DRA driver of the entity type that a claim of the pod uses, with a description for errors.
+type claimedDriver struct {
+	driver      string
+	description string
+}
+
+// claimedDrivers returns the DRA drivers of the entity type that the claims of the pod use.
+func (i *Informers) claimedDrivers(ctx context.Context, pod *v1.Pod,
+	entityType model.PartialRemediationEntityType) ([]claimedDriver, error) {
+	var claimed []claimedDriver
 
 	for _, podClaim := range pod.Spec.ResourceClaims {
-		claimSpec, err := i.getPodResourceClaimSpec(ctx, pod, podClaim)
+		claim, err := i.getPodResourceClaim(ctx, pod, podClaim)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve claim %s of pod %s/%s: %w",
 				podClaim.Name, pod.Namespace, pod.Name, err)
 		}
 
-		if claimSpec != nil {
-			deviceClasses = append(deviceClasses, claimDeviceClasses(claimSpec)...)
+		if claim != nil {
+			claimed = append(claimed, claimDrivers(claim, entityType)...)
 		}
 	}
 
-	return deviceClasses, nil
+	return claimed, nil
 }
 
-// getPodResourceClaimSpec returns the spec of the ResourceClaim a pod claim uses, or nil when the pod needs no
+// claimDrivers returns the DRA drivers of the entity type that the claim uses. For an allocated claim, they come
+// from the allocation, so a FirstAvailable sub-request that was not selected does not count. For a claim that is
+// not allocated yet, they come from the DeviceClasses of every request and sub-request.
+func claimDrivers(claim *resourcev1.ResourceClaim, entityType model.PartialRemediationEntityType) []claimedDriver {
+	var claimed []claimedDriver
+
+	if allocation := claim.Status.Allocation; allocation != nil {
+		drivers := entityType.Drivers()
+
+		for _, result := range allocation.Devices.Results {
+			if slices.Contains(drivers, result.Driver) {
+				claimed = append(claimed, claimedDriver{
+					driver:      result.Driver,
+					description: "a device of DRA driver " + result.Driver,
+				})
+			}
+		}
+
+		return claimed
+	}
+
+	for _, deviceClass := range claimDeviceClasses(&claim.Spec) {
+		if driver, ok := entityType.DriverForDeviceClass(deviceClass); ok {
+			claimed = append(claimed, claimedDriver{
+				driver:      driver,
+				description: fmt.Sprintf("DeviceClass %s of DRA driver %s", deviceClass, driver),
+			})
+		}
+	}
+
+	return claimed
+}
+
+// getPodResourceClaim returns the ResourceClaim a pod claim uses, or nil when the pod needs no
 // claim for it. A claim generated from a ResourceClaimTemplate is bound to the pod in status.resourceClaimStatuses
 // before the pod is scheduled, so the template itself is never read and deleting it does not affect the lookup.
-func (i *Informers) getPodResourceClaimSpec(ctx context.Context, pod *v1.Pod,
-	podClaim v1.PodResourceClaim) (*resourcev1.ResourceClaimSpec, error) {
+func (i *Informers) getPodResourceClaim(ctx context.Context, pod *v1.Pod,
+	podClaim v1.PodResourceClaim) (*resourcev1.ResourceClaim, error) {
 	claimName := podClaim.ResourceClaimName
 	if claimName == nil {
 		for _, claimStatus := range pod.Status.ResourceClaimStatuses {
@@ -719,7 +758,7 @@ func (i *Informers) getPodResourceClaimSpec(ctx context.Context, pod *v1.Pod,
 		return nil, fmt.Errorf("failed to get ResourceClaim %s/%s: %w", pod.Namespace, *claimName, err)
 	}
 
-	return &claim.Spec, nil
+	return claim, nil
 }
 
 func isClaimRequestingDeviceClass(claimSpec *resourcev1.ResourceClaimSpec, deviceClassNames []string) bool {
