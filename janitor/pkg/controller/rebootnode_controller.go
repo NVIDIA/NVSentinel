@@ -159,13 +159,9 @@ func (r *RebootNodeReconciler) completeDuplicateReboot(
 	rebootNode.SetInitialConditions()
 	rebootNode.SetStartTime()
 	rebootNode.SetCompletionTime()
-	rebootNode.SetCondition(metav1.Condition{
-		Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             nodeAlreadyUnderMaintenanceReason,
-		Message:            fmt.Sprintf("RebootNode/%s is active for this node", holderName),
-		LastTransitionTime: metav1.Now(),
-	})
+	rebootNode.SetRebootCompletionCondition(metav1.ConditionFalse,
+		nodeAlreadyUnderMaintenanceReason,
+		fmt.Sprintf("RebootNode/%s is active for this node", holderName))
 
 	if err := r.updateRebootNodeStatusIfChanged(ctx, original, rebootNode); err != nil {
 		return ctrl.Result{}, err
@@ -414,13 +410,8 @@ func (r *RebootNodeReconciler) completeNodeReadyCheck(
 	conditionStatus metav1.ConditionStatus, reason, message, metricsStatus string,
 ) ctrl.Result {
 	rebootNode.SetCompletionTime()
-	rebootNode.SetCondition(metav1.Condition{
-		Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
-		Status:             conditionStatus,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	})
+	rebootNode.SetRebootCompletionCondition(conditionStatus, reason, message)
+
 	metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metricsStatus, node.Name)
 
 	return ctrl.Result{}

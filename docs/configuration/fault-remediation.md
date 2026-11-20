@@ -74,7 +74,7 @@ fault-remediation:
         version: "v1alpha1"
         kind: "GPUReset"
         scope: "Cluster"
-        completeConditionType: "Complete"
+        completeConditionType: "Succeeded"
         templateFileName: "gpureset-template.yaml"
         equivalenceGroup: "reset"
         supersedingEquivalenceGroups: ["restart"]
@@ -108,7 +108,11 @@ Kubernetes Kind of the maintenance CRD.
 Determines whether the maintenance CRD is cluster-scoped or namespaced.
 
 #### completeConditionType
-Status condition name to check for maintenance completion. Used to prevent duplicate CRs when multiple faults occur on the same node. If condition status is `True`, maintenance is complete. 
+The type of the status condition that gives the outcome of the maintenance. fault-remediation reads this condition before it creates a new CR for the same equivalence group. If the status is `True`, the maintenance was successful. If the status is `False`, the maintenance failed, and fault-remediation can create a new CR. If the condition is absent or its status is `Unknown`, the maintenance is in progress.
+
+For `GPUReset`, use `Succeeded`. The janitor sets the `Complete` condition of a GPUReset to `True` when the GPUReset ends, also when the reset failed. Thus `Complete` cannot tell a failed reset from a successful reset.
+
+Only a janitor that sets the `Succeeded` condition can be used with this value. With an earlier janitor, the condition stays absent, and fault-remediation reads each GPUReset as in progress. When you upgrade, the janitor adds the condition to each GPUReset that ended before the upgrade and is not being deleted. If your values set `completeConditionType: "Complete"` for `GPUReset`, change the value to `Succeeded`. `helm upgrade --reuse-values` keeps the value that you set.
 
 #### namespace
 Kubernetes namespace where maintenance CRs will be created.
