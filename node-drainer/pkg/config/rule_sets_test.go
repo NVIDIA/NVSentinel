@@ -381,6 +381,29 @@ stop = true
 	}
 }
 
+func TestLoadTomlConfigFromString_UnknownKeyAndInvalidFields_ReportsAll(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadTomlConfigFromString(`
+[[ruleSets]]
+name = "Bad_Name"
+priorty = 100
+
+[[ruleSets.match.all]]
+kind = "Node"
+expression = "true"
+
+[ruleSets.drain]
+stop = false
+`)
+
+	require.ErrorIs(t, err, ruleset.ErrUnknownKey)
+	require.ErrorContains(t, err, "priorty")
+	require.ErrorIs(t, err, ruleset.ErrInvalidName)
+	require.ErrorIs(t, err, ErrDrainOutcome)
+	require.NotErrorIs(t, err, ErrRuleSetsNotSupported)
+}
+
 func TestLoadTomlConfigFromString_NoRuleSets_KeepsDefaults(t *testing.T) {
 	t.Parallel()
 

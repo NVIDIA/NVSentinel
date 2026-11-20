@@ -15,6 +15,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -219,13 +220,13 @@ func validateAndSetDefaults(config *TomlConfig, md toml.MetaData) (*TomlConfig, 
 }
 
 // validateRuleSetConfig rejects a ruleSets key this config does not decode, such as
-// remediation or a misspelled field, and then checks the decoded rule sets.
+// remediation or a misspelled field, and checks the decoded rule sets. Both checks
+// always run, so one startup reports every problem.
 func validateRuleSetConfig(md toml.MetaData, ruleSets []DrainRuleSet) error {
-	if err := ruleset.CheckUndecoded(md, drainOutcomeKey); err != nil {
-		return err
-	}
-
-	return validateRuleSets(ruleSets)
+	return errors.Join(
+		ruleset.CheckUndecoded(md, drainOutcomeKey),
+		validateRuleSets(ruleSets),
+	)
 }
 
 // setTimeoutDefaults fills the timeout fields that the config left at zero.
