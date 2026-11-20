@@ -77,6 +77,7 @@ This work starts after ADR-071 is implemented. After ADR-071, the mapper reads D
 | Setting | metadata-collector today | metadata-collector after | Mapper DaemonSet |
 |---|---|---|---|
 | Privileged, host network, host PID | Yes | Yes | No |
+| User | Root (`runAsUser: 0`) | Root | Root (`runAsUser: 0`), with all capabilities dropped |
 | `/sys` and `/var/lib/nvsentinel` mounts | Yes | Yes | No |
 | PodResources socket mount | Yes | No | Yes, read-only |
 | `nvidia` RuntimeClass, DRA admin claim, NRI CDI annotation | Yes | Yes | No |
@@ -84,7 +85,7 @@ This work starts after ADR-071 is implemented. After ADR-071, the mapper reads D
 | Tolerations, affinity, priority class, update strategy | `global` value or chart value | Unchanged | The same values |
 | ServiceAccount and ClusterRole | `metadata-collector`, with `patch` pods, `get` `nodes/pods` and `nodes/proxy` | A new ServiceAccount with no ClusterRole | The existing `metadata-collector` ServiceAccount and ClusterRole, plus `list` on ResourceSlices from ADR-071 |
 
-The mapper reaches the kubelet at the host IP, as today, so it does not need the host network. The implementation sets the smallest `securityContext` that can open the PodResources socket.
+The mapper reaches the kubelet at the host IP, as today, so it does not need the host network. It still runs as root, because the kubelet's PodResources socket belongs to root, and connecting to a Unix socket needs write permission on it. The mapper image uses the default `ko` base image, which runs as UID 65532, so the pod spec must set `runAsUser: 0`. Without it, every poll fails with "permission denied".
 
 The mapper does not need the GPU driver, so its default node selector drops `driver.installed`. The mapper then starts on a GPU node before the driver is ready. That is safe: until the driver is ready, no pod on the node has a GPU, so the mapper writes no annotations.
 
@@ -119,7 +120,7 @@ Because all mapper pods start at once, every mapper on a node with DRA pods list
 - **`gpu_metadata.json`:** the path and format do not change, and its readers do not change.
 - **Helm values:** every `metadata-collector` key keeps working, and the new keys are under `podMapper` (see [Chart](#chart)).
 - **Flags:** the metadata-collector binary still accepts `--pod-mapper-enabled` and `--pod-mapper-max-consecutive-failures`, and ignores them with a log line, so an older pod spec keeps starting.
-- **Metrics:** the mapper metrics keep their names. They now come from the mapper DaemonSet's pods, so a query that filters them by the metadata-collector pod no longer matches.
+- **Metrics:** the mapper metrics keep their names. They now come from the mapper DaemonSet's pods, so a query that filters them by the metadata-collector pod no longer matches. The metrics port moves from the node IP to the pod IP. The chart's PodMonitor still scrapes it, because the mapper pod has the release instance label and a port named `metrics`.
 - **Images:** the chart and the images are released together. A newer metadata-collector image under an older chart is not supported: the pod then has no mapper, and partial drains wait.
 
 ## Rationale
@@ -137,7 +138,7 @@ Because all mapper pods start at once, every mapper on a node with DRA pods list
 
 ### Negative
 
-- One more module, image and DaemonSet to build, release and run. Each GPU node runs one more pod.
+- One more module, image and DaemonSet to build, release and run. Each GPU node runs one more pod. When `podMapper.resources` is unset, that pod requests as much as the discovery pod (100m CPU and 128Mi memory by default), so the two pods request twice as much as one pod does today.
 - Until the NVIDIA plugin chart exists, a core DaemonSet ships in the metadata-collector chart, and turning off metadata-collector also turns off the mapper, as today.
 - During the upgrade, two mappers on a node can disagree on a DRA device, and all mapper pods list ResourceSlices at once (see [Upgrade](#upgrade)).
 
