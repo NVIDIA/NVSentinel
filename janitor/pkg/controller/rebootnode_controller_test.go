@@ -191,7 +191,7 @@ var _ = Describe("RebootNode Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify conditions are properly set
-			Expect(updatedRebootNode.Status.Conditions).To(HaveLen(2))
+			Expect(updatedRebootNode.Status.Conditions).To(HaveLen(3))
 
 			// Check SignalSent condition
 			signalSentCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent)
@@ -204,6 +204,11 @@ var _ = Describe("RebootNode Controller", func() {
 			nodeReadyCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady)
 			Expect(nodeReadyCondition).NotTo(BeNil())
 			Expect(nodeReadyCondition.Status).To(Equal(metav1.ConditionUnknown))
+
+			// Check RebootCompleted condition (should be Unknown initially)
+			rebootCompletedCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionRebootCompleted)
+			Expect(rebootCompletedCondition).NotTo(BeNil())
+			Expect(rebootCompletedCondition.Status).To(Equal(metav1.ConditionUnknown))
 
 			// Verify StartTime is set
 			Expect(updatedRebootNode.Status.StartTime).NotTo(BeNil())
