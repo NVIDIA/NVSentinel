@@ -593,7 +593,7 @@ var _ = Describe("RebootNode Controller", func() {
 		})
 
 		It("should reboot a node that NVSentinel quarantined without a cordon", func() {
-			testNode.Annotations = map[string]string{"quarantineHealthEvent": "[]"}
+			testNode.Annotations = map[string]string{"quarantineHealthEvent": `[{"nodeName":"n"}]`}
 			Expect(k8sClient.Update(ctx, testNode)).To(Succeed())
 
 			signalSent := reconcileOnce()

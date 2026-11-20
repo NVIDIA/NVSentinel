@@ -181,7 +181,7 @@ func TestTransformNodeForCache_RetainsJanitorFieldsOnly(t *testing.T) {
 		UID:             types.UID("node-uid"),
 		ResourceVersion: "node-rv",
 		Labels:          map[string]string{"retain": "label"},
-		Annotations:     map[string]string{"drop": "annotation", "quarantineHealthEvent": "drop-value"},
+		Annotations:     map[string]string{"drop": "annotation", "quarantineHealthEvent": `[{"nodeName":"node-a"}]`},
 		Spec: corev1.NodeSpec{
 			ProviderID:    "drop-provider",
 			Unschedulable: true,
@@ -216,7 +216,7 @@ func TestTransformNodeForCache_RetainsJanitorFieldsOnly(t *testing.T) {
 		UID:             types.UID("node-uid"),
 		ResourceVersion: "node-rv",
 		Labels:          map[string]string{"retain": "label"},
-		Annotations:     map[string]string{"quarantineHealthEvent": ""},
+		Annotations:     map[string]string{"quarantineHealthEvent": `[{"nodeName":"node-a"}]`},
 		Spec: corev1.NodeSpec{
 			Unschedulable: true,
 			Taints: []corev1.Taint{{
@@ -308,11 +308,16 @@ func cacheForObject(
 }
 
 func TestNodeOutOfService(t *testing.T) {
+	quarantined := func(value string) *corev1.Node {
+		// The literal key, so that a change of the fault-quarantine key fails this test.
+		return &corev1.Node{Annotations: map[string]string{"quarantineHealthEvent": value}}
+	}
+
 	assert.False(t, NodeOutOfService(&corev1.Node{}))
 	assert.True(t, NodeOutOfService(&corev1.Node{Spec: corev1.NodeSpec{Unschedulable: true}}))
-	assert.True(t, NodeOutOfService(&corev1.Node{
-		Annotations: map[string]string{QuarantineAnnotationKey: ""},
-	}))
+	assert.True(t, NodeOutOfService(quarantined(`[{"nodeName":"node-a"}]`)))
+	assert.False(t, NodeOutOfService(quarantined("")))
+	assert.False(t, NodeOutOfService(quarantined("[]")))
 	assert.False(t, NodeOutOfService(&corev1.Node{
 		Annotations: map[string]string{"quarantineHealthEventIsCordoned": "true"},
 	}))

@@ -26,24 +26,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
+	fqcommon "github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
 )
 
-// QuarantineAnnotationKey is the node annotation that fault-quarantine sets while it holds the node quarantined.
-// It has the same value as QuarantineHealthEventAnnotationKey in fault-quarantine.
-const QuarantineAnnotationKey = "quarantineHealthEvent"
-
 // NodeOutOfService reports whether the node is cordoned or quarantined by NVSentinel. A quarantine ruleset can
-// taint a node without cordoning it.
+// taint a node without cordoning it. Like fault-quarantine, it treats an empty quarantine annotation as not
+// quarantined.
 func NodeOutOfService(node *corev1.Node) bool {
 	if node.Spec.Unschedulable {
 		return true
 	}
 
-	_, quarantined := node.Annotations[QuarantineAnnotationKey]
+	value, ok := node.Annotations[fqcommon.QuarantineHealthEventAnnotationKey]
 
-	return quarantined
+	return ok && !annotationutil.IsEmptyValue(value)
 }
 
 // Build returns cache options that retain only Node and Pod fields read by
@@ -141,10 +140,10 @@ func transformNodeForCache(obj any) (any, error) {
 
 	readyConditions := nodeConditionsForCache(node.Status.Conditions)
 
-	// NodeOutOfService needs only the presence of the quarantine annotation, so its value is dropped.
+	// NodeOutOfService reads the quarantine annotation. Only a quarantined node has it.
 	var annotations map[string]string
-	if _, quarantined := node.Annotations[QuarantineAnnotationKey]; quarantined {
-		annotations = map[string]string{QuarantineAnnotationKey: ""}
+	if value, ok := node.Annotations[fqcommon.QuarantineHealthEventAnnotationKey]; ok {
+		annotations = map[string]string{fqcommon.QuarantineHealthEventAnnotationKey: value}
 	}
 
 	node.TypeMeta = metav1.TypeMeta{}

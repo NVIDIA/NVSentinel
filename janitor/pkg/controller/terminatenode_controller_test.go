@@ -164,7 +164,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		})
 
 		It("Should terminate a node that NVSentinel quarantined without a cordon", func() {
-			node.Annotations = map[string]string{"quarantineHealthEvent": "[]"}
+			node.Annotations = map[string]string{"quarantineHealthEvent": `[{"nodeName":"n"}]`}
 			Expect(k8sClient.Update(ctx, node)).To(Succeed())
 
 			signalSent, _ := reconcileOnce()
