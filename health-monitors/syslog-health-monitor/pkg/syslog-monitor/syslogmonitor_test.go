@@ -355,6 +355,25 @@ func (h *recordingHandler) ProcessLine(message string) (*pb.HealthEvents, error)
 	return nil, nil
 }
 
+// writeStateForCurrentBoot saves a state file that names the running boot,
+// so a monitor built from it sees no boot ID change and starts at the
+// journal tail.
+func writeStateForCurrentBoot(t *testing.T, stateFilePath string) {
+	t.Helper()
+
+	// Empty off Linux, where the monitor reads an empty boot ID as well.
+	bootID, _ := fetchCurrentBootID()
+
+	data, err := json.Marshal(syslogMonitorState{
+		Version:           stateFileVersion,
+		BootID:            bootID,
+		CheckLastCursors:  map[string]string{},
+		BootStartScanDone: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(stateFilePath, data, 0o600))
+}
+
 // Mock PlatformConnectorClient
 type mockPlatformConnectorClient struct {
 	RecordedHealthEvents []*pb.HealthEvents
@@ -471,6 +490,7 @@ func TestJournalProcessingLogic(t *testing.T) {
 	// Create SyslogMonitor
 	testStateFile := "/tmp/test-syslog-monitor-state-4.json"
 	defer os.Remove(testStateFile)
+	writeStateForCurrentBoot(t, testStateFile)
 
 	sm, err := NewSyslogMonitorWithFactory(
 		TEST_NODE,
@@ -897,6 +917,122 @@ func TestBootIDChange_ProcessesEntriesFromBootStart(t *testing.T) {
 	assert.False(t, sm.postRebootInit, "postRebootInit must be false after successful Run")
 }
 
+// TestNoSavedBootID_ProcessesEntriesFromBootStart verifies that a monitor
+// with no saved boot ID scans the current boot the way a monitor that sees
+// the boot ID change does. A reboot leaves the monitor in this state when
+// the state file is on storage that the reboot clears, such as /var/run.
+func TestNoSavedBootID_ProcessesEntriesFromBootStart(t *testing.T) {
+	stateFilePath := t.TempDir() + "/state.json"
+
+	check := CheckDefinition{
+		Name:        "bootCheck",
+		JournalPath: TEST_JOURNAL_PATH,
+	}
+
+	mockJournal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "NVRM: Xid (PCI:0000:38:00): 48, stale previous-boot XID", Cursor: "cursor-0", BootID: "boot-1",
+				Fields: map[string]string{FieldBootID: "boot-1"}},
+			{Message: "NVRM: Xid (PCI:0000:38:00): 79, GPU has fallen off the bus", Cursor: "cursor-1", BootID: "boot-2",
+				Fields: map[string]string{FieldBootID: "boot-2"}},
+		},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+	mockFactory.DefaultJournal = &MockJournal{TestBootID: "boot-2", CurrentPosition: -1}
+
+	// No state file is written.
+	sm, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"tcp://test",
+		30*time.Minute,
+	)
+	require.NoError(t, err)
+
+	// The kernel boot ID is the real one on Linux and empty elsewhere, so
+	// use the boot ID of the mock entries and apply the change by hand.
+	sm.currentBootID = "boot-2"
+	sm.handleBootIDChange("", "boot-2")
+
+	recorder := &recordingHandler{}
+	sm.checkToHandlerMap[check.Name] = recorder
+
+	require.NoError(t, sm.Run(context.Background()))
+
+	require.Len(t, recorder.messages, 1, "the XID logged before the monitor started must be processed")
+	assert.Contains(t, recorder.messages[0], "Xid (PCI:0000:38:00): 79")
+}
+
+// TestBootStartScan_RetryKeepsTheSeekTarget verifies that a boot-start scan
+// stopped at its first entry seeks to the same time on the next poll. No
+// cursor is stored for that entry, so a target taken from the clock again
+// would move past it once the platform connector had been away for longer
+// than the lookback window.
+func TestBootStartScan_RetryKeepsTheSeekTarget(t *testing.T) {
+	check := CheckDefinition{Name: "mockCheck", JournalPath: TEST_JOURNAL_PATH}
+
+	mockJournal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "sxid123 first", Cursor: "cursor-1", BootID: "boot-2",
+				Fields: map[string]string{FieldBootID: "boot-2"}},
+		},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+
+	mockPCClient := &mockPlatformConnectorClient{}
+	sm, err := NewSyslogMonitorWithFactory(TEST_NODE, []CheckDefinition{check}, mockPCClient,
+		TEST_AGENT, TEST_COMPONENT, "60s", t.TempDir()+"/state.json", mockFactory,
+		"http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "", nil, "tcp://test", 30*time.Minute)
+	require.NoError(t, err)
+
+	sm.currentBootID = "boot-2"
+	sm.handleBootIDChange("", "boot-2")
+
+	sm.checkToHandlerMap[check.Name] = &mockHandler{
+		nodeName: "test", defaultAgentName: "syslog-health-monitor", defaultComponentClass: "GPU", checkName: "mockCheck",
+	}
+
+	// A unix target whose socket does not exist makes every Publish fail.
+	sm.pub = healthpub.New(mockPCClient, "unix:///nonexistent/nvsentinel/pc.sock", sm.defaultAgentName)
+
+	require.ErrorIs(t, sm.executeCheck(check), errSendFailed)
+
+	firstTarget := mockJournal.LastSeekRealtimeUsec
+	require.NotZero(t, firstTarget)
+
+	time.Sleep(2 * time.Millisecond)
+
+	mockJournal.Closed = false
+	require.ErrorIs(t, sm.executeCheck(check), errSendFailed)
+	assert.Equal(t, firstTarget, mockJournal.LastSeekRealtimeUsec, "the retry seeks to the same time")
+
+	// The connector is back: the entry is published.
+	mockJournal.Closed = false
+	sm.pub = healthpub.New(mockPCClient, "tcp://test", sm.defaultAgentName)
+	require.NoError(t, sm.executeCheck(check))
+	assert.Len(t, mockPCClient.RecordedHealthEvents, 1)
+}
+
 // TestBootIDChange_SecondPollResumesFromCursor verifies that after the
 // initial post-reboot scan, subsequent poll cycles resume from the saved
 // cursor rather than re-scanning from boot start.
@@ -1065,9 +1201,9 @@ func TestBootIDChange_RealJournalFormat_ReportsCurrentBootXIDsOnce(t *testing.T)
 	assert.Equal(t, "cursor-3", sm.checkLastCursors[check.Name])
 }
 
-// TestNoBootChange_StillSeeksTail verifies that on first install (no
-// boot-ID change, no saved cursor), the monitor still seeks to the
-// journal tail and does NOT process historical entries.
+// TestNoBootChange_StillSeeksTail verifies that with no boot-ID change
+// and no saved cursor the monitor still seeks to the journal tail and
+// does NOT process historical entries.
 func TestNoBootChange_StillSeeksTail(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateFilePath := tmpDir + "/state.json"
@@ -1091,16 +1227,7 @@ func TestNoBootChange_StillSeeksTail(t *testing.T) {
 	mockFactory.DefaultJournal = &MockJournal{TestBootID: "boot-1", CurrentPosition: -1}
 
 	// State with same boot ID as current (no reboot detected).
-	// Empty BootID simulates first install (no previous state). The
-	// postRebootInit flag is only set when oldBootID != "", so this
-	// correctly exercises the SeekTail path on any platform.
-	initialState := syslogMonitorState{
-		Version:          stateFileVersion,
-		BootID:           "",
-		CheckLastCursors: map[string]string{},
-	}
-	stateData, _ := json.Marshal(initialState)
-	_ = os.WriteFile(stateFilePath, stateData, 0o644)
+	writeStateForCurrentBoot(t, stateFilePath)
 
 	sm, err := NewSyslogMonitorWithFactory(
 		TEST_NODE,
@@ -1753,6 +1880,7 @@ func TestExecuteCheck_UndeliveredEventStopsThePassWithoutBusyLooping(t *testing.
 
 	testStateFile := "/tmp/test-syslog-monitor-state-publish-rejection.json"
 	defer os.Remove(testStateFile)
+	writeStateForCurrentBoot(t, testStateFile)
 
 	mockPCClient := &mockPlatformConnectorClient{}
 	sm, err := NewSyslogMonitorWithFactory(TEST_NODE, []CheckDefinition{check}, mockPCClient,
@@ -1833,6 +1961,7 @@ func TestExecuteCheck_RejectedEventIsSkippedNotRetried(t *testing.T) {
 
 	testStateFile := "/tmp/test-syslog-monitor-state-publish-rejected.json"
 	defer os.Remove(testStateFile)
+	writeStateForCurrentBoot(t, testStateFile)
 
 	client := &rejectingPlatformConnectorClient{}
 	sm, err := NewSyslogMonitorWithFactory(TEST_NODE, []CheckDefinition{check}, client,
