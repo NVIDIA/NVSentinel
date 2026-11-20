@@ -98,18 +98,55 @@ kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
 
 ### Partial Drain
 
-If this setting is enabled, the node-drainer drains only the pods that use the GPU_UUID impacted entity in COMPONENT_RESET health events. If it is disabled, the node-drainer drains all eligible pods on the impacted node for the configured namespaces, regardless of the remediation action. Health events with the COMPONENT_RESET remediation action must include an impacted entity for the unhealthy GPU_UUID. Otherwise, the drain fails.
-
-A partial drain also cannot make progress if a pod requests GPUs but has no `dgxc.nvidia.com/devices` annotation. A missing annotation means that the metadata-collector does not work, or that its pod device mapper is disabled (`metadata-collector.podMapper.enabled: false`). The node-drainer does not drain the wrong pods. Instead, it returns an error and continues to retry the health event. Thus, the drain does not complete until the annotation appears or the pod is removed.
-
-A pod requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. The node-drainer reads ResourceClaims only for pods that have DRA claims and no device annotation.
-
-IMPORTANT: If this setting is enabled, the COMPONENT_RESET action in fault-remediation must map to a custom resource that acts only on the GPU_UUID. If partial drain is enabled in node-drainer but fault-remediation maps COMPONENT_RESET to a reboot action, the reboot restarts the pods that node-drainer did not drain.
+If enabled, the node-drainer drains only the pods that use the failed device when the action of a health event repairs one device. If disabled, the node-drainer drains all eligible pods on the impacted node for the configured namespaces, whatever the action.
 
 ```yaml
 node-drainer:
   partialDrainEnabled: true
 ```
+
+`global.partialRemediationEntityTypes` says which actions repair one device, and which devices they cover. The default covers NVIDIA GPUs: for `COMPONENT_RESET`, the node-drainer drains the pods that use the GPU named by the `GPU_UUID` entity of the event.
+
+```yaml
+global:
+  partialRemediationEntityTypes:
+    GPU_UUID:
+      devices:
+        - resourceNames: ["nvidia.com/gpu", "nvidia.com/pgpu"]
+        - driver: gpu.nvidia.com
+          deviceClasses: ["gpu.nvidia.com"]
+          entityValueAttribute: uuid
+      scopedActions: ["COMPONENT_RESET"]
+```
+
+- Each key is an entity type of health events, such as `GPU_UUID`.
+- `devices` lists how pods get a device of that type. A device-plugin entry sets `resourceNames`, the exact resource names that pods request. A DRA entry sets `driver`, the name that the kubelet reports for an allocated device, `deviceClasses`, the DeviceClass names that pods use in their claims, and `entityValueAttribute`, the ResourceSlice attribute whose value health events report for the device. One entry cannot set both kinds of fields.
+- `scopedActions` lists the actions, built-in or custom, that repair one device of the type. An action can be listed under only one entity type. Any other action drains the full node.
+
+The chart fails the install if an entry breaks these rules, and the node-drainer checks them again when it starts.
+
+To add a device type, add another key. Helm merges it with the default. This example drains only the pods that use the failed accelerator for the custom action `accel-reset`:
+
+```yaml
+global:
+  partialRemediationEntityTypes:
+    ACCEL_SERIAL:
+      devices:
+        - driver: accel.example.com
+          deviceClasses: ["accel.example.com"]
+          entityValueAttribute: serial
+      scopedActions: ["accel-reset"]
+```
+
+To stop partial drains for GPUs but keep another type, set `GPU_UUID.scopedActions` to `[]`. Setting `GPU_UUID` to `null` does not remove the default.
+
+A health event with a scoped action must include an entity of that type with a value. Otherwise the drain fails and retries.
+
+A partial drain waits if a pod requests a device of the entity type and its `dgxc.nvidia.com/devices` annotation has no entry for that resource name or DRA driver. This happens when the metadata-collector is not working, when its pod device mapper is disabled (`metadata-collector.podMapper.enabled: false`), or when the mapper wrote the annotation before you added the name. Rather than drain the wrong pods, the node-drainer returns an error and retries the event until the annotation has the entry or the pod is removed. A pod requests a device through a container limit for one of the `resourceNames`, or through a DRA ResourceClaim for one of the `deviceClasses`. The node-drainer reads the ResourceClaims of a pod only when its annotation has no entry for one of the drivers of the entity type.
+
+At this time, the pod device mapper records only the default GPU resource names and the `gpu.nvidia.com` driver, and fault-remediation accepts only `GPU_UUID` in `impactedEntityScope`. You can configure another entity type here, but its partial drains wait for the mapper to record its devices.
+
+IMPORTANT: If partial drain is enabled, each action in `scopedActions` must map to a custom resource in fault-remediation that acts only on the device that the event names. If fault-remediation maps a scoped action, such as `COMPONENT_RESET`, to a reboot, the reboot restarts the pods that the partial drain did not drain.
 
 Post-remediation validation in fault-quarantine must know whether a health event was drained partially. `fault-quarantine.validation.partialDrainEnabled` defaults to `false`, the same as this setting. If you enable partial drain here, do one of these steps:
 
@@ -223,12 +260,7 @@ node-drainer:
   drainGPUPods: false
 ```
 
-The node-drainer detects GPU resource requests through device annotations, which the metadata-collector adds to pods. The node-drainer identifies pods with device annotations as GPU workloads that are eligible for eviction. A pod without the annotation is also a GPU workload if it requests GPUs in one of these ways:
-
-- through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits
-- through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass
-
-If the node-drainer cannot read a ResourceClaim, the drain stops and retries.
+The node-drainer detects GPU resource requests through device annotations added to pods by the metadata-collector. Pods with device annotations are identified as GPU workloads and eligible for eviction. A pod without the annotation is also a GPU workload if it requests a device of any entity type in [`global.partialRemediationEntityTypes`](#partial-drain), through a container limit for one of its `resourceNames` or a DRA ResourceClaim for one of its `deviceClasses`. By default, these are `nvidia.com/gpu` and `nvidia.com/pgpu` container limits, and the `gpu.nvidia.com` DeviceClass. If the node-drainer cannot read a ResourceClaim, the drain stops and retries.
 
 The metadata-collector adds device annotations to pods that request GPU resources. The annotations have this format:
 

@@ -24,6 +24,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/ruleset"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 )
@@ -78,6 +79,20 @@ type TomlConfig struct {
 	// Registers node_drainer_partial_drains_total, which labels partial drains with the
 	// entity they targeted. Off by default because entity_value is a GPU UUID.
 	PartialDrainEntityMetricEnabled bool `toml:"partialDrainEntityMetricEnabled"`
+	// PartialRemediationEntityTypes lists the entity types that get partial drains, their devices and
+	// their scoped actions. The chart renders it from global.partialRemediationEntityTypes. Read it
+	// through EntityTypes, which falls back to the built-in GPU_UUID entry when the key is absent.
+	PartialRemediationEntityTypes model.PartialRemediationEntityTypes `toml:"partialRemediationEntityTypes"`
+}
+
+// EntityTypes returns the configured entity-type map, or the built-in GPU_UUID entry when the
+// configuration has no partialRemediationEntityTypes key.
+func (c *TomlConfig) EntityTypes() model.PartialRemediationEntityTypes {
+	if c.PartialRemediationEntityTypes == nil {
+		return model.DefaultPartialRemediationEntityTypes()
+	}
+
+	return c.PartialRemediationEntityTypes
 }
 
 func (d *Duration) UnmarshalTOML(text any) error {
@@ -204,6 +219,11 @@ func validateAndSetDefaults(config *TomlConfig, md toml.MetaData) (*TomlConfig, 
 
 	if err := validateCustomDrainConfig(config); err != nil {
 		return nil, err
+	}
+
+	config.PartialRemediationEntityTypes = config.EntityTypes()
+	if err := config.PartialRemediationEntityTypes.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid partialRemediationEntityTypes: %w", err)
 	}
 
 	if err := setTimeoutDefaults(config); err != nil {

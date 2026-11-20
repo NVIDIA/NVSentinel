@@ -24,6 +24,9 @@ const (
 )
 
 var (
+	// EntityTypeToResourceNames is the fixed GPU_UUID map that the pod device mapper and the
+	// fault-remediation impactedEntityScope check still read. node-drainer reads the configured
+	// PartialRemediationEntityTypes instead. Both readers move to that map, and this one is removed.
 	EntityTypeToResourceNames = map[string][]string{
 		"GPU_UUID": {
 			"nvidia.com/gpu",
