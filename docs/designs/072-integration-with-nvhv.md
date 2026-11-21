@@ -2,9 +2,9 @@
 
 ## Context
 
-NVHV ([Health Validation](https://github.com/dsx-ai-factory/health-validation)) runs node health checks, such as DCGM's health checks and Xid detection, and reports the result as one verdict for the node. Serving that verdict over gRPC (`health.verdict.v1.VerdictService/Evaluate`, through `health-validation serve`) isn't in NVHV yet: it is in flight in [NVHV PR 268](https://github.com/dsx-ai-factory/health-validation/pull/268), and this design depends on it. Each result in the verdict has a severity and an action. NVSentinel plans to use these checks in place of its own, one kind at a time, such as Xid detection, done today by syslog-health-monitor, and the DCGM health checks, done today by gpu-health-monitor (GHM).
+NVHV ([Health Validation](https://github.com/dsx-ai-factory/health-validation)) runs node health checks, such as DCGM's health checks and Xid detection, and reports the result as one verdict for the node. `health-validation serve` serves that verdict over gRPC (`health.verdict.v1.VerdictService/Evaluate`). Each result in the verdict has a severity and an action. NVSentinel plans to use these checks in place of its own, one kind at a time, such as Xid detection, done today by syslog-health-monitor, and the DCGM health checks, done today by gpu-health-monitor (GHM).
 
-Every kind of check needs the same things from NVSentinel: a way to run NVHV on each GPU node, call it, turn its verdict into health events, and handle NVHV being down. This ADR decides those shared parts once; how each kind of check's results become events will be designed separately.
+Every kind of check needs the same things from NVSentinel: a way to run NVHV on each GPU node, call it, turn its verdict into health events, and handle NVHV being down. This ADR decides those shared parts once; how each kind of check's results become events, and how that check moves from the monitor that runs it today (which monitor acts on it during the move, and in what order), will be designed separately.
 
 ## Decision
 
@@ -27,23 +27,24 @@ flowchart TB
   NVHV --> SRC
 ```
 
-- **Pod.** One pod per GPU node, from a DaemonSet in NVSentinel's chart, with two containers: the monitor, and NVHV (`health-validation serve`, loopback only) from the image NVHV publishes.
+- **Pod.** One pod per GPU node, from a DaemonSet in NVSentinel's chart, with two containers: the monitor, and NVHV (`health-validation serve`, loopback only) from the image NVHV publishes. NVSentinel needs that image to carry the native libraries NVHV's checks load (for example DCGM's `libdcgm.so.4`), so the sidecar needs no host mount for them.
   - **NVHV owns:** running the checks, each result's severity and action, and the connections to the sources it reads (for example DCGM, NVML and the host journal).
   - **The monitor owns:** the poll interval, the faults it reported, saved state, and the events.
-- **Poll.** Every poll interval (configurable, default 15 s) the monitor calls `Evaluate` and gets one verdict for the node. It turns the results into events in the way designed for each kind of check, and publishes only what changed; when nothing changed, it publishes nothing.
-- **Publishing.** The events of one poll go to NVSentinel's platform connector in one batch, through NVSentinel's shared publishing client: the node-local platform connector socket, or a central connector when `HEALTH_PUBLISH_TARGET` is set. The monitor updates its record of reported faults only after the batch was delivered; if publishing fails, the next poll sends the same events again.
-- **NVHV unreachable.** When the call to NVHV fails (`DEADLINE_EXCEEDED`, `UNAVAILABLE`, `INTERNAL`, or no connection), the monitor logs it, sends no health event, and neither raises nor clears any fault until NVHV answers again. Kubernetes restarts NVHV through its liveness probe.
+- **Poll.** Every poll interval (configurable, default 15 s) the monitor calls `Evaluate` and gets one verdict for the node. It turns the results into events in the way designed for each kind of check, and publishes only what changed; when nothing changed, it publishes nothing. A check that is missing from a verdict, or UNKNOWN, never clears a fault the monitor reported: for example, a verdict that holds only `collection_source_busy` leaves every reported fault as it is. Only a result that the check's design treats as a recovery clears a fault.
+- **Publishing.** The events of one poll go to NVSentinel's platform connector in one batch, through NVSentinel's shared publishing client: the node-local platform connector socket, or a central connector when `HEALTH_PUBLISH_TARGET` is set. The monitor updates its record of reported faults only after the batch was delivered. If publishing fails, the record stays as it was, so the next poll computes its events against the same record.
+- **NVHV unreachable.** When the call to NVHV fails (`DEADLINE_EXCEEDED`, `UNAVAILABLE`, `INTERNAL`, or no connection), the monitor logs it, sends no health event, and neither raises nor clears any fault until NVHV answers again. Kubernetes restarts NVHV when it crashes, and when a call stays stuck.
+- **Recovering a stuck NVHV call.** A check can get stuck in a native library call that NVHV can't cancel. NVHV's `serve` keeps serving meanwhile: every later `Evaluate` returns at once with only a `collection_source_busy` check (UNKNOWN, naming the stuck source and when its call started), and no other check runs until that call returns. Only a restart of the NVHV container ends the call, and a probe on NVHV's port or verdict API keeps passing because NVHV still answers. So NVHV must let the kubelet restart it once a call stays stuck past a configurable deadline, set well above NVHV's request timeout. NVHV already tracks each stuck call and when it started (it reports them in `collection_source_busy`), so the deadline is measured from that. Kubelet probes connect to the pod IP, and NVHV's verdict port listens only on loopback, so a probe can't reach it directly. NVHV doesn't do this yet; it is requested in [NVHV issue 319](https://github.com/dsx-ai-factory/health-validation/issues/319). NVHV decides how (for example a health command for an `exec` probe, a gRPC health port on the pod IP, or exiting on its own), and the chart sets up the matching liveness probe.
 - **Chart.** NVSentinel's chart provides:
   - `global.nvidiaHealthValidationMonitor.enabled`, which turns the monitor on for the whole cluster.
   - one poll interval, configurable in the chart (default 15 s), passed to the monitor and to the NVHV settings that depend on it;
   - NVHV's request budget, derived from the poll interval, so a request never outlives the next poll;
   - the monitor's processing strategy (default `EXECUTE_REMEDIATION`);
   - host mounts: the state file and the platform connector socket, or the `HEALTH_PUBLISH_*` settings for a central connector;
-- **Startup order.** On Kubernetes 1.29 and later, NVHV is a native sidecar: an init container with `restartPolicy: Always` and a startup probe on NVHV's port, so the monitor starts only after NVHV is listening, and Kubernetes restarts NVHV on its own. On Kubernetes 1.28 and earlier, NVHV is an ordinary second container, and the monitor's polls fail as NVHV unreachable until NVHV is up.
+- **Startup order.** On Kubernetes 1.29 and later, NVHV is a native sidecar: an init container with `restartPolicy: Always` and an `exec` startup probe that checks NVHV's loopback port from inside its container, so the monitor starts only after NVHV is listening, and Kubernetes restarts NVHV on its own. On Kubernetes 1.28 and earlier, NVHV is an ordinary second container, and the monitor's polls fail as NVHV unreachable until NVHV is up. On Kubernetes 1.29 to 1.32 the native sidecar needs the `SidecarContainers` feature gate on the API server and on every node; it is on by default, and a cluster that turns it off can reject the pod or leave it stuck in initialization. From 1.33 the gate is always on.
 
 ## Rationale
 
-- **NVHV owns its build.** The sidecar runs the image NVHV publishes, including the libraries its checks load, such as DCGM's.
+- **NVHV owns its build.** The sidecar runs the image NVHV publishes, which is to include the native libraries its checks load, such as DCGM's `libdcgm.so.4`, so the library versions come from NVHV, not from each host.
 - **Failures stay apart.** Kubernetes restarts each container on its own, so an NVHV crash doesn't take the monitor down, and NVHV gets its own liveness probe.
 - **One monitor for every check.** Polling, publishing, deployment and NVHV error handling are written once; a new kind of check adds only how its results become events and its settings.
 
@@ -57,11 +58,11 @@ flowchart TB
 
 ### Negative
 
-- **NVSentinel's detection depends on NVHV.** Everything the monitor reports comes from NVHV's verdict. While NVHV is unreachable (crashed, hung, restarting, or never started), no checks run on the node and no fault is raised or cleared; the monitor only logs it and emit the metric for alert.
+- **NVSentinel's detection depends on NVHV.** Everything the monitor reports comes from NVHV's verdict. While NVHV is unreachable (crashed, hung or restarting), no checks run on the node and no fault is raised or cleared; the monitor only logs it and emits a metric for alerting. If NVHV never starts (for example a wrong image), on Kubernetes 1.29 and later the monitor doesn't start either: the pod stays in `Init`, which shows in the pod's status, not in the monitor's metric. On 1.28 and earlier the monitor starts and reports it like any other unreachable NVHV.
 
 ### Mitigations
 
-- NVHV's liveness probe restarts it when it hangs, and the native sidecar keeps the monitor from polling before NVHV is listening.
+- The kubelet restarts NVHV once a call stays stuck past its deadline, and the native sidecar keeps the monitor from polling before NVHV is listening.
 
 ## Alternatives Considered
 
@@ -75,7 +76,7 @@ The sidecar design stays as it is and only the image's source changes: NVSentine
 **Rejected** because:
 
 1. **NVSentinel owns the image build:** it pins the NVHV version and the versions of the libraries NVHV's checks load, and rebuilds for every NVHV release or fix it needs.
-2. **The build must add those libraries.** NVHV's own image build leaves out the ones it expects to be mounted from the host (for example DCGM's `libdcgm.so.4`), so the script adds them itself.
+2. **The build must add those libraries.** NVHV's image build today leaves out the ones it expects to be mounted from the host (for example DCGM's `libdcgm.so.4`), so the script adds them itself.
 3. **External users have an extra step before installing.** The chart should refuse to turn on the monitor when no NVHV image is set, rather than start a pod that can't pull its sidecar.
 4. **Two builds must stay the same.** The internal pipeline runs the same script, so internal and external images are built the same way.
 
@@ -85,10 +86,10 @@ The monitor can import NVHV's Go module and run the checks it needs in its own p
 
 **Rejected** because:
 
-1. **The monitor must handle a hung check itself.** A check can hang in a native library call (for example a DCGM call), which Go can't cancel, so the monitor must not start a new evaluation while one is still running, and its liveness probe must fail once the call runs past a deadline. With the sidecar, NVHV runs one evaluation at a time and is restarted through its own liveness probe; a restart here restarts the whole monitor, not just NVHV.
+1. **The monitor must handle a hung check itself.** A check can hang in a native library call (for example a DCGM call), which Go can't cancel, so the monitor must not start a new evaluation while one is still running, and its liveness probe must fail once the call runs past a deadline. With the sidecar, NVHV runs one evaluation at a time and the kubelet restarts only the NVHV container; a restart here restarts the whole monitor, not just NVHV.
 2. **A crash in a native library NVHV loads stops the monitor** (for example DCGM's or NVML's), because the library is loaded into the monitor's process.
 3. **An NVHV fix needs a monitor release**, not just a new image tag.
-4. **No release to pin yet:** NVHV's module has no release tag yet, and before 1.0 a minor release can change its Go API.
+4. **No stable Go API yet:** NVHV's module is before 1.0 (latest release `toolkit/v0.3.2`), so a minor release can change its Go API.
 5. **The monitor must repeat what NVHV's CLI does around the library call:** set the execution context, cadence, node ID and timeouts; and report a failed GPU architecture discovery as a failed verdict, so that a node whose GPUs are all lost doesn't add up to PASS.
 
 ### Run NVHV as a child process in the monitor's container
@@ -108,7 +109,6 @@ Instead of a new monitor, each existing monitor gets a flag that switches it bet
 
 1. **NVHV doesn't fit cleanly into any one existing monitor.** Its checks span areas that NVSentinel's monitors split between them today (DCGM in gpu-health-monitor, Xid in syslog-health-monitor), and more kinds of check will be added. Putting NVHV into one of them would tie unrelated checks to that monitor: a user who wants a new kind of NVHV check would have to turn on gpu-health-monitor for it.
 2. **Regressions in monitors already in production.** The existing monitors run in production clusters; adding a second detection path inside them risks breaking what works today.
-3. **Each check runs in exactly one monitor.** A kind of check comes either from NVHV or from the old monitor, never both. A separate monitor keeps that split clear; flags inside the existing monitors would spread it across several of them.
 
 ### A separate monitor for each kind of NVHV check
 
@@ -117,4 +117,4 @@ Instead of a new monitor, each existing monitor gets a flag that switches it bet
 ## References (Optional)
 
 - [NVHV (Health Validation) repository](https://github.com/dsx-ai-factory/health-validation)
-- [NVHV PR 268: serve node verdicts over HTTP and gRPC](https://github.com/dsx-ai-factory/health-validation/pull/268) (in flight), which adds the verdict API (`proto/health/v1/verdict.proto`)
+- [NVHV verdict API](https://github.com/dsx-ai-factory/health-validation/blob/main/proto/health/v1/verdict.proto) (`proto/health/v1/verdict.proto`)
