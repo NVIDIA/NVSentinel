@@ -129,7 +129,7 @@ leaves the node cordoned and the pipeline mid-flight:
     echo
     success "The fault is on the node as a condition"
 
-    next_step "./scripts/03-watch-remediation.sh   watch the custom remediation run"
+    next_step "./scripts/03-watch-remediation.sh   watch the custom remediation run (start it right away)"
 }
 
 main() {
