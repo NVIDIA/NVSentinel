@@ -67,8 +67,12 @@ not_cordoned() {
 # All three are needed. Without not_cordoned this would also match the window
 # between the hog's deletion and the uncordon, where the stages below still pass.
 # Without reclaim_processed it would match a cluster where step 2 never ran.
+#
+# not_cordoned is read last because the uncordon is the last thing to happen.
+# Read first, it could see the node just before the cordon, and the other two
+# could then turn true while the node is cordoned and the run is still in progress.
 already_remediated() {
-    not_cordoned && hog_gone && reclaim_processed
+    hog_gone && reclaim_processed && not_cordoned
 }
 
 # Nothing in this script drives the remediation; it only watches. Once the node
