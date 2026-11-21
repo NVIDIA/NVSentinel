@@ -140,6 +140,8 @@ If that fails too, reset rather than retrying further — a half-processed event
 | Remediate | fault-remediation, then memory-reclaim-controller | a `MemoryReclaim` existing, then `status.reclaimedPods` being written, then the pod gone |
 | Back in service | the monitor, then fault-quarantine | `MemoryAvailableCheck` turning `False`, then the node uncordoned |
 
+Start this step right after step 2. Nothing in it drives the remediation: once the fault lands, the controllers run the whole cycle on their own, and the script only watches it happen. If the node is already back in service when the script starts, it stops at once and asks you to run step 2 again.
+
 Every check reads an object — a node condition, a CR status, a `deletionTimestamp` — never a controller's log. Logs are for debugging; a demo that asserts on them asserts on wording.
 
 **Completion is not remediation.** The controller closes the request whether or not it found anything to delete, so `MemoryReclaimed=True` on its own proves nothing. It records what it actually did:

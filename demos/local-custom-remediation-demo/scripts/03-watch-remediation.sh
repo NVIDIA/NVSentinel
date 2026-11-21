@@ -60,6 +60,30 @@ not_cordoned() {
     [[ "$unschedulable" != "true" ]]
 }
 
+# True when the whole cycle ran before this script started: the node is
+# schedulable again, the hog is gone, and a MemoryReclaim records the controller
+# acting on it.
+#
+# All three are needed. Without not_cordoned this would also match the window
+# between the hog's deletion and the uncordon, where the stages below still pass.
+# Without reclaim_processed it would match a cluster where step 2 never ran.
+already_remediated() {
+    not_cordoned && hog_gone && reclaim_processed
+}
+
+# Nothing in this script drives the remediation; it only watches. Once the node
+# is back in service there is no cordon left to wait for, and the timeout in
+# protect would blame fault-quarantine for work it already did.
+stop_if_already_remediated() {
+    already_remediated || return 0
+
+    fail "$NODE is schedulable, $WORKLOAD_NAME is gone and a MemoryReclaim records the controller's work,
+so the remediation appears to have finished before this script started.
+The cycle runs on its own as soon as step 2 finishes; this script can only watch it while it happens.
+Run step 2 again and start this script right after it:
+  ./scripts/02-trigger-pressure.sh && ./scripts/03-watch-remediation.sh"
+}
+
 protect() {
     section "Protect"
 
@@ -149,6 +173,7 @@ main() {
     require_cluster
     NODE="$(worker_node)"
 
+    stop_if_already_remediated
     protect
     remediate
     back_in_service
