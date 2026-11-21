@@ -125,6 +125,20 @@ janitor:
 
 When `true`, the RebootNode and TerminateNode controllers do not call the Janitor Provider. Thus, the Janitor does not trigger real node reboots or terminations. Manual mode does not apply to GPUReset CRs: the Janitor still runs each GPU reset. Use this setting to test the creation of janitor CRs by fault-remediation, without real node reboots or terminations.
 
+A request that waits in manual mode is not deleted when its node is uncordoned. Delete the waiting `RebootNode`, `TerminateNode` and `GPUReset` resources before you turn manual mode off or disable a controller. The webhook rejects the delete while the controller of the kind is disabled, and with manual mode off the controller runs every request that is still waiting.
+
+## Require Node Out of Service
+
+```yaml
+janitor:
+  config:
+    requireNodeOutOfService: true
+```
+
+When `true`, the default, the Janitor refuses a reboot, a terminate or a GPU reset on a node that is neither cordoned nor quarantined by NVSentinel. A node is quarantined while it has the `quarantineHealthEvent` annotation, which fault-quarantine sets also for a ruleset that taints without a cordon. The check runs before the Janitor sends the reboot or terminate signal, and before the GPU reset stops any service. A refused `RebootNode` or `TerminateNode` gets the `SignalSent` condition `False` with the reason `NodeInService`. A refused `GPUReset` fails with the reason `NodeInService`. A refused request is complete, so delete it and create a new one after you cordon the node.
+
+This protects a node that went back into service while a request for it waited, for example in manual mode. Set it to `false` if you create requests for nodes that stay schedulable.
+
 ## HTTP Port
 
 ```yaml

@@ -389,6 +389,19 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 				slog.InfoContext(ctx, "Manual mode enabled, janitor will not send terminate signal for node", "node", node.Name)
 
 				result = ctrl.Result{}
+			} else if refuseNodeInService(r.Config.RequireNodeOutOfService, node) {
+				slog.WarnContext(ctx, "Node is neither cordoned nor quarantined, janitor will not terminate it",
+					"node", node.Name)
+				terminateNode.SetCompletionTime()
+				terminateNode.SetCondition(metav1.Condition{
+					Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent,
+					Status:             metav1.ConditionFalse,
+					Reason:             conditionReasonNodeInService,
+					Message:            "Node is neither cordoned nor quarantined, refusing to terminate it",
+					LastTransitionTime: metav1.Now(),
+				})
+
+				result = ctrl.Result{}
 			} else {
 				slog.InfoContext(ctx, "Sending terminate signal to node", "node", terminateNode.Spec.NodeName)
 				metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)

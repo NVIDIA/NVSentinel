@@ -39,13 +39,15 @@ type Config struct {
 
 // GlobalConfig contains global janitor settings
 type GlobalConfig struct {
-	Timeout              time.Duration `mapstructure:"timeout" json:"timeout"`
-	ManualMode           *bool         `mapstructure:"manualMode" json:"manualMode"`
-	Nodes                NodeConfig    `mapstructure:"nodes" json:"nodes"`
-	CSPProviderHost      string        `mapstructure:"cspProviderHost" json:"cspProviderHost"`
-	CSPProviderCAPath    string        `mapstructure:"cspProviderCAPath" json:"cspProviderCAPath,omitempty"`
-	CSPProviderInsecure  bool          `mapstructure:"cspProviderInsecure" json:"cspProviderInsecure,omitempty"`
-	CSPProviderTokenPath string        `mapstructure:"cspProviderTokenPath" json:"cspProviderTokenPath,omitempty"`
+	Timeout    time.Duration `mapstructure:"timeout" json:"timeout"`
+	ManualMode *bool         `mapstructure:"manualMode" json:"manualMode"`
+	// RequireNodeOutOfService refuses maintenance on a node that is neither cordoned nor quarantined. Default true.
+	RequireNodeOutOfService *bool      `mapstructure:"requireNodeOutOfService" json:"requireNodeOutOfService"`
+	Nodes                   NodeConfig `mapstructure:"nodes" json:"nodes"`
+	CSPProviderHost         string     `mapstructure:"cspProviderHost" json:"cspProviderHost"`
+	CSPProviderCAPath       string     `mapstructure:"cspProviderCAPath" json:"cspProviderCAPath,omitempty"`
+	CSPProviderInsecure     bool       `mapstructure:"cspProviderInsecure" json:"cspProviderInsecure,omitempty"`
+	CSPProviderTokenPath    string     `mapstructure:"cspProviderTokenPath" json:"cspProviderTokenPath,omitempty"`
 }
 
 // NodeConfig contains configuration for nodes
@@ -59,6 +61,8 @@ type RebootNodeControllerConfig struct {
 	Enabled bool
 	// ManualMode indicates if the controller should skip sending reboot signals
 	ManualMode *bool
+	// RequireNodeOutOfService refuses to reboot a node that is neither cordoned nor quarantined. Nil means false.
+	RequireNodeOutOfService *bool
 	// Timeout for reboot operations
 	Timeout time.Duration
 	// Exclusions defines label selectors for nodes that should be excluded from reboot operations
@@ -80,6 +84,8 @@ type TerminateNodeControllerConfig struct {
 	Enabled bool
 	// ManualMode indicates if the controller should skip sending terminate signals
 	ManualMode *bool
+	// RequireNodeOutOfService refuses to terminate a node that is neither cordoned nor quarantined. Nil means false.
+	RequireNodeOutOfService *bool
 	// Timeout for terminate operations
 	Timeout time.Duration
 	// NodeExclusions defines label selectors for nodes that should be excluded from terminate operations
@@ -97,13 +103,16 @@ type TerminateNodeControllerConfig struct {
 
 // GPUResetControllerConfig contains configuration for gpu reset controller
 type GPUResetControllerConfig struct {
-	Enabled         bool                   `mapstructure:"enabled" json:"enabled"`
-	ManualMode      *bool                  `mapstructure:"manualMode" json:"manualMode"`
-	Timeout         time.Duration          `mapstructure:"timeout" json:"timeout"`
-	Mock            bool                   `mapstructure:"mock" json:"mock"`
-	Exclusions      []metav1.LabelSelector `mapstructure:"exclusions" json:"exclusions"`
-	CSPProviderHost string                 `mapstructure:"cspProviderHost" json:"cspProviderHost"`
-	ServiceManager  gpuservices.Manager    `mapstructure:"serviceManager" json:"serviceManager"`
+	Enabled    bool  `mapstructure:"enabled" json:"enabled"`
+	ManualMode *bool `mapstructure:"manualMode" json:"manualMode"`
+	// RequireNodeOutOfService refuses to reset a GPU on a node that is neither cordoned nor quarantined.
+	// Nil means false.
+	RequireNodeOutOfService *bool                  `mapstructure:"requireNodeOutOfService" json:"requireNodeOutOfService"`
+	Timeout                 time.Duration          `mapstructure:"timeout" json:"timeout"`
+	Mock                    bool                   `mapstructure:"mock" json:"mock"`
+	Exclusions              []metav1.LabelSelector `mapstructure:"exclusions" json:"exclusions"`
+	CSPProviderHost         string                 `mapstructure:"cspProviderHost" json:"cspProviderHost"`
+	ServiceManager          gpuservices.Manager    `mapstructure:"serviceManager" json:"serviceManager"`
 	// reset ResetJob will be used to construct the ResolvedJobTemplate from the default Job template
 	ResetJob            ResetJobConfig `mapstructure:"resetJob" json:"resetJob"`
 	ResolvedJobTemplate *batchv1.JobTemplateSpec

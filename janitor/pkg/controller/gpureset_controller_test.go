@@ -2470,6 +2470,58 @@ var _ = Describe("GPUReset Controller", func() {
 			expectUnchanged(observed, nodeLabels, nil)
 		})
 
+		It("should refuse the reset without changing a node label when the node is neither cordoned nor quarantined", func() {
+			reconciler.Config.RequireNodeOutOfService = new(true)
+			nodeLabels := devicePluginDeployLabels()
+			createNodeWithOperandPods(nodeLabels, devicePluginOperandPodLabels())
+			createReset()
+
+			var observed []map[string]string
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var currentNode corev1.Node
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &currentNode)).To(Succeed())
+				observed = append(observed, currentNode.Labels)
+
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.CompletionTime).NotTo(BeNil())
+			}, "20s", "100ms").Should(Succeed())
+
+			updatedReset := getReset()
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonNodeInService)))
+			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&updatedReset, metav1.ConditionFalse, v1alpha1.ReasonNodeInService)
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeNil())
+			Expect(updatedReset.Status.ManagedServices).To(BeNil())
+			Expect(updatedReset.Status.JobRef).To(BeNil())
+
+			By("Verifying no node label was ever changed")
+			expectUnchanged(observed, nodeLabels, nil)
+		})
+
+		It("should reset the GPUs of a cordoned node when the node must be out of service", func() {
+			reconciler.Config.RequireNodeOutOfService = new(true)
+			createNodeWithOperandPods(devicePluginDeployLabels(), devicePluginOperandPodLabels())
+
+			var node corev1.Node
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &node)).To(Succeed())
+			node.Spec.Unschedulable = true
+			Expect(k8sClient.Update(ctx, &node)).To(Succeed())
+			Eventually(func(g Gomega) {
+				var cached corev1.Node
+				g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: nodeName}, &cached)).To(Succeed())
+				g.Expect(cached.Spec.Unschedulable).To(BeTrue())
+			}, "10s", "100ms").Should(Succeed())
+
+			createReset()
+			reconcileUntil(v1alpha1.Complete)
+			Expect(getConditionReason(v1alpha1.ServicesTornDown)).To(Equal(string(v1alpha1.ReasonServiceTeardownSucceeded)))
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+		})
+
 		// setNodeLabel sets a deploy label on the node and waits until the reconciler cache holds the value.
 		setNodeLabel := func(label, value string) {
 			var node corev1.Node

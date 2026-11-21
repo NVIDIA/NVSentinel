@@ -8,6 +8,7 @@ require (
 	github.com/nvidia/nvsentinel/api v0.0.0
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
+	github.com/nvidia/nvsentinel/fault-quarantine v0.0.0
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/prometheus/client_golang v1.25.0
@@ -131,5 +132,7 @@ replace github.com/nvidia/nvsentinel/store-client => ../store-client
 replace github.com/nvidia/nvsentinel/data-models => ../data-models
 
 replace github.com/nvidia/nvsentinel/commons => ../commons
+
+replace github.com/nvidia/nvsentinel/fault-quarantine => ../fault-quarantine
 
 replace github.com/nvidia/nvsentinel/api => ../api
