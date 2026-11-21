@@ -124,7 +124,7 @@ Watcher-based components persist change stream resume tokens. After a restart, a
 To skip the accumulated health events and start from the current stream head, do these steps:
 
 1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](../runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
-2. Scale the component to zero.
+2. Scale the component to zero. Wait until no pod of the component exists.
 3. In the runtime resume-control ConfigMap, patch the key of the component from `RESUME` to `CREATE`.
 4. Scale the component to one replica.
 5. After the component sets its key back to `RESUME`, restore the replicas of the component.
@@ -140,7 +140,7 @@ During the startup in step 4, the component does these actions:
 
 Later restarts still run cold-start recovery, but only for records that are newer than the recorded cutoff.
 
-Helm does not create the resume-control ConfigMap. If the ConfigMap is missing, the components create it at runtime. Thus, GitOps controllers such as Argo CD do not revert your patches to its data. When a component starts and its key is missing, the component writes its key as `RESUME`. Thus, over time, the ConfigMap gets an explicit state for each component.
+Helm does not create the resume-control ConfigMap. If the ConfigMap is missing, the components create it at runtime. Thus, a GitOps controller does not revert your patches to the ConfigMap data, unless a GitOps application declares the ConfigMap. Do not declare the ConfigMap in a GitOps application. When a component starts and its key is missing, the component writes its key as `RESUME`. Thus, over time, the ConfigMap gets an explicit state for each component.
 
 This example does steps 2 to 5 for node-drainer. Run these commands one at a time. If a `kubectl wait` command fails, find the cause before you continue.
 

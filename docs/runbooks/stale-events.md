@@ -21,7 +21,7 @@ The module recovers from this error automatically. It deletes its stale resume t
 
 The modules must also start fresh, without processing the accumulated events, in these cases:
 
-1. **Disabled modules** - Fault handling modules were disabled for a long time while health events continued to accumulate. For this case, do step 2 before you enable the modules again. In step 2, set only the keys of the modules that you enable again. To enable each module with one replica, set `replicaCount: 1` in the values of its subchart. Then continue at step 4.
+1. **Disabled modules** - Fault handling modules were disabled for a long time while health events continued to accumulate. For this case, do step 2 before you enable the modules again. In step 2, set only the keys of the modules that you enable again. To enable a module, set the matching Helm value to `true`: `global.faultQuarantine.enabled`, `global.nodeDrainer.enabled` or `global.faultRemediation.enabled`. Also set `replicaCount: 1` in the values of its subchart, so that it starts with one replica. Then continue at step 4.
 2. **Circuit breaker tripped** - The circuit breaker stayed tripped for an extended period, and many unprocessed events accumulated. A restart does not reset the breaker, and fault-quarantine processes no health events while the breaker is tripped. For this case, follow the [circuit breaker runbook](./circuit-breaker.md) instead of the procedure below. It tells you how to investigate the cause before you reset the breaker. To skip the accumulated health events, reset the breaker with the `CREATE` cursor.
 
 ## Procedure
@@ -34,7 +34,7 @@ Before you change the resume-control ConfigMap, stop the fault handling modules.
 
 1. Record the number of replicas of the fault-quarantine, fault-remediation and node-drainer deployments.
 2. Scale these deployments to zero replicas.
-3. Wait until no pod of these deployments runs.
+3. Wait until no pod of these deployments exists.
 
 ### 2. Set the Resume-Control Keys to CREATE
 

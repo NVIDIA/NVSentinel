@@ -61,7 +61,7 @@ Positive `qps` values enable client-side throttling. The value `0` uses the clie
 To make fault-quarantine skip accumulated health events and start from the current stream head, do these steps:
 
 1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](../runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
-2. Scale fault-quarantine to zero.
+2. Scale fault-quarantine to zero. Wait until no pod of fault-quarantine exists.
 3. In the shared resume-control ConfigMap, set the key of fault-quarantine to `CREATE`.
 4. Scale fault-quarantine to one replica.
 5. After fault-quarantine sets the key back to `RESUME`, restore the replicas of fault-quarantine.

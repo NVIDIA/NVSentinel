@@ -560,8 +560,8 @@ The chart renders this config file from the same template as the config file of 
 The replicas verify the idempotency index one time, before they become ready. To restore the datastore from a backup:
 
 1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](../runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
-2. Scale the Deployment to zero.
-3. Restore the datastore.
+2. Scale the Deployment to zero. Wait until no pod of the Deployment exists.
+3. For the other components that use the datastore, do what your restore method requires. Then restore the datastore.
 4. Run the datastore setup again, so that the index exists. On MongoDB, delete the completed setup Job. Then run a Helm upgrade, or a manual sync of the GitOps application. On PostgreSQL, restart a component that creates the tables.
 5. Scale the Deployment up again. The replicas verify the index again when they start.
 6. If you stopped the reconciliation in step 1, start it again.

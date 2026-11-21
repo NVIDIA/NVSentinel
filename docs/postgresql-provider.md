@@ -106,7 +106,7 @@ A saved start position does not show that the consumer has read all changes. Thu
 To reset the position of a consumer, do these steps:
 
 1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](./runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
-2. Scale the Deployment of the consumer to zero replicas. Wait until no pod of the consumer runs.
+2. Scale the Deployment of the consumer to zero replicas. Wait until no pod of the consumer exists.
 3. Reset the token of the consumer with one of these methods:
    - For fault-quarantine, node-drainer, fault-remediation and health-events-analyzer, set the key of the consumer to `CREATE` in the resume-control ConfigMap. Refer to [Change Stream Resume Tokens](./configuration/README.md#change-stream-resume-tokens).
    - For any consumer, including `event-exporter`, delete the row of the consumer from the `resume_tokens` table.

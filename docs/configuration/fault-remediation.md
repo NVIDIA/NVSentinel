@@ -49,7 +49,7 @@ fault-remediation:
 To make fault-remediation skip the accumulated health events and start from the current stream head, do these steps:
 
 1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](../runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
-2. Scale fault-remediation to zero.
+2. Scale fault-remediation to zero. Wait until no pod of fault-remediation exists.
 3. Set the key of fault-remediation in the shared resume-control ConfigMap to `CREATE`.
 4. Scale fault-remediation to one replica.
 5. After fault-remediation sets the key back to `RESUME`, restore the replicas of fault-remediation.
