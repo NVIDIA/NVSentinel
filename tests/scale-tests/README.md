@@ -201,6 +201,7 @@ The test configuration enables MongoDB metrics for Prometheus. If using `kube-pr
 
 ## Detailed Results
 
+- 📊 [End-to-End Scale Test Report](../../docs/requirements/scale-test-report.md) - Component sizing, load on external components and SLAs, measured up to 100,000 nodes
 - 📊 [API Server Impact & MongoDB Performance](results/API_and_MongoDB_Results.md) - Light/Medium/Heavy load test results
 - 📊 [FQM Latency & Queue Depth](results/FQM_Latency_and_Queue_Depth_Results.md) - End-to-end cordoning latency at 10-50% cluster failure
 - 📊 [Concurrent Drain Operations](results/Concurrent_Drain_Results.md) - Node Drainer scaling with 300 concurrent drains

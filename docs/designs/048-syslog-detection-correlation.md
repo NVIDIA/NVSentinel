@@ -485,54 +485,19 @@ journalctl -k -f | grep --line-buffered mlx5_core
 
 ### 5.4 Multi-line Soft Lockup Detection (`mlx5_napi_soft_lockup`)
 
-A kernel soft-lockup report spans many separate journal entries: the header
-line (`watchdog: BUG: soft lockup - CPU#94 stuck for 226906s!`) carries the CPU
-and duration but no driver attribution, while the `RIP:` and call-trace lines
-that attribute the lockup to mlx5 arrive as subsequent entries. No single-line
-regex can match both, so this pattern is implemented as a small stateful
-detector inside the NIC driver handler rather than as an entry in the
-first-match-wins single-line loop:
+A kernel soft-lockup report spans many separate journal entries: the header line (`watchdog: BUG: soft lockup - CPU#94 stuck for 226906s!`) carries the CPU and duration but no driver attribution, while the `RIP:` and call-trace lines that attribute the lockup to mlx5 arrive as subsequent entries. No single-line regex can match both, so this pattern is implemented as a small stateful detector inside the NIC driver handler rather than as an entry in the first-match-wins single-line loop:
 
-1. **Arm**: a line matching `BUG: soft lockup - CPU#(\d+) stuck for (\d+)s`
-   opens a bounded window (150 kernel log lines). A newer header re-arms the
-   window and refreshes the captured CPU/duration (the kernel re-reports a
-   persistent lockup with a growing duration).
-2. **Confirm**: within the window, a line matching
-   `mlx5e_(poll_ico_cq|napi_poll)\+0x` — the `RIP:` line or a call-trace
-   frame — confirms mlx5 attribution and emits one **Fatal** event
-   (`REPLACE_VM`). Frames prefixed with `?` (followed by a space) are speculative stack remnants
-   and are ignored; generic frames such as `net_rx_action` never count as
-   evidence, so soft lockups in other drivers are not attributed to the NIC.
-3. **Rate-limit**: the watchdog re-reports a persistent lockup every few tens
-   of seconds; emission is suppressed for 30 minutes after each event.
+1. **Arm**: a line matching `BUG: soft lockup - CPU#(\d+) stuck for (\d+)s` opens a bounded window (150 kernel log lines). A newer header re-arms the window and refreshes the captured CPU/duration (the kernel re-reports a persistent lockup with a growing duration).
+2. **Confirm**: within the window, a line matching `mlx5e_(poll_ico_cq|napi_poll)\+0x` — the `RIP:` line or a call-trace frame — confirms mlx5 attribution and emits one **Fatal** event (`REPLACE_VM`). Frames prefixed with `?` (followed by a space) are speculative stack remnants and are ignored; generic frames such as `net_rx_action` never count as evidence, so soft lockups in other drivers are not attributed to the NIC.
+3. **Rate-limit**: the watchdog re-reports a persistent lockup every few tens of seconds; emission is suppressed for 30 minutes after each event.
 
-The window is line-count based (not wall-clock based) so that journal backlog
-replay after a monitor restart behaves identically to live tailing. The kernel
-dump carries no PCI address, so the event is node-scoped (no NIC entity); the
-parsed CPU and duration are attached as event metadata
-(`metadata.cpu`, `metadata.durationSeconds`).
+The window is line-count based (not wall-clock based) so that journal backlog replay after a monitor restart behaves identically to live tailing. The kernel dump carries no PCI address, so the event is node-scoped (no NIC entity); the parsed CPU and duration are attached as event metadata (`metadata.cpu`, `metadata.durationSeconds`).
 
-> **Why fatal on first confirmation**: an mlx5-attributed lockup means the
-> driver's own recovery (TX/RX reporters) is not making progress — observed
-> wedges persist for days and clear only on reboot. The `RIP`/non-speculative
-> frame requirement is the false-positive guard; transient generic soft
-> lockups do not carry mlx5 frames at `RIP`.
+> **Why fatal on first confirmation**: an mlx5-attributed lockup means the driver's own recovery (TX/RX reporters) is not making progress — observed wedges persist for days and clear only on reboot. The `RIP`/non-speculative frame requirement is the false-positive guard; transient generic soft lockups do not carry mlx5 frames at `RIP`.
 >
-> The kernel defines a soft lockup as a failure to reschedule beyond the
-> watchdog threshold — the CPU dumps its stack and *resumes*, so a single
-> report does not by itself prove a permanent wedge
-> ([lockup watchdogs](https://docs.kernel.org/admin-guide/lockup-watchdogs.html)).
-> Two properties bound the risk of acting on the first report anyway:
-> the parsed duration cannot distinguish outcomes at onset (the first report
-> of what becomes a multi-day wedge also says ~26s), and repetition gates
-> never fire on pre-5.13 kernels, which warn once per lockup episode.
+> The kernel defines a soft lockup as a failure to reschedule beyond the watchdog threshold — the CPU dumps its stack and *resumes*, so a single report does not by itself prove a permanent wedge ([lockup watchdogs](https://docs.kernel.org/admin-guide/lockup-watchdogs.html)). Two properties bound the risk of acting on the first report anyway: the parsed duration cannot distinguish outcomes at onset (the first report of what becomes a multi-day wedge also says ~26s), and repetition gates never fire on pre-5.13 kernels, which warn once per lockup episode.
 >
-> **Rollout**: like every pattern in this check, `mlx5_napi_soft_lockup`
-> ships disabled in the default chart. When enabling it, start with
-> `processingStrategy: STORE_ONLY` (shadow mode) — events are persisted and
-> observable but drive no cordon or remediation. Graduate to
-> `EXECUTE_REMEDIATION` after the shadow phase shows adequate precision on
-> your fleet's real journals.
+> **Rollout**: like every pattern in this check, `mlx5_napi_soft_lockup` ships disabled in the default chart. When enabling it, start with `processingStrategy: STORE_ONLY` (shadow mode) — events are persisted and observable but drive no cordon or remediation. Graduate to `EXECUTE_REMEDIATION` after the shadow phase shows adequate precision on your fleet's real journals.
 
 ---
 

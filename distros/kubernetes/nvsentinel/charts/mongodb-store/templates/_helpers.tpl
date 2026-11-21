@@ -86,6 +86,14 @@ Nil/empty → 990 (MongoDB minimum). Integer >= 990.
 {{- end }}
 
 {{/*
+oplogAllowShrink as the string "true" or "false". The mongodb-config ConfigMap
+and the init Job name both use it, so they always agree.
+*/}}
+{{- define "mongodb-store.oplogAllowShrink" -}}
+{{- ternary "true" "false" (eq (.Values.oplogAllowShrink | toString) "true") -}}
+{{- end }}
+
+{{/*
 New empty members read oplog size from our values, not vendored chart templates.
 Bitnami: mongodb.extraFlags must include --oplogSize=<oplogSizeMB> (a mounted
 snippet mongodb.conf makes the image skip dbPath/logpath and crashloop).
@@ -141,12 +149,17 @@ Direct-connection hostnames for replSetResizeOplog (must run on every member).
 {{- end }}
 
 {{/*
-create-mongodb-database-<ttl>-<scriptHash> so a TTL, oplog size, or init-script
-change is a new Job, not a patch on a completed one.
+create-mongodb-database-<ttl>-<hash> so a TTL, oplog setting or pod template
+change is a new Job, not a patch on a completed one. The hash has these inputs:
+- the rendered pod template (mongodb-store.initJobPodTemplate in jobs.yaml),
+  because spec.template of a Job is immutable. It also contains the init and
+  oplog scripts and the replica-member list.
+- oplogSizeMB and oplogAllowShrink, because they reach the Job only through the
+  mongodb-config ConfigMap, not the pod template.
 */}}
 {{- define "mongodb-store.initJobName" -}}
 {{- $ttl := include "mongodb-store.collectionExpirySeconds" . | toString -}}
-{{- $hash := printf "%s\n%s\n%s\n%s\n%s" (include "mongodb-store.oplogSizeMB" .) (include "mongodb-store.oplogMemberHosts" .) (include "mongodb-store.initEval" .) (include "mongodb-store.oplogEval" .) (include "mongodb-store.oplogResizeEnabled" .) | sha256sum | trunc 8 -}}
+{{- $hash := printf "%s\n%s\n%s" (include "mongodb-store.oplogSizeMB" .) (include "mongodb-store.oplogAllowShrink" .) (include "mongodb-store.initJobPodTemplate" .) | sha256sum | trunc 8 -}}
 {{- printf "create-mongodb-database-%s-%s" $ttl $hash | trunc 63 -}}
 {{- end }}
 

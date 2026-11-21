@@ -552,6 +552,8 @@ platformConnector:
     enabled: false
 
   k8sConnector:
+    # Controls node-condition and Kubernetes Event writes for both connector roles.
+    # When false, their roles omit nodes/status and events permissions.
     enabled: true
     # Retry each failed Kubernetes write in place; completed writes are not repeated.
     # Zero or omission selects 25 retries per write. Negative values are invalid.
