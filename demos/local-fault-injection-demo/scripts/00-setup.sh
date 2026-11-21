@@ -205,7 +205,7 @@ print_summary() {
 }
 
 main() {
-    require_tools docker kind kubectl helm jq curl
+    require_tools docker kind kubectl helm jq curl column
 
     section "Preparing the cluster"
     log "Resolving the NVSentinel version to install..."
