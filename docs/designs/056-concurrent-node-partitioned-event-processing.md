@@ -29,14 +29,10 @@ PR #1676 established the prerequisite for parallelization: it enforced a mandato
 
 ## Decision
 
-1. **Partition events by node across a concurrent worker pool**:
-   Events are hashed by `healthevent.nodename` into dedicated FIFO worker channels. Events for the same node are processed serially in strict chronological order; events for distinct nodes are processed concurrently across $N$ workers.
-2. **Implement low-water mark checkpointing**:
-   Because concurrent execution allows out-of-order completion across nodes, the change stream resume token must not be updated to whichever event finished last. The resume token is advanced only to the highest contiguous sequence number where every earlier event has been fully resolved (completed or marked processed per error policy).
-3. **Encapsulate concurrent processing in `store-client`**:
-   The concurrent processor is implemented in `store-client/pkg/client` as `PartitionedEventProcessor`, satisfying the existing `client.EventProcessor` interface.
-4. **Preserve strict backward compatibility**:
-   Worker count defaults to `1` in `EventProcessorConfig` and Helm charts (`workers: 1`). When `workers <= 1`, behavior remains single-threaded.
+1. **Partition events by node across a concurrent worker pool**: Events are hashed by `healthevent.nodename` into dedicated FIFO worker channels. Events for the same node are processed serially in strict chronological order; events for distinct nodes are processed concurrently across $N$ workers.
+2. **Implement low-water mark checkpointing**: Because concurrent execution allows out-of-order completion across nodes, the change stream resume token must not be updated to whichever event finished last. The resume token is advanced only to the highest contiguous sequence number where every earlier event has been fully resolved (completed or marked processed per error policy).
+3. **Encapsulate concurrent processing in `store-client`**: The concurrent processor is implemented in `store-client/pkg/client` as `PartitionedEventProcessor`, satisfying the existing `client.EventProcessor` interface.
+4. **Preserve strict backward compatibility**: Worker count defaults to `1` in `EventProcessorConfig` and Helm charts (`workers: 1`). When `workers <= 1`, behavior remains single-threaded.
 
 ## Implementation
 

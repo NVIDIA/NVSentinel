@@ -1,11 +1,6 @@
 # Authentication Configuration
 
-Operator reference for how health-event publishers authenticate to
-platform-connector: who may submit health events, and about which node.
-
-> The older `docs/platform-connectors.md` predates these changes and describes
-> the previous behaviour. Where it disagrees with this document, this document
-> is correct.
+Operator reference for how health-event publishers authenticate to platform-connector: who can submit health events, and about which node.
 
 ---
 
@@ -25,153 +20,87 @@ global:
 
 ### `enabled`
 
-Must be a **real YAML boolean** and must be set explicitly — there is no
-default. A quoted `"false"` is refused rather than read as `true`, and `null`
-or `0` is refused rather than silently disabling enforcement. The connector
-also refuses to start if the ConfigMap omits the key, so an old chart driving
-new images fails loudly instead of guessing whether authentication is required.
+Must be a **real YAML boolean**. The chart default is `true`. A `null` or non-boolean value fails the render. As a result, the chart does not read a quoted `"false"` as `true`, and `null` or `0` does not silently disable enforcement. If the ConfigMap omits the key, platform-connector does not start. It does not guess whether authentication is required.
 
-Disabling this lets any caller that can reach the connector's socket submit an
-event naming any node. It is not a supported production configuration.
+If you disable it, any caller that can reach the socket of platform-connector can submit a health event that names any node. NVSentinel does not support this configuration in production.
 
 ### `mode`
 
-`enforce` (default) rejects a request that violates the node-binding rule.
-`audit` validates every request and increments the same
-`platform_connector_auth_violations_total` counters by reason, but lets the
-request through instead of rejecting it.
+`enforce` (default) rejects a request that violates the node-binding rule. `audit` validates every request and increments the same `platform_connector_auth_violations_total` counters by reason, but lets the request through instead of rejecting it.
 
-Use `audit` to roll node-binding out against real traffic: run it for a
-period, confirm the violation counters stay at zero, then switch to `enforce`
-with evidence rather than finding out what it breaks in production. `audit`
-still requires `enabled: true`, and every request is still validated: a
-validator failure (including `validator_unavailable` and
-`validator_timeout`) is still recorded, it just no longer rejects the
-request. `audit` changes what happens after a violation is detected, not
-whether requests are checked.
+Use `audit` to roll out node binding against real traffic:
 
-One rejection is not affected by `mode`: an event with no node name from a
-caller resolved to **verified** cross-node scope (`missing_node_name`) is
-always rejected, in both `audit` and `enforce`. Nothing downstream can handle
-an empty node name, so forwarding that event would not be a useful preview of
-what `enforce` would do — it would just be an event `enforce` could never
-have produced, sitting in the datastore. This does not cover a caller that
-fell back to a **degraded** node-local scope under `failOpenOnUnavailable`:
-its identity was never verified as cross-node in the first place, so a blank
-name from it is stamped like any other node-local caller's — see
-[`failOpenOnUnavailable`](#failopenonunavailable).
+1. Run `audit` for a period.
+2. Confirm that the violation counters stay at zero.
+3. Switch to `enforce` with evidence.
+
+This way, you do not learn in production what `enforce` breaks. `audit` still requires `enabled: true`. In `audit` mode, platform-connector still validates every request. It still records a validator failure (including `validator_unavailable` and `validator_timeout`), but the failure does not cause a rejection. `audit` changes what happens after platform-connector detects a violation, not whether platform-connector checks the requests.
+
+`mode` does not affect one rejection. In both `audit` and `enforce`, platform-connector always rejects a health event with no node name from a caller with **verified** cross-node scope (`missing_node_name`). No downstream component can handle an empty node name. As a result, a forwarded event of this type is not a useful preview of what `enforce` does. It is only an event in the datastore that `enforce` can never produce.
+
+This rule does not cover a caller with a **degraded** node-local scope under `failOpenOnUnavailable`. No check verified the identity of that caller as cross-node. As a result, platform-connector stamps a blank name from that caller like the blank name of any other node-local caller. See [`failOpenOnUnavailable`](#failopenonunavailable).
 
 ### `failOpenOnUnavailable`
 
-Distinguishes a validator that never reached a verdict from one that reached
-a verdict and rejected the credential. `validator_unavailable` and
-`validator_timeout` (the API server was unreachable, or the call timed out)
-say nothing about the caller — they are not evidence of a forged token, only
-of the validator's own availability. `token_invalid` (a rejected or malformed
-credential) does say something about the caller and is always rejected under
-`mode: enforce`, regardless of this setting.
+Distinguishes a validator that never reached a verdict from a validator that reached a verdict and rejected the credential. `validator_unavailable` and `validator_timeout` (the API server was unreachable, or the call timed out) say nothing about the caller. They are not evidence of a forged token. They are only evidence about the availability of the validator. `token_invalid` (a rejected or malformed credential) does say something about the caller. Under `mode: enforce`, platform-connector always rejects it, whatever the value of this setting.
 
-Defaults to `false`: an unreachable validator rejects the request, matching
-behaviour before this setting existed. Set `true` to fall back to a
-**degraded** node-local scope instead — a guess, not a verified identity —
-so that a control-plane blip degrades publishers to their own node rather
-than blocking their health events outright:
+The default is `false`: an unreachable validator rejects the request. To use a **degraded** node-local scope instead, set it to `true`. This scope is a guess, not a verified identity. With it, a short control-plane problem limits publishers to their own node, and does not block their health events outright:
 
-- An event with a blank or matching node name is accepted and stamped exactly
-  as a verified node-local caller's would be, in either `mode`. This is the
-  common case the setting exists for: most publishers present a token but
-  leave the node name blank for platform-connector to fill in.
-- An event naming a *different* node is handled according to `mode`. Under
-  `mode: enforce` it is refused as retryable `Unavailable` — the same code
-  the validator itself returned — rather than as `node_mismatch` /
-  `PermissionDenied`. The caller might really be an allowlisted cross-node
-  publisher the outage prevented from being verified, not an actual mismatch,
-  so it is not counted as `node_mismatch` (one of the reasons an operator
-  would alert on as suspected credential abuse) and not rejected in a way
-  publishers treat as non-retryable; it is retried once the validator
-  recovers instead of being dropped for good. Under `mode: audit` that same
-  `Unavailable` is what gets recorded and then let through by `auditOrReject`
-  like any other violation, so the event is forwarded with whatever node name
-  it carried.
+- In either `mode`, platform-connector accepts and stamps a health event with a blank or matching node name, exactly as for a verified node-local caller. This is the common case for this setting. Most publishers present a token but leave the node name blank, so that platform-connector writes it.
+- Under `mode: enforce`, platform-connector refuses a health event that names a *different* node. It uses the retryable code `Unavailable`, the same code that the validator returned. It does not refuse it as `node_mismatch` with `PermissionDenied`. The caller can be an allowlisted cross-node publisher that platform-connector cannot verify because of the outage, so the event is not necessarily a real mismatch. For this reason, platform-connector does not count it as `node_mismatch`, which is one of the reasons that you alert on as suspected credential abuse. It also does not reject it in a way that publishers treat as non-retryable. The publisher retries it after the validator recovers, and does not drop it permanently.
+- Under `mode: audit`, platform-connector records that same `Unavailable` for a health event that names a *different* node. Then it lets the event through, like any other audited violation. As a result, it forwards the event with the node name that the event carried.
 
 ### `audience`
 
-The single audience every publisher's token is minted for, and that
-platform-connector requires TokenReview to echo back in `status.audiences`.
-A token issued for a different service is not accepted.
+The single audience for which the token of every publisher is minted. TokenReview must return this audience in `status.audiences`, as platform-connector requires. As a result, platform-connector does not accept a token issued for a different service.
 
 ### `tokenExpirationSeconds`
 
-Token lifetime. Kubernetes rejects a projected token lifetime below **600**
-seconds or above **2^32**, and rejects fractional values, so the chart enforces
-`600 <= x <= 4294967296` and whole numbers at render time rather than letting
-the API server reject the pod at creation.
+Token lifetime. Kubernetes rejects a projected token lifetime below **600** seconds or above **2^32**. It also rejects fractional values. For this reason, the chart enforces `600 <= x <= 4294967296` and whole numbers at render time. This prevents a rejection of the pod by the API server at creation.
 
 ### `tokenMountPath`
 
-Directory each publisher mounts the token at; the file is `<mountPath>/token`.
+Directory where each publisher mounts the token. The file is `<mountPath>/token`.
 
 ### `crossNodeServiceAccounts`
 
-**Additional** canonical usernames permitted to report health events about nodes
-other than the one they run on. Every entry grants the ability to have any node
-in the cluster cordoned, drained and rebooted — add sparingly.
+**Additional** canonical usernames that can report health events about nodes other than the node that they run on. Every entry gives the ability to have any node in the cluster cordoned, drained and rebooted. Add as few entries as possible.
 
-The bundled cluster-scoped monitors — `csp-health-monitor`,
-`kubernetes-object-monitor`, `nvcre-certification-monitor`,
-`slurm-drain-monitor` and `health-events-analyzer` — are **derived from the
-release namespace** for whichever of them are enabled.
-They do not belong in this list, and installing into a namespace other than
-`nvsentinel` needs no edit.
+The chart derives the usernames of the bundled cluster-scoped monitors **from the release namespace**, for each enabled monitor. These monitors are `csp-health-monitor`, `kubernetes-object-monitor`, `nvcre-certification-monitor`, `slurm-drain-monitor` and `health-events-analyzer`. The chart adds the `lifecycle-manager` ServiceAccount in the same way when `global.lifecycleManager.enabled` and `lifecycle-manager.controllers.maintenanceRequest.enabled` are both `true`. Do not put them in this list. An installation into a namespace other than `nvsentinel` needs no edit.
 
-List only publishers this chart does not ship. Entries are matched **verbatim**
-against the username TokenReview reports:
+List only publishers that this chart does not ship. Each entry must match **verbatim** the username that TokenReview reports:
 
 - form `system:serviceaccount:<namespace>:<name>`
 - namespace: DNS-1123 label, ≤63 characters
 - name: DNS-1123 subdomain, ≤253 characters
 - no leading, trailing or internal whitespace; no uppercase
 
-Nothing is trimmed or normalised for you. An entry that does not match exactly
-can never equal a real username, so the chart and the connector both reject it
-rather than accepting a rule that silently matches nothing.
+NVSentinel does not trim or normalise the entries for you. An entry that does not match exactly can never equal a real username. For this reason, the chart and platform-connector both reject such an entry. They do not accept a rule that silently matches nothing.
 
-Omitting the key means "no additional callers". Writing `null` is refused,
-because null and "none" are not the same statement.
+An omitted key means "no additional callers". The chart refuses `null`, because null and "none" are not the same statement.
 
 ### The per-caller rule
 
-A caller presenting a token is asked two independent questions.
+For a caller that presents a token, platform-connector asks two independent questions.
 
-**1. Is the token being presented where it was issued?** If it carries a node
-claim, that claim must name this connector's own node — for every caller,
-allowlisted or not. Rejected as `node_claim_mismatch`.
+**1. Does the caller present the token on the node for which the API server issued it?** If the token carries a node claim, that claim must name the node where platform-connector runs. If the claim names a different node, platform-connector rejects the request as `node_claim_mismatch`. This rule applies to every caller, allowlisted or not.
 
-**2. May this identity name other nodes?** Only if it is on the allowlist.
-Otherwise it is pinned to the connector's node, and an event naming another node
-is rejected as `node_mismatch`.
+**2. Can this identity name other nodes?** Only if it is on the allowlist. Otherwise, platform-connector pins it to the node where platform-connector runs. For such a caller, platform-connector rejects a health event that names another node as `node_mismatch`.
 
-An allowlisted caller must also present a token bound to a **running pod on a
-scheduled node**. `kubectl create token <sa> --audience=…` without
-`--bound-object-ref` produces a token with neither claim; it is refused for
-own-node events too, not merely downgraded.
+An allowlisted caller must also present a token bound to a **running pod on a scheduled node**. `kubectl create token <sa> --audience=…` without `--bound-object-ref` produces a token with neither claim. platform-connector refuses such a token, even for own-node events. It does not downgrade the scope.
 
-Callers presenting **no** token are accepted and pinned to the connector's node.
-Reaching the socket already granted that much.
+If a caller presents **no** token, platform-connector accepts it and pins it to the node where platform-connector runs. A caller that can reach the socket already has this scope.
 
 ### Where to run cross-node monitors
 
-Their pods hold a credential platform-connector accepts for any node name. Run
-them on a system or control-plane node pool rather than GPU nodes serving
-tenants, using whichever of `nodeSelector`, `affinity` or tolerations your
-cluster already uses.
+Their pods hold a credential that platform-connector accepts for any node name. Run them on a system or control-plane node pool, not on GPU nodes that serve tenants. Use `nodeSelector`, `affinity` or tolerations, whichever your cluster already uses.
 
 ### Metrics
 
 | Metric | Labels | Meaning |
 |---|---|---|
 | `platform_connector_auth_decisions_total` | `decision` = `node_local` \| `cross_node` | Scope granted to a batch. |
-| `platform_connector_auth_violations_total` | `reason` (below) | Batches that violated the node-binding rule. Under `mode: enforce` these are rejected; under `mode: audit` they are recorded but let through. |
+| `platform_connector_auth_violations_total` | `reason` (below) | Batches that violated the node-binding rule. Under `mode: enforce`, platform-connector rejects them. Under `mode: audit`, it records them but lets them through. |
 | `platform_connector_auth_node_claim_total` | `result` = `verified` \| `absent` | Whether the token carried a node claim. |
 
 `reason` values:
@@ -179,57 +108,31 @@ cluster already uses.
 | Reason | Meaning |
 |---|---|
 | `node_mismatch` | A node-local caller named a different node. |
-| `node_claim_mismatch` | The token was issued on another node. |
+| `node_claim_mismatch` | The node claim of the token names another node. |
 | `unbound_cross_node_token` | An allowlisted caller presented a token bound to no pod. |
 | `cross_node_claim_absent` | Pod-bound, but the pod was never scheduled. |
 | `token_missing` | Deployment platform connector only: the caller presented no token. There is no local node to pin a tokenless caller to. |
 | `unbound_token` | Deployment platform connector only: the token is bound to no pod. |
-| `node_claim_absent` | Deployment platform connector only: the token is bound to a pod that never scheduled, so there is no node to pin its events to. |
-| `missing_node_name` | An event carried no node name and none could be stamped. |
+| `node_claim_absent` | Deployment platform connector only: the token is bound to a pod that never scheduled, so there is no node to pin its health events to. |
+| `missing_node_name` | A health event carried no node name, and platform-connector had no node name to stamp. |
 | `token_invalid` | TokenReview rejected the token. |
-| `malformed_credentials` | The authorization header was duplicated, or did not use the Bearer scheme. On the node-local socket a *completely absent* header is not a violation — that caller is accepted and pinned to the connector's node; on the deployment platform connector it is counted as `token_missing`. |
-| `validator_unavailable` / `validator_timeout` / `validator_error` | The API server could not be reached, or returned no identity. With `failOpenOnUnavailable: true`, `validator_unavailable` and `validator_timeout` still increment this counter but fall back to a degraded node-local scope instead of rejecting the request — see [`failOpenOnUnavailable`](#failopenonunavailable) for how that scope treats a blank vs. a differently-named node. |
+| `malformed_credentials` | The caller duplicated the authorization header, or did not use the Bearer scheme. On the node-local socket, a *completely absent* header is not a violation. In this case, platform-connector accepts the caller and pins it to the node where platform-connector runs. On the deployment platform connector, an absent header counts as `token_missing`. |
+| `validator_unavailable` / `validator_timeout` / `validator_error` | The API server was unreachable, or it returned no identity. `validator_error` also counts a permanent TokenReview failure, such as a missing `create` permission on `tokenreviews`. Under `mode: enforce`, `validator_error` always causes a rejection of the request. With `failOpenOnUnavailable: true`, `validator_unavailable` and `validator_timeout` still increment this counter. But the caller then gets a degraded node-local scope, and platform-connector does not reject the request. For how that scope treats a blank node name and a different node name, see [`failOpenOnUnavailable`](#failopenonunavailable). |
 
-A healthy cluster reports zero violations. A sustained non-zero
-`validator_unavailable` is an API-server problem, not a caller problem.
+A healthy cluster reports zero violations. A sustained non-zero `validator_unavailable` is an API-server problem, not a caller problem.
 
 ---
 
-## Migration
-
-| Old | New |
-|---|---|
-| `crossNodeServiceAccounts` listing the bundled monitors | Remove them; they are derived from the release namespace. |
-
-Upgrade the chart and the images together. New images against an old chart do
-not start: the connector requires `enableNodeBindingAuth` to be present, and an
-old chart does not write it.
-
 ## Deployment platform connector
 
-The deployment platform connector reads the same node-binding settings as the
-DaemonSet, from the same `config.json`: `enableNodeBindingAuth`, `AuthAudience`
-and `AuthCrossNodeServiceAccounts` mean exactly what they mean above, and node
-binding must be enabled for it (the connector refuses to start otherwise). One
-thing differs because it has no local node: **every caller must present a
-token**, bound to a running pod on a scheduled node. The node named in that
-token is the node the caller may report on; the cross-node list is the only
-way to name other nodes. `AuthMode: audit` and `AuthFailOpenOnUnavailable` are
-socket settings: with no node to fall back on, the deployment platform
-connector always enforces, and logs a warning when either is set.
+The deployment platform connector reads the same node-binding settings as the DaemonSet, from the same `config.json`. `enableNodeBindingAuth`, `AuthAudience` and `AuthCrossNodeServiceAccounts` mean exactly what they mean above. You must enable node binding for the deployment platform connector. Otherwise, it does not start.
 
-The chart refuses to render the deployment platform connector while node
-binding is off.
+The deployment platform connector has no local node. For this reason, one thing is different: **every caller must present a token**, bound to a running pod on a scheduled node. The node named in that token is the node that the caller can report on. Only an allowlisted caller can name other nodes.
 
-A publisher on the deployment platform connector (`publishTo: deployment`)
-uses the same projected token as on the socket path. The chart mounts it at
-`tokenMountPath` and gives the file, `<tokenMountPath>/token`, to the
-publisher as `HEALTH_PUBLISH_TOKEN_PATH`. The token has the same `audience`
-and the same lifetime, `tokenExpirationSeconds`. Thus the token of a monitor
-stays valid when the monitor moves from the socket to the deployment platform
-connector.
+`AuthMode: audit` and `AuthFailOpenOnUnavailable` are socket settings. The deployment platform connector has no node to use as a fallback. As a result, it always enforces, and it logs a warning if you set either of them.
 
-`crossNodeServiceAccounts` applies to both roles. The network policy of the
-deployment platform connector also admits publisher pods from the namespace
-of each entry. Such a pod must carry the label
-`nvsentinel.nvidia.com/health-publisher: "true"`.
+The chart refuses to render the deployment platform connector while node binding is disabled.
+
+A publisher on the deployment platform connector (`publishTo: deployment`) uses the same projected token as on the socket path. The chart mounts it at `tokenMountPath` and gives the file, `<tokenMountPath>/token`, to the publisher as `HEALTH_PUBLISH_TOKEN_PATH`. The token has the same `audience` and the same lifetime, `tokenExpirationSeconds`. Thus the token of a monitor stays valid when the monitor moves from the socket to the deployment platform connector.
+
+`crossNodeServiceAccounts` applies to both roles. The network policy of the deployment platform connector also admits publisher pods from the namespace of each entry. Such a pod must carry the label `nvsentinel.nvidia.com/health-publisher: "true"`.

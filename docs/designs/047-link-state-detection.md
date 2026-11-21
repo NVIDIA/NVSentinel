@@ -750,8 +750,7 @@ Monitor starts → Sees 34 devices → 16 are DOWN → Generates 16 FATAL alerts
 But... those 16 devices are supposed to be DOWN. False alarm storm!
 ```
 
-**Why VFs are DOWN by default:**
-When SR-IOV is enabled, Virtual Functions are pre-created by the driver but remain in DOWN state until they are:
+**Why VFs are DOWN by default:** When SR-IOV is enabled, Virtual Functions are pre-created by the driver but remain in DOWN state until they are:
 1. Assigned to a VM or container via passthrough/device allocation
 2. Administratively enabled (for InfiniBand, also requires Subnet Manager configuration)
 
@@ -955,10 +954,7 @@ NICs and Ports are modeled as separate entity types to enable precise fault loca
 
 ### 12.1 State Monitoring Configuration
 
-Configuration is split between a ConfigMap mounted at
-`/etc/nic-health-monitor/config.toml` (rendered TOML, sourced from the
-Helm `values.yaml` shown below) and command-line flags that govern
-runtime paths and polling cadence. Both surfaces are documented below.
+Configuration is split between a ConfigMap mounted at `/etc/nic-health-monitor/config.toml` (rendered TOML, sourced from the Helm `values.yaml` shown below) and command-line flags that govern runtime paths and polling cadence. Both surfaces are documented below.
 
 **Helm values (YAML)** — covers sysfs mount points and device filtering:
 
@@ -1005,10 +1001,7 @@ counterDetection:
 
 **SR-IOV Virtual Function handling**
 
-VFs are detected via the `device/physfn` sysfs symlink and skipped
-unconditionally. There is no configuration knob — unassigned VFs are
-expected to stay DOWN by design and monitoring them would produce false
-positives.
+VFs are detected via the `device/physfn` sysfs symlink and skipped unconditionally. There is no configuration knob — unassigned VFs are expected to stay DOWN by design and monitoring them would produce false positives.
 
 > **Note**: The previous `gpu_port_config` and `MonitorNetworkType` configuration options have been removed. Management NIC exclusion is automatic via NUMA detection (Section 4.1). NIC role classification uses the topo matrix published by the metadata collector (Section 4.2). Uncabled port detection uses the card homogeneity check (Section 4.3). Both InfiniBand and Ethernet (RoCE) NICs are monitored equally — no link layer filtering is required.
 

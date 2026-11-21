@@ -2,55 +2,59 @@
 
 ## Overview
 
-The Fault Quarantine module is NVSentinel's first line of defense against faulty GPU nodes. When health monitors detect a problem with a GPU node, this module decides whether the node should be quarantined (isolated from the cluster) to prevent the issue from impacting your workloads.
+The Fault Quarantine module is the first protection that NVSentinel gives against faulty GPU nodes. When health monitors detect a problem with a GPU node, Fault Quarantine decides whether to quarantine the node. Quarantine isolates the node from the cluster, so that the problem does not affect your workloads.
 
-Think of it as a security checkpoint that prevents potentially dangerous nodes from receiving new work. Similar to how a hospital isolates patients with contagious diseases to protect others, Fault Quarantine isolates problematic GPU nodes to protect your cluster and workloads.
+Fault Quarantine acts as a security checkpoint. It stops new work on nodes that can be dangerous. A hospital isolates patients who have contagious diseases to protect other patients. In the same way, Fault Quarantine isolates GPU nodes that have problems, to protect your cluster and workloads.
 
 ### Why Do You Need This?
 
-GPU hardware failures can cause serious problems if left unaddressed:
+If you do not correct a GPU hardware failure, it can cause serious problems:
 
-- **Silent data corruption**: Faulty GPUs can produce incorrect results in AI training or simulations, wasting days or weeks of compute time
-- **Cascading job failures**: One bad GPU can crash an entire multi-GPU distributed training job
-- **Wasted resources**: Other healthy GPUs sit idle waiting for the faulty node to catch up
-- **Poor cluster utilization**: Kubernetes continues scheduling work on broken nodes because it doesn't know they're faulty
+- **Silent data corruption**: Faulty GPUs can produce incorrect results in AI training or simulations. This wastes days or weeks of compute time.
+- **Cascading job failures**: One faulty GPU can crash a full multi-GPU distributed training job.
+- **Wasted resources**: Other healthy GPUs stay idle while they wait for the faulty node to reach the same step.
+- **Poor cluster utilization**: Kubernetes continues to schedule work on broken nodes, because it does not know that they are faulty.
 
-The Fault Quarantine module solves this by:
-- **Preventing new workloads** from being scheduled on faulty nodes (cordoning)
-- **Marking nodes** with specific failure information (tainting and labeling)
-- **Providing visibility** through annotations about what's wrong and when it happened
+Fault Quarantine solves these problems in these ways:
+
+- **Prevents new workloads** on faulty nodes. It cordons each faulty node, so that Kubernetes does not schedule new workloads on it.
+- **Marks nodes** with specific failure information. It applies taints and labels to the nodes.
+- **Gives visibility** through annotations. The annotations show what is wrong and when it occurred.
 
 ## How It Works
 
-The Fault Quarantine module continuously watches the datastore for health events reported by the health monitors (GPU Health Monitor, Syslog Health Monitor, CSP Health Monitor). When a health event arrives, the module:
+Fault Quarantine continuously watches the datastore for health events from the health monitors (GPU Health Monitor, Syslog Health Monitor, CSP Health Monitor). When a health event arrives, Fault Quarantine does these steps:
 
-1. **Recovers unresolved events on startup** before moving to live events
-2. **Evaluates the event** against configurable CEL rules to determine if quarantine is needed
-3. **Checks the circuit breaker** (if enabled) to ensure it's safe to take action
-4. **Takes quarantine action** if rules match:
-   - **Cordons the node**: Sets the node to "unschedulable" so no new pods are placed on it
-   - **Applies taints**: Adds Kubernetes taints to repel running pods (optional)
-   - **Updates annotations**: Records detailed information about why and when the node was quarantined
+1. **Recovers unresolved health events on startup**, before it processes live health events
+2. **Evaluates the health event** against configurable CEL rules, to decide if the node needs quarantine
+3. **Checks the circuit breaker** (if enabled), to make sure that it is safe to take action
+4. **Takes quarantine action** if the rules match:
+   - **Cordons the node**: Sets the node to "unschedulable", so that Kubernetes places no new pods on it
+   - **Applies taints**: Adds Kubernetes taints, which can prevent scheduling or evict running pods, based on their effect (optional)
+   - **Updates annotations**: Records detailed information about why and when Fault Quarantine quarantined the node
    - **Sets labels**: Adds searchable labels for cluster operators
 
-**When a node is quarantined:**
-- Kubernetes will not schedule any new pods on the node
-- Existing pods continue running (unless taints force them to evacuate)
-- The node remains part of the cluster and is fully visible
-- Detailed diagnostic information is attached to the node for troubleshooting
+**When Fault Quarantine quarantines a node:**
 
-**When a healthy event arrives for a quarantined node:**
-- If all health checks have recovered, the module automatically removes the quarantine
-- The node is uncordoned and returned to normal scheduling
-- Quarantine annotations are cleaned up
+- Kubernetes does not schedule any new pods on the node
+- Existing pods continue to run, unless taints force them to leave the node
+- The node stays part of the cluster and is fully visible
+- Fault Quarantine attaches detailed diagnostic information to the node for troubleshooting
+
+**When a health event reports a healthy status for a quarantined node:**
+
+- If all health checks are healthy again, Fault Quarantine automatically removes the quarantine
+- Fault Quarantine uncordons the node, and the node returns to normal scheduling
+- Fault Quarantine removes the quarantine annotations
 
 ### Rule-Based Decision Making with CEL
 
-The Fault Quarantine module uses CEL (Common Expression Language) to define flexible rules for when nodes should be quarantined. CEL is a simple expression language that lets you write conditions like "if this happens, then quarantine the node."
+Fault Quarantine uses CEL (Common Expression Language) rules to decide when to quarantine a node. CEL is a simple expression language. With CEL, you write conditions such as "if this happens, then quarantine the node."
 
-**Key feature**: The CEL evaluator has access to the Kubernetes Node's `metadata` and `spec`. Node `status` is not cached or available to Fault Quarantine rules.
+**Key feature**: The CEL evaluator can read the `metadata` and `spec` of the Kubernetes Node. Fault Quarantine does not cache the Node `status`, and rules cannot read it.
 
 **Example rule capabilities:**
+
 - Quarantine nodes with fatal XID errors: `event.errorCode.contains("XID-48")`
 - Check node labels: `node.metadata.labels["node-type"] == "training"`
 - Evaluate multiple conditions: `event.isFatal && node.metadata.labels["environment"] == "production"`
@@ -59,7 +63,7 @@ The Fault Quarantine module uses CEL (Common Expression Language) to define flex
 
 ## Configuration
 
-See [Fault Quarantine configuration](configuration/fault-quarantine.md) for the full Helm reference, including how to add, modify, and verify rule sets.
+For the full Helm reference, see [Fault Quarantine configuration](configuration/fault-quarantine.md). It also shows how to add, modify, and verify rulesets.
 
 Configure the Fault Quarantine module through Helm values:
 
@@ -99,32 +103,43 @@ fault-quarantine:
 
 ### Defining CEL Rules
 
-Rules are defined using rulesets that evaluate CEL expressions. Each ruleset has:
+You define rules in rulesets. A ruleset evaluates CEL expressions. Each ruleset has these parts:
 
-**Match Conditions**: CEL expressions that determine when the ruleset triggers
-- `kind: "HealthEvent"` - Expressions evaluated against the health event (agent, isFatal, checkName, etc.)
-- `kind: "Node"` - Expressions evaluated against the Kubernetes Node `metadata` and `spec`
+**Match Conditions**: CEL expressions that decide when the ruleset triggers
 
-**Actions**: What happens when conditions match
+- `kind: "HealthEvent"` - Expressions that Fault Quarantine evaluates against the health event (agent, isFatal, checkName and other fields)
+- `kind: "Node"` - Expressions that Fault Quarantine evaluates against the Kubernetes Node `metadata` and `spec`
+
+**Actions**: What occurs when the conditions match
+
 - `cordon.shouldCordon: true` - Cordon (mark unschedulable) the node
 - `taint` (optional) - Apply Kubernetes taints to the node
 - `label` (optional) - Apply a Kubernetes label until all tracked faults recover
 
 **Configuration options:**
+
 - **Dry Run**: Test rules without cordoning nodes
-- **Circuit Breaker**: Prevents cordoning too many nodes at once. See [Circuit Breaker documentation](circuit-breaker.md)
+- **Circuit Breaker**: Prevents cordoning too many nodes at the same time. See [Circuit Breaker documentation](circuit-breaker.md)
 - **Label Prefix**: Customize the prefix for tracking labels and annotations on nodes
-- **Multiple Rulesets**: Define different rules for different failure types with CEL expressions that access either the health event or Node metadata/spec
+- **Multiple Rulesets**: Define different rules for different failure types. Their CEL expressions access either the health event or the Node metadata and spec.
 
 #### Cached Node Fields
 
-The `node` variable is served from the informer cache, not fetched per evaluation. Rules are read once at startup, so the label and annotation keys each expression reads are derived from the compiled CEL, and the cache keeps only those keys. `node.status` is cleared. `node.spec` and the identity metadata are kept whole, because the cordon path reads them. The retained keys are logged at startup, so you can see the effect of a rule change without reading the code.
+The `node` variable comes from the informer cache. Fault Quarantine does not fetch the node again for each evaluation. Fault Quarantine reads the rules one time, at startup. From the compiled CEL, it finds the label and annotation keys that each expression reads. The cache keeps only those keys.
 
-Fault Quarantine also keeps the keys it uses itself, whatever your rules say: the quarantine annotations, the node state label, the GPU node label, the six cordon and uncordon tracking labels, and any label a ruleset applies.
+The cache clears `node.status`. It keeps `node.spec` and the identity metadata whole, because Fault Quarantine reads them when it cordons a node. At startup, Fault Quarantine logs the retained keys. Use this log to see the effect of a rule change without reading the code.
 
-**How you write a rule changes what the cache keeps.** Two rules that select the same nodes can prune differently, so the form matters for memory even when the result is identical.
+Fault Quarantine also keeps the keys that it uses itself, whatever your rules say:
 
-These forms keep one key each, which is the cheapest shape:
+- the quarantine annotations
+- the node state label
+- the GPU node label
+- the six cordon and uncordon tracking labels
+- any label that a ruleset applies
+
+**How you write a rule changes what the cache keeps.** Two rules that select the same nodes can prune the cache differently. Thus the form of a rule changes memory use, even when the result is identical.
+
+Each of these forms keeps one key, which is the cheapest shape:
 
 ```text
 'k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels
@@ -132,7 +147,7 @@ node.metadata.labels['nvidia.com/gpu.present'] == 'true'
 node.metadata.annotations['maintenance'] == 'false'
 ```
 
-These forms keep the whole label map, because the key is not known until the rule runs:
+These forms keep the whole label map, because the key is unknown until the rule runs:
 
 ```text
 size(node.metadata.labels) > 0
@@ -141,9 +156,9 @@ node.metadata.labels[node.spec.nodeName] == 'true'
 node.metadata.labels['nvidia.com/' + 'gpu.present'] == 'true'
 ```
 
-The last one is worth noting: the key is built at run time, so it keeps the whole map even though both halves are string literals. Write the key as a single literal to keep one entry.
+Look carefully at the last form. It builds the key at run time, so it keeps the whole map, although both halves are string literals. To keep one entry, write the key as a single literal.
 
-These forms give up pruning for the node altogether, because no set of keys describes what they read:
+These forms disable all pruning for the node, because no set of keys describes what they read:
 
 ```text
 size(node)
@@ -151,34 +166,41 @@ size(node)
 
 An expression that does not compile has the same effect.
 
-Two properties follow from this, and both surprise people:
+Two results follow from this. Both can surprise you:
 
-- The retained set is a union across every ruleset, and "keep everything" wins. **One unprunable expression in one ruleset turns off label pruning for every node and every rule.** If the startup log shows `retainedLabels="<all>"`, look for the expression that caused it.
-- Rulesets are read whether or not they are enabled. A disabled ruleset with an unprunable expression still turns pruning off. Remove such a ruleset rather than disabling it if you want the saving.
+- The retained set is the union of all rulesets, and "keep everything" has priority. **One unprunable expression in one ruleset disables label pruning for every node and every rule.** If the startup log shows `retainedLabels="<all>"`, find the expression that caused it.
+- Fault Quarantine reads all rulesets, enabled or disabled. A disabled ruleset with an unprunable expression still disables pruning. If you want the saving, remove such a ruleset. Do not only disable it.
 
-Prefer the guarded literal-key form in any case. It is also what correctness needs: reading a label that is absent raises an error rather than returning false, so an optional label has to be read behind an `in` guard.
+In all cases, prefer the guarded literal-key form. Correct rules also need this form. When an expression reads an absent label, the evaluation raises an error and does not return false. Thus, read an optional label only behind an `in` guard.
 
 ## Key Features
 
 ### Entity-Level Tracking
-Tracks health issues at the entity level (e.g., individual GPUs), not just at the node level:
-- Fine-grained visibility into which specific components are failing
+
+Fault Quarantine tracks health issues at the entity level (for example, individual GPUs), and not only at the node level:
+
+- Fine-grained visibility into the specific components that are faulty
 - Track multiple issues on the same node
-- Partial recovery scenarios where some GPUs recover while others remain faulty
+- Partial recovery scenarios, where some GPUs recover while others stay faulty
 
 ### Flexible CEL Rules with Node Context
-CEL expressions receive either the health event or the Kubernetes Node's metadata and spec:
-- Cordon based on node labels (e.g., environment, node type, GPU model)
+
+Each CEL expression receives either the health event or the Kubernetes Node's metadata and spec:
+
+- Cordon based on node labels (for example, environment, node type or GPU model)
 - Check scheduling and taint configuration
 - Skip quarantine for nodes with specific annotations
 - Different thresholds based on any node metadata
 
 ### Automatic Recovery
-When all health checks return to healthy state:
-- Node is automatically uncordoned
-- Taints are removed
-- Quarantine annotations are cleaned up
-- Node returns to normal scheduling
+
+When all health checks return to a healthy state, Fault Quarantine does these actions:
+
+- Uncordons the node automatically
+- Removes the taints
+- Removes the quarantine annotations
+- Returns the node to normal scheduling
 
 ### Circuit Breaker Integration
-Built-in protection against mass cordoning. See [Circuit Breaker documentation](circuit-breaker.md) for details.
+
+Fault Quarantine has built-in protection against mass cordoning. For details, see [Circuit Breaker documentation](circuit-breaker.md).
