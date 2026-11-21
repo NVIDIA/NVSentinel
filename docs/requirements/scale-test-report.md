@@ -514,7 +514,7 @@ The test measured ten fleet sizes, with three connections per node: one for each
 
 Memory is proportional to fleet size, at about 235 KiB per node. The cost per node is flat to within 6.5% across a fiftyfold range of fleet sizes. About 97% of the memory is for the connections of a node, and 3% is for the cached labels of the node. For this reason, one publisher fewer per node removes about a third of the cost, but an empty `allowedLabels` removes only 3%. For the measurement, see [Connector memory: connections against label cache](#connector-memory-connections-against-label-cache-m).
 
-Requests and limits are per replica. The CPU figures are the measured use divided by three. The memory limits do not include the headroom for one replica down that step 4 of [Ingest rate and sizing](#ingest-rate-and-sizing) gives.
+Requests and limits are per replica. The CPU figures are the measured use divided by three. The memory limits assume an even split of the connections. They do not include the headroom for one replica down and for an uneven split that step 4 of [Ingest rate and sizing](#ingest-rate-and-sizing) gives.
 
 The working-set columns are from the **quiet** sweep. In this sweep, MongoDB accepted health events as fast as publishers sent them, so almost no request waited. A connection then cost about 79 KiB. MongoDB is behind when it accepts health events more slowly than publishers send them. Each connection then also holds a request that waits for its write. Such a connection costs 165-171 KiB, about 2.1x quiet.
 
@@ -583,12 +583,14 @@ Size the pool first. Then size the replica count:
 | 1    | pool size per replica (`DATASTORE_MAX_CONNECTIONS`) = target throughput x how long a write takes / replicas | the write time that you measure on the cluster that you size, at that throughput and not at rest. The result is the writes in flight, not the publisher connections |
 | 2    | publisher connections per replica `<= (M_limit - M_fixed) / (a + b)` | 25,000 at a 4Gi limit if the datastore saturates, 53,500 in the quiet case |
 | 3    | `R = ceil(publisher connections / publisher connections per replica)` | how many publishers the fleet has, and the limit from step 2 |
-| 4    | size for one replica down: each remaining replica holds `R / (R - 1)` times its connections, 1.5x at three replicas | the PodDisruptionBudget permits one replica down, and the other replicas absorb its connections. One measurement went from 2,265 MB to 2,851 MB per replica |
+| 4    | size for one replica down: each remaining replica holds `R / (R - 1)` times its connections, 1.5x at three replicas. Add 5% for an uneven split | the PodDisruptionBudget permits one replica down, and the other replicas absorb its connections. One measurement went from 2,265 MB to 2,851 MB per replica. The Service picks a replica for each redial, so the split is not exact. In [Scale-out rebalancing](#scale-out-rebalancing-m), when the split was stable, the busiest replica held under 1% more connections than an even split. The 5% also covers the 165-171 KiB range of a saturated connection |
 
 
 ![Replicas required, by memory limit](images/connector-replicas-needed.png)
 
-The figure shows the quiet case, at 235 KiB per node. This example is for the saturated case, with three publishers per node and MongoDB behind. Step 2 then shows that three replicas at 4Gi support about **25,000 nodes**, or 16,500 with one replica down. A 100,000-node fleet needs about 16 GiB per replica: three replicas at 16Gi, or twelve at 4Gi. With step 4, the fleet needs three replicas at 24Gi, or thirteen at 4Gi.
+The figure shows the quiet case, at 235 KiB per node. This example is for the saturated case, with three publishers per node and MongoDB behind. Without headroom, step 2 shows that three replicas at 4Gi support about **25,000 nodes**. With step 4, they support about 15,900 nodes. Without headroom, a 100,000-node fleet needs about 16 GiB per replica: three replicas at 16Gi, or twelve at 4Gi. With step 4, the fleet needs three replicas at 26Gi, or fourteen at 4Gi.
+
+Step 4 covers one disruption at a time. After a disruption, the connections need about twelve minutes to rebalance, as [Scaling out](#scaling-out) describes. A rollout of platform-connector, or a second disruption in this time, moves more connections to one replica. With the default rollout strategy and three replicas, the last old replica can hold up to about 1.8 times its share of the connections. If MongoDB is behind at that time, this replica can exceed the limit from step 4.
 
 Replicas give throughput and memory capacity, so when you scale for one, the other also changes. Nothing in the chart or the metrics shows this. Replicas are also not a free substitute, for the reason in [Scaling out](#scaling-out). CPU is never the limit in either case: 1.94 cores across three replicas at 100,000 nodes, against a limit of 2 cores for each replica.
 

@@ -175,7 +175,7 @@ Optional behavior override for fault-quarantine. `force` forces node cordoning r
 
 ##### drainOverrides
 
-Optional behavior override for node-drainer. `force` forces immediate pod eviction regardless of the configured namespace drain modes. `skip` skips pod eviction and marks the health event as already drained. Set at most one of `force` or `skip`.
+Optional behavior override for node-drainer. With the built-in eviction, `force` forces immediate pod eviction regardless of the configured namespace drain modes. With [custom drain](../tutorials/writing-a-drain-plugin.md), node-drainer does not use `force`. `skip` skips pod eviction and marks the health event as already drained. Set at most one of `force` or `skip`.
 
 ## CEL Expressions
 

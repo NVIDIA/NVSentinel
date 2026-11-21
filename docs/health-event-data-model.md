@@ -164,7 +164,7 @@ Per-event overrides that let a health monitor bypass default pipeline behavior.
 
 | Field | Effect |
 |-------|--------|
-| `force = true` | node-drainer uses `Immediate` for every pod that it drains, and ignores the configured eviction modes. It does not add pods that no `userNamespaces` entry or `podDrainPolicies` policy selects. |
+| `force = true` | With the built-in eviction, node-drainer uses `Immediate` for every pod that it drains, and ignores the configured eviction modes. It does not add pods that no `userNamespaces` entry or `podDrainPolicies` policy selects. With custom drain, node-drainer does not use this field. The drain template can pass it to the [drain plugin](./tutorials/writing-a-drain-plugin.md), which decides how to evict the pods. |
 | `skip = true` | node-drainer skips the drain entirely. It marks the `UserPodsEvictionStatus` of the event as `AlreadyDrained`, so fault-remediation proceeds immediately. |
 
 > **Use case**: Debug and test events, for example fault-injection demos, set `drainOverrides.skip = true`. This lets them exercise the remediation pipeline without waiting for pod eviction.

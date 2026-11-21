@@ -56,25 +56,27 @@ Positive `qps` values enable client-side throttling. The value `0` uses the clie
 
 ### Change Stream Resume Token
 
-> **Important**: In step 3, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then delete the resume token that the first replica saved.
+> **Important**: In step 4, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then discard the resume token that the first replica saved.
 
 To make node-drainer skip accumulated health events and start from the current stream head, do these steps:
 
-1. Scale node-drainer to zero.
-2. In the shared resume-control ConfigMap, set the key of node-drainer to `CREATE`.
-3. Scale node-drainer to one replica.
-4. After node-drainer sets the key back to `RESUME`, restore the replicas of node-drainer.
+1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](../runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
+2. Scale node-drainer to zero.
+3. In the shared resume-control ConfigMap, set the key of node-drainer to `CREATE`.
+4. Scale node-drainer to one replica.
+5. After node-drainer sets the key back to `RESUME`, restore the replicas of node-drainer.
+6. If you stopped the reconciliation in step 1, start it again.
 
-During the startup in step 3, node-drainer does these actions:
+During the startup in step 4, node-drainer does these actions:
 
-- It deletes only its own resume token.
+- It resets only its own resume token. With MongoDB, it deletes the token. With PostgreSQL, it sets the token to the current head.
 - It records a cold-start cutoff timestamp.
 - It skips startup cold-start recovery for that run.
 - It sets the key back to `RESUME`.
 
 Later restarts still run cold-start recovery, but only for records newer than the recorded cutoff.
 
-Run these commands one at a time. If a `kubectl wait` command fails, find the cause before you continue.
+These commands do steps 2 to 5. Run them one at a time. If a `kubectl wait` command fails, find the cause before you continue.
 
 ```bash
 REPLICAS=$(kubectl -n nvsentinel get deployment node-drainer -o jsonpath='{.spec.replicas}')

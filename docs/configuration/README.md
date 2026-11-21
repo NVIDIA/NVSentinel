@@ -119,18 +119,20 @@ Use GPU Operator v26.7.1 or later. Earlier GPU Operator versions do not support 
 
 Watcher-based components persist change stream resume tokens. After a restart, a component uses its token to resume from the last processed health event.
 
-> **Important**: In step 3, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then delete the resume token that the first replica saved.
+> **Important**: In step 4, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then discard the resume token that the first replica saved.
 
 To skip the accumulated health events and start from the current stream head, do these steps:
 
-1. Scale the component to zero.
-2. In the runtime resume-control ConfigMap, patch the key of the component from `RESUME` to `CREATE`.
-3. Scale the component to one replica.
-4. After the component sets its key back to `RESUME`, restore the replicas of the component.
+1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](../runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
+2. Scale the component to zero.
+3. In the runtime resume-control ConfigMap, patch the key of the component from `RESUME` to `CREATE`.
+4. Scale the component to one replica.
+5. After the component sets its key back to `RESUME`, restore the replicas of the component.
+6. If you stopped the reconciliation in step 1, start it again.
 
-During the startup in step 3, the component does these actions:
+During the startup in step 4, the component does these actions:
 
-- It deletes only its own resume token.
+- It resets only its own resume token. With MongoDB, it deletes the token. With PostgreSQL, it sets the token to the current head.
 - It records a cold-start cutoff timestamp.
 - It skips the startup cold-start recovery for that run.
 - It opens its watcher from the current stream head.
@@ -138,9 +140,9 @@ During the startup in step 3, the component does these actions:
 
 Later restarts still run cold-start recovery, but only for records that are newer than the recorded cutoff.
 
-Helm does not create the resume-control ConfigMap. If the ConfigMap is missing, the components create it at runtime. Thus, GitOps tools such as Argo CD do not revert your patches to its data. When a component starts and its key is missing, the component writes its key as `RESUME`. Thus, over time, the ConfigMap gets an explicit state for each component.
+Helm does not create the resume-control ConfigMap. If the ConfigMap is missing, the components create it at runtime. Thus, GitOps controllers such as Argo CD do not revert your patches to its data. When a component starts and its key is missing, the component writes its key as `RESUME`. Thus, over time, the ConfigMap gets an explicit state for each component.
 
-This example does a one-shot reset for node-drainer. Run these commands one at a time. If a `kubectl wait` command fails, find the cause before you continue.
+This example does steps 2 to 5 for node-drainer. Run these commands one at a time. If a `kubectl wait` command fails, find the cause before you continue.
 
 ```bash
 REPLICAS=$(kubectl -n nvsentinel get deployment node-drainer -o jsonpath='{.spec.replicas}')

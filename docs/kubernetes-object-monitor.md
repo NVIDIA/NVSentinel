@@ -183,7 +183,7 @@ healthEvent:
     skip: true                  # Or use force: true; do not set both
 ```
 
-For each override block, `force` and `skip` are mutually exclusive. If this policy must do the action regardless of the normal rules, use `force`. If this policy must bypass the action, use `skip`.
+For each override block, `force` and `skip` are mutually exclusive. If this policy must do the action regardless of the normal rules, use `force`. If this policy must bypass the action, use `skip`. With [custom drain](./tutorials/writing-a-drain-plugin.md), node-drainer does not use `drainOverrides.force`.
 
 ## Testing Policies
 

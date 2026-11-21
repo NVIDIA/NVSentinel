@@ -21,7 +21,7 @@ The module recovers from this error automatically. It deletes its stale resume t
 
 The modules must also start fresh, without processing the accumulated events, in these cases:
 
-1. **Disabled modules** - Fault handling modules were disabled for a long time while health events continued to accumulate. For this case, do step 2 before you enable the modules again. To enable each module with one replica, set `replicaCount: 1` in the values of its subchart. Then continue at step 4.
+1. **Disabled modules** - Fault handling modules were disabled for a long time while health events continued to accumulate. For this case, do step 2 before you enable the modules again. In step 2, set only the keys of the modules that you enable again. To enable each module with one replica, set `replicaCount: 1` in the values of its subchart. Then continue at step 4.
 2. **Circuit breaker tripped** - The circuit breaker stayed tripped for an extended period, and many unprocessed events accumulated. A restart does not reset the breaker, and fault-quarantine processes no health events while the breaker is tripped. For this case, follow the [circuit breaker runbook](./circuit-breaker.md) instead of the procedure below. It tells you how to investigate the cause before you reset the breaker. To skip the accumulated health events, reset the breaker with the `CREATE` cursor.
 
 ## Procedure
@@ -30,7 +30,7 @@ On a normal start, each module runs a cold-start recovery. The recovery processe
 
 ### 1. Stop Fault Handling Deployments
 
-Before you change the resume-control ConfigMap, stop the fault handling modules. A module reads its key only when it starts. Also, a pod that still runs can write its resume token again after the reset. If a GitOps controller manages NVSentinel, stop its reconciliation first.
+Before you change the resume-control ConfigMap, stop the fault handling modules. A module reads its key only when it starts. Also, a pod that still runs can write its resume token again after the reset. If a GitOps controller manages NVSentinel, stop its reconciliation first, as in [Stop reconciliation](./mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only).
 
 1. Record the number of replicas of the fault-quarantine, fault-remediation and node-drainer deployments.
 2. Scale these deployments to zero replicas.
@@ -38,7 +38,9 @@ Before you change the resume-control ConfigMap, stop the fault handling modules.
 
 ### 2. Set the Resume-Control Keys to CREATE
 
-In the resume-control ConfigMap, set the key of each module to `CREATE`. Set a key only for a module that your installation deploys, or that you enable again after this step. A module that does not run cannot set its key back to `RESUME`. This command sets the keys of all three modules. If a module does not run after this procedure, remove its key from the command:
+In the resume-control ConfigMap, set the key of each module that starts after this step to `CREATE`. These are the modules that you stopped in step 1, or the modules that you enable again. Do not set the key of a module that continues to run. A module reads its key only when it starts. Thus, the key of a running module stays `CREATE`, and its next restart skips the health events that it did not process.
+
+This command sets the keys of all three modules. Remove the key of each module that does not start after this step:
 
 ```bash
 kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
@@ -64,7 +66,7 @@ kubectl rollout status deployment/node-drainer -n nvsentinel
 
 ### 4. Check the Resume-Control Keys
 
-For each module whose key you set in step 2, wait until the module sets its key back to `RESUME`:
+For each module whose key you set in step 2, run its command below. The command waits until the module sets its key back to `RESUME`:
 
 ```bash
 kubectl -n nvsentinel wait configmap/resume-control \
