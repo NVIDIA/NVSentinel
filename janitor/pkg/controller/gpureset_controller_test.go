@@ -2449,10 +2449,31 @@ var _ = Describe("GPUReset Controller", func() {
 				}),
 		)
 
+		// createOperandPodOnOtherNode creates a managed service pod on another node and waits until the reconciler
+		// cache holds it, so that the service manager is found in its namespace.
+		createOperandPodOnOtherNode := func() {
+			pod := &corev1.Pod{
+				Name:      nodeName + "-other-node-operand",
+				Namespace: gpuOperatorServiceManager.Spec.Namespace,
+				Labels:    map[string]string{"app": "nvidia-dcgm", "app.kubernetes.io/managed-by": "gpu-operator"},
+				Spec: corev1.PodSpec{
+					NodeName:   nodeName + "-other",
+					Containers: []corev1.Container{{Name: "operand", Image: "operand:test"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			operandPods = append(operandPods, pod)
+
+			Eventually(func(g Gomega) {
+				g.Expect(mgrClient.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{})).To(Succeed())
+			}, "10s", "100ms").Should(Succeed())
+		}
+
 		It("should skip the service teardown and restoration when no managed service pods run on the node", func() {
 			nodeLabels := draDeployLabels()
 			maps.Copy(nodeLabels, devicePluginDeployLabels())
 			createNodeWithOperandPods(nodeLabels, []map[string]string{{"app": "nvidia-operator-validator"}})
+			createOperandPodOnOtherNode()
 			createReset()
 
 			By("Reconciling until the reset is complete")
@@ -2497,6 +2518,79 @@ var _ = Describe("GPUReset Controller", func() {
 
 			return observed
 		}
+
+		// expectWaitingForServiceManager checks that the GPUReset waits for a managed service pod in the namespace:
+		// no teardown, no record, no Job and no completion.
+		expectWaitingForServiceManager := func() {
+			updatedReset := getReset()
+			Expect(updatedReset.Status.CompletionTime).To(BeNil())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeNil())
+			Expect(updatedReset.Status.ManagedServices).To(BeNil())
+			Expect(updatedReset.Status.JobRef).To(BeNil())
+		}
+
+		It("should wait and then fail without changing a node label when no managed service pod is in the namespace", func() {
+			nodeLabels := draDeployLabels()
+			maps.Copy(nodeLabels, devicePluginDeployLabels())
+			createNodeWithOperandPods(nodeLabels, []map[string]string{{"app": "nvidia-operator-validator"}})
+			createReset()
+
+			By("Waiting while no managed service pod is in the namespace")
+			observed := reconcileTimes(5)
+			expectWaitingForServiceManager()
+
+			By("Moving the start time back past the timeout")
+			waiting := getReset()
+			Expect(waiting.Status.StartTime).NotTo(BeNil())
+			oldStart := metav1.NewTime(time.Now().Add(-2 * reconciler.Config.Timeout))
+			waiting.Status.StartTime = &oldStart
+			Expect(k8sClient.Status().Update(ctx, &waiting)).To(Succeed())
+			Eventually(func(g Gomega) {
+				var cached v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cached)).To(Succeed())
+				g.Expect(cached.Status.StartTime).NotTo(BeNil())
+				g.Expect(cached.Status.StartTime.Time).To(BeTemporally("~", oldStart.Time, time.Second))
+			}, "10s", "100ms").Should(Succeed())
+
+			By("Failing with ServiceManagerNotFound")
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				observed = append(observed, getNodeLabels())
+
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.CompletionTime).NotTo(BeNil())
+			}, "20s", "100ms").Should(Succeed())
+
+			updatedReset := getReset()
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonServiceManagerNotFound)))
+			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&updatedReset, metav1.ConditionFalse, v1alpha1.ReasonServiceManagerNotFound)
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeNil())
+			Expect(updatedReset.Status.ManagedServices).To(BeNil())
+			Expect(updatedReset.Status.JobRef).To(BeNil())
+
+			By("Verifying no node label was ever changed")
+			expectUnchanged(observed, nodeLabels, nil)
+		})
+
+		It("should continue when a managed service pod appears in the namespace during the wait", func() {
+			nodeLabels := draDeployLabels()
+			maps.Copy(nodeLabels, devicePluginDeployLabels())
+			createNodeWithOperandPods(nodeLabels, []map[string]string{{"app": "nvidia-operator-validator"}})
+			createReset()
+
+			By("Waiting while no managed service pod is in the namespace")
+			reconcileTimes(3)
+			expectWaitingForServiceManager()
+
+			By("Starting a managed service pod on another node and reconciling until the reset is complete")
+			createOperandPodOnOtherNode()
+			reconcileUntil(v1alpha1.Complete)
+			Expect(getConditionReason(v1alpha1.ServicesTornDown)).To(Equal(string(v1alpha1.ReasonSkipped)))
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+		})
 
 		It("should not change node labels held by another controller and wait for their release", func() {
 			heldLabels := devicePluginDeployLabels()
@@ -2822,6 +2916,9 @@ var _ = Describe("GPUReset Controller", func() {
 
 				namespace := &corev1.Namespace{Name: clientsNamespace}
 				Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, namespace))).To(Succeed())
+
+				// The GPU Operator runs on another node, so the service manager is found.
+				createOperandPodOnOtherNode()
 			})
 
 			// createClientPod creates a pod in a namespace other than the service manager namespace. The cleanup of
