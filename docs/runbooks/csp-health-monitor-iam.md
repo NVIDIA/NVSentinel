@@ -2,20 +2,21 @@
 
 ## Overview
 
-This runbook covers IAM permission issues for the CSP Health Monitor on GCP and AWS.
+This runbook describes IAM permission issues for the CSP Health Monitor on GCP and AWS.
 
 ## GCP Issues
 
 ### Symptom: PERMISSION_DENIED Errors
 
 **Logs show:**
+
 ```log
 Error iterating GCP log entries: rpc error: code = PermissionDenied desc = The caller does not have permission
 ```
 
 ### Verification Steps
 
-1. **Check GCP Service Account has required role:**
+1. **Check that the GCP Service Account has the required role:**
 
 ```bash
 gcloud projects get-iam-policy {TARGET_PROJECT_ID} \
@@ -23,18 +24,18 @@ gcloud projects get-iam-policy {TARGET_PROJECT_ID} \
     --filter="bindings.members:serviceAccount:{GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com"
 ```
 
-Expected output should show the custom role `projects/{TARGET_PROJECT_ID}/roles/cspHealthMonitorRole` or predefined role `roles/logging.viewer`.
+The expected output shows the custom role `projects/{TARGET_PROJECT_ID}/roles/cspHealthMonitorRole` or the predefined role `roles/logging.viewer`.
 
-2. **Check Workload Identity binding:**
+2. **Check the Workload Identity binding:**
 
 ```bash
 gcloud iam service-accounts get-iam-policy \
     {GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com
 ```
 
-Expected output should show `roles/iam.workloadIdentityUser` with member `serviceAccount:{GKE_PROJECT_ID}.svc.id.goog[nvsentinel/csp-health-monitor]`.
+The expected output shows `roles/iam.workloadIdentityUser` with the member `serviceAccount:{GKE_PROJECT_ID}.svc.id.goog[nvsentinel/csp-health-monitor]`.
 
-3. **Check ServiceAccount annotation:**
+3. **Check the ServiceAccount annotation:**
 
 ```bash
 kubectl get serviceaccount csp-health-monitor -n nvsentinel -o jsonpath='{.metadata.annotations.iam\.gke\.io/gcp-service-account}'
@@ -44,7 +45,7 @@ Expected output: `{GCP_SA_NAME}@{TARGET_PROJECT_ID}.iam.gserviceaccount.com`
 
 ### Resolution
 
-If the GCP Service Account is missing the role:
+If the GCP Service Account does not have the role:
 
 ```bash
 gcloud projects add-iam-policy-binding {TARGET_PROJECT_ID} \
@@ -52,7 +53,7 @@ gcloud projects add-iam-policy-binding {TARGET_PROJECT_ID} \
     --role="projects/{TARGET_PROJECT_ID}/roles/cspHealthMonitorRole"
 ```
 
-If Workload Identity binding is missing:
+If the Workload Identity binding is missing:
 
 ```bash
 gcloud iam service-accounts add-iam-policy-binding \
@@ -75,13 +76,14 @@ gcloud logging read "logName=\"projects/{TARGET_PROJECT_ID}/logs/cloudaudit.goog
 ### Symptom: AccessDeniedException Errors
 
 **Logs show:**
+
 ```log
 Error while fetching maintenance events: operation error Health: DescribeEvents, https response error StatusCode: 403, AccessDeniedException
 ```
 
 ### Verification Steps
 
-1. **Check IAM policy is attached to role:**
+1. **Check that the role has the IAM policy:**
 
 ```bash
 # Use your custom role name if aws.iamRoleName is set, otherwise use the default pattern
@@ -89,11 +91,11 @@ aws iam list-attached-role-policies \
     --role-name {IAM_ROLE_NAME}
 ```
 
-> **Note**: The role name is either the value of `aws.iamRoleName` (if set) or the default `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`.
+> **Note**: The role name is either the value of `aws.iamRoleName` (if you set it) or the default `{CLUSTER_NAME}-nvsentinel-health-monitor-assume-role-policy`.
 
-Expected output should show `CSPHealthMonitorPolicy` attached.
+The expected output shows `CSPHealthMonitorPolicy` as an attached policy.
 
-2. **Check IAM role trust policy:**
+2. **Check the trust policy of the IAM role:**
 
 ```bash
 aws iam get-role \
@@ -101,9 +103,9 @@ aws iam get-role \
     --query 'Role.AssumeRolePolicyDocument'
 ```
 
-Expected: Trust policy should reference the correct EKS OIDC provider and `system:serviceaccount:nvsentinel:csp-health-monitor`.
+Expected: the trust policy references the correct EKS OIDC provider and `system:serviceaccount:nvsentinel:csp-health-monitor`.
 
-3. **Check ServiceAccount annotation:**
+3. **Check the ServiceAccount annotation:**
 
 ```bash
 kubectl get serviceaccount csp-health-monitor -n nvsentinel -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
@@ -113,7 +115,7 @@ Expected output: `arn:aws:iam::{ACCOUNT_ID}:role/{IAM_ROLE_NAME}`
 
 ### Resolution
 
-If IAM policy is not attached:
+If the role does not have the IAM policy:
 
 ```bash
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -123,7 +125,7 @@ aws iam attach-role-policy \
     --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/CSPHealthMonitorPolicy
 ```
 
-If the role ARN doesn't match Helm values, ensure `aws.iamRoleName` (or `configToml.clusterName` if using the default pattern) is correct, and redeploy.
+If the role ARN does not match the Helm values, make sure that `aws.iamRoleName` is correct. If you use the default pattern, make sure that `configToml.clusterName` is correct instead. Then redeploy.
 
 ### Test Permissions Manually
 
@@ -136,6 +138,7 @@ aws health describe-events --filter "services=EC2" --max-items 1
 ### Symptom: Events Detected but Nodes Not Quarantined
 
 **Logs show:**
+
 ```log
 No Kubernetes node found matching GCP numeric instance ID
 Instance ID not found in node map
@@ -143,23 +146,24 @@ Instance ID not found in node map
 
 ### Verification Steps
 
-1. **Check nodes have providerID set:**
+1. **Check that the nodes have a providerID:**
 
 ```bash
 kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.providerID}{"\n"}{end}'
 ```
 
 Expected:
+
 - GCP: `gce://{PROJECT_ID}/{ZONE}/{INSTANCE_NAME}`
 - AWS: `aws:///{AVAILABILITY_ZONE}/{INSTANCE_ID}`
 
-2. **Check GCP node annotations (GCP only):**
+2. **Check the GCP node annotations (GCP only):**
 
 ```bash
 kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.container\.googleapis\.com/instance_id}{"\n"}{end}'
 ```
 
-3. **Check RBAC permissions:**
+3. **Check the RBAC permissions:**
 
 ```bash
 kubectl auth can-i list nodes --as=system:serviceaccount:nvsentinel:csp-health-monitor
@@ -169,9 +173,9 @@ Expected: `yes`
 
 ### Resolution
 
-If nodes missing `providerID`, the kubelet configuration may be incorrect. Check node registration and cloud provider integration.
+If nodes do not have a `providerID`, the kubelet configuration can be incorrect. Check the node registration and the cloud provider integration.
 
-If RBAC is missing, verify the ClusterRole and ClusterRoleBinding were created by the Helm chart:
+If the RBAC permissions are missing, verify that the Helm chart created the ClusterRole and the ClusterRoleBinding:
 
 ```bash
 kubectl get clusterrole csp-health-monitor

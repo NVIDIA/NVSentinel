@@ -2,13 +2,13 @@
 
 ## Overview
 
-The Health Events Analyzer evaluates MongoDB aggregation pipeline rules against incoming health events and emits derived events with recommended actions (for example, repeated XID 48 errors on the same GPU within 24 hours triggers a `CONTACT_SUPPORT` recommendation). This document covers all Helm configuration options for system administrators.
+The Health Events Analyzer evaluates MongoDB aggregation pipeline rules on incoming health events. When a rule matches, the analyzer emits a derived event with a recommended action. For example, repeated XID 48 errors on the same GPU in 24 hours cause a `CONTACT_SUPPORT` recommendation. This document describes the main Helm configuration options for system administrators.
 
 ## Configuration Reference
 
 ### Module Enable/Disable
 
-Controls whether the health-events-analyzer module is deployed in the cluster.
+This setting enables or disables the deployment of the Health Events Analyzer in the cluster.
 
 ```yaml
 global:
@@ -18,7 +18,7 @@ global:
 
 ### Replica Count
 
-Number of health-events-analyzer pod replicas to run.
+The number of Health Events Analyzer pod replicas to run.
 
 ```yaml
 health-events-analyzer:
@@ -27,7 +27,7 @@ health-events-analyzer:
 
 ### Resources
 
-Defines CPU and memory resource requests and limits for the health-events-analyzer pod.
+Defines the CPU and memory resource requests and limits for the Health Events Analyzer pod.
 
 ```yaml
 health-events-analyzer:
@@ -42,7 +42,7 @@ health-events-analyzer:
 
 ### Logging
 
-Sets the verbosity level for health-events-analyzer logs.
+Sets the verbosity level of the Health Events Analyzer logs.
 
 ```yaml
 health-events-analyzer:
@@ -51,7 +51,7 @@ health-events-analyzer:
 
 ### Processing Strategy
 
-Controls whether derived events trigger downstream remediation actions or are recorded only.
+Controls whether derived events start downstream remediation actions, or NVSentinel only records them.
 
 ```yaml
 health-events-analyzer:
@@ -61,17 +61,22 @@ health-events-analyzer:
 **Options:**
 
 #### EXECUTE_REMEDIATION
-Normal operating mode. When a rule fires, downstream modules may update cluster state — applying node conditions, quarantining nodes, draining workloads, or triggering remediations.
+
+The normal operating mode. When a rule matches, downstream modules can update the cluster state. They can apply node conditions, quarantine nodes, drain workloads or start remediations.
 
 #### STORE_AND_ANALYSE
-Events are persisted and ingested by the Health Events Analyzer for rule evaluation. The individual event does not directly trigger quarantine or remediation, but HEA rules can still match on it and emit new `EXECUTE_REMEDIATION` synthetic events as a result — for example, a burst of deduplicated `STORE_AND_ANALYSE` events may collectively satisfy a repeated-failure rule. Use this when you want the raw event suppressed from immediate action but still want HEA correlation to fire.
+
+NVSentinel persists the derived events, but they do not start quarantine or remediation and do not set node conditions. The analyzer does not evaluate its own derived events. Thus, on the analyzer, this mode has the same effect as `STORE_ONLY`.
+
+On another health monitor, this strategy has a different effect. The analyzer evaluates the raw health events of that monitor, and a rule match can emit `EXECUTE_REMEDIATION` derived events. For example, a burst of deduplicated `STORE_AND_ANALYSE` events can together satisfy a repeated-failure rule. Thus, on that monitor, the strategy prevents immediate action on the raw events, but the analyzer still correlates them.
 
 #### STORE_ONLY
-Observability-only mode. Derived events are persisted and exported but do not modify any cluster resources. Use this mode to shadow-test new or customised rules in production before enabling full remediation.
+
+The observability-only mode. NVSentinel persists and exports derived events, but they do not change any cluster resources. Use this mode to shadow-test new or customised rules in production before you enable full remediation.
 
 ### Operator Recovery
 
-Recovery is disabled by default. With MongoDB, enable Node watches and namespaced Event reporting and add a `[rules.recovery]` mapping to each configured aggregation rule that needs operator recovery:
+Recovery is disabled by default. To use it with MongoDB, enable Node watches and namespaced Event reporting. Then add a `[rules.recovery]` mapping to each configured aggregation rule that needs operator recovery:
 
 ```yaml
 health-events-analyzer:
@@ -86,11 +91,11 @@ scope = "entity"
 entity_types = ["GPU_UUID"]
 ```
 
-Use `scope = "node"` without `entity_types` for node-wide rules. Each annotation key must be unique. The operator writes the time when hardware verification completed; the analyzer retains the annotation and reports the result as a Kubernetes Event. Healthy-source triggers and PostgreSQL recovery are not supported. See the [operator guide](../health-events-analyzer-recovery.md) for commands, entity selection, timestamps, and result handling.
+For node-wide rules, use `scope = "node"` without `entity_types`. Each annotation key must be unique. In the annotation, write the time when the hardware verification completed. The analyzer keeps the annotation and reports the result as a Kubernetes Event. NVSentinel does not support healthy-source triggers or recovery with PostgreSQL. For commands, entity selection, timestamps, and result handling, see the [operator guide](../health-events-analyzer-recovery.md).
 
 ### Concurrent Event Processing
 
-The Health Events Analyzer partitions incoming events across a concurrent worker pool by node name. Events for distinct nodes are evaluated concurrently, while events for the same node are processed in strict chronological order. Checkpoints advance using a low-water mark tracker to guarantee at-least-once delivery without head-of-line blocking.
+The Health Events Analyzer divides incoming health events by node name across a pool of concurrent workers. It evaluates health events for different nodes at the same time. It processes health events for the same node in strict chronological order. The analyzer moves its saved stream position past a health event only after that health event and all earlier health events are complete. Thus, after a restart, the analyzer processes each health event at least once. This method does not cause head-of-line blocking.
 
 ```yaml
 health-events-analyzer:
@@ -101,9 +106,9 @@ health-events-analyzer:
 
 #### Scaling Workers by Datastore Event Rate
 
-Each event evaluation executes rule aggregation queries against the datastore, averaging approximately 17.5 ms of I/O round-trip latency. A single worker achieves a processing ceiling of approximately 57 events/second. Throughput scales linearly with the number of workers ($\approx \text{Workers} \times 57\text{ events/s}$).
+For each health event, the analyzer runs rule aggregation queries on the datastore. The I/O round trips for one health event take approximately 17.5 ms on average. One worker can process a maximum of approximately 57 events/second. Throughput increases linearly with the number of workers ($\approx \text{Workers} \times 57\text{ events/s}$).
 
-Use the following reference table to configure `workers` and `maxInFlight` based on cluster size and expected event rate:
+Use this reference table to configure `workers` and `maxInFlight` for the cluster size and the expected event rate:
 
 | Offered Event Rate in DB | Recommended `workers` | Recommended `maxInFlight` | Estimated Throughput Capacity | Recommended Cluster Scale |
 |---|---|---|---|---|
@@ -114,7 +119,7 @@ Use the following reference table to configure `workers` and `maxInFlight` based
 | $800 - 1,500$ events/s | `32` | `4000` | ~1,680 events/s | 8,000 – 15,000 nodes |
 | $> 1,500$ events/s | `64` | `8000` | ~3,500 events/s | 15,000+ nodes |
 
-`maxInFlight` bounds uncheckpointed in-flight events in memory. When in-flight events reach this limit, stream ingestion pauses until workers resolve earlier events. Increase `maxInFlight` proportionally for larger worker counts to absorb bursty event traffic without stalling ingestion.
+`maxInFlight` sets the maximum number of uncheckpointed in-flight events in memory. When the in-flight events reach this limit, stream ingestion pauses until the workers complete earlier events. For a larger number of workers, increase `maxInFlight` proportionally. The analyzer can then absorb bursts of event traffic without a stall of ingestion.
 
 #### Concurrent Rule Evaluation
 
@@ -127,37 +132,37 @@ The analyzer runs one datastore query for each enabled rule when it evaluates an
 
 The analyzer keeps the events from one node in order. Thus, more workers cannot process a burst of events from one node faster. A higher `ruleConcurrency` can.
 
-The rule results do not change. The analyzer publishes the matched events in rule order, as it does when it runs the queries one at a time.
+The rule results do not change. The analyzer publishes the derived events in rule order, as it does when it runs the queries one at a time.
 
-The analyzer runs the same queries, and each query examines the same documents. But in measurements on MongoDB, the datastore used more CPU for each event when the queries ran at the same time. 
+The analyzer runs the same queries, and each query examines the same documents. But on MongoDB, the datastore uses more CPU for each event when the queries run at the same time.
 
 Use these guidelines:
 
-- Keep the default of `1` if the datastore CPU is near its limit. More CPU for each event can decrease throughput.
+- If the datastore CPU is near its limit, keep the default of `1`. More CPU for each event can decrease throughput.
 - If the datastore has spare CPU, set `ruleConcurrency` to `4` or `8`.
 
 The analyzer can run up to `workers` × `ruleConcurrency` rule queries at the same time.
 
 ### Matched-entity metric
 
-`rule_matched_total` is labeled `{rule_name, node_name}` only. Rules that select on a GPU, GPC, TPC, or NIC therefore fire without saying which unit they selected. The optional counter below adds that identity; it is off by default because the extra labels raise cardinality.
+`rule_matched_total` has only the labels `{rule_name, node_name}`. Thus, when a rule that selects on a GPU, GPC, TPC, or NIC matches, the metric does not show which unit the rule selected. The optional counter below adds that identity. It is disabled by default, because the extra labels increase the cardinality.
 
 ```yaml
 health-events-analyzer:
   ruleMatchedEntityMetricEnabled: false
 ```
 
-When enabled, a match on an entity-keyed rule increments:
+If you enable it, a match on an entity-keyed rule increments this counter:
 
 ```text
 rule_matched_entity_total{rule_name, node_name, entity_type, entity_value}
 ```
 
-`entity_type` / `entity_value` come from the triggering event's impacted entities. Only PCI, GPU, GPC, TPC, SM, NVLINK, NIC, NICPort, and NVSwitch are exported, using the producer spelling. GPU UUID is never exported; PCI or GPU index is used instead. Node-scoped rules (for example `MultipleRemediations`) do not emit this series. `RepeatedXidError` does.
+`entity_type` and `entity_value` come from the impacted entities of the triggering health event. The counter exports only PCI, GPU, GPC, TPC, SM, NVLINK, NIC, NICPort, and NVSwitch, with the spelling of the producer. It never exports a GPU UUID, and it uses the PCI or GPU index instead. Node-scoped rules (for example, `MultipleRemediations`) do not emit this series. `RepeatedXIDErrorOnSameGPU` does. With PostgreSQL, the built-in XID burst detector also emits this series, with the rule name `RepeatedXidError`.
 
 ### Client Certificate Mount Path
 
-Path inside the container where TLS client certificates are mounted for authenticated MongoDB connections. Certificates are typically provisioned by cert-manager and mounted via a Kubernetes secret volume.
+The path in the container where Kubernetes mounts the TLS client certificates for authenticated MongoDB connections. Usually, cert-manager provisions the certificates, and Kubernetes mounts them through a secret volume.
 
 ```yaml
 health-events-analyzer:
@@ -166,7 +171,7 @@ health-events-analyzer:
 
 ### Rule Enable/Disable Flags
 
-Each built-in rule can be independently enabled or disabled. All rules are enabled by default. Set a flag to `false` to suppress a rule without removing it from the configuration.
+You can enable or disable each built-in rule independently. All rules are enabled by default. To disable a rule without removing it from the configuration, set its flag to `false`.
 
 ```yaml
 health-events-analyzer:
@@ -194,12 +199,12 @@ health-events-analyzer:
   enableRepeatedNICDegradationRule: true
 ```
 
-The following table summarises every flag, the XID or event type it covers, and the recommended action emitted when the rule fires.
+This table summarises each flag, the XID or event type that it covers, and the recommended action that the rule emits when it matches.
 
 | Flag | Rule | Recommended Action | Description |
 |------|------|--------------------|-------------|
 | `enableMultipleRemediationsRule` | MultipleRemediations | `CONTACT_SUPPORT` | 5 or more remediations on the same node within 7 days |
-| `enableRepeatedXIDErrorOnSameGPURule` | RepeatedXIDErrorOnSameGPU | `CONTACT_SUPPORT` | Any XID whose Xid catalogue immediate action is not `IGNORE` or `RESTART_APP` (and not 45), plus the retirement failures 157 and 161, five or more times within 24 hours on the same GPU (burst window 3 min, sticky XID window 3 h) |
+| `enableRepeatedXIDErrorOnSameGPURule` | RepeatedXIDErrorOnSameGPU | `CONTACT_SUPPORT` | Any XID whose immediate action in the Xid catalogue is not `IGNORE` or `RESTART_APP` (and not 45), plus the retirement failures 157 and 161. Five or more times within 24 hours on the same GPU (burst window 3 min, sticky XID window 3 h) |
 | `enableRepeatedXID31OnSameGPURule` | RepeatedXID31OnSameGPU | `RUN_DCGMEUD` | XID 31 two or more times on the same GPU within 24 hours |
 | `enableRepeatedXID31OnDifferentGPURule` | RepeatedXID31OnDifferentGPU | `NONE` | XID 31 on two or more different GPUs within 24 hours |
 | `enableRepeatedXID13OnSameGPCAndTPCRule` | RepeatedXID13OnSameGPCAndTPC | `RUN_DCGMEUD` | XID 13 two or more times on the same GPC and TPC within 24 hours |
@@ -217,15 +222,15 @@ The following table summarises every flag, the XID or event type it covers, and 
 | `enableXID74Reg3UnexpectedErrorRule` | XID74Reg3UnexpectedError | `CONTACT_SUPPORT` | XID 74 with an unexpected REG3 value |
 | `enableXID74Reg3Bit18SetRule` | XID74Reg3Bit18Set | `CONTACT_SUPPORT` | XID 74 with REG3 bit 18 set |
 | `enableXID74Reg4HardwareIssueRule` | XID74Reg4HardwareIssue | `CONTACT_SUPPORT` | XID 74 with a hardware-indicating REG4 value |
-| `enableXID74Reg4ECCErrorRule` | XID74Reg4ECCError | `CONTACT_SUPPORT` | XID 74 with an ECC-indicating REG4 value |
-| `enableRepeatedNICDriverErrorRule` | RepeatedNICDriverError | `CONTACT_SUPPORT` | Non-fatal NIC driver kernel-log pattern (e.g. TX/RX timeout, NAPI lockup) three or more times on the same node within 1 hour |
+| `enableXID74Reg4ECCErrorRule` | XID74Reg4ECCError | `NONE` | XID 74 with an ECC-indicating REG4 value |
+| `enableRepeatedNICDriverErrorRule` | RepeatedNICDriverError | `CONTACT_SUPPORT` | Non-fatal NIC driver kernel-log pattern (for example, TX/RX timeout or NAPI lockup) three or more times on the same node within 1 hour |
 | `enableRepeatedNICDegradationRule` | RepeatedNICDegradation | `CONTACT_SUPPORT` | Non-fatal NIC counter degradation three or more times on the same NIC port within 1 hour |
 
 ## Rule Configuration
 
 ### Rule Structure
 
-Rules are defined as TOML in the `config:` block of `values.yaml`. Each rule entry has the following fields:
+The `config:` block of `values.yaml` defines the rules as TOML. Each rule entry has these fields:
 
 ```toml
 [[rules]]
@@ -241,7 +246,7 @@ stage = [
 ]
 ```
 
-The full default ruleset — including all aggregation pipeline stage definitions — is in the chart's `values.yaml` at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. Refer to that file when writing or reviewing custom rules.
+The full default ruleset, with all the definitions of the aggregation pipeline stages, is in the `values.yaml` file of the chart at `distros/kubernetes/nvsentinel/charts/health-events-analyzer/values.yaml`. When you write or review custom rules, refer to that file.
 
 ### Skip Rules That Cannot Match
 
@@ -259,7 +264,7 @@ stage = [ ... ]
 
 The expression can read these fields of the incoming event: `agent`, `checkName`, `componentClass`, `errorCode`, `isFatal`, `isHealthy`, `recommendedAction`, `customRecommendedAction`, `nodeName`, `metadata`, and `message`. `errorCode` is a list and `metadata` is a map. The platform connector overrides and the event exporter filter use the same fields.
 
-**The expression must be true for every event that the stages can match.** If it is false for such an event, the analyzer misses that match. To write it safely, copy the stage of the rule that compares `this.` fields to constants. For example, the stage `{"$match": {"$expr": {"$eq": ["this.healthevent.errorcode.0", "74"]}}}` becomes the `when` in the example above. The analyzer resolves `this.healthevent.errorcode.0` to null when the event has no error code, so check `size(event.errorCode) > 0` before you read `event.errorCode[0]`.
+**The expression must be true for every event that the stages can match.** If it is false for such an event, the analyzer misses that match. To write it safely, copy the stage of the rule that compares `this.` fields to constants. For example, the stage `{"$match": {"$expr": {"$eq": ["this.healthevent.errorcode.0", "74"]}}}` becomes the `when` in the example above. If the event has no error code, the analyzer resolves `this.healthevent.errorcode.0` to null. Thus, check `size(event.errorCode) > 0` before you read `event.errorCode[0]`.
 
 The analyzer handles `when` as follows:
 
@@ -270,9 +275,9 @@ The analyzer handles `when` as follows:
 
 ### MultipleRemediations Rule
 
-The `MultipleRemediations` rule fires when five or more remediations have been performed on the same node within the preceding 7 days. Unlike other rules, **it applies a node condition that NVSentinel does not automatically clear**, because the rule does not emit healthy events.
+The `MultipleRemediations` rule matches when NVSentinel performed five or more remediations on the same node in the last 7 days. Unlike other rules, **it applies a node condition that NVSentinel does not automatically clear**, because the rule does not emit healthy derived events.
 
-After the underlying hardware issue is resolved, remove the condition manually:
+After you correct the underlying hardware issue, remove the condition manually:
 
 ```bash
 kubectl get node {NODE_NAME} -o json \
@@ -280,36 +285,38 @@ kubectl get node {NODE_NAME} -o json \
   | kubectl replace -f - --subresource=status
 ```
 
-Replace `MultipleRemediations` with the actual condition type name if a custom rule applied a different condition.
+If a custom rule applied a different condition, replace `MultipleRemediations` with the actual name of the condition type.
 
 ### XID 74 Register Rules
 
-XID 74 (NVLink error) carries register fields (`REG0`–`REG6`) that encode the specific failure mode. The XID 74 rules inspect these register bit patterns to distinguish three categories of failure:
+XID 74 (NVLink error) has register fields (`REG0`–`REG6`) that encode the specific failure mode. The XID 74 rules examine the bit patterns of these registers to distinguish three categories of failure:
 
-**Signal integrity issues** — REG0 bits 21 or 22 set (`XID74Reg0SignalIntegrityErrorRule`). Suggests marginal signal levels; check link mechanical connections and run field diagnostics if the issue persists.
+**Signal integrity issues** — REG0 bits 21 or 22 set (`XID74Reg0SignalIntegrityErrorRule`). This pattern can indicate marginal signal levels. Check the mechanical connections of the link. If the issue continues, run field diagnostics.
 
 **ECC/parity errors** — REG0 bits 4 or 5 set (`XID74Reg0ECCParityErrorRule`), or REG2 bits 0, 1, 2, or 6 set (`RepeatedXID74Reg2HardwareIssueRule`). Repeated occurrences on the same NVLink and GPU indicate a hardware fault.
 
-**Unexpected or unexplained errors** — REG0 bits 1 or 20 set, or REG3 or REG4 anomalies: escalated immediately to `CONTACT_SUPPORT`. REG0 bits 27 or 29 set: escalated to `CONTACT_SUPPORT` after two or more occurrences within 24 hours (`XID74Reg0Bit27Or29SetRule`).
+**Unexpected or unexplained errors** — REG0 bits 1 or 20 set, or a REG3 anomaly: the rule sets `CONTACT_SUPPORT` immediately. REG0 bits 27 or 29 set: the rule sets `CONTACT_SUPPORT` after two or more occurrences within 24 hours (`XID74Reg0Bit27Or29SetRule`).
 
-Rules that check REG0 bits 1, 20, 21, or 22 additionally verify that no other XID errors are active on the same GPU before firing, to avoid false positives during multi-error storms.
+The REG4 rules match after two or more occurrences on the same NVLink and GPU within 24 hours. A hardware-indicating REG4 value gets `CONTACT_SUPPORT` (`XID74Reg4HardwareIssueRule`). An ECC-indicating REG4 value gets `NONE` (`XID74Reg4ECCErrorRule`).
+
+Rules that check REG0 bits 1, 20, 21, or 22 also verify that no other XID errors are active on the same GPU. They do this check before they match. This check prevents false positives during multi-error storms.
 
 ### XID 31 and XID 13 Rules
 
 Both XID 31 (GPU memory error) and XID 13 (graphics engine fault) have two rule variants:
 
-**Same GPU / same GPC+TPC** — repeated occurrences on the same hardware unit suggest a hardware defect. The recommended action is `RUN_DCGMEUD` (run DCGM End-User Diagnostics), followed by field diagnostics if tests pass.
+**Same GPU / same GPC+TPC** — repeated occurrences on the same hardware unit can indicate a hardware defect. The recommended action is `RUN_DCGMEUD` (run DCGM End-User Diagnostics). If the tests pass, run field diagnostics next.
 
-**Different GPU / different GPC+TPC combinations** — the same error appearing on different hardware units within a short window suggests a software or workload problem. The recommended action is `NONE`; investigate the application process identified in the error PID.
+**Different GPU / different GPC+TPC combinations** — the same error on different hardware units in a short window can indicate a software or workload problem. The recommended action is `NONE`. Investigate the application process that the PID in the error identifies.
 
-Both variants use a burst-window algorithm (3-minute window for XID 31, 15-second window for XID 13) to avoid counting rapid re-occurrences of the same event as separate bursts.
+Both variants use a burst-window algorithm: a 3-minute window for XID 31 and a 15-second window for XID 13. Thus, the rules do not count rapid re-occurrences of the same event as separate bursts.
 
 ### NIC Rules
 
 Two NIC rules complement the NIC Health Monitor module:
 
-`enableRepeatedNICDriverErrorRule` — correlates `SysLogsNICDriverError` events from the Syslog Health Monitor. It fires when the same kernel-log error pattern (for example, `mlx5_tx_timeout_detected` or `netdev_watchdog`) occurs three or more times on the same node within one hour, indicating that automatic driver recovery is failing.
+`enableRepeatedNICDriverErrorRule` — correlates `SysLogsNICDriverError` events from the Syslog Health Monitor. It matches when the same kernel-log error pattern (for example, `mlx5_tx_timeout_detected` or `netdev_watchdog`) occurs three or more times on the same node in one hour. This shows that automatic driver recovery does not work.
 
-`enableRepeatedNICDegradationRule` — correlates `InfiniBandDegradationCheck` and `EthernetDegradationCheck` events from the NIC Health Monitor. It fires when a non-fatal counter degradation occurs three or more times on the same NIC port within one hour, suggesting a persistent physical-layer problem.
+`enableRepeatedNICDegradationRule` — correlates `InfiniBandDegradationCheck` and `EthernetDegradationCheck` events from the NIC Health Monitor. It matches when a non-fatal counter degradation occurs three or more times on the same NIC port in one hour. This can indicate a persistent physical-layer problem.
 
-See the [NIC Health Monitor configuration](nic-health-monitor.md) for the corresponding check and detection configuration.
+For the related check and detection configuration, see the [NIC Health Monitor configuration](nic-health-monitor.md).
