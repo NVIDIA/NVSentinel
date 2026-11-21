@@ -35,9 +35,22 @@ process_node() {
   
   while true; do
     # Fetch current conditions (refetch on each retry to resolve conflicts)
-    local current_conditions
-    current_conditions=$(kubectl get node "$node" -o json 2>/dev/null | jq -c '.status.conditions // []' 2>/dev/null || echo "[]")
-    
+    local current_conditions node_json get_output
+    if ! node_json=$(kubectl get node "$node" -o json 2>&1); then
+      get_output="$node_json"
+      # A node deleted since the listing has nothing left to clean up.
+      if echo "$get_output" | grep -qi "notfound\|not found"; then
+        echo "- $node: deleted before cleanup, skipping"
+        return 0
+      fi
+      echo "⚠ $node: get failed - $get_output"
+      return 1
+    fi
+    if ! current_conditions=$(echo "$node_json" | jq -c '.status.conditions // []' 2>&1); then
+      echo "⚠ $node: could not parse node JSON - $current_conditions"
+      return 1
+    fi
+
     if [ "$current_conditions" = "[]" ]; then
       if [ $retry -eq 0 ]; then
         echo "- $node: no conditions found"
@@ -84,6 +97,12 @@ process_node() {
       return 1
     fi
     
+    # The node was deleted between the get and the patch: nothing left to clean up.
+    if echo "$patch_output" | grep -qi "notfound\|not found"; then
+      echo "- $node: deleted before patch, skipping"
+      return 0
+    fi
+
     # Non-retriable error
     echo "⚠ $node: patch failed - $patch_output"
     return 1
@@ -93,6 +112,7 @@ process_node() {
 active_jobs=0
 max_parallel=5
 processed=0
+failed=0
 
 for node in $nodes; do
   process_node "$node" &
@@ -100,7 +120,9 @@ for node in $nodes; do
   processed=$((processed + 1))
   
   if [ $active_jobs -ge $max_parallel ]; then
-    wait -n 2>/dev/null || true
+    if ! wait -n; then
+      failed=$((failed + 1))
+    fi
     active_jobs=$((active_jobs - 1))
   fi
   
@@ -109,5 +131,17 @@ for node in $nodes; do
   fi
 done
 
-wait
+# Collect the exit status of every remaining background job; a bare `wait` would discard them.
+while [ $active_jobs -gt 0 ]; do
+  if ! wait -n; then
+    failed=$((failed + 1))
+  fi
+  active_jobs=$((active_jobs - 1))
+done
+
+if [ $failed -gt 0 ]; then
+  echo "Cleanup failed: $failed of $node_count nodes failed"
+  exit 1
+fi
+
 echo "Cleanup completed for $node_count nodes"
